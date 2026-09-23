@@ -1,3 +1,4 @@
+#include "wire/public_result_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -9,6 +10,8 @@
 // SEARCH_KEY: SBSQL_EMBEDDED_ENGINE_CLIENT
 
 #include "embedded/embedded_engine_client.hpp"
+#include "core/uuid/uuid.hpp"
+#include "wire/parser_server_ipc/binary_identity_io.hpp"
 #include "wire/parser_server_ipc/disconnect_result_validation.hpp"
 #include "wire/parser_server_ipc/sbps_statement_management_bind_codec.hpp"
 #include "engine/sblr/sblr_stmt_prepare_runtime.hpp"
@@ -173,30 +176,13 @@ std::array<std::uint8_t, 16> GetUuid(const std::vector<std::uint8_t>& data,
   return uuid;
 }
 
-std::array<std::uint8_t, 16> TextToUuid(std::string_view text) {
-  std::array<std::uint8_t, 16> out{};
-  auto hex_value = [](char ch) -> int {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-    return -1;
-  };
-  std::size_t nibble = 0;
-  for (char ch : text) {
-    if (ch == '-') continue;
-    const int value = hex_value(ch);
-    if (value < 0 || nibble >= 32) return {};
-    if ((nibble % 2) == 0) out[nibble / 2] = static_cast<std::uint8_t>(value << 4);
-    else out[nibble / 2] = static_cast<std::uint8_t>(out[nibble / 2] | value);
-    ++nibble;
-  }
-  return nibble == 32 ? out : std::array<std::uint8_t, 16>{};
-}
-
-void PopulateTransactionStateFromPayload(std::string_view payload,
+bool PopulateTransactionStateFromPayload(std::string_view payload,
                                          ServerExecutionResult* result) {
-  if (result == nullptr || payload.empty()) return;
+  if (result == nullptr) return false;
+  if (payload.empty()) return true;
   auto line_value = [&](std::string_view key) -> std::optional<std::string> {
+    if (payload.starts_with(scratchbird::wire::public_result::kMagic))
+      return scratchbird::wire::public_result::Value(payload, key);
     std::size_t pos = 0;
     while (pos < payload.size()) {
       const auto end = payload.find('\n', pos);
@@ -226,18 +212,31 @@ void PopulateTransactionStateFromPayload(std::string_view payload,
   const auto replacement_id = line_value("replacement_local_transaction_id");
   const auto active_id = line_value("local_transaction_id");
   if (replacement_id || active_id) {
+    const auto local_id = parse_u64(replacement_id.value_or(active_id.value_or("0")));
+    const auto identity_field = scratchbird::wire::public_result::Find(
+        payload, replacement_id ? "replacement_transaction_uuid" : "transaction_uuid");
+    scratchbird::core::platform::Uuid identity;
+    if (identity_field) {
+      if (identity_field->kind != scratchbird::wire::public_result::Kind::uuid ||
+          identity_field->value.size() != identity.bytes.size()) return false;
+      std::memcpy(identity.bytes.data(), identity_field->value.data(), identity.bytes.size());
+      if (local_id != 0 && !scratchbird::core::uuid::IsEngineIdentityUuid(identity)) return false;
+      if (local_id == 0 && !identity.is_nil()) return false;
+    } else if (local_id != 0) {
+      return false;
+    }
     result->transaction_state_present = true;
-    result->local_transaction_id = parse_u64(replacement_id.value_or(active_id.value_or("0")));
+    result->local_transaction_id = local_id;
     result->snapshot_visible_through_local_transaction_id =
         parse_u64(line_value(replacement_id ? "replacement_snapshot_visible_through_local_transaction_id"
                                             : "snapshot_visible_through_local_transaction_id")
                       .value_or("0"));
-    result->transaction_uuid =
-        line_value(replacement_id ? "replacement_transaction_uuid" : "transaction_uuid").value_or("");
+    result->transaction_uuid = identity;
     result->transaction_timestamp =
         line_value(replacement_id ? "replacement_transaction_timestamp" : "transaction_timestamp")
             .value_or("");
   }
+  return true;
 }
 
 #if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
@@ -286,8 +285,8 @@ scratchbird::server::sbps::Frame BaseFrame(std::uint16_t message_type,
   frame.header.message_type = message_type;
   frame.header.request_uuid = scratchbird::server::sbps::MakeUuidV7Bytes();
   frame.header.sequence_number = 1;
-  frame.header.session_uuid = TextToUuid(session.session_uuid);
-  frame.header.connection_uuid = TextToUuid(session.connection_uuid);
+  frame.header.session_uuid = session.session_uuid.bytes;
+  frame.header.connection_uuid = session.connection_uuid.bytes;
   return frame;
 }
 
@@ -331,8 +330,8 @@ std::vector<std::uint8_t> EncodeResolveNamePayload(const SessionContext& session
   std::vector<std::uint8_t> out;
   PutString(&out, presented_name);
   PutU8(&out, quoted ? 1 : 0);
-  const std::string identifier_profile =
-      session.dialect_profile_uuid.empty() ? "sbsql_v3" : session.dialect_profile_uuid;
+  // This legacy field is an identifier-profile name, not a UUID slot.
+  const std::string identifier_profile = "sbsql_v3";
   PutString(&out, identifier_profile);
   PutString(&out, session.default_language.empty() ? "en" : session.default_language);
   std::string search_path;
@@ -346,9 +345,9 @@ std::vector<std::uint8_t> EncodeResolveNamePayload(const SessionContext& session
   return out;
 }
 
-std::vector<std::uint8_t> EncodeRenderUuidPayload(std::string_view object_uuid) {
+std::vector<std::uint8_t> EncodeRenderUuidPayload(const scratchbird::core::platform::Uuid& object_uuid) {
   std::vector<std::uint8_t> out;
-  PutUuid(&out, TextToUuid(object_uuid));
+  PutUuid(&out, object_uuid.bytes);
   return out;
 }
 
@@ -392,7 +391,7 @@ PublicNameResolutionResult DecodePublicNamePayload(const std::vector<std::uint8_
     return result;
   }
   result.resolved = true;
-  result.object_uuid = scratchbird::server::UuidBytesToText(object_uuid);
+  result.object_uuid = scratchbird::core::platform::Uuid{object_uuid};
   result.canonical_name = canonical_name;
   result.object_class = object_class;
   return result;
@@ -417,7 +416,7 @@ ServerExecutionResult DecodeExecutePayload(
     return result;
   }
   offset += 16;
-  result.cursor_uuid = scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+  result.cursor_uuid = scratchbird::core::platform::Uuid{GetUuid(operation.payload, offset)};
   offset += 16;
   result.row_count = GetU64(operation.payload, offset);
   offset += 8;
@@ -440,7 +439,7 @@ ServerExecutionResult DecodeExecutePayload(
     return result;
   }
   const bool cursor_present =
-      result.cursor_uuid != "00000000-0000-0000-0000-000000000000";
+      !result.cursor_uuid.is_nil();
   const std::uint8_t descriptor_present = operation.payload[offset++];
   if (descriptor_present != (cursor_present ? 1 : 0)) {
     result.messages.diagnostics.push_back(MakeDiagnostic(
@@ -460,26 +459,26 @@ ServerExecutionResult DecodeExecutePayload(
     auto& descriptor = result.cursor_stream_descriptor;
     descriptor.present = true;
     descriptor.stream_descriptor_uuid =
-        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+        scratchbird::core::platform::Uuid{GetUuid(operation.payload, offset)};
     offset += 16;
     descriptor.descriptor_version = GetU16(operation.payload, offset);
     offset += 2;
     descriptor.descriptor_generation = GetU64(operation.payload, offset);
     offset += 8;
     descriptor.cursor_uuid =
-        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+        scratchbird::core::platform::Uuid{GetUuid(operation.payload, offset)};
     offset += 16;
     descriptor.execution_uuid =
-        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+        scratchbird::core::platform::Uuid{GetUuid(operation.payload, offset)};
     offset += 16;
     descriptor.result_set_uuid =
-        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+        scratchbird::core::platform::Uuid{GetUuid(operation.payload, offset)};
     offset += 16;
     descriptor.row_descriptor_uuid =
-        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+        scratchbird::core::platform::Uuid{GetUuid(operation.payload, offset)};
     offset += 16;
     descriptor.snapshot_uuid =
-        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+        scratchbird::core::platform::Uuid{GetUuid(operation.payload, offset)};
     offset += 16;
     descriptor.max_chunk_rows = GetU64(operation.payload, offset);
     offset += 8;
@@ -500,7 +499,13 @@ ServerExecutionResult DecodeExecutePayload(
         "sbp_sbsql.embedded"));
     return result;
   }
-  PopulateTransactionStateFromPayload(result.row_packet, &result);
+  if (!PopulateTransactionStateFromPayload(result.row_packet, &result)) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID", "ERROR",
+        "The embedded transaction result contains an invalid transaction UUID.",
+        "sbp_sbsql.embedded"));
+    return result;
+  }
   result.accepted = true;
   return result;
 }
@@ -546,7 +551,7 @@ struct EmbeddedEngineClient::Impl {
   }
 
   bool PublishCanonicalNativeSessionIdentity(SessionContext* session) {
-    if (session == nullptr || session->session_uuid.empty()) return false;
+    if (session == nullptr || session->session_uuid.is_nil()) return false;
     const auto found = registry.sessions_by_uuid.find(session->session_uuid);
     if (found == registry.sessions_by_uuid.end()) return false;
     EnsureEmbeddedParserIdentity();
@@ -565,10 +570,10 @@ struct EmbeddedEngineClient::Impl {
     // only the capabilities actually provided by this in-process route.
     found->second.transaction_routing_v2_negotiated = true;
     found->second.relation_descriptor_projection_v3_negotiated = true;
-    session->admitted_parser_package_uuid = scratchbird::server::UuidBytesToText(
-        found->second.admitted_parser_package_uuid);
-    session->admitted_dialect_profile_uuid = scratchbird::server::UuidBytesToText(
-        found->second.admitted_dialect_profile_uuid);
+    session->admitted_parser_package_uuid = scratchbird::core::platform::Uuid{
+        found->second.admitted_parser_package_uuid};
+    session->admitted_dialect_profile_uuid = scratchbird::core::platform::Uuid{
+        found->second.admitted_dialect_profile_uuid};
     session->admitted_parser_package_version_major =
         found->second.admitted_parser_package_version_major;
     session->admitted_parser_package_version_minor =
@@ -716,10 +721,10 @@ bool EmbeddedEngineClient::AuthenticateAndAttach(
   const auto user_uuid = GetUuid(attached.payload, offset);
   offset += 16;
   std::string database_path;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::string attach_mode;
   if (!ReadString(attached.payload, &offset, &database_path) ||
-      !ReadString(attached.payload, &offset, &database_uuid) ||
+      !scratchbird::wire::parser_server_ipc::ReadEngineIdentityUuid(attached.payload, &offset, &database_uuid) ||
       !ReadString(attached.payload, &offset, &attach_mode) ||
       offset + 8 * 5 > attached.payload.size()) {
     AddDiagnostic(messages,
@@ -751,9 +756,9 @@ bool EmbeddedEngineClient::AuthenticateAndAttach(
   offset += 8;
   const auto snapshot_visible_through_local_transaction_id = GetU64(attached.payload, offset);
   offset += 8;
-  std::string transaction_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
   std::string transaction_timestamp;
-  if (!ReadString(attached.payload, &offset, &transaction_uuid) ||
+  if (!scratchbird::wire::parser_server_ipc::ReadEngineIdentityUuid(attached.payload, &offset, &transaction_uuid) ||
       !ReadString(attached.payload, &offset, &transaction_timestamp)) {
     AddDiagnostic(messages,
                   "PARSER_SERVER_IPC.ATTACH_RESULT_INVALID",
@@ -767,11 +772,12 @@ bool EmbeddedEngineClient::AuthenticateAndAttach(
     return false;
   }
 
+
   session->authenticated = true;
-  session->session_uuid = scratchbird::server::UuidBytesToText(session_uuid);
-  session->connection_uuid = scratchbird::server::UuidBytesToText(connection_uuid);
+  session->session_uuid = scratchbird::core::platform::Uuid{session_uuid};
+  session->connection_uuid = scratchbird::core::platform::Uuid{connection_uuid};
   session->database_uuid = database_uuid;
-  session->authenticated_user_uuid = scratchbird::server::UuidBytesToText(user_uuid);
+  session->authenticated_user_uuid = scratchbird::core::platform::Uuid{user_uuid};
   session->principal_claim = credentials.principal;
   session->auth_provider_family =
       credentials.provider_family.empty() ? "local_password" : credentials.provider_family;
@@ -780,7 +786,7 @@ bool EmbeddedEngineClient::AuthenticateAndAttach(
                                descriptor_epoch == 0 ? name_resolution_epoch
                                                      : descriptor_epoch,
                                name_resolution_epoch);
-  session->dialect_profile_uuid = "sbsql_v3";
+  session->dialect_profile_uuid = scratchbird::core::platform::Uuid{impl_->dialect_profile_uuid};
   session->search_path = {"sys", "public"};
   session->transaction_context = "always_active";
   session->local_transaction_id = local_transaction_id;
@@ -844,10 +850,10 @@ bool EmbeddedEngineClient::AuthenticateAndAttachSysarch(
   const auto user_uuid = GetUuid(attached.payload, offset);
   offset += 16;
   std::string database_path;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::string attach_mode;
   if (!ReadString(attached.payload, &offset, &database_path) ||
-      !ReadString(attached.payload, &offset, &database_uuid) ||
+      !scratchbird::wire::parser_server_ipc::ReadEngineIdentityUuid(attached.payload, &offset, &database_uuid) ||
       !ReadString(attached.payload, &offset, &attach_mode) ||
       offset + 8 * 5 > attached.payload.size()) {
     AddDiagnostic(messages,
@@ -879,9 +885,9 @@ bool EmbeddedEngineClient::AuthenticateAndAttachSysarch(
   offset += 8;
   const auto snapshot_visible_through_local_transaction_id = GetU64(attached.payload, offset);
   offset += 8;
-  std::string transaction_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
   std::string transaction_timestamp;
-  if (!ReadString(attached.payload, &offset, &transaction_uuid) ||
+  if (!scratchbird::wire::parser_server_ipc::ReadEngineIdentityUuid(attached.payload, &offset, &transaction_uuid) ||
       !ReadString(attached.payload, &offset, &transaction_timestamp)) {
     AddDiagnostic(messages,
                   "PARSER_SERVER_IPC.ATTACH_RESULT_INVALID",
@@ -897,13 +903,14 @@ bool EmbeddedEngineClient::AuthenticateAndAttachSysarch(
 
   const auto found = impl_->registry.sessions_by_uuid.find(
       scratchbird::core::platform::Uuid{session_uuid});
+
   session->authenticated = true;
-  session->session_uuid = scratchbird::server::UuidBytesToText(session_uuid);
+  session->session_uuid = scratchbird::core::platform::Uuid{session_uuid};
   session->connection_uuid = found == impl_->registry.sessions_by_uuid.end()
                                  ? session->session_uuid
-                                 : scratchbird::server::UuidBytesToText(found->second.connection_uuid);
+                                 : scratchbird::core::platform::Uuid{found->second.connection_uuid};
   session->database_uuid = database_uuid;
-  session->authenticated_user_uuid = scratchbird::server::UuidBytesToText(user_uuid);
+  session->authenticated_user_uuid = scratchbird::core::platform::Uuid{user_uuid};
   session->principal_claim = "sysarch";
   session->auth_provider_family = "embedded_sysarch";
   ApplyEmbeddedLanguageContext(session,
@@ -911,7 +918,7 @@ bool EmbeddedEngineClient::AuthenticateAndAttachSysarch(
                                descriptor_epoch == 0 ? name_resolution_epoch
                                                      : descriptor_epoch,
                                name_resolution_epoch);
-  session->dialect_profile_uuid = "sbsql_v3";
+  session->dialect_profile_uuid = scratchbird::core::platform::Uuid{impl_->dialect_profile_uuid};
   session->search_path = {"sys", "public"};
   session->transaction_context = "always_active";
   session->local_transaction_id = local_transaction_id;
@@ -1041,7 +1048,7 @@ EmbeddedEngineClient::ResolveRelationDescriptorsPublic(
 
 PublicNameResolutionResult EmbeddedEngineClient::RenderUuidPublic(
     const SessionContext& session,
-    std::string_view object_uuid) {
+    const scratchbird::core::platform::Uuid& object_uuid) {
   PublicNameResolutionResult result;
 #if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
   auto frame = BaseFrame(static_cast<std::uint16_t>(
@@ -1084,9 +1091,9 @@ EmbeddedEngineClient::AcquireNativeStatementContext(
   if (!session.authenticated || !session.transaction_routing_v2_negotiated ||
       !session.relation_descriptor_projection_v3_negotiated ||
       !transaction.present() ||
-      TextToUuid(session.session_uuid) == std::array<std::uint8_t, 16>{} ||
-      TextToUuid(session.connection_uuid) == std::array<std::uint8_t, 16>{} ||
-      TextToUuid(transaction.transaction_uuid) ==
+      session.session_uuid.bytes == std::array<std::uint8_t, 16>{} ||
+      session.connection_uuid.bytes == std::array<std::uint8_t, 16>{} ||
+      transaction.transaction_uuid.bytes ==
           std::array<std::uint8_t, 16>{}) {
     AddDiagnostic(&result.messages,
                   "PARSER_SERVER_IPC.STATEMENT_CONTEXT_IDENTITY_INVALID",
@@ -3758,7 +3765,7 @@ ServerExecutionResult EmbeddedEngineClient::ExecuteSblrWithDataPacket(
                          session);
   frame.header.payload_schema_id = kExecuteSblrV1PayloadSchema;
   frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
-      TextToUuid(session.session_uuid),
+      session.session_uuid.bytes,
       {},
       std::string(encoded_sblr_envelope),
       cursor_requested,
@@ -3780,7 +3787,7 @@ ServerExecutionResult EmbeddedEngineClient::ExecuteSblrWithDataPacket(
 }
 
 ServerFetchResult EmbeddedEngineClient::FetchCursor(const SessionContext& session,
-                                                    std::string_view cursor_uuid,
+                                                    const scratchbird::core::platform::Uuid& cursor_uuid,
                                                     const ipc::CursorStreamDescriptorV1& stream_descriptor,
                                                     std::uint64_t max_rows,
                                                     std::uint64_t max_bytes,
@@ -3800,12 +3807,12 @@ ServerFetchResult EmbeddedEngineClient::FetchCursor(const SessionContext& sessio
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kFetch),
                          session);
-  PutUuid(&frame.payload, TextToUuid(session.session_uuid));
-  PutUuid(&frame.payload, TextToUuid(cursor_uuid));
+  PutUuid(&frame.payload, session.session_uuid.bytes);
+  PutUuid(&frame.payload, cursor_uuid.bytes);
   PutU64(&frame.payload, max_rows);
   PutU64(&frame.payload, max_bytes);
   PutU32(&frame.payload, fetch_flags);
-  PutUuid(&frame.payload, TextToUuid(stream_descriptor.stream_descriptor_uuid));
+  PutUuid(&frame.payload, stream_descriptor.stream_descriptor_uuid.bytes);
   PutU16(&frame.payload, stream_descriptor.descriptor_version);
   PutU64(&frame.payload, stream_descriptor.descriptor_generation);
   auto operation = scratchbird::server::HandleFetch(&impl_->registry, frame);
@@ -3822,7 +3829,7 @@ ServerFetchResult EmbeddedEngineClient::FetchCursor(const SessionContext& sessio
     return result;
   }
   std::size_t offset = 0;
-  result.cursor_uuid = scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+  result.cursor_uuid = scratchbird::core::platform::Uuid{GetUuid(operation.payload, offset)};
   offset += 16;
   result.row_count = GetU64(operation.payload, offset);
   offset += 8;
@@ -3862,14 +3869,14 @@ ServerFetchResult EmbeddedEngineClient::FetchCursor(const SessionContext& sessio
 }
 
 ServerCloseCursorResult EmbeddedEngineClient::CloseCursor(const SessionContext& session,
-                                                          std::string_view cursor_uuid) {
+                                                          const scratchbird::core::platform::Uuid& cursor_uuid) {
   ServerCloseCursorResult result;
 #if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kCloseCursor),
                          session);
   frame.payload = scratchbird::server::EncodeCloseCursorPayloadForTest(
-      TextToUuid(session.session_uuid), TextToUuid(cursor_uuid));
+      session.session_uuid.bytes, cursor_uuid.bytes);
   auto operation = scratchbird::server::HandleCloseCursor(&impl_->registry, frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -3886,7 +3893,7 @@ ServerCloseCursorResult EmbeddedEngineClient::CloseCursor(const SessionContext& 
     return result;
   }
   result.accepted = outcome == "accepted";
-  result.cursor_uuid = scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+  result.cursor_uuid = scratchbird::core::platform::Uuid{GetUuid(operation.payload, offset)};
   offset += 16;
   (void)ReadString(operation.payload, &offset, &result.detail);
   return result;
@@ -3903,14 +3910,14 @@ ServerCloseCursorResult EmbeddedEngineClient::CloseCursor(const SessionContext& 
 }
 
 ServerCloseCursorResult EmbeddedEngineClient::CancelCursor(const SessionContext& session,
-                                                           std::string_view cursor_uuid) {
+                                                           const scratchbird::core::platform::Uuid& cursor_uuid) {
   ServerCloseCursorResult result;
 #if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kCloseCursor),
                          session);
   frame.payload = scratchbird::server::EncodeCancelCursorPayloadForTest(
-      TextToUuid(session.session_uuid), TextToUuid(cursor_uuid));
+      session.session_uuid.bytes, cursor_uuid.bytes);
   auto operation = scratchbird::server::HandleCloseCursor(&impl_->registry, frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -3927,7 +3934,7 @@ ServerCloseCursorResult EmbeddedEngineClient::CancelCursor(const SessionContext&
     return result;
   }
   result.accepted = outcome == "accepted";
-  result.cursor_uuid = scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+  result.cursor_uuid = scratchbird::core::platform::Uuid{GetUuid(operation.payload, offset)};
   offset += 16;
   (void)ReadString(operation.payload, &offset, &result.detail);
   return result;
@@ -3973,9 +3980,8 @@ bool EmbeddedEngineClient::DisconnectSession(const SessionContext& session,
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kDisconnectNotice),
                          session);
-  const auto exact_system_uuid = [](std::string_view text, const auto& bytes) {
-    return text.size() == 36 && text[8] == '-' && text[13] == '-' &&
-           text[18] == '-' && text[23] == '-' &&
+  const auto exact_system_uuid = [](const scratchbird::core::platform::Uuid& identity, const auto& bytes) {
+    return !identity.is_nil() && identity.bytes == bytes &&
            (bytes[6] & 0xf0) == 0x70 && (bytes[8] & 0xc0) == 0x80;
   };
   if (!exact_system_uuid(session.session_uuid, frame.header.session_uuid)) {

@@ -8,6 +8,7 @@
 
 #include "optimizer_statistics_full.hpp"
 #include "selectivity_model.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -36,8 +37,8 @@ bool Has(const std::vector<std::string>& evidence, const std::string& value) {
 }
 
 opt::OptimizerStatsIdentity Identity(
-    const std::string& relation_uuid,
-    const std::string& statistic_uuid,
+    const scratchbird::core::platform::Uuid& relation_uuid,
+    const scratchbird::core::platform::Uuid& statistic_uuid,
     opt::CostConfidence confidence = opt::CostConfidence::kHigh,
     std::uint64_t stats_epoch = 20,
     opt::OptimizerStatsFreshnessState freshness =
@@ -64,7 +65,7 @@ opt::SelectivityEstimate Child(double selectivity) {
 }
 
 opt::ExtendedStatsSelectivityRequest DocumentRequest(
-    const std::string& relation_uuid) {
+    const scratchbird::core::platform::Uuid& relation_uuid) {
   opt::ExtendedStatsSelectivityRequest request;
   request.relation_uuid = relation_uuid;
   request.document_path_digests = {"path.tenant", "path.status"};
@@ -75,10 +76,10 @@ opt::ExtendedStatsSelectivityRequest DocumentRequest(
 }
 
 opt::ExtendedStatsSelectivityRequest ColumnRequest(
-    const std::string& relation_uuid) {
+    const scratchbird::core::platform::Uuid& relation_uuid) {
   opt::ExtendedStatsSelectivityRequest request;
   request.relation_uuid = relation_uuid;
-  request.column_uuids = {"col.tenant", "col.status", "col.region"};
+  request.column_uuids = {scratchbird::tests::FixtureUuid(1263, 1), scratchbird::tests::FixtureUuid(1263, 2), scratchbird::tests::FixtureUuid(1263, 3)};
   request.value_encodings = {"tenant-7", "active", "north"};
   request.children = {Child(0.10), Child(0.20), Child(0.50)};
   request.minimum_confidence = opt::CostConfidence::kMedium;
@@ -86,8 +87,8 @@ opt::ExtendedStatsSelectivityRequest ColumnRequest(
 }
 
 opt::ExtendedOptimizerStatistic BaseDocumentStat(
-    const std::string& relation_uuid,
-    const std::string& statistic_uuid,
+    const scratchbird::core::platform::Uuid& relation_uuid,
+    const scratchbird::core::platform::Uuid& statistic_uuid,
     opt::ExtendedOptimizerStatisticKind kind) {
   opt::ExtendedOptimizerStatistic stats;
   stats.identity = Identity(relation_uuid, statistic_uuid);
@@ -98,10 +99,10 @@ opt::ExtendedOptimizerStatistic BaseDocumentStat(
 }
 
 opt::ExtendedOptimizerStatistic BaseColumnStat(
-    const std::string& relation_uuid,
-    const std::string& statistic_uuid,
+    const scratchbird::core::platform::Uuid& relation_uuid,
+    const scratchbird::core::platform::Uuid& statistic_uuid,
     opt::ExtendedOptimizerStatisticKind kind,
-    std::vector<std::string> columns) {
+    std::vector<scratchbird::core::platform::Uuid> columns) {
   opt::ExtendedOptimizerStatistic stats;
   stats.identity = Identity(relation_uuid, statistic_uuid);
   stats.kind = kind;
@@ -111,46 +112,46 @@ opt::ExtendedOptimizerStatistic BaseColumnStat(
 }
 
 std::vector<opt::ExtendedOptimizerStatistic> RankedFamilyStats(
-    const std::string& relation_uuid) {
+    const scratchbird::core::platform::Uuid& relation_uuid) {
   auto document_bridge = BaseDocumentStat(
       relation_uuid,
-      "rank.document",
+      scratchbird::tests::FixtureUuid(1263, 4),
       opt::ExtendedOptimizerStatisticKind::kDocumentPathBridge);
   document_bridge.sampled_dependency_selectivity = 0.040;
 
   auto ndv = BaseDocumentStat(
       relation_uuid,
-      "rank.ndv",
+      scratchbird::tests::FixtureUuid(1263, 5),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnNdv);
   ndv.multi_column_distinct_count = 80;
 
   auto correlation = BaseDocumentStat(
       relation_uuid,
-      "rank.correlation",
+      scratchbird::tests::FixtureUuid(1263, 6),
       opt::ExtendedOptimizerStatisticKind::kCrossColumnCorrelation);
   correlation.correlation_coefficient = 0.88;
 
   auto functional = BaseDocumentStat(
       relation_uuid,
-      "rank.functional",
+      scratchbird::tests::FixtureUuid(1263, 7),
       opt::ExtendedOptimizerStatisticKind::kFunctionalDependency);
   functional.functional_dependency_strength = 0.90;
 
   auto sampled = BaseDocumentStat(
       relation_uuid,
-      "rank.sampled",
+      scratchbird::tests::FixtureUuid(1263, 8),
       opt::ExtendedOptimizerStatisticKind::kSampledDependency);
   sampled.sampled_dependency_selectivity = 0.050;
 
   auto histogram = BaseDocumentStat(
       relation_uuid,
-      "rank.histogram",
+      scratchbird::tests::FixtureUuid(1263, 9),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram);
   histogram.histogram_selectivity = 0.060;
 
   auto joint = BaseDocumentStat(
       relation_uuid,
-      "rank.joint",
+      scratchbird::tests::FixtureUuid(1263, 10),
       opt::ExtendedOptimizerStatisticKind::kJointMcv);
   joint.multi_column_distinct_count = 40;
   joint.joint_mcv.push_back({{"tenant-7", "active"}, 0.070});
@@ -159,8 +160,8 @@ std::vector<opt::ExtendedOptimizerStatistic> RankedFamilyStats(
 }
 
 bool RankedFamilyPrecedenceIsDeterministic() {
-  const auto request = DocumentRequest("rel.orh020.rank");
-  const auto stats = RankedFamilyStats("rel.orh020.rank");
+  const auto request = DocumentRequest(scratchbird::tests::FixtureUuid(1263, 11));
+  const auto stats = RankedFamilyStats(scratchbird::tests::FixtureUuid(1263, 11));
 
   const auto all =
       opt::EstimateCorrelatedConjunctionSelectivity(request, stats);
@@ -237,11 +238,11 @@ bool RankedFamilyPrecedenceIsDeterministic() {
 }
 
 bool TieBreakersUseConfidenceEpochSpecificityAndObservedError() {
-  const auto request = ColumnRequest("rel.orh020.tie");
+  const auto request = ColumnRequest(scratchbird::tests::FixtureUuid(1263, 12));
 
   auto medium_new = BaseColumnStat(
       request.relation_uuid,
-      "tie.medium_new",
+      scratchbird::tests::FixtureUuid(1263, 13),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram,
       request.column_uuids);
   medium_new.identity.confidence = opt::CostConfidence::kMedium;
@@ -250,7 +251,7 @@ bool TieBreakersUseConfidenceEpochSpecificityAndObservedError() {
 
   auto high_old = BaseColumnStat(
       request.relation_uuid,
-      "tie.high_old",
+      scratchbird::tests::FixtureUuid(1263, 14),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram,
       request.column_uuids);
   high_old.identity.stats_epoch = 10;
@@ -258,7 +259,7 @@ bool TieBreakersUseConfidenceEpochSpecificityAndObservedError() {
 
   auto high_new_bad_error = BaseColumnStat(
       request.relation_uuid,
-      "tie.high_new_bad_error",
+      scratchbird::tests::FixtureUuid(1263, 15),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram,
       request.column_uuids);
   high_new_bad_error.identity.stats_epoch = 20;
@@ -267,7 +268,7 @@ bool TieBreakersUseConfidenceEpochSpecificityAndObservedError() {
 
   auto high_new_good_error = BaseColumnStat(
       request.relation_uuid,
-      "tie.high_new_good_error",
+      scratchbird::tests::FixtureUuid(1263, 16),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram,
       request.column_uuids);
   high_new_good_error.identity.stats_epoch = 20;
@@ -279,23 +280,23 @@ bool TieBreakersUseConfidenceEpochSpecificityAndObservedError() {
       {medium_new, high_old, high_new_bad_error, high_new_good_error});
   if (!Require(Near(result.estimate.selectivity, 0.040),
                "confidence/epoch/observed-error tie-break selected wrong stat") ||
-      !Require(Has(result.evidence,
-                   "extended_stats_selected_uuid=tie.high_new_good_error"),
+      !Require((result.selected_statistic_uuids ==
+                   std::vector<scratchbird::core::platform::Uuid>{high_new_good_error.identity.statistic_uuid}),
                "selected stat UUID evidence missing for observed-error tie-break")) {
     return false;
   }
 
   auto subset = BaseColumnStat(
       request.relation_uuid,
-      "tie.subset",
+      scratchbird::tests::FixtureUuid(1263, 17),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram,
-      {"col.tenant", "col.status"});
+      {scratchbird::tests::FixtureUuid(1263, 1), scratchbird::tests::FixtureUuid(1263, 2)});
   subset.histogram_selectivity = 0.050;
   subset.observed_selectivity_error = 0.10;
 
   auto full = BaseColumnStat(
       request.relation_uuid,
-      "tie.full",
+      scratchbird::tests::FixtureUuid(1263, 18),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram,
       request.column_uuids);
   full.histogram_selectivity = 0.080;
@@ -306,15 +307,16 @@ bool TieBreakersUseConfidenceEpochSpecificityAndObservedError() {
       {subset, full});
   return Require(Near(specificity.estimate.selectivity, 0.080),
                  "predicate-shape specificity did not prefer full-shape stat") &&
-         Require(Has(specificity.evidence, "extended_stats_selected_uuid=tie.full"),
+         Require((specificity.selected_statistic_uuids ==
+                     std::vector<scratchbird::core::platform::Uuid>{full.identity.statistic_uuid}),
                  "full-shape specificity evidence missing");
 }
 
 bool PartialShapeCompositionCombinesSubsetsAndRemainingScalars() {
   opt::ExtendedStatsSelectivityRequest request;
-  request.relation_uuid = "rel.orh021.partial";
-  request.column_uuids = {"col.tenant", "col.status", "col.region", "col.channel",
-                          "col.priority"};
+  request.relation_uuid = scratchbird::tests::FixtureUuid(1263, 19);
+  request.column_uuids = {scratchbird::tests::FixtureUuid(1263, 1), scratchbird::tests::FixtureUuid(1263, 2), scratchbird::tests::FixtureUuid(1263, 3), scratchbird::tests::FixtureUuid(1263, 20),
+                          scratchbird::tests::FixtureUuid(1263, 21)};
   request.value_encodings = {"tenant-7", "active", "north", "web", "high"};
   request.children = {Child(0.10), Child(0.20), Child(0.50), Child(0.25),
                       Child(0.40)};
@@ -322,16 +324,16 @@ bool PartialShapeCompositionCombinesSubsetsAndRemainingScalars() {
 
   auto tenant_status = BaseColumnStat(
       request.relation_uuid,
-      "partial.tenant_status",
+      scratchbird::tests::FixtureUuid(1263, 22),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram,
-      {"col.tenant", "col.status"});
+      {scratchbird::tests::FixtureUuid(1263, 1), scratchbird::tests::FixtureUuid(1263, 2)});
   tenant_status.histogram_selectivity = 0.060;
 
   auto region_channel = BaseColumnStat(
       request.relation_uuid,
-      "partial.region_channel",
+      scratchbird::tests::FixtureUuid(1263, 23),
       opt::ExtendedOptimizerStatisticKind::kSampledDependency,
-      {"col.region", "col.channel"});
+      {scratchbird::tests::FixtureUuid(1263, 3), scratchbird::tests::FixtureUuid(1263, 20)});
   region_channel.sampled_dependency_selectivity = 0.250;
 
   const auto result = opt::EstimateCorrelatedConjunctionSelectivity(
@@ -351,11 +353,11 @@ bool PartialShapeCompositionCombinesSubsetsAndRemainingScalars() {
 }
 
 bool StaleAuthorityStatsRemainFailClosedDuringPartialFallback() {
-  const auto request = ColumnRequest("rel.orh021.fail_closed");
+  const auto request = ColumnRequest(scratchbird::tests::FixtureUuid(1263, 24));
 
   auto stale_full = BaseColumnStat(
       request.relation_uuid,
-      "fail_closed.stale_full",
+      scratchbird::tests::FixtureUuid(1263, 25),
       opt::ExtendedOptimizerStatisticKind::kJointMcv,
       request.column_uuids);
   stale_full.identity.freshness = opt::OptimizerStatsFreshnessState::kStale;
@@ -363,7 +365,7 @@ bool StaleAuthorityStatsRemainFailClosedDuringPartialFallback() {
 
   auto authority_full = BaseColumnStat(
       request.relation_uuid,
-      "fail_closed.authority_full",
+      scratchbird::tests::FixtureUuid(1263, 26),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram,
       request.column_uuids);
   authority_full.histogram_selectivity = 0.800;
@@ -371,9 +373,9 @@ bool StaleAuthorityStatsRemainFailClosedDuringPartialFallback() {
 
   auto fresh_subset = BaseColumnStat(
       request.relation_uuid,
-      "fail_closed.fresh_subset",
+      scratchbird::tests::FixtureUuid(1263, 27),
       opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram,
-      {"col.tenant", "col.status"});
+      {scratchbird::tests::FixtureUuid(1263, 1), scratchbird::tests::FixtureUuid(1263, 2)});
   fresh_subset.histogram_selectivity = 0.060;
 
   const auto result = opt::EstimateCorrelatedConjunctionSelectivity(

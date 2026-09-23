@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -65,8 +67,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -89,7 +91,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) return true;
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) return true;
   }
   return false;
 }
@@ -97,16 +99,16 @@ bool HasEvidence(const api::EngineApiResult& result,
 void DumpResult(const api::EnginePlanOperationResult& result) {
   std::cerr << "plan_kind=" << result.plan_kind << '\n';
   for (const auto& evidence : result.evidence) {
-    std::cerr << evidence.evidence_kind << ':' << evidence.evidence_id << '\n';
+    std::cerr << evidence.evidence_kind << ':' << scratchbird::tests::EvidenceTextFields(evidence.evidence_id) << '\n';
   }
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid index_uuid;
   api::EngineRequestContext context;
 
   ~Fixture() {
@@ -120,9 +122,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture, std::string reques
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = NewUuidText(platform::UuidKind::principal, 1000);
-  context.session_uuid.canonical = NewUuidText(platform::UuidKind::object, 1001);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = NewIdentity(platform::UuidKind::principal, 1000);
+  context.session_uuid = NewIdentity(platform::UuidKind::object, 1001);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -196,9 +198,9 @@ Fixture MakeFixture() {
   }
   Require(created.ok(), "CDP-022 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, 20);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, 21);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, 20);
+  fixture.index_uuid = NewIdentity(platform::UuidKind::object, 21);
   fixture.context = Begin(fixture, "cdp022-metadata");
 
   const auto table = api::AppendMgaTableMetadata(fixture.context, Table(fixture));
@@ -215,7 +217,7 @@ Fixture MakeFixture() {
   api::EngineInsertRowsRequest insert;
   insert.context = fixture.context;
   insert.context.request_id = "cdp022-insert";
-  insert.target_table.uuid.canonical = fixture.table_uuid;
+  insert.target_table.uuid = fixture.table_uuid;
   insert.target_table.object_kind = "table";
   insert.input_rows = std::move(rows);
   insert.estimated_row_count = insert.input_rows.size();
@@ -240,15 +242,15 @@ api::EnginePlanOperationResult Plan(Fixture& fixture,
   api::EnginePlanOperationRequest request;
   request.context = fixture.context;
   request.context.request_id = "cdp022-plan";
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.predicate = std::move(predicate);
   request.option_envelopes = std::move(options);
   return api::EnginePlanOperation(request);
 }
 
-opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
-                                          const std::string& statistic_uuid,
+opt::OptimizerStatsIdentity FreshIdentity(const api::EngineUuid& object_uuid,
+                                          const api::EngineUuid& statistic_uuid,
                                           platform::u64 visibility_epoch) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = object_uuid;
@@ -265,7 +267,7 @@ opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
 opt::TableCardinalityStats CanonicalTableStats(const Fixture& fixture) {
   opt::TableCardinalityStats stats;
   stats.identity = FreshIdentity(fixture.table_uuid,
-                                 fixture.table_uuid + ":table-statistics",
+                                 scratchbird::tests::FixtureUuid(1496, 1),
                                  fixture.context.local_transaction_id);
   stats.row_count = 128;
   stats.visible_row_count = 128;
@@ -277,14 +279,14 @@ opt::TableCardinalityStats CanonicalTableStats(const Fixture& fixture) {
 opt::IndexStats CanonicalIndexStats(const Fixture& fixture) {
   opt::IndexStats stats;
   stats.identity = FreshIdentity(fixture.index_uuid,
-                                 fixture.index_uuid + ":index-statistics",
+                                 scratchbird::tests::FixtureUuid(1496, 2),
                                  fixture.context.local_transaction_id);
   stats.index_uuid = fixture.index_uuid;
   stats.relation_uuid = fixture.table_uuid;
   stats.index_family = "btree";
-  stats.key_column_uuids = {fixture.table_uuid + ":id"};
-  stats.covered_column_uuids = {fixture.table_uuid + ":id",
-                                fixture.table_uuid + ":note"};
+  stats.key_column_uuids = {scratchbird::tests::FixtureUuid(1496, 3)};
+  stats.covered_column_uuids = {scratchbird::tests::FixtureUuid(1496, 3),
+                                scratchbird::tests::FixtureUuid(1496, 4)};
   stats.unique = true;
   stats.covering = true;
   stats.height = 2;
@@ -318,10 +320,10 @@ opt::AccessPathPlanningRequest CanonicalRequest(const Fixture& fixture,
 
 const opt::PlanCandidate* FindCandidate(
     const std::vector<opt::PlanCandidate>& candidates,
-    std::string_view candidate_id) {
+    std::string_view candidate_id, const api::EngineUuid& index_uuid) {
   const auto candidate = std::find_if(
       candidates.begin(), candidates.end(), [&](const auto& current) {
-        return current.candidate_id == candidate_id;
+        return current.candidate_id == candidate_id && current.index_uuid == index_uuid;
       });
   return candidate == candidates.end() ? nullptr : &*candidate;
 }
@@ -343,7 +345,7 @@ int main() {
   const auto equality_candidates = opt::GenerateFullAccessPathCandidates(
       CanonicalRequest(fixture, "scalar_eq"));
   const auto* lookup = FindCandidate(
-      equality_candidates, "CAND-OPT-INDEX:" + fixture.index_uuid);
+      equality_candidates, "CAND-OPT-INDEX", fixture.index_uuid);
   Require(lookup != nullptr && lookup->cost.selectable,
           "CDP-022 exact catalog statistics did not admit btree lookup");
   Require(lookup->access_kind == plan::PhysicalAccessKind::kScalarBtreeLookup,
@@ -354,7 +356,7 @@ int main() {
   const auto range_candidates = opt::GenerateFullAccessPathCandidates(
       CanonicalRequest(fixture, "scalar_range"));
   const auto* range = FindCandidate(
-      range_candidates, "CAND-OPT-INDEX:" + fixture.index_uuid);
+      range_candidates, "CAND-OPT-INDEX", fixture.index_uuid);
   Require(range != nullptr && range->cost.selectable,
           "CDP-022 exact catalog statistics did not admit btree range");
   Require(range->access_kind == plan::PhysicalAccessKind::kScalarBtreeRange,
@@ -362,7 +364,7 @@ int main() {
 
   auto covering_request = CanonicalRequest(fixture, "scalar_eq");
   covering_request.projected_column_uuids = {
-      fixture.table_uuid + ":id", fixture.table_uuid + ":note"};
+      scratchbird::tests::FixtureUuid(1496, 3), scratchbird::tests::FixtureUuid(1496, 4)};
   covering_request.covering_payload.physical_payload_proof_present = true;
   covering_request.covering_payload.freshness_proven = true;
   covering_request.covering_payload.redaction_safe = true;
@@ -371,7 +373,7 @@ int main() {
   const auto covering_candidates =
       opt::GenerateFullAccessPathCandidates(covering_request);
   const auto* covering = FindCandidate(
-      covering_candidates, "CAND-OPT-COVERING:" + fixture.index_uuid);
+      covering_candidates, "CAND-OPT-COVERING", fixture.index_uuid);
   Require(covering != nullptr && covering->cost.selectable,
           "CDP-022 covered projection lacked an admitted covering candidate");
   Require(covering->access_kind == plan::PhysicalAccessKind::kCoveringIndexScan,

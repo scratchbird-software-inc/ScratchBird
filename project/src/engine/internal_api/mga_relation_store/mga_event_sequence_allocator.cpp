@@ -6,7 +6,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "mga_relation_store/mga_relation_locator.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "mga_relation_store/mga_row_codec.hpp"
+#include "mga_relation_store/mga_relation_metadata_store.hpp"
 
 #include "api_diagnostics.hpp"
 #include "crud_support/crud_store.hpp"
@@ -247,7 +251,9 @@ MgaEventSequenceRangeReservation ReserveEventSequenceRange(
       route = "bootstrap_store_scan";
     }
   }
-  if (next_sequence == 0) { next_sequence = 1; }
+  if (next_sequence == 0) {
+    return RefuseEventSequenceReservation(context, stream_kind, stream_path, "event_sequence_bootstrap_invalid");
+  }
   if (normalized_count >
       std::numeric_limits<std::uint64_t>::max() - next_sequence) {
     return RefuseEventSequenceReservation(
@@ -322,15 +328,19 @@ bool AppendDeferredEventSequenceAllocatorLines(
 }
 
 std::uint64_t ScanNextRowEventSequence(const EngineRequestContext& context) {
-  std::uint64_t max_sequence = 0;
-  for (const auto& line : ReadLines(RowStorePath(context))) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() >= 4 && fields[0] == kRowStoreMagic &&
-        fields[1] == "ROW_VERSION") {
-      max_sequence = std::max(max_sequence, ParseU64(fields[3]));
-    }
+  std::uint64_t maximum=0;
+  const auto scan=[&](const std::string& path) {
+    std::vector<CrudRowVersionRecord> rows;ScopedRelationSummary summary;
+    if(!DecodeScopedRowBinaryStore(path,&rows,&summary)||summary.malformed)return false;
+    for(const auto& row:rows)maximum=std::max(maximum,row.event_sequence);
+    return true;
+  };
+  if(!scan(RowStorePath(context)))return 0;
+  for(const auto& [id,ordinal]:LoadMgaRelationLocators(context.database_path+".sb.mga_relation_scope")) {
+    (void)ordinal;
+    if(!scan(MgaScopedRelationPath(context,id,".rows"))||!scan(MgaScopedRelationPath(context,id,".rows.sbnr")))return 0;
   }
-  return max_sequence + 1;
+  return maximum==UINT64_MAX?0:maximum+1;
 }
 
 std::uint64_t NextRowEventSequence(const EngineRequestContext& context) {
@@ -340,15 +350,20 @@ std::uint64_t NextRowEventSequence(const EngineRequestContext& context) {
 }
 
 std::uint64_t ScanNextIndexEventSequence(const EngineRequestContext& context) {
-  std::uint64_t max_sequence = 0;
-  for (const auto& line : ReadLines(IndexStorePath(context))) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() >= 4 && fields[0] == kRowStoreMagic &&
-        fields[1] == "INDEX_ENTRY") {
-      max_sequence = std::max(max_sequence, ParseU64(fields[3]));
-    }
+  std::uint64_t maximum=0;
+  const auto scan=[&](const std::string& path) {
+    std::vector<scratchbird::core::index::byte> bytes;
+    std::vector<CrudIndexEntryRecord> entries;
+    if(!ReadCompleteMgaBinaryFile(path,&bytes)||!DecodeScopedIndexBinaryBytes(bytes,&entries))return false;
+    for(const auto& entry:entries)maximum=std::max(maximum,entry.event_sequence);
+    return true;
+  };
+  if(!scan(IndexStorePath(context)))return 0;
+  for(const auto& [id,ordinal]:LoadMgaRelationLocators(context.database_path+".sb.mga_relation_scope")) {
+    (void)ordinal;
+    if(!scan(MgaScopedRelationPath(context,id,".indexes"))||!scan(MgaScopedRelationPath(context,id,".indexes.sbnx")))return 0;
   }
-  return max_sequence + 1;
+  return maximum==UINT64_MAX?0:maximum+1;
 }
 
 std::uint64_t NextIndexEventSequence(const EngineRequestContext& context) {
@@ -360,10 +375,14 @@ std::uint64_t NextIndexEventSequence(const EngineRequestContext& context) {
 std::uint64_t ScanNextMetadataEventSequence(
     const EngineRequestContext& context) {
   std::uint64_t max_sequence = 0;
-  for (const auto& line : ReadLines(MetadataStorePath(context))) {
-    const auto fields = SplitTabs(line);
+  std::vector<std::string> records;
+  if (!ReadCompleteMgaMetadataRecords(MetadataStorePath(context), &records)) return 0;
+  for (const auto& line : records) {
+    std::vector<std::string> fields;
+    if (!DecodeMgaMetadataFields(line, &fields)) return 0;
     if (fields.size() >= 4 && fields[0] == kRowStoreMagic &&
         (fields[1] == "TABLE_METADATA" ||
+         fields[1] == "TABLE_METADATA_RETIRED" ||
          fields[1] == kSealedTableMetadataKindV2 ||
          fields[1] == "INDEX_METADATA" ||
          fields[1] == "CONSTRAINT_MUTATION_BATCH" ||
@@ -373,7 +392,7 @@ std::uint64_t ScanNextMetadataEventSequence(
       max_sequence = std::max(max_sequence, ParseU64(fields[3]));
     }
   }
-  return max_sequence + 1;
+  return max_sequence == std::numeric_limits<std::uint64_t>::max() ? 0 : max_sequence + 1;
 }
 
 std::uint64_t NextMetadataEventSequence(const EngineRequestContext& context) {

@@ -18,7 +18,7 @@ namespace {
 
 sblr::SblrOperationEnvelope ParseTextMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const std::vector<std::uint8_t>& descriptor_bytes) {
   auto member = sblr::MakeSblrEnvelope(
       "engine.op.parse_text", "SBLR_PARSE_TEXT",
@@ -50,8 +50,8 @@ int main() {
   std::atomic<unsigned> cancel_on_probe{0};
   auto context = BeginTransaction(fixture, &probes);
   context.language_context.language_resource_epoch = 1;
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 36280));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 36280));
+  context.current_package_uuid = parser_uuid;
   context.query_cancellation_requested = [&] {
     const auto ordinal = probes.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto target = cancel_on_probe.load(std::memory_order_relaxed);
@@ -60,7 +60,7 @@ int main() {
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;
@@ -70,7 +70,7 @@ int main() {
           "003628 live statement receipt acquisition failed");
   if (result != nullptr) (void)sb_engine_result_release(result);
   Require(view.parse_text_executor_availability_generation != 0 &&
-              !view.parse_text_language_profile_uuid.empty() &&
+              !view.parse_text_language_profile_uuid.is_nil() &&
               view.parse_text_language_profile_generation != 0,
           "003628 receipt omitted parse-text authority");
 
@@ -153,7 +153,7 @@ int main() {
   journal_context.statement_metadata_snapshot_engine_owned = true;
   journal_context.trace_tags.push_back("private_parse_text_journal");
   api::SblrParseTextJournalKeyV1 journal_key;
-  journal_key.database_uuid = RawUuid(context.database_uuid.canonical);
+  journal_key.database_uuid = RawUuid(context.database_uuid);
   journal_key.statement_receipt_uuid = descriptor.statement_receipt_uuid;
   journal_key.parse_uuid = descriptor.parse_uuid;
   journal_key.descriptor_sha256 = descriptor.descriptor_sha256;

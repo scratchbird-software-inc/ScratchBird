@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../support/binary_uuid_fixture.hpp"
 #include "api_types.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/delete_api.hpp"
@@ -36,10 +37,10 @@ namespace {
 #define SB_MISS008_SEED_PACK_ROOT "project/resources/seed-packs/initial-resource-pack"
 #endif
 
-constexpr const char* kDatabaseUuid = "019f2800-0000-7000-8000-000000000001";
-constexpr const char* kSchemaUuid = "019f2800-0000-7000-8000-000000000101";
-constexpr const char* kTableUuid = "019f2800-0000-7000-8000-000000000102";
-constexpr const char* kUniqueIdIndexUuid = "019f2800-0000-7000-8000-000000000103";
+constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000001");
+constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000101");
+constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000102");
+constexpr auto kUniqueIdIndexUuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000103");
 
 void Require(bool condition, std::string_view message) {
   if (condition) return;
@@ -73,7 +74,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -96,11 +97,12 @@ api::EngineTypedValue TextValue(std::string value) {
 api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
-  column.requested_column_uuid.canonical =
-      "019f2800-0000-7000-8000-00000000030" + std::to_string(ordinal);
+  column.requested_column_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000300");
+  Require(ordinal < 10, "fixture column ordinal out of range");
+  column.requested_column_uuid.bytes[15] += ordinal;
   column.names.push_back(Name(std::move(name)));
-  column.descriptor.descriptor_uuid.canonical =
-      "019f2800-0000-7000-8000-00000000040" + std::to_string(ordinal);
+  column.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000400");
+  column.descriptor.descriptor_uuid.bytes[15] += ordinal;
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
@@ -109,7 +111,7 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
 
 api::EngineIndexDefinition UniqueIdIndex() {
   api::EngineIndexDefinition index;
-  index.requested_index_uuid.canonical = kUniqueIdIndexUuid;
+  index.requested_index_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000103");
   index.names.push_back(Name("miss008_id_unique"));
   index.index_kind = "btree";
   index.key_envelopes.push_back("unique");
@@ -117,9 +119,9 @@ api::EngineIndexDefinition UniqueIdIndex() {
   return index;
 }
 
-api::EngineRowValue Row(std::string row_uuid, std::string id, std::string note) {
+api::EngineRowValue Row(api::EngineUuid row_uuid, std::string id, std::string note) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", TextValue(std::move(id))});
   row.fields.push_back({"note", TextValue(std::move(note))});
   return row;
@@ -146,19 +148,19 @@ api::EnginePredicateEnvelope IdIn(std::initializer_list<std::string_view> ids) {
 void Grant(api::EngineRequestContext* context, std::string right) {
   api::EngineMaterializedAuthorizationGrant grant;
   if (right == "INSERT") {
-    grant.grant_uuid.canonical = "019f2800-0000-7000-8000-000000000601";
+    grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000601");
   } else if (right == "UPDATE") {
-    grant.grant_uuid.canonical = "019f2800-0000-7000-8000-000000000602";
+    grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000602");
   } else if (right == "DELETE") {
-    grant.grant_uuid.canonical = "019f2800-0000-7000-8000-000000000603";
+    grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000603");
   } else if (right == "SELECT") {
-    grant.grant_uuid.canonical = "019f2800-0000-7000-8000-000000000604";
+    grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000604");
   } else {
-    grant.grant_uuid.canonical = "019f2800-0000-7000-8000-000000000605";
+    grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000605");
   }
   grant.subject_uuid = context->principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = kTableUuid;
+  grant.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000102");
   grant.right = std::move(right);
   grant.security_epoch = context->security_epoch;
   context->authorization_context.grants.push_back(std::move(grant));
@@ -182,22 +184,19 @@ void AddDmlAuthorization(api::EngineRequestContext* context) {
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
-                                      std::string_view session_suffix = "001") {
+                                      api::EngineUuid session_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000001")) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "miss008-dml-upsert-variants";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = kDatabaseUuid;
-  context.principal_uuid.canonical = "019f2800-0000-7000-8000-000000000002";
-  context.session_uuid.canonical =
-      std::string("019f2800-0000-7000-8000-000000000") +
-      std::string(session_suffix);
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000001");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000002");
+  context.session_uuid = session_uuid;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
@@ -210,7 +209,9 @@ std::uint64_t EvidenceU64(const api::EngineApiResult& result,
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind != kind) continue;
     try {
-      return static_cast<std::uint64_t>(std::stoull(evidence.evidence_id));
+      const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+      if (text == nullptr) return 0;
+      return static_cast<std::uint64_t>(std::stoull(*text));
     } catch (...) {
       return 0;
     }
@@ -219,13 +220,13 @@ std::uint64_t EvidenceU64(const api::EngineApiResult& result,
 }
 
 api::EngineRequestContext BeginTransaction(const std::filesystem::path& database_path,
-                                           std::string_view session_suffix,
+                                           api::EngineUuid session_uuid,
                                            bool dml_authorized = true) {
   api::EngineBeginTransactionRequest request;
-  request.context = BaseContext(database_path, session_suffix);
+  request.context = BaseContext(database_path, session_uuid);
   auto begin = api::EngineBeginTransaction(request);
   Require(begin.ok, "MISS-008 transaction begin failed");
-  auto context = BaseContext(database_path, session_suffix);
+  auto context = BaseContext(database_path, session_uuid);
   context.local_transaction_id = begin.local_transaction_id;
   context.transaction_uuid = begin.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id =
@@ -246,11 +247,11 @@ void Commit(const api::EngineRequestContext& context) {
 }
 
 void CreateSchemaAndTable(const std::filesystem::path& database_path) {
-  auto context = BeginTransaction(database_path, "101", false);
+  auto context = BeginTransaction(database_path, scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000101"), false);
 
   api::EngineCreateSchemaRequest schema_request;
   schema_request.context = context;
-  schema_request.target_object.uuid.canonical = kSchemaUuid;
+  schema_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000101");
   schema_request.target_object.object_kind = "schema";
   schema_request.localized_names.push_back(Name("miss008_schema"));
   auto schema = api::EngineCreateSchema(schema_request);
@@ -258,10 +259,10 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
 
   api::EngineCreateTableRequest table_request;
   table_request.context = context;
-  table_request.target_schema.uuid.canonical = kSchemaUuid;
+  table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000101");
   table_request.target_schema.object_kind = "schema";
-  table_request.requested_table_uuid.canonical = kTableUuid;
-  table_request.target_object.uuid.canonical = kTableUuid;
+  table_request.requested_table_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000102");
+  table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000102");
   table_request.target_object.object_kind = "table";
   table_request.table_names.push_back(Name("miss008_table"));
   table_request.table_columns.push_back(Column(0, "id"));
@@ -276,7 +277,7 @@ void InsertRows(const api::EngineRequestContext& context,
                 std::vector<api::EngineRowValue> rows) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = kTableUuid;
+  request.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000102");
   request.target_table.object_kind = "table";
   request.input_rows = std::move(rows);
   auto inserted = api::EngineInsertRows(request);
@@ -303,17 +304,17 @@ void VerifyRights(const api::EngineRequestContext& context) {
 void VerifyUpsert(const api::EngineRequestContext& context) {
   api::EngineMergeRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = kTableUuid;
+  request.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000102");
   request.target_table.object_kind = "table";
   request.merge_surface_variant = "upsert";
   request.conflict_target_column = "id";
   request.on_conflict_action = "do_update";
   request.match_predicate.predicate_kind = "column_equals";
   request.match_predicate.canonical_predicate_envelope = "id";
-  request.input_rows.push_back(Row("019f2800-0000-7000-8000-000000000301",
+  request.input_rows.push_back(Row(scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000301"),
                                    "1",
                                    "upsert-source"));
-  request.input_rows.push_back(Row("019f2800-0000-7000-8000-000000000302",
+  request.input_rows.push_back(Row(scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000302"),
                                    "2",
                                    "upsert-inserted"));
   request.update_assignments.push_back({"note", TextValue("upsert-updated")});
@@ -344,7 +345,7 @@ void VerifyDeleteVariant(const api::EngineRequestContext& context,
                          api::EngineApiU64 expected_deleted) {
   api::EngineDeleteRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = kTableUuid;
+  request.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000102");
   request.target_table.object_kind = "table";
   request.delete_surface_variant = std::move(variant);
   request.delete_predicate = std::move(predicate);
@@ -383,14 +384,14 @@ int main() {
   Require(created.ok(), "MISS-008 credentialed fixture database create failed");
   CreateSchemaAndTable(database_path);
 
-  auto context = BeginTransaction(database_path, "201");
+  auto context = BeginTransaction(database_path, scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000201"));
   VerifyRights(context);
   InsertRows(context,
-             {Row("019f2800-0000-7000-8000-000000000201", "1", "seed"),
-              Row("019f2800-0000-7000-8000-000000000211", "b1", "batch-one"),
-              Row("019f2800-0000-7000-8000-000000000212", "b2", "batch-two"),
-              Row("019f2800-0000-7000-8000-000000000221", "e1", "erase-one"),
-              Row("019f2800-0000-7000-8000-000000000231", "s1", "series-one")});
+             {Row(scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000201"), "1", "seed"),
+              Row(scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000211"), "b1", "batch-one"),
+              Row(scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000212"), "b2", "batch-two"),
+              Row(scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000221"), "e1", "erase-one"),
+              Row(scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000231"), "s1", "series-one")});
   VerifyUpsert(context);
   VerifyDeleteVariant(context,
                       "batch_delete",

@@ -17,6 +17,7 @@ namespace scratchbird::udr::opensearch_parser_support {
 
 inline constexpr std::string_view kSbuOpensearchPackageUuid =
     "019e13c0-0000-7000-8000-000000000311";
+inline constexpr scratchbird::udr::runtime::UdrUuid kSbuOpensearchPackageIdentity{{0x01, 0x9e, 0x13, 0xc0, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x11}};
 inline constexpr std::string_view kSbuOpensearchPackageName = "sbup_opensearch";
 
 struct UdrResult {

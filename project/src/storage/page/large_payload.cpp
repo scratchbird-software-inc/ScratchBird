@@ -10,6 +10,7 @@
 #include "large_payload.hpp"
 
 #include "uuid.hpp"
+#include "payload_binary_codec.hpp"
 
 #include <algorithm>
 #include <map>
@@ -299,26 +300,6 @@ LargePayloadReadResult ReadCommittedPayloadBytes(LargePayloadStore* store,
   return result;
 }
 
-std::map<std::string, std::string> ParseDescriptorFields(const std::string& text) {
-  std::map<std::string, std::string> fields;
-  std::stringstream stream(text);
-  std::string field;
-  while (std::getline(stream, field, ';')) {
-    const auto equals = field.find('=');
-    if (equals == std::string::npos) { continue; }
-    fields[field.substr(0, equals)] = field.substr(equals + 1);
-  }
-  return fields;
-}
-
-u64 ParseU64(const std::string& value) {
-  try {
-    return static_cast<u64>(std::stoull(value));
-  } catch (...) {
-    return 0;
-  }
-}
-
 }  // namespace
 
 const char* LargePayloadFamilyName(LargePayloadFamily family) {
@@ -354,80 +335,49 @@ LargePayloadFamily LargePayloadFamilyFromName(const std::string& name) {
 }
 
 std::string SerializeLargePayloadDescriptor(const LargePayloadDescriptor& descriptor) {
-  std::ostringstream out;
-  out << "SB_LARGE_PAYLOAD_DESCRIPTOR_V1"
-      << ";family=" << LargePayloadFamilyName(descriptor.family)
-      << ";payload_uuid=" << scratchbird::core::uuid::UuidToString(descriptor.payload_uuid.value)
-      << ";owner_object_uuid=" << scratchbird::core::uuid::UuidToString(descriptor.owner_object_uuid.value)
-      << ";generation_scope_uuid=" << scratchbird::core::uuid::UuidToString(descriptor.generation_scope_uuid.value)
-      << ";filespace_uuid=" << scratchbird::core::uuid::UuidToString(descriptor.filespace_uuid.value)
-      << ";overflow_value_uuid=" << scratchbird::core::uuid::UuidToString(descriptor.overflow_value_uuid.value)
-      << ";generation=" << descriptor.generation
-      << ";creator_local_tx=" << descriptor.creator_local_transaction_id
-      << ";retired_by_local_tx=" << descriptor.retired_by_local_transaction_id
-      << ";byte_count=" << descriptor.byte_count
-      << ";content_hash=" << descriptor.content_hash
-      << ";filespace_class=" << descriptor.filespace_class
-      << ";page_family=" << descriptor.page_family
-      << ";inline_payload=" << (descriptor.inline_payload ? "1" : "0");
-  return out.str();
+  using namespace payload_binary;
+  std::string bytes="SBLPD002";
+  for(const auto* id:{&descriptor.payload_uuid,&descriptor.owner_object_uuid,
+      &descriptor.generation_scope_uuid,&descriptor.filespace_uuid,&descriptor.overflow_value_uuid})
+    if(!PutUuid(bytes,*id))return {};
+  PutU64(bytes,static_cast<u64>(descriptor.family));
+  PutU64(bytes,descriptor.generation);
+  PutU64(bytes,descriptor.creator_local_transaction_id);
+  PutU64(bytes,descriptor.retired_by_local_transaction_id);
+  PutU64(bytes,descriptor.byte_count);
+  PutU64(bytes,descriptor.inline_payload?1:0);
+  for(const auto* field:{&descriptor.content_hash,&descriptor.filespace_class,
+      &descriptor.page_family,&descriptor.inline_text})if(!PutString(bytes,*field))return {};
+  if(!ParseLargePayloadDescriptor(bytes))return {};
+  return bytes;
 }
 
-std::optional<LargePayloadDescriptor> ParseLargePayloadDescriptor(const std::string& text) {
-  if (text.rfind("SB_LARGE_PAYLOAD_DESCRIPTOR_V1", 0) != 0) {
+std::optional<LargePayloadDescriptor> ParseLargePayloadDescriptor(const std::string& bytes) {
+  using namespace payload_binary;
+  if(bytes.size()>kMaximumBytes||!bytes.starts_with("SBLPD002"))return std::nullopt;
+  Reader reader{bytes,8};LargePayloadDescriptor descriptor;
+  for(auto* id:{&descriptor.payload_uuid,&descriptor.owner_object_uuid,
+      &descriptor.generation_scope_uuid,&descriptor.filespace_uuid,&descriptor.overflow_value_uuid})
+    if(!reader.Uuid(*id))return std::nullopt;
+  u64 family=0,inline_payload=0;
+  if(!reader.U64(family)||family>static_cast<u64>(LargePayloadFamily::graph)||
+     !reader.U64(descriptor.generation)||!reader.U64(descriptor.creator_local_transaction_id)||
+     !reader.U64(descriptor.retired_by_local_transaction_id)||!reader.U64(descriptor.byte_count)||
+     !reader.U64(inline_payload)||inline_payload>1)return std::nullopt;
+  descriptor.family=static_cast<LargePayloadFamily>(family);descriptor.inline_payload=inline_payload!=0;
+  for(auto* field:{&descriptor.content_hash,&descriptor.filespace_class,
+      &descriptor.page_family,&descriptor.inline_text})if(!reader.String(*field))return std::nullopt;
+  if(reader.cursor!=bytes.size()||!descriptor.payload_uuid.valid()||
+      descriptor.payload_uuid.kind!=UuidKind::object||descriptor.generation==0||descriptor.byte_count==0)
     return std::nullopt;
-  }
-  const auto fields = ParseDescriptorFields(text);
-  LargePayloadDescriptor descriptor;
-  const auto family = fields.find("family");
-  if (family != fields.end()) { descriptor.family = LargePayloadFamilyFromName(family->second); }
-  auto payload_uuid = fields.find("payload_uuid");
-  if (payload_uuid != fields.end()) {
-    const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(UuidKind::object, payload_uuid->second);
-    if (parsed.ok()) { descriptor.payload_uuid = parsed.value; }
-  }
-  auto owner_uuid = fields.find("owner_object_uuid");
-  if (owner_uuid != fields.end()) {
-    const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(UuidKind::object, owner_uuid->second);
-    if (parsed.ok()) { descriptor.owner_object_uuid = parsed.value; }
-  }
-  auto generation_scope_uuid = fields.find("generation_scope_uuid");
-  if (generation_scope_uuid != fields.end()) {
-    auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(UuidKind::row, generation_scope_uuid->second);
-    if (!parsed.ok()) {
-      parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(UuidKind::object, generation_scope_uuid->second);
-    }
-    if (parsed.ok()) { descriptor.generation_scope_uuid = parsed.value; }
-  }
-  auto filespace_uuid = fields.find("filespace_uuid");
-  if (filespace_uuid != fields.end()) {
-    const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(UuidKind::filespace, filespace_uuid->second);
-    if (parsed.ok()) { descriptor.filespace_uuid = parsed.value; }
-  }
-  auto overflow_uuid = fields.find("overflow_value_uuid");
-  if (overflow_uuid != fields.end()) {
-    const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(UuidKind::object, overflow_uuid->second);
-    if (parsed.ok()) { descriptor.overflow_value_uuid = parsed.value; }
-  }
-  descriptor.generation = ParseU64(fields.count("generation") ? fields.at("generation") : "");
-  descriptor.creator_local_transaction_id = ParseU64(fields.count("creator_local_tx") ? fields.at("creator_local_tx") : "");
-  descriptor.retired_by_local_transaction_id = ParseU64(fields.count("retired_by_local_tx") ? fields.at("retired_by_local_tx") : "");
-  descriptor.byte_count = ParseU64(fields.count("byte_count") ? fields.at("byte_count") : "");
-  if (fields.count("content_hash")) { descriptor.content_hash = fields.at("content_hash"); }
-  if (fields.count("filespace_class")) { descriptor.filespace_class = fields.at("filespace_class"); }
-  if (fields.count("page_family")) { descriptor.page_family = fields.at("page_family"); }
-  if (fields.count("inline_payload")) { descriptor.inline_payload = fields.at("inline_payload") == "1"; }
-  if (!descriptor.payload_uuid.valid() || descriptor.generation == 0 || descriptor.byte_count == 0) {
-    return std::nullopt;
-  }
-  if (!descriptor.generation_scope_uuid.valid()) {
-    descriptor.generation_scope_uuid = descriptor.owner_object_uuid;
-  }
-  if (!descriptor.inline_payload &&
-      (!descriptor.owner_object_uuid.valid() || !descriptor.filespace_uuid.valid() ||
-       !descriptor.overflow_value_uuid.valid() || descriptor.filespace_class.empty())) {
-    return std::nullopt;
-  }
+  if(!descriptor.owner_object_uuid.value.is_nil()&&descriptor.owner_object_uuid.kind!=UuidKind::object)return std::nullopt;
+  if(!descriptor.generation_scope_uuid.value.is_nil()&&descriptor.generation_scope_uuid.kind!=UuidKind::object&&
+      descriptor.generation_scope_uuid.kind!=UuidKind::row)return std::nullopt;
+  if(!descriptor.filespace_uuid.value.is_nil()&&descriptor.filespace_uuid.kind!=UuidKind::filespace)return std::nullopt;
+  if(!descriptor.overflow_value_uuid.value.is_nil()&&descriptor.overflow_value_uuid.kind!=UuidKind::object)return std::nullopt;
+  if(!descriptor.inline_payload&&(!descriptor.owner_object_uuid.valid()||!descriptor.filespace_uuid.valid()||
+      !descriptor.overflow_value_uuid.valid()||descriptor.filespace_class.empty()))return std::nullopt;
+  if(!descriptor.generation_scope_uuid.valid())descriptor.generation_scope_uuid=descriptor.owner_object_uuid;
   return descriptor;
 }
 

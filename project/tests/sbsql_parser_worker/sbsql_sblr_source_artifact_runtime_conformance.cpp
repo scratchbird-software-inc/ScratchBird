@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -95,9 +96,9 @@ sblr::SblrOperationEnvelope SourceMapCarrier(
   envelope.result_shape = "void";
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
-      "019dffbb-f000-7000-8000-000000000010";
+      scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000010");
   envelope.registry_snapshot_uuid =
-      "019dffbb-f000-7000-8000-000000000011";
+      scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000011");
   envelope.parser_resolved_names_to_uuids = true;
 
   sblr::SblrOperand operand;

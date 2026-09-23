@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -514,10 +516,10 @@ std::string EvidenceMessage(const CreateTableRowEvidence& row,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000020101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000020102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000020103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 20;
   session.security_policy_epoch = 30;
   session.descriptor_epoch = 40;
@@ -528,7 +530,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000020104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020104");
   config.bundle_contract_id = "sbp_sbsql@create-table-route-test";
   config.build_id = "sbsql-create-table-route-test";
   return config;
@@ -773,7 +775,7 @@ void RemoveTestDatabase() {
   }
 }
 
-std::string CreateMinimalDatabaseForEngineDispatch() {
+api::EngineUuid CreateMinimalDatabaseForEngineDispatch() {
   RemoveTestDatabase();
   db::DatabaseCreateConfig create;
   create.path = TestDatabasePath().string();
@@ -792,21 +794,20 @@ std::string CreateMinimalDatabaseForEngineDispatch() {
               << '\n';
   }
   Require(created.ok(), "CREATE TABLE engine dispatch test database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
-api::EngineRequestContext EngineContext(const std::string& database_uuid) {
+api::EngineRequestContext EngineContext(const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-create-table-exact-route";
   context.database_path = TestDatabasePath().string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000020202";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000020203";
-  context.current_schema_uuid.canonical.clear();
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020202");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020203");
+  context.current_schema_uuid = {};
   context.security_context_present = true;
   context.catalog_generation_id = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.security_epoch = 1;
@@ -817,13 +818,27 @@ api::EngineRequestContext EngineContext(const std::string& database_uuid) {
   return context;
 }
 
-std::string SchemaUuidForPath(const api::EngineRequestContext& context,
+api::EngineUuid SchemaUuidForPath(const api::EngineRequestContext& context,
                               const std::string& path) {
   for (const auto& schema : api::CheckedSchemaTreeRecords(context,
                                                           context.local_transaction_id)) {
     for (const auto& name : schema.localized_names) {
       if (name.path == path) return schema.schema_uuid;
     }
+  }
+  return {};
+}
+
+api::EngineUuid ResultFieldIdentity(const api::EngineRowValue& row,
+                                    std::string_view name) {
+  for (const auto& [key, value] : row.fields) {
+    if (key != name) continue;
+    Require(value.descriptor.canonical_type_name == "uuid" &&
+            value.encoded_value.empty() && value.binary_value.size() == 16,
+            "DDL result UUID must be binary16");
+    api::EngineUuid identity;
+    std::copy(value.binary_value.begin(), value.binary_value.end(), identity.bytes.begin());
+    return identity;
   }
   return {};
 }
@@ -836,7 +851,7 @@ std::string ResultFieldValue(const api::EngineRowValue& row,
   return {};
 }
 
-api::EngineRequestContext BeginEngineTransaction(const std::string& database_uuid) {
+api::EngineRequestContext BeginEngineTransaction(const api::EngineUuid& database_uuid) {
   auto context = EngineContext(database_uuid);
   auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
                                          "SBLR_TXN_BEGIN",
@@ -895,15 +910,15 @@ api::EngineRequestContext BeginEngineTransaction(const std::string& database_uui
 
 api::EngineApiRequest EngineCreateTableApiRequest(std::string_view canonical_type_name,
                                                   std::string_view column_name,
-                                                  std::string_view schema_uuid) {
+                                                  const api::EngineUuid& schema_uuid) {
   api::EngineApiRequest request;
-  request.target_schema.uuid.canonical = std::string(schema_uuid);
+  request.target_schema.uuid = schema_uuid;
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = "019f0000-0000-7000-8000-000000020206";
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020206");
   request.target_object.object_kind = "table";
   request.localized_names.push_back({"en", "primary", "", "customer", true});
   api::EngineColumnDefinition column;
-  column.requested_column_uuid.canonical = "019f0000-0000-7000-8000-000000020207";
+  column.requested_column_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020207");
   column.names.push_back({"en", "primary", "", std::string(column_name), true});
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::string(canonical_type_name);
@@ -932,12 +947,12 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
                            std::string_view on_commit_action) {
   const auto database_uuid = CreateMinimalDatabaseForEngineDispatch();
   auto context = BeginEngineTransaction(database_uuid);
-  context.current_schema_uuid.canonical = SchemaUuidForPath(context, "users.public");
-  Require(!context.current_schema_uuid.canonical.empty(),
+  context.current_schema_uuid = SchemaUuidForPath(context, "users.public");
+  Require(!context.current_schema_uuid.is_nil(),
           "CREATE TABLE engine dispatch users.public schema missing");
   auto api_request = EngineCreateTableApiRequest(canonical_type_name,
                                                 column_name,
-                                                context.current_schema_uuid.canonical);
+                                                context.current_schema_uuid);
   if (temporary) {
     api_request.option_envelopes.push_back("temporary:true");
     api_request.option_envelopes.push_back("temporary_scope:private");
@@ -965,16 +980,16 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
           "EngineCreateTable returned wrong operation id");
   Require(result.api_result.primary_object.object_kind == "table",
           "EngineCreateTable did not return table primary object");
-  Require(result.api_result.primary_object.uuid.canonical ==
-              "019f0000-0000-7000-8000-000000020206",
+  Require(result.api_result.primary_object.uuid ==
+              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020206"),
           "EngineCreateTable returned wrong table UUID");
   bool saw_ddl_result_uuid = false;
   for (const auto& row : result.api_result.result_shape.rows) {
-    if (ResultFieldValue(row, "object_uuid") ==
-            "019f0000-0000-7000-8000-000000020206" &&
+    if (ResultFieldIdentity(row, "object_uuid") ==
+            scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020206") &&
         ResultFieldValue(row, "object_kind") == "table" &&
-        ResultFieldValue(row, "schema_uuid") ==
-            context.current_schema_uuid.canonical &&
+        ResultFieldIdentity(row, "schema_uuid") ==
+            context.current_schema_uuid &&
         ResultFieldValue(row, "name") == "customer") {
       saw_ddl_result_uuid = true;
       break;
@@ -987,15 +1002,15 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
   bool saw_temporary_on_commit = false;
   for (const auto& evidence : result.api_result.evidence) {
     if (evidence.evidence_kind == "mga_relation_metadata" &&
-        evidence.evidence_id == "table_create") {
+        scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, "table_create")) {
       saw_table_create = true;
     }
     if (evidence.evidence_kind == "temporary_object_scope" &&
-        evidence.evidence_id == "private") {
+        scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, "private")) {
       saw_temporary_scope = true;
     }
     if (evidence.evidence_kind == "temporary_on_commit" &&
-        evidence.evidence_id == on_commit_action) {
+        scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, on_commit_action)) {
       saw_temporary_on_commit = true;
     }
   }

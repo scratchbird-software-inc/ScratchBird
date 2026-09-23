@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "api_types.hpp"
 #include "nosql/nosql_backpressure_debt_api.hpp"
 #include "nosql/nosql_family_maintenance_api.hpp"
@@ -39,7 +40,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  const std::string& kind,
                  const std::string& id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) {
       return true;
     }
   }
@@ -60,9 +61,9 @@ api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.security_context_present = true;
-  context.database_uuid.canonical = "019f0087-0000-7000-8000-000000000027";
-  context.principal_uuid.canonical = "019f0087-0000-7000-8000-000000100027";
-  context.transaction_uuid.canonical = "019f0087-0000-7000-8000-000000200027";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0087-0000-7000-8000-000000000027");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0087-0000-7000-8000-000000100027");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0087-0000-7000-8000-000000200027");
   context.local_transaction_id = 27;
   return context;
 }

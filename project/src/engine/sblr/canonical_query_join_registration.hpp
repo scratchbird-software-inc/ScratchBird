@@ -36,7 +36,7 @@ struct LiveJoinRuntimeNodeConfiguration {
 // Runtime callbacks only revalidate the engine-selected MGA authority.
 exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
     std::string implementation_id,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>
         predicate_truth_values,
     std::size_t pair_count,

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/descriptor_api.hpp"
+#include "catalog/catalog_object_lifecycle_codec.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -213,9 +214,11 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
       result.descriptor.descriptor_uuid = object.object_uuid;
       result.descriptor.descriptor_kind = object.object_kind == "synonym" ? "sys.catalog.synonym" : object.object_kind;
       result.descriptor.canonical_type_name = object.object_kind;
-      result.descriptor.encoded_descriptor = "object_uuid=" + object.object_uuid + ";object_kind=" +
-                                            object.object_kind + ";schema_uuid=" + object.schema_uuid +
-                                            ";state=" + object.lifecycle_state + ";payload=" + object.payload;
+      if (!EncodeCatalogLifecycleRecord(object, &result.descriptor.encoded_descriptor)) {
+        return MakeApiBehaviorDiagnostic<EngineGetDescriptorResult>(request.context,
+            "catalog.get_descriptor", MakeInvalidRequestDiagnostic("catalog.get_descriptor",
+                "invalid_binary_catalog_descriptor"));
+      }
       result.result_shape.result_kind = "descriptor";
       result.result_shape.columns.push_back(result.descriptor);
       result.evidence.push_back({"catalog_object_descriptor_lookup", object.object_uuid});
@@ -248,7 +251,7 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
       result.descriptor.descriptor_uuid = table->table_uuid;
       result.descriptor.descriptor_kind = "table";
       result.descriptor.canonical_type_name = table->default_name;
-      result.descriptor.encoded_descriptor = "table_uuid=" + table->table_uuid + ";columns=" + EncodeCrudPairs(table->columns);
+      result.descriptor.encoded_descriptor = "columns=" + EncodeCrudPairs(table->columns);
       result.result_shape.result_kind = "descriptor";
       result.result_shape.columns.push_back(result.descriptor);
       result.evidence.push_back({"table_descriptor_lookup", table->table_uuid});
@@ -267,7 +270,7 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
       result.descriptor.descriptor_uuid = table->table_uuid;
       result.descriptor.descriptor_kind = "table";
       result.descriptor.canonical_type_name = table->default_name;
-      result.descriptor.encoded_descriptor = "table_uuid=" + table->table_uuid + ";columns=" + EncodeCrudPairs(table->columns);
+      result.descriptor.encoded_descriptor = "columns=" + EncodeCrudPairs(table->columns);
       result.result_shape.result_kind = "descriptor";
       result.result_shape.columns.push_back(result.descriptor);
       result.evidence.push_back({"table_descriptor_lookup", table->table_uuid});

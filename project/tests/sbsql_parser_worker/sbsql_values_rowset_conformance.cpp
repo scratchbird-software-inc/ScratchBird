@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -111,9 +112,9 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000003211";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000003212";
-  session.database_uuid = "019f0000-0000-7000-8000-000000003213";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003211");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003212");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003213");
   session.catalog_epoch = 7;
   session.security_policy_epoch = 11;
   session.descriptor_epoch = 13;
@@ -123,7 +124,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-000000003214";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003214");
   config.bundle_contract_id = "sbp_sbsql@values-rowset-route-test";
   config.build_id = "sbsql-values-rowset-route-test";
   return config;
@@ -311,9 +312,9 @@ void RequireLiveValuesRoutes() {
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsql-values-rowset";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000003221";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000003222";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000003223";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003221");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003222");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003223");
   context.security_context_present = true;
   return context;
 }
@@ -402,7 +403,7 @@ void RequireValuesLowering() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "parser no-SQL-execution authority step missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.query.values_rowset_descriptor"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.query.values_rowset_descriptor"),
           "VALUES rowset descriptor ref missing");
   Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"values_rowset\""),
           "VALUES payload marker missing");
@@ -484,7 +485,7 @@ void RequireValuesSetOperationLowering() {
             EvidenceMessage(kSetOpRow,
                             "lowering",
                             "VALUES set operation parser storage/finality refusal missing"));
-    Require(HasValue(artifacts.envelope.descriptor_refs,
+    Require(HasValue(artifacts.envelope.descriptor_requirements,
                      "sys.query.values_set_operation_descriptor"),
             EvidenceMessage(kSetOpRow, "lowering", "VALUES set operation descriptor ref missing"));
     Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"values_set_operation\""),

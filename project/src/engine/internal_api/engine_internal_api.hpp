@@ -94,7 +94,7 @@ struct EngineColumnDescriptor {
   bool nullable = true;
 };
 
-struct EngineResultShape {
+struct EngineOperationResultShape {
   EngineResultCardinality cardinality = EngineResultCardinality::unknown;
   std::vector<EngineColumnDescriptor> columns;
   bool canonical_diagnostics = true;
@@ -104,7 +104,7 @@ struct EngineResultShape {
 struct BoundEngineOperation {
   EngineOperationCode operation_code = EngineOperationCode::unknown;
   OperationAuthorityClass authority_class = OperationAuthorityClass::unknown;
-  EngineResultShape result_shape;
+  EngineOperationResultShape result_shape;
   bool mutates_state = false;
   bool requires_engine_security_check = true;
 };
@@ -126,7 +126,7 @@ struct EngineApiValidationResult {
 
 struct EngineResultShapeResult {
   Status status;
-  EngineResultShape result_shape;
+  EngineOperationResultShape result_shape;
   DiagnosticRecord diagnostic;
 
   bool ok() const {
@@ -153,7 +153,7 @@ EngineApiValidationResult ValidateSblrEnvelope(const SblrEnvelope& envelope);
 EngineApiValidationResult ValidateEngineColumnDescriptor(const EngineColumnDescriptor& column);
 EngineResultShapeResult MakeEngineResultShape(EngineResultCardinality cardinality,
                                               std::vector<EngineColumnDescriptor> columns);
-EngineResultShapeResult ValidateEngineResultShape(const EngineResultShape& result_shape);
+EngineResultShapeResult ValidateEngineResultShape(const EngineOperationResultShape& result_shape);
 EngineApiValidationResult ValidateBoundEngineOperation(const BoundEngineOperation& operation);
 EngineDispatchRequestResult MakeEngineDispatchRequest(EngineContext context,
                                                       SblrEnvelope envelope,

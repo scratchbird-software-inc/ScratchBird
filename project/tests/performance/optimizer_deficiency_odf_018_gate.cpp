@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -47,13 +48,21 @@ bool TreeContainsEvidence(const opt::PhysicalPlanNode& node, const std::string& 
   });
 }
 
+bool TreeContainsJoinOrder(const opt::PhysicalPlanNode& node,
+                           const std::vector<plan::CanonicalPlannerUuid>& identities) {
+  if (node.ordered_relation_uuids == identities) return true;
+  return std::any_of(node.children.begin(), node.children.end(), [&](const auto& child) {
+    return TreeContainsJoinOrder(child, identities);
+  });
+}
+
 void AddRelationStats(opt::OptimizerStatisticsCatalog* catalog,
-                      const std::string& relation_uuid,
+                      const plan::CanonicalPlannerUuid& relation_uuid,
                       double row_count) {
   const auto add = [&](const std::string& name, double value) {
     catalog->Add(opt::MakeStatistic(name,
                                     "relation",
-                                    relation_uuid,
+                                    opt::OptimizerStatisticTarget::Object(relation_uuid),
                                     value,
                                     opt::StatisticSource::kCatalogExact,
                                     18,
@@ -72,12 +81,12 @@ void AddRelationStats(opt::OptimizerStatisticsCatalog* catalog,
 
 opt::OptimizerStatisticsCatalog CardinalityCatalog() {
   opt::OptimizerStatisticsCatalog catalog;
-  AddRelationStats(&catalog, "rel.big", 10000.0);
-  AddRelationStats(&catalog, "rel.medium", 200.0);
-  AddRelationStats(&catalog, "rel.small", 10.0);
+  AddRelationStats(&catalog, scratchbird::tests::FixtureUuid(1541, 1), 10000.0);
+  AddRelationStats(&catalog, scratchbird::tests::FixtureUuid(1541, 2), 200.0);
+  AddRelationStats(&catalog, scratchbird::tests::FixtureUuid(1541, 3), 10.0);
   catalog.Add(opt::MakeStatistic("memory_grant_available_bytes",
                                  "session",
-                                 "local.default",
+                                 opt::OptimizerStatisticTarget::LocalDefault(),
                                  8.0 * 1024.0 * 1024.0,
                                  opt::StatisticSource::kCatalogExact,
                                  18,
@@ -85,7 +94,7 @@ opt::OptimizerStatisticsCatalog CardinalityCatalog() {
                                  opt::CostConfidence::kHigh));
   catalog.Add(opt::MakeStatistic("join_selectivity",
                                  "query",
-                                 "local.default",
+                                 opt::OptimizerStatisticTarget::LocalDefault(),
                                  0.05,
                                  opt::StatisticSource::kCatalogExact,
                                  18,
@@ -96,21 +105,21 @@ opt::OptimizerStatisticsCatalog CardinalityCatalog() {
 
 opt::JoinGraph ReorderSafeInnerGraph() {
   std::vector<opt::JoinRelationNode> relations = {
-      {.relation_uuid = "rel.big", .estimated_rows = 10000},
-      {.relation_uuid = "rel.medium", .estimated_rows = 200},
-      {.relation_uuid = "rel.small", .estimated_rows = 10},
+      {.relation_uuid = scratchbird::tests::FixtureUuid(1541, 1), .estimated_rows = 10000},
+      {.relation_uuid = scratchbird::tests::FixtureUuid(1541, 2), .estimated_rows = 200},
+      {.relation_uuid = scratchbird::tests::FixtureUuid(1541, 3), .estimated_rows = 10},
   };
   std::vector<opt::JoinPredicateEdge> predicates;
   opt::JoinPredicateEdge big_medium;
-  big_medium.left_relation_uuid = "rel.big";
-  big_medium.right_relation_uuid = "rel.medium";
+  big_medium.left_relation_uuid = scratchbird::tests::FixtureUuid(1541, 1);
+  big_medium.right_relation_uuid = scratchbird::tests::FixtureUuid(1541, 2);
   big_medium.predicate_kind = "join.equi";
   big_medium.equality = true;
   big_medium.selectivity = 0.05;
   predicates.push_back(big_medium);
   opt::JoinPredicateEdge medium_small = big_medium;
-  medium_small.left_relation_uuid = "rel.medium";
-  medium_small.right_relation_uuid = "rel.small";
+  medium_small.left_relation_uuid = scratchbird::tests::FixtureUuid(1541, 2);
+  medium_small.right_relation_uuid = scratchbird::tests::FixtureUuid(1541, 3);
   predicates.push_back(medium_small);
   return opt::BuildJoinGraph(std::move(relations), std::move(predicates), false, false);
 }
@@ -118,7 +127,7 @@ opt::JoinGraph ReorderSafeInnerGraph() {
 bool DirectBoundedDpReordersInnerJoins() {
   const auto graph = ReorderSafeInnerGraph();
   const auto order = opt::EnumerateDeterministicJoinOrder(graph, 8 * 1024 * 1024);
-  const std::vector<std::string> expected = {"rel.small", "rel.medium", "rel.big"};
+  const std::vector<plan::CanonicalPlannerUuid> expected = {scratchbird::tests::FixtureUuid(1541, 3), scratchbird::tests::FixtureUuid(1541, 2), scratchbird::tests::FixtureUuid(1541, 1)};
   return Require(order.ok, "bounded DP did not produce an inner-join order") &&
          Require(order.ordered_relation_uuids == expected,
                  "bounded DP did not choose the row-driven non-input order") &&
@@ -137,7 +146,7 @@ bool DirectBoundedDpRecordsBudgetPruning() {
   std::vector<opt::JoinRelationNode> relations;
   for (std::size_t i = 0; i < 8; ++i) {
     opt::JoinRelationNode relation;
-    relation.relation_uuid = "rel.dp" + std::to_string(i);
+    relation.relation_uuid = scratchbird::tests::FixtureUuid(1541, 100 + i);
     relation.estimated_rows = 1000 + i;
     relations.push_back(std::move(relation));
   }
@@ -195,13 +204,13 @@ bool DirectSemanticBarriersPreserveOrder() {
 
   for (const auto& entry : cases) {
     std::vector<opt::JoinRelationNode> relations = {
-        {.relation_uuid = "rel.big", .estimated_rows = 10000},
-        {.relation_uuid = "rel.small", .estimated_rows = 10},
+        {.relation_uuid = scratchbird::tests::FixtureUuid(1541, 1), .estimated_rows = 10000},
+        {.relation_uuid = scratchbird::tests::FixtureUuid(1541, 3), .estimated_rows = 10},
     };
     std::vector<opt::JoinPredicateEdge> predicates;
     opt::JoinPredicateEdge edge;
-    edge.left_relation_uuid = "rel.big";
-    edge.right_relation_uuid = "rel.small";
+    edge.left_relation_uuid = scratchbird::tests::FixtureUuid(1541, 1);
+    edge.right_relation_uuid = scratchbird::tests::FixtureUuid(1541, 3);
     edge.predicate_kind = "join.equi";
     edge.semantic_kind = entry.kind;
     edge.equality = true;
@@ -220,7 +229,7 @@ bool DirectSemanticBarriersPreserveOrder() {
                                            entry.kind == opt::JoinSemanticKind::kSemi ||
                                                entry.kind == opt::JoinSemanticKind::kAnti);
     const auto order = opt::EnumerateDeterministicJoinOrder(graph, 8 * 1024 * 1024);
-    const std::vector<std::string> expected = {"rel.big", "rel.small"};
+    const std::vector<plan::CanonicalPlannerUuid> expected = {scratchbird::tests::FixtureUuid(1541, 1), scratchbird::tests::FixtureUuid(1541, 3)};
     if (!Require(order.ok, std::string(entry.name) + " barrier did not produce a plan") ||
         !Require(order.ordered_relation_uuids == expected,
                  std::string(entry.name) + " barrier did not preserve input order") ||
@@ -290,25 +299,25 @@ plan::LogicalPlan InnerJoinLogicalPlan() {
                                        plan::PhysicalAccessKind::kNone,
                                        "scan.big",
                                        "big_scan");
-  big.required_object_uuids.push_back("rel.big");
+  big.required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1541, 1));
 
   auto medium = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
                                           plan::PhysicalAccessKind::kNone,
                                           "scan.medium",
                                           "medium_scan");
-  medium.required_object_uuids.push_back("rel.medium");
+  medium.required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1541, 2));
 
   auto small = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
                                          plan::PhysicalAccessKind::kNone,
                                          "scan.small",
                                          "small_scan");
-  small.required_object_uuids.push_back("rel.small");
+  small.required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1541, 3));
 
   auto join = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
                                         plan::PhysicalAccessKind::kJoinHash,
                                         "query.join",
                                         "big_medium_small_join");
-  join.required_object_uuids = {"rel.big", "rel.medium", "rel.small"};
+  join.required_object_uuids = {scratchbird::tests::FixtureUuid(1541, 1), scratchbird::tests::FixtureUuid(1541, 2), scratchbird::tests::FixtureUuid(1541, 3)};
   join.required_descriptors = {"desc.join", "join.equi", "join.reorder_safe"};
 
   logical.nodes = {big, medium, small, join};
@@ -324,19 +333,19 @@ plan::LogicalPlan SemanticJoinLogicalPlan(const std::string& descriptor) {
                                        plan::PhysicalAccessKind::kNone,
                                        "scan.big",
                                        "big_scan");
-  big.required_object_uuids.push_back("rel.big");
+  big.required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1541, 1));
 
   auto small = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
                                          plan::PhysicalAccessKind::kNone,
                                          "scan.small",
                                          "small_scan");
-  small.required_object_uuids.push_back("rel.small");
+  small.required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1541, 3));
 
   auto join = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
                                         plan::PhysicalAccessKind::kJoinHash,
                                         "query.join",
                                         "semantic_join");
-  join.required_object_uuids = {"rel.big", "rel.small"};
+  join.required_object_uuids = {scratchbird::tests::FixtureUuid(1541, 1), scratchbird::tests::FixtureUuid(1541, 3)};
   join.required_descriptors = {"desc.join", "join.equi", descriptor};
 
   logical.nodes = {big, small, join};
@@ -349,7 +358,7 @@ bool OptimizerIntegrationUsesDpPhysicalOrder() {
          Require(optimized.has_physical_plan, "optimizer did not expose inner DP physical root") &&
          Require(optimized.physical_root.access_kind == plan::PhysicalAccessKind::kJoinHash,
                  "physical root did not use DP-selected hash join") &&
-         Require(TreeContainsEvidence(optimized.physical_root, "join_order=rel.small,rel.medium,rel.big"),
+         Require(TreeContainsJoinOrder(optimized.physical_root, {scratchbird::tests::FixtureUuid(1541, 3), scratchbird::tests::FixtureUuid(1541, 2), scratchbird::tests::FixtureUuid(1541, 1)}),
                  "physical root tree did not expose DP-selected relation order") &&
          Require(TreeContainsEvidence(optimized.physical_root, "join_order_strategy=bounded_dp"),
                  "physical root tree did not expose bounded DP strategy") &&
@@ -382,7 +391,7 @@ bool OptimizerIntegrationPreservesSemanticOrder() {
     if (!Require(optimized.ok, std::string(entry.descriptor) + " plan was not ok") ||
         !Require(optimized.has_physical_plan,
                  std::string(entry.descriptor) + " plan did not expose physical root") ||
-        !Require(TreeContainsEvidence(optimized.physical_root, "join_order=rel.big,rel.small"),
+        !Require(TreeContainsJoinOrder(optimized.physical_root, {scratchbird::tests::FixtureUuid(1541, 1), scratchbird::tests::FixtureUuid(1541, 3)}),
                  std::string(entry.descriptor) + " did not preserve input order") ||
         !Require(TreeContainsEvidence(optimized.physical_root, "join_order_strategy=semantic_input_order"),
                  std::string(entry.descriptor) + " did not expose semantic strategy") ||

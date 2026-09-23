@@ -1,3 +1,6 @@
+#include "uuid.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <stdexcept>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -28,9 +31,10 @@ namespace sb_auth_probe {
 using namespace scratchbird::engine::internal_api;
 
 inline EngineUuid Uuid(const char* value) {
-  EngineUuid uuid;
-  uuid.canonical = value;
-  return uuid;
+  const auto parsed = scratchbird::core::uuid::ParseUuid(value);
+  if (!parsed.ok() || !scratchbird::core::uuid::IsEngineIdentityUuid(parsed.value))
+    throw std::runtime_error("invalid probe identity fixture");
+  return parsed.value;
 }
 
 inline void AddMaterializedGrant(EngineRequestContext* context,
@@ -85,9 +89,9 @@ inline EngineRequestContext Context(std::initializer_list<const char*> extra_tag
   context.database_path = path;
   context.local_transaction_id = 100;
   context.security_context_present = true;
-  context.database_uuid.canonical = "018f0000-0000-7000-8000-0000000a0001";
-  context.session_uuid.canonical = "018f0000-0000-7000-8000-0000000a0002";
-  context.principal_uuid.canonical = "018f0000-0000-7000-8000-0000000a0003";
+  context.database_uuid = Uuid("018f0000-0000-7000-8000-0000000a0001");
+  context.session_uuid = Uuid("018f0000-0000-7000-8000-0000000a0002");
+  context.principal_uuid = Uuid("018f0000-0000-7000-8000-0000000a0003");
   context.trace_tags = {"security.bootstrap"};
   for (const char* tag : extra_tags) { context.trace_tags.emplace_back(tag); }
   MaterializeAuthorization(&context, true);
@@ -99,9 +103,9 @@ inline EngineRequestContext ContextWithoutRights(std::initializer_list<const cha
   context.database_path = "/tmp/sb_auth_provider_plugin_probe.sbdb";
   context.local_transaction_id = 100;
   context.security_context_present = true;
-  context.database_uuid.canonical = "018f0000-0000-7000-8000-0000000a0001";
-  context.session_uuid.canonical = "018f0000-0000-7000-8000-0000000a0002";
-  context.principal_uuid.canonical = "018f0000-0000-7000-8000-0000000a0003";
+  context.database_uuid = Uuid("018f0000-0000-7000-8000-0000000a0001");
+  context.session_uuid = Uuid("018f0000-0000-7000-8000-0000000a0002");
+  context.principal_uuid = Uuid("018f0000-0000-7000-8000-0000000a0003");
   MaterializeAuthorization(&context, false);
   for (const char* tag : extra_tags) {
     const std::string value(tag);
@@ -123,14 +127,14 @@ template <typename TRequest>
 TRequest Request(const std::string& provider) {
   TRequest request;
   request.context = Context();
-  request.target_object.uuid.canonical = "018f0000-0000-7000-8000-0000000a0100";
+  request.target_object.uuid = Uuid("018f0000-0000-7000-8000-0000000a0100");
   request.option_envelopes.push_back("provider:" + provider);
   request.option_envelopes.push_back("credential:valid");
   request.option_envelopes.push_back("fixture:success");
   request.option_envelopes.push_back("principal:alice");
   request.option_envelopes.push_back("groups:materialized");
   request.option_envelopes.push_back("external_group:CN=DBA,DC=example,DC=org");
-  request.option_envelopes.push_back("internal_group_uuid:018f0000-0000-7000-8000-0000000a0200");
+  request.option_envelopes.push_back("internal_group_uuid:" + MetadataUuidBytes(Uuid("018f0000-0000-7000-8000-0000000a0200")));
   request.option_envelopes.push_back("protected_material:available");
   request.option_envelopes.push_back("token_uuid:018f0000-0000-7000-8000-0000000a0300");
   request.option_envelopes.push_back("challenge_uuid:018f0000-0000-7000-8000-0000000a0400");

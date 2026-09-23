@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -67,7 +68,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -103,10 +104,10 @@ void ConfigureMemoryFixture() {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000011101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000011102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000011103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 111;
   session.security_policy_epoch = 112;
   session.descriptor_epoch = 113;
@@ -117,7 +118,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsql_missing_gate_011";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000011104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011104");
   config.bundle_contract_id = "sbp_sbsql@sbsql-missing-gate-011";
   config.build_id = "sbsql-missing-functionality-gate-011";
   return config;
@@ -147,7 +148,7 @@ void PrintMessages(const PipelineArtifacts& artifacts) {
 }
 
 PipelineArtifacts RunPipeline(std::string_view sql,
-                              std::vector<std::string> resolved = {}) {
+                              std::vector<api::EngineUuid> resolved = {}) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
@@ -184,7 +185,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -202,20 +203,20 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "Gate 011 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid,
+                                        const api::EngineUuid& database_uuid,
                                         std::string request_id,
-                                        std::string session_uuid) {
+                                        api::EngineUuid session_uuid) {
   api::EngineRequestContext context;
   context.request_id = std::move(request_id);
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = std::move(session_uuid);
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000011202";
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.database_uuid = database_uuid;
+  context.session_uuid = std::move(session_uuid);
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011202");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011001");
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.cluster_authority_available = false;
@@ -229,9 +230,9 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid,
+                                                 const api::EngineUuid& database_uuid,
                                                  std::string request_id,
-                                                 std::string session_uuid) {
+                                                 api::EngineUuid session_uuid) {
   auto context = EngineContext(path, database_uuid, std::move(request_id),
                                std::move(session_uuid));
   api::EngineBeginTransactionRequest begin;
@@ -431,12 +432,12 @@ api::EngineRollbackToSavepointResult RollbackToSavepointDirect(
 }
 
 void RequireTableLockRoutes(const std::filesystem::path& path,
-                            const std::string& database_uuid) {
+                            const api::EngineUuid& database_uuid) {
   auto context = BeginEngineTransaction(
       path,
       database_uuid,
       "sbsql-missing-gate-011-table",
-      "019f0000-0000-7000-8000-000000011301");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011301"));
 
   RequireLockRouteRefusal(
       "LOCK TABLE ONLY accounts, public.orders IN SHARE MODE WAIT 5;");
@@ -508,12 +509,12 @@ void RequireTableLockRoutes(const std::filesystem::path& path,
 }
 
 void RequireNamedLockRoutesAndPolicy(const std::filesystem::path& path,
-                                     const std::string& database_uuid) {
+                                     const api::EngineUuid& database_uuid) {
   auto parser_context = BeginEngineTransaction(
       path,
       database_uuid,
       "sbsql-missing-gate-011-parser-named",
-      "019f0000-0000-7000-8000-000000011401");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011401"));
 
   RequireLockRouteRefusal(
       "LOCK NAMED 'gate011_parser_named' IN EXCLUSIVE MODE NOWAIT;");
@@ -539,12 +540,12 @@ void RequireNamedLockRoutesAndPolicy(const std::filesystem::path& path,
       path,
       database_uuid,
       "sbsql-missing-gate-011-savepoint-owner",
-      "019f0000-0000-7000-8000-000000011407");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011407"));
   auto savepoint_contender = BeginEngineTransaction(
       path,
       database_uuid,
       "sbsql-missing-gate-011-savepoint-contender",
-      "019f0000-0000-7000-8000-000000011408");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011408"));
   constexpr std::string_view savepoint_name = "gate011_sp";
   constexpr std::string_view savepoint_lock_name = "gate011_savepoint_retained_lock";
   const auto savepoint_create = CreateSavepointDirect(savepoint_owner, savepoint_name);
@@ -582,12 +583,12 @@ void RequireNamedLockRoutesAndPolicy(const std::filesystem::path& path,
       path,
       database_uuid,
       "sbsql-missing-gate-011-contention-1",
-      "019f0000-0000-7000-8000-000000011402");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011402"));
   auto second = BeginEngineTransaction(
       path,
       database_uuid,
       "sbsql-missing-gate-011-contention-2",
-      "019f0000-0000-7000-8000-000000011403");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011403"));
   constexpr std::string_view contention_name = "gate011_contention_named";
   const auto first_lock = LockNamedDirect(first, contention_name);
   Require(first_lock.ok && first_lock.acquired,
@@ -626,7 +627,7 @@ void RequireNamedLockRoutesAndPolicy(const std::filesystem::path& path,
       path,
       database_uuid,
       "sbsql-missing-gate-011-cleanup",
-      "019f0000-0000-7000-8000-000000011404");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011404"));
   constexpr std::string_view cleanup_name = "gate011_transaction_end_cleanup";
   const auto cleanup_lock = LockNamedDirect(cleanup, cleanup_name);
   Require(cleanup_lock.ok && cleanup_lock.acquired,
@@ -639,7 +640,7 @@ void RequireNamedLockRoutesAndPolicy(const std::filesystem::path& path,
       path,
       database_uuid,
       "sbsql-missing-gate-011-post-cleanup",
-      "019f0000-0000-7000-8000-000000011405");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011405"));
   const auto post_cleanup_lock = LockNamedDirect(post_cleanup, cleanup_name);
   Require(post_cleanup_lock.ok && post_cleanup_lock.acquired,
           "Gate 011 named lock was not released at transaction end");
@@ -649,7 +650,7 @@ void RequireNamedLockRoutesAndPolicy(const std::filesystem::path& path,
       path,
       database_uuid,
       "sbsql-missing-gate-011-cluster",
-      "019f0000-0000-7000-8000-000000011406");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011406"));
   const auto cluster_lock = LockNamedDirect(cluster_context,
                                            "gate011_cluster_scope",
                                            "cluster");
@@ -693,16 +694,16 @@ SblrValue NullValue(std::string descriptor) {
   return value;
 }
 
-sblr::SblrExecutionContext FunctionContext(std::string session_uuid) {
+sblr::SblrExecutionContext FunctionContext(api::EngineUuid session_uuid) {
   sblr::SblrExecutionContext context;
-  context.database_uuid = "019f0000-0000-7000-8000-000000011501";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011501");
   context.session_uuid = std::move(session_uuid);
-  context.user_uuid = "019f0000-0000-7000-8000-000000011502";
-  context.transaction_uuid = "019f0000-0000-7000-8000-000000011503";
+  context.user_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011502");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011503");
   context.local_transaction_id = 11503;
   context.transaction_context_present = true;
   context.security_context_present = true;
-  context.statement_uuid = std::string(kStatementUuid);
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011002");
   context.application_name = "sbsql-missing-gate-011";
   return context;
 }
@@ -755,13 +756,14 @@ void RequireNullInt64(std::string_view label, const sblr::SblrResult& result) {
 }
 
 bool FunctionEvidenceContains(const sblr::SblrExecutionContext& context,
-                              std::string_view fragment) {
+                              std::string_view function_name,
+                              std::string_view action) {
   if (!context.session_runtime_state) return false;
   return std::any_of(
       context.session_runtime_state->advisory_lock_evidence.begin(),
       context.session_runtime_state->advisory_lock_evidence.end(),
-      [fragment](const std::string& evidence) {
-        return evidence.find(fragment) != std::string::npos;
+      [function_name, action](const sblr::SblrAdvisoryLockEvidence& evidence) {
+        return evidence.function_name == function_name && evidence.action == action;
       });
 }
 
@@ -772,7 +774,7 @@ void RequireLockFunctionRuntimeAndLowering() {
   Require(package.registry.Lookup("sb.scalar.release_lock") != nullptr,
           "Gate 011 release_lock function registry row missing");
 
-  auto context = FunctionContext("019f0000-0000-7000-8000-000000011601");
+  auto context = FunctionContext(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011601"));
   RequireInt64Result("Gate 011 GET_LOCK acquire",
                      RunFunction(package.registry,
                                  context,
@@ -780,7 +782,7 @@ void RequireLockFunctionRuntimeAndLowering() {
                                  {TextValue("character", "gate011_function_lock"),
                                   Int64Value(0)}),
                      1);
-  Require(FunctionEvidenceContains(context, "get_lock.acquired:"),
+  Require(FunctionEvidenceContains(context, "get_lock", "acquired"),
           "Gate 011 get_lock acquisition evidence missing");
   RequireInt64Result("Gate 011 GET_LOCK reentrant",
                      RunFunction(package.registry,
@@ -789,11 +791,11 @@ void RequireLockFunctionRuntimeAndLowering() {
                                  {TextValue("character", "gate011_function_lock"),
                                   Int64Value(0)}),
                      1);
-  Require(FunctionEvidenceContains(context, "get_lock.reentrant:"),
+  Require(FunctionEvidenceContains(context, "get_lock", "reentrant"),
           "Gate 011 get_lock reentrant evidence missing");
 
   auto other = context;
-  other.session_uuid = "019f0000-0000-7000-8000-000000011602";
+  other.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011602");
   RequireInt64Result("Gate 011 GET_LOCK contended",
                      RunFunction(package.registry,
                                  other,
@@ -801,7 +803,7 @@ void RequireLockFunctionRuntimeAndLowering() {
                                  {TextValue("character", "gate011_function_lock"),
                                   Int64Value(0)}),
                      0);
-  Require(FunctionEvidenceContains(context, "get_lock.timeout:"),
+  Require(FunctionEvidenceContains(context, "get_lock", "timeout"),
           "Gate 011 get_lock timeout evidence missing");
 
   RequireInt64Result("Gate 011 RELEASE_LOCK decrement",
@@ -871,7 +873,7 @@ void RequireLockFunctionRuntimeAndLowering() {
 void RequireSelectForUpdateCompatibilityEvidence() {
   const auto artifacts =
       RunPipeline("SELECT id FROM customer FOR UPDATE;",
-                  {"019f0000-0000-7000-8000-000000011701"});
+                  {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011701")});
   Require(!artifacts.cst.messages.has_errors(), "Gate 011 FOR UPDATE CST failed");
   Require(!artifacts.ast.messages.has_errors(), "Gate 011 FOR UPDATE AST failed");
   Require(artifacts.bound.bound, "Gate 011 FOR UPDATE bind failed");

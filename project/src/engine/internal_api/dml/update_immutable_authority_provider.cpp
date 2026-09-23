@@ -18,6 +18,8 @@
 #include <cstddef>
 #include <limits>
 #include <mutex>
+#include <map>
+#include <set>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -41,7 +43,7 @@ constexpr std::string_view kTriggerRecordDomain =
 constexpr std::size_t kMaximumFrozenAuthoritySources = 1048576;
 
 std::mutex g_update_authority_mutex;
-std::unordered_map<std::string, EngineDmlUpdateImmutableAuthoritySnapshotV1>
+std::map<std::array<EngineUuid, 5>, EngineDmlUpdateImmutableAuthoritySnapshotV1>
     g_update_authorities;
 std::atomic<std::uint64_t> g_update_authority_ordinal{1};
 
@@ -61,29 +63,16 @@ bool HasTraceTag(const EngineRequestContext& context, std::string_view tag) {
          context.trace_tags.end();
 }
 
-bool ParseExactUuid(std::string_view text,
-                    std::array<std::uint8_t, 16>* bytes = nullptr) {
-  if (text.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
-      scratchbird::core::uuid::UuidToString(parsed.value) != text) {
+bool ExactUuid(const EngineUuid& value,
+               std::array<std::uint8_t, 16>* bytes = nullptr) {
+  if (value.is_nil() || !scratchbird::core::uuid::IsValidUuidVariant(value))
     return false;
-  }
-  if (bytes != nullptr) {
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-              bytes->begin());
-  }
+  if (bytes != nullptr) *bytes = value.bytes;
   return true;
 }
 
-bool UuidLess(std::string_view left, std::string_view right) {
-  std::array<std::uint8_t, 16> left_bytes{};
-  std::array<std::uint8_t, 16> right_bytes{};
-  if (!ParseExactUuid(left, &left_bytes) ||
-      !ParseExactUuid(right, &right_bytes)) {
-    return left < right;
-  }
-  return left_bytes < right_bytes;
+bool UuidLess(const EngineUuid& left, const EngineUuid& right) {
+  return left.bytes < right.bytes;
 }
 
 bool Nonzero(const EngineDmlUpdateSha256V1& value) {
@@ -108,10 +97,10 @@ void PutU64(std::vector<std::uint8_t>* bytes, std::size_t offset,
 }
 
 bool PutUuid(std::vector<std::uint8_t>* bytes, std::size_t offset,
-             std::string_view text, bool optional = false) {
-  if (text.empty() && optional) return true;
+             const EngineUuid& value, bool optional = false) {
+  if (value.is_nil() && optional) return true;
   std::array<std::uint8_t, 16> parsed{};
-  if (!ParseExactUuid(text, &parsed)) return false;
+  if (!ExactUuid(value, &parsed)) return false;
   std::copy(parsed.begin(), parsed.end(), bytes->begin() + offset);
   return true;
 }
@@ -126,7 +115,7 @@ EngineDmlUpdateSha256V1 Hash(std::string_view domain,
   return digest.ok() ? digest.digest : EngineDmlUpdateSha256V1{};
 }
 
-std::string FreshUuid() {
+EngineUuid FreshUuid() {
   const auto now = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch())
@@ -136,13 +125,13 @@ std::string FreshUuid() {
       now + g_update_authority_ordinal.fetch_add(1,
                                                  std::memory_order_relaxed));
   return generated.ok()
-      ? scratchbird::core::uuid::UuidToString(generated.value.value)
-      : std::string{};
+      ? generated.value.value
+      : EngineUuid{};
 }
 
-bool OptionalIdentityValid(std::string_view uuid, std::uint64_t generation) {
-  return (uuid.empty() && generation == 0) ||
-         (generation != 0 && ParseExactUuid(uuid));
+bool OptionalIdentityValid(const EngineUuid& uuid, std::uint64_t generation) {
+  return (uuid.is_nil() && generation == 0) ||
+         (generation != 0 && ExactUuid(uuid));
 }
 
 bool EnumValid(EngineDmlUpdateRowPolicyPhaseV1 value) {
@@ -198,20 +187,20 @@ EngineApiDiagnostic ValidateBase(
   }
   if (context.read_only_mode || context.cluster_transaction_active ||
       context.route_fence_present || context.local_transaction_id == 0 ||
-      !ParseExactUuid(context.transaction_uuid) ||
-      !ParseExactUuid(context.statement_snapshot_uuid) ||
-      !ParseExactUuid(request.authenticated_statement_receipt_uuid) ||
+      !ExactUuid(context.transaction_uuid) ||
+      !ExactUuid(context.statement_snapshot_uuid) ||
+      !ExactUuid(request.authenticated_statement_receipt_uuid) ||
       request.authenticated_statement_receipt_uuid !=
           context.statement_receipt_uuid ||
       request.structural_occurrence_id == 0 ||
-      !ParseExactUuid(request.catalog_snapshot_uuid) ||
+      !ExactUuid(request.catalog_snapshot_uuid) ||
       request.catalog_snapshot_uuid !=
           context.statement_metadata_snapshot_uuid ||
       request.catalog_generation == 0 ||
       request.catalog_generation != context.catalog_generation_id ||
-      !ParseExactUuid(request.relation_occurrence.relation_uuid) ||
+      !ExactUuid(request.relation_occurrence.relation_uuid) ||
       request.relation_occurrence.relation_generation == 0 ||
-      !ParseExactUuid(
+      !ExactUuid(
           request.relation_occurrence.relation_occurrence_uuid) ||
       request.relation_occurrence.relation_occurrence_generation != 1 ||
       request.relation_occurrence.relation_uuid ==
@@ -327,9 +316,9 @@ EngineDmlUpdateSha256V1 VectorHash(std::string_view domain,
 EngineApiDiagnostic BuildRowPolicySet(
     const EngineDmlUpdateImmutableAuthorityFreezeRequestV1& request,
     const EngineSecurityPolicySnapshotAuthorityV1& security,
-    std::string set_uuid,
+    EngineUuid set_uuid,
     EngineDmlUpdateFrozenRowPolicySetV1* out) {
-  if (out == nullptr || !ParseExactUuid(set_uuid)) {
+  if (out == nullptr || !ExactUuid(set_uuid)) {
     return Diagnostic(kDmlUpdateAuthorityDiagnosticInvalid,
                       "sblr.dml_update_rows.row_policy_set_identity_invalid");
   }
@@ -344,16 +333,16 @@ EngineApiDiagnostic BuildRowPolicySet(
             request.relation_occurrence.relation_uuid ||
         source.target_relation_generation !=
             request.relation_occurrence.relation_generation ||
-        !ParseExactUuid(source.source_policy_uuid) ||
+        !ExactUuid(source.source_policy_uuid) ||
         source.source_policy_generation == 0 || !EnumValid(source.phase) ||
-        !ParseExactUuid(source.source_policy_version_uuid) ||
+        !ExactUuid(source.source_policy_version_uuid) ||
         source.effective_transaction_number == 0 ||
-        !ParseExactUuid(source.effective_policy_uuid) ||
+        !ExactUuid(source.effective_policy_uuid) ||
         source.effective_policy_generation == 0 ||
-        !ParseExactUuid(source.source_expression_uuid) ||
+        !ExactUuid(source.source_expression_uuid) ||
         source.source_expression_generation == 0 ||
         !Nonzero(source.source_expression_evidence_sha256) ||
-        !ParseExactUuid(source.expression_uuid) ||
+        !ExactUuid(source.expression_uuid) ||
         source.expression_generation == 0 ||
         !Nonzero(source.expression_evidence_sha256) ||
         source.catalog_snapshot_uuid != request.catalog_snapshot_uuid ||
@@ -374,14 +363,13 @@ EngineApiDiagnostic BuildRowPolicySet(
     if (left->phase != right->phase) return left->phase < right->phase;
     return UuidLess(left->source_policy_uuid, right->source_policy_uuid);
   });
-  std::unordered_set<std::string> seen_phase_sources;
+  std::set<std::pair<EngineDmlUpdateRowPolicyPhaseV1, EngineUuid>> seen_phase_sources;
   EngineDmlUpdateSha256V1 source_catalog_vector_sha256{};
   bool source_catalog_vector_observed = false;
-  std::unordered_set<std::string> seen_policy_versions;
+  std::unordered_set<EngineUuid, EngineUuidHash> seen_policy_versions;
   for (const auto* source : eligible) {
-    const std::string phase_source_key =
-        std::to_string(static_cast<std::uint8_t>(source->phase)) + "\n" +
-        source->source_policy_uuid;
+    const auto phase_source_key =
+        std::pair{source->phase, source->source_policy_uuid};
     if (!seen_phase_sources.insert(phase_source_key).second) {
       return Diagnostic(kDmlUpdateAuthorityDiagnosticInvalid,
                         "sblr.dml_update_rows.row_policy_source_duplicate");
@@ -495,8 +483,8 @@ EngineApiDiagnostic BuildRowPolicySet(
 
 EngineApiDiagnostic BuildConstraintSet(
     const EngineDmlUpdateImmutableAuthorityFreezeRequestV1& request,
-    std::string set_uuid, EngineDmlUpdateFrozenConstraintSetV1* out) {
-  if (out == nullptr || !ParseExactUuid(set_uuid)) {
+    EngineUuid set_uuid, EngineDmlUpdateFrozenConstraintSetV1* out) {
+  if (out == nullptr || !ExactUuid(set_uuid)) {
     return Diagnostic(kDmlUpdateAuthorityDiagnosticInvalid,
                       "sblr.dml_update_rows.constraint_set_identity_invalid");
   }
@@ -516,11 +504,11 @@ EngineApiDiagnostic BuildConstraintSet(
         !source.manager_execution_order_present ||
         !EnumValid(source.constraint_class) || !EnumValid(source.timing) ||
         !EnumValid(source.reservation_mode) ||
-        !ParseExactUuid(source.constraint_uuid) ||
+        !ExactUuid(source.constraint_uuid) ||
         source.constraint_generation == 0 ||
         !OptionalIdentityValid(source.expression_uuid,
                                source.expression_generation) ||
-        !ParseExactUuid(source.reservation_profile_uuid) ||
+        !ExactUuid(source.reservation_profile_uuid) ||
         source.reservation_profile_generation == 0 ||
         !Nonzero(source.dependency_set_sha256)) {
       return Diagnostic(kDmlUpdateAuthorityDiagnosticInvalid,
@@ -535,7 +523,7 @@ EngineApiDiagnostic BuildConstraintSet(
     }
     return UuidLess(left->constraint_uuid, right->constraint_uuid);
   });
-  std::unordered_set<std::string> seen;
+  std::unordered_set<EngineUuid, EngineUuidHash> seen;
   out->set_uuid = std::move(set_uuid);
   out->set_generation = 1;
   for (const auto* source : eligible) {
@@ -572,8 +560,8 @@ EngineApiDiagnostic BuildConstraintSet(
 EngineApiDiagnostic BuildTriggerSet(
     const EngineDmlUpdateImmutableAuthorityFreezeRequestV1& request,
     const EngineSecurityPolicySnapshotAuthorityV1& security,
-    std::string set_uuid, EngineDmlUpdateFrozenTriggerSetV1* out) {
-  if (out == nullptr || !ParseExactUuid(set_uuid)) {
+    EngineUuid set_uuid, EngineDmlUpdateFrozenTriggerSetV1* out) {
+  if (out == nullptr || !ExactUuid(set_uuid)) {
     return Diagnostic(kDmlUpdateAuthorityDiagnosticInvalid,
                       "sblr.dml_update_rows.trigger_set_identity_invalid");
   }
@@ -598,13 +586,13 @@ EngineApiDiagnostic BuildTriggerSet(
         !source.firing_order_present ||
         source.event != EngineDmlUpdateTriggerEventV1::update ||
         !EnumValid(source.timing) || !EnumValid(source.security_mode) ||
-        !ParseExactUuid(source.trigger_uuid) ||
+        !ExactUuid(source.trigger_uuid) ||
         source.trigger_generation == 0 ||
-        !ParseExactUuid(source.body_sblr_uuid) ||
+        !ExactUuid(source.body_sblr_uuid) ||
         source.body_sblr_generation == 0 ||
-        !ParseExactUuid(source.execution_security_context_uuid) ||
+        !ExactUuid(source.execution_security_context_uuid) ||
         source.execution_security_generation == 0 ||
-        !ParseExactUuid(source.recursion_profile_uuid) ||
+        !ExactUuid(source.recursion_profile_uuid) ||
         source.recursion_profile_generation == 0 ||
         source.maximum_depth == 0 || source.maximum_depth > 64 ||
         !Nonzero(source.dependency_set_sha256)) {
@@ -621,7 +609,7 @@ EngineApiDiagnostic BuildTriggerSet(
     }
     return UuidLess(left->trigger_uuid, right->trigger_uuid);
   });
-  std::unordered_set<std::string> seen;
+  std::unordered_set<EngineUuid, EngineUuidHash> seen;
   out->set_uuid = std::move(set_uuid);
   out->set_generation = 1;
   for (const auto* source : eligible) {
@@ -660,20 +648,20 @@ EngineApiDiagnostic BuildTriggerSet(
   return Ok();
 }
 
-std::string SnapshotKey(
+std::array<EngineUuid, 5> SnapshotKey(
     const EngineDmlUpdateImmutableAuthoritySnapshotV1& snapshot) {
-  return snapshot.authenticated_statement_receipt_uuid + "\n" +
-         snapshot.relation_occurrence.relation_occurrence_uuid + "\n" +
-         snapshot.row_policy_set.set_uuid + "\n" +
-         snapshot.constraint_set.set_uuid + "\n" +
-         snapshot.trigger_set.set_uuid;
+  return {snapshot.authenticated_statement_receipt_uuid,
+          snapshot.relation_occurrence.relation_occurrence_uuid,
+          snapshot.row_policy_set.set_uuid,
+          snapshot.constraint_set.set_uuid,
+          snapshot.trigger_set.set_uuid};
 }
 
 EngineApiDiagnostic BuildSets(
     const EngineDmlUpdateImmutableAuthorityFreezeRequestV1& request,
     const EngineSecurityPolicySnapshotAuthorityV1& security,
-    std::string row_policy_set_uuid, std::string constraint_set_uuid,
-    std::string trigger_set_uuid,
+    EngineUuid row_policy_set_uuid, EngineUuid constraint_set_uuid,
+    EngineUuid trigger_set_uuid,
     EngineDmlUpdateImmutableAuthoritySnapshotV1* snapshot) {
   if (snapshot == nullptr) {
     return Diagnostic(kDmlUpdateAuthorityDiagnosticInvalid,
@@ -729,12 +717,12 @@ FreezeDmlUpdateImmutableAuthorityV1(
   snapshot.catalog_generation = request.catalog_generation;
   snapshot.security_policy_snapshot = security_snapshot;
 
-  const std::string row_policy_set_uuid = FreshUuid();
-  const std::string constraint_set_uuid = FreshUuid();
-  const std::string trigger_set_uuid = FreshUuid();
-  if (!ParseExactUuid(row_policy_set_uuid) ||
-      !ParseExactUuid(constraint_set_uuid) ||
-      !ParseExactUuid(trigger_set_uuid) ||
+  const EngineUuid row_policy_set_uuid = FreshUuid();
+  const EngineUuid constraint_set_uuid = FreshUuid();
+  const EngineUuid trigger_set_uuid = FreshUuid();
+  if (!ExactUuid(row_policy_set_uuid) ||
+      !ExactUuid(constraint_set_uuid) ||
+      !ExactUuid(trigger_set_uuid) ||
       row_policy_set_uuid == constraint_set_uuid ||
       row_policy_set_uuid == trigger_set_uuid ||
       constraint_set_uuid == trigger_set_uuid) {
@@ -749,7 +737,7 @@ FreezeDmlUpdateImmutableAuthorityV1(
   if (result.diagnostic.error) return result;
 
   std::lock_guard<std::mutex> guard(g_update_authority_mutex);
-  const std::string key = SnapshotKey(snapshot);
+  const auto key = SnapshotKey(snapshot);
   if (g_update_authorities.contains(key)) {
     result.diagnostic = Diagnostic(
         kDmlUpdateAuthorityDiagnosticInvalid,

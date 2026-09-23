@@ -2,6 +2,7 @@
 
 #include "engine/sblr/sblr_literal_runtime.hpp"
 #include "hash_digest.hpp"
+#include "engine/sblr/relational_descriptor_codec.hpp"
 
 namespace literal_fixture {
 namespace runtime = scratchbird::engine::sblr;
@@ -15,7 +16,7 @@ struct Binding {
 
 inline Submission BuildLiteralSubmission(
     const Fixture& fixture, const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid, Binding* binding) {
+    const platform::Uuid& parser_uuid, Binding* binding) {
   Require(binding != nullptr, "literal submission binding missing");
   const auto package = RawUuid(view.bound_ast_uuid);
   auto member = sblr::MakeSblrEnvelope("query.execute", "SBLR_QUERY_EXECUTE",
@@ -24,18 +25,16 @@ inline Submission BuildLiteralSubmission(
   member.diagnostic_shape="diagnostic_vector";member.parser_package_uuid=parser_uuid;
   member.registry_snapshot_uuid=view.catalog_epoch_uuid;
   member.parser_resolved_names_to_uuids=true;
-  const auto descriptor_text = [&]{
-    constexpr char hex[]="0123456789abcdef";std::string out;out.reserve(36);
-    for(std::size_t i=0;i<16;++i){if(i==4||i==6||i==8||i==10)out.push_back('-');out.push_back(hex[binding->descriptor_uuid[i]>>4]);out.push_back(hex[binding->descriptor_uuid[i]&15]);}return out;}();
-  const std::string descriptor_record = descriptor_text+
-      "|019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-";
-  sblr::SblrOperand descriptor;descriptor.ordinal=1;
-  descriptor.type="relational_descriptor_v1";descriptor.name="slot_1";
-  descriptor.value_kind=sblr::SblrValueKind::literal_typed;
-  const auto type_uuid=RawUuid("019d0000-0000-7000-8000-00000000d712");
-  descriptor.value_body.insert(descriptor.value_body.end(),type_uuid.begin(),type_uuid.end());
-  U64(&descriptor.value_body,descriptor_record.size());
-  descriptor.value_body.insert(descriptor.value_body.end(),descriptor_record.begin(),descriptor_record.end());
+  api::RelationalTypeDescriptor record;
+  record.descriptor_id = 1;
+  record.descriptor_uuid.bytes = binding->descriptor_uuid;
+  record.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
+  record.nullability = api::RelationalNullability::kNonNull;
+  sblr::SblrOperand descriptor; descriptor.ordinal = 1;
+  descriptor.type = "relational_descriptor_v3"; descriptor.name = "slot_1";
+  descriptor.value_kind = sblr::SblrValueKind::relational_type_descriptor;
+  Require(sblr::EncodeRelationalTypeDescriptorV1(record, &descriptor.value_body),
+          "literal relational descriptor encoding failed");
   member.operands.push_back(std::move(descriptor));
   sblr::SblrOperand table;table.ordinal=2;table.type="expression.node_table.v1";
   table.name="expression_nodes";table.value_kind=sblr::SblrValueKind::expression_node_table;

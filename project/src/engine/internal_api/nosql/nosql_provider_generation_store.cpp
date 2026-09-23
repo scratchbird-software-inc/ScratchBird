@@ -11,6 +11,9 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "crud_support/crud_store.hpp"
 #include "hash_digest.hpp"
+#include "catalog/binary_catalog_metadata.hpp"
+#include "uuid.hpp"
+#include <tuple>
 
 #include <algorithm>
 #include <array>
@@ -29,16 +32,25 @@
 namespace scratchbird::engine::internal_api {
 namespace {
 
-constexpr const char* kGenerationMagic = "SBNOSQLPG1";
+constexpr std::string_view kGenerationMagic = "SBNOSQLPG2";
+using MetadataValue = std::variant<std::string, EngineUuid>;
+using MetadataFieldPairs = std::vector<std::pair<std::string, MetadataValue>>;
+using MetadataFieldMap = std::map<std::string, MetadataValue>;
+using GenerationStoreKey = std::pair<std::string, EngineUuid>;
+using GenerationRecordKey = std::tuple<EngineNoSqlProviderFamily, std::string, EngineUuid>;
+GenerationStoreKey StoreKey(const EngineRequestContext& context) {
+  return {context.database_path, context.database_uuid};
+}
+
 
 std::mutex& StoreMutex() {
   static std::mutex mutex;
   return mutex;
 }
 
-std::map<std::string, std::vector<EngineNoSqlProviderGenerationMetadata>>&
+std::map<GenerationStoreKey, std::vector<EngineNoSqlProviderGenerationMetadata>>&
 GenerationCache() {
-  static std::map<std::string, std::vector<EngineNoSqlProviderGenerationMetadata>>
+  static std::map<GenerationStoreKey, std::vector<EngineNoSqlProviderGenerationMetadata>>
       cache;
   return cache;
 }
@@ -90,7 +102,7 @@ bool CanonicalPersistedU64(const std::string_view value) {
 }
 
 bool RawVectorCarrierPairsValid(
-    const std::vector<std::pair<std::string, std::string>>& pairs) {
+    const MetadataFieldPairs& pairs) {
   static constexpr std::array<std::string_view, 46> kVectorKeys = {
       "vector_ann_candidate_present",
       "vector_ann_capability_uuid",
@@ -194,7 +206,7 @@ bool RawVectorCarrierPairsValid(
     if (vector_key || std::ranges::find(kGenericSeedKeys, key) !=
                           kGenericSeedKeys.end()) {
       ++counts[key];
-      values[key] = value;
+      if (const auto* text = std::get_if<std::string>(&value)) values[key] = *text;
     }
   }
   if (!has_vector_key) return true;
@@ -230,7 +242,7 @@ bool RawVectorCarrierPairsValid(
 }
 
 bool RawSearchCarrierPairsValid(
-    const std::vector<std::pair<std::string, std::string>>& pairs) {
+    const MetadataFieldPairs& pairs) {
   static constexpr std::array<std::string_view, 58> kSearchKeys = {
       "search_segment_candidate_present",
       "search_segment_capability_uuid",
@@ -352,7 +364,7 @@ bool RawSearchCarrierPairsValid(
     if (search_key || std::ranges::find(kGenericSeedKeys, key) !=
                           kGenericSeedKeys.end()) {
       ++counts[key];
-      values[key] = value;
+      if (const auto* text = std::get_if<std::string>(&value)) values[key] = *text;
     }
   }
   if (!has_search_key) return true;
@@ -381,32 +393,19 @@ bool RawSearchCarrierPairsValid(
   return true;
 }
 
-bool IsCanonicalLowercaseNonzeroUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  bool nonzero = false;
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const char ch = value[index];
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-      return false;
-    }
-    nonzero = nonzero || ch != '0';
-  }
-  return nonzero;
+bool IsNativeIdentity(const EngineUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool HasExactTimeSeriesRollupBindingInput(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
   return metadata.time_series_rollup_candidate_present &&
          metadata.family == EngineNoSqlProviderFamily::kTimeSeries &&
-         IsCanonicalLowercaseNonzeroUuid(metadata.provider_id) &&
+         IsNativeIdentity(metadata.provider_uuid) &&
          !metadata.database_identity.empty() &&
-         IsCanonicalLowercaseNonzeroUuid(metadata.database_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(metadata.collection_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(metadata.generation_uuid) &&
+         IsNativeIdentity(metadata.database_uuid) &&
+         IsNativeIdentity(metadata.collection_uuid) &&
+         IsNativeIdentity(metadata.generation_uuid) &&
          metadata.generation_id != 0 && metadata.descriptor_epoch != 0 &&
          metadata.security_epoch != 0 && metadata.redaction_epoch != 0 &&
          metadata.catalog_epoch != 0 &&
@@ -421,19 +420,19 @@ bool HasExactTimeSeriesRollupBindingInput(
          metadata.time_series_rollup_interval_ns > 0 &&
          metadata.time_series_rollup_exactness_attestation_state ==
              "TIME_SERIES_ROLLUP_SECTION_8_EXACT_V1" &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.time_series_rollup_statement_snapshot_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.time_series_rollup_statement_metadata_snapshot_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.time_series_rollup_owning_transaction_uuid) &&
          metadata.time_series_rollup_local_transaction_id != 0 &&
          metadata
                  .time_series_rollup_snapshot_visible_through_local_transaction_id !=
              0 &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.time_series_rollup_security_context_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.time_series_rollup_catalog_epoch_uuid) &&
          metadata.time_series_rollup_exact_residual_recheck_required &&
          metadata.time_series_rollup_base_row_mga_recheck_required &&
@@ -449,26 +448,36 @@ bool AppendLengthPrefixed(const std::string_view value, std::string* seed) {
           std::numeric_limits<std::size_t>::max() - value.size()) {
     return false;
   }
+  seed->push_back('T');
   seed->append(length);
   seed->push_back(':');
   seed->append(value);
   return true;
 }
 
-std::string DeriveTimeSeriesRollupCapabilityUuidImpl(
+bool AppendLengthPrefixed(const EngineUuid& value, std::string* seed) {
+  if (!seed) return false;
+  seed->push_back('U');
+  seed->append(reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size());
+  return true;
+}
+
+std::string ComputeTimeSeriesRollupBindingDigestImpl(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
   if (!HasExactTimeSeriesRollupBindingInput(metadata)) return {};
   try {
     std::string seed;
     const auto append_field = [&](const std::string_view name,
-                                  const std::string& value) {
+                                  const auto& value) {
       return AppendLengthPrefixed(name, &seed) &&
              AppendLengthPrefixed(value, &seed);
     };
     if (!AppendLengthPrefixed(
-            "SCRATCHBIRD.TIME_SERIES_ROLLUP_CAPABILITY_BINDING.V1", &seed) ||
-        !append_field("family", EngineNoSqlProviderFamilyName(metadata.family)) ||
+            "SCRATCHBIRD.TIME_SERIES_ROLLUP_CAPABILITY_BINDING.V2", &seed) ||
+        !append_field("family", std::string(EngineNoSqlProviderFamilyName(metadata.family))) ||
         !append_field("provider_id", metadata.provider_id) ||
+        !append_field("provider_uuid", metadata.provider_uuid) ||
+        !append_field("capability_uuid", metadata.time_series_rollup_capability_uuid) ||
         !append_field("database_identity", metadata.database_identity) ||
         !append_field("database_uuid", metadata.database_uuid) ||
         !append_field("collection_uuid", metadata.collection_uuid) ||
@@ -534,19 +543,7 @@ std::string DeriveTimeSeriesRollupCapabilityUuidImpl(
         reinterpret_cast<const scratchbird::core::platform::byte*>(seed.data()),
         seed.size());
     if (!digest.ok() || digest.digest_bytes != 32) return {};
-    std::array<std::uint8_t, 16> uuid_bytes{};
-    std::copy_n(digest.digest.begin(), uuid_bytes.size(), uuid_bytes.begin());
-    uuid_bytes[6] =
-        static_cast<std::uint8_t>((uuid_bytes[6] & 0x0fU) | 0x80U);
-    uuid_bytes[8] =
-        static_cast<std::uint8_t>((uuid_bytes[8] & 0x3fU) | 0x80U);
-    std::ostringstream out;
-    out << std::hex << std::setfill('0');
-    for (std::size_t index = 0; index < uuid_bytes.size(); ++index) {
-      if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
-      out << std::setw(2) << static_cast<unsigned>(uuid_bytes[index]);
-    }
-    return out.str();
+    return std::string(reinterpret_cast<const char*>(digest.digest.data()), 32);
   } catch (...) {
     return {};
   }
@@ -563,30 +560,30 @@ bool HasExactVectorAnnBindingInput(
                          metadata.vector_ann_algorithm_id == "diskann_like";
   return metadata.vector_ann_candidate_present &&
          metadata.family == EngineNoSqlProviderFamily::kVector &&
-         IsCanonicalLowercaseNonzeroUuid(metadata.provider_id) &&
+         IsNativeIdentity(metadata.provider_uuid) &&
          !metadata.database_identity.empty() &&
-         IsCanonicalLowercaseNonzeroUuid(metadata.database_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(metadata.collection_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(metadata.generation_uuid) &&
+         IsNativeIdentity(metadata.database_uuid) &&
+         IsNativeIdentity(metadata.collection_uuid) &&
+         IsNativeIdentity(metadata.generation_uuid) &&
          metadata.generation_id != 0 && metadata.descriptor_epoch != 0 &&
          metadata.security_epoch != 0 && metadata.redaction_epoch != 0 &&
          metadata.catalog_epoch != 0 && metadata.publish_state == "published" &&
          metadata.validation_state == "validated" &&
          !metadata.provider_claims_transaction_finality_authority &&
          !metadata.provider_claims_visibility_authority &&
-         IsCanonicalLowercaseNonzeroUuid(metadata.vector_ann_index_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(metadata.vector_ann_index_uuid) &&
+         IsNativeIdentity(
              metadata.vector_ann_base_relation_uuid) &&
          metadata.vector_ann_base_relation_uuid == metadata.collection_uuid &&
          metadata.vector_ann_base_relation_generation != 0 &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.vector_ann_relation_descriptor_uuid) &&
          metadata.vector_ann_relation_descriptor_generation != 0 &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.vector_ann_embedding_column_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.vector_ann_embedding_descriptor_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.vector_ann_embedding_type_uuid) &&
          metadata.vector_ann_dimension == 3 &&
          metadata.vector_ann_element_profile == "real32" && metric &&
@@ -604,21 +601,21 @@ bool HasExactVectorAnnBindingInput(
              metadata.vector_ann_required_recall_ppm &&
          metadata.vector_ann_observed_recall_ppm <= 1'000'000 &&
          metadata.vector_ann_recall_sample_deterministic &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.vector_ann_recall_evidence_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(metadata.vector_ann_statement_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(metadata.vector_ann_statement_uuid) &&
+         IsNativeIdentity(
              metadata.vector_ann_statement_snapshot_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.vector_ann_statement_metadata_snapshot_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.vector_ann_owning_transaction_uuid) &&
          metadata.vector_ann_local_transaction_id != 0 &&
          metadata.vector_ann_snapshot_visible_through_local_transaction_id !=
              0 &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.vector_ann_security_context_uuid) &&
-         IsCanonicalLowercaseNonzeroUuid(
+         IsNativeIdentity(
              metadata.vector_ann_catalog_epoch_uuid) &&
          metadata.vector_ann_exact_fallback_available &&
          metadata.vector_ann_full_base_exact_recheck_required &&
@@ -636,13 +633,13 @@ bool HasExactVectorAnnBindingInput(
          !metadata.vector_ann_wal_claims_transaction_finality_authority;
 }
 
-std::string DeriveVectorAnnCapabilityUuidImpl(
+std::string ComputeVectorAnnBindingDigestImpl(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
   if (!HasExactVectorAnnBindingInput(metadata)) return {};
   try {
     std::string seed;
     const auto append_field = [&](const std::string_view name,
-                                  const std::string& value) {
+                                  const auto& value) {
       return AppendLengthPrefixed(name, &seed) &&
              AppendLengthPrefixed(value, &seed);
     };
@@ -655,9 +652,11 @@ std::string DeriveVectorAnnCapabilityUuidImpl(
       return append_field(name, BoolText(value));
     };
     if (!AppendLengthPrefixed(
-            "SCRATCHBIRD.VECTOR_ANN_CAPABILITY_BINDING.V1", &seed) ||
-        !append_field("family", EngineNoSqlProviderFamilyName(metadata.family)) ||
+            "SCRATCHBIRD.VECTOR_ANN_CAPABILITY_BINDING.V2", &seed) ||
+        !append_field("family", std::string(EngineNoSqlProviderFamilyName(metadata.family))) ||
         !append_field("provider_id", metadata.provider_id) ||
+        !append_field("provider_uuid", metadata.provider_uuid) ||
+        !append_field("capability_uuid", metadata.vector_ann_capability_uuid) ||
         !append_field("database_identity", metadata.database_identity) ||
         !append_field("database_uuid", metadata.database_uuid) ||
         !append_field("collection_uuid", metadata.collection_uuid) ||
@@ -772,19 +771,7 @@ std::string DeriveVectorAnnCapabilityUuidImpl(
         reinterpret_cast<const scratchbird::core::platform::byte*>(seed.data()),
         seed.size());
     if (!digest.ok() || digest.digest_bytes != 32) return {};
-    std::array<std::uint8_t, 16> uuid_bytes{};
-    std::copy_n(digest.digest.begin(), uuid_bytes.size(), uuid_bytes.begin());
-    uuid_bytes[6] =
-        static_cast<std::uint8_t>((uuid_bytes[6] & 0x0fU) | 0x80U);
-    uuid_bytes[8] =
-        static_cast<std::uint8_t>((uuid_bytes[8] & 0x3fU) | 0x80U);
-    std::ostringstream out;
-    out << std::hex << std::setfill('0');
-    for (std::size_t index = 0; index < uuid_bytes.size(); ++index) {
-      if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
-      out << std::setw(2) << static_cast<unsigned>(uuid_bytes[index]);
-    }
-    return out.str();
+    return std::string(reinterpret_cast<const char*>(digest.digest.data()), 32);
   } catch (...) {
     return {};
   }
@@ -798,12 +785,12 @@ bool LowercaseHexDigest(const std::string_view value) {
 
 bool HasExactSearchSegmentBindingInput(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
-  const auto uuid = [](const std::string& value) {
-    return IsCanonicalLowercaseNonzeroUuid(value);
+  const auto uuid = [](const EngineUuid& value) {
+    return IsNativeIdentity(value);
   };
   return metadata.search_segment_candidate_present &&
          metadata.family == EngineNoSqlProviderFamily::kSearch &&
-         uuid(metadata.provider_id) && !metadata.database_identity.empty() &&
+         uuid(metadata.provider_uuid) && !metadata.database_identity.empty() &&
          uuid(metadata.database_uuid) && uuid(metadata.collection_uuid) &&
          uuid(metadata.generation_uuid) && metadata.generation_id != 0 &&
          metadata.descriptor_epoch != 0 && metadata.security_epoch != 0 &&
@@ -876,13 +863,13 @@ bool HasExactSearchSegmentBindingInput(
          !metadata.search_segment_wal_claims_transaction_finality_authority;
 }
 
-std::string DeriveSearchSegmentCapabilityUuidImpl(
+std::string ComputeSearchSegmentBindingDigestImpl(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
   if (!HasExactSearchSegmentBindingInput(metadata)) return {};
   try {
     std::string seed;
     const auto append_field = [&](const std::string_view name,
-                                  const std::string& value) {
+                                  const auto& value) {
       return AppendLengthPrefixed(name, &seed) &&
              AppendLengthPrefixed(value, &seed);
     };
@@ -895,9 +882,11 @@ std::string DeriveSearchSegmentCapabilityUuidImpl(
       return append_field(name, BoolText(value));
     };
     if (!AppendLengthPrefixed(
-            "SCRATCHBIRD.SEARCH_SEGMENT_CAPABILITY_BINDING.V1", &seed) ||
-        !append_field("family", EngineNoSqlProviderFamilyName(metadata.family)) ||
+            "SCRATCHBIRD.SEARCH_SEGMENT_CAPABILITY_BINDING.V2", &seed) ||
+        !append_field("family", std::string(EngineNoSqlProviderFamilyName(metadata.family))) ||
         !append_field("provider_id", metadata.provider_id) ||
+        !append_field("provider_uuid", metadata.provider_uuid) ||
+        !append_field("capability_uuid", metadata.search_segment_capability_uuid) ||
         !append_field("database_identity", metadata.database_identity) ||
         !append_field("database_uuid", metadata.database_uuid) ||
         !append_field("collection_uuid", metadata.collection_uuid) ||
@@ -1037,19 +1026,7 @@ std::string DeriveSearchSegmentCapabilityUuidImpl(
         reinterpret_cast<const scratchbird::core::platform::byte*>(seed.data()),
         seed.size());
     if (!digest.ok() || digest.digest_bytes != 32) return {};
-    std::array<std::uint8_t, 16> uuid_bytes{};
-    std::copy_n(digest.digest.begin(), uuid_bytes.size(), uuid_bytes.begin());
-    uuid_bytes[6] =
-        static_cast<std::uint8_t>((uuid_bytes[6] & 0x0fU) | 0x80U);
-    uuid_bytes[8] =
-        static_cast<std::uint8_t>((uuid_bytes[8] & 0x3fU) | 0x80U);
-    std::ostringstream out;
-    out << std::hex << std::setfill('0');
-    for (std::size_t index = 0; index < uuid_bytes.size(); ++index) {
-      if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
-      out << std::setw(2) << static_cast<unsigned>(uuid_bytes[index]);
-    }
-    return out.str();
+    return std::string(reinterpret_cast<const char*>(digest.digest.data()), 32);
   } catch (...) {
     return {};
   }
@@ -1078,64 +1055,20 @@ std::string GenerationPath(const EngineRequestContext& context) {
   return context.database_path + ".sb.nosql_provider_generations";
 }
 
-std::uint64_t Fnva64(const std::string& text) {
-  std::uint64_t hash = 1469598103934665603ull;
-  for (const unsigned char ch : text) {
-    hash ^= ch;
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
-std::string Hex64(std::uint64_t value) {
-  std::ostringstream out;
-  out << std::hex << std::setw(16) << std::setfill('0') << value;
-  return out.str();
-}
-
-bool IsHex(char ch) {
-  return std::isxdigit(static_cast<unsigned char>(ch)) != 0;
-}
-
-bool IsValidUuid(const std::string& value) {
-  if (value.size() != 36) { return false; }
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (i == 8 || i == 13 || i == 18 || i == 23) {
-      if (value[i] != '-') { return false; }
-    } else if (!IsHex(value[i])) {
-      return false;
-    }
-  }
-  return true;
-}
-
-std::string StableGenerationUuid(const EngineRequestContext& context,
-                                 const std::string& provider_id,
-                                 const std::string& collection_uuid,
-                                 std::uint64_t generation_id) {
-  const std::string database_seed =
-      !context.database_uuid.is_nil()
-          ? context.database_uuid
-          : EngineNoSqlProviderDatabaseIdentity(context);
-  const std::string seed = database_seed + "|" + provider_id + "|" +
-                           collection_uuid + "|" +
-                           std::to_string(generation_id);
-  std::string hex = Hex64(Fnva64(seed + ":left")) +
-                    Hex64(Fnva64(seed + ":right"));
-  hex[12] = '7';
-  hex[16] = '8';
-  return hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" +
-         hex.substr(12, 4) + "-" + hex.substr(16, 4) + "-" +
-         hex.substr(20, 12);
+bool IsValidUuid(const EngineUuid& value) { return IsNativeIdentity(value); }
+EngineUuid NewGenerationUuid() {
+  const auto issued = core::uuid::IssueRuntimeIdentityV7();
+  return issued ? *issued : EngineUuid{};
 }
 
 std::uint64_t NonZeroEpoch(std::uint64_t epoch) { return epoch == 0 ? 1 : epoch; }
 
-std::vector<std::pair<std::string, std::string>> MetadataPairs(
+MetadataFieldPairs MetadataPairs(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
   return {
       {"family", EngineNoSqlProviderFamilyName(metadata.family)},
       {"provider_id", metadata.provider_id},
+      {"provider_uuid", metadata.provider_uuid},
       {"database_identity", metadata.database_identity},
       {"database_uuid", metadata.database_uuid},
       {"collection_uuid", metadata.collection_uuid},
@@ -1155,6 +1088,7 @@ std::vector<std::pair<std::string, std::string>> MetadataPairs(
        BoolText(metadata.provider_claims_transaction_finality_authority)},
       {"provider_claims_visibility_authority",
        BoolText(metadata.provider_claims_visibility_authority)},
+      {"time_series_rollup_binding_digest", metadata.time_series_rollup_binding_digest},
       {"time_series_rollup_candidate_present",
        BoolText(metadata.time_series_rollup_candidate_present)},
       {"time_series_rollup_capability_uuid",
@@ -1188,6 +1122,7 @@ std::vector<std::pair<std::string, std::string>> MetadataPairs(
        BoolText(metadata.time_series_rollup_base_row_mga_recheck_required)},
       {"time_series_rollup_security_recheck_required",
        BoolText(metadata.time_series_rollup_security_recheck_required)},
+      {"vector_ann_binding_digest", metadata.vector_ann_binding_digest},
       {"vector_ann_candidate_present",
        BoolText(metadata.vector_ann_candidate_present)},
       {"vector_ann_capability_uuid", metadata.vector_ann_capability_uuid},
@@ -1278,6 +1213,7 @@ std::vector<std::pair<std::string, std::string>> MetadataPairs(
        BoolText(metadata.vector_ann_wal_claims_visibility_authority)},
       {"vector_ann_wal_claims_transaction_finality_authority",
        BoolText(metadata.vector_ann_wal_claims_transaction_finality_authority)},
+      {"search_segment_binding_digest", metadata.search_segment_binding_digest},
       {"search_segment_candidate_present",
        BoolText(metadata.search_segment_candidate_present)},
       {"search_segment_capability_uuid",
@@ -1400,32 +1336,39 @@ std::vector<std::pair<std::string, std::string>> MetadataPairs(
   };
 }
 
-std::map<std::string, std::string> PairMap(
-    const std::vector<std::pair<std::string, std::string>>& pairs) {
-  std::map<std::string, std::string> out;
+MetadataFieldMap PairMap(
+    const MetadataFieldPairs& pairs) {
+  MetadataFieldMap out;
   for (const auto& [key, value] : pairs) {
     out[key] = value;
   }
   return out;
 }
 
-std::string ValueOr(const std::map<std::string, std::string>& values,
+std::string ValueOr(const MetadataFieldMap& values,
                     const std::string& key,
                     const std::string& fallback = {}) {
   const auto it = values.find(key);
-  return it == values.end() ? fallback : it->second;
+  return it == values.end() || !std::holds_alternative<std::string>(it->second) ? fallback : std::get<std::string>(it->second);
+}
+
+EngineUuid IdentityOr(const MetadataFieldMap& values, const std::string& key) {
+  const auto it = values.find(key);
+  return it == values.end() || !std::holds_alternative<EngineUuid>(it->second)
+      ? EngineUuid{} : std::get<EngineUuid>(it->second);
 }
 
 EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
-    const std::vector<std::pair<std::string, std::string>>& pairs) {
+    const MetadataFieldPairs& pairs) {
   const auto values = PairMap(pairs);
   EngineNoSqlProviderGenerationMetadata metadata;
   metadata.family = EngineNoSqlProviderFamilyFromString(ValueOr(values, "family"));
   metadata.provider_id = ValueOr(values, "provider_id");
+  metadata.provider_uuid = IdentityOr(values, "provider_uuid");
   metadata.database_identity = ValueOr(values, "database_identity");
-  metadata.database_uuid = ValueOr(values, "database_uuid");
-  metadata.collection_uuid = ValueOr(values, "collection_uuid");
-  metadata.generation_uuid = ValueOr(values, "generation_uuid");
+  metadata.database_uuid = IdentityOr(values, "database_uuid");
+  metadata.collection_uuid = IdentityOr(values, "collection_uuid");
+  metadata.generation_uuid = IdentityOr(values, "generation_uuid");
   metadata.generation_id = ParseU64(ValueOr(values, "generation_id"));
   metadata.descriptor_epoch = ParseU64(ValueOr(values, "descriptor_epoch"));
   metadata.security_epoch = ParseU64(ValueOr(values, "security_epoch"));
@@ -1442,10 +1385,11 @@ EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
       ParseBool(ValueOr(values, "provider_claims_transaction_finality_authority"));
   metadata.provider_claims_visibility_authority =
       ParseBool(ValueOr(values, "provider_claims_visibility_authority"));
+  metadata.time_series_rollup_binding_digest = ValueOr(values, "time_series_rollup_binding_digest");
   metadata.time_series_rollup_candidate_present =
       ParseBool(ValueOr(values, "time_series_rollup_candidate_present"));
   metadata.time_series_rollup_capability_uuid =
-      ValueOr(values, "time_series_rollup_capability_uuid");
+      IdentityOr(values, "time_series_rollup_capability_uuid");
   metadata.time_series_rollup_generation =
       ParseU64(ValueOr(values, "time_series_rollup_generation"));
   metadata.time_series_visible_late_arrival_generation = ParseU64(
@@ -1455,12 +1399,12 @@ EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
   metadata.time_series_rollup_exactness_attestation_state =
       ValueOr(values, "time_series_rollup_exactness_attestation_state");
   metadata.time_series_rollup_statement_snapshot_uuid =
-      ValueOr(values, "time_series_rollup_statement_snapshot_uuid");
+      IdentityOr(values, "time_series_rollup_statement_snapshot_uuid");
   metadata.time_series_rollup_statement_metadata_snapshot_uuid =
-      ValueOr(values,
+      IdentityOr(values,
               "time_series_rollup_statement_metadata_snapshot_uuid");
   metadata.time_series_rollup_owning_transaction_uuid =
-      ValueOr(values, "time_series_rollup_owning_transaction_uuid");
+      IdentityOr(values, "time_series_rollup_owning_transaction_uuid");
   metadata.time_series_rollup_local_transaction_id =
       ParseU64(ValueOr(values, "time_series_rollup_local_transaction_id"));
   metadata.time_series_rollup_snapshot_visible_through_local_transaction_id =
@@ -1468,34 +1412,35 @@ EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
           values,
           "time_series_rollup_snapshot_visible_through_local_transaction_id"));
   metadata.time_series_rollup_security_context_uuid =
-      ValueOr(values, "time_series_rollup_security_context_uuid");
+      IdentityOr(values, "time_series_rollup_security_context_uuid");
   metadata.time_series_rollup_catalog_epoch_uuid =
-      ValueOr(values, "time_series_rollup_catalog_epoch_uuid");
+      IdentityOr(values, "time_series_rollup_catalog_epoch_uuid");
   metadata.time_series_rollup_exact_residual_recheck_required = ParseBool(
       ValueOr(values, "time_series_rollup_exact_residual_recheck_required"));
   metadata.time_series_rollup_base_row_mga_recheck_required = ParseBool(
       ValueOr(values, "time_series_rollup_base_row_mga_recheck_required"));
   metadata.time_series_rollup_security_recheck_required = ParseBool(
       ValueOr(values, "time_series_rollup_security_recheck_required"));
+  metadata.vector_ann_binding_digest = ValueOr(values, "vector_ann_binding_digest");
   metadata.vector_ann_candidate_present =
       ParseBool(ValueOr(values, "vector_ann_candidate_present"));
   metadata.vector_ann_capability_uuid =
-      ValueOr(values, "vector_ann_capability_uuid");
-  metadata.vector_ann_index_uuid = ValueOr(values, "vector_ann_index_uuid");
+      IdentityOr(values, "vector_ann_capability_uuid");
+  metadata.vector_ann_index_uuid = IdentityOr(values, "vector_ann_index_uuid");
   metadata.vector_ann_base_relation_uuid =
-      ValueOr(values, "vector_ann_base_relation_uuid");
+      IdentityOr(values, "vector_ann_base_relation_uuid");
   metadata.vector_ann_base_relation_generation =
       ParseU64(ValueOr(values, "vector_ann_base_relation_generation"));
   metadata.vector_ann_relation_descriptor_uuid =
-      ValueOr(values, "vector_ann_relation_descriptor_uuid");
+      IdentityOr(values, "vector_ann_relation_descriptor_uuid");
   metadata.vector_ann_relation_descriptor_generation = ParseU64(
       ValueOr(values, "vector_ann_relation_descriptor_generation"));
   metadata.vector_ann_embedding_column_uuid =
-      ValueOr(values, "vector_ann_embedding_column_uuid");
+      IdentityOr(values, "vector_ann_embedding_column_uuid");
   metadata.vector_ann_embedding_descriptor_uuid =
-      ValueOr(values, "vector_ann_embedding_descriptor_uuid");
+      IdentityOr(values, "vector_ann_embedding_descriptor_uuid");
   metadata.vector_ann_embedding_type_uuid =
-      ValueOr(values, "vector_ann_embedding_type_uuid");
+      IdentityOr(values, "vector_ann_embedding_type_uuid");
   metadata.vector_ann_dimension =
       ParseU64(ValueOr(values, "vector_ann_dimension"));
   metadata.vector_ann_element_profile =
@@ -1522,15 +1467,15 @@ EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
   metadata.vector_ann_recall_sample_deterministic = ParseBool(
       ValueOr(values, "vector_ann_recall_sample_deterministic"));
   metadata.vector_ann_recall_evidence_uuid =
-      ValueOr(values, "vector_ann_recall_evidence_uuid");
+      IdentityOr(values, "vector_ann_recall_evidence_uuid");
   metadata.vector_ann_statement_uuid =
-      ValueOr(values, "vector_ann_statement_uuid");
+      IdentityOr(values, "vector_ann_statement_uuid");
   metadata.vector_ann_statement_snapshot_uuid =
-      ValueOr(values, "vector_ann_statement_snapshot_uuid");
+      IdentityOr(values, "vector_ann_statement_snapshot_uuid");
   metadata.vector_ann_statement_metadata_snapshot_uuid =
-      ValueOr(values, "vector_ann_statement_metadata_snapshot_uuid");
+      IdentityOr(values, "vector_ann_statement_metadata_snapshot_uuid");
   metadata.vector_ann_owning_transaction_uuid =
-      ValueOr(values, "vector_ann_owning_transaction_uuid");
+      IdentityOr(values, "vector_ann_owning_transaction_uuid");
   metadata.vector_ann_local_transaction_id =
       ParseU64(ValueOr(values, "vector_ann_local_transaction_id"));
   metadata.vector_ann_snapshot_visible_through_local_transaction_id =
@@ -1538,9 +1483,9 @@ EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
           values,
           "vector_ann_snapshot_visible_through_local_transaction_id"));
   metadata.vector_ann_security_context_uuid =
-      ValueOr(values, "vector_ann_security_context_uuid");
+      IdentityOr(values, "vector_ann_security_context_uuid");
   metadata.vector_ann_catalog_epoch_uuid =
-      ValueOr(values, "vector_ann_catalog_epoch_uuid");
+      IdentityOr(values, "vector_ann_catalog_epoch_uuid");
   metadata.vector_ann_exact_fallback_available =
       ParseBool(ValueOr(values, "vector_ann_exact_fallback_available"));
   metadata.vector_ann_full_base_exact_recheck_required = ParseBool(
@@ -1574,61 +1519,62 @@ EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
       ValueOr(values, "vector_ann_wal_claims_visibility_authority"));
   metadata.vector_ann_wal_claims_transaction_finality_authority = ParseBool(
       ValueOr(values, "vector_ann_wal_claims_transaction_finality_authority"));
+  metadata.search_segment_binding_digest = ValueOr(values, "search_segment_binding_digest");
   metadata.search_segment_candidate_present =
       ParseBool(ValueOr(values, "search_segment_candidate_present"));
   metadata.search_segment_capability_uuid =
-      ValueOr(values, "search_segment_capability_uuid");
+      IdentityOr(values, "search_segment_capability_uuid");
   metadata.search_segment_index_uuid =
-      ValueOr(values, "search_segment_index_uuid");
-  metadata.search_segment_uuid = ValueOr(values, "search_segment_uuid");
+      IdentityOr(values, "search_segment_index_uuid");
+  metadata.search_segment_uuid = IdentityOr(values, "search_segment_uuid");
   metadata.search_segment_base_relation_uuid =
-      ValueOr(values, "search_segment_base_relation_uuid");
+      IdentityOr(values, "search_segment_base_relation_uuid");
   metadata.search_segment_base_relation_generation =
       ParseU64(ValueOr(values, "search_segment_base_relation_generation"));
   metadata.search_segment_relation_descriptor_uuid =
-      ValueOr(values, "search_segment_relation_descriptor_uuid");
+      IdentityOr(values, "search_segment_relation_descriptor_uuid");
   metadata.search_segment_relation_descriptor_generation = ParseU64(
       ValueOr(values, "search_segment_relation_descriptor_generation"));
   metadata.search_segment_body_column_uuid =
-      ValueOr(values, "search_segment_body_column_uuid");
+      IdentityOr(values, "search_segment_body_column_uuid");
   metadata.search_segment_body_descriptor_uuid =
-      ValueOr(values, "search_segment_body_descriptor_uuid");
+      IdentityOr(values, "search_segment_body_descriptor_uuid");
   metadata.search_segment_body_type_uuid =
-      ValueOr(values, "search_segment_body_type_uuid");
+      IdentityOr(values, "search_segment_body_type_uuid");
   metadata.search_segment_category_column_uuid =
-      ValueOr(values, "search_segment_category_column_uuid");
+      IdentityOr(values, "search_segment_category_column_uuid");
   metadata.search_segment_category_descriptor_uuid =
-      ValueOr(values, "search_segment_category_descriptor_uuid");
+      IdentityOr(values, "search_segment_category_descriptor_uuid");
   metadata.search_segment_category_type_uuid =
-      ValueOr(values, "search_segment_category_type_uuid");
+      IdentityOr(values, "search_segment_category_type_uuid");
   metadata.search_segment_search_type_descriptor_uuid =
-      ValueOr(values, "search_segment_search_type_descriptor_uuid");
+      IdentityOr(values, "search_segment_search_type_descriptor_uuid");
   metadata.search_segment_search_type_descriptor_generation = ParseU64(
       ValueOr(values, "search_segment_search_type_descriptor_generation"));
   metadata.search_segment_analyzer_uuid =
-      ValueOr(values, "search_segment_analyzer_uuid");
+      IdentityOr(values, "search_segment_analyzer_uuid");
   metadata.search_segment_analyzer_generation =
       ParseU64(ValueOr(values, "search_segment_analyzer_generation"));
   metadata.search_segment_analyzer_pipeline_sha256 =
       ValueOr(values, "search_segment_analyzer_pipeline_sha256");
   metadata.search_segment_tokenizer_uuid =
-      ValueOr(values, "search_segment_tokenizer_uuid");
+      IdentityOr(values, "search_segment_tokenizer_uuid");
   metadata.search_segment_tokenizer_generation =
       ParseU64(ValueOr(values, "search_segment_tokenizer_generation"));
   metadata.search_segment_language_profile_uuid =
-      ValueOr(values, "search_segment_language_profile_uuid");
+      IdentityOr(values, "search_segment_language_profile_uuid");
   metadata.search_segment_language_profile_generation = ParseU64(
       ValueOr(values, "search_segment_language_profile_generation"));
   metadata.search_segment_ranking_model_uuid =
-      ValueOr(values, "search_segment_ranking_model_uuid");
+      IdentityOr(values, "search_segment_ranking_model_uuid");
   metadata.search_segment_ranking_model_generation = ParseU64(
       ValueOr(values, "search_segment_ranking_model_generation"));
   metadata.search_segment_phrase_profile_uuid =
-      ValueOr(values, "search_segment_phrase_profile_uuid");
+      IdentityOr(values, "search_segment_phrase_profile_uuid");
   metadata.search_segment_phrase_profile_generation = ParseU64(
       ValueOr(values, "search_segment_phrase_profile_generation"));
   metadata.search_segment_query_syntax_profile_uuid =
-      ValueOr(values, "search_segment_query_syntax_profile_uuid");
+      IdentityOr(values, "search_segment_query_syntax_profile_uuid");
   metadata.search_segment_query_syntax_profile_generation = ParseU64(
       ValueOr(values, "search_segment_query_syntax_profile_generation"));
   metadata.search_segment_index_profile_id =
@@ -1644,13 +1590,13 @@ EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
   metadata.search_segment_publish_attestation_state =
       ValueOr(values, "search_segment_publish_attestation_state");
   metadata.search_segment_statement_uuid =
-      ValueOr(values, "search_segment_statement_uuid");
+      IdentityOr(values, "search_segment_statement_uuid");
   metadata.search_segment_statement_snapshot_uuid =
-      ValueOr(values, "search_segment_statement_snapshot_uuid");
+      IdentityOr(values, "search_segment_statement_snapshot_uuid");
   metadata.search_segment_statement_metadata_snapshot_uuid =
-      ValueOr(values, "search_segment_statement_metadata_snapshot_uuid");
+      IdentityOr(values, "search_segment_statement_metadata_snapshot_uuid");
   metadata.search_segment_owning_transaction_uuid =
-      ValueOr(values, "search_segment_owning_transaction_uuid");
+      IdentityOr(values, "search_segment_owning_transaction_uuid");
   metadata.search_segment_local_transaction_id =
       ParseU64(ValueOr(values, "search_segment_local_transaction_id"));
   metadata.search_segment_snapshot_visible_through_local_transaction_id =
@@ -1658,9 +1604,9 @@ EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
           values,
           "search_segment_snapshot_visible_through_local_transaction_id"));
   metadata.search_segment_security_context_uuid =
-      ValueOr(values, "search_segment_security_context_uuid");
+      IdentityOr(values, "search_segment_security_context_uuid");
   metadata.search_segment_catalog_epoch_uuid =
-      ValueOr(values, "search_segment_catalog_epoch_uuid");
+      IdentityOr(values, "search_segment_catalog_epoch_uuid");
   metadata.search_segment_exact_fallback_available =
       ParseBool(ValueOr(values, "search_segment_exact_fallback_available"));
   metadata.search_segment_full_corpus_exact_recheck_required = ParseBool(
@@ -1734,10 +1680,8 @@ void AddCommonEvidence(EngineNoSqlProviderGenerationResult* result) {
                              metadata.provider_id);
   result->evidence.push_back("provider_generation_database_identity=" +
                              metadata.database_identity);
-  result->evidence.push_back("provider_generation_collection_uuid=" +
-                             metadata.collection_uuid);
-  result->evidence.push_back("provider_generation_uuid=" +
-                             metadata.generation_uuid);
+  result->identity_evidence.push_back({"provider_generation_collection_uuid", metadata.collection_uuid});
+  result->identity_evidence.push_back({"provider_generation_uuid", metadata.generation_uuid});
   result->evidence.push_back("provider_generation_id=" +
                              std::to_string(metadata.generation_id));
   result->evidence.push_back("provider_generation_descriptor_epoch=" +
@@ -1767,9 +1711,7 @@ void AddCommonEvidence(EngineNoSqlProviderGenerationResult* result) {
   result->evidence.push_back(
       "provider_generation_time_series_rollup_candidate_present=" +
       BoolText(metadata.time_series_rollup_candidate_present));
-  result->evidence.push_back(
-      "provider_generation_time_series_rollup_capability_uuid=" +
-      metadata.time_series_rollup_capability_uuid);
+  result->identity_evidence.push_back({"provider_generation_time_series_rollup_capability_uuid", metadata.time_series_rollup_capability_uuid});
   result->evidence.push_back(
       "provider_generation_time_series_rollup_generation=" +
       std::to_string(metadata.time_series_rollup_generation));
@@ -1783,15 +1725,9 @@ void AddCommonEvidence(EngineNoSqlProviderGenerationResult* result) {
   result->evidence.push_back(
       "provider_generation_time_series_rollup_exactness_attestation_state=" +
       metadata.time_series_rollup_exactness_attestation_state);
-  result->evidence.push_back(
-      "provider_generation_time_series_rollup_statement_snapshot_uuid=" +
-      metadata.time_series_rollup_statement_snapshot_uuid);
-  result->evidence.push_back(
-      "provider_generation_time_series_rollup_statement_metadata_snapshot_uuid=" +
-      metadata.time_series_rollup_statement_metadata_snapshot_uuid);
-  result->evidence.push_back(
-      "provider_generation_time_series_rollup_owning_transaction_uuid=" +
-      metadata.time_series_rollup_owning_transaction_uuid);
+  result->identity_evidence.push_back({"provider_generation_time_series_rollup_statement_snapshot_uuid", metadata.time_series_rollup_statement_snapshot_uuid});
+  result->identity_evidence.push_back({"provider_generation_time_series_rollup_statement_metadata_snapshot_uuid", metadata.time_series_rollup_statement_metadata_snapshot_uuid});
+  result->identity_evidence.push_back({"provider_generation_time_series_rollup_owning_transaction_uuid", metadata.time_series_rollup_owning_transaction_uuid});
   result->evidence.push_back(
       "provider_generation_time_series_rollup_local_transaction_id=" +
       std::to_string(metadata.time_series_rollup_local_transaction_id));
@@ -1799,12 +1735,8 @@ void AddCommonEvidence(EngineNoSqlProviderGenerationResult* result) {
       "provider_generation_time_series_rollup_snapshot_visible_through_local_transaction_id=" +
       std::to_string(metadata
                          .time_series_rollup_snapshot_visible_through_local_transaction_id));
-  result->evidence.push_back(
-      "provider_generation_time_series_rollup_security_context_uuid=" +
-      metadata.time_series_rollup_security_context_uuid);
-  result->evidence.push_back(
-      "provider_generation_time_series_rollup_catalog_epoch_uuid=" +
-      metadata.time_series_rollup_catalog_epoch_uuid);
+  result->identity_evidence.push_back({"provider_generation_time_series_rollup_security_context_uuid", metadata.time_series_rollup_security_context_uuid});
+  result->identity_evidence.push_back({"provider_generation_time_series_rollup_catalog_epoch_uuid", metadata.time_series_rollup_catalog_epoch_uuid});
   result->evidence.push_back(
       "provider_generation_time_series_rollup_exact_residual_recheck_required=" +
       BoolText(metadata.time_series_rollup_exact_residual_recheck_required));
@@ -1816,7 +1748,11 @@ void AddCommonEvidence(EngineNoSqlProviderGenerationResult* result) {
       BoolText(metadata.time_series_rollup_security_recheck_required));
   for (const auto& [key, value] : MetadataPairs(metadata)) {
     if (key.starts_with("vector_ann_")) {
-      result->evidence.push_back("provider_generation_" + key + "=" + value);
+      if (const auto* uuid = std::get_if<EngineUuid>(&value)) {
+        result->identity_evidence.push_back({"provider_generation_" + key, *uuid});
+      } else {
+        result->evidence.push_back("provider_generation_" + key + "=" + std::get<std::string>(value));
+      }
     }
   }
   result->evidence.push_back(
@@ -1825,7 +1761,11 @@ void AddCommonEvidence(EngineNoSqlProviderGenerationResult* result) {
                ValidateVectorAnnCapabilityBindingV1(metadata)));
   for (const auto& [key, value] : MetadataPairs(metadata)) {
     if (key.starts_with("search_segment_")) {
-      result->evidence.push_back("provider_generation_" + key + "=" + value);
+      if (const auto* uuid = std::get_if<EngineUuid>(&value)) {
+        result->identity_evidence.push_back({"provider_generation_" + key, *uuid});
+      } else {
+        result->evidence.push_back("provider_generation_" + key + "=" + std::get<std::string>(value));
+      }
     }
   }
   result->evidence.push_back(
@@ -1837,45 +1777,39 @@ void AddCommonEvidence(EngineNoSqlProviderGenerationResult* result) {
 bool Matches(const EngineNoSqlProviderGenerationMetadata& metadata,
              EngineNoSqlProviderFamily family,
              const std::string& provider_id,
-             const std::string& collection_uuid) {
+             const EngineUuid& collection_uuid) {
   return metadata.family == family && metadata.provider_id == provider_id &&
          metadata.collection_uuid == collection_uuid;
 }
 
-std::string GenerationKey(const EngineNoSqlProviderGenerationMetadata& metadata) {
-  return std::string(EngineNoSqlProviderFamilyName(metadata.family)) + "\x1f" +
-         metadata.provider_id + "\x1f" + metadata.collection_uuid;
+GenerationRecordKey GenerationKey(const EngineNoSqlProviderGenerationMetadata& metadata) {
+  return {metadata.family, metadata.provider_id, metadata.collection_uuid};
 }
 
 bool BoundToContext(const EngineRequestContext& context,
                     const EngineNoSqlProviderGenerationMetadata& metadata) {
-  if (!context.database_uuid.is_nil() &&
-      !metadata.database_uuid.empty() &&
-      IsValidUuid(context.database_uuid) &&
-      IsValidUuid(metadata.database_uuid)) {
-    return context.database_uuid == metadata.database_uuid;
-  }
-  const auto identity = EngineNoSqlProviderDatabaseIdentity(context);
-  return metadata.database_identity.empty() || metadata.database_identity == identity;
+  return IsValidUuid(context.database_uuid) && IsValidUuid(metadata.database_uuid) &&
+         context.database_uuid == metadata.database_uuid &&
+         metadata.database_identity == EngineNoSqlProviderDatabaseIdentity(context);
 }
 
 bool HasDefaultTimeSeriesRollupCarrier(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
-  return !metadata.time_series_rollup_candidate_present &&
-         metadata.time_series_rollup_capability_uuid.empty() &&
+  return !metadata.time_series_rollup_candidate_present && metadata.time_series_rollup_binding_digest.empty() &&
+         metadata.time_series_rollup_capability_uuid.is_nil() &&
          metadata.time_series_rollup_generation == 0 &&
          metadata.time_series_visible_late_arrival_generation == 0 &&
          metadata.time_series_rollup_interval_ns == 0 &&
          metadata.time_series_rollup_exactness_attestation_state.empty() &&
-         metadata.time_series_rollup_statement_snapshot_uuid.empty() &&
-         metadata.time_series_rollup_statement_metadata_snapshot_uuid.empty() &&
-         metadata.time_series_rollup_owning_transaction_uuid.empty() &&
+         metadata.time_series_rollup_statement_snapshot_uuid.is_nil() &&
+         metadata.time_series_rollup_statement_metadata_snapshot_uuid.is_nil() &&
+         metadata.time_series_rollup_owning_transaction_uuid.is_nil() &&
          metadata.time_series_rollup_local_transaction_id == 0 &&
          metadata
                  .time_series_rollup_snapshot_visible_through_local_transaction_id ==
              0 &&
-         metadata.time_series_rollup_security_context_uuid.empty() &&
-         metadata.time_series_rollup_catalog_epoch_uuid.empty() &&
+         metadata.time_series_rollup_security_context_uuid.is_nil() &&
+         metadata.time_series_rollup_catalog_epoch_uuid.is_nil() &&
          !metadata.time_series_rollup_exact_residual_recheck_required &&
          !metadata.time_series_rollup_base_row_mga_recheck_required &&
          !metadata.time_series_rollup_security_recheck_required;
@@ -1889,22 +1823,21 @@ bool HasValidTimeSeriesRollupCarrier(
   return HasExactTimeSeriesRollupBindingInput(metadata) &&
          metadata.time_series_rollup_capability_uuid !=
              metadata.generation_uuid &&
-         metadata.time_series_rollup_capability_uuid ==
-             DeriveTimeSeriesRollupCapabilityUuidImpl(metadata);
+         ValidateTimeSeriesRollupCapabilityBindingV1(metadata);
 }
 
 bool HasDefaultVectorAnnCarrier(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
-  return !metadata.vector_ann_candidate_present &&
-         metadata.vector_ann_capability_uuid.empty() &&
-         metadata.vector_ann_index_uuid.empty() &&
-         metadata.vector_ann_base_relation_uuid.empty() &&
+  return !metadata.vector_ann_candidate_present && metadata.vector_ann_binding_digest.empty() &&
+         metadata.vector_ann_capability_uuid.is_nil() &&
+         metadata.vector_ann_index_uuid.is_nil() &&
+         metadata.vector_ann_base_relation_uuid.is_nil() &&
          metadata.vector_ann_base_relation_generation == 0 &&
-         metadata.vector_ann_relation_descriptor_uuid.empty() &&
+         metadata.vector_ann_relation_descriptor_uuid.is_nil() &&
          metadata.vector_ann_relation_descriptor_generation == 0 &&
-         metadata.vector_ann_embedding_column_uuid.empty() &&
-         metadata.vector_ann_embedding_descriptor_uuid.empty() &&
-         metadata.vector_ann_embedding_type_uuid.empty() &&
+         metadata.vector_ann_embedding_column_uuid.is_nil() &&
+         metadata.vector_ann_embedding_descriptor_uuid.is_nil() &&
+         metadata.vector_ann_embedding_type_uuid.is_nil() &&
          metadata.vector_ann_dimension == 0 &&
          metadata.vector_ann_element_profile.empty() &&
          metadata.vector_ann_metric_id.empty() &&
@@ -1918,16 +1851,16 @@ bool HasDefaultVectorAnnCarrier(
          metadata.vector_ann_required_recall_ppm == 0 &&
          metadata.vector_ann_observed_recall_ppm == 0 &&
          !metadata.vector_ann_recall_sample_deterministic &&
-         metadata.vector_ann_recall_evidence_uuid.empty() &&
-         metadata.vector_ann_statement_uuid.empty() &&
-         metadata.vector_ann_statement_snapshot_uuid.empty() &&
-         metadata.vector_ann_statement_metadata_snapshot_uuid.empty() &&
-         metadata.vector_ann_owning_transaction_uuid.empty() &&
+         metadata.vector_ann_recall_evidence_uuid.is_nil() &&
+         metadata.vector_ann_statement_uuid.is_nil() &&
+         metadata.vector_ann_statement_snapshot_uuid.is_nil() &&
+         metadata.vector_ann_statement_metadata_snapshot_uuid.is_nil() &&
+         metadata.vector_ann_owning_transaction_uuid.is_nil() &&
          metadata.vector_ann_local_transaction_id == 0 &&
          metadata.vector_ann_snapshot_visible_through_local_transaction_id ==
              0 &&
-         metadata.vector_ann_security_context_uuid.empty() &&
-         metadata.vector_ann_catalog_epoch_uuid.empty() &&
+         metadata.vector_ann_security_context_uuid.is_nil() &&
+         metadata.vector_ann_catalog_epoch_uuid.is_nil() &&
          !metadata.vector_ann_exact_fallback_available &&
          !metadata.vector_ann_full_base_exact_recheck_required &&
          !metadata.vector_ann_base_row_mga_recheck_required &&
@@ -1944,47 +1877,42 @@ bool HasDefaultVectorAnnCarrier(
          !metadata.vector_ann_wal_claims_transaction_finality_authority;
 }
 
-bool HasValidVectorAnnCarrier(
-    const EngineNoSqlProviderGenerationMetadata& metadata) {
-  if (!metadata.vector_ann_candidate_present) {
-    return HasDefaultVectorAnnCarrier(metadata);
-  }
-  const auto derived = DeriveVectorAnnCapabilityUuidImpl(metadata);
-  return !derived.empty() &&
-         metadata.vector_ann_capability_uuid != metadata.generation_uuid &&
-         ConstantTimeTextEqual(metadata.vector_ann_capability_uuid, derived);
+bool HasValidVectorAnnCarrier(const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!metadata.vector_ann_candidate_present) return HasDefaultVectorAnnCarrier(metadata);
+  return metadata.vector_ann_capability_uuid != metadata.generation_uuid &&
+         ValidateVectorAnnCapabilityBindingV1(metadata);
 }
 
 bool HasDefaultSearchSegmentCarrier(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
-  return !metadata.search_segment_candidate_present &&
-         metadata.search_segment_capability_uuid.empty() &&
-         metadata.search_segment_index_uuid.empty() &&
-         metadata.search_segment_uuid.empty() &&
-         metadata.search_segment_base_relation_uuid.empty() &&
+  return !metadata.search_segment_candidate_present && metadata.search_segment_binding_digest.empty() &&
+         metadata.search_segment_capability_uuid.is_nil() &&
+         metadata.search_segment_index_uuid.is_nil() &&
+         metadata.search_segment_uuid.is_nil() &&
+         metadata.search_segment_base_relation_uuid.is_nil() &&
          metadata.search_segment_base_relation_generation == 0 &&
-         metadata.search_segment_relation_descriptor_uuid.empty() &&
+         metadata.search_segment_relation_descriptor_uuid.is_nil() &&
          metadata.search_segment_relation_descriptor_generation == 0 &&
-         metadata.search_segment_body_column_uuid.empty() &&
-         metadata.search_segment_body_descriptor_uuid.empty() &&
-         metadata.search_segment_body_type_uuid.empty() &&
-         metadata.search_segment_category_column_uuid.empty() &&
-         metadata.search_segment_category_descriptor_uuid.empty() &&
-         metadata.search_segment_category_type_uuid.empty() &&
-         metadata.search_segment_search_type_descriptor_uuid.empty() &&
+         metadata.search_segment_body_column_uuid.is_nil() &&
+         metadata.search_segment_body_descriptor_uuid.is_nil() &&
+         metadata.search_segment_body_type_uuid.is_nil() &&
+         metadata.search_segment_category_column_uuid.is_nil() &&
+         metadata.search_segment_category_descriptor_uuid.is_nil() &&
+         metadata.search_segment_category_type_uuid.is_nil() &&
+         metadata.search_segment_search_type_descriptor_uuid.is_nil() &&
          metadata.search_segment_search_type_descriptor_generation == 0 &&
-         metadata.search_segment_analyzer_uuid.empty() &&
+         metadata.search_segment_analyzer_uuid.is_nil() &&
          metadata.search_segment_analyzer_generation == 0 &&
          metadata.search_segment_analyzer_pipeline_sha256.empty() &&
-         metadata.search_segment_tokenizer_uuid.empty() &&
+         metadata.search_segment_tokenizer_uuid.is_nil() &&
          metadata.search_segment_tokenizer_generation == 0 &&
-         metadata.search_segment_language_profile_uuid.empty() &&
+         metadata.search_segment_language_profile_uuid.is_nil() &&
          metadata.search_segment_language_profile_generation == 0 &&
-         metadata.search_segment_ranking_model_uuid.empty() &&
+         metadata.search_segment_ranking_model_uuid.is_nil() &&
          metadata.search_segment_ranking_model_generation == 0 &&
-         metadata.search_segment_phrase_profile_uuid.empty() &&
+         metadata.search_segment_phrase_profile_uuid.is_nil() &&
          metadata.search_segment_phrase_profile_generation == 0 &&
-         metadata.search_segment_query_syntax_profile_uuid.empty() &&
+         metadata.search_segment_query_syntax_profile_uuid.is_nil() &&
          metadata.search_segment_query_syntax_profile_generation == 0 &&
          metadata.search_segment_index_profile_id.empty() &&
          metadata.search_segment_generation == 0 &&
@@ -1992,16 +1920,16 @@ bool HasDefaultSearchSegmentCarrier(
          !metadata.search_segment_checksum_valid &&
          !metadata.search_segment_sealed_generation &&
          metadata.search_segment_publish_attestation_state.empty() &&
-         metadata.search_segment_statement_uuid.empty() &&
-         metadata.search_segment_statement_snapshot_uuid.empty() &&
-         metadata.search_segment_statement_metadata_snapshot_uuid.empty() &&
-         metadata.search_segment_owning_transaction_uuid.empty() &&
+         metadata.search_segment_statement_uuid.is_nil() &&
+         metadata.search_segment_statement_snapshot_uuid.is_nil() &&
+         metadata.search_segment_statement_metadata_snapshot_uuid.is_nil() &&
+         metadata.search_segment_owning_transaction_uuid.is_nil() &&
          metadata.search_segment_local_transaction_id == 0 &&
          metadata
                  .search_segment_snapshot_visible_through_local_transaction_id ==
              0 &&
-         metadata.search_segment_security_context_uuid.empty() &&
-         metadata.search_segment_catalog_epoch_uuid.empty() &&
+         metadata.search_segment_security_context_uuid.is_nil() &&
+         metadata.search_segment_catalog_epoch_uuid.is_nil() &&
          !metadata.search_segment_exact_fallback_available &&
          !metadata.search_segment_full_corpus_exact_recheck_required &&
          !metadata.search_segment_residual_recheck_required &&
@@ -2019,26 +1947,20 @@ bool HasDefaultSearchSegmentCarrier(
          !metadata.search_segment_wal_claims_transaction_finality_authority;
 }
 
-bool HasValidSearchSegmentCarrier(
-    const EngineNoSqlProviderGenerationMetadata& metadata) {
-  if (!metadata.search_segment_candidate_present) {
-    return HasDefaultSearchSegmentCarrier(metadata);
-  }
-  const auto derived = DeriveSearchSegmentCapabilityUuidImpl(metadata);
-  return !derived.empty() &&
-         metadata.search_segment_capability_uuid != metadata.generation_uuid &&
-         ConstantTimeTextEqual(metadata.search_segment_capability_uuid,
-                               derived);
+bool HasValidSearchSegmentCarrier(const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!metadata.search_segment_candidate_present) return HasDefaultSearchSegmentCarrier(metadata);
+  return metadata.search_segment_capability_uuid != metadata.generation_uuid &&
+         ValidateSearchSegmentCapabilityBindingV1(metadata);
 }
 
 bool HasLifecycleMetadata(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
-  return metadata.family != EngineNoSqlProviderFamily::kUnknown &&
+  return metadata.persistence_valid && metadata.family != EngineNoSqlProviderFamily::kUnknown &&
          (!metadata.database_identity.empty() ||
-          !metadata.database_uuid.empty()) &&
-         (metadata.database_uuid.empty() ||
+          !metadata.database_uuid.is_nil()) &&
+         (metadata.database_uuid.is_nil() ||
           IsValidUuid(metadata.database_uuid)) &&
-         !metadata.provider_id.empty() && !metadata.collection_uuid.empty() &&
+         !metadata.provider_id.empty() && !metadata.collection_uuid.is_nil() &&
          metadata.generation_id != 0 &&
          IsValidUuid(metadata.generation_uuid) &&
          !metadata.publish_state.empty() && !metadata.validation_state.empty() &&
@@ -2068,176 +1990,147 @@ bool MetadataRefMismatch(
           proof.support_bundle_evidence_id != metadata.support_bundle_evidence_id);
 }
 
-bool RewriteLocked(
-    const EngineRequestContext& context,
-    const std::vector<EngineNoSqlProviderGenerationMetadata>& generations) {
+bool WriteGenerationRecord(std::ostream& out, const EngineNoSqlProviderGenerationMetadata& metadata) {
+  BinaryCatalogMetadata fields;
+  for (const auto& [key, value] : MetadataPairs(metadata)) {
+    if (const auto* uuid = std::get_if<EngineUuid>(&value)) fields.identities.emplace(key, *uuid);
+    else fields.text.emplace(key, std::get<std::string>(value));
+  }
+  std::string bytes;
+  if (!EncodeBinaryCatalogMetadata(fields, "nosql.provider_generation.v2", &bytes)) return false;
+  std::string frame;
+  AppendBinaryU32(&frame, static_cast<std::uint32_t>(bytes.size()));
+  out.write(frame.data(), frame.size());
+  out.write(bytes.data(), bytes.size());
+  return static_cast<bool>(out);
+}
+
+bool RewriteLocked(const EngineRequestContext& context,
+                   const std::vector<EngineNoSqlProviderGenerationMetadata>& generations) {
   const auto path = GenerationPath(context);
-  if (path.empty()) { return true; }
+  if (path.empty()) return true;
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) { return false; }
+  if (!out) return false;
+  out.write(kGenerationMagic.data(), kGenerationMagic.size());
   for (const auto& metadata : generations) {
-    out << kGenerationMagic << "\tGENERATION\t"
-        << EncodeCrudPairs(MetadataPairs(metadata)) << '\n';
+    if (!metadata.persistence_valid || !WriteGenerationRecord(out, metadata)) return false;
   }
   out.flush();
   return static_cast<bool>(out);
 }
 
-bool ExistingFileNeedsRecordSeparator(const std::string& path) {
-  if (path.empty()) return false;
-  std::error_code size_error;
-  const auto size = std::filesystem::file_size(path, size_error);
-  if (size_error || size == 0) return false;
-  std::ifstream in(path, std::ios::binary);
-  if (!in) return false;
-  in.seekg(static_cast<std::streamoff>(size - 1));
-  char last = '\0';
-  in.get(last);
-  return in && last != '\n';
+EngineNoSqlProviderGenerationMetadata CorruptGenerationRecord() {
+  EngineNoSqlProviderGenerationMetadata metadata;
+  metadata.persistence_valid = false;
+  // Preserve corrupt evidence so every model admission refuses it; never turn
+  // an unreadable/legacy store into an absent preferred generation.
+  metadata.time_series_rollup_candidate_present = true;
+  metadata.vector_ann_candidate_present = true;
+  metadata.search_segment_candidate_present = true;
+  return metadata;
 }
 
-std::vector<EngineNoSqlProviderGenerationMetadata> LoadLocked(
-    const EngineRequestContext& context) {
-  const auto identity = EngineNoSqlProviderDatabaseIdentity(context);
-  auto cache_it = GenerationCache().find(identity);
-  if (cache_it != GenerationCache().end()) {
-    return cache_it->second;
-  }
-
+std::vector<EngineNoSqlProviderGenerationMetadata> LoadLocked(const EngineRequestContext& context) {
+  const auto cached = GenerationCache().find(StoreKey(context));
+  if (cached != GenerationCache().end()) return cached->second;
   std::vector<EngineNoSqlProviderGenerationMetadata> loaded;
-  // Pre-existing ordinary families retain latest-wins log behavior. Active
-  // vector/search carriers are retained as cohorts so a duplicated raw
-  // carrier cannot be normalized away before canonical admission rejects it.
-  std::map<std::string,
-           std::vector<EngineNoSqlProviderGenerationMetadata>> latest;
   const auto path = GenerationPath(context);
+  const auto corrupt = [&] { return std::vector<EngineNoSqlProviderGenerationMetadata>{CorruptGenerationRecord()}; };
   if (!path.empty()) {
-    std::ifstream in(path, std::ios::binary);
-    std::string line;
-    while (std::getline(in, line)) {
-      if (line.rfind(kGenerationMagic, 0) != 0) {
-        continue;
+    std::error_code error;
+    const bool exists = std::filesystem::exists(path, error);
+    if (error) return corrupt();
+    if (exists) {
+      std::ifstream in(path, std::ios::binary);
+      std::string magic(kGenerationMagic.size(), '\0');
+      if (!in.read(magic.data(), magic.size()) || magic != kGenerationMagic) return corrupt();
+      while (in.peek() != std::char_traits<char>::eof()) {
+        std::array<std::uint8_t, 4> length{};
+        if (!in.read(reinterpret_cast<char*>(length.data()), 4)) return corrupt();
+        std::size_t cursor = 0; std::uint32_t size = 0;
+        if (!ReadBinaryU32(length, &cursor, &size) || size > kApiBehaviorRecordMaximumBytes) return corrupt();
+        std::string bytes(size, '\0');
+        if (!in.read(bytes.data(), bytes.size())) return corrupt();
+        BinaryCatalogMetadata fields;
+        if (!DecodeBinaryCatalogMetadata(bytes, "nosql.provider_generation.v2", &fields)) return corrupt();
+        MetadataFieldPairs pairs;
+        for (const auto& item : fields.text) pairs.emplace_back(item.first, item.second);
+        for (const auto& item : fields.identities) pairs.emplace_back(item.first, item.second);
+        if (!RawVectorCarrierPairsValid(pairs) || !RawSearchCarrierPairsValid(pairs)) return corrupt();
+        auto metadata = MetadataFromPairs(pairs);
+        const auto expected = MetadataPairs(metadata);
+        const auto actual_map = PairMap(pairs);
+        if (actual_map != PairMap(expected)) return corrupt(); // exact fields and value types
+        if (!BoundToContext(context, metadata)) return corrupt();
+        loaded.push_back(std::move(metadata)); // retain duplicates for admission checks
       }
-      const auto parts = Split(line, '\t');
-      if (parts.size() < 3 || parts[1] != std::string("GENERATION")) {
-        if (parts.size() >= 3 && parts[1] == std::string("DROP")) {
-          const auto decoded = DecodeCrudPairs(parts[2]);
-          auto metadata = MetadataFromPairs(decoded);
-          const bool raw_vector_valid = RawVectorCarrierPairsValid(decoded);
-          const bool raw_search_valid = RawSearchCarrierPairsValid(decoded);
-          if (!raw_vector_valid) {
-            metadata.vector_ann_candidate_present = false;
-            metadata.vector_ann_capability_uuid = "invalid-raw-carrier";
-          }
-          if (!raw_search_valid) {
-            metadata.search_segment_candidate_present = false;
-            metadata.search_segment_capability_uuid = "invalid-raw-carrier";
-          }
-          if (!raw_vector_valid || !raw_search_valid) {
-            // A malformed tombstone is evidence of corrupt persistence, not
-            // authority to erase the last valid generation and turn the
-            // corruption into benign absence.
-            latest[GenerationKey(metadata)] = {std::move(metadata)};
-            continue;
-          }
-          if (BoundToContext(context, metadata) ||
-              metadata.time_series_rollup_candidate_present ||
-              !HasDefaultVectorAnnCarrier(metadata) ||
-              !HasDefaultSearchSegmentCarrier(metadata)) {
-            latest.erase(GenerationKey(metadata));
-          }
-        }
-        continue;
-      }
-      const auto decoded = DecodeCrudPairs(parts[2]);
-      auto metadata = MetadataFromPairs(decoded);
-      if (!RawVectorCarrierPairsValid(decoded)) {
-        // Preserve a nondefault sentinel so the corrupt record cannot be
-        // normalized into a benign inactive/absent ANN generation.
-        metadata.vector_ann_candidate_present = false;
-        metadata.vector_ann_capability_uuid = "invalid-raw-carrier";
-      }
-      if (!RawSearchCarrierPairsValid(decoded)) {
-        metadata.search_segment_candidate_present = false;
-        metadata.search_segment_capability_uuid = "invalid-raw-carrier";
-      }
-      if (!BoundToContext(context, metadata) &&
-          !metadata.time_series_rollup_candidate_present &&
-          HasDefaultVectorAnnCarrier(metadata) &&
-          HasDefaultSearchSegmentCarrier(metadata)) {
-        continue;
-      }
-      // Candidate rows retain their decoded identity so the capability binding
-      // remains an integrity check over the persisted bytes.  Normalizing a
-      // substituted identity here would silently repair the signed value before
-      // canonical admission sees it.  Legacy/default rows keep the historical
-      // context normalization behavior.
-      if (!metadata.time_series_rollup_candidate_present &&
-          HasDefaultVectorAnnCarrier(metadata) &&
-          HasDefaultSearchSegmentCarrier(metadata)) {
-        metadata.database_identity = identity;
-      }
-      const auto key = GenerationKey(metadata);
-      if ((metadata.family == EngineNoSqlProviderFamily::kVector &&
-           !HasDefaultVectorAnnCarrier(metadata)) ||
-          (metadata.family == EngineNoSqlProviderFamily::kSearch &&
-           !HasDefaultSearchSegmentCarrier(metadata))) {
-        latest[key].push_back(std::move(metadata));
-      } else {
-        latest[key] = {std::move(metadata)};
-      }
+      if (in.bad()) return corrupt();
     }
   }
-  for (auto& [key, generations] : latest) {
-    (void)key;
-    for (auto& metadata : generations) {
-      loaded.push_back(std::move(metadata));
-    }
-  }
-  GenerationCache()[identity] = loaded;
+  GenerationCache()[StoreKey(context)] = loaded;
   return loaded;
 }
 
 }  // namespace
 
-std::string DeriveTimeSeriesRollupCapabilityUuidV1(
-    const EngineNoSqlProviderGenerationMetadata& metadata) {
-  return DeriveTimeSeriesRollupCapabilityUuidImpl(metadata);
+std::string ComputeTimeSeriesRollupBindingDigestV2(const EngineNoSqlProviderGenerationMetadata& metadata) {
+  return ComputeTimeSeriesRollupBindingDigestImpl(metadata);
+}
+bool SealTimeSeriesRollupCapabilityV2(EngineNoSqlProviderGenerationMetadata* metadata) {
+  if (!metadata || !HasExactTimeSeriesRollupBindingInput(*metadata)) return false;
+  auto sealed = *metadata;
+  const auto issued = core::uuid::IssueRuntimeIdentityV7();
+  if (!issued) return false;
+  sealed.time_series_rollup_capability_uuid = *issued;
+  sealed.time_series_rollup_binding_digest = ComputeTimeSeriesRollupBindingDigestImpl(sealed);
+  if (sealed.time_series_rollup_binding_digest.size() != 32) return false;
+  *metadata = std::move(sealed);
+  return true;
+}
+bool ValidateTimeSeriesRollupCapabilityBindingV1(const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!metadata.persistence_valid || !IsNativeIdentity(metadata.time_series_rollup_capability_uuid)) return false;
+  const auto digest = ComputeTimeSeriesRollupBindingDigestImpl(metadata);
+  return digest.size() == 32 && ConstantTimeTextEqual(metadata.time_series_rollup_binding_digest, digest);
 }
 
-bool ValidateTimeSeriesRollupCapabilityBindingV1(
-    const EngineNoSqlProviderGenerationMetadata& metadata) {
-  if (!metadata.time_series_rollup_candidate_present) return false;
-  const auto derived = DeriveTimeSeriesRollupCapabilityUuidImpl(metadata);
-  return !derived.empty() &&
-         metadata.time_series_rollup_capability_uuid == derived;
+std::string ComputeVectorAnnBindingDigestV2(const EngineNoSqlProviderGenerationMetadata& metadata) {
+  return ComputeVectorAnnBindingDigestImpl(metadata);
+}
+bool SealVectorAnnCapabilityV2(EngineNoSqlProviderGenerationMetadata* metadata) {
+  if (!metadata || !HasExactVectorAnnBindingInput(*metadata)) return false;
+  auto sealed = *metadata;
+  const auto issued = core::uuid::IssueRuntimeIdentityV7();
+  if (!issued) return false;
+  sealed.vector_ann_capability_uuid = *issued;
+  sealed.vector_ann_binding_digest = ComputeVectorAnnBindingDigestImpl(sealed);
+  if (sealed.vector_ann_binding_digest.size() != 32) return false;
+  *metadata = std::move(sealed);
+  return true;
+}
+bool ValidateVectorAnnCapabilityBindingV1(const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!metadata.persistence_valid || !IsNativeIdentity(metadata.vector_ann_capability_uuid)) return false;
+  const auto digest = ComputeVectorAnnBindingDigestImpl(metadata);
+  return digest.size() == 32 && ConstantTimeTextEqual(metadata.vector_ann_binding_digest, digest);
 }
 
-std::string DeriveVectorAnnCapabilityUuidV1(
-    const EngineNoSqlProviderGenerationMetadata& metadata) {
-  return DeriveVectorAnnCapabilityUuidImpl(metadata);
+std::string ComputeSearchSegmentBindingDigestV2(const EngineNoSqlProviderGenerationMetadata& metadata) {
+  return ComputeSearchSegmentBindingDigestImpl(metadata);
 }
-
-bool ValidateVectorAnnCapabilityBindingV1(
-    const EngineNoSqlProviderGenerationMetadata& metadata) {
-  if (!metadata.vector_ann_candidate_present) return false;
-  const auto derived = DeriveVectorAnnCapabilityUuidImpl(metadata);
-  return !derived.empty() &&
-         ConstantTimeTextEqual(metadata.vector_ann_capability_uuid, derived);
+bool SealSearchSegmentCapabilityV2(EngineNoSqlProviderGenerationMetadata* metadata) {
+  if (!metadata || !HasExactSearchSegmentBindingInput(*metadata)) return false;
+  auto sealed = *metadata;
+  const auto issued = core::uuid::IssueRuntimeIdentityV7();
+  if (!issued) return false;
+  sealed.search_segment_capability_uuid = *issued;
+  sealed.search_segment_binding_digest = ComputeSearchSegmentBindingDigestImpl(sealed);
+  if (sealed.search_segment_binding_digest.size() != 32) return false;
+  *metadata = std::move(sealed);
+  return true;
 }
-
-std::string DeriveSearchSegmentCapabilityUuidV1(
-    const EngineNoSqlProviderGenerationMetadata& metadata) {
-  return DeriveSearchSegmentCapabilityUuidImpl(metadata);
-}
-
-bool ValidateSearchSegmentCapabilityBindingV1(
-    const EngineNoSqlProviderGenerationMetadata& metadata) {
-  if (!metadata.search_segment_candidate_present) return false;
-  const auto derived = DeriveSearchSegmentCapabilityUuidImpl(metadata);
-  return !derived.empty() &&
-         ConstantTimeTextEqual(metadata.search_segment_capability_uuid,
-                               derived);
+bool ValidateSearchSegmentCapabilityBindingV1(const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!metadata.persistence_valid || !IsNativeIdentity(metadata.search_segment_capability_uuid)) return false;
+  const auto digest = ComputeSearchSegmentBindingDigestImpl(metadata);
+  return digest.size() == 32 && ConstantTimeTextEqual(metadata.search_segment_binding_digest, digest);
 }
 
 std::string EngineNoSqlProviderDatabaseIdentity(
@@ -2246,7 +2139,7 @@ std::string EngineNoSqlProviderDatabaseIdentity(
     return context.database_path;
   }
   if (!context.database_uuid.is_nil()) {
-    return context.database_uuid;
+    return "native_database";
   }
   return "embedded_transient_nosql_provider";
 }
@@ -2254,21 +2147,16 @@ std::string EngineNoSqlProviderDatabaseIdentity(
 EngineNoSqlProviderGenerationMetadata MakeDocumentProviderGenerationMetadata(
     const EngineRequestContext& context,
     const std::string& provider_id,
-    const std::string& collection_uuid,
+    const EngineUuid& collection_uuid,
     std::uint64_t generation_id) {
   EngineNoSqlProviderGenerationMetadata metadata;
   metadata.family = EngineNoSqlProviderFamily::kDocument;
   metadata.provider_id = provider_id;
   metadata.database_identity = EngineNoSqlProviderDatabaseIdentity(context);
-  metadata.database_uuid = IsValidUuid(context.database_uuid)
-                               ? context.database_uuid
-                               : GenerateCrudEngineUuid("database");
+  metadata.database_uuid = context.database_uuid;
   metadata.collection_uuid = collection_uuid;
   metadata.generation_id = generation_id;
-  metadata.generation_uuid = StableGenerationUuid(context,
-                                                  provider_id,
-                                                  collection_uuid,
-                                                  generation_id);
+  metadata.generation_uuid = NewGenerationUuid();
   metadata.descriptor_epoch = NonZeroEpoch(context.resource_epoch);
   metadata.security_epoch = NonZeroEpoch(context.security_epoch);
   metadata.redaction_epoch = NonZeroEpoch(context.security_epoch);
@@ -2276,13 +2164,13 @@ EngineNoSqlProviderGenerationMetadata MakeDocumentProviderGenerationMetadata(
   metadata.publish_state = "published";
   metadata.validation_state = "validated";
   metadata.backup_metadata_ref =
-      "backup.provider_generation:" + metadata.generation_uuid;
+      "backup.provider_generation";
   metadata.restore_metadata_ref =
-      "restore.provider_generation:" + metadata.generation_uuid;
+      "restore.provider_generation";
   metadata.repair_metadata_ref =
-      "repair.provider_generation:" + metadata.generation_uuid;
+      "repair.provider_generation";
   metadata.support_bundle_evidence_id =
-      "support.nosql_provider_generation:" + metadata.generation_uuid;
+      "support.nosql_provider_generation";
   return metadata;
 }
 
@@ -2292,10 +2180,8 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
   std::lock_guard<std::mutex> guard(StoreMutex());
   auto writable = metadata;
   writable.database_identity = EngineNoSqlProviderDatabaseIdentity(context);
-  if (writable.database_uuid.empty() || !IsValidUuid(writable.database_uuid)) {
-    writable.database_uuid = IsValidUuid(context.database_uuid)
-                                 ? context.database_uuid
-                                 : GenerateCrudEngineUuid("database");
+  if (writable.database_uuid.is_nil() || !IsValidUuid(writable.database_uuid)) {
+    writable.database_uuid = context.database_uuid;
   }
   if (writable.descriptor_epoch == 0) {
     writable.descriptor_epoch = NonZeroEpoch(context.resource_epoch);
@@ -2328,6 +2214,9 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
 
   const auto identity = EngineNoSqlProviderDatabaseIdentity(context);
   auto generations = LoadLocked(context);
+  if (std::ranges::any_of(generations, [](const auto& item) { return !item.persistence_valid; })) {
+    return Failure(context, "nosql.provider_generation.persistence", kNoSqlProviderGenerationUnavailable);
+  }
   if (writable.family == EngineNoSqlProviderFamily::kVector ||
       writable.family == EngineNoSqlProviderFamily::kSearch) {
     std::size_t matching = 0;
@@ -2363,38 +2252,10 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
                      }),
       generations.end());
   generations.push_back(writable);
-  if (writable.family == EngineNoSqlProviderFamily::kVector ||
-      writable.family == EngineNoSqlProviderFamily::kSearch) {
-    // Vector/search publication is a single-current-generation replacement.
-    // It never converts a matching corrupt/duplicate carrier into a repair.
-    if (!RewriteLocked(context, generations)) {
-      return Failure(context,
-                     "nosql.provider_generation.publish",
-                     kNoSqlProviderGenerationUnavailable);
-    }
-  } else {
-    // Preserve the established append-log semantics, including unrelated and
-    // forward-compatible records, for every pre-existing family.
-    const auto path = GenerationPath(context);
-    if (!path.empty()) {
-      std::ofstream out(path, std::ios::binary | std::ios::app);
-      if (!out) {
-        return Failure(context,
-                       "nosql.provider_generation.publish",
-                       kNoSqlProviderGenerationUnavailable);
-      }
-      if (ExistingFileNeedsRecordSeparator(path)) out << '\n';
-      out << kGenerationMagic << "\tGENERATION\t"
-          << EncodeCrudPairs(MetadataPairs(writable)) << '\n';
-      out.flush();
-      if (!out) {
-        return Failure(context,
-                       "nosql.provider_generation.publish",
-                       kNoSqlProviderGenerationUnavailable);
-      }
-    }
+  if (!RewriteLocked(context, generations)) {
+    return Failure(context, "nosql.provider_generation.publish", kNoSqlProviderGenerationUnavailable);
   }
-  GenerationCache()[identity] = generations;
+  GenerationCache()[StoreKey(context)] = generations;
 
   EngineNoSqlProviderGenerationResult result;
   result.ok = true;
@@ -2411,7 +2272,7 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
     const EngineRequestContext& context,
     EngineNoSqlProviderFamily family,
     const std::string& provider_id,
-    const std::string& collection_uuid) {
+    const EngineUuid& collection_uuid) {
   std::lock_guard<std::mutex> guard(StoreMutex());
   const auto loaded = LoadLocked(context);
   EngineNoSqlProviderGenerationResult result;
@@ -2436,6 +2297,64 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
   }
   for (const auto& metadata : loaded) {
     if (Matches(metadata, family, provider_id, collection_uuid)) {
+      if (metadata.time_series_rollup_candidate_present &&
+          !ValidateTimeSeriesRollupCapabilityBindingV1(metadata)) {
+        return Failure(context,
+                       "nosql.provider_generation.load",
+                       kNoSqlProviderGenerationMetadataMissing);
+      }
+      if (!HasValidVectorAnnCarrier(metadata)) {
+        return Failure(context,
+                       "nosql.provider_generation.load",
+                       kNoSqlProviderGenerationMetadataMissing);
+      }
+      if (!HasValidSearchSegmentCarrier(metadata)) {
+        return Failure(context,
+                       "nosql.provider_generation.load",
+                       kNoSqlProviderGenerationMetadataMissing);
+      }
+      result.ok = true;
+      result.diagnostic = OkDiagnostic();
+      result.metadata = metadata;
+      AddCommonEvidence(&result);
+      result.evidence.push_back("provider_generation_loaded=true");
+      return result;
+    }
+  }
+  return Failure(context,
+                 "nosql.provider_generation.load",
+                 kNoSqlProviderGenerationUnavailable);
+}
+
+EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
+    const EngineRequestContext& context,
+    EngineNoSqlProviderFamily family,
+    const EngineUuid& provider_uuid,
+    const EngineUuid& collection_uuid) {
+  std::lock_guard<std::mutex> guard(StoreMutex());
+  const auto loaded = LoadLocked(context);
+  EngineNoSqlProviderGenerationResult result;
+  std::size_t matching_vector_carriers = 0;
+  std::size_t matching_search_carriers = 0;
+  for (const auto& metadata : loaded) {
+    if ((metadata.family == family && metadata.provider_uuid == provider_uuid && metadata.collection_uuid == collection_uuid) &&
+        family == EngineNoSqlProviderFamily::kVector &&
+        !HasDefaultVectorAnnCarrier(metadata)) {
+      ++matching_vector_carriers;
+    }
+    if ((metadata.family == family && metadata.provider_uuid == provider_uuid && metadata.collection_uuid == collection_uuid) &&
+        family == EngineNoSqlProviderFamily::kSearch &&
+        !HasDefaultSearchSegmentCarrier(metadata)) {
+      ++matching_search_carriers;
+    }
+  }
+  if (matching_vector_carriers > 1 || matching_search_carriers > 1) {
+    return Failure(context,
+                   "nosql.provider_generation.load",
+                   kNoSqlProviderGenerationMetadataMissing);
+  }
+  for (const auto& metadata : loaded) {
+    if ((metadata.family == family && metadata.provider_uuid == provider_uuid && metadata.collection_uuid == collection_uuid)) {
       if (metadata.time_series_rollup_candidate_present &&
           !ValidateTimeSeriesRollupCapabilityBindingV1(metadata)) {
         return Failure(context,
@@ -2493,12 +2412,12 @@ EngineNoSqlProviderGenerationResult ValidateNoSqlProviderGeneration(
   const bool generation_mismatch =
       metadata.generation_id < proof.required_generation ||
       proof.available_generation < proof.required_generation ||
-      (!proof.generation_uuid.empty() &&
+      (!proof.generation_uuid.is_nil() &&
        metadata.generation_uuid != proof.generation_uuid) ||
       (!proof.provider_id.empty() && metadata.provider_id != proof.provider_id) ||
-      (!proof.database_uuid.empty() && IsValidUuid(proof.database_uuid) &&
+      (!proof.database_uuid.is_nil() && IsValidUuid(proof.database_uuid) &&
        metadata.database_uuid != proof.database_uuid) ||
-      (!proof.collection_uuid.empty() &&
+      (!proof.collection_uuid.is_nil() &&
        metadata.collection_uuid != proof.collection_uuid);
   if (generation_mismatch || !proof.visible_to_snapshot) {
     return Failure(context,
@@ -2609,10 +2528,13 @@ EngineNoSqlProviderGenerationResult DropNoSqlProviderGeneration(
     const EngineRequestContext& context,
     EngineNoSqlProviderFamily family,
     const std::string& provider_id,
-    const std::string& collection_uuid) {
+    const EngineUuid& collection_uuid) {
   std::lock_guard<std::mutex> guard(StoreMutex());
   const auto identity = EngineNoSqlProviderDatabaseIdentity(context);
   auto generations = LoadLocked(context);
+  if (std::ranges::any_of(generations, [](const auto& item) { return !item.persistence_valid; })) {
+    return Failure(context, "nosql.provider_generation.persistence", kNoSqlProviderGenerationUnavailable);
+  }
   const auto before = generations.size();
   generations.erase(
       std::remove_if(generations.begin(),
@@ -2631,7 +2553,7 @@ EngineNoSqlProviderGenerationResult DropNoSqlProviderGeneration(
                    "nosql.provider_generation.drop",
                    kNoSqlProviderGenerationUnavailable);
   }
-  GenerationCache()[identity] = generations;
+  GenerationCache()[StoreKey(context)] = generations;
 
   EngineNoSqlProviderGenerationResult result;
   result.ok = true;
@@ -2656,7 +2578,7 @@ EngineNoSqlProviderGenerationResult CleanupNoSqlProviderGenerations(
     bool drop_persistent_state) {
   std::lock_guard<std::mutex> guard(StoreMutex());
   const auto identity = EngineNoSqlProviderDatabaseIdentity(context);
-  GenerationCache().erase(identity);
+  GenerationCache().erase(StoreKey(context));
   if (drop_persistent_state) {
     const auto path = GenerationPath(context);
     if (!path.empty()) {
@@ -2677,6 +2599,7 @@ EngineNoSqlProviderGenerationResult CleanupNoSqlProviderGenerations(
 void AddNoSqlProviderGenerationEvidence(
     EngineApiResult* result,
     const EngineNoSqlProviderGenerationResult& generation) {
+  result->evidence.insert(result->evidence.end(), generation.identity_evidence.begin(), generation.identity_evidence.end());
   for (const auto& item : generation.evidence) {
     AddApiBehaviorEvidence(result, "nosql_provider_generation", item);
   }

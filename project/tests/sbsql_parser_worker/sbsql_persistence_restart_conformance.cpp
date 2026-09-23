@@ -1,3 +1,4 @@
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "api_types.hpp"
 #include "catalog/catalog_lookup_api.hpp"
 #include "database_lifecycle.hpp"
@@ -84,9 +86,18 @@ std::string FieldValue(const api::EngineApiResult& result,
 
 bool HasEvidence(const api::EngineApiResult& result, std::string_view kind, std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && (id.empty() || evidence.evidence_id == id)) {
+    if (evidence.evidence_kind == kind && (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
+  }
+  return false;
+}
+
+bool HasEvidence(const api::EngineApiResult& result, std::string_view kind,
+                 const api::EngineUuid& identity) {
+  for (const auto& evidence : result.evidence) {
+    const auto* value = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && value && *value == identity) return true;
   }
   return false;
 }
@@ -104,21 +115,33 @@ bool HasFieldValue(const api::EngineApiResult& result,
   return false;
 }
 
+bool HasFieldValue(const api::EngineApiResult& result,
+                   std::string_view field_name, const api::EngineUuid& identity) {
+  for (const auto& row : result.result_shape.rows) {
+    for (const auto& field : row.fields) {
+      const auto& value = field.second;
+      if (field.first == field_name && !value.isSqlNull() && value.encoded_value.empty() &&
+          value.binary_value.size() == identity.bytes.size() &&
+          std::equal(value.binary_value.begin(), value.binary_value.end(), identity.bytes.begin())) return true;
+    }
+  }
+  return false;
+}
+
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "fspe011d-persistence-restart";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = "019e078d-f11d-7000-8000-000000000001";
-  context.principal_uuid.canonical = "019e078d-f11d-7000-8000-000000000002";
-  context.session_uuid.canonical = "019e078d-f11d-7000-8000-000000000003";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000001");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000002");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000003");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.trace_tags.push_back("FSPE-011D");
@@ -131,8 +154,7 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
 
 api::EngineRequestContext GrantAdminContext(api::EngineRequestContext context) {
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019e078d-f11d-7000-8000-00000000a001";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-00000000a001");
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
   context.authorization_context.policy_epoch = context.resource_epoch;
@@ -141,7 +163,7 @@ api::EngineRequestContext GrantAdminContext(api::EngineRequestContext context) {
   context.authorization_context.effective_subjects.push_back(
       {context.principal_uuid, "principal"});
   api::EngineMaterializedAuthorizationGrant grant_admin;
-  grant_admin.grant_uuid.canonical = "019e078d-f11d-7000-8000-00000000a102";
+  grant_admin.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-00000000a102");
   grant_admin.subject_uuid = context.principal_uuid;
   grant_admin.subject_kind = "principal";
   grant_admin.right = "SEC_GRANT_ADMIN";
@@ -234,9 +256,9 @@ api::EngineTypedValue TextValue(std::string value) {
 api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name, std::string type) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
-  column.requested_column_uuid.canonical = "019e078d-f11d-7000-8000-00000000010" + std::to_string(ordinal);
+  column.requested_column_uuid = scratchbird::tests::FixtureUuid(1574, 100 + ordinal);
   column.names.push_back({"en", "primary", name, name, true});
-  column.descriptor.descriptor_uuid.canonical = "019e078d-f11d-7000-8000-00000000020" + std::to_string(ordinal);
+  column.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1574, 200 + ordinal);
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
   column.descriptor.encoded_descriptor = "type=" + column.descriptor.canonical_type_name;
@@ -247,18 +269,18 @@ api::EngineLocalizedName Name(std::string name) {
   return {"en", "primary", name, name, true};
 }
 
-api::EngineDescriptor ScalarDescriptor(std::string uuid, std::string type) {
+api::EngineDescriptor ScalarDescriptor(api::EngineUuid uuid, std::string type) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = std::move(uuid);
+  descriptor.descriptor_uuid = std::move(uuid);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::move(type);
   descriptor.encoded_descriptor = "type=" + descriptor.canonical_type_name;
   return descriptor;
 }
 
-api::EngineIndexDefinition BtreeIndex(std::string uuid, std::string name, std::string column) {
+api::EngineIndexDefinition BtreeIndex(api::EngineUuid uuid, std::string name, std::string column) {
   api::EngineIndexDefinition index;
-  index.requested_index_uuid.canonical = std::move(uuid);
+  index.requested_index_uuid = std::move(uuid);
   index.names.push_back(Name(std::move(name)));
   index.index_kind = "btree";
   index.key_envelopes.push_back(std::move(column));
@@ -267,7 +289,7 @@ api::EngineIndexDefinition BtreeIndex(std::string uuid, std::string name, std::s
 
 api::EngineRowValue Row(std::string id, std::string note) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = "019e078d-f11d-7000-8000-000000000301";
+  row.requested_row_uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000301");
   row.fields.push_back({"id", TextValue(std::move(id))});
   row.fields.push_back({"note", TextValue(std::move(note))});
   return row;
@@ -275,10 +297,10 @@ api::EngineRowValue Row(std::string id, std::string note) {
 
 void RequireLookup(const std::filesystem::path& database_path,
                    const api::EngineRequestContext& context,
-                   std::string uuid,
+                   api::EngineUuid uuid,
                    std::string kind) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = uuid;
+  request.target_object.uuid = uuid;
   request.target_object.object_kind = kind;
   const auto lookup = Dispatch(database_path,
                                "catalog.lookup_object",
@@ -286,16 +308,16 @@ void RequireLookup(const std::filesystem::path& database_path,
                                context,
                                request,
                                true);
-  Require(lookup.api_result.primary_object.uuid.canonical == uuid, "catalog lookup did not find persisted object after restart");
+  Require(lookup.api_result.primary_object.uuid == uuid, "catalog lookup did not find persisted object after restart");
   Require(lookup.api_result.primary_object.object_kind == kind, "catalog lookup returned wrong persisted object kind after restart");
 }
 
 void RequireDescriptorContains(const std::filesystem::path& database_path,
                                const api::EngineRequestContext& context,
-                               std::string uuid,
+                               api::EngineUuid uuid,
                                std::string needle) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = uuid;
+  request.target_object.uuid = uuid;
   const auto descriptor = Dispatch(database_path,
                                    "catalog.get_descriptor",
                                    "SBLR_CATALOG_GET_DESCRIPTOR",
@@ -304,7 +326,7 @@ void RequireDescriptorContains(const std::filesystem::path& database_path,
                                    true);
   Require(!descriptor.api_result.result_shape.columns.empty(), "descriptor lookup returned no descriptor after restart");
   if (descriptor.api_result.result_shape.columns.front().encoded_descriptor.find(needle) == std::string::npos) {
-    std::cerr << "descriptor payload for " << uuid << ": "
+    std::cerr << "descriptor payload for binary object identity: "
               << descriptor.api_result.result_shape.columns.front().encoded_descriptor
               << " missing=" << needle << '\n';
   }
@@ -352,12 +374,10 @@ int main() {
           database_path, SB_FSP011D_SEED_PACK_ROOT);
   Require(created.ok(), "credentialed lifecycle fixture database create failed");
   Require(std::filesystem::exists(database_path), "lifecycle create did not create database file");
-  const std::string created_database_uuid =
-      scratchbird::core::uuid::UuidToString(created.state.database_uuid.value);
-  const std::string created_filespace_uuid =
-      scratchbird::core::uuid::UuidToString(created.state.filespace_uuid.value);
-  Require(!created_database_uuid.empty(), "created database UUID was not reported");
-  Require(!created_filespace_uuid.empty(), "created filespace UUID was not reported");
+  const auto created_database_uuid = created.state.database_uuid.value;
+  const auto created_filespace_uuid = created.state.filespace_uuid.value;
+  Require(!created_database_uuid.is_nil(), "created database UUID was not reported");
+  Require(!created_filespace_uuid.is_nil(), "created filespace UUID was not reported");
 
   auto open_result = Dispatch(database_path,
                               "lifecycle.open_database",
@@ -377,10 +397,10 @@ int main() {
   write_context.transaction_uuid = begin_write.api_result.transaction_uuid;
   write_context.snapshot_visible_through_local_transaction_id = begin_write.api_result.local_transaction_id;
 
-  constexpr const char* kSchemaUuid = "019e078d-f11d-7000-8000-000000000101";
-  constexpr const char* kTableUuid = "019e078d-f11d-7000-8000-000000000102";
+  constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000101");
+  constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000102");
   api::EngineApiRequest schema_request;
-  schema_request.target_object.uuid.canonical = kSchemaUuid;
+  schema_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000101");
   schema_request.target_object.object_kind = "schema";
   schema_request.localized_names.push_back(Name("fspe011d_schema"));
   auto schema = Dispatch(database_path,
@@ -389,13 +409,13 @@ int main() {
                          write_context,
                          schema_request,
                          true);
-  Require(schema.api_result.primary_object.uuid.canonical == kSchemaUuid, "schema create did not use server UUID");
+  Require(schema.api_result.primary_object.uuid == kSchemaUuid, "schema create did not use server UUID");
   Require(HasEvidence(schema.api_result, "schema", kSchemaUuid), "schema persistence evidence missing");
 
   api::EngineApiRequest table_request;
-  table_request.target_schema.uuid.canonical = kSchemaUuid;
+  table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000101");
   table_request.target_schema.object_kind = "schema";
-  table_request.target_object.uuid.canonical = kTableUuid;
+  table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000102");
   table_request.target_object.object_kind = "table";
   table_request.localized_names.push_back(Name("fspe011d_table"));
   table_request.columns.push_back(Column(0, "id", "text"));
@@ -406,11 +426,11 @@ int main() {
                         write_context,
                         table_request,
                         true);
-  Require(table.api_result.primary_object.uuid.canonical == kTableUuid, "table create did not use server UUID");
+  Require(table.api_result.primary_object.uuid == kTableUuid, "table create did not use server UUID");
   Require(HasEvidence(table.api_result, "mga_relation_metadata", "table_create"), "table MGA evidence missing");
 
   api::EngineApiRequest insert_request;
-  insert_request.target_object.uuid.canonical = kTableUuid;
+  insert_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000102");
   insert_request.target_object.object_kind = "table";
   insert_request.rows.push_back(Row("1", "persisted-across-restart"));
   auto insert = Dispatch(database_path,
@@ -422,22 +442,22 @@ int main() {
   Require(insert.api_result.result_shape.rows.size() == 1, "insert did not return one row");
   Require(HasEvidence(insert.api_result, "mga_row_store", "row_insert"), "insert row-store evidence missing");
 
-  constexpr const char* kIndexUuid = "019e078d-f11d-7000-8000-000000000103";
+  constexpr auto kIndexUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000103");
   api::EngineApiRequest index_request;
-  index_request.target_object.uuid.canonical = kTableUuid;
+  index_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000102");
   index_request.target_object.object_kind = "table";
   index_request.indexes.push_back(BtreeIndex(kIndexUuid, "fspe011d_table_id_idx", "id"));
   api::EngineCreateIndexRequest create_index_request;
   static_cast<api::EngineApiRequest&>(create_index_request) = index_request;
   create_index_request.context = write_context;
   const auto index = api::EngineCreateIndex(create_index_request);
-  Require(index.ok && index.primary_object.uuid.canonical == kIndexUuid,
+  Require(index.ok && index.primary_object.uuid == kIndexUuid,
           "index create did not use server UUID");
   Require(HasEvidence(index, "mga_relation_metadata", "index_create"),
           "index MGA evidence missing");
 
   api::EngineApiRequest indexed_insert_request;
-  indexed_insert_request.target_object.uuid.canonical = kTableUuid;
+  indexed_insert_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000102");
   indexed_insert_request.target_object.object_kind = "table";
   indexed_insert_request.rows.push_back(Row("2", "persisted-through-index"));
   auto indexed_insert = Dispatch(database_path,
@@ -449,30 +469,30 @@ int main() {
   Require(indexed_insert.api_result.result_shape.rows.size() == 1, "post-index insert did not return one row");
   Require(HasEvidence(indexed_insert.api_result, "mga_row_store", "row_insert"), "post-index insert row-store evidence missing");
 
-  constexpr const char* kDomainUuid = "019e078d-f11d-7000-8000-000000000104";
+  constexpr auto kDomainUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000104");
   api::EngineApiRequest domain_request;
-  domain_request.target_schema.uuid.canonical = kSchemaUuid;
+  domain_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000101");
   domain_request.target_schema.object_kind = "schema";
-  domain_request.target_object.uuid.canonical = kDomainUuid;
+  domain_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000104");
   domain_request.target_object.object_kind = "domain";
   domain_request.localized_names.push_back(Name("fspe011d_domain"));
-  domain_request.descriptors.push_back(ScalarDescriptor("019e078d-f11d-7000-8000-000000000204", "text"));
+  domain_request.descriptors.push_back(ScalarDescriptor(scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000204"), "text"));
   domain_request.policy_profile.encoded_profiles.push_back("domain_visibility_policy:fspe011d_visible");
   domain_request.option_envelopes.push_back("check_constraint:not_empty");
   api::EngineCreateDomainRequest create_domain_request;
   static_cast<api::EngineApiRequest&>(create_domain_request) = domain_request;
   create_domain_request.context = write_context;
   const auto domain = api::EngineCreateDomain(create_domain_request);
-  Require(domain.ok && domain.primary_object.uuid.canonical == kDomainUuid,
+  Require(domain.ok && domain.primary_object.uuid == kDomainUuid,
           "domain create did not use server UUID");
   Require(HasEvidence(domain, "domain_event", "domain_create"),
           "domain persistence evidence missing");
 
-  constexpr const char* kFunctionUuid = "019e078d-f11d-7000-8000-000000000105";
+  constexpr auto kFunctionUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000105");
   api::EngineApiRequest function_request;
-  function_request.target_schema.uuid.canonical = kSchemaUuid;
+  function_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000101");
   function_request.target_schema.object_kind = "schema";
-  function_request.target_object.uuid.canonical = kFunctionUuid;
+  function_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000105");
   function_request.target_object.object_kind = "function";
   function_request.localized_names.push_back(Name("fspe011d_function"));
   function_request.option_envelopes.push_back("permission:manage_executable");
@@ -487,14 +507,14 @@ int main() {
   for (const auto& diagnostic : function.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
-  Require(function.ok && function.primary_object.uuid.canonical == kFunctionUuid,
+  Require(function.ok && function.primary_object.uuid == kFunctionUuid,
           "function create did not use server UUID");
   Require(HasEvidence(function, "function", kFunctionUuid),
           "function persistence evidence missing");
 
-  constexpr const char* kIdentityUuid = "019e078d-f11d-7000-8000-000000000106";
+  constexpr auto kIdentityUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000106");
   api::EngineApiRequest identity_request;
-  identity_request.target_object.uuid.canonical = kIdentityUuid;
+  identity_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000106");
   identity_request.target_object.object_kind = "security_identity";
   identity_request.localized_names.push_back(Name("fspe011d_user"));
   identity_request.option_envelopes.push_back("identity_kind:user");
@@ -509,14 +529,14 @@ int main() {
   for (const auto& diagnostic : identity.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
-  Require(identity.ok && identity.primary_object.uuid.canonical == kIdentityUuid,
+  Require(identity.ok && identity.primary_object.uuid == kIdentityUuid,
           "security identity create did not use server UUID");
   Require(HasEvidence(identity, "security_user", kIdentityUuid),
           "security identity persistence evidence missing");
 
-  constexpr const char* kGrantUuid = "019e078d-f11d-7000-8000-000000000107";
+  constexpr auto kGrantUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000107");
   api::EngineApiRequest grant_request;
-  grant_request.target_object.uuid.canonical = kGrantUuid;
+  grant_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000107");
   grant_request.target_object.object_kind = "grant";
   grant_request.related_objects.push_back({{kIdentityUuid}, "security_identity"});
   grant_request.related_objects.push_back({{kTableUuid}, "table"});
@@ -527,12 +547,12 @@ int main() {
                         GrantAdminContext(write_context),
                         grant_request,
                         true);
-  Require(grant.api_result.primary_object.uuid.canonical == kGrantUuid, "grant create did not use server UUID");
+  Require(grant.api_result.primary_object.uuid == kGrantUuid, "grant create did not use server UUID");
   Require(HasEvidence(grant.api_result, "grant", kGrantUuid), "grant persistence evidence missing");
 
-  constexpr const char* kConfigUuid = "019e078d-f11d-7000-8000-000000000108";
+  constexpr auto kConfigUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000108");
   api::EngineApiRequest config_request;
-  config_request.target_object.uuid.canonical = kConfigUuid;
+  config_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000108");
   config_request.target_object.object_kind = "config";
   config_request.localized_names.push_back(Name("fspe011d.metrics.enabled"));
   config_request.option_envelopes.push_back("value:true");
@@ -540,14 +560,14 @@ int main() {
   static_cast<api::EngineApiRequest&>(set_config_request) = config_request;
   set_config_request.context = write_context;
   const auto config = api::EngineSetConfig(set_config_request);
-  Require(config.ok && config.primary_object.uuid.canonical == kConfigUuid,
+  Require(config.ok && config.primary_object.uuid == kConfigUuid,
           "config set did not use server UUID");
   Require(HasEvidence(config, "config", kConfigUuid),
           "config persistence evidence missing");
 
-  constexpr const char* kParserPackageUuid = "019e078d-f11d-7000-8000-000000000109";
+  constexpr auto kParserPackageUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000109");
   api::EngineApiRequest parser_package_request;
-  parser_package_request.target_object.uuid.canonical = kParserPackageUuid;
+  parser_package_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000109");
   parser_package_request.target_object.object_kind = "parser_package";
   parser_package_request.localized_names.push_back(Name("fspe011d_sbsql_parser_package"));
   parser_package_request.option_envelopes.push_back("package_kind:sbsql_parser_support");
@@ -557,18 +577,18 @@ int main() {
                                  write_context,
                                  parser_package_request,
                                  true);
-  Require(parser_package.api_result.primary_object.uuid.canonical == kParserPackageUuid,
+  Require(parser_package.api_result.primary_object.uuid == kParserPackageUuid,
           "parser package register did not use server UUID");
   Require(HasEvidence(parser_package.api_result, "parser_package", kParserPackageUuid),
           "parser package persistence evidence missing");
 
-  constexpr const char* kEventChannelUuid = "019e078d-f11d-7000-8000-00000000010a";
-  constexpr const char* kSubscriptionUuid = "019e078d-f11d-7000-8000-00000000010b";
+  constexpr auto kEventChannelUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-00000000010a");
+  constexpr auto kSubscriptionUuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-00000000010b");
   api::EngineApiRequest channel_request;
-  channel_request.target_object.uuid.canonical = kEventChannelUuid;
+  channel_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-00000000010a");
   channel_request.target_object.object_kind = "event_channel";
   channel_request.localized_names.push_back(Name("fspe011d_channel"));
-  channel_request.option_envelopes.push_back("queue_policy_uuid:event.queue.durable_local.fspe011d");
+  channel_request.option_envelopes.push_back(std::string("queue_policy_uuid:") + api::MetadataUuidBytes(scratchbird::tests::FixtureUuid(1574, 1)));
   api::EngineCreateEventChannelRequest create_channel_request;
   static_cast<api::EngineApiRequest&>(create_channel_request) = channel_request;
   auto event_create_context = write_context;
@@ -576,15 +596,15 @@ int main() {
       &event_create_context, {"EVENT_CREATE"});
   create_channel_request.context = std::move(event_create_context);
   const auto channel = api::EngineCreateEventChannel(create_channel_request);
-  Require(channel.ok && channel.primary_object.uuid.canonical == kEventChannelUuid,
+  Require(channel.ok && channel.primary_object.uuid == kEventChannelUuid,
           "event channel create did not use server UUID");
   Require(HasEvidence(channel, "event_channel", kEventChannelUuid),
           "event channel persistence evidence missing");
 
   api::EngineApiRequest listen_request;
-  listen_request.target_object.uuid.canonical = kEventChannelUuid;
+  listen_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-00000000010a");
   listen_request.target_object.object_kind = "event_channel";
-  listen_request.option_envelopes.push_back(std::string("subscription_uuid:") + kSubscriptionUuid);
+  listen_request.option_envelopes.push_back(std::string("subscription_uuid:") + api::MetadataUuidBytes(kSubscriptionUuid));
   listen_request.option_envelopes.push_back("delivery_profile:durable_local");
   api::EngineListenNotificationRequest listen_notification_request;
   static_cast<api::EngineApiRequest&>(listen_notification_request) =
@@ -594,13 +614,13 @@ int main() {
       &event_listen_context, {"EVENT_SUBSCRIBE"});
   listen_notification_request.context = std::move(event_listen_context);
   const auto listen = api::EngineListenNotification(listen_notification_request);
-  Require(listen.ok && listen.primary_object.uuid.canonical == kSubscriptionUuid,
+  Require(listen.ok && listen.primary_object.uuid == kSubscriptionUuid,
           "event listen did not use subscription UUID");
   Require(HasEvidence(listen, "event_subscription", kSubscriptionUuid),
           "event subscription persistence evidence missing");
 
   api::EngineApiRequest notify_request;
-  notify_request.target_object.uuid.canonical = kEventChannelUuid;
+  notify_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-00000000010a");
   notify_request.target_object.object_kind = "event_channel";
   notify_request.rows.push_back(Row("event", "persisted-event"));
   notify_request.option_envelopes.push_back("payload:persisted-event");
@@ -635,7 +655,7 @@ int main() {
   page_agent_request.option_envelopes.push_back("agent_metric_snapshot_protected_material_present:false");
   page_agent_request.option_envelopes.push_back("agent_metric_snapshot_provenance_record:fspe011d:provenance");
   page_agent_request.option_envelopes.push_back(
-      "agent_metric_snapshot_scope_uuid:019e078d-f11d-7000-8000-000000000001");
+      std::string("agent_metric_snapshot_scope_uuid:") + api::MetadataUuidBytes(scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000001")));
   page_agent_request.option_envelopes.push_back(
       "agent_metric_snapshot_digest:sha256:fspe011d:page_allocation_manager");
   page_agent_request.option_envelopes.push_back(
@@ -645,7 +665,7 @@ int main() {
   page_agent_request.option_envelopes.push_back(
       "agent_metric_snapshot_id:fspe011d:page_allocation_manager");
   page_agent_request.option_envelopes.push_back(
-      "agent_metric_snapshot_evidence_uuid:019e078d-f11d-7000-8000-00000000a201");
+      std::string("agent_metric_snapshot_evidence_uuid:") + api::MetadataUuidBytes(scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-00000000a201")));
   page_agent_request.option_envelopes.push_back("safety_fence_result:passed");
   page_agent_request.option_envelopes.push_back("wall_now_us:1");
   page_agent_request.option_envelopes.push_back("monotonic_now_us:1");
@@ -701,7 +721,7 @@ int main() {
   read_context.snapshot_visible_through_local_transaction_id = begin_write.api_result.local_transaction_id;
 
   api::EngineApiRequest lookup_request;
-  lookup_request.target_object.uuid.canonical = kTableUuid;
+  lookup_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000102");
   lookup_request.target_object.object_kind = "table";
   auto lookup = Dispatch(database_path,
                          "catalog.lookup_object",
@@ -709,7 +729,7 @@ int main() {
                          read_context,
                          lookup_request,
                          true);
-  Require(lookup.api_result.primary_object.uuid.canonical == kTableUuid, "catalog lookup did not find table after restart");
+  Require(lookup.api_result.primary_object.uuid == kTableUuid, "catalog lookup did not find table after restart");
   RequireLookup(database_path, read_context, kSchemaUuid, "schema");
   RequireLookup(database_path, read_context, kIndexUuid, "index");
   RequireLookup(database_path, read_context, kDomainUuid, "domain");
@@ -722,7 +742,7 @@ int main() {
   RequireDescriptorContains(database_path, read_context, kDomainUuid, "visibility_policy=66737065303131645f76697369626c65");
 
   api::EngineApiRequest select_request;
-  select_request.target_object.uuid.canonical = kTableUuid;
+  select_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e078d-f11d-7000-8000-000000000102");
   select_request.target_object.object_kind = "table";
   select_request.predicate.predicate_kind = "column_equals";
   select_request.predicate.canonical_predicate_envelope = "id";
@@ -780,7 +800,6 @@ int main() {
   Require(commit_read.api_result.ok, "read transaction commit failed");
 
   std::filesystem::remove_all(work);
-  std::cout << "sbsql_persistence_restart_conformance=passed database_uuid="
-            << created_database_uuid << " rows=2 table_uuid=" << kTableUuid << '\n';
+  std::cout << "sbsql_persistence_restart_conformance=passed rows=2 native_identity_checks=passed\n";
   return EXIT_SUCCESS;
 }

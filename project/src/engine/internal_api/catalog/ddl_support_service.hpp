@@ -25,22 +25,22 @@ namespace scratchbird::engine::internal_api {
 // not authority here.
 
 struct CatalogDdlDependencyEdge {
-  std::string source_uuid;
+  EngineUuid source_uuid;
   std::string source_kind;
-  std::string dependency_uuid;
+  EngineUuid dependency_uuid;
   std::string dependency_kind;
   std::string invalidation_action;
 };
 
 struct CatalogDdlDependencyClosure {
-  std::string root_uuid;
+  EngineUuid root_uuid;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t policy_epoch = 0;
   std::string cache_key;
   std::string closure_digest;
   bool cache_hit = false;
-  std::vector<std::string> affected_object_uuids;
+  std::vector<EngineUuid> affected_object_uuids;
   std::vector<CatalogDdlDependencyEdge> edges;
 };
 
@@ -56,7 +56,7 @@ class CatalogDdlDependencyClosureCache {
   CatalogDdlDependencyClosure LookupOrBuild(
       const EngineCatalogObjectLifecycleState& state,
       const EngineRequestContext& context,
-      const std::string& root_uuid);
+      const EngineUuid& root_uuid);
   void Clear();
   CatalogDdlDependencyClosureCacheStats Stats() const;
 
@@ -80,22 +80,22 @@ struct CatalogDdlStagedDescriptor {
 
 struct CatalogDdlCacheInvalidation {
   std::string cache_family;
-  std::string object_uuid;
+  EngineUuid object_uuid;
   std::string reason;
 };
 
 struct CatalogDdlPreparedContextProof {
-  std::string prepared_context_uuid;
-  std::vector<std::string> dependent_object_uuids;
+  EngineUuid prepared_context_uuid;
+  std::vector<EngineUuid> dependent_object_uuids;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t policy_epoch = 0;
 };
 
 struct CatalogDdlPreparedContextInvalidation {
-  std::string prepared_context_uuid;
+  EngineUuid prepared_context_uuid;
   std::string reason;
-  std::vector<std::string> matched_object_uuids;
+  std::vector<EngineUuid> matched_object_uuids;
 };
 
 struct CatalogDdlPublishPlan {
@@ -114,7 +114,7 @@ struct CatalogDdlImmutableSnapshot {
   std::uint64_t generation = 0;
   std::uint64_t catalog_epoch = 0;
   std::string snapshot_digest;
-  std::vector<std::string> object_uuids;
+  std::vector<EngineUuid> object_uuids;
   bool immutable = true;
   bool finality_authority_cached = false;
 };

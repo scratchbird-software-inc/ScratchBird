@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "ddl/create_api.hpp"
@@ -18,6 +19,7 @@
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/mga_relation_locator.hpp"
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
 #include "mga_relation_store/mga_savepoint_marker_codec.hpp"
@@ -160,7 +162,7 @@ std::filesystem::path MakeTempDir() {
   return std::filesystem::path(made);
 }
 
-std::string CreateOpenDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateOpenDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, 1779200001000).value;
@@ -180,11 +182,11 @@ std::string CreateOpenDatabase(const std::filesystem::path& path) {
   Require(opened.ok(), "DBLC-009 first open activation failed");
   const auto clean = db::MarkDatabaseCleanShutdown(path.string());
   Require(clean.ok(), "DBLC-009 clean shutdown marker failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
-                                  const std::string& database_uuid,
+                                  const api::EngineUuid& database_uuid,
                                   HostedDatabaseState state = HostedDatabaseState::kOpen) {
   HostedEngineState engine_state;
   engine_state.engine_context_active = true;
@@ -363,16 +365,16 @@ scratchbird::server::ParserServerEventSession EventSessionFor(
     const AttachedSession& attached,
     const ServerSessionRecord& session) {
   scratchbird::server::ParserServerEventSession event_session;
-  event_session.parser_channel_uuid = scratchbird::server::UuidBytesToText(attached.connection_uuid);
+  event_session.parser_channel_uuid = scratchbird::core::platform::Uuid{attached.connection_uuid};
   event_session.engine_context.request_id = "dblc-009-event-disconnect";
   event_session.engine_context.database_path = session.database_path;
-  event_session.engine_context.database_uuid.canonical = session.database_uuid;
-  event_session.engine_context.principal_uuid.canonical =
-      scratchbird::server::UuidBytesToText(session.effective_user_uuid);
-  event_session.engine_context.session_uuid.canonical =
-      scratchbird::server::UuidBytesToText(session.session_uuid);
+  event_session.engine_context.database_uuid = session.database_uuid;
+  event_session.engine_context.principal_uuid =
+      scratchbird::core::platform::Uuid{session.effective_user_uuid};
+  event_session.engine_context.session_uuid =
+      scratchbird::core::platform::Uuid{session.session_uuid};
   event_session.engine_context.local_transaction_id = session.local_transaction_id;
-  event_session.engine_context.transaction_uuid.canonical =
+  event_session.engine_context.transaction_uuid =
       session.transaction_uuid;
   event_session.engine_context.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
@@ -392,21 +394,25 @@ scratchbird::server::ParserServerEventSession EventSessionFor(
   return event_session;
 }
 
-void SeedActiveEventTransaction(const std::filesystem::path& database_path, std::uint64_t tx_id) {
-  std::ofstream out(database_path.string() + ".sb.crud_events", std::ios::binary | std::ios::app);
-  out << "SBCRUD1\tTX_BEGIN\t" << tx_id << "\tdblc009_event_disconnect\n";
-  Require(static_cast<bool>(out), "DBLC-009 failed to seed event transaction evidence");
+void RequireActiveEventTransaction(const std::filesystem::path& database_path, std::uint64_t tx_id) {
+  Require(TransactionHasState(database_path, tx_id, tx::TransactionState::active),
+          "DBLC-009 event transaction is absent from engine inventory");
+}
+std::string IdentityBytes(const api::EngineUuid& identity) {
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
 }
 
 void CreateEventChannel(const scratchbird::server::ParserServerEventSession& event_session,
-                        const std::string& channel_uuid) {
+                        const api::EngineUuid& channel_uuid) {
   api::EngineCreateEventChannelRequest request;
   request.context.request_id = "dblc-009-event-channel-create";
   request.context.database_path = event_session.engine_context.database_path;
-  request.context.database_uuid.canonical = event_session.engine_context.database_uuid.canonical;
-  request.context.principal_uuid.canonical = event_session.engine_context.principal_uuid.canonical;
-  request.context.session_uuid.canonical = event_session.engine_context.session_uuid.canonical;
+  request.context.database_uuid = event_session.engine_context.database_uuid;
+  request.context.principal_uuid = event_session.engine_context.principal_uuid;
+  request.context.session_uuid = event_session.engine_context.session_uuid;
   request.context.local_transaction_id = event_session.engine_context.local_transaction_id;
+  request.context.transaction_uuid = event_session.engine_context.transaction_uuid;
+  request.context.snapshot_visible_through_local_transaction_id = event_session.engine_context.snapshot_visible_through_local_transaction_id;
   request.context.security_context_present = event_session.engine_context.security_context_present;
   request.context.trust_mode =
       event_session.engine_context.trust_mode ==
@@ -415,8 +421,8 @@ void CreateEventChannel(const scratchbird::server::ParserServerEventSession& eve
           ? api::EngineTrustMode::embedded_in_process
           : api::EngineTrustMode::server_isolated;
   request.context.trace_tags = event_session.engine_context.trace_tags;
-  request.target_object = {{channel_uuid}, "event_channel"};
-  request.option_envelopes.push_back("channel_uuid:" + channel_uuid);
+  request.target_object = {channel_uuid, "event_channel"};
+  request.option_envelopes.push_back("channel_uuid:" + IdentityBytes(channel_uuid));
   request.option_envelopes.push_back("channel:dblc009_event_channel");
   const auto created = api::EngineCreateEventChannel(request);
   Require(created.ok, "DBLC-009 failed to create engine-authorized event channel");
@@ -427,22 +433,22 @@ void VerifyEventDisconnectCleanup(const AttachedSession& attached,
   scratchbird::server::ParserEventNotificationRouter router;
   scratchbird::server::ParserServerEventIpcRuntime runtime(&router);
   const auto event_session = EventSessionFor(attached, session);
-  const std::string channel_uuid = "event.channel.dblc009";
-  SeedActiveEventTransaction(std::filesystem::path(session.database_path), session.local_transaction_id);
+  const auto channel_uuid = scratchbird::tests::FixtureUuid(1594, 1);
+  RequireActiveEventTransaction(std::filesystem::path(session.database_path), session.local_transaction_id);
   CreateEventChannel(event_session, channel_uuid);
 
   scratchbird::server::PsEventSubscribeRequest subscribe;
-  subscribe.request_uuid = "event-subscribe-dblc-009";
+  subscribe.request_uuid = scratchbird::tests::FixtureUuid(1594, 2);
   subscribe.session = event_session;
   subscribe.channel_uuid = channel_uuid;
-  subscribe.rendering_profile_uuid = "rendering.default";
+  subscribe.rendering_profile_uuid = scratchbird::tests::FixtureUuid(1594, 3);
   const auto subscribed = runtime.HandleSubscribe(subscribe);
   Require(subscribed.outcome == "accepted", "DBLC-009 event subscribe failed");
   Require(router.ActiveSubscriptionCount() == 1, "DBLC-009 event subscription was not registered");
 
-  const auto enqueued = router.EnqueueCommittedEvent("event.channel.dblc009",
-                                                     "event-001",
-                                                     "payload.text",
+  const auto enqueued = router.EnqueueCommittedEvent(channel_uuid,
+                                                     scratchbird::tests::FixtureUuid(1594, 4),
+                                                     scratchbird::tests::FixtureUuid(1594, 5),
                                                      "payload");
   Require(enqueued.ok, "DBLC-009 event enqueue failed");
   Require(router.QueuedEventCount(event_session.parser_channel_uuid) == 1,
@@ -460,15 +466,15 @@ void VerifyEventDisconnectCleanup(const AttachedSession& attached,
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& database_path,
-                                        const std::string& database_uuid,
+                                        const api::EngineUuid& database_uuid,
                                         const std::array<std::uint8_t, 16>& session_uuid) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "dblc-009-lifecycle-detach";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = "019e0f09-a100-7000-8000-000000000901";
-  context.session_uuid.canonical = scratchbird::server::UuidBytesToText(session_uuid);
+  context.database_uuid = database_uuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e0f09-a100-7000-8000-000000000901");
+  context.session_uuid = scratchbird::core::platform::Uuid{session_uuid};
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -478,7 +484,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& database_pa
 }
 
 void VerifyLifecycleDetachClusterFailClosed(const std::filesystem::path& database_path,
-                                            const std::string& database_uuid,
+                                            const api::EngineUuid& database_uuid,
                                             const std::array<std::uint8_t, 16>& session_uuid) {
   api::EngineDetachLifecycleRequest request;
   request.context = EngineContext(database_path, database_uuid, session_uuid);
@@ -490,7 +496,7 @@ void VerifyLifecycleDetachClusterFailClosed(const std::filesystem::path& databas
 }
 
 void VerifyDetachCleanup(const std::filesystem::path& database_path,
-                         const std::string& database_uuid) {
+                         const api::EngineUuid& database_uuid) {
   ServerSessionRegistry registry;
   const auto engine_state = MakeEngineState(database_path, database_uuid);
   const auto session_a = AttachAuthenticatedSession(&registry, engine_state);
@@ -503,20 +509,19 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
   api::EngineBeginTransactionRequest begin;
   begin.context = EngineContext(database_path, database_uuid,
                                 session_a.session_uuid);
-  begin.context.principal_uuid.canonical =
-      scratchbird::server::UuidBytesToText(
-          session_it->second.effective_user_uuid);
+  begin.context.principal_uuid =
+      scratchbird::core::platform::Uuid{session_it->second.effective_user_uuid};
   begin.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(begin);
   Require(begun.ok && begun.local_transaction_id != 0 &&
-              !begun.transaction_uuid.canonical.empty(),
+              !begun.transaction_uuid.is_nil(),
           "DBLC-009 engine MGA transaction begin failed");
 
   scratchbird::server::ServerTransactionState transaction;
   transaction.local_transaction_id = begun.local_transaction_id;
   transaction.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
-  transaction.transaction_uuid = begun.transaction_uuid.canonical;
+  transaction.transaction_uuid = begun.transaction_uuid;
   transaction.isolation_level = "read_committed";
   session_it->second.local_transaction_id = transaction.local_transaction_id;
   session_it->second.default_local_transaction_id =
@@ -648,16 +653,16 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
 void FinalizeFixtureTransactions(ServerSessionRecord& session,
                                  const AttachedSession& attached,
                                  const std::filesystem::path& database_path,
-                                 const std::string& database_uuid) {
+                                 const api::EngineUuid& database_uuid) {
   // Finalize each real attach transaction before testing the separate
   // temporary-session cleanup operation. No forged inventory or row fixtures.
   for (const auto& [_, transaction] : session.transactions_by_local_id) {
     api::EngineRollbackTransactionRequest rollback;
     rollback.context = EngineContext(database_path, database_uuid, attached.session_uuid);
-    rollback.context.principal_uuid.canonical =
-        scratchbird::server::UuidBytesToText(session.effective_user_uuid);
+    rollback.context.principal_uuid =
+        scratchbird::core::platform::Uuid{session.effective_user_uuid};
     rollback.context.local_transaction_id = transaction.local_transaction_id;
-    rollback.context.transaction_uuid.canonical = transaction.transaction_uuid;
+    rollback.context.transaction_uuid = transaction.transaction_uuid;
     rollback.context.snapshot_visible_through_local_transaction_id =
         transaction.snapshot_visible_through_local_transaction_id;
     rollback.context.transaction_timestamp = transaction.transaction_timestamp;
@@ -670,13 +675,13 @@ void FinalizeFixtureTransactions(ServerSessionRecord& session,
   session.transactions_by_local_id.clear();
   session.default_local_transaction_id = 0;
   session.local_transaction_id = 0;
-  session.transaction_uuid.clear();
+  session.transaction_uuid = {};
   session.transaction_timestamp.clear();
   session.snapshot_visible_through_local_transaction_id = 0;
 }
 
 void VerifyTemporaryCleanupFailure(const std::filesystem::path& database_path,
-                                   const std::string& database_uuid) {
+                                   const api::EngineUuid& database_uuid) {
   ServerSessionRegistry registry;
   const auto engine_state = MakeEngineState(database_path, database_uuid);
   const auto attached = AttachAuthenticatedSession(&registry, engine_state);
@@ -750,7 +755,7 @@ void VerifyTemporaryCleanupFailure(const std::filesystem::path& database_path,
 }
 
 void VerifyTemporaryCleanupIdentity(const std::filesystem::path& database_path,
-                                    const std::string& database_uuid) {
+                                    const api::EngineUuid& database_uuid) {
   using State = api::EngineTransactionInventoryState;
   ServerSessionRegistry registry;
   const auto engine_state = MakeEngineState(database_path, database_uuid);
@@ -759,13 +764,13 @@ void VerifyTemporaryCleanupIdentity(const std::filesystem::path& database_path,
   auto& session = registry.sessions_by_uuid.at(key);
   FinalizeFixtureTransactions(session, attached, database_path, database_uuid);
   auto context = EngineContext(database_path, database_uuid, attached.session_uuid);
-  context.principal_uuid.canonical =
-      scratchbird::server::UuidBytesToText(session.effective_user_uuid);
+  context.principal_uuid =
+      scratchbird::core::platform::Uuid{session.effective_user_uuid};
   api::EngineCleanupTemporarySessionRequest request;
   request.context = context;
 
   auto malformed = request;
-  malformed.context.session_uuid.canonical.clear();
+  malformed.context.session_uuid = {};
   const auto invalid = api::EngineCleanupTemporarySessionState(malformed);
   Require(!invalid.ok && invalid.cleanup_local_transaction_id == 0 &&
               invalid.cleanup_transaction.state == State::not_started &&
@@ -819,7 +824,7 @@ void VerifyTemporaryCleanupIdentity(const std::filesystem::path& database_path,
   rollback.context.local_transaction_id = failed.cleanup_transaction.local_transaction_id;
   // Text here belongs to this legacy test API boundary, not the new binary
   // observation. The broader EngineUuid API migration remains required.
-  rollback.context.transaction_uuid.canonical = uuid::UuidToString(identity->identity.transaction_uuid.value);
+  rollback.context.transaction_uuid = identity->identity.transaction_uuid.value;
   rollback.context.snapshot_visible_through_local_transaction_id =
       failed.cleanup_transaction.snapshot_visible_through_local_transaction_id;
   rollback.context.transaction_timestamp = failed.cleanup_transaction.transaction_timestamp;
@@ -865,7 +870,7 @@ void VerifyTemporaryCleanupIdentity(const std::filesystem::path& database_path,
 }
 
 void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
-                               const std::string& database_uuid,
+                               const api::EngineUuid& database_uuid,
                                bool canonical_savepoint_effect = false) {
   using State = api::EngineTransactionInventoryState;
   ServerSessionRegistry registry;
@@ -875,8 +880,8 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   auto& session = registry.sessions_by_uuid.at(key);
   FinalizeFixtureTransactions(session, attached, database_path, database_uuid);
   auto context = EngineContext(database_path, database_uuid, attached.session_uuid);
-  context.principal_uuid.canonical =
-      scratchbird::server::UuidBytesToText(session.effective_user_uuid);
+  context.principal_uuid =
+      scratchbird::core::platform::Uuid{session.effective_user_uuid};
   const auto name = [](const std::string& text) {
     api::EngineLocalizedName result;
     result.language_tag = "en";
@@ -902,7 +907,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   api::EngineCreateTableRequest table;
   table.context = create_context;
   // Exact current built-in datatype receipt admitted by the Core registry.
-  table.context.datatype_catalog_snapshot_uuid.canonical = "019d0000-0000-7000-8000-00000000d701";
+  table.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   table.context.datatype_catalog_generation = 1;
   table.context.datatype_registry_generation = 1;
   table.target_schema = created_schema.primary_object;
@@ -922,12 +927,12 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   }
   Require(created_table.ok, "metadata I/O fixture table creation failed");
   const auto actual_descriptor = api::LoadMgaRelationStorageDescriptor(
-      table.context, created_table.table_object.uuid.canonical);
+      table.context, created_table.table_object.uuid);
   Require(actual_descriptor.ok, "actual created relation descriptor missing");
   const auto original_descriptor_fields =
       api::SerializeMgaRelationStorageDescriptor(actual_descriptor.descriptor);
   Require(!api::PersistDescriptorFields(table.context,
-      created_table.table_object.uuid.canonical, original_descriptor_fields).error,
+      created_table.table_object.uuid, original_descriptor_fields).error,
       "actual descriptor sidecar publication failed");
   api::EngineCreateSavepointRequest cache_savepoint;
   cache_savepoint.context = table.context;
@@ -942,25 +947,24 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   if (canonical_savepoint_effect) {
     // A trusted component caller exercises the production coordinator over
     // real engine-created state. This is not a parser/IPC admission proof.
-    canonical_context.statement_uuid.canonical =
-        scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
+    canonical_context.statement_uuid =
+        scratchbird::core::platform::Uuid{sbps::MakeUuidV7Bytes()};
     canonical_context.statement_metadata_snapshot_engine_owned = true;
     canonical_context.trace_tags.push_back("private_savepoint_coordination");
     const auto reserved = api::ReserveSblrSavepoint(canonical_context,
-        canonical_context.statement_uuid.canonical,
-        api::Sha256Tagged("component_transaction:" + begun.transaction_uuid.canonical +
+        canonical_context.statement_uuid,
+        api::Sha256Tagged("component_transaction:" + IdentityBytes(begun.transaction_uuid) +
                          ":" + std::to_string(begun.local_transaction_id)),
         1, api::Sha256Tagged("component_savepoint_symbol"));
     Require(reserved.ok, "canonical component savepoint reservation failed");
     canonical_savepoint = api::ActivateSblrSavepoint(canonical_context,
-        canonical_context.statement_uuid.canonical, reserved.snapshot.descriptor_uuid,
+        canonical_context.statement_uuid, reserved.snapshot.descriptor_uuid,
         reserved.snapshot.descriptor_generation, reserved.snapshot.descriptor_evidence_sha256, 1);
     Require(canonical_savepoint.ok, "canonical component savepoint activation failed");
-    const auto savepoint_uuid = uuid::ParseUuid(canonical_savepoint.snapshot.savepoint_uuid);
-    const auto transaction_uuid = uuid::ParseUuid(begun.transaction_uuid.canonical);
-    Require(savepoint_uuid.ok() && transaction_uuid.ok(), "canonical savepoint binary identity missing");
-    canonical_handle.savepoint_uuid = savepoint_uuid.value.bytes;
-    canonical_handle.transaction_uuid = transaction_uuid.value.bytes;
+    Require(uuid::IsEngineIdentityUuid(canonical_savepoint.snapshot.savepoint_uuid) &&
+                uuid::IsEngineIdentityUuid(begun.transaction_uuid), "canonical savepoint binary identity missing");
+    canonical_handle.savepoint_uuid = canonical_savepoint.snapshot.savepoint_uuid.bytes;
+    canonical_handle.transaction_uuid = begun.transaction_uuid.bytes;
     canonical_handle.savepoint_generation = canonical_savepoint.snapshot.savepoint_generation;
     canonical_handle.local_transaction_id = begun.local_transaction_id;
     canonical_handle.transaction_ordinal = canonical_savepoint.snapshot.transaction_ordinal;
@@ -978,14 +982,14 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   for (const auto mutation : {api::MgaDmlMutationKind::insert,
        api::MgaDmlMutationKind::update, api::MgaDmlMutationKind::delete_rows}) {
     Require(!api::AdmitMgaDmlSavepointMutation(table.context,
-                created_table.table_object.uuid.canonical, mutation, true).error,
+                created_table.table_object.uuid, mutation, true).error,
             "valid private temporary row mutation admission failed");
-    for (const auto& session_identity : {std::string{}, std::string("invalid-session"),
-         scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes())}) {
+    for (const auto& session_identity : {api::EngineUuid{}, scratchbird::tests::FixtureUuidLiteral("11111111-1111-4111-8111-111111111111"),
+         scratchbird::core::platform::Uuid{sbps::MakeUuidV7Bytes()}}) {
       auto foreign_context = table.context;
-      foreign_context.session_uuid.canonical = session_identity;
+      foreign_context.session_uuid = session_identity;
       Require(api::AdmitMgaDmlSavepointMutation(foreign_context,
-                  created_table.table_object.uuid.canonical, mutation, true).error,
+                  created_table.table_object.uuid, mutation, true).error,
               "temporary mutation admitted missing malformed or foreign session");
     }
   }
@@ -1016,10 +1020,10 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   Require(stored.ok && inserted.row_uuids.size() == 2,
           "real large-value row inventory unavailable");
   const auto stored_row = std::find_if(stored.state.row_versions.begin(), stored.state.row_versions.end(),
-      [&](const auto& r) { return r.row_uuid == inserted.row_uuids.front().canonical && !r.deleted; });
+      [&](const auto& r) { return r.row_uuid == inserted.row_uuids.front() && !r.deleted; });
   Require(stored_row != stored.state.row_versions.end(), "actual large-value row version missing");
   const auto stored_second_row = std::find_if(stored.state.row_versions.begin(), stored.state.row_versions.end(),
-      [&](const auto& r) { return r.row_uuid == inserted.row_uuids[1].canonical && !r.deleted; });
+      [&](const auto& r) { return r.row_uuid == inserted.row_uuids[1] && !r.deleted; });
   Require(stored_second_row != stored.state.row_versions.end(), "second actual large-value row version missing");
   if (canonical_savepoint_effect) {
     api::EngineSelectRowsRequest select;
@@ -1036,9 +1040,9 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
     const auto after_visible = api::EngineSelectRows(select);
     const auto remaining = std::count_if(after.state.row_versions.begin(), after.state.row_versions.end(),
         [&](const auto& candidate) {
-          return candidate.table_uuid == created_table.table_object.uuid.canonical &&
+          return candidate.table_uuid == created_table.table_object.uuid &&
                  std::any_of(inserted.row_uuids.begin(), inserted.row_uuids.end(),
-                   [&](const auto& identity) { return identity.canonical == candidate.row_uuid; });
+                   [&](const auto& identity) { return identity == candidate.row_uuid; });
         });
     std::cout << "canonical_savepoint_rollback ok=" << rolled.ok << " before_rows=2 after_rows="
               << remaining << " relation_read_ok=" << after.ok
@@ -1071,7 +1075,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   const auto reclaim_path = database_path.string() + ".sb.mga_large_values";
   const auto reclaim_permissions = std::filesystem::status(reclaim_path).permissions();
   const auto before_append_size = std::filesystem::file_size(reclaim_path);
-  std::set<std::string> reclaimed_ids;
+  std::set<api::EngineUuid> reclaimed_ids;
   std::uint64_t reclaimed_count = 0;
   std::filesystem::permissions(reclaim_path, std::filesystem::perms::owner_read);
   const auto append_denied = api::AppendMgaLargeValueReclaimMarkersForRowVersion(
@@ -1153,7 +1157,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   const auto changed_snapshot=api::LoadMgaMetadataSnapshot(context);
   const auto has_name=[&](const auto& snapshot,std::string_view expected) {
     return snapshot && std::any_of(snapshot->tables.begin(),snapshot->tables.end(),[&](const auto& item) {
-      return item.table_uuid==created_table.table_object.uuid.canonical && item.default_name==expected;
+      return item.table_uuid==created_table.table_object.uuid && item.default_name==expected;
     });
   };
   Require(changed_snapshot.ok() && has_name(changed_snapshot.snapshot,"cleanup_io_temporarx"),
@@ -1179,7 +1183,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
               !descriptor_bytes.empty(), "actual descriptor sidecar bytes missing");
   const auto descriptor_time = std::filesystem::last_write_time(descriptor_path);
   const auto warm_descriptors = api::LoadDescriptorFieldsSnapshot(context);
-  const auto relation_uuid = created_table.table_object.uuid.canonical;
+  const auto relation_uuid = created_table.table_object.uuid;
   Require(warm_descriptors && warm_descriptors->at(relation_uuid) == original_descriptor_fields,
           "descriptor warm-up lost actual created fields");
   auto altered_descriptor = actual_descriptor.descriptor;
@@ -1334,11 +1338,11 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
     request.context.engine_request_context = &probe_context;
     request.context.sblr_context.transaction_context_present = true;
     request.context.sblr_context.local_transaction_id = probe_context.local_transaction_id;
-    request.context.sblr_context.transaction_uuid = probe_context.transaction_uuid.canonical;
+    request.context.sblr_context.transaction_uuid = probe_context.transaction_uuid;
     request.context.sblr_context.active_savepoint_names = names.names;
-    if (names.diagnostic.error) request.context.sblr_context.savepoint_authority_diagnostic = {
+    if (names.diagnostic.error) request.context.sblr_context.savepoint_authority_diagnostic = scratchbird::engine::sblr::MakeSblrDiagnostic(
         names.diagnostic.code, names.diagnostic.message_key, names.diagnostic.detail,
-        scratchbird::engine::sblr::SblrDiagnosticSeverity::error, {}};
+        scratchbird::engine::sblr::SblrDiagnosticSeverity::error);
     return scratchbird::engine::functions::DispatchFunctionCall(function_package.registry, request).result;
   };
   const auto active_function = call_savepoint_active(probe_names);
@@ -1486,19 +1490,25 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   Require(!unreadable_index.ok && unreadable_index.diagnostic.error,
           "relation load published success from nonregular index authority");
   const auto row_bytes = std::filesystem::file_size(row_path);
+  char original_last_byte = 0;
+  {
+    std::ifstream original(row_path, std::ios::binary);
+    original.seekg(-1, std::ios::end);
+    Require(static_cast<bool>(original.get(original_last_byte)), "row fixture tail read failed");
+  }
   std::filesystem::resize_file(row_path, row_bytes - 1);
   const auto truncated_rows = api::LoadMgaRelationStoreState(context);
   {
     std::ofstream restore(row_path, std::ios::binary | std::ios::app);
-    restore.put('\n');
+    restore.put(original_last_byte);
     restore.flush();
-    Require(restore.good(), "row fixture delimiter restoration failed");
+    Require(restore.good(), "row fixture byte restoration failed");
   }
   Require(!truncated_rows.ok && truncated_rows.diagnostic.error,
           "unterminated row record was admitted as complete relation state");
-  const auto table_uuid = created_table.table_object.uuid.canonical;
+  const auto table_uuid = created_table.table_object.uuid;
   const auto scope_root = database_path.string() + ".sb.mga_relation_scope/";
-  const auto scoped_index_path = scope_root + table_uuid + ".indexes";
+  const auto scoped_index_path = api::MgaScopedRelationPath(context, table_uuid, ".indexes");
   const auto saved_scoped_index_path = scoped_index_path + ".read_failure_test_saved";
   const bool had_scoped_index = std::filesystem::exists(scoped_index_path);
   if (had_scoped_index) std::filesystem::rename(scoped_index_path, saved_scoped_index_path);
@@ -1510,8 +1520,8 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   Require(!unreadable_scoped_index.ok && unreadable_scoped_index.diagnostic.error &&
               !unreadable_target_index.ok && unreadable_target_index.diagnostic.error,
           "scoped index read failure became global fallback or successful target state");
-  const auto summary_path = scope_root + table_uuid + ".summary";
-  const auto scoped_row_path = scope_root + table_uuid + ".rows";
+  const auto summary_path = api::MgaScopedRelationPath(context, table_uuid, ".summary");
+  const auto scoped_row_path = api::MgaScopedRelationPath(context, table_uuid, ".rows");
   Require(std::filesystem::is_regular_file(scoped_row_path), "real inserted scoped rows missing");
   std::vector<api::CrudRowVersionRecord> scoped_rows;
   bool used_rows = false;
@@ -1573,7 +1583,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   replace_scoped_text(original_scoped_bytes);
   Require(!partial_text_cache && scoped_rows.empty() && !used_rows,
           "unterminated scoped text published partial or cached row authority");
-  const auto binary_index_path = scope_root + table_uuid + ".indexes.sbnx";
+  const auto binary_index_path = api::MgaScopedRelationPath(context, table_uuid, ".indexes.sbnx");
   const auto saved_binary_index_path = binary_index_path + ".read_failure_test_saved";
   const bool had_binary_index = std::filesystem::exists(binary_index_path);
   if (had_binary_index) std::filesystem::rename(binary_index_path, saved_binary_index_path);
@@ -1696,7 +1706,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   std::filesystem::create_directory(binary_row_fault_path);
   bounded_binary_read(0, false);
   std::filesystem::remove(binary_row_fault_path);
-  const auto scoped_binary_row_path = scope_root + table_uuid + ".rows.sbnr";
+  const auto scoped_binary_row_path = api::MgaScopedRelationPath(context, table_uuid, ".rows.sbnr");
   const auto saved_scoped_row_path = scoped_row_path + ".cache_test_saved";
   const auto saved_scoped_binary_path = scoped_binary_row_path + ".cache_test_saved";
   const bool had_scoped_binary = std::filesystem::exists(scoped_binary_row_path);
@@ -1822,7 +1832,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
       api::EngineRollbackTransactionRequest rollback;
       rollback.context = context;
       rollback.context.local_transaction_id = entry->identity.local_id.value;
-      rollback.context.transaction_uuid.canonical = uuid::UuidToString(entry->identity.transaction_uuid.value);
+      rollback.context.transaction_uuid = entry->identity.transaction_uuid.value;
       Require(api::EngineRollbackTransaction(rollback).ok, "metadata cleanup refused rollback could not be finalized");
     }
     const auto retained = api::HasMgaTemporaryCleanupMetadataWork(context, true, true, true);
@@ -1833,7 +1843,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   const auto truncated = api::HasMgaTemporaryCleanupMetadataWork(context, true, true, true);
   {
     std::ofstream restore(metadata_path, std::ios::binary | std::ios::app);
-    restore.put('\n');
+    restore.put(original_last_byte);
     restore.flush();
     Require(restore.good(), "metadata fixture delimiter restoration failed");
   }
@@ -1865,7 +1875,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
 int main(int argc, char** argv) {
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "dblc009_detach_cleanup.sbdb";
-  const std::string database_uuid = CreateOpenDatabase(database_path);
+  const auto database_uuid = CreateOpenDatabase(database_path);
   if (argc == 2 && std::string_view(argv[1]) == "--temporary-cleanup-failure") {
     std::cerr << "temporary_cleanup_fixture=" << temp_dir.string() << '\n';
     VerifyTemporaryCleanupFailure(database_path, database_uuid);

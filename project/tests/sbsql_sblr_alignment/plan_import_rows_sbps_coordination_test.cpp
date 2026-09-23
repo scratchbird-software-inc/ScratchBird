@@ -1,3 +1,6 @@
+#include "wire/public_result_packet.hpp"
+#include <map>
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -20,6 +23,7 @@
 #include "server/sbps.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "datatype_catalog_manifest.hpp"
 
 #include <algorithm>
 #include <array>
@@ -52,10 +56,8 @@ namespace wire = scratchbird::engine;
 
 using Bytes = std::vector<std::uint8_t>;
 
-constexpr std::string_view kInt32DescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d716";
-constexpr std::string_view kInt32TypeUuid =
-    "019d0000-0000-7000-8000-00000000d717";
+constexpr auto kInt32DescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716");
+constexpr auto kInt32TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717");
 constexpr std::uint64_t kFixtureEpochMillis = 1947000000000ull;
 constexpr std::uint64_t kOccurrence = 1;
 
@@ -108,21 +110,9 @@ platform::TypedUuid NewTypedUuid(platform::UuidKind kind) {
   return durable.value;
 }
 
-std::string UuidText(const platform::TypedUuid& value) {
-  return uuid::UuidToString(value.value);
-}
-
-std::string UuidText(const std::array<std::uint8_t, 16>& value) {
-  platform::Uuid raw;
-  raw.bytes = value;
-  return uuid::UuidToString(raw);
-}
-
-std::array<std::uint8_t, 16> UuidBytes(std::string_view text) {
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  Require(parsed.ok(), "UUID parsing failed");
-  return parsed.value.bytes;
-}
+platform::Uuid NativeUuid(const platform::TypedUuid& value) { return value.value; }
+platform::Uuid NativeUuid(const std::array<std::uint8_t, 16>& value) { return platform::Uuid{value}; }
+std::array<std::uint8_t, 16> UuidBytes(const platform::Uuid& value) { return value.bytes; }
 
 sb_engine_uuid_t PublicUuid(const platform::TypedUuid& value) {
   sb_engine_uuid_t result{};
@@ -164,9 +154,26 @@ std::vector<std::uint8_t> ReadBytes(const std::filesystem::path& path) {
 }
 
 std::string Int32Descriptor() {
-  return "type=int32;datatype_descriptor_uuid=" +
-         std::string(kInt32DescriptorUuid) + ";type_uuid=" +
-         std::string(kInt32TypeUuid) + ";nullable=false";
+  return "type=int32;nullable=false";
+}
+
+api::EngineColumnDefinition Int32Column() {
+  const auto lookup = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"), 1, 1, kInt32DescriptorUuid, 1);
+  Require(lookup.ok && lookup.row.type_uuid == kInt32TypeUuid,
+          "exact fixture datatype catalog binding is unavailable");
+  api::EngineColumnDefinition column;
+  column.requested_column_uuid = NewTypedUuid(platform::UuidKind::object).value;
+  column.ordinal = 0;
+  column.nullable = false;
+  column.descriptor.descriptor_uuid = lookup.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_uuid = lookup.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = lookup.row.descriptor_generation;
+  column.descriptor.type_uuid = lookup.row.type_uuid;
+  column.descriptor.descriptor_kind = "scalar";
+  column.descriptor.canonical_type_name = lookup.row.canonical_name;
+  column.descriptor.encoded_descriptor = Int32Descriptor();
+  return column;
 }
 
 struct Fixture {
@@ -212,12 +219,12 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "plan-import-rows-sbps-coordination";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = UuidText(fixture.database);
+  context.database_uuid = NativeUuid(fixture.database);
   context.database_page_size_bytes = 16384;
-  context.default_root_uuid.canonical = UuidText(fixture.filespace);
-  context.current_schema_uuid.canonical = UuidText(fixture.schema);
-  context.principal_uuid.canonical = UuidText(fixture.principal);
-  context.session_uuid.canonical = UuidText(fixture.session);
+  context.default_root_uuid = NativeUuid(fixture.filespace);
+  context.current_schema_uuid = NativeUuid(fixture.schema);
+  context.principal_uuid = NativeUuid(fixture.principal);
+  context.session_uuid = NativeUuid(fixture.session);
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -232,8 +239,8 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.optimizer_maximum_planning_time_ns = 5'000'000'000ull;
   context.optimizer_spill_allowed = true;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      UuidText(NewTypedUuid(platform::UuidKind::object));
+  context.authorization_context.authority_uuid =
+      NativeUuid(NewTypedUuid(platform::UuidKind::object));
   context.authorization_context.security_context_generation = 1;
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
@@ -246,11 +253,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.authorization_context.effective_subjects.push_back(
       std::move(subject));
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
-      UuidText(NewTypedUuid(platform::UuidKind::object));
+  grant.grant_uuid =
+      NativeUuid(NewTypedUuid(platform::UuidKind::object));
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = UuidText(fixture.relation);
+  grant.target_uuid = NativeUuid(fixture.relation);
   grant.right = "INSERT";
   grant.security_epoch = context.security_epoch;
   context.authorization_context.grants.push_back(std::move(grant));
@@ -293,9 +300,11 @@ Fixture MakeFixture() {
 
   api::CrudTableRecord table;
   table.creator_tx = fixture.transaction.local_transaction_id;
-  table.table_uuid = UuidText(fixture.relation);
+  table.table_uuid = NativeUuid(fixture.relation);
   table.default_name = "plan_import_rows_target";
   table.columns = {{"id", Int32Descriptor()}};
+  table.bound_columns = {Int32Column()};
+  table.bound_relation_generation = table.bound_column_generation = 1;
   Require(!api::AppendMgaTableMetadata(fixture.transaction, table).error,
           "fixture table metadata append failed");
   const auto ensured = api::EnsureMgaRelationStorageDescriptor(
@@ -362,7 +371,7 @@ bridge::StatementContextReceiptHandle AcquireReceipt(
     bridge::StatementContextReceiptView* view) {
   bridge::StatementContextAcquireRequest request;
   request.engine_context = &context;
-  request.exact_transaction_uuid = context.transaction_uuid.canonical;
+  request.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   sb_engine_result_t engine_result = nullptr;
   const auto status = bridge::AcquireStatementContextReceipt(
@@ -384,7 +393,7 @@ api::SblrExecutorAvailabilityRowIdentity AvailabilityIdentity() {
 
 std::vector<std::uint8_t> Demand(
     const bridge::StatementContextReceiptView& view,
-    std::string_view target_table_uuid,
+    const platform::Uuid& target_table_uuid,
     std::vector<std::array<std::uint8_t, 16>> mapping_targets = {}) {
   constexpr std::size_t kHeaderBytes = 120;
   constexpr std::size_t kMappingBytes = 24;
@@ -493,7 +502,7 @@ Bytes CanonicalStruct(std::uint32_t format, std::uint8_t version) {
 }
 
 codec::SblrOperationEnvelope PackageBoundary(
-    bool begin, std::string_view parser_uuid, std::string_view registry_uuid,
+    bool begin, const platform::Uuid& parser_uuid, const platform::Uuid& registry_uuid,
     const std::array<std::uint8_t, 16>& package_uuid) {
   auto operation = codec::MakeSblrEnvelope(
       begin ? "engine.op.package_begin" : "engine.op.package_end",
@@ -524,7 +533,7 @@ struct PlanSubmission {
 
 PlanSubmission BuildPlanSubmission(
     const Fixture& fixture, const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const std::vector<std::uint8_t>& descriptor_ref_bytes) {
   const auto package_uuid = UuidBytes(view.bound_ast_uuid);
   auto member = codec::MakeSblrEnvelope(
@@ -581,13 +590,13 @@ PlanSubmission BuildPlanSubmission(
                   descriptor_ref_bytes,
           "canonical plan-import member identity or descriptor-ref drifted");
 
-  const auto database_uuid = UuidBytes(UuidText(fixture.database));
+  const auto database_uuid = UuidBytes(NativeUuid(fixture.database));
   const auto dialect_uuid =
       NewTypedUuid(platform::UuidKind::object).value.bytes;
   const auto parser_uuid_bytes = UuidBytes(parser_uuid);
   const auto registry_uuid = UuidBytes(view.catalog_epoch_uuid);
   const auto statement_uuid = UuidBytes(view.statement_uuid);
-  const auto principal_uuid = UuidBytes(UuidText(fixture.principal));
+  const auto principal_uuid = UuidBytes(NativeUuid(fixture.principal));
   wire::SblrCanonicalContainer container;
   std::copy(database_uuid.begin(), database_uuid.end(),
             container.canonical_anchor.begin());
@@ -769,14 +778,14 @@ void TestCoordination() {
   Require(available.snapshot.installed && available.snapshot.generation != 0 &&
               std::filesystem::exists(availability_path),
           "receipt bootstrap did not publish exact plan-import availability");
-  Require(!view.receipt_uuid.empty() && !view.resource_admission_uuid.empty(),
+  Require(!view.receipt_uuid.is_nil() && !view.resource_admission_uuid.is_nil(),
           "receipt omitted statement or resource-admission authority");
   api::EngineRequestContext copied_context;
   Require(bridge::CopyStatementContextEngineContextV1(
               receipt, &copied_context, nullptr) == SB_ENGINE_STATUS_OK &&
-              copied_context.statement_receipt_uuid.canonical ==
+              copied_context.statement_receipt_uuid ==
                   view.receipt_uuid &&
-              copied_context.resource_admission_uuid.canonical ==
+              copied_context.resource_admission_uuid ==
                   view.resource_admission_uuid,
           "opaque receipt context copy lost import authority");
 
@@ -785,12 +794,12 @@ void TestCoordination() {
   live.connection_uuid = sbps::MakeUuidV7Bytes();
   live.server_channel_uuid = sbps::MakeUuidV7Bytes();
   live.channel_state = server::ServerChannelState::kReady;
-  live.session_uuid = UuidBytes(UuidText(fixture.session));
+  live.session_uuid = UuidBytes(NativeUuid(fixture.session));
   live.auth_context_uuid = sbps::MakeUuidV7Bytes();
-  live.principal_uuid = UuidBytes(UuidText(fixture.principal));
+  live.principal_uuid = UuidBytes(NativeUuid(fixture.principal));
   live.effective_user_uuid = live.principal_uuid;
   live.database_path = fixture.database_path.string();
-  live.database_uuid = UuidText(fixture.database);
+  live.database_uuid = NativeUuid(fixture.database);
   live.catalog_generation = view.catalog_generation_id;
   live.security_epoch = view.security_epoch;
   live.resource_epoch = view.resource_epoch;
@@ -816,7 +825,7 @@ void TestCoordination() {
                                                          statement);
 
   server::HostedEngineState engine_state;
-  const auto canonical = Demand(view, UuidText(fixture.relation));
+  const auto canonical = Demand(view, NativeUuid(fixture.relation));
   Require(canonical.size() == 120 &&
               std::equal(canonical.begin(), canonical.begin() + 4,
                          std::string_view("IPRQ").begin()),
@@ -835,7 +844,7 @@ void TestCoordination() {
                  "malformed policy demand did not precede authentication");
 
   auto unauthorized_payload =
-      Demand(view, UuidText(NewTypedUuid(platform::UuidKind::object)));
+      Demand(view, NativeUuid(NewTypedUuid(platform::UuidKind::object)));
   auto unauthorized = RequestFrame(live, std::move(unauthorized_payload));
   RequireRefusal(server::HandleCoordinateDmlPlanImportRowsBind(
                      &registry, engine_state, unauthorized),
@@ -845,7 +854,7 @@ void TestCoordination() {
   const auto mapping_target =
       NewTypedUuid(platform::UuidKind::object).value.bytes;
   auto nonzero_mapping = RequestFrame(
-      live, Demand(view, UuidText(fixture.relation), {mapping_target}));
+      live, Demand(view, NativeUuid(fixture.relation), {mapping_target}));
   RequireRefusal(server::HandleCoordinateDmlPlanImportRowsBind(
                      &registry, engine_state, nonzero_mapping),
                  "SBLR.OPERATION_UNSUPPORTED",
@@ -921,8 +930,8 @@ void TestCoordination() {
               planned.normalized_source_kind_code == 2 &&
               planned.normalized_format_family_code == 1 &&
               planned.mapped_column_count == 0 &&
-              planned.validated_request_descriptor_uuid.canonical ==
-                  UuidText(descriptor_ref.descriptor_uuid) &&
+              planned.validated_request_descriptor_uuid ==
+                  NativeUuid(descriptor_ref.descriptor_uuid) &&
               planned.validated_request_descriptor_generation ==
                   descriptor_ref.descriptor_generation &&
               Nonzero(planned.validated_request_projection_sha256),
@@ -957,7 +966,7 @@ void TestCoordination() {
           "accepted IPEV was not exact 208-byte all-ten-gate evidence");
 
   const auto parser_uuid =
-      UuidText(NewTypedUuid(platform::UuidKind::object));
+      NativeUuid(NewTypedUuid(platform::UuidKind::object));
   const auto submission =
       BuildPlanSubmission(fixture, view, parser_uuid, success.payload);
   bridge::StatementPackageAdmissionReservationRequest reservation_request;
@@ -986,7 +995,7 @@ void TestCoordination() {
   admission.admitted_parser_package_uuid = parser_uuid;
   admission.admitted_parser_package_version_major = 1;
   admission.admitted_registry_snapshot_uuid = view.catalog_epoch_uuid;
-  admission.authenticated_principal_uuid = UuidText(fixture.principal);
+  admission.authenticated_principal_uuid = NativeUuid(fixture.principal);
   admission.catalog_snapshot_uuid = view.statement_metadata_snapshot_uuid;
   admission.engine_mga_statement_uuid = view.statement_uuid;
   admission.engine_mga_snapshot_uuid = view.statement_snapshot_uuid;
@@ -1075,25 +1084,28 @@ void TestCoordination() {
               SB_ENGINE_STATUS_OK,
           "public import planning payload was unavailable");
   const std::string payload(payload_view.data, payload_view.size_bytes);
-  const std::string expected_row =
-      "surface_accepted_bool=1;planning_only_bool=1;"
-      "execution_requires_execute_import_rows_bool=1;"
-      "row_execution_completed_bool=0;row_persistence_claimed_bool=0;"
-      "normalized_insert_mode=" +
-      std::to_string(planned.normalized_insert_mode_code) +
-      ";normalized_source_kind=" +
-      std::to_string(planned.normalized_source_kind_code) +
-      ";normalized_format_family=" +
-      std::to_string(planned.normalized_format_family_code) +
-      ";mapped_column_count_u64=" +
-      std::to_string(planned.mapped_column_count) +
-      ";validated_request_descriptor_uuid_16=" +
-      planned.validated_request_descriptor_uuid.canonical +
-      ";validated_request_descriptor_generation_u64=" +
-      std::to_string(planned.validated_request_descriptor_generation) +
-      ";validated_request_projection_sha256_32=sha256:" +
-      scratchbird::core::hash::HexLower(
-          planned.validated_request_projection_sha256);
+  namespace packet = scratchbird::wire::public_result;
+  const std::map<std::string, std::string> expected_fields = {
+      {"surface_accepted_bool", "1"}, {"planning_only_bool", "1"},
+      {"execution_requires_execute_import_rows_bool", "1"},
+      {"row_execution_completed_bool", "0"}, {"row_persistence_claimed_bool", "0"},
+      {"normalized_insert_mode", std::to_string(planned.normalized_insert_mode_code)},
+      {"normalized_source_kind", std::to_string(planned.normalized_source_kind_code)},
+      {"normalized_format_family", std::to_string(planned.normalized_format_family_code)},
+      {"mapped_column_count_u64", std::to_string(planned.mapped_column_count)},
+      {"validated_request_descriptor_uuid_16", std::string(reinterpret_cast<const char*>(planned.validated_request_descriptor_uuid.bytes.data()), 16)},
+      {"validated_request_descriptor_generation_u64", std::to_string(planned.validated_request_descriptor_generation)},
+      {"validated_request_projection_sha256_32", std::string(reinterpret_cast<const char*>(planned.validated_request_projection_sha256.data()), 32)}};
+  const auto row = packet::Find(payload, "row[0]");
+  std::vector<packet::Field> row_fields;
+  Require(row && row->kind == packet::Kind::row && packet::Decode(row->value, &row_fields) && row_fields.size() == 12,
+          "public import plan result did not contain twelve framed fields");
+  std::map<std::string, std::string> actual_fields;
+  for (const auto& field : row_fields) Require(actual_fields.emplace(field.name, field.value).second,
+                                              "public import plan result has duplicate fields");
+  const auto id = packet::Find(row->value, "validated_request_descriptor_uuid_16");
+  Require(id && id->kind == packet::Kind::uuid && id->value.size() == 16,
+          "public import descriptor identity was not binary16");
   constexpr std::string_view kExpectedMetadata =
       "surface_accepted_bool:bool_u8:not_null;"
       "planning_only_bool:bool_u8:not_null;"
@@ -1107,55 +1119,19 @@ void TestCoordination() {
       "validated_request_descriptor_uuid_16:uuid16:not_null;"
       "validated_request_descriptor_generation_u64:u64:not_null;"
       "validated_request_projection_sha256_32:bstr32:not_null";
-  Require(payload.find("operation_id=dml.plan_import_rows\n") == 0 &&
-              payload.find("result_kind=import_plan_result\n") !=
-                  std::string::npos &&
-              payload.find("row_count=1\n") != std::string::npos &&
-              payload.find("row[0]=" + expected_row + "\n") !=
-                  std::string::npos &&
-              payload.find("row_meta[0]=" +
-                           std::string(kExpectedMetadata) + "\n") !=
-                  std::string::npos &&
-              std::count(expected_row.begin(), expected_row.end(), '=') == 12 &&
+  Require(packet::Value(payload, "operation_id") == "dml.plan_import_rows" &&
+              packet::Value(payload, "result_kind") == "import_plan_result" &&
+              packet::Value(payload, "row_count") == "1" && actual_fields == expected_fields &&
+              packet::Value(payload, "row_meta[0]") == kExpectedMetadata &&
               payload.find("plan_import_rows_target") == std::string::npos &&
-              payload.find(fixture.database_path.string()) ==
-                  std::string::npos &&
-              payload.find(UuidText(fixture.relation)) == std::string::npos,
+              payload.find(fixture.database_path.string()) == std::string::npos &&
+              payload.find(std::string(reinterpret_cast<const char*>(fixture.relation.value.bytes.data()), 16)) == std::string::npos,
           "public twelve-field import_plan_result drifted or leaked names");
-
-  constexpr std::string_view kIpevPrefix =
-      "evidence=accepted_executor_evidence_ipev_v1:";
-  const auto evidence_begin = payload.find(kIpevPrefix);
-  const auto hex_begin = evidence_begin == std::string::npos
-                             ? std::string::npos
-                             : evidence_begin + kIpevPrefix.size();
-  const auto hex_end = hex_begin == std::string::npos
-                           ? std::string::npos
-                           : payload.find('\n', hex_begin);
-  Require(hex_begin != std::string::npos && hex_end != std::string::npos &&
-              hex_end - hex_begin ==
-                  codec::kPlanImportRowsExecutorEvidenceBytesV1 * 2,
-          "public result omitted the exact 416-hex-character IPEV");
-  const auto public_evidence_hex =
-      payload.substr(hex_begin, hex_end - hex_begin);
-  Require(std::all_of(public_evidence_hex.begin(), public_evidence_hex.end(),
-                      [](char ch) {
-                        return (ch >= '0' && ch <= '9') ||
-                               (ch >= 'a' && ch <= 'f');
-                      }),
-          "public IPEV was not canonical lowercase hexadecimal");
-  Bytes public_evidence_bytes;
-  public_evidence_bytes.reserve(public_evidence_hex.size() / 2);
-  const auto hex_digit = [](char ch) -> std::uint8_t {
-    return static_cast<std::uint8_t>(ch <= '9' ? ch - '0'
-                                               : ch - 'a' + 10);
-  };
-  for (std::size_t offset = 0; offset != public_evidence_hex.size();
-       offset += 2) {
-    public_evidence_bytes.push_back(static_cast<std::uint8_t>(
-        (hex_digit(public_evidence_hex[offset]) << 4U) |
-        hex_digit(public_evidence_hex[offset + 1])));
-  }
+  const auto evidence = packet::Evidence(payload, "accepted_executor_evidence_ipev_v1");
+  Require(evidence && evidence->kind == packet::Kind::bytes &&
+              evidence->value.size() == codec::kPlanImportRowsExecutorEvidenceBytesV1,
+          "public result omitted the exact binary IPEV");
+  Bytes public_evidence_bytes(evidence->value.begin(), evidence->value.end());
   codec::PlanImportRowsExecutorEvidenceV1 public_evidence;
   codec_diagnostic = {};
   Require(codec::DecodePlanImportRowsExecutorEvidenceV1(
@@ -1172,7 +1148,7 @@ void TestCoordination() {
                   available.snapshot.generation &&
               public_evidence.completed_validation_bits ==
                   codec::kPlanImportRowsAcceptedValidationBitsV1 &&
-              public_evidence_hex == HexLower(public_evidence_bytes),
+              public_evidence_bytes == evidence_bytes,
           "public IPEV did not bind the exact descriptor and all ten gates");
   (void)sb_engine_result_release(public_result);
 

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -94,7 +95,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -127,10 +128,10 @@ void PrintApiDiagnostics(const api::EngineApiResult& result) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000065101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000065102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000065103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 565;
   session.security_policy_epoch = 566;
   session.descriptor_epoch = 567;
@@ -141,7 +142,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_065_pivot_unpivot_route";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000065104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065104");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-065-pivot-unpivot-route-test";
   config.build_id = "sbsql-sbsfc-065-pivot-unpivot-route-test";
   return config;
@@ -156,7 +157,7 @@ PipelineArtifacts RunPipeline(const RouteCase& test_case) {
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            {std::string(kTableUuid)});
+                            {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065001")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -260,12 +261,12 @@ void RequireServerAdmission(const SblrEnvelope& envelope) {
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsql-sbsfc-065-pivot-unpivot-exact-route";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000065201";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000065202";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000065203";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000065204";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000065205";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000065206";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065201");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065202");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065203");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065204");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065205");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065206");
   context.local_transaction_id = 65;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
@@ -316,24 +317,24 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineRowValue PivotRow(std::string row_uuid,
+api::EngineRowValue PivotRow(api::EngineUuid row_uuid,
                              std::string region,
                              std::string quarter,
                              std::string amount) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"region", TextValue(std::move(region))});
   row.fields.push_back({"quarter", TextValue(std::move(quarter))});
   row.fields.push_back({"amount", Int64Value(std::move(amount))});
   return row;
 }
 
-api::EngineRowValue UnpivotRow(std::string row_uuid,
+api::EngineRowValue UnpivotRow(api::EngineUuid row_uuid,
                                std::string region,
                                std::string q1,
                                std::string q2) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"region", TextValue(std::move(region))});
   row.fields.push_back({"q1", Int64Value(std::move(q1))});
   row.fields.push_back({"q2", Int64Value(std::move(q2))});
@@ -353,19 +354,19 @@ void RequirePivotPlanDispatch() {
   AddTextOperand(&envelope, "pivot_in_item_count", "2");
 
   api::EngineApiRequest api_request;
-  api_request.rows.push_back(PivotRow("relation-0-row-019f0000-0000-7000-8000-000000065301",
+  api_request.rows.push_back(PivotRow(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065301"),
                                       "north",
                                       "Q1",
                                       "10"));
-  api_request.rows.push_back(PivotRow("relation-0-row-019f0000-0000-7000-8000-000000065302",
+  api_request.rows.push_back(PivotRow(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065302"),
                                       "north",
                                       "Q2",
                                       "7"));
-  api_request.rows.push_back(PivotRow("relation-0-row-019f0000-0000-7000-8000-000000065303",
+  api_request.rows.push_back(PivotRow(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065303"),
                                       "south",
                                       "Q1",
                                       "3"));
-  api_request.rows.push_back(PivotRow("relation-0-row-019f0000-0000-7000-8000-000000065304",
+  api_request.rows.push_back(PivotRow(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065304"),
                                       "south",
                                       "Q2",
                                       "4"));
@@ -406,11 +407,11 @@ void RequireUnpivotPlanDispatch() {
   AddTextOperand(&envelope, "unpivot_in_item_count", "2");
 
   api::EngineApiRequest api_request;
-  api_request.rows.push_back(UnpivotRow("relation-0-row-019f0000-0000-7000-8000-000000065401",
+  api_request.rows.push_back(UnpivotRow(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065401"),
                                         "north",
                                         "10",
                                         "7"));
-  api_request.rows.push_back(UnpivotRow("relation-0-row-019f0000-0000-7000-8000-000000065402",
+  api_request.rows.push_back(UnpivotRow(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000065402"),
                                         "south",
                                         "3",
                                         "4"));

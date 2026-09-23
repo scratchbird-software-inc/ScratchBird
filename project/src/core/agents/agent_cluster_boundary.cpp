@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_cluster_boundary.hpp"
+#include "uuid.hpp"
 
 #include "cluster_provider/cluster_provider.hpp"
 
@@ -90,7 +91,7 @@ void AddDiagnosticCode(AgentClusterBoundaryResult* result, std::string code) {
   result->diagnostic_codes.push_back(std::move(code));
 }
 
-void AddEvidence(AgentClusterBoundaryResult* result, std::string kind, std::string id) {
+void AddEvidence(AgentClusterBoundaryResult* result, std::string kind, std::variant<std::string, scratchbird::core::platform::Uuid> id) {
   if (result == nullptr) {
     return;
   }
@@ -183,8 +184,14 @@ void AddLeaseEvidence(AgentClusterBoundaryResult* result,
               std::to_string(state.lease_until_microseconds));
 }
 
-std::string DeterministicFenceToken(const std::string& instance_uuid, u64 epoch) {
-  return "agent-cluster-fence:" + instance_uuid + ":" + std::to_string(epoch);
+std::string DeterministicFenceToken(const scratchbird::core::platform::Uuid& instance_uuid,
+                                    u64 epoch) {
+  // Opaque local lease token, never a rendered UUID or cluster authority.
+  std::string token("SBAFNC02", 8);
+  token.append(reinterpret_cast<const char*>(instance_uuid.bytes.data()), 16);
+  for (unsigned shift = 0; shift != 64; shift += 8)
+    token.push_back(static_cast<char>((epoch >> shift) & 255));
+  return token;
 }
 
 }  // namespace
@@ -254,7 +261,7 @@ AgentClusterBoundaryResult ApplyAgentClusterLeaseSurface(
       break;
     case AgentClusterLeaseSurface::acquire_lease:
       if (lease_state.state == AgentClusterLeadershipState::quarantined ||
-          request.instance_uuid.empty() ||
+          !scratchbird::core::uuid::IsEngineIdentityUuid(request.instance_uuid) ||
           request.lease_duration_microseconds == 0) {
         MarkPreconditionFailure(&result, lease_state.state == AgentClusterLeadershipState::quarantined
                                              ? kAgentClusterSplitBrainRefusedCode
@@ -299,7 +306,7 @@ AgentClusterBoundaryResult ApplyAgentClusterLeaseSurface(
       break;
     case AgentClusterLeaseSurface::failover:
       if (lease_state.state == AgentClusterLeadershipState::quarantined ||
-          request.instance_uuid.empty() ||
+          !scratchbird::core::uuid::IsEngineIdentityUuid(request.instance_uuid) ||
           request.lease_duration_microseconds == 0) {
         MarkPreconditionFailure(&result, lease_state.state == AgentClusterLeadershipState::quarantined
                                              ? kAgentClusterSplitBrainRefusedCode

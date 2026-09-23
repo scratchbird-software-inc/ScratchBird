@@ -9,6 +9,9 @@
 #include "runtime/parser_runtime.hpp"
 
 #include "control_plane.hpp"
+#include "uuid.hpp"
+#include <fstream>
+#include <stdexcept>
 #include "lifecycle/parser_lifecycle.hpp"
 #include "statement/statement_catalog.hpp"
 #include "wire/sbsql_test_wire.hpp"
@@ -210,7 +213,11 @@ ParserConfig ConfigFromArgs(int argc, char** argv, bool force_probe) {
   config.listener_control_fd = static_cast<int>(ParseU64(std::getenv("SB_LISTENER_CONTROL_FD"), 0));
   config.listener_control_socket = Env("SB_LISTENER_CONTROL_SOCKET", "");
   config.worker_numeric_id = ParseU64(std::getenv("SB_PARSER_WORKER_NUMERIC_ID"), 1);
-  config.parser_uuid = Env("SB_PARSER_UUID", "00000000-0000-7000-8000-00000000sbsq");
+  if (!Env("SB_PARSER_UUID").empty())
+    throw std::invalid_argument("parser identity requires binary16 binding, not SB_PARSER_UUID text");
+  const auto parser_identity = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  if (!parser_identity) throw std::runtime_error("parser identity issuance failed");
+  config.parser_uuid = *parser_identity;
   config.listener_uuid = Env("SB_LISTENER_UUID", "");
   config.database_token = Env("SB_DATABASE_TOKEN", "");
   config.server_endpoint = Env("SB_SERVER_PARSER_IPC_ENDPOINT", Env("SB_SERVER_ENDPOINT", ""));
@@ -233,7 +240,19 @@ ParserConfig ConfigFromArgs(int argc, char** argv, bool force_probe) {
     if (arg == "--allow-probe-auth") config.allow_probe_auth = true;
     if (auto value = ValueAfter(arg, "--server-endpoint="); !value.empty()) config.server_endpoint = std::move(value);
     if (auto value = ValueAfter(arg, "--database-token="); !value.empty()) config.database_token = std::move(value);
-    if (auto value = ValueAfter(arg, "--parser-uuid="); !value.empty()) config.parser_uuid = std::move(value);
+    if (arg.starts_with("--parser-uuid="))
+      throw std::invalid_argument("use --parser-identity-file with a binary16 binding");
+    if (arg == "--parser-identity-file=")
+      throw std::invalid_argument("parser identity file path is required");
+    if (auto value = ValueAfter(arg, "--parser-identity-file="); !value.empty()) {
+      std::ifstream input(value, std::ios::binary);
+      scratchbird::core::platform::Uuid identity;
+      input.read(reinterpret_cast<char*>(identity.bytes.data()), 16);
+      if (!input || input.peek() != std::char_traits<char>::eof() ||
+          !scratchbird::core::uuid::IsEngineIdentityUuid(identity))
+        throw std::invalid_argument("parser identity file must contain one binary16 engine UUID");
+      config.parser_uuid = identity;
+    }
     if (auto value = ValueAfter(arg, "--listener-uuid="); !value.empty()) config.listener_uuid = std::move(value);
     if (auto value = ValueAfter(arg, "--dialect="); !value.empty()) config.dialect = std::move(value);
     if (auto value = ValueAfter(arg, "--profile="); !value.empty()) config.profile_id = std::move(value);

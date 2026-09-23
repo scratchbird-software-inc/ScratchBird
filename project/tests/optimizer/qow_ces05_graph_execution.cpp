@@ -1,6 +1,9 @@
+#include "catalog/column_metadata_codec.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "model_family_coordinator.hpp"
 #include "model_family_executor.hpp"
 #include "logical_plan.hpp"
@@ -84,11 +87,15 @@ constexpr std::array<Vector, 12> kVectors{{
      "not_applicable", 36, 37},
 }};
 
-std::string Uuid(const std::uint64_t value) {
-  char buffer[37];
-  std::snprintf(buffer, sizeof(buffer), "00000000-0000-4000-8000-%012llx",
-                static_cast<unsigned long long>(value));
-  return buffer;
+api::EngineUuid Uuid(const std::uint64_t value) {
+  auto identity = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000000");
+  for (unsigned byte = 0; byte < 6; ++byte)
+    identity.bytes[15-byte] = static_cast<std::uint8_t>(value >> (8*byte));
+  return identity;
+}
+
+std::string UuidBytes(const api::EngineUuid& value) {
+  return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
 }
 
 bool Require(const bool condition, const std::string_view detail) {
@@ -220,11 +227,11 @@ api::EngineDescriptor Descriptor(const std::uint64_t identity,
                                  const std::string& type,
                                  const bool nullable) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = Uuid(identity);
+  descriptor.descriptor_uuid = Uuid(identity);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = type;
-  descriptor.encoded_descriptor =
-      "type_uuid=" + Uuid(identity + 100) + ";nullability=" +
+  descriptor.type_uuid = Uuid(identity + 100);
+  descriptor.encoded_descriptor = std::string("nullability=") +
       (nullable ? "nullable" : "non_null");
   return descriptor;
 }
@@ -232,6 +239,15 @@ api::EngineDescriptor Descriptor(const std::uint64_t identity,
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             std::string value) {
   return {descriptor, std::move(value), false};
+}
+
+api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
+                            const api::EngineUuid& identity) {
+  api::EngineTypedValue value;
+  value.descriptor = descriptor;
+  value.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
+  value.setState(api::EngineValueState::value);
+  return value;
 }
 
 opt::ModelFamilyCoordinatorRequestV1 Planning(const Vector& vector) {
@@ -428,21 +444,21 @@ std::string StablePlanBytes(
   const auto& selected = planned.selected_candidate;
   bytes << planned.logical_operator_id << '|' << planned.physical_operator_id
         << '|' << planned.exact_fallback_selected << '|'
-        << selected.alternative_uuid << '|' << selected.provider_uuid << '|'
-        << selected.capability_uuid << '|' << selected.provider_generation
-        << '|' << selected.cost.cost_vector_uuid << '|'
+        << UuidBytes(selected.alternative_uuid) << '|' << UuidBytes(selected.provider_uuid) << '|'
+        << UuidBytes(selected.capability_uuid) << '|' << selected.provider_generation
+        << '|' << UuidBytes(selected.cost.cost_vector_uuid) << '|'
         << selected.cost.cpu_units << '|'
         << selected.cost.sequential_read_units << '|'
         << selected.cost.random_read_units << '|'
         << selected.cost.memory_bytes_required << '|'
         << selected.cost.uncertainty_penalty << '|'
         << selected.cost.risk_penalty << '|'
-        << planned.physical_dag.selected_plan_uuid << '|'
+        << UuidBytes(planned.physical_dag.selected_plan_uuid) << '|'
         << planned.physical_dag.root_physical_node_id;
   for (const auto& node : planned.physical_dag.nodes) {
     bytes << '|' << node.physical_node_id << '|' << node.causal_counter_id
-          << '|' << node.selected_alternative_uuid << '|'
-          << node.executor_capability_uuid << '|' << node.cost_vector_uuid
+          << '|' << UuidBytes(node.selected_alternative_uuid) << '|'
+          << UuidBytes(node.executor_capability_uuid) << '|' << UuidBytes(node.cost_vector_uuid)
           << '|' << node.memory_bytes_required;
   }
   return bytes.str();
@@ -452,16 +468,20 @@ std::string StableExecutionBytes(
     const exec::ModelFamilyExecutionResultV1& result) {
   std::ostringstream bytes;
   bytes << result.output.family_id << '|' << result.output.operation_id << '|'
-        << result.output.selected_alternative_uuid << '|'
+        << UuidBytes(result.output.selected_alternative_uuid) << '|'
         << result.output.provider_generation << '|'
         << result.output.causal_counter_id;
   for (const auto& identity : result.output.ordered_row_identities) {
-    bytes << '|' << identity.row_uuid << '|' << identity.vertex_uuid << '|'
-          << identity.edge_uuid << '|' << identity.path_uuid << '|'
+    bytes << '|' << UuidBytes(identity.row_uuid) << '|' << UuidBytes(identity.vertex_uuid) << '|'
+          << UuidBytes(identity.edge_uuid) << '|' << UuidBytes(identity.path_uuid) << '|'
           << identity.graph_depth;
   }
   for (const auto& row : result.output.batch.rows) {
-    for (const auto& value : row.values) bytes << '|' << value.encoded_value;
+    for (const auto& value : row.values) {
+      bytes << '|' << value.encoded_value.size() << ':' << value.encoded_value;
+      bytes << '|' << value.binary_value.size() << ':';
+      bytes.write(reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size());
+    }
   }
   return bytes.str();
 }
@@ -575,7 +595,7 @@ bool ReplayAndGraphIdentity() {
   const auto provider = match_seed.execute_provider;
   match_seed.execute_provider = [provider](const auto& input) {
     auto result = provider(input);
-    result.provider_batch.ordered_row_identities.front().edge_uuid.clear();
+    result.provider_batch.ordered_row_identities.front().edge_uuid = {};
     return result;
   };
   passed &= Require(exec::ExecuteModelFamilySourceV1(match_seed).accepted,
@@ -616,7 +636,7 @@ bool ReplayAndGraphIdentity() {
   expand_positive_depth.execute_provider =
       [positive_provider](const auto& input) {
     auto result = positive_provider(input);
-    result.provider_batch.ordered_row_identities.front().edge_uuid.clear();
+    result.provider_batch.ordered_row_identities.front().edge_uuid = {};
     return result;
   };
   const auto expand_missing_edge =
@@ -640,8 +660,8 @@ bool ReplayAndGraphIdentity() {
   auto row_value_substitution = Execution(kVectors[0]);
   row_value_substitution.execute_provider = [provider](const auto& input) {
     auto result = provider(input);
-    result.provider_batch.batch.rows.front().values.front().encoded_value =
-        Uuid(7991);
+    result.provider_batch.batch.rows.front().values.front() = Value(
+        result.provider_batch.batch.rows.front().values.front().descriptor, Uuid(7991));
     return result;
   };
   const auto row_value_refused =
@@ -744,16 +764,16 @@ platform::TypedUuid ProductionUuid(const platform::UuidKind kind) {
   return uuid::GenerateEngineIdentityV7(kind, ProductionSeed()).value;
 }
 
-std::string ProductionUuidText(const platform::UuidKind kind) {
-  return uuid::UuidToString(ProductionUuid(kind).value);
+api::EngineUuid ProductionNativeUuid(const platform::UuidKind kind) {
+  return ProductionUuid(kind).value;
 }
 
 struct ProductionFixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string schema_uuid;
-  std::string graph_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid schema_uuid;
+  api::EngineUuid graph_uuid;
   api::MgaRelationStorageDescriptor graph_descriptor;
 
   ~ProductionFixture() {
@@ -783,9 +803,9 @@ bool MakeProductionFixture(ProductionFixture* fixture) {
   if (!db::CreateDatabaseFile(create).ok()) {
     return Require(false, "production graph database creation failed");
   }
-  fixture->database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture->schema_uuid = ProductionUuidText(platform::UuidKind::schema);
-  fixture->graph_uuid = ProductionUuidText(platform::UuidKind::object);
+  fixture->database_uuid = create.database_uuid.value;
+  fixture->schema_uuid = ProductionNativeUuid(platform::UuidKind::schema);
+  fixture->graph_uuid = ProductionNativeUuid(platform::UuidKind::object);
   return true;
 }
 
@@ -795,11 +815,11 @@ api::EngineRequestContext ProductionBaseContext(
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      ProductionUuidText(platform::UuidKind::principal);
-  context.session_uuid.canonical =
-      ProductionUuidText(platform::UuidKind::object);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      ProductionNativeUuid(platform::UuidKind::principal);
+  context.session_uuid =
+      ProductionNativeUuid(platform::UuidKind::object);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -807,8 +827,7 @@ api::EngineRequestContext ProductionBaseContext(
   context.catalog_generation_id = 74;
   context.security_epoch = 75;
   context.resource_epoch = 76;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 77;
@@ -858,8 +877,8 @@ api::EngineColumnDefinition ProductionColumn(
     std::string canonical_type,
     const bool nullable) {
   api::EngineColumnDefinition column;
-  column.requested_column_uuid.canonical =
-      ProductionUuidText(platform::UuidKind::object);
+  column.requested_column_uuid =
+      ProductionNativeUuid(platform::UuidKind::object);
   column.names.push_back(ProductionName(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = canonical_type;
@@ -872,11 +891,11 @@ api::EngineColumnDefinition ProductionColumn(
 
 void AddProductionAuthorization(api::EngineRequestContext* context,
                                 const std::string& right,
-                                const std::string& target_uuid) {
+                                const api::EngineUuid& target_uuid) {
   if (!context->authorization_context.present) {
     context->authorization_context.present = true;
-    context->authorization_context.authority_uuid.canonical =
-        ProductionUuidText(platform::UuidKind::object);
+    context->authorization_context.authority_uuid =
+        ProductionNativeUuid(platform::UuidKind::object);
     context->authorization_context.principal_uuid = context->principal_uuid;
     context->authorization_context.security_epoch = context->security_epoch;
     context->authorization_context.policy_epoch = 78;
@@ -886,11 +905,11 @@ void AddProductionAuthorization(api::EngineRequestContext* context,
         {context->principal_uuid, "principal"});
   }
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
-      ProductionUuidText(platform::UuidKind::object);
+  grant.grant_uuid =
+      ProductionNativeUuid(platform::UuidKind::object);
   grant.subject_uuid = context->principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = target_uuid;
+  grant.target_uuid = target_uuid;
   grant.right = right;
   grant.security_epoch = context->security_epoch;
   context->authorization_context.grants.push_back(std::move(grant));
@@ -900,7 +919,7 @@ bool CreateProductionGraph(ProductionFixture* fixture,
                            const api::EngineRequestContext& context) {
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
-  schema.target_object.uuid.canonical = fixture->schema_uuid;
+  schema.target_object.uuid = fixture->schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(ProductionName("graph_schema"));
   if (!api::EngineCreateSchema(schema).ok) {
@@ -908,10 +927,10 @@ bool CreateProductionGraph(ProductionFixture* fixture,
   }
   api::EngineCreateTableRequest table;
   table.context = context;
-  table.context.current_schema_uuid.canonical.clear();
-  table.target_schema.uuid.canonical = fixture->schema_uuid;
+  table.context.current_schema_uuid = {};
+  table.target_schema.uuid = fixture->schema_uuid;
   table.target_schema.object_kind = "schema";
-  table.requested_table_uuid.canonical = fixture->graph_uuid;
+  table.requested_table_uuid = fixture->graph_uuid;
   table.table_names.push_back(ProductionName("graph_fixture"));
   table.table_columns.push_back(
       ProductionColumn(0, "vertex_uuid", "uuid", false));
@@ -950,7 +969,7 @@ bool CreateProductionGraph(ProductionFixture* fixture,
     for (const auto& column : loaded.descriptor.columns) {
       std::cerr << "QOW-CES05-GRAPH descriptor: " << column.ordinal << ' '
                 << column.canonical_name_key << ' '
-                << column.value_descriptor.descriptor_uuid.canonical << ' '
+                << "<binary16 UUID>" << ' '
                 << column.value_descriptor.descriptor_kind << ' '
                 << column.value_descriptor.canonical_type_name << ' '
                 << column.value_descriptor.encoded_descriptor << '\n';
@@ -969,11 +988,11 @@ api::EngineGraphWriteResult WriteProductionGraph(
   request.structured_graph_persist = true;
   request.graph_object_uuid = fixture.graph_uuid;
   request.provider_generation = fixture.graph_descriptor.descriptor_generation;
-  request.target_object.uuid.canonical = fixture.graph_uuid;
+  request.target_object.uuid = fixture.graph_uuid;
   request.target_object.object_kind = "graph";
-  request.bound_object_identity.object_uuid.canonical = fixture.graph_uuid;
+  request.bound_object_identity.object_uuid = fixture.graph_uuid;
   request.bound_object_identity.resolved_object_type = "graph";
-  request.bound_object_identity.resolved_schema_uuid.canonical =
+  request.bound_object_identity.resolved_schema_uuid =
       fixture.schema_uuid;
   request.bound_object_identity.catalog_generation_id =
       context.catalog_generation_id;
@@ -995,21 +1014,13 @@ api::EngineGraphWriteResult WriteProductionGraph(
   return api::EngineGraphWrite(request);
 }
 
-std::string DescriptorField(const std::string& encoded,
-                            const std::string_view key) {
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto end = encoded.find(';', offset);
-    const auto field = std::string_view(encoded).substr(
-        offset, end == std::string::npos ? std::string::npos : end - offset);
-    const auto equal = field.find('=');
-    if (equal != std::string_view::npos && field.substr(0, equal) == key) {
-      return std::string(field.substr(equal + 1));
-    }
-    if (end == std::string::npos) break;
-    offset = end + 1;
-  }
-  return {};
+api::EngineUuid DescriptorIdentity(const api::EngineDescriptor& descriptor) {
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)) return {};
+  const auto it = fields.identities.find("type_uuid");
+  if (it == fields.identities.end()) return descriptor.type_uuid;
+  if (!descriptor.type_uuid.is_nil() && descriptor.type_uuid != it->second) return {};
+  return it->second;
 }
 
 api::TypedRelationalDag ProductionGraphDag(
@@ -1020,15 +1031,15 @@ api::TypedRelationalDag ProductionGraphDag(
   api::TypedRelationalDag dag;
   dag.wire_version = 2;
   dag.bound_sblr_tree_uuid =
-      ProductionUuidText(platform::UuidKind::object);
-  dag.bound_catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+      ProductionNativeUuid(platform::UuidKind::object);
+  dag.bound_catalog_epoch_uuid = context.catalog_epoch_uuid;
   dag.bound_security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
-  dag.statement_uuid = context.statement_uuid.canonical;
-  dag.owning_transaction_uuid = context.transaction_uuid.canonical;
-  dag.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+      context.authorization_context.authority_uuid;
+  dag.statement_uuid = context.statement_uuid;
+  dag.owning_transaction_uuid = context.transaction_uuid;
+  dag.statement_snapshot_uuid = context.statement_snapshot_uuid;
   dag.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   dag.local_transaction_id = context.local_transaction_id;
   dag.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
@@ -1038,10 +1049,9 @@ api::TypedRelationalDag ProductionGraphDag(
     api::RelationalTypeDescriptor descriptor;
     descriptor.descriptor_id = static_cast<std::uint32_t>(ordinal + 1);
     descriptor.descriptor_uuid =
-        column.value_descriptor.descriptor_uuid.canonical;
+        column.value_descriptor.descriptor_uuid;
     descriptor.type_uuid =
-        DescriptorField(column.value_descriptor.encoded_descriptor,
-                        "type_uuid");
+        DescriptorIdentity(column.value_descriptor);
     descriptor.nullability =
         column.nullable ? api::RelationalNullability::kNullable
                         : api::RelationalNullability::kNonNull;
@@ -1054,7 +1064,7 @@ api::TypedRelationalDag ProductionGraphDag(
         api::RelationalExpressionKind::kIdentifier;
     output_expression.result_descriptor_id =
         static_cast<std::uint32_t>(ordinal + 1);
-    output_expression.bound_name_uuid = column.column_uuid.canonical;
+    output_expression.bound_name_uuid = column.column_uuid;
     dag.expressions.push_back(std::move(output_expression));
     dag.outputs.push_back(
         {static_cast<std::uint32_t>(ordinal + 1), 1,
@@ -1066,7 +1076,7 @@ api::TypedRelationalDag ProductionGraphDag(
   alias.expression_id = 10;
   alias.expression_kind = api::RelationalExpressionKind::kIdentifier;
   alias.result_descriptor_id = 1;
-  alias.bound_name_uuid = graph.relation_uuid.canonical;
+  alias.bound_name_uuid = graph.relation_uuid;
   dag.expressions.push_back(std::move(alias));
   const auto add_literal = [&](const std::uint32_t expression_id,
                                const std::uint32_t descriptor_id,
@@ -1115,7 +1125,7 @@ api::TypedRelationalDag ProductionGraphDag(
     node.bound_expression_ids.insert(node.bound_expression_ids.end(),
                                      {10, 11});
   }
-  node.required_object_uuids = {graph.relation_uuid.canonical};
+  node.required_object_uuids = {graph.relation_uuid};
   node.semantic_variant_id =
       expand ? "SBLR_MODEL_EXPAND_V1" : "SBLR_MODEL_SOURCE_V1";
   dag.nodes.push_back(std::move(node));
@@ -1139,7 +1149,7 @@ api::TypedRelationalDag ProductionGraphCteDag(
   return dag;
 }
 
-std::string ProductionCoreTypeUuid(const std::string_view stable_name) {
+api::EngineUuid ProductionCoreTypeUuid(const std::string_view stable_name) {
   static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
   const auto count = std::ranges::count_if(
@@ -1153,9 +1163,9 @@ std::string ProductionCoreTypeUuid(const std::string_view stable_name) {
     return {};
   }
   const auto descriptor_uuid =
-      uuid::UuidToString(descriptor->descriptor_uuid.value);
+      descriptor->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701",
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
       manifest.manifest.catalog_epoch, 1, descriptor_uuid,
       descriptor->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
@@ -1169,7 +1179,7 @@ api::TypedRelationalDag ProductionGraphCountDag(
   api::RelationalTypeDescriptor count_descriptor;
   count_descriptor.descriptor_id = 10;
   count_descriptor.descriptor_uuid =
-      ProductionUuidText(platform::UuidKind::object);
+      ProductionNativeUuid(platform::UuidKind::object);
   count_descriptor.type_uuid = ProductionCoreTypeUuid("int64");
   count_descriptor.nullability = api::RelationalNullability::kNonNull;
   dag.descriptors.push_back(std::move(count_descriptor));
@@ -1242,7 +1252,7 @@ api::TypedRelationalDag ProductionGraphRecursiveCteDag(
   dag.nodes.push_back(std::move(recursive));
   if (mutation == ProductionGraphRecursiveMutation::mga_context) {
     dag.statement_snapshot_uuid =
-        ProductionUuidText(platform::UuidKind::object);
+        ProductionNativeUuid(platform::UuidKind::object);
   }
   return dag;
 }
@@ -1291,7 +1301,7 @@ api::TypedRelationalDag ProductionGraphSetDag(
   if (mutation == ProductionGraphSetMutation::literal_type) {
     literal.literal_kind = api::RelationalLiteralKind::kString;
   }
-  literal.literal_or_parameter_ref = Uuid(8999);
+  literal.literal_or_parameter_ref = UuidBytes(Uuid(8999));
   dag.expressions.push_back(std::move(literal));
   dag.values_rows.push_back({1, {31}});
   dag.outputs.push_back({21, 3, 31, "vertex_uuid", 1, true, 0});
@@ -1333,7 +1343,7 @@ api::TypedRelationalDag ProductionGraphSetDag(
   }
   if (mutation == ProductionGraphSetMutation::mga_context) {
     dag.statement_snapshot_uuid =
-        ProductionUuidText(platform::UuidKind::object);
+        ProductionNativeUuid(platform::UuidKind::object);
   }
   if (mutation == ProductionGraphSetMutation::orphan_expression) {
     auto orphan = dag.expressions.front();
@@ -1436,7 +1446,7 @@ api::TypedRelationalDag ProductionGraphFilterProjectLimitDag(
   api::RelationalTypeDescriptor boolean_descriptor;
   boolean_descriptor.descriptor_id = 10;
   boolean_descriptor.descriptor_uuid =
-      ProductionUuidText(platform::UuidKind::object);
+      ProductionNativeUuid(platform::UuidKind::object);
   boolean_descriptor.type_uuid = ProductionCoreTypeUuid("boolean");
   boolean_descriptor.nullability = api::RelationalNullability::kNonNull;
   dag.descriptors.push_back(std::move(boolean_descriptor));
@@ -1464,7 +1474,7 @@ api::TypedRelationalDag ProductionGraphSortDag(
   auto dag = ProductionGraphDag(context, graph, false);
   dag.root_node_id = 2;
   const auto ordering_uuid =
-      ProductionUuidText(platform::UuidKind::object);
+      ProductionNativeUuid(platform::UuidKind::object);
   api::RelationalPropertyRecord ordering;
   ordering.property_uuid = ordering_uuid;
   ordering.property_kind = api::RelationalPropertyKind::kOrdering;
@@ -1494,19 +1504,19 @@ api::TypedRelationalDag ProductionGraphRowNumberDag(
   api::RelationalTypeDescriptor row_number_descriptor;
   row_number_descriptor.descriptor_id = 10;
   row_number_descriptor.descriptor_uuid =
-      ProductionUuidText(platform::UuidKind::object);
+      ProductionNativeUuid(platform::UuidKind::object);
   row_number_descriptor.type_uuid = ProductionCoreTypeUuid("int64");
   row_number_descriptor.nullability =
       api::RelationalNullability::kNonNull;
   dag.descriptors.push_back(std::move(row_number_descriptor));
-  constexpr std::string_view kRowNumberFunctionUuid =
-      "019de5fc-2400-7539-bcce-00eef3ae7220";
+  constexpr auto kRowNumberFunctionUuid =
+      scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7539-bcce-00eef3ae7220");
   api::RelationalExpressionRecord row_number;
   row_number.expression_id = 30;
   row_number.expression_kind =
       api::RelationalExpressionKind::kFunctionCall;
   row_number.result_descriptor_id = 10;
-  row_number.function_uuid = std::string(kRowNumberFunctionUuid);
+  row_number.function_uuid = kRowNumberFunctionUuid;
   dag.expressions.push_back(std::move(row_number));
   for (std::size_t ordinal = 0; ordinal < graph.columns.size(); ++ordinal) {
     dag.outputs.push_back(
@@ -1519,14 +1529,14 @@ api::TypedRelationalDag ProductionGraphRowNumberDag(
   dag.outputs.push_back({40, 3, 30, "row_number", 10, true, 9});
   const auto ordering_uuid = dag.properties.front().property_uuid;
   const auto window_uuid =
-      ProductionUuidText(platform::UuidKind::object);
+      ProductionNativeUuid(platform::UuidKind::object);
   api::RelationalPropertyRecord window_property;
   window_property.property_uuid = window_uuid;
   window_property.property_kind = api::RelationalPropertyKind::kWindow;
   window_property.origin_node_id = 3;
   window_property.dependency_property_uuids = {ordering_uuid};
   window_property.window_frame_descriptor_uuid =
-      ProductionUuidText(platform::UuidKind::object);
+      ProductionNativeUuid(platform::UuidKind::object);
   dag.properties.push_back(std::move(window_property));
   api::RelationalDagNode window;
   window.node_id = 3;
@@ -1553,7 +1563,7 @@ api::TypedRelationalDag ProductionGraphRowNumberDag(
   invocation.window_definition_id = 1;
   invocation.function_abi_version = 1;
   invocation.builtin_id = "sb.window.row_number";
-  invocation.function_uuid = std::string(kRowNumberFunctionUuid);
+  invocation.function_uuid = kRowNumberFunctionUuid;
   invocation.result_descriptor_id = 10;
   invocation.output_name_utf8 = "row_number";
   dag.window_invocations.push_back(std::move(invocation));
@@ -1564,7 +1574,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  const std::string_view kind,
                  const std::string_view id) {
   return std::ranges::any_of(result.evidence, [&](const auto& evidence) {
-    return evidence.evidence_kind == kind && evidence.evidence_id == id;
+    return evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id);
   });
 }
 
@@ -1586,6 +1596,20 @@ std::string ApiRowField(const api::EngineApiResult& result,
   });
   return field == row.fields.end() ? std::string{}
                                    : field->second.encoded_value;
+}
+
+std::optional<api::EngineUuid> ApiRowIdentity(const api::EngineApiResult& result,
+                        std::size_t row_ordinal, std::string_view field_name) {
+  if (row_ordinal >= result.result_shape.rows.size()) return std::nullopt;
+  for (const auto& [name, value] : result.result_shape.rows[row_ordinal].fields) {
+    if (name != field_name) continue;
+    if (value.isNull() || !value.encoded_value.empty() || value.binary_value.size()!=16)
+      return std::nullopt;
+    api::EngineUuid id;
+    std::copy(value.binary_value.begin(),value.binary_value.end(),id.bytes.begin());
+    return id;
+  }
+  return std::nullopt;
 }
 
 api::EngineGraphPhysicalProof ProductionGraphProof() {
@@ -1646,8 +1670,8 @@ bool DirectGraphSafetyBoundaries(const api::EngineRequestContext& context) {
   bool passed = true;
   passed &= Require(
       parallel.ok && parallel.result_shape.rows.size() == 2 &&
-          ApiRowField(parallel, 0, "path_uuid") !=
-              ApiRowField(parallel, 1, "path_uuid"),
+          ApiRowIdentity(parallel, 0, "path_uuid") !=
+              ApiRowIdentity(parallel, 1, "path_uuid"),
       "parallel graph edges did not produce edge-aware path identities");
 
   auto resource = request;
@@ -1714,8 +1738,8 @@ bool DirectGraphSafetyBoundaries(const api::EngineRequestContext& context) {
   const auto boundary = api::EngineGraphQuery(bidirectional);
   passed &= Require(
       boundary.ok && boundary.result_shape.rows.size() == 2 &&
-          ApiRowField(boundary, 0, "vertex_uuid") == Uuid(8101) &&
-          ApiRowField(boundary, 1, "vertex_uuid") == Uuid(8102),
+          ApiRowIdentity(boundary, 0, "vertex_uuid") == Uuid(8101) &&
+          ApiRowIdentity(boundary, 1, "vertex_uuid") == Uuid(8102),
       "two-row bidirectional graph boundary was refused or truncated");
 
   auto finite_large_depth = request;
@@ -1744,7 +1768,8 @@ bool DirectGraphSafetyBoundaries(const api::EngineRequestContext& context) {
   passed &= exact_corpus_refused(duplicate_vertex,
                                  "duplicate direct graph vertex was admitted");
   auto noncanonical_vertex = request;
-  noncanonical_vertex.vertices[0].vertex_id = "not-a-canonical-uuid";
+  noncanonical_vertex.vertices[0].vertex_id = Uuid(8199);
+  noncanonical_vertex.vertices[0].vertex_id.bytes[8] = 0;
   passed &= exact_corpus_refused(
       noncanonical_vertex, "noncanonical direct graph vertex was admitted");
   auto duplicate_edge = request;
@@ -1833,8 +1858,8 @@ bool PersistentGraphLexicalMutationRefusals(
       RollbackProductionTransaction(context);
       return Require(false, "persistent graph mutation append failed");
     }
-    context.statement_uuid.canonical =
-        ProductionUuidText(platform::UuidKind::object);
+    context.statement_uuid =
+        ProductionNativeUuid(platform::UuidKind::object);
     api::EnginePublishStatementSnapshotRequest publish;
     publish.context = context;
     const auto snapshot = api::EnginePublishStatementSnapshot(publish);
@@ -1846,8 +1871,8 @@ bool PersistentGraphLexicalMutationRefusals(
     context.snapshot_visible_through_local_transaction_id =
         snapshot.snapshot_vector.visible_committed_high_watermark;
     context.statement_metadata_snapshot_engine_owned = true;
-    context.statement_metadata_snapshot_uuid.canonical =
-        ProductionUuidText(platform::UuidKind::object);
+    context.statement_metadata_snapshot_uuid =
+        ProductionNativeUuid(platform::UuidKind::object);
     context.statement_metadata_snapshot_visible_through_local_transaction_id =
         context.snapshot_visible_through_local_transaction_id;
     AddProductionAuthorization(&context, "SELECT", fixture.graph_uuid);
@@ -1859,9 +1884,9 @@ bool PersistentGraphLexicalMutationRefusals(
     request.graph_object_uuid = fixture.graph_uuid;
     request.provider_generation =
         fixture.graph_descriptor.descriptor_generation;
-    request.bound_object_identity.object_uuid.canonical = fixture.graph_uuid;
+    request.bound_object_identity.object_uuid = fixture.graph_uuid;
     request.bound_object_identity.resolved_object_type = "graph";
-    request.bound_object_identity.resolved_schema_uuid.canonical =
+    request.bound_object_identity.resolved_schema_uuid =
         fixture.schema_uuid;
     request.bound_object_identity.catalog_generation_id =
         context.catalog_generation_id;
@@ -1889,9 +1914,9 @@ bool PersistentGraphLexicalMutationRefusals(
   api::CrudRowVersionRecord duplicate_label;
   duplicate_label.row_uuid = Uuid(8191);
   duplicate_label.version_uuid =
-      ProductionUuidText(platform::UuidKind::object);
+      ProductionNativeUuid(platform::UuidKind::object);
   duplicate_label.values = {{"record_kind", "vertex"},
-                            {"vertex_uuid", duplicate_label.row_uuid},
+                            {"vertex_uuid", UuidBytes(duplicate_label.row_uuid)},
                             {"label.0", "P"},
                             {"label.1", "P"}};
   bool passed = run_mutation(
@@ -1901,11 +1926,11 @@ bool PersistentGraphLexicalMutationRefusals(
   api::CrudRowVersionRecord lexical_weight;
   lexical_weight.row_uuid = Uuid(8291);
   lexical_weight.version_uuid =
-      ProductionUuidText(platform::UuidKind::object);
+      ProductionNativeUuid(platform::UuidKind::object);
   lexical_weight.values = {{"record_kind", "edge"},
-                           {"edge_uuid", lexical_weight.row_uuid},
-                           {"source_vertex_uuid", Uuid(8101)},
-                           {"target_vertex_uuid", Uuid(8102)},
+                           {"edge_uuid", UuidBytes(lexical_weight.row_uuid)},
+                           {"source_vertex_uuid", UuidBytes(Uuid(8101))},
+                           {"target_vertex_uuid", UuidBytes(Uuid(8102))},
                            {"edge_type", "NEXT"},
                            {"edge_weight", "1e0"}};
   passed &= run_mutation(
@@ -1971,8 +1996,8 @@ bool ProductionCanonicalGraphQueryRoute() {
   if (!BeginProductionTransaction(fixture, "rcp074-graph-reader", &context)) {
     return false;
   }
-  context.statement_uuid.canonical =
-      ProductionUuidText(platform::UuidKind::object);
+  context.statement_uuid =
+      ProductionNativeUuid(platform::UuidKind::object);
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = context;
   const auto snapshot = api::EnginePublishStatementSnapshot(publish);
@@ -1983,18 +2008,18 @@ bool ProductionCanonicalGraphQueryRoute() {
   context.snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical =
-      ProductionUuidText(platform::UuidKind::object);
+  context.statement_metadata_snapshot_uuid =
+      ProductionNativeUuid(platform::UuidKind::object);
   context.statement_metadata_snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
-  context.catalog_epoch_uuid.canonical =
-      ProductionUuidText(platform::UuidKind::object);
-  context.optimizer_capability_snapshot_uuid.canonical =
-      ProductionUuidText(platform::UuidKind::object);
-  context.optimizer_resource_snapshot_uuid.canonical =
-      ProductionUuidText(platform::UuidKind::object);
-  context.optimizer_route_snapshot_uuid.canonical =
-      ProductionUuidText(platform::UuidKind::object);
+  context.catalog_epoch_uuid =
+      ProductionNativeUuid(platform::UuidKind::object);
+  context.optimizer_capability_snapshot_uuid =
+      ProductionNativeUuid(platform::UuidKind::object);
+  context.optimizer_resource_snapshot_uuid =
+      ProductionNativeUuid(platform::UuidKind::object);
+  context.optimizer_route_snapshot_uuid =
+      ProductionNativeUuid(platform::UuidKind::object);
   context.optimizer_route_epoch = 79;
   context.optimizer_route_generation = 80;
   context.optimizer_memory_budget_bytes = 1024 * 1024;
@@ -2108,7 +2133,7 @@ bool ProductionCanonicalGraphQueryRoute() {
            result.physical_node_count == 1 &&
            result.canonical_result_column_count == 9 &&
            result.canonical_result_row_count == rows &&
-           !result.selected_plan_uuid.empty() &&
+           !result.selected_plan_uuid.is_nil() &&
            !result.canonical_result_bytes.empty();
   };
   bool passed = true;
@@ -2210,7 +2235,7 @@ bool ProductionCanonicalGraphQueryRoute() {
               << '\n';
     for (const auto& evidence : recursive_cte.api_result.evidence) {
       if (evidence.evidence_kind.find("recursive") != std::string::npos) {
-        std::cerr << evidence.evidence_kind << '=' << evidence.evidence_id
+        std::cerr << evidence.evidence_kind << '=' << scratchbird::tests::EvidenceTextFields(evidence.evidence_id)
                   << '\n';
       }
     }
@@ -2225,7 +2250,7 @@ bool ProductionCanonicalGraphQueryRoute() {
           set_union.api_result.ok && set_union.physical_node_count == 4 &&
           set_union.canonical_result_column_count == 1 &&
           set_union.canonical_result_row_count == 4 &&
-          ApiRowField(set_union.api_result, 3, "vertex_uuid") ==
+          ApiRowIdentity(set_union.api_result, 3, "vertex_uuid") ==
               Uuid(8999) &&
           replayed_set_union.api_result.ok &&
           replayed_set_union.canonical_result_bytes ==
@@ -2238,7 +2263,7 @@ bool ProductionCanonicalGraphQueryRoute() {
                       "union-all.ordinal.left-then-right.bag.v1"),
       "production graph PROJECT+UNION ALL VALUES did not consume the graph batch");
   if (!set_union.api_result.ok || set_union.canonical_result_row_count != 4 ||
-      ApiRowField(set_union.api_result, 3, "vertex_uuid") != Uuid(8999) ||
+      ApiRowIdentity(set_union.api_result, 3, "vertex_uuid") != Uuid(8999) ||
       !HasEvidence(set_union.api_result,
                    "canonical.graph_set_implementation",
                    "setop.union-all.ordinal.typed.v1") ||
@@ -2247,14 +2272,14 @@ bool ProductionCanonicalGraphQueryRoute() {
     std::cerr << "QOW-CES05-GRAPH set detail ok=" << set_union.api_result.ok
               << " nodes=" << set_union.physical_node_count << " rows="
               << set_union.canonical_result_row_count << " last="
-              << ApiRowField(set_union.api_result, 3, "vertex_uuid")
+              << "<binary16 UUID>"
               << " replay_equal="
               << (replayed_set_union.canonical_result_bytes ==
                   set_union.canonical_result_bytes)
               << '\n';
     for (const auto& evidence : set_union.api_result.evidence) {
       if (evidence.evidence_kind.find("set") != std::string::npos) {
-        std::cerr << evidence.evidence_kind << '=' << evidence.evidence_id
+        std::cerr << evidence.evidence_kind << '=' << scratchbird::tests::EvidenceTextFields(evidence.evidence_id)
                   << '\n';
       }
     }
@@ -2401,7 +2426,7 @@ bool ProductionCanonicalGraphQueryRoute() {
     auto malformed = ProductionGraphProjectLimitDag(
         context, current_graph.descriptor);
     malformed.statement_snapshot_uuid =
-        ProductionUuidText(platform::UuidKind::object);
+        ProductionNativeUuid(platform::UuidKind::object);
     malformed_unary_dags.push_back(std::move(malformed));
   }
   for (const auto& malformed_dag : malformed_unary_dags) {

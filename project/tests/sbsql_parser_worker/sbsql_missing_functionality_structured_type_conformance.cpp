@@ -6,7 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "catalog/structured_type_api.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "database_lifecycle.hpp"
 #include "local_transaction_store.hpp"
 #include "sblr_admission.hpp"
@@ -65,8 +67,8 @@ constexpr std::string_view kSetUuid =
 
 struct Fixture {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
   txn::LocalTransactionId typed_local_transaction_id;
   txn::LocalTransactionInventory inventory;
@@ -108,7 +110,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -146,16 +148,16 @@ api::EngineLocalizedName Name(std::string name) {
 
 void Grant(api::EngineRequestContext* context,
            std::string right,
-           std::string target_uuid = "*") {
+           api::EngineUuid target_uuid = {}) {
   api::EngineAuthorizationSubject subject;
-  subject.subject_uuid.canonical = std::string(kPrincipalUuid);
+  subject.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000001");
   subject.subject_kind = "user";
   context->authorization_context.effective_subjects.push_back(subject);
 
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.subject_uuid.canonical = std::string(kPrincipalUuid);
+  grant.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000001");
   grant.subject_kind = "user";
-  grant.target_uuid.canonical = std::move(target_uuid);
+  grant.target_uuid = std::move(target_uuid);
   grant.right = std::move(right);
   context->authorization_context.grants.push_back(std::move(grant));
 }
@@ -164,18 +166,17 @@ api::EngineRequestContext Context(const Fixture& fixture,
                                   std::vector<std::string> rights) {
   api::EngineRequestContext context;
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = std::string(kPrincipalUuid);
-  context.session_uuid.canonical = "019f0600-0000-7000-8000-000000000010";
-  context.transaction_uuid.canonical = fixture.transaction_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000001");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000010");
+  context.transaction_uuid = fixture.transaction_uuid;
   context.local_transaction_id = fixture.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       fixture.local_transaction_id;
   context.security_context_present = true;
   context.authorization_context.present = true;
-  context.authorization_context.principal_uuid.canonical = std::string(kPrincipalUuid);
-  context.authorization_context.authority_uuid.canonical =
-      "019f0600-0000-7000-8000-000000000020";
+  context.authorization_context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000001");
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000020");
   context.authorization_context.evidence_tags.push_back("structured_type_conformance");
   for (auto& right : rights) Grant(&context, std::move(right));
   return context;
@@ -214,8 +215,8 @@ Fixture CreateFixture() {
                                           1790600000004);
   Require(begun.ok(), "local transaction begin failed");
   fixture.inventory = std::move(begun.inventory);
-  fixture.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  fixture.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
+  fixture.database_uuid = database_uuid.value.value;
+  fixture.transaction_uuid = transaction_uuid.value.value;
   fixture.local_transaction_id = begun.entry.identity.local_id.value;
   fixture.typed_local_transaction_id = begun.entry.identity.local_id;
   Require(db::PersistLocalTransactionInventoryToDatabase(fixture.path.string(),
@@ -239,7 +240,7 @@ void CommitFixture(Fixture* fixture) {
   Require(reopened.ok(), "reopen transaction begin failed");
   fixture->inventory = std::move(reopened.inventory);
   fixture->transaction_uuid =
-      uuid::UuidToString(reopen_transaction_uuid.value.value);
+      reopen_transaction_uuid.value.value;
   fixture->local_transaction_id = reopened.entry.identity.local_id.value;
   fixture->typed_local_transaction_id = reopened.entry.identity.local_id;
   Require(db::PersistLocalTransactionInventoryToDatabase(fixture->path.string(),
@@ -402,14 +403,14 @@ void ValidateAdmissionAndRegistry() {
 }
 
 api::EngineCreateStructuredTypeRequest BaseCreate(const Fixture& fixture,
-                                                  std::string type_uuid,
+                                                  api::EngineUuid type_uuid,
                                                   std::string family,
                                                   std::string name) {
   api::EngineCreateStructuredTypeRequest request;
   request.context = Context(fixture, {"TYPE_DDL", "USAGE"});
-  request.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000002");
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = std::move(type_uuid);
+  request.target_object.uuid = std::move(type_uuid);
   request.target_object.object_kind = "structured_type_descriptor";
   request.localized_names.push_back(Name(std::move(name)));
   request.option_envelopes.push_back("structured_family:" + std::move(family));
@@ -431,7 +432,7 @@ void RequireCreateOk(const api::EngineCreateStructuredTypeResult& result,
 
 void TestCreateFamilies(Fixture* fixture) {
   auto composite = BaseCreate(*fixture,
-                              std::string(kCompositeUuid),
+                              scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000101"),
                               "composite",
                               "address_type");
   composite.option_envelopes.push_back("syntax_form:composite_native");
@@ -440,7 +441,7 @@ void TestCreateFamilies(Fixture* fixture) {
   RequireCreateOk(api::EngineCreateStructuredType(composite), "composite");
 
   auto shorthand = BaseCreate(*fixture,
-                              std::string(kCompositeShorthandUuid),
+                              scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000102"),
                               "composite",
                               "point_type");
   shorthand.option_envelopes.push_back("syntax_form:composite_shorthand");
@@ -449,7 +450,7 @@ void TestCreateFamilies(Fixture* fixture) {
   RequireCreateOk(api::EngineCreateStructuredType(shorthand), "composite");
 
   auto enum_type = BaseCreate(*fixture,
-                              std::string(kEnumUuid),
+                              scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000103"),
                               "enum",
                               "color_type");
   enum_type.option_envelopes.push_back("label:red");
@@ -458,7 +459,7 @@ void TestCreateFamilies(Fixture* fixture) {
   RequireCreateOk(api::EngineCreateStructuredType(enum_type), "enum");
 
   auto pg_range = BaseCreate(*fixture,
-                             std::string(kRangeUuid),
+                             scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000104"),
                              "range",
                              "business_time_range");
   pg_range.option_envelopes.push_back("syntax_form:pg_range");
@@ -467,7 +468,7 @@ void TestCreateFamilies(Fixture* fixture) {
   RequireCreateOk(api::EngineCreateStructuredType(pg_range), "range");
 
   auto native_range = BaseCreate(*fixture,
-                                 std::string(kNativeRangeUuid),
+                                 scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000105"),
                                  "range",
                                  "native_int_range");
   native_range.option_envelopes.push_back("syntax_form:native_range");
@@ -475,15 +476,15 @@ void TestCreateFamilies(Fixture* fixture) {
   RequireCreateOk(api::EngineCreateStructuredType(native_range), "range");
 
   auto multirange = BaseCreate(*fixture,
-                               std::string(kMultirangeUuid),
+                               scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000106"),
                                "multirange",
                                "business_time_multirange");
   multirange.option_envelopes.push_back("auto_derived:true");
-  multirange.option_envelopes.push_back("base_range_uuid:" + std::string(kRangeUuid));
+  multirange.option_envelopes.push_back("base_range_uuid:" + api::MetadataUuidBytes(scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000104")));
   RequireCreateOk(api::EngineCreateStructuredType(multirange), "multirange");
 
   auto variant = BaseCreate(*fixture,
-                            std::string(kVariantUuid),
+                            scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000107"),
                             "variant",
                             "measurement_variant");
   variant.option_envelopes.push_back("alternative:int_value:int64");
@@ -491,7 +492,7 @@ void TestCreateFamilies(Fixture* fixture) {
   RequireCreateOk(api::EngineCreateStructuredType(variant), "variant");
 
   auto set_type = BaseCreate(*fixture,
-                             std::string(kSetUuid),
+                             scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000108"),
                              "set",
                              "feature_flag_set");
   set_type.option_envelopes.push_back("element_type:text");
@@ -520,11 +521,11 @@ void TestCreateFamilies(Fixture* fixture) {
 
   api::EngineShowStructuredTypeRequest show_one;
   show_one.context = Context(*fixture, {"USAGE"});
-  show_one.target_object.uuid.canonical = std::string(kCompositeUuid);
+  show_one.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000101");
   show_one.target_object.object_kind = "structured_type_descriptor";
   const auto one = api::EngineShowStructuredType(show_one);
   Require(one.ok, "SHOW TYPE failed");
-  Require(FieldValue(one, "type_uuid") == std::string(kCompositeUuid),
+  Require(FieldValue(one, "type_uuid") == api::MetadataUuidBytes(scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000101")),
           "SHOW TYPE returned wrong UUID");
   Require(FieldValue(one, "field_count") == "2",
           "composite descriptor fields not projected");
@@ -533,7 +534,7 @@ void TestCreateFamilies(Fixture* fixture) {
 void TestConstructorCastCompareSerialize(const Fixture& fixture) {
   api::EngineEvaluateStructuredTypeConstructorRequest construct_enum;
   construct_enum.context = Context(fixture, {"USAGE"});
-  construct_enum.target_object.uuid.canonical = std::string(kEnumUuid);
+  construct_enum.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000103");
   construct_enum.target_object.object_kind = "structured_type_descriptor";
   construct_enum.option_envelopes.push_back("label:green");
   construct_enum.option_envelopes.push_back("encoded_value:green");
@@ -545,7 +546,7 @@ void TestConstructorCastCompareSerialize(const Fixture& fixture) {
 
   api::EngineEvaluateStructuredTypeCastRequest cast;
   cast.context = Context(fixture, {"USAGE"});
-  cast.target_object.uuid.canonical = std::string(kRangeUuid);
+  cast.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000104");
   cast.target_object.object_kind = "structured_type_descriptor";
   cast.option_envelopes.push_back("source_descriptor:timestamp_pair");
   const auto cast_result = api::EngineEvaluateStructuredTypeCast(cast);
@@ -555,7 +556,7 @@ void TestConstructorCastCompareSerialize(const Fixture& fixture) {
 
   api::EngineCompareStructuredTypeValuesRequest compare;
   compare.context = Context(fixture, {"USAGE"});
-  compare.target_object.uuid.canonical = std::string(kVariantUuid);
+  compare.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000107");
   compare.target_object.object_kind = "structured_type_descriptor";
   const auto compare_result = api::EngineCompareStructuredTypeValues(compare);
   Require(compare_result.ok, "structured type compare failed");
@@ -564,7 +565,7 @@ void TestConstructorCastCompareSerialize(const Fixture& fixture) {
 
   api::EngineSerializeStructuredTypeValueRequest serialize;
   serialize.context = Context(fixture, {"USAGE"});
-  serialize.target_object.uuid.canonical = std::string(kCompositeUuid);
+  serialize.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000101");
   serialize.target_object.object_kind = "structured_type_descriptor";
   const auto serialize_result = api::EngineSerializeStructuredTypeValue(serialize);
   Require(serialize_result.ok, "structured type serialization failed");
@@ -578,7 +579,7 @@ void TestConstructorCastCompareSerialize(const Fixture& fixture) {
 
 void TestMutationsAndRefusals(Fixture* fixture) {
   auto direct_self = BaseCreate(*fixture,
-                                "019f0600-0000-7000-8000-000000000210",
+                                scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000210"),
                                 "composite",
                                 "bad_self");
   direct_self.option_envelopes.push_back("field:self_ref:self");
@@ -589,7 +590,7 @@ void TestMutationsAndRefusals(Fixture* fixture) {
           "direct self recursion diagnostic missing");
 
   auto duplicate_enum = BaseCreate(*fixture,
-                                   "019f0600-0000-7000-8000-000000000211",
+                                   scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000211"),
                                    "enum",
                                    "bad_enum");
   duplicate_enum.option_envelopes.push_back("label:dup");
@@ -600,7 +601,7 @@ void TestMutationsAndRefusals(Fixture* fixture) {
           "duplicate member diagnostic missing");
 
   auto raw_sql = BaseCreate(*fixture,
-                            "019f0600-0000-7000-8000-000000000212",
+                            scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000212"),
                             "enum",
                             "bad_sql_text");
   raw_sql.option_envelopes.push_back("label:a");
@@ -612,7 +613,7 @@ void TestMutationsAndRefusals(Fixture* fixture) {
 
   api::EngineShowStructuredTypeRequest no_usage;
   no_usage.context = Context(*fixture, {});
-  no_usage.target_object.uuid.canonical = std::string(kEnumUuid);
+  no_usage.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000103");
   no_usage.target_object.object_kind = "structured_type_descriptor";
   const auto no_usage_result = api::EngineShowStructuredType(no_usage);
   Require(!no_usage_result.ok, "SHOW TYPE without USAGE accepted");
@@ -621,7 +622,7 @@ void TestMutationsAndRefusals(Fixture* fixture) {
 
   api::EngineAlterStructuredTypeRequest multi_alter;
   multi_alter.context = Context(*fixture, {"TYPE_DDL", "USAGE"});
-  multi_alter.target_object.uuid.canonical = std::string(kEnumUuid);
+  multi_alter.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000103");
   multi_alter.target_object.object_kind = "structured_type_descriptor";
   multi_alter.option_envelopes.push_back("mutation_count:2");
   multi_alter.option_envelopes.push_back("drop_label:red");
@@ -633,7 +634,7 @@ void TestMutationsAndRefusals(Fixture* fixture) {
 
   api::EngineAlterStructuredTypeRequest drop_label;
   drop_label.context = Context(*fixture, {"TYPE_DDL", "USAGE"});
-  drop_label.target_object.uuid.canonical = std::string(kEnumUuid);
+  drop_label.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000103");
   drop_label.target_object.object_kind = "structured_type_descriptor";
   drop_label.option_envelopes.push_back("mutation_count:1");
   drop_label.option_envelopes.push_back("drop_label:green");
@@ -644,7 +645,7 @@ void TestMutationsAndRefusals(Fixture* fixture) {
 
   api::EngineEvaluateStructuredTypeConstructorRequest retired_enum;
   retired_enum.context = Context(*fixture, {"USAGE"});
-  retired_enum.target_object.uuid.canonical = std::string(kEnumUuid);
+  retired_enum.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000103");
   retired_enum.target_object.object_kind = "structured_type_descriptor";
   retired_enum.option_envelopes.push_back("label:green");
   const auto retired_result =
@@ -655,7 +656,7 @@ void TestMutationsAndRefusals(Fixture* fixture) {
 
   api::EngineAlterStructuredTypeRequest alter_range;
   alter_range.context = Context(*fixture, {"TYPE_DDL", "USAGE"});
-  alter_range.target_object.uuid.canonical = std::string(kRangeUuid);
+  alter_range.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000104");
   alter_range.target_object.object_kind = "structured_type_descriptor";
   alter_range.option_envelopes.push_back("mutation_count:1");
   alter_range.option_envelopes.push_back("set_range_option:canonical=lower_inc");
@@ -666,7 +667,7 @@ void TestMutationsAndRefusals(Fixture* fixture) {
 
   api::EngineDropStructuredTypeRequest drop_set;
   drop_set.context = Context(*fixture, {"TYPE_DDL", "USAGE"});
-  drop_set.target_object.uuid.canonical = std::string(kSetUuid);
+  drop_set.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000108");
   drop_set.target_object.object_kind = "structured_type_descriptor";
   const auto drop_result = api::EngineDropStructuredType(drop_set);
   Require(drop_result.ok, "DROP TYPE failed");
@@ -675,7 +676,7 @@ void TestMutationsAndRefusals(Fixture* fixture) {
 
   api::EngineShowStructuredTypeRequest show_dropped;
   show_dropped.context = Context(*fixture, {"USAGE"});
-  show_dropped.target_object.uuid.canonical = std::string(kSetUuid);
+  show_dropped.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000108");
   show_dropped.target_object.object_kind = "structured_type_descriptor";
   const auto show_dropped_result = api::EngineShowStructuredType(show_dropped);
   Require(!show_dropped_result.ok, "dropped structured type stayed visible");
@@ -687,7 +688,7 @@ void TestCommittedReopenVisibility(Fixture* fixture) {
   CommitFixture(fixture);
   api::EngineShowStructuredTypeRequest show_enum;
   show_enum.context = Context(*fixture, {"USAGE"});
-  show_enum.target_object.uuid.canonical = std::string(kEnumUuid);
+  show_enum.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000103");
   show_enum.target_object.object_kind = "structured_type_descriptor";
   const auto enum_result = api::EngineShowStructuredType(show_enum);
   Require(enum_result.ok, "committed enum descriptor not visible after reopen");
@@ -696,7 +697,7 @@ void TestCommittedReopenVisibility(Fixture* fixture) {
 
   api::EngineShowStructuredTypeRequest show_range;
   show_range.context = Context(*fixture, {"USAGE"});
-  show_range.target_object.uuid.canonical = std::string(kRangeUuid);
+  show_range.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000104");
   show_range.target_object.object_kind = "structured_type_descriptor";
   const auto range_result = api::EngineShowStructuredType(show_range);
   Require(range_result.ok, "committed range descriptor not visible after reopen");

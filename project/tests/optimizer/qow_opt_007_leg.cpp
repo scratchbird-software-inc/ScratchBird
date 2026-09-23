@@ -12,11 +12,11 @@ namespace executor = scratchbird::engine::executor;
 
 namespace {
 
-std::string Uuid(const std::uint64_t value) {
-  char buffer[37];
-  std::snprintf(buffer, sizeof(buffer), "019f0000-0000-7000-8000-%012llx",
-                static_cast<unsigned long long>(value));
-  return buffer;
+executor::PhysicalUuid Uuid(const std::uint64_t value) {
+  executor::PhysicalUuid id{{0x01,0x9f,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0,0}};
+  for (unsigned n=0;n<6;++n)
+    id.bytes[15-n]=static_cast<std::uint8_t>(value >> (8*n));
+  return id;
 }
 
 executor::PhysicalMgaStatementContext Mga(const bool timestamp) {
@@ -124,7 +124,7 @@ int main() {
     passed &= Require(Refused(malformed_timestamp),
                       family + " malformed common timestamp was accepted");
     auto bad = common;
-    bad.multimodel_composition_receipt_uuid.clear();
+    bad.multimodel_composition_receipt_uuid = {};
     passed &= Require(Refused(bad), family + " absent receipt was accepted");
     bad = common;
     bad.multimodel_lexical_source_ordinal = 3;

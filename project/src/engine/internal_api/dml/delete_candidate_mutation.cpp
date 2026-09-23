@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "dml/delete_candidate_mutation.hpp"
 #include "dml/test_optimization_profile.hpp"
 #include "dml/datatype_operator_registry_projection.hpp"
@@ -194,7 +195,7 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
         delta.index = plan.index; delta.table_uuid = target; delta.row_uuid = row.row_uuid;
         delta.version_uuid = tombstone.version_uuid; delta.values = row.values;
         delta.delta_kind = scratchbird::core::index::SecondaryIndexDeltaKind::delete_row;
-        delta.source_evidence_reference = "engine.dml.delete.secondary_index_delta:" + context.statement_uuid;
+        delta.source_evidence_reference = EncodeMgaMetadataFields({"engine.dml.delete.secondary_index_delta:", MetadataUuidBytes(context.statement_uuid)});
         deltas.push_back(std::move(delta));
       }
     }

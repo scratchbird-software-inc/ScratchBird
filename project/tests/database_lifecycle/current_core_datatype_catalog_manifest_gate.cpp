@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -132,10 +133,8 @@ void TestFailClosedCatalogValidation() {
 }
 
 void TestInt32ExactDescriptorTypeCodecIdentity() {
-  constexpr std::string_view kDescriptorUuid =
-      "019d0000-0000-7000-8000-00000000d716";
-  constexpr std::string_view kTypeUuid =
-      "019d0000-0000-7000-8000-00000000d717";
+  constexpr auto kDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716");
+  constexpr auto kTypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717");
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   Require(manifest.ok(), "MDF-012 int32 catalog load failed");
   const auto int32_row = dt::LookupDatatypeCatalogRow(
@@ -151,8 +150,8 @@ void TestInt32ExactDescriptorTypeCodecIdentity() {
           "MDF-012 int32 descriptor UUID drifted");
 
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701", 1, 1,
-      std::string(kDescriptorUuid), 1);
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"), 1, 1,
+      kDescriptorUuid, 1);
   Require(identity.ok && identity.row.type_uuid == kTypeUuid &&
               identity.row.codec_id == "datatype.int32.le.v1" &&
               identity.row.codec_version == 1 &&
@@ -161,31 +160,26 @@ void TestInt32ExactDescriptorTypeCodecIdentity() {
               identity.row.null_supported,
           "MDF-012 int32 descriptor/type/codec identity drifted");
   Require(!dt::LookupDatatypeTypeCodecIdentityV1(
-               "019d0000-0000-7000-8000-00000000d701", 2, 1,
-               std::string(kDescriptorUuid), 1)
+               scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"), 2, 1,
+               kDescriptorUuid, 1)
                .ok,
           "MDF-012 stale int32 catalog generation was admitted");
   Require(!dt::LookupDatatypeTypeCodecIdentityV1(
-               "019d0000-0000-7000-8000-00000000d701", 1, 1,
-               std::string(kTypeUuid), 1)
+               scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"), 1, 1,
+               kTypeUuid, 1)
                .ok,
           "MDF-012 int32 type UUID was accepted as descriptor authority");
 }
 
 void TestTextExactDescriptorTypeCodecIdentity() {
-  constexpr std::string_view kSnapshotUuid =
-      "019d0000-0000-7000-8000-00000000d701";
-  constexpr std::string_view kDescriptorUuid =
-      "019d0000-0000-7000-8000-00000000d718";
-  constexpr std::string_view kTypeUuid =
-      "019d0000-0000-7000-8000-00000000d719";
-  constexpr std::string_view kCodecUuid =
-      "019d0000-0000-7000-8000-00000000d71a";
-  constexpr std::string_view kProvisionalUuid =
-      "2c010000-6368-7172-a163-746572000000";
+  constexpr auto kSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+  constexpr auto kDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
+  constexpr auto kTypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719");
+  constexpr auto kCodecUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71a");
+  constexpr auto kProvisionalUuid = scratchbird::tests::FixtureUuidLiteral("2c010000-6368-7172-a163-746572000000");
 
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      std::string(kSnapshotUuid), 1, 1, std::string(kDescriptorUuid), 1);
+      kSnapshotUuid, 1, 1, kDescriptorUuid, 1);
   Require(identity.ok && identity.diagnostic_id.empty(),
           "MDF-012 canonical text identity lookup failed");
   const auto& row = identity.row;
@@ -255,22 +249,22 @@ void TestTextExactDescriptorTypeCodecIdentity() {
       "MDF-012 stale text registry tuple was admitted");
   reject_text_lookalike(
       [](auto& candidate) {
-        candidate.type_uuid = "019d0000-0000-7000-8000-00000000d71b";
+        candidate.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71b");
       },
       "MDF-012 text type lookalike was admitted");
 
   const auto fixed = dt::LookupDatatypeTypeCodecIdentityV1(
-      std::string(kSnapshotUuid), 1, 1,
-      "019d0000-0000-7000-8000-00000000d716", 1);
+      kSnapshotUuid, 1, 1,
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716"), 1);
   Require(fixed.ok, "MDF-012 fixed-width control identity lookup failed");
   auto fixed_zero = fixed.row;
   fixed_zero.canonical_value_bytes = 0;
   Require(!dt::IsExactCanonicalTextTypeCodecIdentityV1(fixed_zero),
           "MDF-012 fixed-width zero was admitted as the text width marker");
 
-  const auto refuse = [&](std::string snapshot, std::uint64_t catalog_generation,
+  const auto refuse = [&](scratchbird::core::platform::Uuid snapshot, std::uint64_t catalog_generation,
                           std::uint64_t registry_generation,
-                          std::string descriptor,
+                          scratchbird::core::platform::Uuid descriptor,
                           std::uint64_t descriptor_generation,
                           std::string_view message) {
     const auto rejected = dt::LookupDatatypeTypeCodecIdentityV1(
@@ -280,20 +274,20 @@ void TestTextExactDescriptorTypeCodecIdentity() {
                 rejected.diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID",
             message);
   };
-  refuse(std::string(kSnapshotUuid), 1, 1, std::string(kProvisionalUuid), 1,
+  refuse(kSnapshotUuid, 1, 1, kProvisionalUuid, 1,
          "MDF-012 provisional text identity was admitted");
-  refuse(std::string(kSnapshotUuid), 1, 1, std::string(kTypeUuid), 1,
+  refuse(kSnapshotUuid, 1, 1, kTypeUuid, 1,
          "MDF-012 text type UUID was accepted as descriptor authority");
-  refuse(std::string(kSnapshotUuid), 1, 1, std::string(kCodecUuid), 1,
+  refuse(kSnapshotUuid, 1, 1, kCodecUuid, 1,
          "MDF-012 text codec UUID was accepted as descriptor authority");
-  refuse(std::string(kSnapshotUuid), 2, 1, std::string(kDescriptorUuid), 1,
+  refuse(kSnapshotUuid, 2, 1, kDescriptorUuid, 1,
          "MDF-012 stale text catalog generation was admitted");
-  refuse(std::string(kSnapshotUuid), 1, 2, std::string(kDescriptorUuid), 1,
+  refuse(kSnapshotUuid, 1, 2, kDescriptorUuid, 1,
          "MDF-012 stale text registry generation was admitted");
-  refuse(std::string(kSnapshotUuid), 1, 1, std::string(kDescriptorUuid), 2,
+  refuse(kSnapshotUuid, 1, 1, kDescriptorUuid, 2,
          "MDF-012 stale text descriptor generation was admitted");
-  refuse("019d0000-0000-7000-8000-00000000d702", 1, 1,
-         std::string(kDescriptorUuid), 1,
+  refuse(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d702"), 1, 1,
+         kDescriptorUuid, 1,
          "MDF-012 wrong text snapshot UUID was admitted");
 }
 

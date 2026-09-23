@@ -24,18 +24,13 @@ CrudStoreResult LoadCrudState(const EngineRequestContext& context) {
   CrudStoreResult result;
   const auto path_status = ValidateCrudDatabasePath(context, "crud.load_state");
   if (path_status.error) { result.diagnostic = path_status; return result; }
-  std::ifstream in(CrudEventPath(context), std::ios::binary);
-  if (!in) { in.open(context.database_path, std::ios::binary); }
-  if (!in) { result.ok = true; return result; }
-  std::string line;
-  while (std::getline(in, line)) {
-    ++result.state.max_event_sequence;
-    const std::uint64_t event_sequence = result.state.max_event_sequence;
-    const auto magic_pos = line.find(kCrudMagic);
-    if (magic_pos == std::string::npos) { continue; }
-    if (magic_pos != 0) { line = line.substr(magic_pos); }
-    const auto parts = Split(line, '\t');
-    if (parts.size() < 2) { continue; }
+  std::vector<std::vector<std::string>> records;
+  if (!ReadCrudBinaryEvents(CrudEventPath(context), &records)) {
+    result.diagnostic = MakeInvalidRequestDiagnostic("crud.load_state", "binary_event_store_invalid");
+    return result;
+  }
+  for (const auto& parts : records) {
+    const auto event_sequence = ++result.state.max_event_sequence;
     const auto& event = parts[1];
     if (event == "TX_BEGIN" && parts.size() >= 4) {
       const auto tx = ParseU64(parts[2]);
@@ -85,7 +80,7 @@ CrudStoreResult LoadCrudState(const EngineRequestContext& context) {
       CrudTableRecord table;
       table.creator_tx = ParseU64(parts[2]);
       table.event_sequence = event_sequence;
-      table.table_uuid = parts[3];
+      table.table_uuid = CrudBinaryIdentity(parts[3]);
       table.default_name = HexDecode(parts[4]);
       table.columns = DecodeCrudPairs(parts[5]);
       result.state.tables.push_back(std::move(table));
@@ -93,21 +88,21 @@ CrudStoreResult LoadCrudState(const EngineRequestContext& context) {
       CrudTableRecord table;
       table.creator_tx = ParseU64(parts[2]);
       table.event_sequence = event_sequence;
-      table.table_uuid = parts[3];
+      table.table_uuid = CrudBinaryIdentity(parts[3]);
       table.default_name = HexDecode(parts[4]);
       table.columns = DecodeCrudPairs(parts[5]);
       table.temporary = ParseBool(parts[6]);
       table.temporary_scope = parts[7];
-      table.temporary_session_uuid = parts[8];
+      table.temporary_session_uuid = CrudBinaryIdentity(parts[8], true);
       table.on_commit_action = parts[9];
       result.state.tables.push_back(std::move(table));
     } else if (event == "ROW_VERSION" && parts.size() >= 8) {
       CrudRowVersionRecord row;
       row.creator_tx = ParseU64(parts[2]);
       row.event_sequence = event_sequence;
-      row.table_uuid = parts[3];
-      row.row_uuid = parts[4];
-      row.version_uuid = parts[5];
+      row.table_uuid = CrudBinaryIdentity(parts[3]);
+      row.row_uuid = CrudBinaryIdentity(parts[4]);
+      row.version_uuid = CrudBinaryIdentity(parts[5]);
       row.deleted = parts[6] == "1";
       row.values = DecodeCrudPairs(parts[7]);
       row.sequence = ++result.state.max_sequence;
@@ -116,11 +111,11 @@ CrudStoreResult LoadCrudState(const EngineRequestContext& context) {
       CrudRowVersionRecord row;
       row.creator_tx = ParseU64(parts[2]);
       row.event_sequence = event_sequence;
-      row.table_uuid = parts[3];
-      row.row_uuid = parts[4];
-      row.version_uuid = parts[5];
+      row.table_uuid = CrudBinaryIdentity(parts[3]);
+      row.row_uuid = CrudBinaryIdentity(parts[4]);
+      row.version_uuid = CrudBinaryIdentity(parts[5]);
       row.deleted = parts[6] == "1";
-      row.previous_version_uuid = parts[7];
+      row.previous_version_uuid = CrudBinaryIdentity(parts[7], true);
       row.previous_sequence = ParseU64(parts[8]);
       row.values = DecodeCrudPairs(parts[9]);
       row.sequence = ++result.state.max_sequence;
@@ -129,8 +124,8 @@ CrudStoreResult LoadCrudState(const EngineRequestContext& context) {
       CrudIndexRecord index;
       index.creator_tx = ParseU64(parts[2]);
       index.event_sequence = event_sequence;
-      index.index_uuid = parts[3];
-      index.table_uuid = parts[4];
+      index.index_uuid = CrudBinaryIdentity(parts[3]);
+      index.table_uuid = CrudBinaryIdentity(parts[4]);
       index.column_name = HexDecode(parts[5]);
       index.profile = NormalizeCrudIndexProfile(parts[6]);
       index.family = CrudIndexFamilyForProfile(index.profile);
@@ -141,8 +136,8 @@ CrudStoreResult LoadCrudState(const EngineRequestContext& context) {
       CrudIndexRecord index;
       index.creator_tx = ParseU64(parts[2]);
       index.event_sequence = event_sequence;
-      index.index_uuid = parts[3];
-      index.table_uuid = parts[4];
+      index.index_uuid = CrudBinaryIdentity(parts[3]);
+      index.table_uuid = CrudBinaryIdentity(parts[4]);
       index.profile = NormalizeCrudIndexProfile(parts[5]);
       index.family = parts[6].empty() ? CrudIndexFamilyForProfile(index.profile) : parts[6];
       index.default_name = HexDecode(parts[7]);
@@ -160,51 +155,51 @@ CrudStoreResult LoadCrudState(const EngineRequestContext& context) {
       CrudIndexEntryRecord entry;
       entry.creator_tx = ParseU64(parts[2]);
       entry.event_sequence = event_sequence;
-      entry.index_uuid = parts[3];
-      entry.table_uuid = parts[4];
+      entry.index_uuid = CrudBinaryIdentity(parts[3]);
+      entry.table_uuid = CrudBinaryIdentity(parts[4]);
       entry.column_name = HexDecode(parts[5]);
       entry.family = kCrudIndexFamilyBtree;
       entry.entry_kind = "scalar";
       entry.key_value = HexDecode(parts[6]);
-      entry.row_uuid = parts[7];
-      entry.version_uuid = parts[8];
+      entry.row_uuid = CrudBinaryIdentity(parts[7]);
+      entry.version_uuid = CrudBinaryIdentity(parts[8]);
       entry.sequence = ++result.state.max_index_sequence;
       result.state.index_entries.push_back(std::move(entry));
     } else if (event == "INDEX_ENTRY_V2" && parts.size() >= 11) {
       CrudIndexEntryRecord entry;
       entry.creator_tx = ParseU64(parts[2]);
       entry.event_sequence = event_sequence;
-      entry.index_uuid = parts[3];
-      entry.table_uuid = parts[4];
+      entry.index_uuid = CrudBinaryIdentity(parts[3]);
+      entry.table_uuid = CrudBinaryIdentity(parts[4]);
       entry.column_name = HexDecode(parts[5]);
       entry.family = parts[6];
       entry.entry_kind = parts[7];
       entry.key_value = HexDecode(parts[8]);
       entry.payload_value = HexDecode(parts[9]);
-      entry.row_uuid = parts[10];
-      if (parts.size() >= 12) { entry.version_uuid = parts[11]; }
+      entry.row_uuid = CrudBinaryIdentity(parts[10]);
+      if (parts.size() >= 12) { entry.version_uuid = CrudBinaryIdentity(parts[11]); }
       entry.sequence = ++result.state.max_index_sequence;
       result.state.index_entries.push_back(std::move(entry));
     } else if (event == "OVERFLOW_VALUE" && parts.size() >= 11) {
       CrudLargeValueRecord large;
       large.creator_tx = ParseU64(parts[2]);
       large.event_sequence = event_sequence;
-      large.overflow_uuid = parts[3];
-      large.table_uuid = parts[4];
-      large.row_uuid = parts[5];
-      large.version_uuid = parts[6];
+      large.overflow_uuid = CrudBinaryIdentity(parts[3]);
+      large.table_uuid = CrudBinaryIdentity(parts[4]);
+      large.row_uuid = CrudBinaryIdentity(parts[5]);
+      large.version_uuid = CrudBinaryIdentity(parts[6]);
       large.field_name = HexDecode(parts[7]);
       large.total_bytes = ParseU64(parts[8]);
       large.content_hash = parts[9];
       large.state = parts[10];
       result.state.large_values.push_back(std::move(large));
     } else if (event == "OVERFLOW_CHUNK" && parts.size() >= 7) {
-      auto* large = FindMutableCrudLargeValue(&result.state, parts[3]);
+      auto* large = FindMutableCrudLargeValue(&result.state, CrudBinaryIdentity(parts[3]));
       if (large != nullptr) {
         CrudLargeValueChunkRecord chunk;
         chunk.creator_tx = ParseU64(parts[2]);
         chunk.event_sequence = event_sequence;
-        chunk.overflow_uuid = parts[3];
+        chunk.overflow_uuid = CrudBinaryIdentity(parts[3]);
         chunk.ordinal = ParseU64(parts[4]);
         chunk.payload_fragment = HexDecode(parts[5]);
         chunk.checksum = ParseU64(parts[6]);

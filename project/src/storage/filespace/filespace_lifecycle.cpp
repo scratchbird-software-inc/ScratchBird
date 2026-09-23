@@ -233,8 +233,8 @@ double FilespaceHealthStateValue(FilespaceState state) {
 }
 
 void EmitFilespaceAuthorityMetrics(const FilespaceDescriptor& descriptor) {
-  const std::string database_uuid = scratchbird::core::uuid::UuidToString(descriptor.database_uuid.value);
-  const std::string filespace_uuid = scratchbird::core::uuid::UuidToString(descriptor.filespace_uuid.value);
+  const auto database_uuid = descriptor.database_uuid.value;
+  const auto filespace_uuid = descriptor.filespace_uuid.value;
   const std::string role = FilespaceRoleName(descriptor.role);
   const std::string state = FilespaceStateName(descriptor.state);
   (void)scratchbird::core::metrics::PublishFilespaceRoleState(FilespaceRoleStateValue(descriptor.role),

@@ -13,15 +13,8 @@ namespace scratchbird::engine::internal_api {
 namespace {
 namespace w = scratchbird::wire;
 namespace mga = scratchbird::transaction::mga;
-bool Matches(const std::string& text, const w::TypedUpdateUuid& binary) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-  return parsed.ok() && !parsed.value.is_nil() &&
-      std::equal(binary.begin(), binary.end(), parsed.value.bytes.begin());
-}
-std::string Text(const w::TypedUpdateUuid& binary) {
-  scratchbird::core::platform::Uuid uuid;
-  std::copy(binary.begin(), binary.end(), uuid.bytes.begin());
-  return scratchbird::core::uuid::UuidToString(uuid);
+bool Matches(const EngineUuid& identity, const w::TypedUpdateUuid& binary) {
+  return !identity.is_nil() && identity.bytes == binary;
 }
 }
 
@@ -66,7 +59,7 @@ EngineDmlDeleteRecoveryObservationV1 ObserveDmlDeleteRecoveryAuthorityV1(
   const auto transaction = mga::LookupLocalTransaction(inventory.snapshot->inventory,
       mga::MakeLocalTransactionId(context.local_transaction_id));
   if (!transaction.ok() || !Matches(
-          scratchbird::core::uuid::UuidToString(transaction.entry.identity.transaction_uuid.value),
+          transaction.entry.identity.transaction_uuid.value,
           head.owning_transaction_uuid)) return refuse("inventory_owner_mismatch", "MGA.TRANSACTION.STALE");
   using D = EngineDmlDeleteRecoveryDispositionV1;
   using S = w::TypedUpdateJournalState;
@@ -81,14 +74,14 @@ EngineDmlDeleteRecoveryObservationV1 ObserveDmlDeleteRecoveryAuthorityV1(
   } else if (head.lifecycle_state == S::aborted) {
     if (head.statement_savepoint_generation) {
       const auto marker = ObserveMgaSavepointMarker(context,
-          MgaSavepointUuidKey(Text(head.statement_savepoint_uuid)), head.statement_savepoint_generation);
+          MgaSavepointUuidKey(EngineUuid{head.statement_savepoint_uuid}), head.statement_savepoint_generation);
       if (!marker.ok || (!marker.rolled_back && marker.lifecycle != MgaSavepointMarkerLifecycle::invalidated))
         return refuse("aborted_chain_without_MGA_rewind");
     }
     disposition = D::aborted;
   } else {
     const auto marker = ObserveMgaSavepointMarker(context,
-        MgaSavepointUuidKey(Text(head.statement_savepoint_uuid)), head.statement_savepoint_generation);
+        MgaSavepointUuidKey(EngineUuid{head.statement_savepoint_uuid}), head.statement_savepoint_generation);
     if (!marker.ok || marker.lifecycle == MgaSavepointMarkerLifecycle::missing)
       return refuse("exact_savepoint_history_unavailable");
     const bool released = marker.lifecycle == MgaSavepointMarkerLifecycle::released && !marker.rolled_back;

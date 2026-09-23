@@ -58,7 +58,11 @@ info::SysInformationProjectionContext Context() {
 std::string Field(const info::SysInformationProjectionRow& row,
                   std::string_view name) {
   for (const auto& [field_name, value] : row.fields) {
-    if (field_name == name) { return value; }
+    if (field_name == name) {
+      const auto* text = std::get_if<std::string>(&value);
+      Require(text != nullptr, "expected text projection field");
+      return *text;
+    }
   }
   return {};
 }
@@ -79,7 +83,17 @@ bool HasRowValue(const info::SysInformationProjectionResult& result,
                  std::string_view field_name,
                  std::string_view value) {
   for (const auto& row : result.rows) {
-    if (Field(row, field_name) == value) { return true; }
+    const auto* field = info::SysInformationField(row, field_name);
+    if (field && *field == info::SysInformationProjectionValue{std::string(value)}) { return true; }
+  }
+  return false;
+}
+
+bool HasRowValue(const info::SysInformationProjectionResult& result,
+                 std::string_view field_name, const info::EngineUuid& value) {
+  for (const auto& row : result.rows) {
+    const auto* field = info::SysInformationField(row, field_name);
+    if (field && *field == info::SysInformationProjectionValue{value}) { return true; }
   }
   return false;
 }
@@ -95,27 +109,25 @@ void RequireOk(const info::SysInformationProjectionResult& result,
 void RequireNoRawUuidLeak(const info::SysInformationProjectionResult& result) {
   for (const auto& row : result.rows) {
     for (const auto& [field_name, value] : row.fields) {
-      if (field_name.size() >= 5 &&
-          field_name.substr(field_name.size() - 5) == "_uuid") {
-        Require(value.rfind("agent.", 0) != 0,
-                "fake agent reference leaked in " + field_name + "=" + value);
-        Require(value.rfind("policy.", 0) != 0,
-                "fake policy reference leaked in " + field_name + "=" + value);
-        Require(value.rfind("scope.", 0) != 0,
-                "fake scope reference leaked in " + field_name + "=" + value);
+      if (field_name.ends_with("_uuid")) {
+        Require(std::holds_alternative<info::EngineUuid>(value),
+                "UUID projection field must be binary16: " + field_name);
+        continue;
       }
-      Require(value.find("raw-principal") == std::string::npos,
+      const auto* text = std::get_if<std::string>(&value);
+      Require(text != nullptr, "unexpected binary field: " + field_name);
+      Require(text->find("raw-principal") == std::string::npos,
               "raw principal token leaked in " + field_name);
-      Require(value.find("/dev/scratchbird") == std::string::npos,
+      Require(text->find("/dev/scratchbird") == std::string::npos,
               "physical path leaked in " + field_name);
-      Require(value.find("blocker-principal") == std::string::npos,
+      Require(text->find("blocker-principal") == std::string::npos,
               "blocker detail leaked in " + field_name);
     }
   }
 }
 
-std::string Id(platform::UuidKind kind, platform::u64 seed) {
-  static std::map<std::pair<int, platform::u64>, std::string> generated_ids;
+info::EngineUuid Id(platform::UuidKind kind, platform::u64 seed) {
+  static std::map<std::pair<int, platform::u64>, info::EngineUuid> generated_ids;
   const auto key = std::make_pair(static_cast<int>(kind), seed);
   const auto found = generated_ids.find(key);
   if (found != generated_ids.end()) { return found->second; }
@@ -123,7 +135,7 @@ std::string Id(platform::UuidKind kind, platform::u64 seed) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, 1915016000000ull + seed);
   Require(generated.ok(), "fixture UUID generation failed");
   const auto [inserted, _] =
-      generated_ids.emplace(key, uuid::UuidToString(generated.value.value));
+      generated_ids.emplace(key, generated.value.value);
   return inserted->second;
 }
 
@@ -147,13 +159,13 @@ std::vector<info::SysInformationAgentSource> Agents() {
        .last_diagnostic_code = "AGENT.NONE",
        .catalog_generation_id = 2},
       {.agent_uuid = Id(platform::UuidKind::object, 11),
-       .agent_ref = Id(platform::UuidKind::object, 11),
+       .agent_ref = "fixture_agent_11",
        .agent_name = "hidden_agent",
        .agent_type_id = "hidden_agent",
        .catalog_generation_id = 2,
        .hidden = true},
       {.agent_uuid = Id(platform::UuidKind::object, 12),
-       .agent_ref = Id(platform::UuidKind::object, 12),
+       .agent_ref = "fixture_agent_12",
        .agent_name = "future_agent",
        .agent_type_id = "future_agent",
        .catalog_generation_id = 9},
@@ -163,7 +175,7 @@ std::vector<info::SysInformationAgentSource> Agents() {
 std::vector<info::SysInformationAgentMetricDependencySource> MetricDependencies() {
   return {
       {.agent_uuid = Id(platform::UuidKind::object, 1),
-       .agent_ref = Id(platform::UuidKind::object, 1),
+       .agent_ref = "fixture_agent_ref_1",
        .metric_family = "sys.metrics.storage.pages",
        .metric_namespace = "sys.metrics.storage.pages",
        .required_or_optional = "required",
@@ -179,13 +191,13 @@ std::vector<info::SysInformationAgentMetricDependencySource> MetricDependencies(
 std::vector<info::SysInformationAgentPolicySource> Policies() {
   return {
       {.agent_uuid = Id(platform::UuidKind::object, 1),
-       .agent_ref = Id(platform::UuidKind::object, 1),
+       .agent_ref = "fixture_agent_ref_1",
        .policy_uuid = Id(platform::UuidKind::object, 3),
-       .policy_ref = Id(platform::UuidKind::object, 3),
+       .policy_ref = "fixture_policy_ref_3",
        .policy_name = "page_allocation_default",
        .policy_family = "page_allocation_policy",
        .version_uuid = Id(platform::UuidKind::object, 4),
-       .version_ref = Id(platform::UuidKind::object, 4),
+       .version_ref = "fixture_version_ref_4",
        .active_state = "active",
        .validation_state = "valid",
        .attached_at = "2026-05-21T12:00:01Z",
@@ -197,16 +209,16 @@ std::vector<info::SysInformationAgentPolicySource> Policies() {
 std::vector<info::SysInformationAgentActionSource> Actions() {
   return {
       {.action_uuid = Id(platform::UuidKind::object, 5),
-       .action_ref = Id(platform::UuidKind::object, 5),
+       .action_ref = "fixture_action_ref_5",
        .agent_uuid = Id(platform::UuidKind::object, 1),
-       .agent_ref = Id(platform::UuidKind::object, 1),
+       .agent_ref = "fixture_agent_ref_1",
        .action_id = "request_page_preallocation",
        .state = "recommended",
        .risk_class = "bounded_storage",
        .created_at = "2026-05-21T12:00:02Z",
        .expires_at = "2026-05-21T12:05:02Z",
        .approval_required = "YES",
-       .actor_uuid = "raw-principal-should-not-leak",
+       .actor_uuid = Id(platform::UuidKind::principal, 100),
        .actor_ref = "principal.operator",
        .diagnostic_code = "AGENT.ACTION_READY",
        .catalog_generation_id = 2,
@@ -217,17 +229,17 @@ std::vector<info::SysInformationAgentActionSource> Actions() {
 std::vector<info::SysInformationAgentOverrideSource> Overrides() {
   return {
       {.override_uuid = Id(platform::UuidKind::object, 6),
-       .override_ref = Id(platform::UuidKind::object, 6),
+       .override_ref = "fixture_override_ref_6",
        .target_uuid = Id(platform::UuidKind::object, 5),
-       .target_ref = Id(platform::UuidKind::object, 5),
+       .target_ref = "fixture_target_ref_5",
        .scope_uuid = Id(platform::UuidKind::database, 2),
-       .scope_ref = Id(platform::UuidKind::database, 2),
+       .scope_ref = "fixture_scope_ref_2",
        .suppression_class = "maintenance_window",
        .starts_at = "2026-05-21T12:00:00Z",
        .expires_at = "2026-05-21T13:00:00Z",
        .state = "active",
        .reason_code = "operator_suppression",
-       .created_by = "raw-principal-should-not-leak",
+       .created_by = Id(platform::UuidKind::principal, 100),
        .created_by_ref = "principal.operator",
        .catalog_generation_id = 2,
        .actor_visible = false},
@@ -237,15 +249,15 @@ std::vector<info::SysInformationAgentOverrideSource> Overrides() {
 std::vector<info::SysInformationAgentEvidenceSource> Evidence() {
   return {
       {.evidence_uuid = Id(platform::UuidKind::object, 7),
-       .evidence_ref = Id(platform::UuidKind::object, 7),
+       .evidence_ref = "fixture_evidence_ref_7",
        .agent_uuid = Id(platform::UuidKind::object, 1),
-       .agent_ref = Id(platform::UuidKind::object, 1),
+       .agent_ref = "fixture_agent_ref_1",
        .evidence_type = "page_preallocation",
        .action_uuid = Id(platform::UuidKind::object, 5),
-       .action_ref = Id(platform::UuidKind::object, 5),
+       .action_ref = "fixture_action_ref_5",
        .redaction_class = "summary",
        .created_at = "2026-05-21T12:00:03Z",
-       .actor_uuid = "raw-principal-should-not-leak",
+       .actor_uuid = Id(platform::UuidKind::principal, 100),
        .actor_ref = "principal.operator",
        .payload_digest = "sha256:012345",
        .payload_redacted = "YES",
@@ -257,10 +269,10 @@ std::vector<info::SysInformationAgentEvidenceSource> Evidence() {
 std::vector<info::SysInformationAgentAuditSource> Audit() {
   return {
       {.audit_uuid = Id(platform::UuidKind::object, 8),
-       .audit_ref = Id(platform::UuidKind::object, 8),
+       .audit_ref = "fixture_audit_ref_8",
        .evidence_uuid = Id(platform::UuidKind::object, 7),
-       .evidence_ref = Id(platform::UuidKind::object, 7),
-       .actor_uuid = "raw-principal-should-not-leak",
+       .evidence_ref = "fixture_evidence_ref_7",
+       .actor_uuid = Id(platform::UuidKind::principal, 100),
        .actor_ref = "principal.operator",
        .command_name = "REQUEST PAGE PREALLOCATION",
        .sblr_operation = "SBLR_AGENT_REQUEST_PAGE_PREALLOCATION",
@@ -276,11 +288,11 @@ std::vector<info::SysInformationAgentAuditSource> Audit() {
 std::vector<info::SysInformationFilespaceCapacityAgentStateSource> FilespaceState() {
   return {
       {.agent_uuid = Id(platform::UuidKind::object, 9),
-       .agent_ref = Id(platform::UuidKind::object, 9),
+       .agent_ref = "fixture_agent_ref_9",
        .filespace_uuid = Id(platform::UuidKind::filespace, 20),
-       .filespace_ref = Id(platform::UuidKind::filespace, 20),
+       .filespace_ref = "fixture_filespace_ref_20",
        .policy_uuid = Id(platform::UuidKind::object, 21),
-       .policy_ref = Id(platform::UuidKind::object, 21),
+       .policy_ref = "fixture_policy_ref_21",
        .mode = "active",
        .health_state = "healthy",
        .last_capacity_metric_at = "2026-05-21T12:00:05Z",
@@ -294,13 +306,13 @@ std::vector<info::SysInformationFilespaceCapacityAgentStateSource> FilespaceStat
 std::vector<info::SysInformationPageAllocationAgentStateSource> PageState() {
   return {
       {.agent_uuid = Id(platform::UuidKind::object, 1),
-       .agent_ref = Id(platform::UuidKind::object, 1),
+       .agent_ref = "fixture_agent_ref_1",
        .filespace_uuid = Id(platform::UuidKind::filespace, 20),
-       .filespace_ref = Id(platform::UuidKind::filespace, 20),
+       .filespace_ref = "fixture_filespace_ref_20",
        .page_family = "data",
        .page_type = "relation",
        .policy_uuid = Id(platform::UuidKind::object, 3),
-       .policy_ref = Id(platform::UuidKind::object, 3),
+       .policy_ref = "fixture_policy_ref_3",
        .mode = "active",
        .last_scan_generation = "42",
        .last_shrink_ready_state = "ready",
@@ -312,7 +324,7 @@ std::vector<info::SysInformationPageAllocationAgentStateSource> PageState() {
 std::vector<info::SysInformationFilespaceShrinkReadinessSource> ShrinkReadiness() {
   return {
       {.filespace_uuid = Id(platform::UuidKind::filespace, 20),
-       .filespace_ref = Id(platform::UuidKind::filespace, 20),
+       .filespace_ref = "fixture_filespace_ref_20",
        .safe_start_byte = "0",
        .safe_end_byte = "1048576",
        .truncate_ready_bytes = "65536",
@@ -320,7 +332,7 @@ std::vector<info::SysInformationFilespaceShrinkReadinessSource> ShrinkReadiness(
        .readiness_state = "ready",
        .scan_generation = "42",
        .evidence_uuid = Id(platform::UuidKind::object, 22),
-       .evidence_ref = Id(platform::UuidKind::object, 22),
+       .evidence_ref = "fixture_evidence_ref_22",
        .catalog_generation_id = 2},
   };
 }
@@ -418,7 +430,7 @@ void TestDirectRowsAndRedaction() {
 
   const auto actions = Build("sys.agent_actions");
   RequireOk(actions, "sys.agent_actions projection failed");
-  Require(HasRowValue(actions, "actor_uuid", "<redacted:actor_uuid>"),
+  Require(HasRowValue(actions, "actor_uuid", info::EngineUuid{}),
           "agent action actor was not redacted");
   RequireNoRawUuidLeak(actions);
 
@@ -436,7 +448,7 @@ void TestDirectRowsAndRedaction() {
 
   const auto audit = Build("sys.agent_audit");
   RequireOk(audit, "sys.agent_audit projection failed");
-  Require(HasRowValue(audit, "actor_uuid", "<redacted:actor_uuid>"),
+  Require(HasRowValue(audit, "actor_uuid", info::EngineUuid{}),
           "agent audit actor was not redacted");
   RequireNoRawUuidLeak(audit);
 }
@@ -481,7 +493,7 @@ void TestFrontendAliases() {
 
   const auto storage = Build("sys.frontend.filespace_shrink_readiness");
   RequireOk(storage, "sys.frontend.filespace_shrink_readiness projection failed");
-  Require(HasRowValue(storage, "filespace_name", Id(platform::UuidKind::filespace, 20)),
+  Require(HasRowValue(storage, "filespace_name", "fixture_filespace_ref_20"),
           "frontend shrink alias filespace missing");
 }
 

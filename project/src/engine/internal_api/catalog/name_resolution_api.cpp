@@ -168,13 +168,13 @@ TemporaryFilteredNameMatches FilterTemporaryNameMatches(
 EngineApiDiagnostic AttachGlobalAggregateViewSemanticProjection(
     const EngineResolveNameRequest& request,
     const std::string& object_kind,
-    const std::string& object_uuid,
+    const EngineUuid& object_uuid,
     EngineResolveNameResult* result) {
   if (object_kind != "view") {
     return MakeEngineApiDiagnostic(
         "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
-  if (result == nullptr || object_uuid.empty()) {
+  if (result == nullptr || object_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic(
         "catalog.resolve_name", "semantic_projection_output_required");
   }
@@ -245,13 +245,13 @@ bool CanonicalSemanticObjectUuid(const EngineUuid& value) {
 EngineApiDiagnostic AttachRelationProjectionViewSemanticProjection(
     const EngineResolveNameRequest& request,
     const std::string& object_kind,
-    const std::string& object_uuid,
+    const EngineUuid& object_uuid,
     EngineResolveNameResult* result) {
   if (object_kind != "view") {
     return MakeEngineApiDiagnostic(
         "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
-  if (result == nullptr || object_uuid.empty()) {
+  if (result == nullptr || object_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic(
         "catalog.resolve_name", "semantic_projection_output_required");
   }
@@ -350,7 +350,7 @@ EngineApiDiagnostic AttachRelationProjectionViewSemanticProjection(
 EngineApiDiagnostic AttachViewSemanticProjection(
     const EngineResolveNameRequest& request,
     const std::string& object_kind,
-    const std::string& object_uuid,
+    const EngineUuid& object_uuid,
     EngineResolveNameResult* result) {
   const auto aggregate = AttachGlobalAggregateViewSemanticProjection(
       request, object_kind, object_uuid, result);

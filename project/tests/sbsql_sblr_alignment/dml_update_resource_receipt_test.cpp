@@ -16,7 +16,7 @@ ResourceReceipt AcquireResourceReceipt(PublicSession& session, const api::Engine
   ResourceReceipt result;
   bridge::StatementContextAcquireRequest request;
   request.engine_context = &context;
-  request.exact_transaction_uuid = context.transaction_uuid.canonical;
+  request.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptView view;
   Require(bridge::AcquireStatementContextReceipt(session.session, &request, &result.handle, &view, nullptr) ==
               SB_ENGINE_STATUS_OK, "resource receipt acquisition failed");
@@ -31,7 +31,7 @@ void RefuseCallerCapability(PublicSession& session, api::EngineRequestContext co
   context.dml_update_resource_receipt = capability;
   bridge::StatementContextAcquireRequest request;
   request.engine_context = &context;
-  request.exact_transaction_uuid = context.transaction_uuid.canonical;
+  request.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   Require(bridge::AcquireStatementContextReceipt(session.session, &request, &receipt, &view, nullptr) ==

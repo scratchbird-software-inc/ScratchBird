@@ -40,7 +40,7 @@ struct IparSupportSessionScope {
   std::array<std::uint8_t, 16> auth_context_uuid{};
   std::array<std::uint8_t, 16> principal_uuid{};
   std::array<std::uint8_t, 16> effective_user_uuid{};
-  std::string database_uuid;
+  core::platform::Uuid database_uuid{};
   IparSupportEpochVector epoch;
 };
 
@@ -69,8 +69,8 @@ struct IparCacheStatus {
 struct IparUuidDependency {
   std::string dependency_kind;
   std::string logical_name;
-  std::string object_uuid;
-  std::string descriptor_uuid;
+  core::platform::Uuid object_uuid{};
+  core::platform::Uuid descriptor_uuid{};
   std::string descriptor_hash;
   std::uint64_t catalog_generation = 1;
   std::uint64_t descriptor_epoch = 1;
@@ -192,9 +192,9 @@ struct IparResolvedDescriptorPut {
   IparSupportSessionScope scope;
   std::string cache_key;
   std::string resolved_name;
-  std::string object_uuid;
+  core::platform::Uuid object_uuid{};
   std::string object_kind;
-  std::string descriptor_uuid;
+  core::platform::Uuid descriptor_uuid{};
   std::string descriptor_hash;
   std::string operation_id;
   IparCacheAuthorityFlags authority_flags;
@@ -204,9 +204,9 @@ struct IparDescriptorRecord {
   std::string cache_key;
   IparSupportSessionScope scope;
   std::string resolved_name;
-  std::string object_uuid;
+  core::platform::Uuid object_uuid{};
   std::string object_kind;
-  std::string descriptor_uuid;
+  core::platform::Uuid descriptor_uuid{};
   std::string descriptor_hash;
   std::string operation_id;
   IparCacheAuthorityFlags authority_flags;
@@ -283,7 +283,7 @@ struct IparResultBufferRequest {
   std::string requested_reuse_key;
   std::string operation_id;
   std::string result_shape_hash;
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid{};
   std::uint64_t minimum_capacity = 0;
   bool returning_path = false;
   bool parser_or_driver_finality_authority = false;

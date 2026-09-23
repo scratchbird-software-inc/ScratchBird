@@ -68,15 +68,15 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path root;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
   api::EngineRequestContext context;
 
   ~Fixture() {
@@ -91,11 +91,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, 1000);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, 1001);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewIdentity(platform::UuidKind::principal, 1000);
+  context.session_uuid =
+      NewIdentity(platform::UuidKind::object, 1001);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -145,8 +145,8 @@ Fixture MakeFixture() {
   }
   Require(created.ok(), "compact scalar database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, 20);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, 20);
   fixture.context = Begin(fixture);
 
   api::CrudTableRecord table;
@@ -202,9 +202,9 @@ sblr::SblrDispatchResult DispatchCompactInsert(
   envelope.result_shape = "mutation_result";
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
-      NewUuidText(platform::UuidKind::object, 2000);
+      NewIdentity(platform::UuidKind::object, 2000);
   envelope.registry_snapshot_uuid =
-      NewUuidText(platform::UuidKind::object, 2001);
+      NewIdentity(platform::UuidKind::object, 2001);
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
@@ -229,7 +229,13 @@ sblr::SblrDispatchResult DispatchCompactInsert(
                               value.end());
     envelope.operands.push_back(std::move(operand));
   };
-  append_text("target_object_uuid", fixture.table_uuid);
+  sblr::SblrOperand target;
+  target.ordinal = static_cast<std::uint32_t>(envelope.operands.size() + 1);
+  target.type = "uuid";
+  target.name = "target_object_uuid";
+  target.value_kind = sblr::SblrValueKind::uuid_ref;
+  target.value_body.assign(fixture.table_uuid.bytes.begin(), fixture.table_uuid.bytes.end());
+  envelope.operands.push_back(std::move(target));
   append_text("target_object_kind", "table");
   append_text("insert_values_row_count", std::to_string(cells.size()));
   append_text("insert_values_column_count", "1");
@@ -249,7 +255,7 @@ api::EngineSelectRowsResult SelectAll(const Fixture& fixture) {
   api::EngineSelectRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = "compact-scalar-select";
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   return api::EngineSelectRows(request);
 }

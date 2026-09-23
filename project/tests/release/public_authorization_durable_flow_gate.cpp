@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -40,7 +41,7 @@ api::EngineUuid MakeUuid(UuidKind kind, u64 offset) {
       uuid::GenerateEngineIdentityV7(kind, kBaseMillis + offset);
   api::EngineUuid out;
   if (generated.ok()) {
-    out.canonical = uuid::UuidToString(generated.value.value);
+    out = generated.value.value;
   }
   return out;
 }
@@ -57,9 +58,18 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
+  }
+  return false;
+}
+
+bool HasEvidence(const api::EngineApiResult& result,
+                 std::string_view kind, const api::EngineUuid& identity) {
+  for (const auto& evidence : result.evidence) {
+    const auto* value = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && value && *value == identity) return true;
   }
   return false;
 }
@@ -260,12 +270,12 @@ bool MaterializesNestedGroupsAndPolicies(const std::filesystem::path& work_dir) 
   ok = Expect(row_policy.source_policy_generation ==
                   source_row_policy.source_policy_generation &&
                   row_policy.update_policy_phase == 1 &&
-                  row_policy.effective_policy_uuid.canonical ==
-                      source_row_policy.effective_policy_uuid.canonical &&
+                  row_policy.effective_policy_uuid ==
+                      source_row_policy.effective_policy_uuid &&
                   row_policy.effective_policy_generation ==
                       source_row_policy.effective_policy_generation &&
-                  row_policy.effective_expression_uuid.canonical ==
-                      source_row_policy.effective_expression_uuid.canonical &&
+                  row_policy.effective_expression_uuid ==
+                      source_row_policy.effective_expression_uuid &&
                   row_policy.effective_expression_generation ==
                       source_row_policy.effective_expression_generation &&
                   row_policy.effective_expression_evidence_sha256 ==
@@ -354,7 +364,7 @@ bool MaterializesNestedGroupsAndPolicies(const std::filesystem::path& work_dir) 
               "EngineGrantRight should authorize through materialized SEC_GRANT_ADMIN") && ok;
   ok = Expect(HasEvidence(grant_result,
                           "security_grant_admin",
-                          ids.principal.canonical),
+                          ids.principal),
               "grant API should preserve grant admin evidence") && ok;
   return ok;
 }

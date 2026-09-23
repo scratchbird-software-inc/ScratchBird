@@ -41,7 +41,7 @@ struct CacheKey {
   std::uint64_t memory_pressure_generation{0};
   std::uint64_t normalized_statement_hash{0};
   std::uint64_t parameter_type_shape_hash{0};
-  std::string connection_uuid;
+  core::platform::Uuid connection_uuid;
   std::string transaction_context_hash;
   std::string dialect;
   std::string role_set_hash;
@@ -54,7 +54,7 @@ struct CacheKey {
   std::string common_resource_hash;
   std::uint64_t language_resource_epoch{0};
   std::uint64_t localized_name_epoch{0};
-  std::string policy_profile;
+  core::platform::Uuid policy_profile;
   std::string parser_profile;
   std::uint64_t message_resource_epoch{0};
   std::string resource_compatibility_identity;
@@ -113,7 +113,7 @@ class SblrTemplateCache {
   void InvalidateMemoryPressureGeneration(std::uint64_t new_generation);
   void InvalidateNormalizedStatementHash(std::uint64_t new_hash);
   void InvalidateParameterTypeShapeHash(std::uint64_t new_hash);
-  void InvalidateConnection(std::string_view connection_uuid);
+  void InvalidateConnection(const core::platform::Uuid& connection_uuid);
   void InvalidateTransactionContext(std::string_view transaction_context_hash);
   void InvalidateDialect(std::string_view dialect);
   void InvalidateRoleSetHash(std::string_view new_hash);
@@ -126,7 +126,7 @@ class SblrTemplateCache {
   void InvalidateCommonResourceHash(std::string_view new_common_resource_hash);
   void InvalidateLanguageResourceEpoch(std::uint64_t new_epoch);
   void InvalidateLocalizedNameEpoch(std::uint64_t new_epoch);
-  void InvalidatePolicyProfile(std::string_view new_policy_profile);
+  void InvalidatePolicyProfile(const core::platform::Uuid& new_policy_profile);
   void InvalidateParserProfile(std::string_view new_parser_profile);
   void InvalidateMessageResourceEpoch(std::uint64_t new_epoch);
   void InvalidateResourceCompatibilityIdentity(std::string_view new_identity);

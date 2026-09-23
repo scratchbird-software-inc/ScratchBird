@@ -29,6 +29,7 @@ namespace scratchbird::server {
 
 struct ServerManagementRequest {
   std::string operation_key;
+  // Binary16 identity carrier; empty denotes an absent target. Text UUIDs are refused.
   std::string target_uuid;
   std::string mode;
   std::string audit_reason;

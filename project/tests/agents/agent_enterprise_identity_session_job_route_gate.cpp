@@ -6,6 +6,12 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+using scratchbird::tests::FixtureIdentityForLabel;
+#include "../support/binary_uuid_fixture.hpp"
 #include "agents/identity_manager.hpp"
 #include "agents/job_control_manager.hpp"
 #include "agents/session_control_manager.hpp"
@@ -106,8 +112,8 @@ TestDatabase CreateActiveDatabase(const char* basename) {
 
   TestDatabase result;
   result.path = path;
-  result.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  result.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
+  result.database_uuid = BinaryFixtureIdentity(database_uuid.value.value);
+  result.transaction_uuid = BinaryFixtureIdentity(transaction_uuid.value.value);
   result.local_transaction_id = begun.entry.identity.local_id.value;
   return result;
 }
@@ -116,14 +122,13 @@ api::EngineRequestContext Context(const TestDatabase& database) {
   api::EngineRequestContext context;
   context.request_id = "aeic-identity-session-job";
   context.database_path = database.path.string();
-  context.database_uuid.canonical = database.database_uuid;
-  context.transaction_uuid.canonical = database.transaction_uuid;
+  context.database_uuid = NativeFixtureIdentity(database.database_uuid);
+  context.transaction_uuid = NativeFixtureIdentity(database.transaction_uuid);
   context.local_transaction_id = database.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       database.local_transaction_id;
   context.security_context_present = true;
-  context.principal_uuid.canonical =
-      "019f0900-0000-7000-8000-000000002901";
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002901");
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.trace_tags.push_back("security.bootstrap");
   context.trace_tags.push_back("security.fixture_trace_authority");
@@ -138,12 +143,12 @@ agents::DurableAgentCatalogImage DurableWorkflowCatalog() {
   image.authority.durable_catalog_authority = true;
   image.authority.mga_transaction_evidence = true;
   image.authority.mga_transaction_uuid =
-      "019f0900-0000-7000-8000-000000002903";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002903"));
   image.authority.transaction_generation = 29;
-  image.authority.evidence_uuid = "019f0900-0000-7000-8000-000000002904";
-  image.authority.database_uuid = "019f0900-0000-7000-8000-000000002900";
+  image.authority.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002904"));
+  image.authority.database_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002900"));
   image.authority.catalog_storage_uuid =
-      "019f0900-0000-7000-8000-000000002911";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002911"));
   image.authority.storage_commit_evidence_uuid = image.authority.evidence_uuid;
   image.authority.catalog_generation = 29;
   image.authority.local_transaction_id = 29001;
@@ -158,10 +163,10 @@ agents::DurableAgentCatalogImage DurableWorkflowCatalog() {
 
 template <typename TRequest>
 void SetGenericWorkflowAuthority(TRequest* request, const std::string& subject) {
-  request->database_uuid = "019f0900-0000-7000-8000-000000002900";
-  request->principal_uuid = "019f0900-0000-7000-8000-000000002901";
-  request->mga_transaction_uuid = "019f0900-0000-7000-8000-000000002903";
-  request->evidence_uuid = "019f0900-0000-7000-8000-000000002904";
+  request->database_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002900"));
+  request->principal_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002901"));
+  request->mga_transaction_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002903"));
+  request->evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002904"));
   request->idempotency_key = "idem:aeic029:" + subject;
   request->local_transaction_id = 29001;
   request->catalog_generation = 29;
@@ -198,7 +203,7 @@ agents::WorkloadResourceQuotaController Quota() {
 agents::DatabaseLocalBackgroundJobScheduler StartedScheduler() {
   agents::DatabaseLocalBackgroundJobScheduler scheduler;
   agents::BackgroundJobSchedulerStartup startup;
-  startup.database_uuid = "019f0900-0000-7000-8000-000000002900";
+  startup.database_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002900"));
   startup.policy_generation = 29;
   startup.tx2_activation_committed = true;
   startup.startup_admitted = true;
@@ -217,7 +222,7 @@ agents::BackgroundJobDefinition Job(std::string job_uuid) {
   agents::BackgroundJobDefinition job;
   job.job_uuid = std::move(job_uuid);
   job.job_type = "aeic029_job";
-  job.database_uuid = "019f0900-0000-7000-8000-000000002900";
+  job.database_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002900"));
   job.pool_id = "background";
   job.workload_class = agents::WorkloadClass::background;
   job.source = agents::WorkloadAdmissionSource::engine;
@@ -231,9 +236,9 @@ void TestIdentityManagerRoutesThroughEngineSecurityApi() {
   auto context = Context(database);
 
   impl::IdentityManagerRequest identity;
-  identity.principal_uuid = "019f0900-0000-7000-8000-000000002a01";
+  identity.principal_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002a01"));
   SetGenericWorkflowAuthority(&identity, identity.principal_uuid);
-  identity.operator_principal_uuid = context.principal_uuid.canonical;
+  identity.operator_principal_uuid = BinaryFixtureIdentity(context.principal_uuid);
   identity.lock_requested = true;
   identity.identity_metrics_authoritative = true;
   identity.explicit_admin_request = true;
@@ -263,15 +268,39 @@ void TestIdentityManagerRoutesThroughEngineSecurityApi() {
   Cleanup(database.path);
 }
 
+void TestSessionControlRejectsInvalidBinaryIdentity() {
+  server::ServerSessionRegistry registry;
+  const auto identity = scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002b01");
+  server::ServerSessionRecord session;
+  session.session_uuid = identity.bytes;
+  registry.sessions_by_uuid.emplace(identity, session);
+  auto wrong_version = identity;
+  wrong_version.bytes[6] = 0x60;
+  const std::vector<std::string> invalid{
+      {}, std::string(15, '\0'), std::string(17, '\0'), std::string(16, '\0'),
+      "019f0900-0000-7000-8000-000000002b01", BinaryFixtureIdentity(wrong_version)};
+  for (const auto& bytes : invalid) {
+    impl::SessionControlManagerRequest request;
+    request.session_uuid = bytes;
+    request.disconnect_requested = true;
+    const auto refused = server::ApplySessionControlAgentRoute(&registry, nullptr, request);
+    Require(!refused.ok() && !refused.registry_mutated &&
+                refused.diagnostic_code == "SB_AGENT_SESSION_CONTROL_ROUTE.SESSION_IDENTITY_INVALID" &&
+                registry.sessions_by_uuid.size() == 1 && registry.sessions_by_uuid.contains(identity),
+            "session bridge did not reject malformed identity before ledger/registry mutation");
+  }
+}
+
 void TestSessionControlMutatesServerRegistry() {
   auto catalog = DurableWorkflowCatalog();
   agents::AgentLocalWorkflowLedger ledger(&catalog);
   server::ServerSessionRegistry registry;
   server::ServerSessionRecord session;
-  session.database_uuid = "019f0900-0000-7000-8000-000000002900";
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002900");
   session.engine_authorization_trace_tags.push_back("right:OBS_AGENT_CONTROL");
-  const std::string session_uuid = "019f0900-0000-7000-8000-000000002b01";
-  registry.sessions_by_uuid.emplace(session_uuid, session);
+  const std::string session_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0900-0000-7000-8000-000000002b01"));
+  session.session_uuid = NativeFixtureIdentity(session_uuid).bytes;
+  registry.sessions_by_uuid.emplace(NativeFixtureIdentity(session_uuid), session);
 
   impl::SessionControlManagerRequest request;
   request.session_uuid = session_uuid;
@@ -288,7 +317,8 @@ void TestSessionControlMutatesServerRegistry() {
   Require(registry.sessions_by_uuid.empty(),
           "session control bridge left disconnected session visible");
 
-  registry.sessions_by_uuid.emplace(session_uuid, session);
+  session.session_uuid = NativeFixtureIdentity(session_uuid).bytes;
+  registry.sessions_by_uuid.emplace(NativeFixtureIdentity(session_uuid), session);
   request.disconnect_requested = false;
   request.reauth_requested = true;
   request.idempotency_key = "idem:aeic029:reauth";
@@ -296,7 +326,7 @@ void TestSessionControlMutatesServerRegistry() {
       server::ApplySessionControlAgentRoute(&registry, &ledger, request);
   Require(reauth.ok() && reauth.registry_mutated && reauth.reauth_required,
           "session control bridge did not mark reauth required");
-  Require(!registry.sessions_by_uuid.at(session_uuid)
+  Require(!registry.sessions_by_uuid.at(NativeFixtureIdentity(session_uuid))
                .engine_authorization_trace_tags.empty(),
           "session reauth evidence was not attached to server registry");
 
@@ -364,6 +394,7 @@ void TestJobControlMutatesBackgroundScheduler() {
 }  // namespace
 
 int main() {
+  TestSessionControlRejectsInvalidBinaryIdentity();
   TestIdentityManagerRoutesThroughEngineSecurityApi();
   TestSessionControlMutatesServerRegistry();
   TestJobControlMutatesBackgroundScheduler();

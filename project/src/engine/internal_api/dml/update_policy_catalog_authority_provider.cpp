@@ -41,21 +41,17 @@ bool HasTraceTag(const EngineRequestContext& context, std::string_view tag) {
          context.trace_tags.end();
 }
 
-bool ExactUuid(std::string_view text) {
-  if (text.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == text;
+bool ExactUuid(const EngineUuid& value) {
+  return !value.is_nil() && scratchbird::core::uuid::IsValidUuidVariant(value);
 }
 
-bool TypedUuid(std::string_view text, update_wire::TypedUpdateUuid* out) {
-  if (out == nullptr || !ExactUuid(text)) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), out->begin());
+bool TypedUuid(const EngineUuid& value, update_wire::TypedUpdateUuid* out) {
+  if (out == nullptr || !ExactUuid(value)) return false;
+  *out = value.bytes;
   return true;
 }
 
-std::string FreshUuid() {
+EngineUuid FreshUuid() {
   const auto now = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count());
@@ -64,8 +60,8 @@ std::string FreshUuid() {
       now + g_policy_source_identity_ordinal.fetch_add(
                 1, std::memory_order_relaxed));
   return generated.ok()
-      ? scratchbird::core::uuid::UuidToString(generated.value.value)
-      : std::string{};
+      ? generated.value.value
+      : EngineUuid{};
 }
 
 bool RawSha256(std::span<const std::uint8_t> bytes,
@@ -153,7 +149,7 @@ CaptureDmlUpdatePolicyCatalogAuthorityV1(
     return result;
   }
 
-  const std::string vector_uuid = FreshUuid();
+  const EngineUuid vector_uuid = FreshUuid();
   update_wire::TypedUpdateSecurityPolicySourceVector vector;
   if (!TypedUuid(vector_uuid, &vector.identity.vector_uuid) ||
       !TypedUuid(request.descriptor_uuid,

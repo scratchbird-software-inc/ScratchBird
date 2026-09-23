@@ -6,6 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "catalog/column_metadata_codec.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <stdexcept>
 #include "dml/insert_batch.hpp"
 #include "dml/insert_descriptor_key.hpp"
 
@@ -205,51 +208,41 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
-std::map<std::string, std::string> DescriptorFields(const std::string& descriptor) {
-  std::map<std::string, std::string> fields;
-  std::string current;
-  std::istringstream in(descriptor);
-  while (std::getline(in, current, ';')) {
-    current = TrimAscii(current);
-    if (current.empty()) {
-      continue;
-    }
-    const auto equals = current.find('=');
-    if (equals == std::string::npos) {
-      fields[LowerAscii(current)] = "true";
-      continue;
-    }
-    fields[LowerAscii(TrimAscii(current.substr(0, equals)))] =
-        TrimAscii(current.substr(equals + 1));
-  }
+CatalogColumnMetadata DescriptorFields(const std::string& descriptor) {
+  CatalogColumnMetadata fields;
+  if(!AdmitCatalogColumnMetadata(descriptor,&fields))throw std::invalid_argument("insert_batch_metadata_invalid");
   return fields;
 }
 
-std::string DescriptorField(const std::map<std::string, std::string>& fields,
+std::string DescriptorField(const CatalogColumnMetadata& fields,
                             std::initializer_list<const char*> keys) {
   for (const char* key : keys) {
-    const auto found = fields.find(key);
-    if (found != fields.end()) {
+    const auto found = fields.text.find(key);
+    if (found != fields.text.end()) {
       return found->second;
     }
   }
   return {};
 }
 
-bool DescriptorBool(const std::map<std::string, std::string>& fields,
+bool DescriptorBool(const CatalogColumnMetadata& fields,
                     std::initializer_list<const char*> keys) {
   const std::string value = LowerAscii(DescriptorField(fields, keys));
   return value == "1" || value == "true" || value == "yes" || value == "on";
 }
 
-bool DescriptorFalse(const std::map<std::string, std::string>& fields,
+bool DescriptorFalse(const CatalogColumnMetadata& fields,
                      std::initializer_list<const char*> keys) {
   const std::string value = LowerAscii(DescriptorField(fields, keys));
   return value == "0" || value == "false" || value == "no" || value == "off";
 }
 
-bool DescriptorValuePresent(const std::map<std::string, std::string>& fields,
+bool DescriptorValuePresent(const CatalogColumnMetadata& fields,
                             std::initializer_list<const char*> keys) {
+  for(const char* key:keys) {
+    const auto found=fields.identities.find(key);
+    if(found!=fields.identities.end()&&!found->second.is_nil())return true;
+  }
   const std::string value = DescriptorField(fields, keys);
   return !value.empty() && LowerAscii(value) != "none";
 }
@@ -316,7 +309,7 @@ InsertRowEncoderPlan BuildInsertRowEncoderPlan(
     if (column_plan.domain_bound) {
       ++plan.domain_validator_count;
       AppendKeyPart(&domains, column.first,
-                    DescriptorField(fields, {"domain_uuid", "domain", "domain_descriptor", "domain_ref"}));
+                    MetadataUuidBytes(BinaryCatalogUuid(fields,"domain_uuid")));
     }
     if (column_plan.check_bound) {
       ++plan.check_validator_count;
@@ -1077,8 +1070,14 @@ void CaptureInsertMemoryArenaProof(const EngineInsertRowsRequest& request,
   memory_context.session_id = request.context.session_uuid;
   memory_context.transaction_id = context->transaction_uuid;
   memory_context.database_id = context->database_uuid;
-  memory_context.engine_id = "scratchbird_engine_insert";
-  memory_context.operation_id = "insert_batch";
+  static const EngineUuid process_identity=GenerateCrudEngineUuid("object");
+  memory_context.engine_id = process_identity;
+  memory_context.operation_id = context->statement_uuid;
+  memory_context.snapshot_boundary = request.context.statement_snapshot_uuid;
+  memory_context.metadata_boundary = request.context.statement_metadata_snapshot_uuid;
+  memory_context.resource_budget_reference = request.context.optimizer_resource_snapshot_uuid;
+  memory_context.policy_generation = request.context.resource_epoch;
+  memory_context.security_generation = request.context.security_epoch;
   memory_context.engine_mga_authoritative = true;
   memory_context.parser_or_reference_finality_or_visibility_authority = false;
   memory_context.client_finality_or_visibility_authority = false;
@@ -1497,14 +1496,18 @@ EngineApiDiagnostic UniqueConflictDiagnostic(const CrudTableRecord& table,
     break;
   }
   if (primary_key) {
-    return MakeEngineApiDiagnostic("CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION",
+    auto diagnostic = MakeEngineApiDiagnostic("CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION",
                                    "constraint.primary_key.violation",
-                                   "duplicate_key:" + index.index_uuid);
+                                   "duplicate_key");
+    diagnostic.identity_fields={{"index_uuid",index.index_uuid}};
+    return diagnostic;
   }
   if (unique_key) {
-    return MakeEngineApiDiagnostic("CLI.CONSTRAINT_UNIQUE_VIOLATION",
+    auto diagnostic = MakeEngineApiDiagnostic("CLI.CONSTRAINT_UNIQUE_VIOLATION",
                                    "constraint.unique.violation",
-                                   "duplicate_key:" + index.index_uuid);
+                                   "duplicate_key");
+    diagnostic.identity_fields={{"index_uuid",index.index_uuid}};
+    return diagnostic;
   }
   return MakeInvalidRequestDiagnostic("crud.unique_index", "unique_index_duplicate");
 }
@@ -1611,14 +1614,14 @@ EngineApiDiagnostic AppendSecondaryIndexDeltaLedgerEntries(const EngineRequestCo
     input.values = row.values;
     input.delta_kind = idx::SecondaryIndexDeltaKind::insert;
     input.source_evidence_reference =
-        "engine.dml.insert.secondary_index_delta:" + context.statement_uuid;
+        EncodeMgaMetadataFields({"engine.dml.insert.secondary_index_delta:",MetadataUuidBytes(context.statement_uuid)});
     entries.push_back(std::move(input));
   }
   return TransactionalRelationStore(request_context)
       .AppendSecondaryIndexDeltaLedgerEntries(entries, nullptr);
 }
 
-void AddInsertTrace(InsertBatchContext* context, std::string event_name, std::string phase, std::string detail) {
+void AddInsertTrace(InsertBatchContext* context, std::string event_name, std::string phase, EngineEvidenceValue detail) {
   if (context == nullptr) {
     return;
   }
@@ -1642,7 +1645,12 @@ void AddInsertBatchEvidenceToResult(const InsertBatchContext& context, EngineApi
   constexpr std::size_t kHeadInsertTraceEvidence = 48;
   constexpr std::size_t kTailInsertTraceEvidence = 24;
   const auto append_trace = [result](const InsertBatchTraceEvent& trace) {
-    result->evidence.push_back({"insert_trace", trace.event_name + ":" + trace.phase + ":" + trace.detail});
+    if(const auto* text=std::get_if<std::string>(&trace.detail)) {
+      result->evidence.push_back({"insert_trace",trace.event_name+":"+trace.phase+":"+*text});
+    } else {
+      result->evidence.push_back({"insert_trace",trace.event_name+":"+trace.phase});
+      result->evidence.push_back({"insert_trace_identity",std::get<EngineUuid>(trace.detail)});
+    }
   };
   if (context.trace_event_count <= kMaxInlineInsertTraceEvidence) {
     for (const auto& trace : context.trace_events) {

@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/catalog_object_lifecycle_codec.hpp"
+#include "catalog/constraint_metadata_codec.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_registry.hpp"
@@ -198,6 +200,10 @@ EngineApiDiagnostic CatalogDiagnostic(const char* code, std::string detail = {})
   return MakeEngineApiDiagnostic(code, std::move(message_key), std::move(detail), true);
 }
 
+EngineApiDiagnostic CatalogDiagnostic(const char* code, const EngineUuid&) {
+  return CatalogDiagnostic(code, std::string("object_uuid"));
+}
+
 EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
@@ -227,24 +233,13 @@ TResult DiagnosticResult(const EngineRequestContext& context,
   return result;
 }
 
-EngineTypedValue Value(std::string value) {
-  EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
-  typed.encoded_value = std::move(value);
-  return typed;
-}
-
-void AddRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
-  EngineRowValue row;
-  row.requested_row_uuid = GenerateCrudEngineUuid("row");
-  for (auto& field : fields) { row.fields.push_back({std::move(field.first), Value(std::move(field.second))}); }
+void AddRow(EngineApiResult* result, ApiBehaviorFields fields) {
+  result->result_shape.rows.push_back(ApiBehaviorRow(std::move(fields)));
   result->result_shape.result_kind = "catalog_object_lifecycle_rows";
-  result->result_shape.rows.push_back(std::move(row));
 }
 
-void AddEvidence(EngineApiResult* result, std::string kind, std::string id) {
-  result->evidence.push_back({std::move(kind), std::move(id)});
+void AddEvidence(EngineApiResult* result, std::string kind, EngineEvidenceValue id) {
+  AddApiBehaviorEvidence(result, std::move(kind), std::move(id));
 }
 
 bool TransactionStatusVisible(const EngineRequestContext& context,
@@ -355,39 +350,12 @@ std::map<std::string, std::string> PayloadMap(const std::string& payload) {
   return fields;
 }
 
-std::string SynonymPayload(const EngineApiRequest& request,
-                           const std::string& target_uuid,
-                           const std::string& target_class) {
-  std::vector<std::string> parts;
-  parts.push_back("synonym_target_uuid=" + target_uuid);
-  parts.push_back("synonym_target_class=" + target_class);
-  parts.push_back("synonym_dependency_strength=hard");
-  parts.push_back("synonym_catalog_table=sys.catalog.synonym");
-  for (const auto& option : request.option_envelopes) {
-    if (StartsWith(option, "payload:policy_uuid=")) {
-      parts.push_back(option.substr(8));
-    }
-  }
-  std::string out;
-  for (const auto& part : parts) {
-    if (!out.empty()) { out.push_back(';'); }
-    out += part;
-  }
-  return out;
-}
-
-std::string SynonymTargetUuid(const EngineCatalogObjectRecord& object) {
-  if (object.object_kind != "synonym") { return {}; }
-  const auto fields = PayloadMap(object.payload);
-  const auto it = fields.find("synonym_target_uuid");
-  return it == fields.end() ? std::string{} : it->second;
+EngineUuid SynonymTargetUuid(const EngineCatalogObjectRecord& object) {
+  return object.object_kind == "synonym" ? object.synonym_target_uuid : EngineUuid{};
 }
 
 std::string SynonymTargetClass(const EngineCatalogObjectRecord& object) {
-  if (object.object_kind != "synonym") { return {}; }
-  const auto fields = PayloadMap(object.payload);
-  const auto it = fields.find("synonym_target_class");
-  return it == fields.end() ? std::string{} : it->second;
+  return object.object_kind == "synonym" ? object.synonym_target_class : std::string{};
 }
 
 std::string DependencyKindForRelatedObject(const std::string& source_kind,
@@ -445,7 +413,7 @@ bool SupportFamilyAllowedForConstraint(const std::string& constraint_class,
   return true;
 }
 
-std::string RequestedOrGeneratedUuid(const EngineUuid& uuid, const std::string& kind) {
+EngineUuid RequestedOrGeneratedUuid(const EngineUuid& uuid, const std::string& kind) {
   if (!uuid.is_nil()) { return uuid; }
   return GenerateCrudEngineUuid(kind);
 }
@@ -458,7 +426,7 @@ std::string ObjectKind(const EngineApiRequest& request) {
   return {};
 }
 
-std::string ObjectUuid(const EngineApiRequest& request) {
+EngineUuid ObjectUuid(const EngineApiRequest& request) {
   if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
   if (!request.bound_object_identity.object_uuid.is_nil()) {
     return request.bound_object_identity.object_uuid;
@@ -467,9 +435,9 @@ std::string ObjectUuid(const EngineApiRequest& request) {
 }
 
 EngineCatalogNameRecord MakeNameRecord(const EngineRequestContext& context,
-                                       const std::string& object_uuid,
+                                       const EngineUuid& object_uuid,
                                        const std::string& object_kind,
-                                       const std::string& schema_uuid,
+                                       const EngineUuid& schema_uuid,
                                        const EngineLocalizedName& name,
                                        std::uint64_t metadata_epoch) {
   const std::string raw = !name.raw_name_text.empty() ? name.raw_name_text : name.name;
@@ -502,117 +470,89 @@ EngineCatalogNameRecord MakeNameRecord(const EngineRequestContext& context,
 }
 
 std::string ObjectEvent(const EngineCatalogObjectRecord& record) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tOBJECT\t" +
-         std::to_string(record.creator_tx) + "\t" + record.object_uuid + "\t" + record.object_kind + "\t" +
-         record.schema_uuid + "\t" + record.owner_principal_uuid + "\t" + record.lifecycle_state + "\t" +
-         std::to_string(record.definition_epoch) + "\t" + std::to_string(record.metadata_epoch) + "\t" +
-         HexEncode(record.payload) + "\t" + (record.deleted ? "1" : "0");
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(record, &bytes)) return {};
+  return bytes;
 }
 
 std::string NameEvent(const EngineCatalogNameRecord& record) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tNAME\t" +
-         std::to_string(record.creator_tx) + "\t" + record.name_entry_uuid + "\t" + record.object_uuid + "\t" +
-         record.object_kind + "\t" + record.schema_uuid + "\t" + record.language_tag + "\t" +
-         record.name_class + "\t" + record.identifier_profile_uuid + "\t" + HexEncode(record.raw_name_text) + "\t" +
-         HexEncode(record.display_name) + "\t" + HexEncode(record.normalized_lookup_key) + "\t" +
-         HexEncode(record.exact_lookup_key) + "\t" + (record.requires_exact_match ? "1" : "0") + "\t" +
-         std::to_string(record.metadata_epoch) + "\t" + (record.deleted ? "1" : "0");
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(record, &bytes)) return {};
+  return bytes;
 }
 
 std::string DependencyEvent(const EngineCatalogDependencyRecord& record) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tDEPENDENCY\t" +
-         std::to_string(record.creator_tx) + "\t" + record.source_uuid + "\t" + record.source_kind + "\t" +
-         record.dependency_uuid + "\t" + record.dependency_kind + "\t" +
-         std::to_string(record.metadata_epoch) + "\t" + (record.deleted ? "1" : "0");
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(record, &bytes)) return {};
+  return bytes;
 }
 
 std::string ColumnMetadataEvent(const EngineCatalogColumnMetadataRecord& record) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tCOLUMN_METADATA\t" +
-         std::to_string(record.creator_tx) + "\t" + record.column_uuid + "\t" +
-         record.owner_object_uuid + "\t" + HexEncode(record.descriptor_kind) + "\t" +
-         HexEncode(record.canonical_type_name) + "\t" +
-         HexEncode(record.default_expression_envelope) + "\t" +
-         std::to_string(record.ordinal) + "\t" + (record.nullable ? "1" : "0") + "\t" +
-         std::to_string(record.metadata_epoch) + "\t" + (record.deleted ? "1" : "0");
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(record, &bytes)) return {};
+  return bytes;
 }
 
 std::string ConstraintDescriptorEvent(const EngineCatalogConstraintDescriptorRecord& record) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tCONSTRAINT_DESCRIPTOR\t" +
-         std::to_string(record.creator_tx) + "\t" + record.constraint_uuid + "\t" +
-         record.constraint_class + "\t" + record.owner_object_uuid + "\t" +
-         record.name_ref_uuid + "\t" + record.constraint_policy_version_uuid + "\t" +
-         record.enforcement_timing + "\t" + record.validation_state + "\t" +
-         record.trust_state + "\t" + record.support_requirement + "\t" +
-         record.predicate_sblr_uuid + "\t" + record.diagnostic_profile_uuid + "\t" +
-         record.metrics_profile_uuid + "\t" + record.conformance_profile_uuid + "\t" +
-         HexEncode(record.constraint_hash) + "\t" +
-         HexEncode(record.canonical_constraint_envelope) + "\t" +
-         std::to_string(record.metadata_epoch) + "\t" + (record.deleted ? "1" : "0");
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(record, &bytes)) return {};
+  return bytes;
 }
 
 std::string KeyDescriptorEvent(const EngineCatalogKeyDescriptorRecord& record) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tKEY_DESCRIPTOR\t" +
-         std::to_string(record.creator_tx) + "\t" + record.key_descriptor_uuid + "\t" +
-         record.constraint_uuid + "\t" + record.key_class + "\t" + record.owner_object_uuid + "\t" +
-         HexEncode(record.component_order_hash) + "\t" +
-         HexEncode(record.comparison_profile_hash) + "\t" + record.null_policy + "\t" +
-         record.canonical_encoding_uuid + "\t" +
-         (record.candidate_reference_allowed ? "1" : "0") + "\t" + record.key_state + "\t" +
-         HexEncode(record.key_hash) + "\t" + std::to_string(record.metadata_epoch) + "\t" +
-         (record.deleted ? "1" : "0");
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(record, &bytes)) return {};
+  return bytes;
 }
 
 std::string ConstraintSubjectEvent(const EngineCatalogConstraintSubjectRecord& record) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tCONSTRAINT_SUBJECT\t" +
-         std::to_string(record.creator_tx) + "\t" + record.subject_uuid + "\t" +
-         record.constraint_uuid + "\t" + record.subject_kind + "\t" +
-         record.subject_object_uuid + "\t" + HexEncode(record.subject_descriptor) + "\t" +
-         record.expression_sblr_uuid + "\t" + std::to_string(record.ordinal) + "\t" +
-         std::to_string(record.metadata_epoch) + "\t" + (record.deleted ? "1" : "0");
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(record, &bytes)) return {};
+  return bytes;
 }
 
 std::string ConstraintDependencyEvent(const EngineCatalogConstraintDependencyRecord& record) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tCONSTRAINT_DEPENDENCY\t" +
-         std::to_string(record.creator_tx) + "\t" + record.dependency_uuid + "\t" +
-         record.constraint_uuid + "\t" + record.dependency_kind + "\t" +
-         record.dependency_object_uuid + "\t" + record.dependency_version_uuid + "\t" +
-         record.invalidation_action + "\t" + HexEncode(record.dependency_hash) + "\t" +
-         std::to_string(record.metadata_epoch) + "\t" + (record.deleted ? "1" : "0");
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(record, &bytes)) return {};
+  return bytes;
 }
 
 std::string ConstraintSupportStructureEvent(const EngineCatalogConstraintSupportStructureRecord& record) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tCONSTRAINT_SUPPORT\t" +
-         std::to_string(record.creator_tx) + "\t" + record.support_binding_uuid + "\t" +
-         record.constraint_uuid + "\t" + record.support_uuid + "\t" +
-         record.support_class + "\t" + record.support_family + "\t" +
-         HexEncode(record.coverage_scope_hash) + "\t" + record.durability_class + "\t" +
-         record.residency_class + "\t" + record.validity_state + "\t" +
-         record.enforcement_role + "\t" + HexEncode(record.binding_hash) + "\t" +
-         std::to_string(record.metadata_epoch) + "\t" + (record.deleted ? "1" : "0");
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(record, &bytes)) return {};
+  return bytes;
 }
 
-std::string RetireNamesEvent(std::uint64_t tx, const std::string& object_uuid, std::uint64_t metadata_epoch) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tRETIRE_NAMES\t" +
-         std::to_string(tx) + "\t" + object_uuid + "\t" + std::to_string(metadata_epoch);
+std::string RetireNamesEvent(std::uint64_t tx, const EngineUuid& object_uuid, std::uint64_t metadata_epoch) {
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(EngineCatalogRetireNamesRecord{tx, object_uuid, metadata_epoch}, &bytes)) return {};
+  return bytes;
 }
 
 std::string CacheInvalidateEvent(const EngineRequestContext& context,
                                  const std::string& operation_id,
-                                 const std::string& object_uuid,
+                                 const EngineUuid& object_uuid,
                                  std::uint64_t metadata_epoch) {
-  return std::string(kCatalogObjectLifecycleEventMagic) + "\tCACHE_INVALIDATE\t" +
-         std::to_string(context.local_transaction_id) + "\t" + HexEncode(operation_id) + "\t" +
-         object_uuid + "\t" + std::to_string(metadata_epoch) + "\t" +
-         std::to_string(context.name_resolution_epoch) + "\t" + std::to_string(context.resource_epoch);
+  std::string bytes;
+  if (!EncodeCatalogLifecycleRecord(EngineCatalogCacheInvalidationRecord{
+      context.local_transaction_id, object_uuid, operation_id, metadata_epoch,
+      context.name_resolution_epoch, context.resource_epoch}, &bytes)) return {};
+  return bytes;
 }
 
 EngineApiDiagnostic AppendEvent(const EngineRequestContext& context, const std::string& event) {
   if (context.database_path.empty()) {
     return CatalogDiagnostic(kCatalogObjectDiagnosticDatabasePathRequired, "database_path");
   }
+  ApiBehaviorRecord frame;
+  CatalogLifecycleRecord record;
+  if (!DecodeApiBehaviorRecord({reinterpret_cast<const std::uint8_t*>(event.data()), event.size()}, &frame) ||
+      !DecodeCatalogLifecycleFrame(frame, &record) || frame.creator_tx != context.local_transaction_id) {
+    return CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, "invalid_binary_catalog_record");
+  }
   std::ofstream out(EventPath(context), std::ios::binary | std::ios::app);
   if (!out) { return CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, "open"); }
-  out << event << '\n';
+  out.write(event.data(), static_cast<std::streamsize>(event.size()));
   out.flush();
   if (!out) { return CatalogDiagnostic(kCatalogObjectDiagnosticDatabaseWriteFailed, "flush"); }
   return OkDiagnostic();
@@ -620,7 +560,7 @@ EngineApiDiagnostic AppendEvent(const EngineRequestContext& context, const std::
 
 EngineApiDiagnostic AppendCacheInvalidation(const EngineRequestContext& context,
                                             const std::string& operation_id,
-                                            const std::string& object_uuid,
+                                            const EngineUuid& object_uuid,
                                             std::uint64_t metadata_epoch) {
   return AppendEvent(context, CacheInvalidateEvent(context, operation_id, object_uuid, metadata_epoch));
 }
@@ -764,39 +704,31 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   }
   const CrudState* transaction_state = crud_state.ok ? &crud_state.state : nullptr;
 
-  std::map<std::string, EngineCatalogObjectRecord> objects;
+  std::map<EngineUuid, EngineCatalogObjectRecord> objects;
   std::vector<EngineCatalogNameRecord> names;
-  std::map<std::string, EngineCatalogDependencyRecord> dependencies;
-  std::map<std::string, EngineCatalogColumnMetadataRecord> columns;
-  std::map<std::string, EngineCatalogConstraintDescriptorRecord> constraints;
-  std::map<std::string, EngineCatalogKeyDescriptorRecord> key_descriptors;
-  std::map<std::string, EngineCatalogConstraintSubjectRecord> constraint_subjects;
-  std::map<std::string, EngineCatalogConstraintDependencyRecord> constraint_dependencies;
-  std::map<std::string, EngineCatalogConstraintSupportStructureRecord> constraint_supports;
-  std::set<std::string> retired_objects;
+  std::map<std::tuple<EngineUuid, EngineUuid, std::string>, EngineCatalogDependencyRecord> dependencies;
+  std::map<EngineUuid, EngineCatalogColumnMetadataRecord> columns;
+  std::map<EngineUuid, EngineCatalogConstraintDescriptorRecord> constraints;
+  std::map<EngineUuid, EngineCatalogKeyDescriptorRecord> key_descriptors;
+  std::map<EngineUuid, EngineCatalogConstraintSubjectRecord> constraint_subjects;
+  std::map<EngineUuid, EngineCatalogConstraintDependencyRecord> constraint_dependencies;
+  std::map<EngineUuid, EngineCatalogConstraintSupportStructureRecord> constraint_supports;
+  std::set<EngineUuid> retired_objects;
   std::uint64_t event_sequence = 0;
-  std::string line;
-  while (std::getline(in, line)) {
+  while (in.peek() != std::char_traits<char>::eof()) {
+    CatalogLifecycleRecord event;
+    if (!ReadCatalogLifecycleRecord(in, &event)) {
+      result.state = {};
+      result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
+                                           "invalid_binary_catalog_record");
+      return result;
+    }
     ++event_sequence;
-    if (!StartsWith(line, kCatalogObjectLifecycleEventMagic)) { continue; }
-    const auto parts = Split(line, '\t');
-    if (parts.size() < 2) { continue; }
-    const std::string& event = parts[1];
-    const std::uint64_t creator_tx = parts.size() >= 3 ? ParseU64(parts[2]) : 0;
-    if (options.enforce_visibility && !EventVisible(context, transaction_state, creator_tx)) { continue; }
-    if (event == "OBJECT" && parts.size() >= 12) {
-      EngineCatalogObjectRecord record;
+    const auto creator_tx = std::visit([](const auto& record) { return record.creator_tx; }, event);
+    if (options.enforce_visibility && !EventVisible(context, transaction_state, creator_tx)) continue;
+    if (const auto* decoded = std::get_if<EngineCatalogObjectRecord>(&event)) {
+      auto record = *decoded;
       record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.object_uuid = parts[3];
-      record.object_kind = parts[4];
-      record.schema_uuid = parts[5];
-      record.owner_principal_uuid = parts[6];
-      record.lifecycle_state = parts[7].empty() ? "active" : parts[7];
-      record.definition_epoch = ParseU64(parts[8]);
-      record.metadata_epoch = ParseU64(parts[9]);
-      record.payload = HexDecode(parts[10]);
-      record.deleted = ParseBool(parts[11]);
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
       if (record.deleted || record.lifecycle_state == "dropped") {
         retired_objects.insert(record.object_uuid);
@@ -805,187 +737,89 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
         retired_objects.erase(record.object_uuid);
         objects[record.object_uuid] = std::move(record);
       }
-    } else if (event == "NAME" && parts.size() >= 17) {
-      EngineCatalogNameRecord record;
+    } else if (const auto* decoded = std::get_if<EngineCatalogNameRecord>(&event)) {
+      auto record = *decoded;
       record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.name_entry_uuid = parts[3];
-      record.object_uuid = parts[4];
-      record.object_kind = parts[5];
-      record.schema_uuid = parts[6];
-      record.language_tag = parts[7].empty() ? "en" : parts[7];
-      record.name_class = parts[8].empty() ? "primary" : parts[8];
-      record.identifier_profile_uuid = parts[9].empty() ? "sbsql_v3" : parts[9];
-      record.raw_name_text = HexDecode(parts[10]);
-      record.display_name = HexDecode(parts[11]);
-      record.normalized_lookup_key = HexDecode(parts[12]);
-      record.exact_lookup_key = HexDecode(parts[13]);
-      record.requires_exact_match = ParseBool(parts[14]);
-      record.metadata_epoch = ParseU64(parts[15]);
-      record.deleted = ParseBool(parts[16]);
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
       result.state.name_resolution_epoch = std::max(result.state.name_resolution_epoch, record.metadata_epoch);
       if (!record.deleted) { names.push_back(std::move(record)); }
-    } else if (event == "RETIRE_NAMES" && parts.size() >= 5) {
-      const std::string object_uuid = parts[3];
-      const std::uint64_t epoch = ParseU64(parts[4]);
+    } else if (const auto* decoded = std::get_if<EngineCatalogRetireNamesRecord>(&event)) {
+      const auto& object_uuid = decoded->object_uuid;
+      const auto epoch = decoded->metadata_epoch;
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, epoch);
       result.state.name_resolution_epoch = std::max(result.state.name_resolution_epoch, epoch);
       names.erase(std::remove_if(names.begin(), names.end(), [&object_uuid](const EngineCatalogNameRecord& name) {
                     return name.object_uuid == object_uuid;
                   }),
                   names.end());
-    } else if (event == "DEPENDENCY" && parts.size() >= 9) {
-      EngineCatalogDependencyRecord record;
+    } else if (const auto* decoded = std::get_if<EngineCatalogDependencyRecord>(&event)) {
+      auto record = *decoded;
       record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.source_uuid = parts[3];
-      record.source_kind = parts[4];
-      record.dependency_uuid = parts[5];
-      record.dependency_kind = parts[6];
-      record.metadata_epoch = ParseU64(parts[7]);
-      record.deleted = ParseBool(parts[8]);
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
-      const std::string key = record.source_uuid + "\t" + record.dependency_uuid + "\t" + record.dependency_kind;
+      const auto key = std::make_tuple(record.source_uuid, record.dependency_uuid, record.dependency_kind);
       if (record.deleted) {
         dependencies.erase(key);
       } else {
         dependencies[key] = std::move(record);
       }
-    } else if (event == "COLUMN_METADATA" && parts.size() >= 12) {
-      EngineCatalogColumnMetadataRecord record;
+    } else if (const auto* decoded = std::get_if<EngineCatalogColumnMetadataRecord>(&event)) {
+      auto record = *decoded;
       record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.column_uuid = parts[3];
-      record.owner_object_uuid = parts[4];
-      record.descriptor_kind = HexDecode(parts[5]);
-      record.canonical_type_name = HexDecode(parts[6]);
-      record.default_expression_envelope = HexDecode(parts[7]);
-      record.ordinal = static_cast<std::uint32_t>(ParseU64(parts[8]));
-      record.nullable = ParseBool(parts[9]);
-      record.metadata_epoch = ParseU64(parts[10]);
-      record.deleted = ParseBool(parts[11]);
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
       if (record.deleted) {
         columns.erase(record.column_uuid);
       } else {
         columns[record.column_uuid] = std::move(record);
       }
-    } else if (event == "CONSTRAINT_DESCRIPTOR" && parts.size() >= 20) {
-      EngineCatalogConstraintDescriptorRecord record;
+    } else if (const auto* decoded = std::get_if<EngineCatalogConstraintDescriptorRecord>(&event)) {
+      auto record = *decoded;
       record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.constraint_uuid = parts[3];
-      record.constraint_class = parts[4];
-      record.owner_object_uuid = parts[5];
-      record.name_ref_uuid = parts[6];
-      record.constraint_policy_version_uuid = parts[7];
-      record.enforcement_timing = parts[8].empty() ? "immediate" : parts[8];
-      record.validation_state = parts[9].empty() ? "unvalidated" : parts[9];
-      record.trust_state = parts[10].empty() ? "untrusted" : parts[10];
-      record.support_requirement = parts[11].empty() ? "optional" : parts[11];
-      record.predicate_sblr_uuid = parts[12];
-      record.diagnostic_profile_uuid = parts[13];
-      record.metrics_profile_uuid = parts[14];
-      record.conformance_profile_uuid = parts[15];
-      record.constraint_hash = HexDecode(parts[16]);
-      record.canonical_constraint_envelope = HexDecode(parts[17]);
-      record.metadata_epoch = ParseU64(parts[18]);
-      record.deleted = ParseBool(parts[19]);
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
       if (record.deleted) {
         constraints.erase(record.constraint_uuid);
       } else {
         constraints[record.constraint_uuid] = std::move(record);
       }
-    } else if (event == "KEY_DESCRIPTOR" && parts.size() >= 16) {
-      EngineCatalogKeyDescriptorRecord record;
+    } else if (const auto* decoded = std::get_if<EngineCatalogKeyDescriptorRecord>(&event)) {
+      auto record = *decoded;
       record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.key_descriptor_uuid = parts[3];
-      record.constraint_uuid = parts[4];
-      record.key_class = parts[5];
-      record.owner_object_uuid = parts[6];
-      record.component_order_hash = HexDecode(parts[7]);
-      record.comparison_profile_hash = HexDecode(parts[8]);
-      record.null_policy = parts[9].empty() ? "not_applicable" : parts[9];
-      record.canonical_encoding_uuid = parts[10];
-      record.candidate_reference_allowed = ParseBool(parts[11]);
-      record.key_state = parts[12].empty() ? "active" : parts[12];
-      record.key_hash = HexDecode(parts[13]);
-      record.metadata_epoch = ParseU64(parts[14]);
-      record.deleted = ParseBool(parts[15]);
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
       if (record.deleted) {
         key_descriptors.erase(record.key_descriptor_uuid);
       } else {
         key_descriptors[record.key_descriptor_uuid] = std::move(record);
       }
-    } else if (event == "CONSTRAINT_SUBJECT" && parts.size() >= 12) {
-      EngineCatalogConstraintSubjectRecord record;
+    } else if (const auto* decoded = std::get_if<EngineCatalogConstraintSubjectRecord>(&event)) {
+      auto record = *decoded;
       record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.subject_uuid = parts[3];
-      record.constraint_uuid = parts[4];
-      record.subject_kind = parts[5];
-      record.subject_object_uuid = parts[6];
-      record.subject_descriptor = HexDecode(parts[7]);
-      record.expression_sblr_uuid = parts[8];
-      record.ordinal = static_cast<std::uint32_t>(ParseU64(parts[9]));
-      record.metadata_epoch = ParseU64(parts[10]);
-      record.deleted = ParseBool(parts[11]);
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
       if (record.deleted) {
         constraint_subjects.erase(record.subject_uuid);
       } else {
         constraint_subjects[record.subject_uuid] = std::move(record);
       }
-    } else if (event == "CONSTRAINT_DEPENDENCY" && parts.size() >= 12) {
-      EngineCatalogConstraintDependencyRecord record;
+    } else if (const auto* decoded = std::get_if<EngineCatalogConstraintDependencyRecord>(&event)) {
+      auto record = *decoded;
       record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.dependency_uuid = parts[3];
-      record.constraint_uuid = parts[4];
-      record.dependency_kind = parts[5];
-      record.dependency_object_uuid = parts[6];
-      record.dependency_version_uuid = parts[7];
-      record.invalidation_action = parts[8];
-      record.dependency_hash = HexDecode(parts[9]);
-      record.metadata_epoch = ParseU64(parts[10]);
-      record.deleted = ParseBool(parts[11]);
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
       if (record.deleted) {
         constraint_dependencies.erase(record.dependency_uuid);
       } else {
         constraint_dependencies[record.dependency_uuid] = std::move(record);
       }
-    } else if (event == "CONSTRAINT_SUPPORT" && parts.size() >= 16) {
-      EngineCatalogConstraintSupportStructureRecord record;
+    } else if (const auto* decoded = std::get_if<EngineCatalogConstraintSupportStructureRecord>(&event)) {
+      auto record = *decoded;
       record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.support_binding_uuid = parts[3];
-      record.constraint_uuid = parts[4];
-      record.support_uuid = parts[5];
-      record.support_class = parts[6];
-      record.support_family = parts[7];
-      record.coverage_scope_hash = HexDecode(parts[8]);
-      record.durability_class = parts[9];
-      record.residency_class = parts[10];
-      record.validity_state = parts[11];
-      record.enforcement_role = parts[12];
-      record.binding_hash = HexDecode(parts[13]);
-      record.metadata_epoch = ParseU64(parts[14]);
-      record.deleted = ParseBool(parts[15]);
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
       if (record.deleted) {
         constraint_supports.erase(record.support_binding_uuid);
       } else {
         constraint_supports[record.support_binding_uuid] = std::move(record);
       }
-    } else if (event == "CACHE_INVALIDATE" && parts.size() >= 7) {
-      const std::uint64_t epoch = ParseU64(parts[5]);
+    } else if (const auto* decoded = std::get_if<EngineCatalogCacheInvalidationRecord>(&event)) {
+      const auto epoch = decoded->metadata_epoch;
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, epoch);
-      result.state.name_resolution_epoch = std::max(result.state.name_resolution_epoch, ParseU64(parts[6]));
+      result.state.name_resolution_epoch = std::max(result.state.name_resolution_epoch, decoded->name_resolution_epoch);
     }
   }
   if (in.bad() || !in.eof()) {
@@ -998,7 +832,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   while (pruned_child) {
     pruned_child = false;
     for (auto it = objects.begin(); it != objects.end();) {
-      if (!it->second.schema_uuid.empty() && retired_objects.count(it->second.schema_uuid) != 0) {
+      if (!it->second.schema_uuid.is_nil() && retired_objects.count(it->second.schema_uuid) != 0) {
         retired_objects.insert(it->second.object_uuid);
         it = objects.erase(it);
         pruned_child = true;
@@ -1008,7 +842,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     }
   }
   for (auto& [_, object] : objects) { result.state.objects.push_back(std::move(object)); }
-  std::set<std::string> active_objects;
+  std::set<EngineUuid> active_objects;
   for (const auto& object : result.state.objects) { active_objects.insert(object.object_uuid); }
   for (auto& name : names) {
     if (active_objects.count(name.object_uuid) != 0) { result.state.names.push_back(std::move(name)); }
@@ -1018,7 +852,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
       result.state.dependencies.push_back(std::move(dependency));
     }
   }
-  std::set<std::string> active_constraints;
+  std::set<EngineUuid> active_constraints;
   for (auto& [_, column] : columns) {
     if (active_objects.count(column.owner_object_uuid) != 0) {
       result.state.columns.push_back(std::move(column));
@@ -1031,7 +865,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     }
   }
   for (auto& [_, key] : key_descriptors) {
-    const bool constraint_link_ok = key.constraint_uuid.empty() ||
+    const bool constraint_link_ok = key.constraint_uuid.is_nil() ||
                                     active_constraints.count(key.constraint_uuid) != 0;
     if (constraint_link_ok && active_objects.count(key.owner_object_uuid) != 0) {
       result.state.key_descriptors.push_back(std::move(key));
@@ -1059,7 +893,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
 }
 
 const EngineCatalogObjectRecord* FindObject(const EngineCatalogObjectLifecycleState& state,
-                                            const std::string& object_uuid) {
+                                            const EngineUuid& object_uuid) {
   for (const auto& object : state.objects) {
     if (object.object_uuid == object_uuid) { return &object; }
   }
@@ -1068,11 +902,11 @@ const EngineCatalogObjectRecord* FindObject(const EngineCatalogObjectLifecycleSt
 
 bool PrincipalOwnsSchema(const EngineCatalogObjectLifecycleState& state,
                          const EngineRequestContext& context,
-                         const std::string& schema_uuid) {
-  if (schema_uuid.empty()) { return true; }
+                         const EngineUuid& schema_uuid) {
+  if (schema_uuid.is_nil()) { return true; }
   const auto* schema = FindObject(state, schema_uuid);
   if (schema == nullptr || schema->object_kind != "schema") { return true; }
-  if (schema->owner_principal_uuid.empty()) { return true; }
+  if (schema->owner_principal_uuid.is_nil()) { return true; }
   return schema->owner_principal_uuid == context.principal_uuid;
 }
 
@@ -1091,11 +925,8 @@ bool ObjectKindCanUseSessionTemporaryNameNamespace(
   return object_kind == "table" || object_kind == "relation";
 }
 
-bool IsExactCanonicalSessionUuid(const std::string& value) {
-  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
-      scratchbird::core::platform::UuidKind::session, value);
-  return parsed.ok() &&
-         scratchbird::core::uuid::UuidToString(parsed.value.value) == value;
+bool IsAdmittedSessionUuid(const EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 EngineApiDiagnostic ValidateCatalogNameNamespace(
@@ -1115,8 +946,8 @@ EngineApiDiagnostic ValidateCatalogNameNamespace(
     return CatalogDiagnostic(kCatalogObjectDiagnosticNameNamespaceInvalid,
                              "session_temporary_namespace_requires_relation");
   }
-  if (!IsExactCanonicalSessionUuid(context.session_uuid) ||
-      !IsExactCanonicalSessionUuid(
+  if (!IsAdmittedSessionUuid(context.session_uuid) ||
+      !IsAdmittedSessionUuid(
           name_namespace.owner_session_uuid) ||
       name_namespace.owner_session_uuid !=
           context.session_uuid) {
@@ -1154,13 +985,13 @@ CatalogNameNamespaceClassification ClassifyExistingCatalogNameNamespace(
   }
   if (!visibility.table.temporary) {
     if (visibility.table.temporary_scope.empty() &&
-        visibility.table.temporary_session_uuid.empty()) {
+        visibility.table.temporary_session_uuid.is_nil()) {
       return result;
     }
   } else if (visibility.table.temporary_scope == "global") {
-    if (visibility.table.temporary_session_uuid.empty()) { return result; }
+    if (visibility.table.temporary_session_uuid.is_nil()) { return result; }
   } else if (visibility.table.temporary_scope == "private" &&
-             IsExactCanonicalSessionUuid(
+             IsAdmittedSessionUuid(
                  visibility.table.temporary_session_uuid)) {
     result.name_namespace.kind =
         EngineCatalogNameNamespaceKind::kSessionTemporary;
@@ -1171,8 +1002,7 @@ CatalogNameNamespaceClassification ClassifyExistingCatalogNameNamespace(
   result.ok = false;
   result.diagnostic = CatalogDiagnostic(
       kCatalogObjectDiagnosticNameNamespaceInvalid,
-      "temporary_relation_namespace_descriptor_invalid:" +
-          existing.object_uuid);
+      "temporary_relation_namespace_descriptor_invalid");
   return result;
 }
 
@@ -1200,9 +1030,9 @@ bool CatalogNameNamespacesCollide(
 }
 
 EngineApiDiagnostic CheckNameConflict(const EngineCatalogObjectLifecycleState& state,
-                                      const std::string& object_uuid,
+                                      const EngineUuid& object_uuid,
                                       const std::string& object_kind,
-                                      const std::string& schema_uuid,
+                                      const EngineUuid& schema_uuid,
                                       const std::vector<EngineLocalizedName>& names,
                                       const EngineRequestContext& context,
                                       const EngineCatalogNameNamespace&
@@ -1229,7 +1059,7 @@ EngineApiDiagnostic CheckNameConflict(const EngineCatalogObjectLifecycleState& s
         }
         return CatalogDiagnostic(object_kind == "synonym" ? kCatalogSynonymDiagnosticNameConflict
                                                           : kCatalogObjectDiagnosticDuplicateName,
-                                 existing.object_kind + ":" + schema_uuid + ":" + wanted.display_name);
+                                 existing.object_kind + ":" + wanted.display_name);
       }
     }
   }
@@ -1239,7 +1069,7 @@ EngineApiDiagnostic CheckNameConflict(const EngineCatalogObjectLifecycleState& s
 const EngineCatalogObjectRecord* ResolveNamedObjectInScope(
     const EngineCatalogObjectLifecycleState& state,
     const EngineRequestContext& context,
-    const std::string& schema_uuid,
+    const EngineUuid& schema_uuid,
     const std::string& requested_object_kind,
     const EngineLocalizedName& requested_name) {
   const auto wanted = MakeNameRecord(context, {}, requested_object_kind, schema_uuid, requested_name, 0);
@@ -1248,7 +1078,7 @@ const EngineCatalogObjectRecord* ResolveNamedObjectInScope(
         entry.object_kind != "synonym") {
       continue;
     }
-    if (!schema_uuid.empty() && entry.schema_uuid != schema_uuid) { continue; }
+    if (!schema_uuid.is_nil() && entry.schema_uuid != schema_uuid) { continue; }
     if (entry.language_tag != wanted.language_tag) { continue; }
     if (ProfileName(entry.identifier_profile_uuid) != ProfileName(wanted.identifier_profile_uuid)) { continue; }
     const std::string left_key = wanted.requires_exact_match ? wanted.exact_lookup_key : wanted.normalized_lookup_key;
@@ -1300,7 +1130,7 @@ void FillObjectResult(TResult* result,
   result->catalog_row_uuid = GenerateCrudEngineUuid("row");
   result->metadata_cache_epoch = metadata_epoch;
   AddEvidence(result, "catalog_metadata_epoch", std::to_string(metadata_epoch));
-  AddEvidence(result, "metadata_cache_invalidation", object.object_uuid + ":" + std::to_string(metadata_epoch));
+  AddEvidence(result, "metadata_cache_invalidation", object.object_uuid);
   AddRow(result, {{"object_uuid", object.object_uuid},
                   {"object_kind", object.object_kind},
                   {"schema_uuid", object.schema_uuid},
@@ -1311,9 +1141,9 @@ void FillObjectResult(TResult* result,
 
 EngineApiDiagnostic PersistResolverNames(const EngineRequestContext& context,
                                          const std::string& operation_id,
-                                         const std::string& object_uuid,
+                                         const EngineUuid& object_uuid,
                                          const std::string& object_kind,
-                                         const std::string& schema_uuid,
+                                         const EngineUuid& schema_uuid,
                                          const std::vector<EngineLocalizedName>& names,
                                          const std::string& fallback_name,
                                          bool retire_first) {
@@ -1401,36 +1231,25 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
     result.state.name_resolution_epoch =
         std::max(result.state.name_resolution_epoch, epoch);
   };
-  std::string line;
-  while (std::getline(in, line)) {
-    if (!StartsWith(line, kCatalogObjectLifecycleEventMagic)) continue;
-    const auto parts = Split(line, '\t');
-    if (parts.size() < 3 || !event_visible(ParseU64(parts[2]))) continue;
-    const auto& event = parts[1];
-    if (event == "OBJECT" && parts.size() >= 12) {
-      observe_metadata(ParseU64(parts[9]));
-    } else if (event == "NAME" && parts.size() >= 17) {
-      observe_name(ParseU64(parts[15]));
-    } else if (event == "RETIRE_NAMES" && parts.size() >= 5) {
-      observe_name(ParseU64(parts[4]));
-    } else if (event == "DEPENDENCY" && parts.size() >= 9) {
-      observe_metadata(ParseU64(parts[7]));
-    } else if (event == "COLUMN_METADATA" && parts.size() >= 12) {
-      observe_metadata(ParseU64(parts[10]));
-    } else if (event == "CONSTRAINT_DESCRIPTOR" && parts.size() >= 20) {
-      observe_metadata(ParseU64(parts[18]));
-    } else if (event == "KEY_DESCRIPTOR" && parts.size() >= 16) {
-      observe_metadata(ParseU64(parts[14]));
-    } else if (event == "CONSTRAINT_SUBJECT" && parts.size() >= 12) {
-      observe_metadata(ParseU64(parts[10]));
-    } else if (event == "CONSTRAINT_DEPENDENCY" && parts.size() >= 12) {
-      observe_metadata(ParseU64(parts[10]));
-    } else if (event == "CONSTRAINT_SUPPORT" && parts.size() >= 16) {
-      observe_metadata(ParseU64(parts[14]));
-    } else if (event == "CACHE_INVALIDATE" && parts.size() >= 7) {
-      observe_metadata(ParseU64(parts[5]));
-      observe_name(ParseU64(parts[6]));
+  while (in.peek() != std::char_traits<char>::eof()) {
+    CatalogLifecycleRecord event;
+    if (!ReadCatalogLifecycleRecord(in, &event)) {
+      result.state = {};
+      result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
+                                           "invalid_binary_catalog_epoch_record");
+      return result;
     }
+    std::visit([&](const auto& record) {
+      if (!event_visible(record.creator_tx)) return;
+      using Record = std::decay_t<decltype(record)>;
+      observe_metadata(record.metadata_epoch);
+      if constexpr (std::is_same_v<Record, EngineCatalogNameRecord> ||
+                    std::is_same_v<Record, EngineCatalogRetireNamesRecord>) {
+        observe_name(record.metadata_epoch);
+      } else if constexpr (std::is_same_v<Record, EngineCatalogCacheInvalidationRecord>) {
+        observe_name(record.name_resolution_epoch);
+      }
+    }, event);
   }
   if (in.bad() || !in.eof()) {
     result.state = {};
@@ -1455,7 +1274,7 @@ EngineCatalogSynonymResolutionResult ResolveCatalogSynonymChain(
     const std::string& required_final_object_kind) {
   EngineCatalogSynonymResolutionResult result;
   const EngineCatalogObjectRecord* current = &candidate;
-  std::set<std::string> seen_synonyms;
+  std::set<EngineUuid> seen_synonyms;
   while (current != nullptr && current->object_kind == "synonym") {
     if (seen_synonyms.count(current->object_uuid) != 0) {
       result.diagnostic = CatalogDiagnostic(kCatalogSynonymDiagnosticCycle, current->object_uuid);
@@ -1468,9 +1287,9 @@ EngineCatalogSynonymResolutionResult ResolveCatalogSynonymChain(
     seen_synonyms.insert(current->object_uuid);
     result.synonym_chain.push_back(current->object_uuid);
 
-    const std::string target_uuid = SynonymTargetUuid(*current);
+    const EngineUuid target_uuid = SynonymTargetUuid(*current);
     const std::string target_class = SynonymTargetClass(*current);
-    if (target_uuid.empty() || target_class.empty()) {
+    if (target_uuid.is_nil() || target_class.empty()) {
       result.diagnostic = CatalogDiagnostic(kCatalogSynonymDiagnosticTargetMissing, current->object_uuid);
       return result;
     }
@@ -1486,7 +1305,7 @@ EngineCatalogSynonymResolutionResult ResolveCatalogSynonymChain(
     }
     if (!dependency_ok) {
       result.diagnostic = CatalogDiagnostic(kCatalogSynonymDiagnosticDependencyInvalid,
-                                            current->object_uuid + "->" + target_uuid);
+                                            "synonym_target_dependency_missing");
       return result;
     }
     current = FindObject(state, target_uuid);
@@ -1496,7 +1315,7 @@ EngineCatalogSynonymResolutionResult ResolveCatalogSynonymChain(
     }
     if (current->object_kind != target_class) {
       result.diagnostic = CatalogDiagnostic(kCatalogSynonymDiagnosticTargetClassMismatch,
-                                            target_uuid + ":" + current->object_kind + "!=" + target_class);
+                                            current->object_kind + "!=" + target_class);
       return result;
     }
   }
@@ -1507,7 +1326,7 @@ EngineCatalogSynonymResolutionResult ResolveCatalogSynonymChain(
   }
   if (!required_final_object_kind.empty() && current->object_kind != required_final_object_kind) {
     result.diagnostic = CatalogDiagnostic(kCatalogSynonymDiagnosticTargetClassMismatch,
-                                          current->object_uuid + ":" + current->object_kind + "!=" +
+                                          current->object_kind + "!=" +
                                               required_final_object_kind);
     return result;
   }
@@ -1520,13 +1339,13 @@ EngineCatalogSynonymResolutionResult ResolveCatalogSynonymChain(
 EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     const EngineApiRequest& request,
     const EngineCatalogObjectLifecycleState& state,
-    const std::string& owner_object_uuid,
+    const EngineUuid& owner_object_uuid,
     std::uint64_t metadata_epoch) {
   for (const auto& column : request.columns) {
     EngineCatalogColumnMetadataRecord record;
     record.creator_tx = request.context.local_transaction_id;
     record.column_uuid = RequestedOrGeneratedUuid(column.requested_column_uuid, "column");
-    if (record.column_uuid.empty()) {
+    if (record.column_uuid.is_nil()) {
       return CatalogDiagnostic(kCatalogObjectDiagnosticUuidRequired, "column_uuid");
     }
     record.owner_object_uuid = owner_object_uuid;
@@ -1540,11 +1359,11 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     if (appended.error) { return appended; }
   }
 
-  std::set<std::string> pending_constraint_name_keys;
+  std::set<std::tuple<EngineUuid, std::string, std::string, std::string>> pending_constraint_name_keys;
   for (const auto& definition : request.constraints) {
-    const std::string constraint_uuid =
+    const EngineUuid constraint_uuid =
         RequestedOrGeneratedUuid(definition.requested_constraint_uuid, "constraint");
-    if (constraint_uuid.empty()) {
+    if (constraint_uuid.is_nil()) {
       return CatalogDiagnostic(kCatalogConstraintDiagnosticUuidRequired, "constraint_uuid");
     }
     if (definition.constraint_kind.empty()) {
@@ -1552,15 +1371,19 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     }
     if (FindObject(state, constraint_uuid) != nullptr) {
       return CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName,
-                               "constraint_uuid:" + constraint_uuid);
+                               "constraint_uuid");
     }
 
-    const auto fields = PayloadMap(definition.canonical_constraint_envelope);
-    const std::string support_uuid = PayloadField(fields, "support_uuid");
+    CatalogConstraintMetadata metadata;
+    if (!DecodeCatalogConstraintMetadata(definition.canonical_constraint_envelope, &metadata)) {
+      return CatalogDiagnostic(kCatalogConstraintDiagnosticDescriptorInvalid, "binary_constraint_metadata_required");
+    }
+    const auto& fields = metadata.text;
+    const EngineUuid support_uuid = CatalogConstraintUuid(metadata, "support_uuid");
     const std::string support_family = PayloadField(fields, "support_family");
-    if (ConstraintClassRequiresSupport(definition.constraint_kind) && support_uuid.empty()) {
+    if (ConstraintClassRequiresSupport(definition.constraint_kind) && support_uuid.is_nil()) {
       return CatalogDiagnostic(kCatalogConstraintDiagnosticSupportRequired,
-                               definition.constraint_kind + ":" + constraint_uuid);
+                               definition.constraint_kind);
     }
     if (!SupportFamilyAllowedForConstraint(definition.constraint_kind, support_family)) {
       return CatalogDiagnostic(kCatalogConstraintDiagnosticSupportFamilyUnsupported,
@@ -1578,10 +1401,9 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     }
     for (const auto& name : definition.names) {
       const auto pending = MakeNameRecord(request.context, constraint_uuid, "constraint", owner_object_uuid, name, metadata_epoch);
-      const std::string lookup_key = owner_object_uuid + "\t" + pending.language_tag + "\t" +
-                                     ProfileName(pending.identifier_profile_uuid) + "\t" +
-                                     (pending.requires_exact_match ? pending.exact_lookup_key
-                                                                   : pending.normalized_lookup_key);
+      const auto lookup_key = std::make_tuple(owner_object_uuid, pending.language_tag,
+          ProfileName(pending.identifier_profile_uuid),
+          pending.requires_exact_match ? pending.exact_lookup_key : pending.normalized_lookup_key);
       if (!pending_constraint_name_keys.insert(lookup_key).second) {
         return CatalogDiagnostic(kCatalogConstraintDiagnosticDuplicateName, pending.display_name);
       }
@@ -1590,7 +1412,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     const std::string constraint_hash = PayloadField(fields, "constraint_hash");
     if (constraint_hash.empty()) {
       return CatalogDiagnostic(kCatalogConstraintDiagnosticDescriptorInvalid,
-                               "constraint_hash:" + constraint_uuid);
+                               "constraint_hash");
     }
 
     EngineCatalogObjectRecord object;
@@ -1603,7 +1425,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     object.definition_epoch = 1;
     object.metadata_epoch = metadata_epoch;
     object.payload = "constraint_catalog_table=sys.constraint_descriptor;constraint_class=" +
-                     definition.constraint_kind + ";owner_object_uuid=" + owner_object_uuid;
+                     definition.constraint_kind;
     auto appended = AppendEvent(request.context, ObjectEvent(object));
     if (appended.error) { return appended; }
 
@@ -1623,9 +1445,9 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     descriptor.constraint_uuid = constraint_uuid;
     descriptor.constraint_class = definition.constraint_kind;
     descriptor.owner_object_uuid = owner_object_uuid;
-    descriptor.name_ref_uuid = PayloadField(fields, "name_ref_uuid");
+    descriptor.name_ref_uuid = CatalogConstraintUuid(metadata, "name_ref_uuid");
     descriptor.constraint_policy_version_uuid =
-        PayloadField(fields, "constraint_policy_version_uuid", PayloadField(fields, "policy_uuid"));
+        CatalogConstraintUuid(metadata, "constraint_policy_version_uuid", CatalogConstraintUuid(metadata, "policy_uuid"));
     descriptor.enforcement_timing = PayloadField(fields, "enforcement_timing", "immediate");
     descriptor.validation_state = PayloadField(fields, "validation_state", "unvalidated");
     descriptor.trust_state = PayloadField(fields, "trust_state", "untrusted");
@@ -1633,26 +1455,26 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
         fields,
         "support_requirement",
         ConstraintClassRequiresSupport(definition.constraint_kind) ? "required" : "optional");
-    descriptor.predicate_sblr_uuid = PayloadField(fields, "predicate_sblr_uuid");
-    descriptor.diagnostic_profile_uuid = PayloadField(fields, "diagnostic_profile_uuid");
-    descriptor.metrics_profile_uuid = PayloadField(fields, "metrics_profile_uuid");
-    descriptor.conformance_profile_uuid = PayloadField(fields, "conformance_profile_uuid");
+    descriptor.predicate_sblr_uuid = CatalogConstraintUuid(metadata, "predicate_sblr_uuid");
+    descriptor.diagnostic_profile_uuid = CatalogConstraintUuid(metadata, "diagnostic_profile_uuid");
+    descriptor.metrics_profile_uuid = CatalogConstraintUuid(metadata, "metrics_profile_uuid");
+    descriptor.conformance_profile_uuid = CatalogConstraintUuid(metadata, "conformance_profile_uuid");
     descriptor.constraint_hash = constraint_hash;
     descriptor.canonical_constraint_envelope = definition.canonical_constraint_envelope;
     descriptor.metadata_epoch = metadata_epoch;
     appended = AppendEvent(request.context, ConstraintDescriptorEvent(descriptor));
     if (appended.error) { return appended; }
 
-    const std::string key_descriptor_uuid = PayloadField(fields, "key_descriptor_uuid");
-    if (!key_descriptor_uuid.empty() || ConstraintClassRequiresSupport(definition.constraint_kind)) {
+    const EngineUuid key_descriptor_uuid = CatalogConstraintUuid(metadata, "key_descriptor_uuid");
+    if (!key_descriptor_uuid.is_nil() || ConstraintClassRequiresSupport(definition.constraint_kind)) {
       EngineCatalogKeyDescriptorRecord key;
       key.creator_tx = request.context.local_transaction_id;
-      key.key_descriptor_uuid = key_descriptor_uuid.empty()
+      key.key_descriptor_uuid = key_descriptor_uuid.is_nil()
                                     ? GenerateCrudEngineUuid("key_descriptor")
                                     : key_descriptor_uuid;
-      if (key.key_descriptor_uuid.empty()) {
+      if (key.key_descriptor_uuid.is_nil()) {
         return CatalogDiagnostic(kCatalogConstraintDiagnosticDescriptorInvalid,
-                                 "key_descriptor_uuid:" + constraint_uuid);
+                                 "key_descriptor_uuid");
       }
       key.constraint_uuid = constraint_uuid;
       key.key_class = PayloadField(fields, "key_class", definition.constraint_kind);
@@ -1660,7 +1482,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
       key.component_order_hash = PayloadField(fields, "component_order_hash");
       key.comparison_profile_hash = PayloadField(fields, "comparison_profile_hash");
       key.null_policy = PayloadField(fields, "null_policy", "not_applicable");
-      key.canonical_encoding_uuid = PayloadField(fields, "canonical_encoding_uuid");
+      key.canonical_encoding_uuid = CatalogConstraintUuid(metadata, "canonical_encoding_uuid");
       key.candidate_reference_allowed = PayloadBoolField(fields, "candidate_reference_allowed", true);
       key.key_state = PayloadField(fields, "key_state", "active");
       key.key_hash = PayloadField(fields, "key_hash", constraint_hash);
@@ -1671,36 +1493,36 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
 
     EngineCatalogConstraintSubjectRecord subject;
     subject.creator_tx = request.context.local_transaction_id;
-    subject.subject_uuid = PayloadField(fields, "subject_uuid", GenerateCrudEngineUuid("constraint_subject"));
+    subject.subject_uuid = CatalogConstraintUuid(metadata, "subject_uuid", GenerateCrudEngineUuid("constraint_subject"));
     subject.constraint_uuid = constraint_uuid;
     subject.subject_kind = PayloadField(fields, "subject_kind", "owner_object");
-    subject.subject_object_uuid = PayloadField(fields, "subject_object_uuid", owner_object_uuid);
+    subject.subject_object_uuid = CatalogConstraintUuid(metadata, "subject_object_uuid", owner_object_uuid);
     subject.subject_descriptor = PayloadField(fields, "subject_descriptor");
-    subject.expression_sblr_uuid = PayloadField(fields, "expression_sblr_uuid");
+    subject.expression_sblr_uuid = CatalogConstraintUuid(metadata, "expression_sblr_uuid");
     subject.ordinal = static_cast<std::uint32_t>(ParseU64(PayloadField(fields, "subject_ordinal", "0")));
     subject.metadata_epoch = metadata_epoch;
-    if (subject.subject_uuid.empty() || subject.subject_object_uuid.empty()) {
+    if (subject.subject_uuid.is_nil() || subject.subject_object_uuid.is_nil()) {
       return CatalogDiagnostic(kCatalogConstraintDiagnosticDescriptorInvalid,
-                               "constraint_subject:" + constraint_uuid);
+                               "constraint_subject");
     }
     appended = AppendEvent(request.context, ConstraintSubjectEvent(subject));
     if (appended.error) { return appended; }
 
-    const std::string dependency_object_uuid = PayloadField(fields, "dependency_object_uuid");
-    if (!dependency_object_uuid.empty()) {
+    const EngineUuid dependency_object_uuid = CatalogConstraintUuid(metadata, "dependency_object_uuid");
+    if (!dependency_object_uuid.is_nil()) {
       EngineCatalogConstraintDependencyRecord dependency;
       dependency.creator_tx = request.context.local_transaction_id;
-      dependency.dependency_uuid = PayloadField(fields, "dependency_uuid", GenerateCrudEngineUuid("constraint_dependency"));
+      dependency.dependency_uuid = CatalogConstraintUuid(metadata, "dependency_uuid", GenerateCrudEngineUuid("constraint_dependency"));
       dependency.constraint_uuid = constraint_uuid;
       dependency.dependency_kind = PayloadField(fields, "dependency_kind", "object");
       dependency.dependency_object_uuid = dependency_object_uuid;
-      dependency.dependency_version_uuid = PayloadField(fields, "dependency_version_uuid");
+      dependency.dependency_version_uuid = CatalogConstraintUuid(metadata, "dependency_version_uuid");
       dependency.invalidation_action = PayloadField(fields, "invalidation_action", "revalidate_required");
       dependency.dependency_hash = PayloadField(fields, "dependency_hash", constraint_hash);
       dependency.metadata_epoch = metadata_epoch;
-      if (dependency.dependency_uuid.empty() || dependency.dependency_kind.empty()) {
+      if (dependency.dependency_uuid.is_nil() || dependency.dependency_kind.empty()) {
         return CatalogDiagnostic(kCatalogConstraintDiagnosticDependencyInvalid,
-                                 "dependency:" + constraint_uuid);
+                                 "dependency");
       }
       appended = AppendEvent(request.context, ConstraintDependencyEvent(dependency));
       if (appended.error) { return appended; }
@@ -1716,10 +1538,10 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
       if (appended.error) { return appended; }
     }
 
-    if (!support_uuid.empty()) {
+    if (!support_uuid.is_nil()) {
       EngineCatalogConstraintSupportStructureRecord support;
       support.creator_tx = request.context.local_transaction_id;
-      support.support_binding_uuid = PayloadField(fields, "support_binding_uuid", GenerateCrudEngineUuid("constraint_support"));
+      support.support_binding_uuid = CatalogConstraintUuid(metadata, "support_binding_uuid", GenerateCrudEngineUuid("constraint_support"));
       support.constraint_uuid = constraint_uuid;
       support.support_uuid = support_uuid;
       support.support_class = PayloadField(fields, "support_class", "index");
@@ -1731,9 +1553,9 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
       support.enforcement_role = PayloadField(fields, "enforcement_role", "primary_enforcement");
       support.binding_hash = PayloadField(fields, "binding_hash", constraint_hash);
       support.metadata_epoch = metadata_epoch;
-      if (support.support_binding_uuid.empty() || support.support_family.empty()) {
+      if (support.support_binding_uuid.is_nil() || support.support_family.empty()) {
         return CatalogDiagnostic(kCatalogConstraintDiagnosticSupportRequired,
-                                 "support:" + constraint_uuid);
+                                 "support");
       }
       appended = AppendEvent(request.context, ConstraintSupportStructureEvent(support));
       if (appended.error) { return appended; }
@@ -1756,8 +1578,8 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   constexpr const char* kOperation = "catalog.object.create";
   const auto valid = ValidateMutatingContext(request.context);
   if (valid.error) { return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, valid); }
-  const std::string object_uuid = ObjectUuid(request);
-  if (object_uuid.empty()) {
+  const EngineUuid object_uuid = ObjectUuid(request);
+  if (object_uuid.is_nil()) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticUuidRequired, "target_object.uuid"));
   }
@@ -1783,9 +1605,9 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   }
   if (FindObject(loaded.state, object_uuid) != nullptr) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(
-        request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName, "object_uuid:" + object_uuid));
+        request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName, "object_uuid"));
   }
-  std::string schema_uuid = request.target_schema.uuid;
+  EngineUuid schema_uuid = request.target_schema.uuid;
   for (const auto& segment_name : PathSegmentNames(request)) {
     const auto* parent = ResolveNamedObjectInScope(loaded.state, request.context, schema_uuid, {}, segment_name);
     if (parent == nullptr) {
@@ -1801,11 +1623,11 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
           request.context,
           kOperation,
           CatalogDiagnostic(kCatalogSynonymDiagnosticParentNotAllowed,
-                            remapped.final_object.object_uuid + ":" + remapped.final_object.object_kind));
+                            remapped.final_object.object_kind));
     }
     schema_uuid = remapped.final_object.object_uuid;
   }
-  if (!schema_uuid.empty()) {
+  if (!schema_uuid.is_nil()) {
     if (const auto* parent_candidate = FindObject(loaded.state, schema_uuid)) {
       const auto remapped = ResolveCatalogSynonymChain(loaded.state, *parent_candidate, request.context, {});
       if (!remapped.ok) {
@@ -1816,12 +1638,12 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
             request.context,
             kOperation,
             CatalogDiagnostic(kCatalogSynonymDiagnosticParentNotAllowed,
-                              remapped.final_object.object_uuid + ":" + remapped.final_object.object_kind));
+                              remapped.final_object.object_kind));
       }
       schema_uuid = remapped.final_object.object_uuid;
     }
   }
-  if (object_kind != "schema" && schema_uuid.empty()) {
+  if (object_kind != "schema" && schema_uuid.is_nil()) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticSchemaUuidRequired, "target_schema.uuid"));
   }
@@ -1837,7 +1659,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
                                           request.context,
                                           request.name_namespace);
   if (conflict.error) { return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, conflict); }
-  std::string synonym_target_uuid;
+  EngineUuid synonym_target_uuid;
   std::string synonym_target_class;
   if (object_kind == "synonym") {
     if (request.related_objects.empty() || request.related_objects.front().uuid.is_nil() ||
@@ -1866,7 +1688,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
           request.context,
           kOperation,
           CatalogDiagnostic(kCatalogSynonymDiagnosticTargetClassMismatch,
-                            target->object_uuid + ":" + target->object_kind + "!=" + related.object_kind));
+                            target->object_kind + "!=" + related.object_kind));
     }
   }
 
@@ -1880,9 +1702,9 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   record.lifecycle_state = "active";
   record.definition_epoch = 1;
   record.metadata_epoch = epoch;
-  record.payload = object_kind == "synonym"
-                       ? SynonymPayload(request, synonym_target_uuid, synonym_target_class)
-                       : PayloadFromRequest(request);
+  record.synonym_target_uuid = synonym_target_uuid;
+  record.synonym_target_class = synonym_target_class;
+  record.payload = PayloadFromRequest(request);
   auto appended = AppendEvent(request.context, ObjectEvent(record));
   if (appended.error) {
     return DiagnosticResult<EngineCatalogCreateObjectResult>(request.context, kOperation, appended);
@@ -1918,7 +1740,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
 
   auto result = SuccessResult<EngineCatalogCreateObjectResult>(request.context, kOperation);
   FillObjectResult(&result, request.context, record, epoch);
-  AddEvidence(&result, "resolver_boundary", "SBNAME1:" + object_uuid);
+  AddEvidence(&result, "resolver_boundary", object_uuid);
   AddDdlPublicationResult(&result,
                           kOperation,
                           object_kind,
@@ -1942,8 +1764,8 @@ EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
         operation_id,
         CatalogDiagnostic(kCatalogConstraintDiagnosticKindRequired, "constraints"));
   }
-  const std::string owner_object_uuid = ObjectUuid(request);
-  if (owner_object_uuid.empty()) {
+  const EngineUuid owner_object_uuid = ObjectUuid(request);
+  if (owner_object_uuid.is_nil()) {
     return DiagnosticResult<EngineCatalogApplyConstraintsResult>(
         request.context,
         operation_id,
@@ -1995,8 +1817,8 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
   constexpr const char* kOperation = "catalog.object.alter";
   const auto valid = ValidateMutatingContext(request.context);
   if (valid.error) { return DiagnosticResult<EngineCatalogAlterObjectResult>(request.context, kOperation, valid); }
-  const std::string object_uuid = ObjectUuid(request);
-  if (object_uuid.empty()) {
+  const EngineUuid object_uuid = ObjectUuid(request);
+  if (object_uuid.is_nil()) {
     return DiagnosticResult<EngineCatalogAlterObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticUuidRequired, "target_object.uuid"));
   }
@@ -2013,7 +1835,7 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
     return DiagnosticResult<EngineCatalogAlterObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticSchemaOwnerDenied, existing->schema_uuid));
   }
-  std::string synonym_target_uuid;
+  EngineUuid synonym_target_uuid;
   std::string synonym_target_class;
   if (existing->object_kind == "synonym") {
     if (request.related_objects.empty() || request.related_objects.front().uuid.is_nil() ||
@@ -2036,7 +1858,7 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
           request.context,
           kOperation,
           CatalogDiagnostic(kCatalogSynonymDiagnosticTargetClassMismatch,
-                            target->object_uuid + ":" + target->object_kind + "!=" +
+                            target->object_kind + "!=" +
                                 request.related_objects.front().object_kind));
     }
     synonym_target_uuid = target->object_uuid;
@@ -2047,15 +1869,15 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
   replacement.creator_tx = request.context.local_transaction_id;
   replacement.definition_epoch = existing->definition_epoch + 1;
   replacement.metadata_epoch = epoch;
-  replacement.payload = existing->object_kind == "synonym"
-                            ? SynonymPayload(request, synonym_target_uuid, synonym_target_class)
-                            : PayloadFromRequest(request);
+  replacement.synonym_target_uuid = synonym_target_uuid;
+  replacement.synonym_target_class = synonym_target_class;
+  replacement.payload = PayloadFromRequest(request);
   auto appended = AppendEvent(request.context, ObjectEvent(replacement));
   if (appended.error) { return DiagnosticResult<EngineCatalogAlterObjectResult>(request.context, kOperation, appended); }
   if (existing->object_kind == "synonym") {
-    const std::string old_target_uuid = SynonymTargetUuid(*existing);
+    const EngineUuid old_target_uuid = SynonymTargetUuid(*existing);
     const std::string old_target_class = SynonymTargetClass(*existing);
-    if (!old_target_uuid.empty() && !old_target_class.empty() &&
+    if (!old_target_uuid.is_nil() && !old_target_class.empty() &&
         (old_target_uuid != synonym_target_uuid || old_target_class != synonym_target_class)) {
       EngineCatalogDependencyRecord retired_dependency;
       retired_dependency.creator_tx = request.context.local_transaction_id;
@@ -2096,8 +1918,8 @@ EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRen
   constexpr const char* kOperation = "catalog.object.rename";
   const auto valid = ValidateMutatingContext(request.context);
   if (valid.error) { return DiagnosticResult<EngineCatalogRenameObjectResult>(request.context, kOperation, valid); }
-  const std::string object_uuid = ObjectUuid(request);
-  if (object_uuid.empty()) {
+  const EngineUuid object_uuid = ObjectUuid(request);
+  if (object_uuid.is_nil()) {
     return DiagnosticResult<EngineCatalogRenameObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticUuidRequired, "target_object.uuid"));
   }
@@ -2144,7 +1966,7 @@ EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRen
 
   auto result = SuccessResult<EngineCatalogRenameObjectResult>(request.context, kOperation);
   FillObjectResult(&result, request.context, replacement, epoch);
-  AddEvidence(&result, "resolver_boundary", "SBNAME1:" + object_uuid);
+  AddEvidence(&result, "resolver_boundary", object_uuid);
   AddDdlPublicationResult(&result,
                           kOperation,
                           replacement.object_kind,
@@ -2158,8 +1980,8 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
   constexpr const char* kOperation = "catalog.object.drop";
   const auto valid = ValidateMutatingContext(request.context);
   if (valid.error) { return DiagnosticResult<EngineCatalogDropObjectResult>(request.context, kOperation, valid); }
-  const std::string object_uuid = ObjectUuid(request);
-  if (object_uuid.empty()) {
+  const EngineUuid object_uuid = ObjectUuid(request);
+  if (object_uuid.is_nil()) {
     return DiagnosticResult<EngineCatalogDropObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticUuidRequired, "target_object.uuid"));
   }
@@ -2184,7 +2006,7 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
       return DiagnosticResult<EngineCatalogDropObjectResult>(
           request.context,
           kOperation,
-          CatalogDiagnostic(kCatalogObjectDiagnosticDependencyBlockedDrop, dependency.source_uuid + "->" + object_uuid));
+          CatalogDiagnostic(kCatalogObjectDiagnosticDependencyBlockedDrop, "inbound_object_dependency"));
     }
   }
   const std::uint64_t epoch = loaded.state.metadata_epoch + 1;
@@ -2219,7 +2041,7 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
   result.catalog_row_uuid = GenerateCrudEngineUuid("row");
   result.metadata_cache_epoch = epoch;
   AddEvidence(&result, "catalog_metadata_epoch", std::to_string(epoch));
-  AddEvidence(&result, "metadata_cache_invalidation", object_uuid + ":" + std::to_string(epoch));
+  AddEvidence(&result, "metadata_cache_invalidation", object_uuid);
   AddEvidence(&result, "dependency_mode",
               request.cascade_dependencies ? "cascade" : "restrict");
   AddEvidence(&result, "retired_inbound_dependency_count",
@@ -2236,8 +2058,8 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
 
 EngineCatalogLookupObjectResult EngineCatalogLookupObjectByUuid(const EngineCatalogLookupObjectRequest& request) {
   constexpr const char* kOperation = "catalog.object.lookup_uuid";
-  const std::string object_uuid = ObjectUuid(request);
-  if (object_uuid.empty()) {
+  const EngineUuid object_uuid = ObjectUuid(request);
+  if (object_uuid.is_nil()) {
     return DiagnosticResult<EngineCatalogLookupObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticUuidRequired, "target_object.uuid"));
   }
@@ -2271,8 +2093,8 @@ EngineCatalogResolveObjectNameResult EngineCatalogResolveObjectName(const Engine
   if (!loaded.ok) {
     return DiagnosticResult<EngineCatalogResolveObjectNameResult>(request.context, kOperation, loaded.diagnostic);
   }
-  std::string schema_uuid = request.target_schema.uuid;
-  if (!schema_uuid.empty()) {
+  EngineUuid schema_uuid = request.target_schema.uuid;
+  if (!schema_uuid.is_nil()) {
     if (const auto* parent_candidate = FindObject(loaded.state, schema_uuid)) {
       const auto remapped = ResolveCatalogSynonymChain(loaded.state, *parent_candidate, request.context, {});
       if (!remapped.ok) {
@@ -2283,7 +2105,7 @@ EngineCatalogResolveObjectNameResult EngineCatalogResolveObjectName(const Engine
             request.context,
             kOperation,
             CatalogDiagnostic(kCatalogSynonymDiagnosticParentNotAllowed,
-                              remapped.final_object.object_uuid + ":" + remapped.final_object.object_kind));
+                              remapped.final_object.object_kind));
       }
       schema_uuid = remapped.final_object.object_uuid;
     }
@@ -2304,7 +2126,7 @@ EngineCatalogResolveObjectNameResult EngineCatalogResolveObjectName(const Engine
           request.context,
           kOperation,
           CatalogDiagnostic(kCatalogSynonymDiagnosticParentNotAllowed,
-                            remapped.final_object.object_uuid + ":" + remapped.final_object.object_kind));
+                            remapped.final_object.object_kind));
     }
     schema_uuid = remapped.final_object.object_uuid;
   }
@@ -2322,7 +2144,7 @@ EngineCatalogResolveObjectNameResult EngineCatalogResolveObjectName(const Engine
     for (const auto& synonym_uuid : resolved.synonym_chain) {
       AddEvidence(&result, "synonym_chain", synonym_uuid);
     }
-    if (!schema_uuid.empty()) {
+    if (!schema_uuid.is_nil()) {
       result.bound_object_identity.parent_object_uuid = schema_uuid;
     }
     return result;
@@ -2333,7 +2155,7 @@ EngineCatalogResolveObjectNameResult EngineCatalogResolveObjectName(const Engine
       const auto wanted = MakeNameRecord(request.context, {}, object_kind, schema_uuid, requested, 0);
       for (const auto& entry : all.state.names) {
         if (!object_kind.empty() && entry.object_kind != object_kind) { continue; }
-        if (!schema_uuid.empty() && entry.schema_uuid != schema_uuid) { continue; }
+        if (!schema_uuid.is_nil() && entry.schema_uuid != schema_uuid) { continue; }
         const std::string left_key = wanted.requires_exact_match ? wanted.exact_lookup_key : wanted.normalized_lookup_key;
         const std::string right_key = wanted.requires_exact_match ? entry.exact_lookup_key : entry.normalized_lookup_key;
         if (left_key == right_key) {

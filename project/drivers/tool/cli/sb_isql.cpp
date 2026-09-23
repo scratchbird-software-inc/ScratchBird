@@ -313,6 +313,22 @@ void traceScriptStatement(const char* stage, const std::string& sql) {
     std::fflush(stderr);
 }
 
+// Human-readable UUIDs belong at the client display boundary.
+std::string displayUuidParameter(std::string_view bytes) {
+    if (bytes.empty()) return {};
+    if (bytes.size() != 16) return "<invalid UUID parameter>";
+    constexpr char hex[] = "0123456789abcdef";
+    std::string text;
+    text.reserve(36);
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) text.push_back('-');
+        const auto byte = static_cast<unsigned char>(bytes[i]);
+        text.push_back(hex[byte >> 4]);
+        text.push_back(hex[byte & 15]);
+    }
+    return text;
+}
+
 std::string jsonEscape(const std::string& value) {
     std::ostringstream out;
     for (unsigned char ch : value) {
@@ -372,7 +388,7 @@ void emitOrh125RouteEvidence(int exit_code) {
     const std::string security_epoch =
         g_connection ? g_connection->getParameterStatus("security.generation") : std::string{};
     const std::string authenticated_user_uuid =
-        g_connection ? g_connection->getParameterStatus("session.authenticated_user_uuid") : std::string{};
+        g_connection ? displayUuidParameter(g_connection->getParameterStatus("session.authenticated_user_uuid")) : std::string{};
     const std::string auth_provider_family =
         g_connection ? g_connection->getParameterStatus("session.auth_provider_family") : std::string{};
     const std::string principal_claim =

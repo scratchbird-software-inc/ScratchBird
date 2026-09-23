@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -36,10 +37,10 @@ namespace {
 namespace datatypes = scratchbird::core::datatypes;
 namespace wire = scratchbird::wire;
 
-constexpr std::string_view kTextDescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d718";
-constexpr std::string_view kTextTypeUuid =
-    "019d0000-0000-7000-8000-00000000d719";
+constexpr EngineUuid kTextDescriptorUuid{{
+    0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x18}};
+constexpr EngineUuid kTextTypeUuid{{
+    0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x19}};
 constexpr std::string_view kTextCodecId = "datatype.text.utf8.v1";
 constexpr std::uint64_t kTextMaximumBytes = 16ull * 1024ull * 1024ull;
 constexpr std::uint64_t kMinimumStorageHeadroomBytes = 64ull * 1024ull;
@@ -54,6 +55,13 @@ EngineApiDiagnostic Diagnostic(std::string code,
                                std::string detail = {}) {
   return MakeEngineApiDiagnostic(std::move(code), std::move(key),
                                  std::move(detail), true);
+}
+
+EngineApiDiagnostic Diagnostic(std::string code, std::string key,
+                               const EngineUuid& identity) {
+  auto result = MakeEngineApiDiagnostic(std::move(code), std::move(key), {}, true);
+  result.identity_fields.emplace_back("object_uuid", identity);
+  return result;
 }
 
 std::string StageDetail(const EngineApiDiagnostic& diagnostic) {
@@ -115,45 +123,8 @@ bool UuidPresent(const wire::NarrowQueryUuid& value) {
                      [](std::uint8_t byte) { return byte != 0; });
 }
 
-std::string UuidText(const wire::NarrowQueryUuid& value) {
-  if (!UuidPresent(value)) return {};
-  scratchbird::core::platform::Uuid parsed{};
-  std::copy(value.begin(), value.end(), parsed.bytes.begin());
-  return scratchbird::core::uuid::UuidToString(parsed);
-}
-
-struct ExactEncodedDescriptorFieldLookup {
-  bool well_formed = false;
-  bool present = false;
-  std::string value;
-};
-
-ExactEncodedDescriptorFieldLookup LookupExactEncodedDescriptorField(
-    const std::string_view descriptor,
-    const std::string_view requested_key) {
-  ExactEncodedDescriptorFieldLookup result;
-  if (descriptor.empty() || requested_key.empty()) return result;
-  std::size_t start = 0;
-  while (start <= descriptor.size()) {
-    const auto end = descriptor.find(';', start);
-    const auto field = descriptor.substr(
-        start, end == std::string_view::npos ? std::string_view::npos
-                                             : end - start);
-    const auto equals = field.find('=');
-    if (field.empty() || equals == std::string_view::npos || equals == 0 ||
-        equals + 1 == field.size()) {
-      return {};
-    }
-    if (field.substr(0, equals) == requested_key) {
-      if (result.present) return {};
-      result.present = true;
-      result.value = std::string(field.substr(equals + 1));
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
-  result.well_formed = true;
-  return result;
+EngineUuid NativeUuid(const wire::NarrowQueryUuid& value) {
+  return EngineUuid{value};
 }
 
 bool SameOccurrence(const wire::NarrowQueryUuid& left_uuid,
@@ -230,20 +201,20 @@ struct CanonicalCell {
 };
 
 struct BoundColumn {
-  std::string column_uuid;
+  EngineUuid column_uuid;
   std::uint32_t ordinal = 0;
   std::string storage_key;
   EngineDescriptor descriptor;
   bool nullable = false;
-  std::string charset_uuid;
-  std::string collation_uuid;
+  EngineUuid charset_uuid;
+  EngineUuid collation_uuid;
   std::uint64_t maximum_inline_bytes = 0;
   datatypes::DatatypeTypeCodecIdentityRowV1 datatype;
 };
 
 struct SourceRow {
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
   std::vector<CanonicalCell> cells;
   std::vector<std::string> ordering_keys;
 };
@@ -284,9 +255,7 @@ bool CellMemory(const CanonicalCell& cell, std::uint64_t* total) {
 }
 
 bool RowMemory(const SourceRow& row, std::uint64_t* total) {
-  if (!AddStringCapacity(row.row_uuid, total) ||
-      !AddStringCapacity(row.version_uuid, total) ||
-      !AddCapacityBytes(row.cells, total) ||
+  if (!AddCapacityBytes(row.cells, total) ||
       !AddCapacityBytes(row.ordering_keys, total)) {
     return false;
   }
@@ -302,12 +271,8 @@ bool RowMemory(const SourceRow& row, std::uint64_t* total) {
 bool DatatypeMemory(
     const datatypes::DatatypeTypeCodecIdentityRowV1& datatype,
     std::uint64_t* total) {
-  return AddStringCapacity(datatype.catalog_snapshot_uuid, total) &&
-         AddStringCapacity(datatype.descriptor_uuid, total) &&
-         AddStringCapacity(datatype.type_uuid, total) &&
-         AddStringCapacity(datatype.codec_id, total) &&
+  return AddStringCapacity(datatype.codec_id, total) &&
          AddStringCapacity(datatype.canonical_name, total) &&
-         AddStringCapacity(datatype.codec_uuid, total) &&
          AddStringCapacity(datatype.canonical_byte_order, total) &&
          AddStringCapacity(datatype.canonical_representation, total) &&
          AddStringCapacity(datatype.canonical_charset, total) &&
@@ -335,24 +300,15 @@ bool BindingMemory(const wire::NarrowQueryBinding& binding,
 
 bool SourceMemory(const SourceState& source, std::uint64_t* total) {
   if (!AddStringCapacity(source.occurrence.alias, total) ||
-      !AddStringCapacity(source.descriptor.descriptor_uuid, total) ||
-      !AddStringCapacity(source.descriptor.database_uuid, total) ||
-      !AddStringCapacity(source.descriptor.schema_uuid, total) ||
-      !AddStringCapacity(source.descriptor.relation_uuid, total) ||
       !AddCapacityBytes(source.columns, total) ||
       !AddCapacityBytes(source.rows, total)) {
     return false;
   }
   for (const auto& column : source.columns) {
-    if (!AddStringCapacity(column.column_uuid, total) ||
-        !AddStringCapacity(column.storage_key, total) ||
-        !AddStringCapacity(column.descriptor.descriptor_uuid,
-                           total) ||
+    if (!AddStringCapacity(column.storage_key, total) ||
         !AddStringCapacity(column.descriptor.descriptor_kind, total) ||
         !AddStringCapacity(column.descriptor.canonical_type_name, total) ||
         !AddStringCapacity(column.descriptor.encoded_descriptor, total) ||
-        !AddStringCapacity(column.charset_uuid, total) ||
-        !AddStringCapacity(column.collation_uuid, total) ||
         !DatatypeMemory(column.datatype, total)) {
       return false;
     }
@@ -367,11 +323,11 @@ bool OutputMatchesDatatype(
     const wire::NarrowQueryOutputOccurrence& output,
     const datatypes::DatatypeTypeCodecIdentityRowV1& datatype,
     bool nullable) {
-  return UuidText(output.datatype_descriptor_uuid) ==
+  return NativeUuid(output.datatype_descriptor_uuid) ==
              datatype.descriptor_uuid &&
          output.datatype_descriptor_generation ==
              datatype.descriptor_generation &&
-         UuidText(output.datatype_type_uuid) == datatype.type_uuid &&
+         NativeUuid(output.datatype_type_uuid) == datatype.type_uuid &&
          output.datatype_type_generation == datatype.type_generation &&
          output.datatype_binary_type_code ==
              datatype.canonical_binary_type_code &&
@@ -402,9 +358,9 @@ std::optional<std::size_t> FindColumnIndex(
     const SourceState& source,
     const wire::NarrowQueryUuid& column_uuid,
     std::uint32_t column_ordinal) {
-  const auto text = UuidText(column_uuid);
+  const auto identity = NativeUuid(column_uuid);
   for (std::size_t index = 0; index < source.columns.size(); ++index) {
-    if (source.columns[index].column_uuid == text &&
+    if (source.columns[index].column_uuid == identity &&
         source.columns[index].ordinal == column_ordinal) {
       return index;
     }
@@ -958,13 +914,13 @@ class NarrowQueryProfileOccurrenceSource final
     auto& state = sources_[source_index];
     const auto& occurrence = state.occurrence;
     if (descriptor.descriptor_uuid !=
-            UuidText(occurrence.relation_descriptor_uuid) ||
+            NativeUuid(occurrence.relation_descriptor_uuid) ||
         descriptor.descriptor_generation !=
             occurrence.relation_descriptor_generation ||
         descriptor.relation_uuid !=
-            UuidText(occurrence.relation_object_uuid) ||
+            NativeUuid(occurrence.relation_object_uuid) ||
         descriptor.schema_uuid !=
-            UuidText(occurrence.schema_uuid) ||
+            NativeUuid(occurrence.schema_uuid) ||
         descriptor.database_uuid != context_.database_uuid ||
         occurrence.validated_resource_epoch != context_.resource_epoch ||
         descriptor.relation_kind != "table" ||
@@ -977,7 +933,7 @@ class NarrowQueryProfileOccurrenceSource final
     }
     state.descriptor = descriptor;
 
-    using ColumnKey = std::pair<std::string, std::uint32_t>;
+    using ColumnKey = std::pair<EngineUuid, std::uint32_t>;
     std::set<ColumnKey> required;
     for (const auto& output : binding_.outputs) {
       if (!SameOccurrence(output.source_occurrence_uuid,
@@ -986,7 +942,7 @@ class NarrowQueryProfileOccurrenceSource final
                           occurrence.source_occurrence_generation)) {
         continue;
       }
-      required.emplace(UuidText(output.source_column_uuid),
+      required.emplace(NativeUuid(output.source_column_uuid),
                        output.source_column_ordinal);
     }
     for (const auto& term : binding_.ordering_terms) {
@@ -996,7 +952,7 @@ class NarrowQueryProfileOccurrenceSource final
                           occurrence.source_occurrence_generation)) {
         continue;
       }
-      required.emplace(UuidText(term.source_column_uuid),
+      required.emplace(NativeUuid(term.source_column_uuid),
                        term.source_column_ordinal);
     }
     if (required.empty()) {
@@ -1031,21 +987,26 @@ class NarrowQueryProfileOccurrenceSource final
             "sblr.query_execute.source_column_stale", key.first);
         return false;
       }
-      const auto embedded_datatype_descriptor =
-          LookupExactEncodedDescriptorField(
-              found->value_descriptor.encoded_descriptor,
-              "datatype_descriptor_uuid");
-      const std::string& canonical_datatype_descriptor_uuid =
-          embedded_datatype_descriptor.present
-              ? embedded_datatype_descriptor.value
-              : found->value_descriptor.descriptor_uuid;
+      CatalogColumnMetadata metadata;
+      if (!AdmitCatalogColumnMetadata(found->value_descriptor.encoded_descriptor,
+                                      &metadata)) {
+        preparation_diagnostic_ = Diagnostic(
+            "DATATYPE.DESCRIPTOR.INVALID",
+            "sblr.query_execute.source_datatype_metadata_invalid", key.first);
+        return false;
+      }
+      const auto& canonical_datatype_descriptor_uuid =
+          found->value_descriptor.datatype_descriptor_uuid.is_nil()
+              ? found->value_descriptor.descriptor_uuid
+              : found->value_descriptor.datatype_descriptor_uuid;
       const auto datatype = datatypes::LookupDatatypeTypeCodecIdentityV1(
           context_.datatype_catalog_snapshot_uuid,
           context_.datatype_catalog_generation,
           context_.datatype_registry_generation,
           canonical_datatype_descriptor_uuid, 1);
-      if ((embedded_datatype_descriptor.present &&
-           !embedded_datatype_descriptor.well_formed) ||
+      const auto metadata_descriptor = metadata.identities.find("datatype_descriptor_uuid");
+      if ((metadata_descriptor != metadata.identities.end() &&
+           metadata_descriptor->second != canonical_datatype_descriptor_uuid) ||
           !datatype.ok ||
           (datatype.row.canonical_binary_type_code !=
                static_cast<std::uint32_t>(datatypes::CanonicalTypeId::int32) &&
@@ -1127,8 +1088,8 @@ class NarrowQueryProfileOccurrenceSource final
       const auto type = static_cast<datatypes::CanonicalTypeId>(
           column.datatype.canonical_binary_type_code);
       if (type == datatypes::CanonicalTypeId::character) {
-        const auto collation_uuid = UuidText(term.collation_uuid);
-        if (collation_uuid.empty() ||
+        const auto collation_uuid = NativeUuid(term.collation_uuid);
+        if (collation_uuid.is_nil() ||
             collation_uuid != column.collation_uuid ||
             term.collation_generation == 0) {
           preparation_diagnostic_ = Diagnostic(
@@ -1244,7 +1205,7 @@ class NarrowQueryProfileOccurrenceSource final
   bool PrepareSource(std::size_t source_index,
                      const TypedResultProducerStageRequestV1& stage) {
     auto& state = sources_[source_index];
-    const auto relation_uuid = UuidText(state.occurrence.relation_object_uuid);
+    const auto relation_uuid = NativeUuid(state.occurrence.relation_object_uuid);
     // EngineApiDiagnostic defaults to error=true.  This is an optional
     // observation slot, so initialize it explicitly to success; otherwise an
     // unrelated store refusal before the callback runs can be masked by an

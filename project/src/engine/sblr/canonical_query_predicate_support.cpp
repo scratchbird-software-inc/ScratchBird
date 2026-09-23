@@ -155,7 +155,7 @@ CanonicalPredicateScratchBound BoundCanonicalPredicateScratchBytes(
           record.expression_kind ==
               api::RelationalExpressionKind::kFunctionCall &&
           record.function_uuid.has_value() &&
-          CanonicalUuidText(*record.function_uuid) &&
+          scratchbird::core::uuid::IsEngineIdentityUuid(*record.function_uuid) &&
           !record.bound_name_uuid.has_value() &&
           !record.literal_kind.has_value() &&
           !record.operator_name.has_value() &&
@@ -167,7 +167,7 @@ CanonicalPredicateScratchBound BoundCanonicalPredicateScratchBytes(
               api::RelationalExpressionKind::kIdentifier &&
           record.child_expression_ids.empty() &&
           record.bound_name_uuid.has_value() &&
-          CanonicalUuidText(*record.bound_name_uuid) &&
+          scratchbird::core::uuid::IsEngineIdentityUuid(*record.bound_name_uuid) &&
           !record.function_uuid.has_value() &&
           !record.literal_kind.has_value() &&
           !record.operator_name.has_value() &&
@@ -341,10 +341,10 @@ CanonicalPredicateScratchBound BoundCanonicalPredicateScratchBytes(
                           typed.canonical_value_bytes.size()),
                       &parameter_payload) &&
                   CheckedAdd(
-                      static_cast<std::uint64_t>(typed.descriptor_uuid.size()),
+                      static_cast<std::uint64_t>(typed.descriptor_uuid.bytes.size()),
                       static_cast<std::uint64_t>(typed.value_state.size()),
                       &typed_metadata_bytes) &&
-                  CheckedAdd(typed_metadata_bytes, 2,
+                  CheckedAdd(typed_metadata_bytes, 1,
                              &typed_metadata_bytes) &&
                   CheckedAdd(parameter_payload, typed_metadata_bytes,
                              &parameter_payload) &&
@@ -425,4 +425,3 @@ CanonicalPredicateScratchBound BoundCanonicalPredicateScratchBytes(
 }
 
 }  // namespace scratchbird::engine::sblr
-

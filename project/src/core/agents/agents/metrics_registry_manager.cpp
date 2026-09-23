@@ -331,7 +331,7 @@ MetricsRegistryManagerResult ApplyMetricsRegistryManagerAction(
     const u64 before = CountRollups(request.history_path);
     const auto generated =
         metrics::GenerateMetricRollups(request.history_path,
-                                       request.rollup_grain);
+                                       request.rollup_grain, request.actor_uuid, request.transaction_uuid);
     if (!generated.ok) {
       return FailMutation(generated, "generate_rollups");
     }

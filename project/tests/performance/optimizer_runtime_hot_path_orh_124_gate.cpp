@@ -618,7 +618,7 @@ nosql::EngineNoSqlPhysicalProviderContract NoSqlContract() {
   contract.index_generation.covers_predicate = true;
   contract.index_generation.required_generation = 9;
   contract.index_generation.available_generation = 9;
-  contract.index_generation.index_uuid = "orh124-document-path-index-proof";
+  contract.index_generation.index_uuid = scratchbird::tests::FixtureUuid(1274, 1301);
   contract.policy.proof_present = true;
   contract.policy.allowed = true;
   contract.provider_generation.required = true;
@@ -634,10 +634,10 @@ nosql::EngineNoSqlPhysicalProviderContract NoSqlContract() {
   contract.provider_generation.security_epoch = 11;
   contract.provider_generation.redaction_epoch = 12;
   contract.provider_generation.catalog_epoch = 13;
-  contract.provider_generation.generation_uuid = "orh124-generation";
+  contract.provider_generation.generation_uuid = scratchbird::tests::FixtureUuid(1275, 1);
   contract.provider_generation.provider_id = contract.provider_id;
-  contract.provider_generation.database_uuid = "orh124-database";
-  contract.provider_generation.collection_uuid = "orh124-collection";
+  contract.provider_generation.database_uuid = scratchbird::tests::FixtureUuid(1275, 2);
+  contract.provider_generation.collection_uuid = scratchbird::tests::FixtureUuid(1275, 3);
   contract.provider_generation.publish_state = "published";
   contract.provider_generation.validation_state = "validated";
   contract.provider_generation.backup_metadata_ref = "backup/orh124";

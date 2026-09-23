@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -65,7 +66,7 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 udr_runtime::UdrCallResult ParserSupportProbe(
     const udr_runtime::UdrCallInput& input) {
   udr_runtime::UdrCallResult result;
-  result.ok = !input.package_uuid.empty();
+  result.ok = !input.package_uuid.is_nil();
   result.payload = "DBLC-013AJ-parser-support-probe";
   result.message_vector_json = "{\"diagnostic\":\"UDR.OK\"}";
   return result;
@@ -169,11 +170,10 @@ void TestCoreFeatureGateModel() {
 }
 
 void TestParserPackageCapabilityAdmission() {
-  constexpr std::string_view kSupportUdrUuid =
-      "019e13aj-0000-7000-8000-0000000000aa";
+  constexpr auto kSupportUdrUuid = scratchbird::tests::FixtureUuid(1341, 1);
   udr_runtime::ResetRuntimeForTest();
   udr_runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSupportUdrUuid);
+  descriptor.package_uuid = kSupportUdrUuid;
   descriptor.package_name = "builtin test parser support UDR";
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "capability-profile-conformance";
@@ -195,7 +195,7 @@ void TestParserPackageCapabilityAdmission() {
   entry.capability_enabled = true;
   entry.parser_support_udr_required = true;
   entry.parser_support_udr_available = true;
-  entry.parser_support_udr_uuid = std::string(kSupportUdrUuid);
+  entry.parser_support_udr_uuid = kSupportUdrUuid;
   entry.parser_support_udr_source_revision = descriptor.source_revision;
   entry.parser_support_udr_binary_hash = descriptor.binary_hash;
   entry.parser_support_udr_signature_policy = descriptor.signature_policy;
@@ -266,7 +266,7 @@ void TestConfigCapabilityPolicyLifecycle(const std::filesystem::path& temp_dir) 
   const auto start = server::StartConfigPolicySecurityLifecycle(
       server::BuildConfigPolicySecurityLifecycleInput(config,
                                                       (temp_dir / "example.sbdb").string(),
-                                                      "019e13a9-0000-7000-8000-000000000001",
+                                                      scratchbird::tests::FixtureUuidLiteral("019e13a9-0000-7000-8000-000000000001"),
                                                       true,
                                                       false));
   Require(start.ok(), "capability policy lifecycle did not start");

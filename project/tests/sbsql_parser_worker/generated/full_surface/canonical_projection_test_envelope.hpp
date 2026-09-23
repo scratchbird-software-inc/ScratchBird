@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "../../../support/binary_uuid_fixture.hpp"
 #include "sblr/sblr_engine_envelope.hpp"
 #include "sblr/sblr_opcode_registry.hpp"
 
@@ -26,8 +27,8 @@ inline engine::sblr::SblrOperationEnvelope CanonicalizeProjectionEnvelopeForTest
   }
 
   envelope.opcode_code = opcode->code;
-  envelope.parser_package_uuid = "019f0000-0000-7000-8000-00000000f001";
-  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-00000000f002";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000f001");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000f002");
 
   std::string_view function_id;
   std::size_t function_argument_count = 0;

@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
+#include "../../src/engine/internal_api/mga_relation_store/mga_relation_locator.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "database_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
@@ -73,8 +75,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 std::vector<std::string> SplitTabs(const std::string& line) {
@@ -117,9 +119,9 @@ struct AllocationRecord {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -142,22 +144,10 @@ std::filesystem::path IndexStorePath(const Fixture& fixture) {
   return fixture.database_path.string() + ".sb.mga_index_entries";
 }
 
-std::string ScopedRelationSegmentName(const std::string& table_uuid) {
-  std::string name;
-  name.reserve(table_uuid.size());
-  for (const char ch : table_uuid) {
-    const bool safe = (ch >= 'a' && ch <= 'z') ||
-                      (ch >= 'A' && ch <= 'Z') ||
-                      (ch >= '0' && ch <= '9') ||
-                      ch == '-' || ch == '_';
-    name.push_back(safe ? ch : '_');
-  }
-  return name.empty() ? std::string("unknown") : name;
-}
-
 std::filesystem::path ScopedIndexStorePath(const Fixture& fixture) {
-  return fixture.database_path.string() + ".sb.mga_relation_scope/" +
-         ScopedRelationSegmentName(fixture.table_uuid) + ".indexes";
+  api::EngineRequestContext context;
+  context.database_path = fixture.database_path.string();
+  return api::MgaScopedRelationPath(context, fixture.table_uuid, ".indexes");
 }
 
 std::filesystem::path DeltaLedgerPath(const Fixture& fixture) {
@@ -190,7 +180,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& entry : evidence) {
-    if (entry.evidence_kind == kind && entry.evidence_id == value) {
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceTextFields(entry.evidence_id) == value) {
       return true;
     }
   }
@@ -202,7 +192,7 @@ void AssertNoDocumentationRuntimeTokens(
     const std::vector<api::EngineEvidenceReference>& evidence) {
   std::vector<std::string> bodies = ReadLines(AllocatorPath(fixture));
   for (const auto& entry : evidence) {
-    bodies.push_back(entry.evidence_kind + "=" + entry.evidence_id);
+    bodies.push_back(entry.evidence_kind + "=" + scratchbird::tests::EvidenceTextFields(entry.evidence_id));
   }
   const std::vector<std::string_view> forbidden = {
       "docs" "/execution-plans",
@@ -225,11 +215,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -275,9 +265,9 @@ Fixture MakeFixture() {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-034 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 10);
+  fixture.index_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 11);
   return fixture;
 }
 
@@ -303,8 +293,8 @@ api::CrudRowVersionRecord RowRecord(const Fixture& fixture,
   api::CrudRowVersionRecord row;
   row.creator_tx = context.local_transaction_id;
   row.table_uuid = fixture.table_uuid;
-  row.row_uuid = NewUuidText(platform::UuidKind::row, fixture.salt + 200 + salt);
-  row.version_uuid = NewUuidText(platform::UuidKind::row, fixture.salt + 300 + salt);
+  row.row_uuid = NewNativeUuid(platform::UuidKind::row, fixture.salt + 200 + salt);
+  row.version_uuid = NewNativeUuid(platform::UuidKind::row, fixture.salt + 300 + salt);
   row.values.push_back({"id", std::move(id)});
   row.values.push_back({"name", std::move(name)});
   return row;
@@ -313,8 +303,8 @@ api::CrudRowVersionRecord RowRecord(const Fixture& fixture,
 api::MgaIndexEntryRowInput IndexRow(platform::u64 salt,
                                     std::string name) {
   api::MgaIndexEntryRowInput row;
-  row.row_uuid = NewUuidText(platform::UuidKind::row, 50000 + salt);
-  row.version_uuid = NewUuidText(platform::UuidKind::row, 51000 + salt);
+  row.row_uuid = NewNativeUuid(platform::UuidKind::row, 50000 + salt);
+  row.version_uuid = NewNativeUuid(platform::UuidKind::row, 51000 + salt);
   row.values.push_back({"id", std::to_string(salt)});
   row.values.push_back({"name", std::move(name)});
   return row;
@@ -329,8 +319,8 @@ api::MgaSecondaryIndexDeltaLedgerEntryInput DeltaInput(
   api::MgaSecondaryIndexDeltaLedgerEntryInput input;
   input.index = index;
   input.table_uuid = fixture.table_uuid;
-  input.row_uuid = NewUuidText(platform::UuidKind::row, fixture.salt + 600 + salt);
-  input.version_uuid = NewUuidText(platform::UuidKind::row, fixture.salt + 700 + salt);
+  input.row_uuid = NewNativeUuid(platform::UuidKind::row, fixture.salt + 600 + salt);
+  input.version_uuid = NewNativeUuid(platform::UuidKind::row, fixture.salt + 700 + salt);
   input.values.push_back({"id", std::to_string(salt)});
   input.values.push_back({"name", std::move(name)});
   input.delta_kind = scratchbird::core::index::SecondaryIndexDeltaKind::insert;

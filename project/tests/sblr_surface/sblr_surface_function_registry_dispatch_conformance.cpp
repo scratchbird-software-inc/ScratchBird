@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -53,14 +54,14 @@ functions::FunctionCallRequest RequestFor(const functions::FunctionRegistryEntry
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
-  request.context.sblr_context.cluster_uuid = "ELER-074-function-registry-cluster";
-  request.context.sblr_context.node_uuid = "ELER-074-function-registry-node";
-  request.context.sblr_context.database_uuid = "ELER-074-function-registry-db";
-  request.context.sblr_context.transaction_uuid = "ELER-074-function-registry-tx";
-  request.context.sblr_context.statement_uuid = "ELER-074-function-registry-stmt";
-  request.context.sblr_context.user_uuid = "ELER-074-function-registry-user";
-  request.context.sblr_context.current_role_uuid = "ELER-074-function-registry-role";
-  request.context.sblr_context.current_schema_uuid = "ELER-074-function-registry-schema";
+  request.context.sblr_context.cluster_uuid = scratchbird::tests::FixtureUuid(1484, 201);
+  request.context.sblr_context.node_uuid = scratchbird::tests::FixtureUuid(1484, 202);
+  request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuid(1484, 203);
+  request.context.sblr_context.transaction_uuid = scratchbird::tests::FixtureUuid(1484, 204);
+  request.context.sblr_context.statement_uuid = scratchbird::tests::FixtureUuid(1274, 1501);
+  request.context.sblr_context.user_uuid = scratchbird::tests::FixtureUuid(1484, 205);
+  request.context.sblr_context.current_role_uuid = scratchbird::tests::FixtureUuid(1484, 206);
+  request.context.sblr_context.current_schema_uuid = scratchbird::tests::FixtureUuid(1484, 207);
   request.context.sblr_context.transaction_context_present = true;
   request.context.sblr_context.security_context_present = true;
   request.context.sblr_context.current_timestamp = "2026-06-03T12:00:00Z";
@@ -251,7 +252,7 @@ int main() {
   Require(exec::ValidateCanonicalAggregateRuntimeRegistryV1().empty(),
           "canonical global aggregate registry self-validation failed");
   const auto* upper_by_uuid = package.registry.LookupByUuid(
-      "019de5fc-2400-7f4f-a75a-97f18565ad84");
+      scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7f4f-a75a-97f18565ad84"));
   Require(upper_by_uuid != nullptr &&
               upper_by_uuid->function_id == "sb.scalar.upper",
           "canonical upper function UUID did not resolve exactly");

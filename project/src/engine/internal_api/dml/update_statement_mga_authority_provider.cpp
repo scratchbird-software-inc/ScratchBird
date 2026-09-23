@@ -35,12 +35,8 @@ bool HasTraceTag(const EngineRequestContext& context, std::string_view tag) {
          context.trace_tags.end();
 }
 
-bool ExactUuid(std::string_view text) {
-  if (text.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() &&
-         !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == text;
+bool ExactUuid(const EngineUuid& value) {
+  return !value.is_nil() && scratchbird::core::uuid::IsValidUuidVariant(value);
 }
 
 EngineApiDiagnostic ValidateOpenRequest(

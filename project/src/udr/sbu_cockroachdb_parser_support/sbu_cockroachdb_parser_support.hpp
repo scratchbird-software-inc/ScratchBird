@@ -17,6 +17,7 @@ namespace scratchbird::udr::cockroachdb_parser_support {
 
 inline constexpr std::string_view kSbuCockroachdbPackageUuid =
     "019e13c0-0000-7000-8000-00000000030b";
+inline constexpr scratchbird::udr::runtime::UdrUuid kSbuCockroachdbPackageIdentity{{0x01, 0x9e, 0x13, 0xc0, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0b}};
 inline constexpr std::string_view kSbuCockroachdbPackageName = "sbup_cockroachdb";
 
 struct UdrResult {

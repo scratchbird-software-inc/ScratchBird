@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -45,8 +46,8 @@ bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
 }
 
-std::string Id(platform::UuidKind kind, platform::u64 seed) {
-  static std::map<std::pair<int, platform::u64>, std::string> generated_ids;
+platform::Uuid Id(platform::UuidKind kind, platform::u64 seed) {
+  static std::map<std::pair<int, platform::u64>, platform::Uuid> generated_ids;
   const auto key = std::make_pair(static_cast<int>(kind), seed);
   const auto found = generated_ids.find(key);
   if (found != generated_ids.end()) {
@@ -67,7 +68,7 @@ std::string Id(platform::UuidKind kind, platform::u64 seed) {
     generated_uuid = typed.value;
   }
   const auto [inserted, _] =
-      generated_ids.emplace(key, uuid::UuidToString(generated_uuid.value));
+      generated_ids.emplace(key, generated_uuid.value);
   return inserted->second;
 }
 
@@ -76,11 +77,11 @@ api::EngineRequestContext Context() {
   context.security_context_present = true;
   context.request_id = "dpc061-management-observability";
   context.database_path = "/tmp/dpc061-runtime.sbdb";
-  context.database_uuid.canonical = Id(platform::UuidKind::database, 1);
-  context.node_uuid.canonical = Id(platform::UuidKind::object, 2);
-  context.session_uuid.canonical = Id(platform::UuidKind::session, 3);
-  context.principal_uuid.canonical = Id(platform::UuidKind::principal, 4);
-  context.transaction_uuid.canonical = Id(platform::UuidKind::transaction, 5);
+  context.database_uuid = Id(platform::UuidKind::database, 1);
+  context.node_uuid = Id(platform::UuidKind::object, 2);
+  context.session_uuid = Id(platform::UuidKind::session, 3);
+  context.principal_uuid = Id(platform::UuidKind::principal, 4);
+  context.transaction_uuid = Id(platform::UuidKind::transaction, 5);
   context.catalog_generation_id = 1061;
   context.name_resolution_epoch = 2061;
   context.security_epoch = 3061;
@@ -243,7 +244,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) {
       return true;
     }
   }

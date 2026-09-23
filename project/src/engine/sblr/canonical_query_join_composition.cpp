@@ -16,6 +16,7 @@
 #include "canonical_query_scalar_support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -390,13 +391,19 @@ ExecuteCanonicalObjectFreeJoinQuery(
                       " exceeds the admitted memory budget");
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
+  std::array<api::EngineUuid, 4> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live join identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto join_capability_uuid =
-      DerivedCanonicalUuid(identity_scope,
-                           "join." + join_component + ".capability");
+      owned_identities[1];
   const auto join_implementation_id =
       "join." + join_component + ".3vl.nested.v1";
   std::vector<LivePhysicalNodeProfile> profiles;
@@ -472,16 +479,9 @@ ExecuteCanonicalObjectFreeJoinQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "join.execution-attempt");
+      owned_identities[2];
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(request.context.local_transaction_id) + ":" +
-              std::to_string(
-                  request.context.snapshot_visible_through_local_transaction_id),
-          "join.transaction-effect-unchanged");
+      owned_identities[3];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =

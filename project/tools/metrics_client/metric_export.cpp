@@ -12,7 +12,8 @@
 #include <set>
 #include <stdexcept>
 
-namespace scratchbird::core::metrics {
+namespace scratchbird::client::metrics {
+using namespace scratchbird::core::metrics;
 namespace {
 using E=MetricExportError;
 bool Name(const std::string& name) {
@@ -149,4 +150,4 @@ MetricExportResult RenderOpenMetricsProjection(const MetricExportContext& contex
    catch(const std::length_error&){return {E::size_limit,{}};}
    catch(...){return {E::invalid_projection,{}};}
 }
-} // namespace scratchbird::core::metrics
+} // namespace scratchbird::client::metrics

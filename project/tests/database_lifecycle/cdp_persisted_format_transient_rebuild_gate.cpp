@@ -1,3 +1,5 @@
+#include "hash_digest.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -77,8 +79,8 @@ struct UuidFactory {
     return generated.value;
   }
 
-  std::string Text(UuidKind kind, std::uint64_t salt) const {
-    return uuid::UuidToString(Typed(kind, salt).value);
+  api::EngineUuid Native(UuidKind kind, std::uint64_t salt) const {
+    return Typed(kind, salt).value;
   }
 };
 
@@ -88,11 +90,11 @@ struct TempFixture {
   UuidFactory uuids;
   TypedUuid database_uuid;
   TypedUuid filespace_uuid;
-  std::string database_uuid_text;
-  std::string filespace_uuid_text;
-  std::string principal_uuid;
-  std::string schema_uuid;
-  std::string table_uuid;
+  api::EngineUuid database_identity;
+  api::EngineUuid filespace_identity;
+  api::EngineUuid principal_uuid;
+  api::EngineUuid schema_uuid;
+  api::EngineUuid table_uuid;
   std::string schema_name;
   std::string table_name;
   std::uint64_t table_metadata_epoch = 0;
@@ -107,7 +109,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) {
       return true;
     }
   }
@@ -132,9 +134,9 @@ api::EngineRequestContext BaseContext(const TempFixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid_text;
-  context.principal_uuid.canonical = fixture.principal_uuid;
-  context.session_uuid.canonical = fixture.uuids.Text(UuidKind::object, 1000 + epoch);
+  context.database_uuid = fixture.database_identity;
+  context.principal_uuid = fixture.principal_uuid;
+  context.session_uuid = fixture.uuids.Native(UuidKind::object, 1000 + epoch);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -179,26 +181,26 @@ void Rollback(const api::EngineRequestContext& context) {
 
 api::EngineCatalogCreateObjectRequest CreateObjectRequest(
     const api::EngineRequestContext& context,
-    const std::string& object_uuid,
+    const api::EngineUuid& object_uuid,
     std::string object_kind,
-    const std::string& schema_uuid,
+    const api::EngineUuid& schema_uuid,
     std::string object_name) {
   api::EngineCatalogCreateObjectRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = object_uuid;
+  request.target_object.uuid = object_uuid;
   request.target_object.object_kind = std::move(object_kind);
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.localized_names.push_back(Name(std::move(object_name)));
   return request;
 }
 
 api::EngineResolveNameRequest ResolveRequest(const api::EngineRequestContext& context,
-                                             const std::string& schema_uuid,
+                                             const api::EngineUuid& schema_uuid,
                                              std::string object_kind,
                                              std::string object_name) {
   api::EngineResolveNameRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.target_object.object_kind = std::move(object_kind);
   request.localized_names.push_back(Name(std::move(object_name)));
   return request;
@@ -206,11 +208,11 @@ api::EngineResolveNameRequest ResolveRequest(const api::EngineRequestContext& co
 
 api::EngineGetDescriptorRequest DescriptorRequest(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid,
+    const api::EngineUuid& table_uuid,
     std::string cache_option) {
   api::EngineGetDescriptorRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = table_uuid;
+  request.target_object.uuid = table_uuid;
   request.target_object.object_kind = "table";
   request.option_envelopes.push_back(std::move(cache_option));
   return request;
@@ -225,13 +227,28 @@ api::EngineTypedValue Int64Value(std::int64_t value) {
   return typed;
 }
 
-api::EngineQueryRelation Relation(const std::string& table_uuid,
+std::string FixtureDescriptorDigest(const api::EngineUuid& identity) {
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(identity.bytes.data(), identity.bytes.size());
+  Require(digest.ok(), "fixture descriptor digest failed");
+  return scratchbird::core::hash::HexLower(digest.digest);
+}
+
+bool HasEvidence(const api::EngineApiResult& result, std::string_view kind,
+                 const api::EngineUuid& expected) {
+  for (const auto& evidence : result.evidence) {
+    const auto* identity = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && identity && *identity == expected) return true;
+  }
+  return false;
+}
+
+api::EngineQueryRelation Relation(const api::EngineUuid& table_uuid,
                                   const std::string& table_name) {
   api::EngineQueryRelation relation;
   relation.relation_name = table_name;
-  relation.source_object.uuid.canonical = table_uuid;
+  relation.source_object.uuid = table_uuid;
   relation.source_object.object_kind = "table";
-  relation.descriptor_digest = "descriptor:" + table_uuid;
+  relation.descriptor_digest = FixtureDescriptorDigest(table_uuid);
   for (int value : {10, 20, 30}) {
     api::EngineRowValue row;
     row.fields.push_back({"id", Int64Value(value)});
@@ -241,7 +258,7 @@ api::EngineQueryRelation Relation(const std::string& table_uuid,
 }
 
 api::EnginePlanOperationRequest PlanRequest(api::EngineRequestContext context,
-                                            const std::string& table_uuid,
+                                            const api::EngineUuid& table_uuid,
                                             const std::string& table_name,
                                             std::string cache_option,
                                             std::string sblr_digest,
@@ -250,7 +267,7 @@ api::EnginePlanOperationRequest PlanRequest(api::EngineRequestContext context,
   request.context = std::move(context);
   request.execute = true;
   request.query_operation = "count";
-  request.target_object.uuid.canonical = table_uuid;
+  request.target_object.uuid = table_uuid;
   request.target_object.object_kind = "table";
   request.relations.push_back(Relation(table_uuid, table_name));
   request.option_envelopes.push_back(std::move(cache_option));
@@ -326,11 +343,11 @@ TempFixture CreateDatabaseFixture() {
   fixture.database_path = fixture.dir / "cdp024.sbdb";
   fixture.database_uuid = fixture.uuids.Typed(UuidKind::database, 10);
   fixture.filespace_uuid = fixture.uuids.Typed(UuidKind::filespace, 11);
-  fixture.database_uuid_text = uuid::UuidToString(fixture.database_uuid.value);
-  fixture.filespace_uuid_text = uuid::UuidToString(fixture.filespace_uuid.value);
-  fixture.principal_uuid = fixture.uuids.Text(UuidKind::principal, 12);
-  fixture.schema_uuid = fixture.uuids.Text(UuidKind::object, 13);
-  fixture.table_uuid = fixture.uuids.Text(UuidKind::object, 14);
+  fixture.database_identity = fixture.database_uuid.value;
+  fixture.filespace_identity = fixture.filespace_uuid.value;
+  fixture.principal_uuid = fixture.uuids.Native(UuidKind::principal, 12);
+  fixture.schema_uuid = fixture.uuids.Native(UuidKind::object, 13);
+  fixture.table_uuid = fixture.uuids.Native(UuidKind::object, 14);
   fixture.schema_name = "cdp024_schema_" + std::to_string(fixture.uuids.base_millis);
   fixture.table_name = "cdp024_table_" + std::to_string(fixture.uuids.base_millis);
 
@@ -367,11 +384,11 @@ void ProvePersistentHeaderCompatibility(const TempFixture& fixture) {
   Require(reopened.state.header.format_minor ==
               disk::kScratchBirdDatabaseFormatMinor,
           "CDP-024 reopened header minor format mismatch");
-  Require(uuid::UuidToString(reopened.state.database_uuid.value) ==
-              fixture.database_uuid_text,
+  Require(reopened.state.database_uuid.value ==
+              fixture.database_identity,
           "CDP-024 reopened database UUID drifted");
-  Require(uuid::UuidToString(reopened.state.filespace_uuid.value) ==
-              fixture.filespace_uuid_text,
+  Require(reopened.state.filespace_uuid.value ==
+              fixture.filespace_identity,
           "CDP-024 reopened filespace UUID drifted");
   Require(db::ClassifyDatabaseOpenCompatibility(reopened.state.header, true) ==
               db::DatabaseOpenCompatibilityClass::current,
@@ -485,7 +502,7 @@ void CreateCatalogObjects(TempFixture* fixture) {
                           fixture->schema_uuid,
                           fixture->table_name));
   RequireEngineOk(created_table, "CDP-024 table create failed");
-  Require(created_table.primary_object.uuid.canonical == fixture->table_uuid,
+  Require(created_table.primary_object.uuid == fixture->table_uuid,
           "CDP-024 table create did not preserve generated table UUID");
   fixture->table_metadata_epoch = created_table.metadata_cache_epoch;
   Commit(table_context);
@@ -499,7 +516,7 @@ void ExerciseDescriptorCacheEpoch(TempFixture& fixture,
   const auto resolved = api::EngineResolveName(
       ResolveRequest(read_context, fixture.schema_uuid, "table", fixture.table_name));
   RequireEngineOk(resolved, "CDP-024 reopened resolver lookup failed");
-  Require(resolved.bound_object_identity.object_uuid.canonical == fixture.table_uuid,
+  Require(resolved.bound_object_identity.object_uuid == fixture.table_uuid,
           "CDP-024 resolver did not return generated table UUID");
 
   const auto miss = api::EngineGetDescriptor(
@@ -507,7 +524,7 @@ void ExerciseDescriptorCacheEpoch(TempFixture& fixture,
   RequireEngineOk(miss, "CDP-024 descriptor cache miss lookup failed");
   Require(HasEvidence(miss, "descriptor_metadata_cache", "miss"),
           "CDP-024 descriptor cache did not record first miss");
-  Require(miss.descriptor.descriptor_uuid.canonical == fixture.table_uuid,
+  Require(miss.descriptor.descriptor_uuid == fixture.table_uuid,
           "CDP-024 descriptor did not bind generated table UUID");
   if (encoded_descriptor != nullptr && encoded_descriptor->empty()) {
     *encoded_descriptor = miss.descriptor.encoded_descriptor;
@@ -544,7 +561,7 @@ void ExercisePlanCacheEpoch(TempFixture& fixture,
   RequireEngineOk(miss, "CDP-024 optimizer plan cache miss request failed");
   RequirePlanCacheEvidence(miss, "miss");
   Require(HasEvidence(miss, "optimizer_live_plan_cache_binding",
-                      "descriptor:" + fixture.table_uuid),
+                      fixture.table_uuid),
           "CDP-024 plan cache did not bind descriptor UUID");
   Require(CountValue(miss) == "3",
           "CDP-024 optimizer plan cache miss changed query result");

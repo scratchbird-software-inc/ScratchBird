@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -125,7 +126,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -142,10 +143,10 @@ std::string DiagnosticField(
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000078101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000078102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000078103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000078101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000078102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000078103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 78;
   session.security_policy_epoch = 79;
   session.descriptor_epoch = 80;
@@ -156,7 +157,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_078_procedural_general_residual";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000078104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000078104");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-078-procedural-general-residual";
   config.build_id = "sbsql-sbsfc-078-procedural-general-residual";
   return config;
@@ -179,7 +180,7 @@ PipelineArtifacts RunPipeline(const CaseRow& row) {
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            {std::string(kTargetUuid)});
+                            {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000078001")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -289,7 +290,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+scratchbird::core::platform::Uuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -303,18 +304,18 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "SBSFC-078 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const scratchbird::core::platform::Uuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-sbsfc-078-procedural-general-residual";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000078201";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000078202";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000078203";
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000078201");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000078202");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000078203");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -325,7 +326,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid) {
+                                                 const scratchbird::core::platform::Uuid& database_uuid) {
   auto context = EngineContext(path, database_uuid);
   auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
                                          "SBLR_TRANSACTION_BEGIN",
@@ -374,7 +375,7 @@ sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
 
 api::EngineApiRequest ApiRequestFor(const CaseRow& row) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::string(kTargetUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000078001");
   request.target_object.object_kind = "sbsfc078_procedural_surface";
   request.option_envelopes.push_back(std::string("sbsfc078_surface_id:") + std::string(row.surface_id));
   request.option_envelopes.push_back(std::string("surface_kind:") + std::string(row.canonical_name));
@@ -391,7 +392,7 @@ api::EngineApiRequest ApiRequestFor(const CaseRow& row) {
 
 void RequireEngineDispatch(const api::EngineRequestContext& base_context,
                            const std::filesystem::path& path,
-                           const std::string& database_uuid,
+                           const scratchbird::core::platform::Uuid& database_uuid,
                            const CaseRow& row) {
   api::EngineRequestContext context = base_context;
   if (row.requires_transaction_context) {

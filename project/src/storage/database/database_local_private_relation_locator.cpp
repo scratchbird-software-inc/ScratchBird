@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "security_lifecycle_event_codec.hpp"
 #include "database_local_private_relation_locator.hpp"
 
 #include "hash_digest.hpp"
@@ -28,6 +29,7 @@
 #include <vector>
 
 namespace scratchbird::storage::database {
+namespace sec_event = scratchbird::storage::database::security_event_codec;
 namespace {
 
 namespace core_hash = scratchbird::core::hash;
@@ -68,7 +70,7 @@ constexpr u16 kCurrentSecurityBatchMinor = 1;
 constexpr std::size_t kLegacySecurityBatchFixedBytes = 140;
 constexpr std::size_t kCurrentSecurityBatchFixedBytes =
     kDatabaseLocalSecurityBatchEnvelopeBytesV1;
-constexpr std::string_view kLifecycleMagic = "SBSECPL1";
+constexpr std::string_view kLifecycleMagic = "SBSECPL2";
 constexpr std::string_view kSuccessorKind = "AUTH_CONTEXT_SUCCESSOR";
 
 Status LocatorOkStatus() {
@@ -636,20 +638,6 @@ bool ParseExactU64(std::string_view text, u64* value) {
   return true;
 }
 
-std::vector<std::string_view> SplitTabs(std::string_view line) {
-  std::vector<std::string_view> parts;
-  std::size_t begin = 0;
-  while (begin <= line.size()) {
-    const auto separator = line.find('\t', begin);
-    if (separator == std::string_view::npos) {
-      parts.push_back(line.substr(begin));
-      break;
-    }
-    parts.push_back(line.substr(begin, separator - begin));
-    begin = separator + 1;
-  }
-  return parts;
-}
 
 std::size_t ExactLifecycleFieldCount(std::string_view kind) {
   if (kind == "PRINCIPAL") return 10;
@@ -658,7 +646,7 @@ std::size_t ExactLifecycleFieldCount(std::string_view kind) {
   if (kind == "MEMBERSHIP") return 10;
   if (kind == "GRANT") return 13;
   if (kind == "REVOKE") return 8;
-  if (kind == "AUDIT") return 10;
+  if (kind == "AUDIT") return 12;
   if (kind == "CACHE_INVALIDATE") return 6;
   if (kind == "ROW_POLICY") return 27;
   if (kind == "PRIVILEGE_TEMPLATE") return 20;
@@ -689,12 +677,8 @@ bool ValidateLifecycleLine(std::string_view line,
                            std::string_view expected_kind,
                            u64 creator_local_transaction_id,
                            u64 expected_generation,
-                           std::vector<std::string_view>* parts_out) {
-  if (line.empty() || line.find('\n') != std::string_view::npos ||
-      line.find('\r') != std::string_view::npos) {
-    return false;
-  }
-  auto parts = SplitTabs(line);
+                           sec_event::Parts* parts_out) {
+  auto parts = sec_event::Decode(line);
   if (parts.size() != ExactLifecycleFieldCount(expected_kind) ||
       parts[0] != kLifecycleMagic || parts[1] != expected_kind) {
     return false;
@@ -716,39 +700,13 @@ bool ValidateLifecycleLine(std::string_view line,
   return true;
 }
 
-std::string NewlineTerminatedPayload(
-    const std::vector<std::string>& events,
-    std::size_t count = std::numeric_limits<std::size_t>::max()) {
-  std::string payload;
-  const auto limit = std::min(events.size(), count);
-  for (std::size_t index = 0; index < limit; ++index) {
-    payload.append(events[index]);
-    payload.push_back('\n');
-  }
-  return payload;
-}
-
 bool DecodeLifecyclePayload(const std::vector<byte>& payload,
                             u32 event_count,
                             std::vector<std::string>* events) {
-  if (events == nullptr || payload.empty() || payload.back() != '\n') {
-    return false;
-  }
-  events->clear();
-  std::size_t begin = 0;
-  while (begin < payload.size()) {
-    const auto found = std::find(
-        payload.begin() + static_cast<std::ptrdiff_t>(begin), payload.end(),
-        static_cast<byte>('\n'));
-    if (found == payload.end()) return false;
-    const auto end =
-        static_cast<std::size_t>(std::distance(payload.begin(), found));
-    if (end == begin) return false;
-    events->emplace_back(
-        reinterpret_cast<const char*>(payload.data() + begin), end - begin);
-    begin = end + 1;
-  }
-  return events->size() == event_count;
+  std::vector<std::string> decoded;
+  if (!events || !sec_event::Unframe(std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()), &decoded) ||
+      decoded.size() != event_count) return false;
+  *events = std::move(decoded); return true;
 }
 
 bool ValidateLifecycleBatchInternal(
@@ -763,14 +721,13 @@ bool ValidateLifecycleBatchInternal(
       batch.events.size() != 4) {
     return RefuseBatch(refusal, "batch_identity_or_generation_invalid");
   }
-  const auto actor_text = core_uuid::UuidToString(batch.actor_principal_uuid);
-  const auto actor = core_uuid::ParseDurableEngineIdentityUuid(
-      UuidKind::principal, actor_text);
+  const auto actor = core_uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::principal, batch.actor_principal_uuid);
   if (!actor.ok()) {
     return RefuseBatch(refusal, "batch_actor_principal_invalid");
   }
 
-  const auto authority_parts = SplitTabs(batch.events[0]);
+  const auto authority_parts = sec_event::Decode(batch.events[0]);
   if (authority_parts.size() < 2 ||
       !IsAuthorityLifecycleKind(authority_parts[1]) ||
       !ValidateLifecycleLine(
@@ -783,11 +740,11 @@ bool ValidateLifecycleBatchInternal(
       authority_parts[10] != "deny") {
     return RefuseBatch(refusal, "grant_effect_invalid");
   }
-  std::vector<std::string_view> audit_parts;
+  sec_event::Parts audit_parts;
   if (!ValidateLifecycleLine(
           batch.events[1], "AUDIT", batch.creator_local_transaction_id,
           batch.successor_security_context_generation, &audit_parts) ||
-      audit_parts[5] != actor_text || audit_parts[7] != "success") {
+      audit_parts.identity(5) != batch.actor_principal_uuid || audit_parts[7] != "success") {
     return RefuseBatch(refusal, "audit_event_invalid");
   }
   if (!ValidateLifecycleLine(
@@ -796,10 +753,10 @@ bool ValidateLifecycleBatchInternal(
           batch.successor_security_context_generation, nullptr)) {
     return RefuseBatch(refusal, "cache_invalidation_event_invalid");
   }
-  const auto successor_parts = SplitTabs(batch.events[3]);
+  const auto successor_parts = sec_event::Decode(batch.events[3]);
   u64 successor_tx = 0;
   u64 successor_generation = 0;
-  const std::string unsealed = NewlineTerminatedPayload(batch.events, 3);
+  const std::string unsealed = sec_event::Frame(batch.events, 3);
   const auto digest = core_hash::ComputeSha256Digest(
       reinterpret_cast<const byte*>(unsealed.data()), unsealed.size());
   if (!digest.ok() ||
@@ -1168,7 +1125,7 @@ std::vector<byte> EncodeDatabaseLocalSecurityBatchEnvelopeV1(
     const DatabaseLocalSecurityBatchEnvelopeV1& batch,
     std::string* refusal) {
   if (!ValidateLifecycleBatchInternal(batch, refusal)) return {};
-  const std::string payload = NewlineTerminatedPayload(batch.events);
+  const std::string payload = sec_event::Frame(batch.events);
   if (payload.empty() ||
       payload.size() > std::numeric_limits<u32>::max()) {
     RefuseBatch(refusal, "batch_payload_size_invalid");

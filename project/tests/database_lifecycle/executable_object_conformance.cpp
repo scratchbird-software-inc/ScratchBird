@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -7,6 +9,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "extensibility/executable_object_lifecycle.hpp"
+#include "catalog/binary_view_options.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -56,8 +59,16 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) { return true; }
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) { return true; }
   }
+  return false;
+}
+
+bool HasEvidence(const api::EngineApiResult& result,
+                 std::string_view kind, const api::EngineUuid& id) {
+  for (const auto& evidence : result.evidence)
+    if (evidence.evidence_kind == kind &&
+        scratchbird::tests::EvidenceIdentityEquals(evidence.evidence_id, id)) return true;
   return false;
 }
 
@@ -95,10 +106,10 @@ api::EngineRequestContext Context(const std::filesystem::path& path,
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.database_path = path.string();
-  context.database_uuid.canonical = "db-dblc-013ag";
-  context.principal_uuid.canonical = "principal-owner";
-  context.session_uuid.canonical = "session-dblc-013ag";
-  context.transaction_uuid.canonical = "txn-" + std::to_string(tx);
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 1601);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1602);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 1603);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1418, 10000 + tx);
   context.local_transaction_id = tx;
   context.snapshot_visible_through_local_transaction_id = visible_through;
   context.security_context_present = true;
@@ -112,15 +123,15 @@ api::EngineRequestContext Context(const std::filesystem::path& path,
 template <typename TRequest>
 TRequest BaseRequest(const std::filesystem::path& path,
                      std::uint64_t tx,
-                     std::string uuid,
+                     api::EngineUuid uuid,
                      std::string kind) {
   TRequest request;
   request.context = Context(path, tx, tx);
-  request.target_database.uuid.canonical = "db-dblc-013ag";
+  request.target_database.uuid = request.context.database_uuid;
   request.target_database.object_kind = "database";
-  request.target_schema.uuid.canonical = "schema-app";
+  request.target_schema.uuid = scratchbird::tests::FixtureUuid(1418, 13);
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = std::move(uuid);
+  request.target_object.uuid = std::move(uuid);
   request.target_object.object_kind = std::move(kind);
   return request;
 }
@@ -146,7 +157,7 @@ void AddStoredSblr(api::EngineApiRequest* request, std::string hash_seed) {
 
 api::EngineCreateExecutableObjectRequest CreateSblrRequest(const std::filesystem::path& path,
                                                            std::uint64_t tx,
-                                                           std::string uuid,
+                                                           api::EngineUuid uuid,
                                                            std::string kind,
                                                            std::string hash_seed) {
   auto request = BaseRequest<api::EngineCreateExecutableObjectRequest>(
@@ -158,7 +169,7 @@ api::EngineCreateExecutableObjectRequest CreateSblrRequest(const std::filesystem
 
 api::EngineInvokeExecutableObjectRequest InvokeRequest(const std::filesystem::path& path,
                                                        std::uint64_t tx,
-                                                       std::string uuid,
+                                                       api::EngineUuid uuid,
                                                        std::string kind) {
   auto request = BaseRequest<api::EngineInvokeExecutableObjectRequest>(
       path, tx, std::move(uuid), std::move(kind));
@@ -168,75 +179,75 @@ api::EngineInvokeExecutableObjectRequest InvokeRequest(const std::filesystem::pa
 }
 
 void TestCreateAlterDropDependencyAndGeneration(const std::filesystem::path& path) {
-  auto package = CreateSblrRequest(path, 1, "pkg-billing", "package", "pkg");
+  auto package = CreateSblrRequest(path, 1, scratchbird::tests::FixtureUuid(1418, 7), "package", "pkg");
   RequireOk(api::EngineCreateExecutableObject(package), "package create failed");
 
-  auto stored_sblr = CreateSblrRequest(path, 2, "sblr-billing-tax", "stored_sblr", "stored");
+  auto stored_sblr = CreateSblrRequest(path, 2, scratchbird::tests::FixtureUuid(1418, 12), "stored_sblr", "stored");
   const auto stored_created = api::EngineCreateExecutableObject(stored_sblr);
   RequireOk(stored_created, "stored SBLR create failed");
   Require(HasEvidence(stored_created, "stored_sblr", "hash_and_provenance_recorded"),
           "stored SBLR provenance evidence was not emitted");
 
-  auto function = CreateSblrRequest(path, 3, "fn-tax-rate", "function", "fn-v1");
-  function.related_objects.push_back({{"pkg-billing"}, "package"});
-  function.related_objects.push_back({{"sblr-billing-tax"}, "stored_sblr"});
+  auto function = CreateSblrRequest(path, 3, scratchbird::tests::FixtureUuid(1418, 6), "function", "fn-v1");
+  function.related_objects.push_back({{scratchbird::tests::FixtureUuid(1418, 7)}, "package"});
+  function.related_objects.push_back({{scratchbird::tests::FixtureUuid(1418, 12)}, "stored_sblr"});
   const auto fn_created = api::EngineCreateExecutableObject(function);
   RequireOk(fn_created, "function create failed");
   Require(fn_created.executable_generation == 1, "function create generation mismatch");
 
-  auto procedure = CreateSblrRequest(path, 4, "proc-invoice", "procedure", "proc-v1");
-  procedure.related_objects.push_back({{"fn-tax-rate"}, "function"});
+  auto procedure = CreateSblrRequest(path, 4, scratchbird::tests::FixtureUuid(1418, 9), "procedure", "proc-v1");
+  procedure.related_objects.push_back({{scratchbird::tests::FixtureUuid(1418, 6)}, "function"});
   RequireOk(api::EngineCreateExecutableObject(procedure), "procedure create failed");
 
-  auto trigger = CreateSblrRequest(path, 5, "trg-invoice-audit", "trigger", "trigger-v1");
-  trigger.related_objects.push_back({{"proc-invoice"}, "procedure"});
+  auto trigger = CreateSblrRequest(path, 5, scratchbird::tests::FixtureUuid(1418, 14), "trigger", "trigger-v1");
+  trigger.related_objects.push_back({{scratchbird::tests::FixtureUuid(1418, 9)}, "procedure"});
   RequireOk(api::EngineCreateExecutableObject(trigger), "trigger create failed");
 
   auto routine = BaseRequest<api::EngineCreateExecutableObjectRequest>(
-      path, 6, "routine-internal-seed", "routine");
+      path, 6, scratchbird::tests::FixtureUuid(1418, 11), "routine");
   AddManage(&routine);
   routine.option_envelopes.push_back("executor:internal_procedure");
   routine.option_envelopes.push_back("internal_procedure_id:sys.exec.seed_builtin");
   RequireOk(api::EngineCreateExecutableObject(routine), "internal routine create failed");
 
   auto alter_function = BaseRequest<api::EngineAlterExecutableObjectRequest>(
-      path, 7, "fn-tax-rate", "function");
+      path, 7, scratchbird::tests::FixtureUuid(1418, 6), "function");
   AddManage(&alter_function);
   AddStoredSblr(&alter_function, "fn-v2");
   const auto altered = api::EngineAlterExecutableObject(alter_function);
   RequireOk(altered, "function alter failed");
   Require(altered.executable_generation == 2, "function alter generation mismatch");
-  Require(HasEvidence(altered, "dependency_invalidation", "fn-tax-rate"),
+  Require(HasEvidence(altered, "dependency_invalidation", scratchbird::tests::FixtureUuid(1418, 6)),
           "function alter did not publish dependency invalidation evidence");
 
   const auto invalidated_proc = api::EngineInvokeExecutableObject(
-      InvokeRequest(path, 8, "proc-invoice", "procedure"));
+      InvokeRequest(path, 8, scratchbird::tests::FixtureUuid(1418, 9), "procedure"));
   RequireDiagnostic(invalidated_proc,
                     api::kExecutableObjectDiagnosticDependencyInvalidated,
                     "invalidated dependent procedure invocation was accepted");
 
   auto inspect = BaseRequest<api::EngineInspectExecutableObjectRequest>(
-      path, 9, "proc-invoice", "procedure");
+      path, 9, scratchbird::tests::FixtureUuid(1418, 9), "procedure");
   inspect.context.trace_tags.push_back("right:DISCOVER");
   const auto inspected = api::EngineInspectExecutableObjects(inspect);
   RequireOk(inspected, "inspect after dependency invalidation failed");
   Require(HasRowField(inspected, "invalidated", "true"),
           "inspect did not expose invalidated dependency state");
 
-  auto hidden_invoke = InvokeRequest(path, 10, "fn-tax-rate", "function");
+  auto hidden_invoke = InvokeRequest(path, 10, scratchbird::tests::FixtureUuid(1418, 6), "function");
   hidden_invoke.context.snapshot_visible_through_local_transaction_id = 2;
   RequireDiagnostic(api::EngineInvokeExecutableObject(hidden_invoke),
                     api::kExecutableObjectDiagnosticMgaVisibilityRefused,
                     "snapshot-invisible executable generation was accepted");
 
   auto drop_trigger = BaseRequest<api::EngineDropExecutableObjectRequest>(
-      path, 11, "trg-invoice-audit", "trigger");
+      path, 11, scratchbird::tests::FixtureUuid(1418, 14), "trigger");
   AddManage(&drop_trigger);
   const auto dropped = api::EngineDropExecutableObject(drop_trigger);
   RequireOk(dropped, "trigger drop failed");
   Require(dropped.executable_generation == 2, "drop did not advance executable generation");
 
-  auto dropped_invoke = InvokeRequest(path, 12, "trg-invoice-audit", "trigger");
+  auto dropped_invoke = InvokeRequest(path, 12, scratchbird::tests::FixtureUuid(1418, 14), "trigger");
   RequireDiagnostic(api::EngineInvokeExecutableObject(dropped_invoke),
                     api::kExecutableObjectDiagnosticNotFound,
                     "dropped trigger remained invokable");
@@ -244,14 +255,14 @@ void TestCreateAlterDropDependencyAndGeneration(const std::filesystem::path& pat
 
 void TestPermissionExecutionBoundaryAndStoredSblr(const std::filesystem::path& path) {
   auto no_permission = BaseRequest<api::EngineCreateExecutableObjectRequest>(
-      path, 20, "fn-denied", "function");
+      path, 20, scratchbird::tests::FixtureUuid(1418, 2), "function");
   AddStoredSblr(&no_permission, "denied");
   RequireDiagnostic(api::EngineCreateExecutableObject(no_permission),
                     api::kExecutableObjectDiagnosticPermissionDenied,
                     "create without executable management permission was admitted");
 
   auto missing_hash = BaseRequest<api::EngineCreateExecutableObjectRequest>(
-      path, 21, "fn-missing-hash", "function");
+      path, 21, scratchbird::tests::FixtureUuid(1418, 3), "function");
   AddManage(&missing_hash);
   missing_hash.option_envelopes.push_back("executor:sblr");
   missing_hash.option_envelopes.push_back("sblr_provenance:parser_lowered_uuid_bound_sblr_v3");
@@ -260,7 +271,7 @@ void TestPermissionExecutionBoundaryAndStoredSblr(const std::filesystem::path& p
                     "SBLR executable without hash was admitted");
 
   auto missing_provenance = BaseRequest<api::EngineCreateExecutableObjectRequest>(
-      path, 22, "fn-missing-provenance", "function");
+      path, 22, scratchbird::tests::FixtureUuid(1418, 4), "function");
   AddManage(&missing_provenance);
   missing_provenance.option_envelopes.push_back("executor:sblr");
   missing_provenance.option_envelopes.push_back("sblr_hash:sha256:missing-provenance");
@@ -268,7 +279,7 @@ void TestPermissionExecutionBoundaryAndStoredSblr(const std::filesystem::path& p
                     api::kExecutableObjectDiagnosticStoredSblrProvenanceRequired,
                     "SBLR executable without provenance was admitted");
 
-  auto boundary = CreateSblrRequest(path, 23, "fn-parser-owned", "function", "parser-owned");
+  auto boundary = CreateSblrRequest(path, 23, scratchbird::tests::FixtureUuid(1418, 5), "function", "parser-owned");
   boundary.option_envelopes.push_back("parser_execute:true");
   RequireDiagnostic(api::EngineCreateExecutableObject(boundary),
                     api::kExecutableObjectDiagnosticExecutionBoundaryRefused,
@@ -276,16 +287,16 @@ void TestPermissionExecutionBoundaryAndStoredSblr(const std::filesystem::path& p
 }
 
 void TestSideEffectPolicy(const std::filesystem::path& path) {
-  auto sidefx = CreateSblrRequest(path, 30, "proc-sidefx", "procedure", "sidefx");
+  auto sidefx = CreateSblrRequest(path, 30, scratchbird::tests::FixtureUuid(1418, 10), "procedure", "sidefx");
   sidefx.option_envelopes.push_back("side_effect_class:external_non_idempotent");
   RequireOk(api::EngineCreateExecutableObject(sidefx), "side-effecting procedure create failed");
 
-  auto denied = InvokeRequest(path, 31, "proc-sidefx", "procedure");
+  auto denied = InvokeRequest(path, 31, scratchbird::tests::FixtureUuid(1418, 10), "procedure");
   RequireDiagnostic(api::EngineInvokeExecutableObject(denied),
                     api::kExecutableObjectDiagnosticSideEffectPolicyDenied,
                     "side-effecting invocation was admitted without policy allowance");
 
-  auto allowed = InvokeRequest(path, 32, "proc-sidefx", "procedure");
+  auto allowed = InvokeRequest(path, 32, scratchbird::tests::FixtureUuid(1418, 10), "procedure");
   allowed.option_envelopes.push_back("policy:executable.side_effect:allow");
   const auto allowed_result = api::EngineInvokeExecutableObject(allowed);
   RequireOk(allowed_result, "side-effecting invocation with policy allowance failed");
@@ -294,51 +305,51 @@ void TestSideEffectPolicy(const std::filesystem::path& path) {
 }
 
 void TestUnloadQuiesceAndActiveInvocation(const std::filesystem::path& path) {
-  auto active_proc = CreateSblrRequest(path, 40, "proc-active", "procedure", "active");
+  auto active_proc = CreateSblrRequest(path, 40, scratchbird::tests::FixtureUuid(1418, 8), "procedure", "active");
   RequireOk(api::EngineCreateExecutableObject(active_proc), "active procedure create failed");
 
   auto begin = BaseRequest<api::EngineBeginExecutableObjectInvocationRequest>(
-      path, 41, "proc-active", "procedure");
+      path, 41, scratchbird::tests::FixtureUuid(1418, 8), "procedure");
   AddInvoke(&begin);
   const auto begun = api::EngineBeginExecutableObjectInvocation(begin);
   RequireOk(begun, "begin invocation failed");
-  Require(!begun.invocation_lease_uuid.empty(), "begin invocation did not return a lease UUID");
+  Require(!begun.invocation_lease_uuid.is_nil(), "begin invocation did not return a lease UUID");
 
   auto unload_blocked = BaseRequest<api::EngineUnloadExecutableObjectRequest>(
-      path, 42, "proc-active", "procedure");
+      path, 42, scratchbird::tests::FixtureUuid(1418, 8), "procedure");
   AddManage(&unload_blocked);
   RequireDiagnostic(api::EngineUnloadExecutableObject(unload_blocked),
                     api::kExecutableObjectDiagnosticUnloadBlockedActiveInvocation,
                     "unload with active invocation was admitted");
 
   auto finish = BaseRequest<api::EngineFinishExecutableObjectInvocationRequest>(
-      path, 43, "proc-active", "procedure");
+      path, 43, scratchbird::tests::FixtureUuid(1418, 8), "procedure");
   AddInvoke(&finish);
-  finish.option_envelopes.push_back("invocation_lease_uuid:" + begun.invocation_lease_uuid);
+  finish.option_envelopes.push_back(api::BinaryViewUuidOption("invocation_lease_uuid:", begun.invocation_lease_uuid));
   RequireOk(api::EngineFinishExecutableObjectInvocation(finish), "finish invocation failed");
 
   auto quiesce = BaseRequest<api::EngineQuiesceExecutableObjectRequest>(
-      path, 44, "proc-active", "procedure");
+      path, 44, scratchbird::tests::FixtureUuid(1418, 8), "procedure");
   AddManage(&quiesce);
   const auto quiesced = api::EngineQuiesceExecutableObject(quiesce);
   RequireOk(quiesced, "quiesce failed");
   Require(HasEvidence(quiesced, "unload_behavior", "quiescing_new_invocations_blocked"),
           "quiesce did not emit new-invocation blocking evidence");
 
-  auto quiesced_invoke = InvokeRequest(path, 45, "proc-active", "procedure");
+  auto quiesced_invoke = InvokeRequest(path, 45, scratchbird::tests::FixtureUuid(1418, 8), "procedure");
   RequireDiagnostic(api::EngineInvokeExecutableObject(quiesced_invoke),
                     api::kExecutableObjectDiagnosticQuiescing,
                     "quiesced executable accepted a new invocation");
 
   auto unload = BaseRequest<api::EngineUnloadExecutableObjectRequest>(
-      path, 46, "proc-active", "procedure");
+      path, 46, scratchbird::tests::FixtureUuid(1418, 8), "procedure");
   AddManage(&unload);
   const auto unloaded = api::EngineUnloadExecutableObject(unload);
   RequireOk(unloaded, "unload after invocation release failed");
   Require(HasEvidence(unloaded, "unload_behavior", "dispatch_table_removed"),
           "unload did not emit dispatch-table removal evidence");
 
-  auto unloaded_invoke = InvokeRequest(path, 47, "proc-active", "procedure");
+  auto unloaded_invoke = InvokeRequest(path, 47, scratchbird::tests::FixtureUuid(1418, 8), "procedure");
   RequireDiagnostic(api::EngineInvokeExecutableObject(unloaded_invoke),
                     api::kExecutableObjectDiagnosticUnloaded,
                     "unloaded executable accepted an invocation");
@@ -346,8 +357,8 @@ void TestUnloadQuiesceAndActiveInvocation(const std::filesystem::path& path) {
 
 void TestEventTriggerBoundary(const std::filesystem::path& path) {
   auto event_trigger = BaseRequest<api::EngineCreateExecutableObjectRequest>(
-      path, 50, "evt-ddl-end", "event_trigger");
-  event_trigger.target_schema.uuid.canonical.clear();
+      path, 50, scratchbird::tests::FixtureUuid(1418, 1), "event_trigger");
+  event_trigger.target_schema.uuid = {};
   AddEventTriggerManage(&event_trigger);
   AddStoredSblr(&event_trigger, "evt");
   event_trigger.option_envelopes.push_back("event:DDL_COMMAND_END");
@@ -357,9 +368,9 @@ void TestEventTriggerBoundary(const std::filesystem::path& path) {
           "event trigger create did not publish boundary evidence");
 
   auto fire = BaseRequest<api::EngineFireExecutableEventTriggerRequest>(
-      path, 51, "", "event_trigger");
-  fire.target_object.uuid.canonical.clear();
-  fire.target_schema.uuid.canonical.clear();
+      path, 51, {}, "event_trigger");
+  fire.target_object.uuid = {};
+  fire.target_schema.uuid = {};
   fire.option_envelopes.push_back("engine_event_trigger_dispatch:true");
   fire.context.trace_tags.push_back("right:EVENT_PUBLISH");
   fire.option_envelopes.push_back("event:DDL_COMMAND_END");

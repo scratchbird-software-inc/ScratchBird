@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/import_execution_api.hpp"
 #include "dml/insert_api.hpp"
@@ -69,16 +70,16 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid index_uuid;
   platform::u64 salt = 48000;
 
   ~Fixture() {
@@ -109,7 +110,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextFields(item.evidence_id) == id) {
       return true;
     }
   }
@@ -155,11 +156,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -237,9 +238,9 @@ Fixture MakeFixture() {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-048 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 10);
+  fixture.index_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 11);
 
   auto metadata = Begin(fixture, "odf048-metadata");
   Require(!api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)).error,
@@ -257,7 +258,7 @@ api::EngineInsertRowsRequest InsertRequest(
     std::string policy_option) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), "payload-note"));
   request.estimated_row_count = 1;
@@ -274,7 +275,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     std::string policy_option) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";
@@ -300,7 +301,7 @@ api::EngineExecuteNativeBulkIngestRequest NativeBulkRequest(
     std::string policy_option) {
   api::EngineExecuteNativeBulkIngestRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
   request.estimated_row_count =
@@ -318,10 +319,10 @@ api::EngineExecuteNativeBulkIngestRequest NativeBulkRequest(
 template <typename TRequest>
 void SetNoSqlWriteRequest(TRequest* request,
                           const api::EngineRequestContext& context,
-                          std::string object_uuid,
+                          platform::Uuid object_uuid,
                           std::string policy_option) {
   request->context = context;
-  request->target_object.uuid.canonical = std::move(object_uuid);
+  request->target_object.uuid = std::move(object_uuid);
   request->target_object.object_kind = "nosql_object";
   request->localized_names.push_back({"en", "primary", {}, "odf048", true});
   request->rows.push_back(Row("payload-id", "payload-note"));
@@ -447,7 +448,7 @@ void ExerciseNoSqlPolicies(const Fixture& fixture,
   api::EngineKeyValuePutRequest kv;
   SetNoSqlWriteRequest(&kv,
                        context,
-                       NewUuidText(platform::UuidKind::object, fixture.salt + 200),
+                       NewNativeUuid(platform::UuidKind::object, fixture.salt + 200),
                        "write_result_policy=return_none");
   RequireReturnNone(api::EngineKeyValuePut(kv));
 
@@ -455,7 +456,7 @@ void ExerciseNoSqlPolicies(const Fixture& fixture,
   SetNoSqlWriteRequest(
       &document_insert,
       context,
-      NewUuidText(platform::UuidKind::object, fixture.salt + 201),
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 201),
       "result_payload_policy=ids_only");
   RequireIdsOnly(api::EngineDocumentInsert(document_insert));
 
@@ -463,7 +464,7 @@ void ExerciseNoSqlPolicies(const Fixture& fixture,
   SetNoSqlWriteRequest(
       &document_update,
       context,
-      NewUuidText(platform::UuidKind::object, fixture.salt + 202),
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 202),
       "write_result_policy=changed_fields");
   RequireChangedFields(api::EngineDocumentUpdate(document_update));
 
@@ -471,7 +472,7 @@ void ExerciseNoSqlPolicies(const Fixture& fixture,
   SetNoSqlWriteRequest(
       &vector_write,
       context,
-      NewUuidText(platform::UuidKind::object, fixture.salt + 203),
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 203),
       "write_result_policy=summary_only");
   RequireSummaryOnly(api::EngineVectorWrite(vector_write), 1);
 
@@ -479,7 +480,7 @@ void ExerciseNoSqlPolicies(const Fixture& fixture,
   SetNoSqlWriteRequest(
       &graph_write,
       context,
-      NewUuidText(platform::UuidKind::object, fixture.salt + 204),
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 204),
       "write_result_policy=full_payload");
   RequireFullPayload(api::EngineGraphWrite(graph_write));
 
@@ -487,7 +488,7 @@ void ExerciseNoSqlPolicies(const Fixture& fixture,
   SetNoSqlWriteRequest(
       &time_series,
       context,
-      NewUuidText(platform::UuidKind::object, fixture.salt + 205),
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 205),
       "odf048.write_result_policy=ids_only");
   RequireIdsOnly(api::EngineTimeSeriesAppend(time_series));
 }

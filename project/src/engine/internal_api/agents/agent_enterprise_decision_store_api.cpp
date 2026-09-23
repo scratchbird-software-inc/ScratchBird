@@ -11,11 +11,22 @@
 // SEARCH_KEY: AEIC_ENTERPRISE_DECISION_EVIDENCE_STORE
 
 #include <utility>
+#include "uuid.hpp"
+#include <algorithm>
 
 namespace scratchbird::engine::internal_api {
 namespace {
 
 namespace agents = scratchbird::core::agents;
+std::string IdentityBytes(const EngineUuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+bool ReadIdentity(std::string_view bytes, EngineUuid* id) {
+  if (bytes.size() != id->bytes.size()) return false;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), id->bytes.size(), id->bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(*id);
+}
+
 
 std::string DiagnosticDetail(const EngineApiDiagnostic& diagnostic) {
   if (!diagnostic.detail.empty()) { return diagnostic.detail; }
@@ -42,7 +53,7 @@ agents::DurableAgentResourceReservationRequest ResourceReservationForDecision(
           "agent_enterprise_decision_resource_reservation|" +
           reservation.reservation_key);
   reservation.owner_scope = request.decision.principal_uuid.empty()
-                                ? request.context.principal_uuid
+                                ? IdentityBytes(request.context.principal_uuid)
                                 : request.decision.principal_uuid;
   reservation.agent_type_id = request.decision.agent_type_id;
   reservation.operation_id = request.decision.operation_id;

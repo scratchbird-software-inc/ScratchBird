@@ -9,6 +9,8 @@
 #include "security/protected_material_api.hpp"
 
 #include "api_diagnostics.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "uuid.hpp"
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
 #include "runtime_platform.hpp"
@@ -52,10 +54,10 @@ using scratchbird::core::platform::u64;
 
 // SEARCH_KEY: SB_ENGINE_SECURITY_PROTECTED_MATERIAL_DURABLE_CATALOG
 inline constexpr std::array<byte, 8> kProtectedMaterialCatalogMagic = {
-    'S', 'B', 'P', 'M', 'C', 'A', 'T', '1'};
+    'S', 'B', 'P', 'M', 'C', 'A', 'T', '2'};
 inline constexpr std::array<byte, 8> kProtectedMaterialRecordMagic = {
-    'S', 'B', 'P', 'M', 'R', 'E', 'C', '1'};
-inline constexpr u16 kProtectedMaterialCatalogVersion = 1;
+    'S', 'B', 'P', 'M', 'R', 'E', 'C', '2'};
+inline constexpr u16 kProtectedMaterialCatalogVersion = 2;
 inline constexpr u16 kProtectedMaterialCatalogHeaderBytes = 80;
 inline constexpr u16 kProtectedMaterialRecordHeaderBytes = 88;
 inline constexpr u16 kProtectedMaterialDigestBytes = core_hash::kSha256DigestBytes;
@@ -205,6 +207,23 @@ bool ReadLengthPrefixedString(const std::vector<byte>& payload,
   return true;
 }
 
+// Version 2 stores exactly 16 bytes per identity, including optional nil values.
+bool AppendIdentity(std::vector<byte>* out, const EngineUuid& value) {
+  if (!value.is_nil() && !scratchbird::core::uuid::IsEngineIdentityUuid(value)) return false;
+  out->insert(out->end(), value.bytes.begin(), value.bytes.end());
+  return true;
+}
+
+bool ReadIdentity(const std::vector<byte>& payload, std::size_t* offset, EngineUuid* out) {
+  if (*offset > payload.size() || payload.size() - *offset < 16) return false;
+  EngineUuid value;
+  std::copy_n(payload.begin() + *offset, 16, value.bytes.begin());
+  if (!value.is_nil() && !scratchbird::core::uuid::IsEngineIdentityUuid(value)) return false;
+  *offset += 16;
+  *out = value;
+  return true;
+}
+
 bool ReadU64(const std::vector<byte>& payload, std::size_t* offset, u64* out) {
   if (*offset > payload.size() || payload.size() - *offset < sizeof(u64)) { return false; }
   *out = Load64(payload, *offset);
@@ -268,38 +287,6 @@ bool AttachSha256Digest(std::vector<byte>* encoded,
   return true;
 }
 
-std::string HexEncodeBytes(const std::vector<byte>& bytes) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(bytes.size() * 2);
-  for (const auto value : bytes) {
-    const auto v = static_cast<unsigned char>(value);
-    out.push_back(kHex[(v >> 4) & 0x0f]);
-    out.push_back(kHex[v & 0x0f]);
-  }
-  return out;
-}
-
-int HexValue(char value) {
-  if (value >= '0' && value <= '9') { return value - '0'; }
-  if (value >= 'a' && value <= 'f') { return value - 'a' + 10; }
-  if (value >= 'A' && value <= 'F') { return value - 'A' + 10; }
-  return -1;
-}
-
-bool HexDecodeBytes(const std::string& text, std::vector<byte>* bytes) {
-  if ((text.size() % 2) != 0) { return false; }
-  bytes->clear();
-  bytes->reserve(text.size() / 2);
-  for (std::size_t index = 0; index < text.size(); index += 2) {
-    const int hi = HexValue(text[index]);
-    const int lo = HexValue(text[index + 1]);
-    if (hi < 0 || lo < 0) { return false; }
-    bytes->push_back(static_cast<byte>((hi << 4) | lo));
-  }
-  return true;
-}
-
 std::string DigestEncodedPackage(const std::vector<byte>& encoded) {
   const std::string payload(reinterpret_cast<const char*>(encoded.data()),
                             encoded.size());
@@ -338,11 +325,11 @@ EngineApiDiagnostic ValidateProtectedMaterialCatalogPath(const EngineRequestCont
 
 bool SerializePolicy(const EngineProtectedMaterialPolicySet& policy,
                      std::vector<byte>* payload) {
-  if (!AppendLengthPrefixedString(payload, policy.retention_policy_uuid) ||
-      !AppendLengthPrefixedString(payload, policy.access_policy_uuid) ||
-      !AppendLengthPrefixedString(payload, policy.release_policy_uuid) ||
-      !AppendLengthPrefixedString(payload, policy.purge_policy_uuid) ||
-      !AppendLengthPrefixedString(payload, policy.audit_policy_uuid)) {
+  if (!AppendIdentity(payload, policy.retention_policy_uuid) ||
+      !AppendIdentity(payload, policy.access_policy_uuid) ||
+      !AppendIdentity(payload, policy.release_policy_uuid) ||
+      !AppendIdentity(payload, policy.purge_policy_uuid) ||
+      !AppendIdentity(payload, policy.audit_policy_uuid)) {
     return false;
   }
   Append64(payload, policy.retention_until_epoch_millis);
@@ -358,11 +345,11 @@ bool SerializePolicy(const EngineProtectedMaterialPolicySet& policy,
 bool DeserializePolicy(const std::vector<byte>& payload,
                        std::size_t* offset,
                        EngineProtectedMaterialPolicySet* policy) {
-  if (!ReadLengthPrefixedString(payload, offset, &policy->retention_policy_uuid) ||
-      !ReadLengthPrefixedString(payload, offset, &policy->access_policy_uuid) ||
-      !ReadLengthPrefixedString(payload, offset, &policy->release_policy_uuid) ||
-      !ReadLengthPrefixedString(payload, offset, &policy->purge_policy_uuid) ||
-      !ReadLengthPrefixedString(payload, offset, &policy->audit_policy_uuid) ||
+  if (!ReadIdentity(payload, offset, &policy->retention_policy_uuid) ||
+      !ReadIdentity(payload, offset, &policy->access_policy_uuid) ||
+      !ReadIdentity(payload, offset, &policy->release_policy_uuid) ||
+      !ReadIdentity(payload, offset, &policy->purge_policy_uuid) ||
+      !ReadIdentity(payload, offset, &policy->audit_policy_uuid) ||
       !ReadU64(payload, offset, &policy->retention_until_epoch_millis) ||
       !ReadBool(payload, offset, &policy->legal_hold)) {
     return false;
@@ -371,6 +358,7 @@ bool DeserializePolicy(const std::vector<byte>& payload,
   const u32 purpose_count = Load32(payload, *offset);
   *offset += sizeof(u32);
   policy->release_purposes.clear();
+  if (purpose_count > (payload.size() - *offset) / sizeof(u32)) return false;
   policy->release_purposes.reserve(purpose_count);
   for (u32 i = 0; i < purpose_count; ++i) {
     std::string purpose;
@@ -382,14 +370,14 @@ bool DeserializePolicy(const std::vector<byte>& payload,
 
 bool SerializeMaterialPayload(const EngineProtectedMaterialCatalogEntry& material,
                               std::vector<byte>* payload) {
-  if (!AppendLengthPrefixedString(payload, material.database_uuid) ||
-      !AppendLengthPrefixedString(payload, material.protected_material_uuid) ||
+  if (!AppendIdentity(payload, material.database_uuid) ||
+      !AppendIdentity(payload, material.protected_material_uuid) ||
       !AppendLengthPrefixedString(payload, material.object_class) ||
-      !AppendLengthPrefixedString(payload, material.owner_scope_uuid) ||
+      !AppendIdentity(payload, material.owner_scope_uuid) ||
       !AppendLengthPrefixedString(payload, material.purpose_class) ||
       !AppendLengthPrefixedString(payload, material.storage_class) ||
       !AppendLengthPrefixedString(payload, material.lifecycle_state) ||
-      !AppendLengthPrefixedString(payload, material.active_version_uuid) ||
+      !AppendIdentity(payload, material.active_version_uuid) ||
       !SerializePolicy(material.policy, payload)) {
     return false;
   }
@@ -398,20 +386,20 @@ bool SerializeMaterialPayload(const EngineProtectedMaterialCatalogEntry& materia
   Append64(payload, material.updated_local_transaction_id);
   Append64(payload, material.security_epoch);
   AppendBool(payload, material.purged);
-  return true;
+  return !material.database_uuid.is_nil() && !material.protected_material_uuid.is_nil() && !material.owner_scope_uuid.is_nil();
 }
 
 bool DeserializeMaterialPayload(const std::vector<byte>& payload,
                                 EngineProtectedMaterialCatalogEntry* material) {
   std::size_t offset = 0;
-  if (!ReadLengthPrefixedString(payload, &offset, &material->database_uuid) ||
-      !ReadLengthPrefixedString(payload, &offset, &material->protected_material_uuid) ||
+  if (!ReadIdentity(payload, &offset, &material->database_uuid) ||
+      !ReadIdentity(payload, &offset, &material->protected_material_uuid) ||
       !ReadLengthPrefixedString(payload, &offset, &material->object_class) ||
-      !ReadLengthPrefixedString(payload, &offset, &material->owner_scope_uuid) ||
+      !ReadIdentity(payload, &offset, &material->owner_scope_uuid) ||
       !ReadLengthPrefixedString(payload, &offset, &material->purpose_class) ||
       !ReadLengthPrefixedString(payload, &offset, &material->storage_class) ||
       !ReadLengthPrefixedString(payload, &offset, &material->lifecycle_state) ||
-      !ReadLengthPrefixedString(payload, &offset, &material->active_version_uuid) ||
+      !ReadIdentity(payload, &offset, &material->active_version_uuid) ||
       !DeserializePolicy(payload, &offset, &material->policy) ||
       !ReadU64(payload, &offset, &material->catalog_generation_id) ||
       !ReadU64(payload, &offset, &material->created_local_transaction_id) ||
@@ -420,14 +408,14 @@ bool DeserializeMaterialPayload(const std::vector<byte>& payload,
       !ReadBool(payload, &offset, &material->purged)) {
     return false;
   }
-  return offset == payload.size();
+  return offset == payload.size() && !material->database_uuid.is_nil() && !material->protected_material_uuid.is_nil() && !material->owner_scope_uuid.is_nil();
 }
 
 bool SerializeVersionPayload(const EngineProtectedMaterialVersionCatalogEntry& version,
                              std::vector<byte>* payload) {
-  if (!AppendLengthPrefixedString(payload, version.database_uuid) ||
-      !AppendLengthPrefixedString(payload, version.protected_material_uuid) ||
-      !AppendLengthPrefixedString(payload, version.protected_material_version_uuid) ||
+  if (!AppendIdentity(payload, version.database_uuid) ||
+      !AppendIdentity(payload, version.protected_material_uuid) ||
+      !AppendIdentity(payload, version.protected_material_version_uuid) ||
       !AppendLengthPrefixedString(payload, version.protected_reference) ||
       !AppendLengthPrefixedString(payload, version.envelope_reference) ||
       !AppendLengthPrefixedString(payload, version.payload_hash) ||
@@ -443,15 +431,15 @@ bool SerializeVersionPayload(const EngineProtectedMaterialVersionCatalogEntry& v
   Append64(payload, version.security_epoch);
   AppendBool(payload, version.active);
   AppendBool(payload, version.purged);
-  return true;
+  return !version.database_uuid.is_nil() && !version.protected_material_uuid.is_nil() && !version.protected_material_version_uuid.is_nil();
 }
 
 bool DeserializeVersionPayload(const std::vector<byte>& payload,
                                EngineProtectedMaterialVersionCatalogEntry* version) {
   std::size_t offset = 0;
-  if (!ReadLengthPrefixedString(payload, &offset, &version->database_uuid) ||
-      !ReadLengthPrefixedString(payload, &offset, &version->protected_material_uuid) ||
-      !ReadLengthPrefixedString(payload, &offset, &version->protected_material_version_uuid) ||
+  if (!ReadIdentity(payload, &offset, &version->database_uuid) ||
+      !ReadIdentity(payload, &offset, &version->protected_material_uuid) ||
+      !ReadIdentity(payload, &offset, &version->protected_material_version_uuid) ||
       !ReadLengthPrefixedString(payload, &offset, &version->protected_reference) ||
       !ReadLengthPrefixedString(payload, &offset, &version->envelope_reference) ||
       !ReadLengthPrefixedString(payload, &offset, &version->payload_hash) ||
@@ -467,16 +455,16 @@ bool DeserializeVersionPayload(const std::vector<byte>& payload,
       !ReadBool(payload, &offset, &version->purged)) {
     return false;
   }
-  return offset == payload.size();
+  return offset == payload.size() && !version->database_uuid.is_nil() && !version->protected_material_uuid.is_nil() && !version->protected_material_version_uuid.is_nil();
 }
 
 bool SerializeAuditPayload(const EngineProtectedMaterialAuditEvent& event,
                            std::vector<byte>* payload) {
-  if (!AppendLengthPrefixedString(payload, event.audit_event_uuid) ||
-      !AppendLengthPrefixedString(payload, event.database_uuid) ||
-      !AppendLengthPrefixedString(payload, event.protected_material_uuid) ||
-      !AppendLengthPrefixedString(payload, event.protected_material_version_uuid) ||
-      !AppendLengthPrefixedString(payload, event.actor_uuid) ||
+  if (event.audit_event_uuid.is_nil() || !AppendIdentity(payload, event.audit_event_uuid) ||
+      !AppendIdentity(payload, event.database_uuid) ||
+      !AppendIdentity(payload, event.protected_material_uuid) ||
+      !AppendIdentity(payload, event.protected_material_version_uuid) ||
+      !AppendIdentity(payload, event.actor_uuid) ||
       !AppendLengthPrefixedString(payload, event.event_kind) ||
       !AppendLengthPrefixedString(payload, event.decision) ||
       !AppendLengthPrefixedString(payload, event.diagnostic_code) ||
@@ -487,17 +475,17 @@ bool SerializeAuditPayload(const EngineProtectedMaterialAuditEvent& event,
   Append64(payload, event.local_transaction_id);
   Append64(payload, event.catalog_generation_id);
   AppendBool(payload, event.redaction_applied);
-  return true;
+  return !event.audit_event_uuid.is_nil() && !event.database_uuid.is_nil() && !event.protected_material_uuid.is_nil() && !event.actor_uuid.is_nil();
 }
 
 bool DeserializeAuditPayload(const std::vector<byte>& payload,
                              EngineProtectedMaterialAuditEvent* event) {
   std::size_t offset = 0;
-  if (!ReadLengthPrefixedString(payload, &offset, &event->audit_event_uuid) ||
-      !ReadLengthPrefixedString(payload, &offset, &event->database_uuid) ||
-      !ReadLengthPrefixedString(payload, &offset, &event->protected_material_uuid) ||
-      !ReadLengthPrefixedString(payload, &offset, &event->protected_material_version_uuid) ||
-      !ReadLengthPrefixedString(payload, &offset, &event->actor_uuid) ||
+  if (!ReadIdentity(payload, &offset, &event->audit_event_uuid) ||
+      !ReadIdentity(payload, &offset, &event->database_uuid) ||
+      !ReadIdentity(payload, &offset, &event->protected_material_uuid) ||
+      !ReadIdentity(payload, &offset, &event->protected_material_version_uuid) ||
+      !ReadIdentity(payload, &offset, &event->actor_uuid) ||
       !ReadLengthPrefixedString(payload, &offset, &event->event_kind) ||
       !ReadLengthPrefixedString(payload, &offset, &event->decision) ||
       !ReadLengthPrefixedString(payload, &offset, &event->diagnostic_code) ||
@@ -508,7 +496,7 @@ bool DeserializeAuditPayload(const std::vector<byte>& payload,
       !ReadBool(payload, &offset, &event->redaction_applied)) {
     return false;
   }
-  return offset == payload.size();
+  return offset == payload.size() && !event->audit_event_uuid.is_nil() && !event->database_uuid.is_nil() && !event->protected_material_uuid.is_nil() && !event->actor_uuid.is_nil();
 }
 
 bool EncodeProtectedMaterialRecord(ProtectedMaterialRecordKind kind,
@@ -538,7 +526,7 @@ bool EncodeProtectedMaterialRecord(ProtectedMaterialRecordKind kind,
 bool DecodeProtectedMaterialRecord(const std::vector<byte>& catalog,
                                    std::size_t* offset,
                                    u64* last_sequence,
-                                   const std::string& expected_database_uuid,
+                                   const EngineUuid& expected_database_uuid,
                                    ProtectedMaterialCatalogImage* image,
                                    std::string* detail) {
   if (*offset > catalog.size() ||
@@ -589,7 +577,7 @@ bool DecodeProtectedMaterialRecord(const std::vector<byte>& catalog,
   const std::vector<byte> payload(
       catalog.begin() + static_cast<std::ptrdiff_t>(record_start + header_bytes),
       catalog.begin() + static_cast<std::ptrdiff_t>(record_start + record_bytes));
-  std::string record_database_uuid;
+  EngineUuid record_database_uuid;
   if (kind == ProtectedMaterialRecordKind::material) {
     EngineProtectedMaterialCatalogEntry material;
     if (!DeserializeMaterialPayload(payload, &material)) {
@@ -615,8 +603,8 @@ bool DecodeProtectedMaterialRecord(const std::vector<byte>& catalog,
     record_database_uuid = event.database_uuid;
     image->audit_events.push_back(std::move(event));
   }
-  if (record_database_uuid.empty() ||
-      (!expected_database_uuid.empty() && record_database_uuid != expected_database_uuid)) {
+  if (record_database_uuid.is_nil() ||
+      (!expected_database_uuid.is_nil() && record_database_uuid != expected_database_uuid)) {
     *detail = "protected_material_catalog_database_uuid_mismatch";
     return false;
   }
@@ -694,7 +682,7 @@ std::vector<byte> EncodeProtectedMaterialCatalog(ProtectedMaterialCatalogImage i
 
 ProtectedMaterialCatalogLoadResult DecodeProtectedMaterialCatalogBytes(
     const std::vector<byte>& encoded,
-    const std::string& expected_database_uuid) {
+    const EngineUuid& expected_database_uuid) {
   if (encoded.size() < kProtectedMaterialCatalogHeaderBytes ||
       !MagicEquals(encoded, 0, kProtectedMaterialCatalogMagic)) {
     return ProtectedMaterialCatalogError("protected_material_catalog_header_invalid");
@@ -753,7 +741,7 @@ ProtectedMaterialCatalogLoadResult DecodeProtectedMaterialCatalogBytes(
 
 ProtectedMaterialCatalogLoadResult LoadProtectedMaterialCatalogFile(
     const EngineRequestContext& context,
-    const std::string& expected_database_uuid) {
+    const EngineUuid& expected_database_uuid) {
   const auto path_status = ValidateProtectedMaterialCatalogPath(context);
   if (path_status.error) { return ProtectedMaterialCatalogError(path_status.detail); }
   const std::string path = ProtectedMaterialCatalogPath(context);
@@ -952,7 +940,7 @@ EngineApiDiagnostic PersistProtectedMaterialCatalogFile(
 }
 
 ProtectedMaterialCatalogImage CaptureProtectedMaterialCatalogImageLocked(
-    const std::string& database_uuid) {
+    const EngineUuid& database_uuid) {
   ProtectedMaterialCatalogImage image;
   image.generation = MaterialCatalogGenerationCounter();
   for (const auto& material : MaterialCatalog()) {
@@ -968,7 +956,7 @@ ProtectedMaterialCatalogImage CaptureProtectedMaterialCatalogImageLocked(
 }
 
 template <typename Entry>
-void EraseDatabaseEntries(std::vector<Entry>* entries, const std::string& database_uuid) {
+void EraseDatabaseEntries(std::vector<Entry>* entries, const EngineUuid& database_uuid) {
   entries->erase(std::remove_if(entries->begin(),
                                 entries->end(),
                                 [&](const Entry& entry) {
@@ -993,7 +981,7 @@ void RefreshProtectedMaterialGenerationCounterLocked() {
 }
 
 void ReplaceProtectedMaterialCatalogImageLocked(
-    const std::string& database_uuid,
+    const EngineUuid& database_uuid,
     const ProtectedMaterialCatalogImage& image) {
   EraseDatabaseEntries(&MaterialCatalog(), database_uuid);
   EraseDatabaseEntries(&MaterialVersions(), database_uuid);
@@ -1010,7 +998,7 @@ void ReplaceProtectedMaterialCatalogImageLocked(
 
 EngineApiDiagnostic LoadProtectedMaterialCatalogForDatabaseLocked(
     const EngineRequestContext& context,
-    const std::string& database_uuid) {
+    const EngineUuid& database_uuid) {
   const auto loaded = LoadProtectedMaterialCatalogFile(context, database_uuid);
   if (!loaded.ok) { return loaded.diagnostic; }
   ProtectedMaterialCatalogImage image = loaded.present
@@ -1022,7 +1010,7 @@ EngineApiDiagnostic LoadProtectedMaterialCatalogForDatabaseLocked(
 
 EngineApiDiagnostic PersistProtectedMaterialCatalogForDatabaseLocked(
     const EngineRequestContext& context,
-    const std::string& database_uuid) {
+    const EngineUuid& database_uuid) {
   auto image = CaptureProtectedMaterialCatalogImageLocked(database_uuid);
   image.generation = MaterialCatalogGenerationCounter();
   return PersistProtectedMaterialCatalogFile(context, image);
@@ -1030,7 +1018,7 @@ EngineApiDiagnostic PersistProtectedMaterialCatalogForDatabaseLocked(
 
 EngineApiDiagnostic PersistProtectedMaterialCatalogMutationLocked(
     const EngineRequestContext& context,
-    const std::string& database_uuid,
+    const EngineUuid& database_uuid,
     const ProtectedMaterialCatalogImage& before_mutation) {
   const auto persisted = PersistProtectedMaterialCatalogForDatabaseLocked(context, database_uuid);
   if (persisted.error) {
@@ -1044,7 +1032,7 @@ std::uint64_t RequestTime(const EngineRequestContext& context) {
   return context.resource_epoch == 0 ? 1 : context.resource_epoch;
 }
 
-std::string DatabaseUuidFromRequest(const EngineApiRequest& request) {
+EngineUuid DatabaseUuidFromRequest(const EngineApiRequest& request) {
   if (!request.context.database_uuid.is_nil()) {
     return request.context.database_uuid;
   }
@@ -1063,24 +1051,23 @@ bool OptionEnabled(const EngineApiRequest& request, const std::string& prefix) {
   return SecurityOptionBool(request, prefix, false);
 }
 
-std::string FingerprintFor(const std::string& database_uuid,
-                           const std::string& key_uuid,
-                           const std::string& filespace_uuid,
+std::string FingerprintFor(const EngineUuid& database_uuid,
+                           const EngineUuid& key_uuid,
+                           const EngineUuid& filespace_uuid,
                            const std::string& evidence) {
-  const std::string framed = "scratchbird.protected_material.fingerprint.v1|" +
-                             database_uuid + "|" + key_uuid + "|" + filespace_uuid;
+  const std::string framed = EncodeMgaMetadataFields({"scratchbird.protected_material.fingerprint.v2",
+      MetadataUuidBytes(database_uuid), MetadataUuidBytes(key_uuid), MetadataUuidBytes(filespace_uuid)});
   return "fingerprint:v1:hmac-sha256:" +
          SecurityHmacSha256Hex(evidence, framed);
 }
 
-std::string HandleFor(const std::string& database_uuid,
-                      const std::string& filespace_uuid,
-                      const std::string& key_uuid,
+std::string HandleFor(const EngineUuid& database_uuid,
+                      const EngineUuid& filespace_uuid,
+                      const EngineUuid& key_uuid,
                       std::uint64_t generation,
                       const std::string& key_fingerprint) {
-  const std::string framed = "scratchbird.protected_material.handle.v1|" + database_uuid + "|" +
-                             filespace_uuid + "|" + key_uuid + "|" +
-                             std::to_string(generation) + "|" + key_fingerprint;
+  const std::string framed = EncodeMgaMetadataFields({"scratchbird.protected_material.handle.v2",
+      MetadataUuidBytes(database_uuid), MetadataUuidBytes(filespace_uuid), MetadataUuidBytes(key_uuid), std::to_string(generation), key_fingerprint});
   return "protected-material-handle:v1:hmac-sha256:" +
          SecurityHmacSha256Hex(key_fingerprint, framed) + ":" +
          std::to_string(generation);
@@ -1119,6 +1106,19 @@ EngineApiDiagnostic AuthorityBypassDiagnostic(const std::string& operation_id,
 
 EngineApiDiagnostic ValidateEngineAuthorityBoundary(const EngineApiRequest& request,
                                                     const std::string& operation_id) {
+  std::vector<std::string_view> identity_fields;
+  for (const auto& option : request.option_envelopes) {
+    const auto separator = option.find(':');
+    if (separator == std::string::npos) continue;
+    const std::string_view key(option.data(), separator);
+    if (!key.ends_with("_uuid")) continue;
+    EngineUuid identity;
+    if (std::find(identity_fields.begin(), identity_fields.end(), key) != identity_fields.end() ||
+        !ReadMetadataUuid(std::string_view(option).substr(separator + 1), &identity))
+      return MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.IDENTITY_INVALID",
+                                    "binary16_identity_option_required");
+    identity_fields.push_back(key);
+  }
   const std::vector<std::string> authority_prefixes = {
       "auth_authority:", "key_authority:", "protected_material_authority:",
       "filespace_open_authority:", "encryption_authority:", "storage_authority:"};
@@ -1169,8 +1169,11 @@ EngineApiDiagnostic RequireShutdownAuthority(const EngineApiRequest& request,
 }
 
 void AddProtectedMaterialRow(EngineApiResult* result,
-                             std::vector<std::pair<std::string, std::string>> fields) {
-  for (auto& field : fields) { field.second = RedactProtectedMaterialForDiagnostics(std::move(field.second)); }
+                             SecurityRowFields fields) {
+  for (auto& field : fields) {
+    if (auto* text = std::get_if<std::string>(&field.second))
+      *text = RedactProtectedMaterialForDiagnostics(std::move(*text));
+  }
   AddSecurityRow(result, std::move(fields));
 }
 
@@ -1183,16 +1186,16 @@ void ExpireActiveEntriesLocked(std::uint64_t now) {
   }
 }
 
-EngineProtectedMaterialCacheEntry* FindEntryLocked(const std::string& database_uuid,
-                                                   const std::string& filespace_uuid,
-                                                   const std::string& key_uuid,
+EngineProtectedMaterialCacheEntry* FindEntryLocked(const EngineUuid& database_uuid,
+                                                   const EngineUuid& filespace_uuid,
+                                                   const EngineUuid& key_uuid,
                                                    const std::string& key_handle,
                                                    bool active_only) {
   for (auto& entry : Cache()) {
     if (active_only && (!entry.active || entry.purged || entry.expired)) { continue; }
-    if (!database_uuid.empty() && entry.database_uuid != database_uuid) { continue; }
-    if (!filespace_uuid.empty() && entry.filespace_uuid != filespace_uuid) { continue; }
-    if (!key_uuid.empty() && entry.key_uuid != key_uuid) { continue; }
+    if (!database_uuid.is_nil() && entry.database_uuid != database_uuid) { continue; }
+    if (!filespace_uuid.is_nil() && entry.filespace_uuid != filespace_uuid) { continue; }
+    if (!key_uuid.is_nil() && entry.key_uuid != key_uuid) { continue; }
     if (!key_handle.empty() && entry.key_handle != key_handle) { continue; }
     return &entry;
   }
@@ -1207,14 +1210,14 @@ EngineProtectedMaterialCacheEntry* FindAnyHandleLocked(const std::string& key_ha
   return nullptr;
 }
 
-bool HasExpiredCandidateLocked(const std::string& database_uuid,
-                               const std::string& filespace_uuid,
-                               const std::string& key_uuid,
+bool HasExpiredCandidateLocked(const EngineUuid& database_uuid,
+                               const EngineUuid& filespace_uuid,
+                               const EngineUuid& key_uuid,
                                const std::string& key_handle) {
   for (const auto& entry : Cache()) {
-    if (!database_uuid.empty() && entry.database_uuid != database_uuid) { continue; }
-    if (!filespace_uuid.empty() && entry.filespace_uuid != filespace_uuid) { continue; }
-    if (!key_uuid.empty() && entry.key_uuid != key_uuid) { continue; }
+    if (!database_uuid.is_nil() && entry.database_uuid != database_uuid) { continue; }
+    if (!filespace_uuid.is_nil() && entry.filespace_uuid != filespace_uuid) { continue; }
+    if (!key_uuid.is_nil() && entry.key_uuid != key_uuid) { continue; }
     if (!key_handle.empty() && entry.key_handle != key_handle) { continue; }
     if (entry.expired && !entry.purged) { return true; }
   }
@@ -1233,7 +1236,7 @@ std::uint64_t PurgeLocked() {
 }
 
 EngineProtectedMaterialCacheEntry AdmitLocked(const EngineAdmitEncryptionKeyRequest& request,
-                                              const std::string& database_uuid,
+                                              const EngineUuid& database_uuid,
                                               std::uint64_t admitted_at) {
   for (auto& entry : Cache()) {
     if (entry.database_uuid == database_uuid &&
@@ -1268,16 +1271,8 @@ EngineProtectedMaterialCacheEntry AdmitLocked(const EngineAdmitEncryptionKeyRequ
   return entry;
 }
 
-bool IsUuidText(const std::string& value) {
-  if (value.size() != 36) { return false; }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) {
-      if (value[index] != '-') { return false; }
-      continue;
-    }
-    if (!std::isxdigit(static_cast<unsigned char>(value[index]))) { return false; }
-  }
-  return true;
+bool IsMaterialIdentity(const EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool IsKnownStorageClass(const std::string& storage_class) {
@@ -1322,20 +1317,20 @@ bool ProtectedPayloadPresent(const std::string& protected_reference,
 }
 
 bool PolicySetComplete(const EngineProtectedMaterialPolicySet& policy) {
-  return IsUuidText(policy.retention_policy_uuid) &&
-         IsUuidText(policy.access_policy_uuid) &&
-         IsUuidText(policy.release_policy_uuid) &&
-         IsUuidText(policy.purge_policy_uuid) &&
-         IsUuidText(policy.audit_policy_uuid);
+  return IsMaterialIdentity(policy.retention_policy_uuid) &&
+         IsMaterialIdentity(policy.access_policy_uuid) &&
+         IsMaterialIdentity(policy.release_policy_uuid) &&
+         IsMaterialIdentity(policy.purge_policy_uuid) &&
+         IsMaterialIdentity(policy.audit_policy_uuid);
 }
 
 EngineProtectedMaterialPolicySet MergePolicy(EngineProtectedMaterialPolicySet base,
                                              const EngineProtectedMaterialPolicySet& overlay) {
-  if (!overlay.retention_policy_uuid.empty()) { base.retention_policy_uuid = overlay.retention_policy_uuid; }
-  if (!overlay.access_policy_uuid.empty()) { base.access_policy_uuid = overlay.access_policy_uuid; }
-  if (!overlay.release_policy_uuid.empty()) { base.release_policy_uuid = overlay.release_policy_uuid; }
-  if (!overlay.purge_policy_uuid.empty()) { base.purge_policy_uuid = overlay.purge_policy_uuid; }
-  if (!overlay.audit_policy_uuid.empty()) { base.audit_policy_uuid = overlay.audit_policy_uuid; }
+  if (!overlay.retention_policy_uuid.is_nil()) { base.retention_policy_uuid = overlay.retention_policy_uuid; }
+  if (!overlay.access_policy_uuid.is_nil()) { base.access_policy_uuid = overlay.access_policy_uuid; }
+  if (!overlay.release_policy_uuid.is_nil()) { base.release_policy_uuid = overlay.release_policy_uuid; }
+  if (!overlay.purge_policy_uuid.is_nil()) { base.purge_policy_uuid = overlay.purge_policy_uuid; }
+  if (!overlay.audit_policy_uuid.is_nil()) { base.audit_policy_uuid = overlay.audit_policy_uuid; }
   if (overlay.retention_until_epoch_millis != 0) {
     base.retention_until_epoch_millis = overlay.retention_until_epoch_millis;
   }
@@ -1358,7 +1353,7 @@ std::uint64_t ReadVisibilityPoint(const EngineRequestContext& context) {
 
 EngineApiDiagnostic ValidateMutationContext(const EngineApiRequest& request,
                                             const std::string& operation_id) {
-  if (DatabaseUuidFromRequest(request).empty()) {
+  if (DatabaseUuidFromRequest(request).is_nil()) {
     return MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.CATALOG_INVALID",
                                   operation_id + ":database_uuid_required");
   }
@@ -1369,8 +1364,8 @@ EngineApiDiagnostic ValidateMutationContext(const EngineApiRequest& request,
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-EngineProtectedMaterialCatalogEntry* FindMaterialLocked(const std::string& database_uuid,
-                                                        const std::string& protected_material_uuid) {
+EngineProtectedMaterialCatalogEntry* FindMaterialLocked(const EngineUuid& database_uuid,
+                                                        const EngineUuid& protected_material_uuid) {
   for (auto& material : MaterialCatalog()) {
     if (material.database_uuid == database_uuid &&
         material.protected_material_uuid == protected_material_uuid) {
@@ -1381,9 +1376,9 @@ EngineProtectedMaterialCatalogEntry* FindMaterialLocked(const std::string& datab
 }
 
 EngineProtectedMaterialVersionCatalogEntry* FindVersionLocked(
-    const std::string& database_uuid,
-    const std::string& protected_material_uuid,
-    const std::string& protected_material_version_uuid) {
+    const EngineUuid& database_uuid,
+    const EngineUuid& protected_material_uuid,
+    const EngineUuid& protected_material_version_uuid) {
   for (auto& version : MaterialVersions()) {
     if (version.database_uuid == database_uuid &&
         version.protected_material_uuid == protected_material_uuid &&
@@ -1394,8 +1389,8 @@ EngineProtectedMaterialVersionCatalogEntry* FindVersionLocked(
   return nullptr;
 }
 
-std::uint64_t NextVersionNumberLocked(const std::string& database_uuid,
-                                      const std::string& protected_material_uuid) {
+std::uint64_t NextVersionNumberLocked(const EngineUuid& database_uuid,
+                                      const EngineUuid& protected_material_uuid) {
   std::uint64_t max_version = 0;
   for (const auto& version : MaterialVersions()) {
     if (version.database_uuid == database_uuid &&
@@ -1417,8 +1412,8 @@ bool VersionVisibleAt(const EngineProtectedMaterialVersionCatalogEntry& version,
 
 EngineProtectedMaterialVersionCatalogEntry* ResolveActiveVersionLocked(
     const EngineRequestContext& context,
-    const std::string& database_uuid,
-    const std::string& protected_material_uuid) {
+    const EngineUuid& database_uuid,
+    const EngineUuid& protected_material_uuid) {
   const std::uint64_t visibility_point = ReadVisibilityPoint(context);
   EngineProtectedMaterialVersionCatalogEntry* selected = nullptr;
   for (auto& version : MaterialVersions()) {
@@ -1456,12 +1451,8 @@ EngineProtectedMaterialVersionCatalogEntry RedactedVersion(
 }
 
 std::string ProtectedMaterialRefFor(const EngineProtectedMaterialVersionCatalogEntry& version) {
-  const std::string framed = "scratchbird.protected_material.ref.v1|" +
-                             version.database_uuid + "|" +
-                             version.protected_material_uuid + "|" +
-                             version.protected_material_version_uuid + "|" +
-                             std::to_string(version.version_number) + "|" +
-                             version.payload_hash;
+  const std::string framed = EncodeMgaMetadataFields({"scratchbird.protected_material.ref.v2",
+      MetadataUuidBytes(version.database_uuid), MetadataUuidBytes(version.protected_material_uuid), MetadataUuidBytes(version.protected_material_version_uuid), std::to_string(version.version_number), version.payload_hash});
   return "protected-material-ref:v1:sha256:" + SecuritySha256Hex(framed) + ":" +
          std::to_string(version.version_number);
 }
@@ -1469,12 +1460,8 @@ std::string ProtectedMaterialRefFor(const EngineProtectedMaterialVersionCatalogE
 std::string ReleaseHandleFor(const EngineProtectedMaterialVersionCatalogEntry& version,
                              const std::string& purpose,
                              std::uint64_t generation) {
-  const std::string framed = "scratchbird.protected_material.release.v1|" +
-                             version.database_uuid + "|" +
-                             version.protected_material_uuid + "|" +
-                             version.protected_material_version_uuid + "|" +
-                             purpose + "|" + std::to_string(generation) + "|" +
-                             version.payload_hash + "|" + version.protected_reference;
+  const std::string framed = EncodeMgaMetadataFields({"scratchbird.protected_material.release.v2",
+      MetadataUuidBytes(version.database_uuid), MetadataUuidBytes(version.protected_material_uuid), MetadataUuidBytes(version.protected_material_version_uuid), purpose, std::to_string(generation), version.payload_hash, version.protected_reference});
   const std::string key = version.protected_reference.empty()
       ? version.payload_hash
       : version.protected_reference;
@@ -1485,9 +1472,9 @@ std::string ReleaseHandleFor(const EngineProtectedMaterialVersionCatalogEntry& v
 
 EngineProtectedMaterialAuditEvent AppendMaterialAuditLocked(
     const EngineRequestContext& context,
-    const std::string& database_uuid,
-    const std::string& protected_material_uuid,
-    const std::string& protected_material_version_uuid,
+    const EngineUuid& database_uuid,
+    const EngineUuid& protected_material_uuid,
+    const EngineUuid& protected_material_version_uuid,
     const std::string& event_kind,
     const std::string& decision,
     const std::string& diagnostic_code,
@@ -1506,12 +1493,8 @@ EngineProtectedMaterialAuditEvent AppendMaterialAuditLocked(
   event.local_transaction_id = context.local_transaction_id;
   event.catalog_generation_id = catalog_generation_id;
   event.redaction_applied = true;
-  const std::string framed = database_uuid + "|" + protected_material_uuid + "|" +
-                             protected_material_version_uuid + "|" + event_kind + "|" +
-                             decision + "|" + std::to_string(event.event_epoch_millis) + "|" +
-                             std::to_string(MaterialAuditEvents().size() + 1);
-  event.audit_event_uuid = "protected-material-audit:v1:sha256:" +
-                           SecuritySha256Hex(framed);
+  const auto issued = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  if (issued) event.audit_event_uuid = *issued;
   MaterialAuditEvents().push_back(event);
   return event;
 }
@@ -1591,9 +1574,9 @@ EngineAdmitEncryptionKeyResult EngineAdmitEncryptionKey(
   if (status.error) {
     return SecurityFailure<EngineAdmitEncryptionKeyResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = DatabaseUuidFromRequest(request);
-  if (database_uuid.empty() || request.key_uuid.empty() ||
-      request.filespace_uuid.empty() || request.secret_evidence.empty()) {
+  const EngineUuid database_uuid = DatabaseUuidFromRequest(request);
+  if (database_uuid.is_nil() || request.key_uuid.is_nil() ||
+      request.filespace_uuid.is_nil() || request.secret_evidence.empty()) {
     return SecurityFailure<EngineAdmitEncryptionKeyResult>(
         request.context,
         operation_id,
@@ -1644,9 +1627,9 @@ EngineRotateEncryptionKeyResult EngineRotateEncryptionKey(
   if (status.error) {
     return SecurityFailure<EngineRotateEncryptionKeyResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = DatabaseUuidFromRequest(request);
-  if (database_uuid.empty() || request.key_uuid.empty() ||
-      request.replacement_key_uuid.empty() || request.replacement_secret_evidence.empty()) {
+  const EngineUuid database_uuid = DatabaseUuidFromRequest(request);
+  if (database_uuid.is_nil() || request.key_uuid.is_nil() ||
+      request.replacement_key_uuid.is_nil() || request.replacement_secret_evidence.empty()) {
     return SecurityFailure<EngineRotateEncryptionKeyResult>(
         request.context,
         operation_id,
@@ -1662,7 +1645,7 @@ EngineRotateEncryptionKeyResult EngineRotateEncryptionKey(
   }
 
   EngineProtectedMaterialCacheEntry replacement;
-  std::string filespace_uuid;
+  EngineUuid filespace_uuid;
   {
     std::lock_guard<std::mutex> lock(CacheMutex());
     ExpireActiveEntriesLocked(RequestTime(request.context));
@@ -1722,7 +1705,7 @@ EngineInspectProtectedMaterialCacheResult EngineInspectProtectedMaterialCache(
     std::lock_guard<std::mutex> lock(CacheMutex());
     ExpireActiveEntriesLocked(RequestTime(request.context));
     for (const auto& entry : Cache()) {
-      if (!request.key_uuid.empty() && entry.key_uuid != request.key_uuid) { continue; }
+      if (!request.key_uuid.is_nil() && entry.key_uuid != request.key_uuid) { continue; }
       EngineProtectedMaterialCacheEntry redacted = entry;
       redacted.key_label = RedactProtectedMaterialForDiagnostics(redacted.key_label);
       result.entries.push_back(redacted);
@@ -1796,10 +1779,10 @@ EngineOpenEncryptedFilespaceResult EngineOpenEncryptedFilespace(
   if (status.error) {
     return SecurityFailure<EngineOpenEncryptedFilespaceResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = request.database_uuid.empty()
+  const EngineUuid database_uuid = request.database_uuid.is_nil()
                                         ? DatabaseUuidFromRequest(request)
                                         : request.database_uuid;
-  if (database_uuid.empty() || request.filespace_uuid.empty()) {
+  if (database_uuid.is_nil() || request.filespace_uuid.is_nil()) {
     return SecurityFailure<EngineOpenEncryptedFilespaceResult>(
         request.context,
         operation_id,
@@ -1829,7 +1812,7 @@ EngineOpenEncryptedFilespaceResult EngineOpenEncryptedFilespace(
       if (auto* handle_entry = FindAnyHandleLocked(request.key_handle)) {
         scope_mismatch = handle_entry->database_uuid != database_uuid ||
                          handle_entry->filespace_uuid != request.filespace_uuid ||
-                         (!request.key_uuid.empty() && handle_entry->key_uuid != request.key_uuid);
+                         (!request.key_uuid.is_nil() && handle_entry->key_uuid != request.key_uuid);
       }
     }
     auto* active = FindEntryLocked(database_uuid,
@@ -1955,8 +1938,8 @@ EngineCreateProtectedMaterialResult EngineCreateProtectedMaterial(
   if (status.error) {
     return SecurityFailure<EngineCreateProtectedMaterialResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = DatabaseUuidFromRequest(request);
-  if (!IsUuidText(request.protected_material_uuid) ||
+  const EngineUuid database_uuid = DatabaseUuidFromRequest(request);
+  if (!IsMaterialIdentity(request.protected_material_uuid) ||
       !IsKnownPurposeClass(request.purpose_class) ||
       !IsKnownStorageClass(request.storage_class)) {
     return SecurityFailure<EngineCreateProtectedMaterialResult>(
@@ -1977,14 +1960,14 @@ EngineCreateProtectedMaterialResult EngineCreateProtectedMaterial(
   const bool initial_payload_present = ProtectedPayloadPresent(request.protected_reference,
                                                               request.envelope_reference,
                                                               request.payload_hash);
-  if (initial_payload_present && !IsUuidText(request.initial_version_uuid)) {
+  if (initial_payload_present && !IsMaterialIdentity(request.initial_version_uuid)) {
     return SecurityFailure<EngineCreateProtectedMaterialResult>(
         request.context,
         operation_id,
         MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.VERSION_INVALID",
                                "initial_version_uuid_required_for_initial_payload"));
   }
-  if (!request.initial_version_uuid.empty() && !IsUuidText(request.initial_version_uuid)) {
+  if (!request.initial_version_uuid.is_nil() && !IsMaterialIdentity(request.initial_version_uuid)) {
     return SecurityFailure<EngineCreateProtectedMaterialResult>(
         request.context,
         operation_id,
@@ -2023,7 +2006,7 @@ EngineCreateProtectedMaterialResult EngineCreateProtectedMaterial(
     material.database_uuid = database_uuid;
     material.protected_material_uuid = request.protected_material_uuid;
     material.object_class = request.object_class.empty() ? "protected_material" : request.object_class;
-    material.owner_scope_uuid = !request.owner_scope_uuid.empty()
+    material.owner_scope_uuid = !request.owner_scope_uuid.is_nil()
         ? request.owner_scope_uuid
         : (!request.context.principal_uuid.is_nil()
                ? request.context.principal_uuid
@@ -2101,9 +2084,9 @@ EngineAddProtectedMaterialVersionResult EngineAddProtectedMaterialVersion(
   if (status.error) {
     return SecurityFailure<EngineAddProtectedMaterialVersionResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = DatabaseUuidFromRequest(request);
-  if (!IsUuidText(request.protected_material_uuid) ||
-      !IsUuidText(request.protected_material_version_uuid) ||
+  const EngineUuid database_uuid = DatabaseUuidFromRequest(request);
+  if (!IsMaterialIdentity(request.protected_material_uuid) ||
+      !IsMaterialIdentity(request.protected_material_version_uuid) ||
       !ProtectedPayloadPresent(request.protected_reference,
                                request.envelope_reference,
                                request.payload_hash)) {
@@ -2243,8 +2226,8 @@ EngineResolveProtectedMaterialResult EngineResolveProtectedMaterial(
   if (status.error) {
     return SecurityFailure<EngineResolveProtectedMaterialResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = DatabaseUuidFromRequest(request);
-  if (database_uuid.empty() || !IsUuidText(request.protected_material_uuid)) {
+  const EngineUuid database_uuid = DatabaseUuidFromRequest(request);
+  if (database_uuid.is_nil() || !IsMaterialIdentity(request.protected_material_uuid)) {
     return SecurityFailure<EngineResolveProtectedMaterialResult>(
         request.context,
         operation_id,
@@ -2340,8 +2323,8 @@ EngineReleaseProtectedMaterialResult EngineReleaseProtectedMaterial(
   if (status.error) {
     return SecurityFailure<EngineReleaseProtectedMaterialResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = DatabaseUuidFromRequest(request);
-  if (database_uuid.empty() || !IsUuidText(request.protected_material_uuid) ||
+  const EngineUuid database_uuid = DatabaseUuidFromRequest(request);
+  if (database_uuid.is_nil() || !IsMaterialIdentity(request.protected_material_uuid) ||
       request.purpose.empty()) {
     return SecurityFailure<EngineReleaseProtectedMaterialResult>(
         request.context,
@@ -2370,7 +2353,7 @@ EngineReleaseProtectedMaterialResult EngineReleaseProtectedMaterial(
                                  "protected_material_not_found"));
     }
     EngineProtectedMaterialVersionCatalogEntry* version = nullptr;
-    if (!request.protected_material_version_uuid.empty()) {
+    if (!request.protected_material_version_uuid.is_nil()) {
       version = FindVersionLocked(database_uuid,
                                   request.protected_material_uuid,
                                   request.protected_material_version_uuid);
@@ -2468,9 +2451,9 @@ EnginePurgeProtectedMaterialVersionResult EnginePurgeProtectedMaterialVersion(
   if (status.error) {
     return SecurityFailure<EnginePurgeProtectedMaterialVersionResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = DatabaseUuidFromRequest(request);
-  if (!IsUuidText(request.protected_material_uuid) ||
-      !IsUuidText(request.protected_material_version_uuid)) {
+  const EngineUuid database_uuid = DatabaseUuidFromRequest(request);
+  if (!IsMaterialIdentity(request.protected_material_uuid) ||
+      !IsMaterialIdentity(request.protected_material_version_uuid)) {
     return SecurityFailure<EnginePurgeProtectedMaterialVersionResult>(
         request.context,
         operation_id,
@@ -2629,7 +2612,7 @@ EnginePurgeProtectedMaterialVersionResult EnginePurgeProtectedMaterialVersion(
         }
       }
       material->active_version_uuid = replacement == nullptr
-          ? std::string{}
+          ? EngineUuid{}
           : replacement->protected_material_version_uuid;
       material->lifecycle_state = replacement == nullptr ? "retained_no_active_version" : "active";
     }
@@ -2688,8 +2671,8 @@ EngineInspectProtectedMaterialCatalogResult EngineInspectProtectedMaterialCatalo
   if (status.error) {
     return SecurityFailure<EngineInspectProtectedMaterialCatalogResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = DatabaseUuidFromRequest(request);
-  if (database_uuid.empty()) {
+  const EngineUuid database_uuid = DatabaseUuidFromRequest(request);
+  if (database_uuid.is_nil()) {
     return SecurityFailure<EngineInspectProtectedMaterialCatalogResult>(
         request.context,
         operation_id,
@@ -2705,8 +2688,8 @@ EngineInspectProtectedMaterialCatalogResult EngineInspectProtectedMaterialCatalo
       return SecurityFailure<EngineInspectProtectedMaterialCatalogResult>(request.context, operation_id, status);
     }
     for (const auto& material : MaterialCatalog()) {
-      if (!database_uuid.empty() && material.database_uuid != database_uuid) { continue; }
-      if (!request.protected_material_uuid.empty() &&
+      if (!database_uuid.is_nil() && material.database_uuid != database_uuid) { continue; }
+      if (!request.protected_material_uuid.is_nil() &&
           material.protected_material_uuid != request.protected_material_uuid) {
         continue;
       }
@@ -2715,8 +2698,8 @@ EngineInspectProtectedMaterialCatalogResult EngineInspectProtectedMaterialCatalo
     }
     if (request.include_versions) {
       for (const auto& version : MaterialVersions()) {
-        if (!database_uuid.empty() && version.database_uuid != database_uuid) { continue; }
-        if (!request.protected_material_uuid.empty() &&
+        if (!database_uuid.is_nil() && version.database_uuid != database_uuid) { continue; }
+        if (!request.protected_material_uuid.is_nil() &&
             version.protected_material_uuid != request.protected_material_uuid) {
           continue;
         }
@@ -2726,8 +2709,8 @@ EngineInspectProtectedMaterialCatalogResult EngineInspectProtectedMaterialCatalo
     }
     if (request.include_audit) {
       for (const auto& event : MaterialAuditEvents()) {
-        if (!database_uuid.empty() && event.database_uuid != database_uuid) { continue; }
-        if (!request.protected_material_uuid.empty() &&
+        if (!database_uuid.is_nil() && event.database_uuid != database_uuid) { continue; }
+        if (!request.protected_material_uuid.is_nil() &&
             event.protected_material_uuid != request.protected_material_uuid) {
           continue;
         }
@@ -2748,8 +2731,8 @@ EngineExportProtectedMaterialPackageResult EngineExportProtectedMaterialPackage(
   if (status.error) {
     return SecurityFailure<EngineExportProtectedMaterialPackageResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = DatabaseUuidFromRequest(request);
-  if (database_uuid.empty() || !IsUuidText(request.protected_material_uuid)) {
+  const EngineUuid database_uuid = DatabaseUuidFromRequest(request);
+  if (database_uuid.is_nil() || !IsMaterialIdentity(request.protected_material_uuid)) {
     return SecurityFailure<EngineExportProtectedMaterialPackageResult>(
         request.context,
         operation_id,
@@ -2806,7 +2789,7 @@ EngineExportProtectedMaterialPackageResult EngineExportProtectedMaterialPackage(
   result.protected_material_redacted = true;
   result.plaintext_material_returned = false;
   result.package_digest = digest;
-  result.encoded_package = HexEncodeBytes(encoded);
+  result.encoded_package = encoded;
   result.source_database_uuid = database_uuid;
   result.protected_material_uuid = request.protected_material_uuid;
   result.material_count = static_cast<EngineApiU64>(package.materials.size());
@@ -2838,8 +2821,8 @@ EngineImportProtectedMaterialPackageResult EngineImportProtectedMaterialPackage(
   if (status.error) {
     return SecurityFailure<EngineImportProtectedMaterialPackageResult>(request.context, operation_id, status);
   }
-  const std::string database_uuid = DatabaseUuidFromRequest(request);
-  if (database_uuid.empty() || request.encoded_package.empty()) {
+  const EngineUuid database_uuid = DatabaseUuidFromRequest(request);
+  if (database_uuid.is_nil() || request.encoded_package.empty()) {
     return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
         request.context,
         operation_id,
@@ -2854,14 +2837,7 @@ EngineImportProtectedMaterialPackageResult EngineImportProtectedMaterialPackage(
                                "protected_material_package_import_requires_authority"));
   }
 
-  std::vector<byte> encoded;
-  if (!HexDecodeBytes(request.encoded_package, &encoded)) {
-    return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
-        request.context,
-        operation_id,
-        MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PACKAGE_INVALID",
-                               "protected_material_package_hex_invalid"));
-  }
+  const auto& encoded = request.encoded_package;
   const std::string digest = DigestEncodedPackage(encoded);
   if (!request.expected_package_digest.empty() &&
       request.expected_package_digest != digest) {
@@ -2886,7 +2862,7 @@ EngineImportProtectedMaterialPackageResult EngineImportProtectedMaterialPackage(
                                "protected_material_package_material_required"));
   }
   for (const auto& material : decoded.image.materials) {
-    if (!IsUuidText(material.protected_material_uuid) ||
+    if (!IsMaterialIdentity(material.protected_material_uuid) ||
         !IsKnownPurposeClass(material.purpose_class) ||
         !IsKnownStorageClass(material.storage_class) ||
         !PolicySetComplete(material.policy)) {
@@ -2898,8 +2874,8 @@ EngineImportProtectedMaterialPackageResult EngineImportProtectedMaterialPackage(
     }
   }
   for (const auto& version : decoded.image.versions) {
-    if (!IsUuidText(version.protected_material_uuid) ||
-        !IsUuidText(version.protected_material_version_uuid) ||
+    if (!IsMaterialIdentity(version.protected_material_uuid) ||
+        !IsMaterialIdentity(version.protected_material_version_uuid) ||
         !IsKnownStorageClass(version.storage_class) ||
         !PolicySetComplete(version.policy)) {
       return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
@@ -2926,7 +2902,7 @@ EngineImportProtectedMaterialPackageResult EngineImportProtectedMaterialPackage(
       return SecurityFailure<EngineImportProtectedMaterialPackageResult>(request.context, operation_id, status);
     }
     const auto before_mutation = CaptureProtectedMaterialCatalogImageLocked(database_uuid);
-    auto package_contains_material = [&](const std::string& uuid) {
+    auto package_contains_material = [&](const EngineUuid& uuid) {
       for (const auto& material : decoded.image.materials) {
         if (material.protected_material_uuid == uuid) { return true; }
       }

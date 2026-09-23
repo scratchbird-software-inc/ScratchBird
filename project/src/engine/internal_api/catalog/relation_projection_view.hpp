@@ -171,7 +171,7 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request);
 // payloads fail closed.
 EngineRelationProjectionViewDescriptor DescribeEngineRelationProjectionView(
     const EngineRequestContext& context,
-    const std::string& view_uuid);
+    const EngineUuid& view_uuid);
 
 EngineDescriptor EngineRelationProjectionViewSemanticDescriptor(
     const EngineRelationProjectionViewDescriptor& descriptor);

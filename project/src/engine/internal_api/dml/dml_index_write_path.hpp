@@ -30,8 +30,8 @@ enum class DmlIndexWriteOperation {
 };
 
 struct DmlIndexWriteRowImage {
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
   std::vector<std::pair<std::string, std::string>> values;
 };
 
@@ -40,12 +40,12 @@ struct DmlIndexWriteEvent {
   std::size_t source_ordinal = 0;
   std::size_t action_ordinal = 0;
   CrudIndexRecord index;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   DmlIndexWriteRowImage old_row;
   DmlIndexWriteRowImage new_row;
   bool has_old_row = false;
   bool has_new_row = false;
-  std::string transaction_uuid;
+  EngineUuid transaction_uuid;
   EngineApiU64 local_transaction_id = 0;
   bool mga_transaction_identity_proof = false;
   bool mga_transaction_finality_authority_proof = false;
@@ -60,7 +60,7 @@ struct DmlIndexWriteEvent {
 };
 
 struct DmlPhysicalIndexTreeRef {
-  std::string index_uuid;
+  EngineUuid index_uuid;
   scratchbird::storage::page::IndexBtreePhysicalTree* tree = nullptr;
 };
 
@@ -94,7 +94,7 @@ struct DmlUpdateIndexMaintenanceDecision {
 };
 
 struct DmlSecondaryDeltaLedgerRef {
-  std::string index_uuid;
+  EngineUuid index_uuid;
   scratchbird::core::index::PersistentSecondaryIndexDeltaLedger* ledger = nullptr;
   scratchbird::core::index::SecondaryIndexDeltaLedgerLimits limits;
 };

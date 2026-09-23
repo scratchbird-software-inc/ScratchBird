@@ -167,8 +167,8 @@ bool BindPreparedRecursiveCtePeakMemory(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveRecursiveCteRegistration(
     PreparedRecursiveCteRoot prepared,
-    std::string recursive_term_capability_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid recursive_term_capability_uuid,
+    core::platform::Uuid capability_uuid,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kRecursiveCte;
@@ -316,7 +316,7 @@ MakeLiveRecursiveCteRegistration(
             });
         if (cancellation_policy_count != 1 ||
             cancellation_policy == execution_dag->admission_evidence.end() ||
-            cancellation_policy->evidence_uuid.empty()) {
+            cancellation_policy->evidence_uuid.is_nil()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-RECURSIVE-CTE-INPUT-V1";
@@ -338,7 +338,7 @@ MakeLiveRecursiveCteRegistration(
             });
         if (resource_evidence_count != 1 ||
             resource_evidence == execution_dag->admission_evidence.end() ||
-            resource_evidence->evidence_uuid.empty() ||
+            resource_evidence->evidence_uuid.is_nil() ||
             prepared.planned_peak_memory_bytes == 0 ||
             prepared.planned_resident_structural_bytes == 0 ||
             node.memory_bytes_required !=
@@ -409,7 +409,7 @@ MakeLiveRecursiveCteRegistration(
         std::size_t current_live_memory_bytes = 0;
         std::size_t peak_live_memory_bytes = 0;
         std::size_t memory_grant_bytes = 0;
-        std::string result_memory_grant_evidence_uuid;
+        core::platform::Uuid result_memory_grant_evidence_uuid;
         if (prepared.profile.search_cycle) {
           exec::CanonicalRecursiveCteSearchCycleRequest recursive;
           recursive.selected_physical_node_id = node.physical_node_id;
@@ -731,7 +731,7 @@ PreparedRecursiveCteTerm PrepareLiveRecursiveCteTerm(
 bool LiveRecursiveCteTermNodeBound(
     const PreparedRecursiveCteTerm& prepared,
     const exec::PhysicalNodeRecord& node,
-    const std::string_view capability_uuid) {
+    const core::platform::Uuid capability_uuid) {
   if (node.node_kind != exec::PhysicalNodeKind::kCte ||
       node.implementation_id !=
           "cte.recursive-term.int64-increment.typed.v1" ||
@@ -896,7 +896,7 @@ LiveRecursiveCteTermExecution ExecutePreparedRecursiveCteTerm(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveRecursiveCteTermRegistration(
     PreparedRecursiveCteTerm prepared,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kCte;

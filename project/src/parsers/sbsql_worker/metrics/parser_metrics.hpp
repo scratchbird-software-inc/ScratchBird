@@ -25,6 +25,11 @@ class ParserMetrics {
   void SetGauge(std::string name, double value);
   void SetState(ParserState state);
   [[nodiscard]] ParserState State() const;
+  [[nodiscard]] std::string SnapshotPacket(const ParserConfig&, const SessionContext&,
+                                            const SblrTemplateCache&) const;
+  [[nodiscard]] std::string HeartbeatPacket(const ParserConfig&, const SessionContext&,
+                                             const SblrTemplateCache&, std::string_view) const;
+  // Non-identity attributes only. Identity transport uses the binary packet.
   [[nodiscard]] std::string SnapshotJson(const ParserConfig& config,
                                          const SessionContext& session,
                                          const SblrTemplateCache& cache) const;

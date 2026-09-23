@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "management/memory_management_api.hpp"
 
@@ -51,7 +52,7 @@ bool HasEvidence(const engine::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) {
       return true;
     }
   }
@@ -83,8 +84,8 @@ engine::EngineRequestContext Context(bool control = false,
                                      bool cluster_authority = false) {
   engine::EngineRequestContext context;
   context.security_context_present = true;
-  context.database_uuid.canonical = "019e4000-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical = "019e4000-0000-7000-8000-000000000002";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e4000-0000-7000-8000-000000000001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e4000-0000-7000-8000-000000000002");
   context.local_transaction_id = control ? 8101 : 0;
   context.resource_epoch = 12;
   context.security_epoch = 34;
@@ -133,8 +134,7 @@ mem::MemoryPressureObservation PressureObservation() {
 }
 
 void FillGovernance(engine::EngineMemoryManagementRequest* request) {
-  request->governance.profile_uuid.canonical =
-      "019e4000-0000-7000-8000-000000000010";
+  request->governance.profile_uuid = scratchbird::tests::FixtureUuidLiteral("019e4000-0000-7000-8000-000000000010");
   request->governance.policy_config = PolicyConfig();
   request->governance.expected_policy_generation = 7;
   request->governance.observed_policy_generation = 7;
@@ -176,8 +176,7 @@ engine::EngineMemoryManagementRequest GovernanceRequest(
 }
 
 void FillAutomation(engine::EngineMemoryManagementRequest* request) {
-  request->automation.recommendation_uuid.canonical =
-      "019e4000-0000-7000-8000-000000000020";
+  request->automation.recommendation_uuid = scratchbird::tests::FixtureUuidLiteral("019e4000-0000-7000-8000-000000000020");
   request->automation.report_generation = 3;
   request->automation.recommendation_generation = 4;
   request->automation.report_bounded = true;
@@ -202,10 +201,8 @@ engine::EngineMemoryManagementRequest AutomationRequest(
 }
 
 void FillResidency(engine::EngineMemoryManagementRequest* request) {
-  request->object_residency.object_uuid.canonical =
-      "019e4000-0000-7000-8000-000000000030";
-  request->object_residency.filespace_uuid.canonical =
-      "019e4000-0000-7000-8000-000000000031";
+  request->object_residency.object_uuid = scratchbird::tests::FixtureUuidLiteral("019e4000-0000-7000-8000-000000000030");
+  request->object_residency.filespace_uuid = scratchbird::tests::FixtureUuidLiteral("019e4000-0000-7000-8000-000000000031");
   request->object_residency.object_kind = "table";
   request->object_residency.residency_class =
       engine::EngineMemoryObjectResidencyClass::warm_on_open;
@@ -256,10 +253,8 @@ engine::EngineMemoryManagementRequest RateLimitRequest(bool control = false) {
 }
 
 void FillMigration(engine::EngineMemoryManagementRequest* request) {
-  request->migration.profile_uuid.canonical =
-      "019e4000-0000-7000-8000-000000000040";
-  request->migration.policy_uuid.canonical =
-      "019e4000-0000-7000-8000-000000000041";
+  request->migration.profile_uuid = scratchbird::tests::FixtureUuidLiteral("019e4000-0000-7000-8000-000000000040");
+  request->migration.policy_uuid = scratchbird::tests::FixtureUuidLiteral("019e4000-0000-7000-8000-000000000041");
   request->migration.source_policy_version = 2;
   request->migration.target_policy_version = 3;
   request->migration.source_schema_version = 2;

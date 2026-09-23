@@ -114,6 +114,8 @@ struct ForeignMemoryReservationRequest {
   HierarchicalMemoryBudgetProvenance provenance;
   ForeignMemoryAuthority authority;
   std::vector<std::string> evidence;
+  MemoryBinaryUuid binary_owner_uuid{};
+  MemoryBinaryUuid binary_owning_scope_uuid{};
 };
 
 struct ForeignMemoryReservationToken {
@@ -142,6 +144,8 @@ struct ForeignMemoryActiveReservationSnapshot {
       ForeignMemoryOverLimitAction::deny;
   ForeignMemoryLinkageMode linkage_mode = ForeignMemoryLinkageMode::not_applicable;
   std::vector<std::string> evidence;
+  MemoryBinaryUuid binary_owner_uuid{};
+  MemoryBinaryUuid binary_owning_scope_uuid{};
 };
 
 struct ForeignMemorySourceSnapshot {
@@ -170,6 +174,7 @@ struct ForeignMemoryOwningScopeSnapshot {
   u64 cancel_cleanup_count = 0;
   u64 owner_cleanup_count = 0;
   u64 over_limit_refusal_count = 0;
+  MemoryBinaryUuid binary_owning_scope_uuid{};
 };
 
 struct ForeignMemoryReservationSnapshot {
@@ -285,9 +290,13 @@ class ForeignMemoryReservationLedger {
 
   ForeignMemoryReservationAcquireResult Reserve(ForeignMemoryReservationRequest request);
   ForeignMemoryReservationCleanupResult CleanupOwner(std::string owner_id);
+  ForeignMemoryReservationCleanupResult CleanupOwner(const MemoryBinaryUuid& owner_uuid);
   ForeignMemoryReservationSnapshot Snapshot() const;
 
  private:
+  ForeignMemoryReservationCleanupResult CleanupOwnerImpl(
+      std::string_view owner_id, const MemoryBinaryUuid& owner_uuid);
+
   struct BucketAccounting {
     u64 active_reservation_count = 0;
     u64 current_estimated_bytes = 0;
@@ -329,7 +338,7 @@ class ForeignMemoryReservationLedger {
   mutable std::mutex mutex_;
   std::map<u64, ReservationRecord> records_;
   std::map<ForeignMemorySource, BucketAccounting> source_accounting_;
-  std::map<std::string, BucketAccounting> owning_scope_accounting_;
+  std::map<std::pair<std::string, MemoryBinaryUuid>, BucketAccounting> owning_scope_accounting_;
   std::atomic<u64> next_reservation_id_{1};
   u64 current_estimated_bytes_ = 0;
   u64 peak_estimated_bytes_ = 0;

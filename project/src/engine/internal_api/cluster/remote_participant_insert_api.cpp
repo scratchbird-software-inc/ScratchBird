@@ -41,9 +41,6 @@ bool OneOf(const std::string& value, std::initializer_list<const char*> allowed)
   return false;
 }
 
-std::string MetricLabel(const std::string& value) {
-  return value.empty() ? "unknown" : value;
-}
 
 void RecordParticipantMetrics(const EngineRemoteParticipantInsertRequest& request,
                               const std::string& result,
@@ -52,9 +49,9 @@ void RecordParticipantMetrics(const EngineRemoteParticipantInsertRequest& reques
   if (!request.context.cluster_authority_available) {
     return;
   }
-  const std::string database_uuid = MetricLabel(request.target_database.uuid);
-  const std::string table_uuid = MetricLabel(request.target_table.uuid);
-  const std::string participant_node_uuid = MetricLabel(request.participant_node_uuid);
+  const EngineUuid database_uuid = request.target_database.uuid;
+  const EngineUuid table_uuid = request.target_table.uuid;
+  const EngineUuid participant_node_uuid = request.participant_node_uuid;
   (void)scratchbird::core::metrics::RecordClusterInsertParticipantAdmission(database_uuid,
                                                                            table_uuid,
                                                                            participant_node_uuid,

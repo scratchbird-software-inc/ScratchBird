@@ -15,6 +15,7 @@
 #include "security/security_principal_lifecycle.hpp"
 #include "local_transaction_store.hpp"
 #include "transaction_inventory.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -25,6 +26,9 @@
 #include <filesystem>
 #include <iostream>
 #include <initializer_list>
+#include <map>
+#include <mutex>
+#include <tuple>
 #include <string>
 #include <string_view>
 
@@ -46,15 +50,35 @@ inline void ConfigureLifecycleMemoryFixture(std::string_view provenance) {
   }
 }
 
-inline std::string CanonicalTestUuid(std::string_view provenance,
-                                     std::string_view suffix) {
-  return std::string(provenance) + ":" + std::string(suffix);
+inline engine::internal_api::EngineUuid CanonicalTestUuid(
+    std::string_view provenance, std::string_view suffix,
+    engine::internal_api::EngineUuid database = {}) {
+  // Fixture allocation only: labels select stable fixture coordinates, while
+  // the engine receives full binary identities. No label hash is a system ID.
+  using Key = std::tuple<std::string, std::string, engine::internal_api::EngineUuid>;
+  static std::mutex mutex;
+  static std::map<Key, engine::internal_api::EngineUuid> ids;
+  std::lock_guard lock(mutex);
+  const Key key{std::string(provenance), std::string(suffix), database};
+  if (const auto found = ids.find(key); found != ids.end()) return found->second;
+  if (ids.size() >= UINT32_MAX) std::abort();
+  const auto id = scratchbird::tests::FixtureUuid(0xdb1c, ids.size() + 1);
+  ids.emplace(key, id);
+  return id;
+}
+
+inline engine::internal_api::EngineUuid DurableTestUuid(
+    const engine::internal_api::EngineUuid& identity) {
+  return identity;
 }
 
 inline engine::internal_api::EngineUuid DurableTestUuid(std::string_view uuid) {
-  engine::internal_api::EngineUuid value;
-  value.canonical = std::string(uuid);
-  return value;
+  const auto parsed = core::uuid::ParseUuid(std::string(uuid));
+  if (!parsed.ok()) {
+    std::cerr << "invalid UUID literal in lifecycle fixture\n";
+    std::exit(EXIT_FAILURE);
+  }
+  return parsed.value;
 }
 
 struct DurableBootstrapTransaction {
@@ -100,8 +124,7 @@ inline DurableBootstrapTransaction BeginDurableBootstrapTransaction(
   }
   DurableBootstrapTransaction result;
   result.database_path = database_path;
-  result.transaction_uuid.canonical = scratchbird::core::uuid::UuidToString(
-      generated.value.value);
+  result.transaction_uuid = generated.value.value;
   result.local_transaction_id = begun.entry.identity.local_id.value;
   result.snapshot_visible_through_local_transaction_id =
       begun.entry.begin_visible_through_local_transaction_id;
@@ -179,16 +202,16 @@ inline void MaterializeAuthorizationRights(
     std::string_view provenance,
     std::initializer_list<std::string_view> rights);
 
+template<class DatabaseIdentity>
 inline void CreateDurableLocalPasswordPrincipal(
     const std::filesystem::path& database_path,
-    std::string_view database_uuid,
+    const DatabaseIdentity& database_uuid,
     std::string_view principal_uuid,
     std::string_view principal_name,
     std::string_view verifier,
     std::uint64_t local_transaction_id,
     std::string_view provenance,
-    std::string_view transaction_uuid =
-        "019e108d-1700-7000-8000-00000000d002",
+    const engine::internal_api::EngineUuid& transaction_uuid,
     std::string_view credential_fingerprint = {}) {
   engine::internal_api::EngineSecurityCreatePrincipalRequest request;
   request.context.trust_mode = engine::internal_api::EngineTrustMode::embedded_in_process;
@@ -197,7 +220,7 @@ inline void CreateDurableLocalPasswordPrincipal(
   request.context.principal_uuid = DurableTestUuid(principal_uuid);
   request.context.session_uuid =
       DurableTestUuid("019e108d-1700-7000-8000-00000000d001");
-  request.context.transaction_uuid = DurableTestUuid(transaction_uuid);
+  request.context.transaction_uuid = transaction_uuid;
   request.context.security_context_present = true;
   request.context.trace_tags.push_back("security.bootstrap");
   request.context.local_transaction_id = local_transaction_id;
@@ -207,7 +230,7 @@ inline void CreateDurableLocalPasswordPrincipal(
   request.context.security_epoch = 1;
   request.target_object.uuid = DurableTestUuid(principal_uuid);
   request.target_object.object_kind = "security_principal";
-  request.principal_uuid = std::string(principal_uuid);
+  request.principal_uuid = request.context.principal_uuid;
   request.principal_name = std::string(principal_name);
   request.credential_fingerprint = credential_fingerprint.empty()
       ? LocalPasswordVerifierFingerprint(verifier)
@@ -228,17 +251,17 @@ inline void CreateDurableLocalPasswordPrincipal(
   ++g_bootstrap_security_context_generation;
 }
 
+template<class DatabaseIdentity, class TargetIdentity>
 inline void GrantDurablePrincipalPrivilege(
     const std::filesystem::path& database_path,
-    std::string_view database_uuid,
+    const DatabaseIdentity& database_uuid,
     std::string_view principal_uuid,
-    std::string_view target_object_uuid,
+    const TargetIdentity& target_object_uuid,
     std::string_view target_object_kind,
     std::string_view privilege,
     std::uint64_t local_transaction_id,
     std::string_view provenance,
-    std::string_view transaction_uuid =
-        "019e108d-1700-7000-8000-00000000d002") {
+    const engine::internal_api::EngineUuid& transaction_uuid) {
   engine::internal_api::EngineSecurityGrantPrivilegeRequest request;
   request.context.trust_mode = engine::internal_api::EngineTrustMode::embedded_in_process;
   request.context.database_path = database_path.string();
@@ -246,7 +269,7 @@ inline void GrantDurablePrincipalPrivilege(
   request.context.principal_uuid = DurableTestUuid(principal_uuid);
   request.context.session_uuid =
       DurableTestUuid("019e108d-1700-7000-8000-00000000d101");
-  request.context.transaction_uuid = DurableTestUuid(transaction_uuid);
+  request.context.transaction_uuid = transaction_uuid;
   request.context.security_context_present = true;
   request.context.trace_tags.push_back("security.bootstrap");
   request.context.local_transaction_id = local_transaction_id;
@@ -256,9 +279,9 @@ inline void GrantDurablePrincipalPrivilege(
   request.context.security_epoch = 1;
   request.target_object.uuid = DurableTestUuid(target_object_uuid);
   request.target_object.object_kind = std::string(target_object_kind);
-  request.grantee_uuid = std::string(principal_uuid);
+  request.grantee_uuid = DurableTestUuid(principal_uuid);
   request.grantee_kind = "principal";
-  request.target_object_uuid = std::string(target_object_uuid);
+  request.target_object_uuid = DurableTestUuid(target_object_uuid);
   request.target_object_kind = std::string(target_object_kind);
   request.privilege = std::string(privilege);
   request.grant_effect = "allow";
@@ -293,8 +316,8 @@ inline void MaterializeAuthorizationRights(
     engine::internal_api::EngineRequestContext* context,
     std::string_view provenance,
     std::initializer_list<std::string_view> rights) {
-  if (context->principal_uuid.canonical.empty()) {
-    context->principal_uuid.canonical = CanonicalTestUuid(provenance, "principal");
+  if (context->principal_uuid.is_nil()) {
+    context->principal_uuid = CanonicalTestUuid(provenance, "principal");
   }
   if (context->security_epoch == 0) {
     context->security_epoch = 1;
@@ -306,10 +329,8 @@ inline void MaterializeAuthorizationRights(
 
   auto& authorization = context->authorization_context;
   authorization.present = true;
-  authorization.authority_uuid.canonical =
-      context->database_uuid.canonical.empty()
-          ? CanonicalTestUuid(provenance, "authority")
-          : context->database_uuid.canonical + ":authority";
+  authorization.authority_uuid =
+      CanonicalTestUuid(provenance, "authority", context->database_uuid);
   // CreateDatabaseFile publishes the bootstrap security context at generation
   // one.  Every lifecycle mutation in this fixture is staged under the one
   // durable bootstrap transaction and must carry that exact generation until
@@ -328,7 +349,7 @@ inline void MaterializeAuthorizationRights(
   std::uint64_t index = 0;
   for (std::string_view right : rights) {
     engine::internal_api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid.canonical =
+    grant.grant_uuid =
         CanonicalTestUuid(provenance, "grant-" + std::to_string(++index));
     grant.subject_uuid = context->principal_uuid;
     grant.subject_kind = "principal";

@@ -84,15 +84,11 @@ EngineApiDiagnostic Refuse(std::string detail, std::string code = "RESOURCE.BUDG
 EngineApiDiagnostic Ok() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
-bool ExactUuid(const std::string& text) {
-  const auto parsed = uuid::ParseUuid(text);
-  return parsed.ok() && !parsed.value.is_nil() && uuid::UuidToString(parsed.value) == text;
+bool ExactUuid(const EngineUuid& value) {
+  return uuid::IsEngineIdentityUuid(value);
 }
-wire::TypedUpdateUuid BinaryUuid(const std::string& text) {
-  const auto parsed = uuid::ParseUuid(text);
-  wire::TypedUpdateUuid result{};
-  if (parsed.ok()) std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), result.begin());
-  return result;
+wire::TypedUpdateUuid BinaryUuid(const EngineUuid& value) {
+  return value.bytes;
 }
 bool IssueUuid(wire::TypedUpdateUuid* out) {
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -147,7 +143,7 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& c) {
   const auto txn = mga::LookupLocalTransaction(loaded.snapshot->inventory,
                                               mga::MakeLocalTransactionId(c.local_transaction_id));
   if (!txn.ok() || txn.entry.state != mga::TransactionState::active || txn.entry.rollback_only ||
-      txn.entry.identity.transaction_uuid.value != uuid::ParseUuid(c.transaction_uuid).value)
+      txn.entry.identity.transaction_uuid.value != c.transaction_uuid)
     return Refuse("owning MGA transaction is not active", "MGA.TRANSACTION.STALE");
   return Ok();
 }
@@ -324,7 +320,7 @@ EngineDmlUpdateResourceCaptureV1 EngineDmlUpdateResourceGovernorV1::Capture(cons
   }
   resources::HierarchicalMemoryBudgetReserveRequest request;
   request.operation_id = "dml.update_rows";
-  request.owner_scope = c.statement_receipt_uuid;
+  request.owner_uuid = c.statement_receipt_uuid;
   request.leaf_scope_id = "canonical_values";
   request.bytes = b.maximum_total_canonical_value_bytes;
   // Prepare request bookkeeping first, then retain the owner before debiting.

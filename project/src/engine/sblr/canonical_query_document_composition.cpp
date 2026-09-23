@@ -40,6 +40,7 @@
 #include "engine/optimizer/optimizer_contract.hpp"
 #include "engine/optimizer/relational_planner.hpp"
 #include "nosql/document_api.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
 #include "query/canonical_heap_optimizer_admission.hpp"
 #include "query/canonical_relational_bridge.hpp"
@@ -144,32 +145,32 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   }
   const auto mga = PhysicalMgaContextFromResolvedSnapshot(
       input.context, snapshot.snapshot_vector);
-  const auto identity_scope = dag.bound_sblr_tree_uuid + ":" +
-                              input.context.statement_uuid;
-  const auto physical_alternative_uuid = DerivedCanonicalUuid(
-      identity_scope,
-      "alternative." + std::to_string(scan->node_id) +
-          ".physical_document_path_scan_v1");
-  const auto physical_cost_uuid = DerivedCanonicalUuid(
-      identity_scope,
-      "cost-vector." + std::to_string(scan->node_id) +
-          ".physical_document_path_scan_v1");
+  // Consumer kinds are unique. Retain issued bindings for this invocation.
+  std::array<api::EngineUuid, 27> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                               "document execution identity allocation failed");
+    identity = *issued;
+  }
+  const auto physical_alternative_uuid = owned_identities[0];
+  const auto physical_cost_uuid = owned_identities[1];
   const auto provider_uuid =
-      DerivedCanonicalUuid(identity_scope, "document.provider");
+      owned_identities[2];
   const auto capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "document.capability");
+      owned_identities[3];
   const auto policy_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "document.policy-snapshot");
+      owned_identities[4];
   const auto statistics_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "document.statistics-snapshot");
+      owned_identities[5];
   const auto resource_contract_uuid =
-      DerivedCanonicalUuid(identity_scope, "document.resource-contract");
+      owned_identities[6];
   const auto result_handle_uuid =
-      DerivedCanonicalUuid(identity_scope, "document.result-handle");
+      owned_identities[7];
   const auto property_uuid =
-      DerivedCanonicalUuid(identity_scope, "document.property");
+      owned_identities[8];
   const auto security_receipt_uuid =
-      DerivedCanonicalUuid(identity_scope, "document.security-receipt");
+      owned_identities[9];
   const auto generation = std::max<std::uint64_t>(
       1, input.context.catalog_generation_id);
 
@@ -444,7 +445,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
     };
     const auto json_type_uuid = type_uuid_for("json_document");
     const auto character_type_uuid = type_uuid_for("character");
-    if (json_type_uuid.empty() || character_type_uuid.empty() ||
+    if (json_type_uuid.is_nil() || character_type_uuid.is_nil() ||
         document_descriptor->type_uuid != json_type_uuid ||
         output_descriptor->type_uuid != json_type_uuid ||
         path_descriptor->type_uuid != character_type_uuid) {
@@ -512,12 +513,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
     const auto provider_generation = generation;
     std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
     alternatives.push_back(MakeModelFamilyCapabilitySnapshotForCompositionV1(
-        planning, identity_scope + ".document-unnest.native",
+        planning,
         opt::ModelFamilyAlternativeRouteClassV1::kNative, provider_uuid,
         capability_uuid, provider_generation, true, 1, 1,
         planning.memory_budget_bytes));
     const auto planned = PlanCanonicalModelFamilySourceForCompositionV1(
-        planning, identity_scope + ".document-unnest.inventory",
+        planning,
         std::move(alternatives));
     if (!planned.accepted || !planned.selected ||
         !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
@@ -791,19 +792,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
     std::uint64_t limit_offset = 0;
     bool fetch_first_rows_only = false;
     std::string limit_implementation_id;
-    std::string filter_capability_uuid;
-    std::string project_capability_uuid;
-    std::string sort_capability_uuid;
-    std::string window_capability_uuid;
-    std::string window_order_evidence_uuid;
-    std::string aggregate_capability_uuid;
-    std::string cte_capability_uuid;
+    api::EngineUuid filter_capability_uuid;
+    api::EngineUuid project_capability_uuid;
+    api::EngineUuid sort_capability_uuid;
+    api::EngineUuid window_capability_uuid;
+    api::EngineUuid window_order_evidence_uuid;
+    api::EngineUuid aggregate_capability_uuid;
+    api::EngineUuid cte_capability_uuid;
     std::string nonrecursive_cte_implementation_id;
-    std::string recursive_term_capability_uuid;
-    std::string recursive_root_capability_uuid;
-    std::string set_values_capability_uuid;
-    std::string set_root_capability_uuid;
-    std::string limit_capability_uuid;
+    api::EngineUuid recursive_term_capability_uuid;
+    api::EngineUuid recursive_root_capability_uuid;
+    api::EngineUuid set_values_capability_uuid;
+    api::EngineUuid set_root_capability_uuid;
+    api::EngineUuid limit_capability_uuid;
     std::unordered_set<api::RelationalDagNodeKind> consumer_kinds;
     for (const auto* consumer : consumer_chain) {
       const auto logical_consumer = logical_node_for(consumer->node_id);
@@ -838,8 +839,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                           prepared.detail);
           }
           prepared_filter = std::move(prepared);
-          filter_capability_uuid = DerivedCanonicalUuid(
-              identity_scope, "document-unnest.filter.capability");
+          filter_capability_uuid = owned_identities[10];
           consumer_profile.implementation_id = "filter.3vl.row.v1";
           consumer_profile.capability_uuid = filter_capability_uuid;
           consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kFilter;
@@ -854,8 +854,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
             return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                           "DOCUMENT_UNNEST PROJECT semantic is not canonical");
           }
-          project_capability_uuid = DerivedCanonicalUuid(
-              identity_scope, "document-unnest.project.capability");
+          project_capability_uuid = owned_identities[11];
           std::vector<const api::RelationalOutputRecord*> project_outputs;
           for (const auto& output : dag.outputs) {
             if (output.relation_node_id == consumer->node_id) {
@@ -987,8 +986,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                           prepared.detail);
           }
           prepared_sort = std::move(prepared);
-          sort_capability_uuid = DerivedCanonicalUuid(
-              identity_scope, "document-unnest.sort.capability");
+          sort_capability_uuid = owned_identities[12];
           consumer_profile.implementation_id =
               prepared_sort->expression_ordering
                   ? "sort.typed.expression-row.v1"
@@ -1011,8 +1009,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           break;
         }
         case api::RelationalDagNodeKind::kWindow: {
-          constexpr std::string_view kRowNumberFunctionUuid =
-              "019de5fc-2400-7539-bcce-00eef3ae7220";
+          constexpr api::EngineUuid kRowNumberFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x75,0x39,0xbc,0xce,0x00,0xee,0xf3,0xae,0x72,0x20}};
           std::vector<const api::RelationalWindowDefinitionRecord*>
               definitions;
           std::vector<const api::RelationalWindowInvocationRecord*>
@@ -1054,7 +1051,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
               typed_sort->bound_expression_ids.size() == 1 &&
               prepared_sort.has_value() &&
               consumer->required_property_uuids ==
-                  std::vector<std::string>{
+                  std::vector<api::EngineUuid>{
                       prepared_sort->ordering_property_uuid} &&
               consumer->delivered_property_uuids.size() == 2 &&
               std::ranges::find(consumer->delivered_property_uuids,
@@ -1090,7 +1087,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
               function->expression_kind !=
                   api::RelationalExpressionKind::kFunctionCall ||
               function->function_uuid !=
-                  std::optional<std::string>(kRowNumberFunctionUuid) ||
+                  std::optional<api::EngineUuid>(kRowNumberFunctionUuid) ||
               function->bound_name_uuid.has_value() ||
               function->operator_name.has_value() ||
               function->literal_kind.has_value() ||
@@ -1099,7 +1096,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
               function->result_descriptor_id !=
                   invocations.front()->result_descriptor_id ||
               row_number_descriptor == dag.descriptors.end() ||
-              int64_type_uuid.empty() ||
+              int64_type_uuid.is_nil() ||
               row_number_descriptor->type_uuid != int64_type_uuid ||
               row_number_descriptor->nullability !=
                   api::RelationalNullability::kNonNull ||
@@ -1156,9 +1153,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                   plan::CanonicalLogicalPropertyKind::kWindow ||
               window_property->origin_logical_node_id != consumer->node_id ||
               window_property->dependency_property_uuids !=
-                  std::vector<std::string>{
+                  std::vector<api::EngineUuid>{
                       prepared_sort->ordering_property_uuid} ||
-              window_property->window_frame_descriptor_uuid.empty()) {
+              window_property->window_frame_descriptor_uuid.is_nil()) {
             return refuse(
                 "QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1",
                 "DOCUMENT_UNNEST ROW_NUMBER property binding is not exact");
@@ -1201,11 +1198,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           composition_state.result_bindings.push_back(
               std::move(row_number_binding));
           prepared_row_number = std::move(row_number_column);
-          window_capability_uuid = DerivedCanonicalUuid(
-              identity_scope, "document-unnest.window.row-number.capability");
-          window_order_evidence_uuid = DerivedCanonicalUuid(
-              identity_scope + ":" + prepared_sort->ordering_property_uuid,
-              "document-unnest.window.deterministic-order");
+          window_capability_uuid = owned_identities[13];
+          window_order_evidence_uuid = owned_identities[14];
           consumer_profile.implementation_id = "window.row-number.v1";
           consumer_profile.capability_uuid = window_capability_uuid;
           consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kWindow;
@@ -1241,7 +1235,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           const auto int64_type_uuid = type_uuid_for("int64");
           if (consumer->output_descriptor_ids.size() != 1 ||
               count_descriptor == dag.descriptors.end() ||
-              int64_type_uuid.empty() ||
+              int64_type_uuid.is_nil() ||
               count_descriptor->type_uuid != int64_type_uuid ||
               count_descriptor->nullability !=
                   api::RelationalNullability::kNonNull ||
@@ -1265,8 +1259,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           composition_state.batch.columns = {prepared.result_column};
           composition_state.result_bindings = prepared.result_bindings;
           prepared_count_star = std::move(prepared);
-          aggregate_capability_uuid = DerivedCanonicalUuid(
-              identity_scope, "document-unnest.count-star.capability");
+          aggregate_capability_uuid = owned_identities[15];
           consumer_profile.implementation_id = "aggregate.count-star.v1";
           consumer_profile.capability_uuid = aggregate_capability_uuid;
           consumer_profile.physical_node_kind =
@@ -1305,11 +1298,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           nonrecursive_cte_implementation_id =
               consumer->shareable ? "cte.bound.materialize.typed.v1"
                                   : "cte.bound.inline.typed.v1";
-          cte_capability_uuid = DerivedCanonicalUuid(
-              identity_scope,
-              consumer->shareable
-                  ? "document-unnest.cte.materialize.capability"
-                  : "document-unnest.cte.inline.capability");
+          cte_capability_uuid = owned_identities[16];
           consumer_profile.implementation_id =
               nonrecursive_cte_implementation_id;
           consumer_profile.capability_uuid = cte_capability_uuid;
@@ -1364,8 +1353,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           limit_implementation_id = fetch_first_rows_only
                                         ? "fetch.native.rows-only.v1"
                                         : "limit.typed.v1";
-          limit_capability_uuid = DerivedCanonicalUuid(
-              identity_scope, "document-unnest.limit.capability");
+          limit_capability_uuid = owned_identities[17];
           consumer_profile.implementation_id = limit_implementation_id;
           consumer_profile.capability_uuid = limit_capability_uuid;
           consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kLimit;
@@ -1531,10 +1519,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
             "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
             "DOCUMENT_UNNEST UNION ALL VALUES memory bound was exceeded");
       }
-      set_values_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "document-unnest.set-values.capability");
-      set_root_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "document-unnest.set-union-all.capability");
+      set_values_capability_uuid = owned_identities[18];
+      set_root_capability_uuid = owned_identities[19];
 
       LivePhysicalNodeProfile values_profile;
       values_profile.logical_node_id = logical_values->logical_node_id;
@@ -1628,10 +1614,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
             "document recursive payload peak exceeds its admitted memory budget");
       }
       prepared_recursive_cte = prepared;
-      recursive_term_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "document-unnest.recursive-term.capability");
-      recursive_root_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "document-unnest.recursive-root.capability");
+      recursive_term_capability_uuid = owned_identities[20];
+      recursive_root_capability_uuid = owned_identities[21];
 
       LivePhysicalNodeProfile term_profile;
       term_profile.logical_node_id = recursive_term->node_id;
@@ -1763,7 +1747,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
     execution_request.execute_provider =
         [context = input.context,
          document_payload = *document_expression->literal_or_parameter_ref,
-         wildcard_path, unnest_column, identity_scope, property_uuid,
+         wildcard_path, unnest_column, property_uuid,
          security_receipt_uuid, source_input](
             const exec::ModelSourceInputDescriptorV1& selected_input) {
           exec::ModelProviderExecutionResultV1 provider;
@@ -1830,8 +1814,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                          account_peak(canonical_json.size()) &&
                          account_peak(sizeof(exec::ExecutorColumnDescriptor)) &&
                          account_peak(unnest_column.stable_name.size()) &&
-                         account_peak(unnest_column.descriptor.descriptor_uuid
-                                          .size()) &&
+                         account_peak(unnest_column.descriptor.descriptor_uuid.bytes.size()) &&
                          account_peak(unnest_column.descriptor.descriptor_kind
                                           .size()) &&
                          account_peak(unnest_column.descriptor
@@ -1843,8 +1826,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                       account_peak(element.size()) &&
                       account_peak(sizeof(exec::DescriptorTuple)) &&
                       account_peak(sizeof(api::EngineTypedValue)) &&
-                      account_peak(unnest_column.descriptor.descriptor_uuid
-                                       .size()) &&
+                      account_peak(unnest_column.descriptor.descriptor_uuid.bytes.size()) &&
                       account_peak(unnest_column.descriptor.descriptor_kind
                                        .size()) &&
                       account_peak(unnest_column.descriptor
@@ -1856,10 +1838,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                       account_peak(72);
           }
           peak_ok = peak_ok &&
-                    account_peak(selected_input.provider_uuid.size()) &&
-                    account_peak(selected_input.result_handle_uuid.size()) &&
-                    account_peak(security_receipt_uuid.size()) &&
-                    account_peak(property_uuid.size()) &&
+                    account_peak(selected_input.provider_uuid.bytes.size()) &&
+                    account_peak(selected_input.result_handle_uuid.bytes.size()) &&
+                    account_peak(security_receipt_uuid.bytes.size()) &&
+                    account_peak(property_uuid.bytes.size()) &&
                     account_peak(
                         std::string_view("SB_MODEL_PROPERTY_DESCRIPTOR_V1")
                             .size()) &&
@@ -1896,13 +1878,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
             value.encoded_value = std::move(expansion.elements[ordinal]);
             value.setState(api::EngineValueState::value);
             exchange.batch.rows.push_back({{std::move(value)}});
-            const auto ordinal_scope =
-                identity_scope + ":" + std::to_string(ordinal);
-            exchange.ordered_row_identities.push_back(
-                {DerivedCanonicalUuid(ordinal_scope,
-                                      "document-unnest.document"),
-                 DerivedCanonicalUuid(ordinal_scope,
-                                      "document-unnest.row")});
+            const auto document_identity = core::uuid::IssueRuntimeIdentityV7();
+            const auto row_identity = core::uuid::IssueRuntimeIdentityV7();
+            if (!document_identity || !row_identity) {
+              provider.diagnostic_id = "SB_MODEL_DOCUMENT_IDENTITY_ISSUANCE_FAILED_V1";
+              provider.detail = "document expansion identity allocation failed";
+              return provider;
+            }
+            exchange.ordered_row_identities.push_back({*document_identity, *row_identity});
           }
           exchange.properties.property_uuid = property_uuid;
           exchange.properties.exact = true;
@@ -1982,7 +1965,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
               exec::ExecuteModelFamilySourceV1(bounded_request);
           step.data_access_observed = executed.data_access_observed;
           if (!executed.accepted || !executed.root_published ||
-              executed.output.object_uuid != "" ||
+              !executed.output.object_uuid.is_nil() ||
               executed.output.operation_id != "DOCUMENT_UNNEST" ||
               executed.output.physical_node_id !=
                   selected_node.physical_node_id ||
@@ -2111,9 +2094,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
         return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                       "DOCUMENT_UNNEST SORT comparison bound overflowed");
       }
-      const auto tie_uuid = DerivedCanonicalUuid(
-          identity_scope + ":" + prepared_sort->ordering_property_uuid,
-          "document-unnest.sort.deterministic-tie");
+      const auto tie_uuid = owned_identities[22];
       if (prepared_sort->expression_ordering) {
         selected.available_executors.push_back(
             MakeLiveExpressionSortRegistration(
@@ -2178,18 +2159,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
     selected.result_publication_request.invocation_mode =
         exec::CanonicalResultInvocationMode::kDirect;
     selected.result_publication_request.execution_attempt_uuid =
-        DerivedCanonicalUuid(
-            identity_scope + ":" + input.context.current_monotonic_ns,
-            "document-unnest.execution-attempt");
+        owned_identities[23];
     selected.result_publication_request.result_kind =
         exec::CanonicalResultKind::kRows;
     selected.result_publication_request.transaction_effect_evidence_uuid =
-        DerivedCanonicalUuid(
-            identity_scope + ":" +
-                std::to_string(input.context.local_transaction_id) + ":" +
-                std::to_string(
-                    input.context.snapshot_visible_through_local_transaction_id),
-            "document-unnest.transaction-effect-unchanged");
+        owned_identities[24];
     selected.result_publication_request.maximum_row_count =
         prepared_document_set.has_value() ? bounded_rows
                                           : source_input.maximum_rows;
@@ -2332,12 +2306,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   const auto provider_generation = persisted_relation.descriptor_generation;
   std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
   alternatives.push_back(MakeModelFamilyCapabilitySnapshotForCompositionV1(
-      planning, identity_scope + ".document.fallback",
+      planning,
       opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
       provider_uuid, capability_uuid, provider_generation, true, 1, 1,
       planning.memory_budget_bytes));
   const auto planned = PlanCanonicalModelFamilySourceForCompositionV1(
-      planning, identity_scope + ".document.inventory",
+      planning,
       std::move(alternatives));
   if (!planned.accepted || !planned.selected ||
       !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
@@ -2581,7 +2555,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   };
 
   struct DocumentProjectionDependency {
-    std::string column_uuid;
+    api::EngineUuid column_uuid;
     std::string path;
     std::uint32_t descriptor_id{0};
     api::EngineDescriptor descriptor;
@@ -2601,28 +2575,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   const auto descriptor_field = [](const std::string& encoded,
                                    const std::string_view name) {
     EncodedFieldLookup result;
-    std::size_t offset = 0;
-    while (offset <= encoded.size()) {
-      const auto end = encoded.find(';', offset);
-      const auto field = std::string_view(encoded).substr(
-          offset, end == std::string::npos ? std::string::npos
-                                            : end - offset);
-      const auto equal = field.find('=');
-      if (equal == std::string_view::npos || equal == 0 ||
-          equal + 1 == field.size()) {
-        result.valid = false;
-        return result;
-      }
-      if (field.substr(0, equal) == name) {
-        if (result.value.has_value()) {
-          result.valid = false;
-          return result;
-        }
-        result.value = std::string(field.substr(equal + 1));
-      }
-      if (end == std::string::npos) break;
-      offset = end + 1;
+    api::CatalogColumnMetadata fields;
+    if (!api::DecodeCatalogColumnMetadata(encoded, &fields)) {
+      result.valid = false;
+      return result;
     }
+    const auto found = fields.text.find(std::string(name));
+    if (found != fields.text.end()) result.value = found->second;
+    return result;
+  };
+  struct NativeFieldLookup {
+    bool valid{false};
+    std::optional<api::EngineUuid> value;
+  };
+  const auto descriptor_identity = [](const std::string& encoded, std::string_view name) {
+    NativeFieldLookup result;
+    api::CatalogColumnMetadata fields;
+    if (!api::DecodeCatalogColumnMetadata(encoded, &fields)) return result;
+    result.valid = true;
+    const auto found = fields.identities.find(std::string(name));
+    if (found != fields.identities.end()) result.value = found->second;
     return result;
   };
   const auto build_descriptor = [](const api::RelationalTypeDescriptor& source,
@@ -2664,7 +2636,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   };
   const auto exact_persisted_binding = [&](const auto& column,
                                            const auto& descriptor) {
-    const auto type_uuid = descriptor_field(
+    const auto type_uuid = descriptor_identity(
         column.value_descriptor.encoded_descriptor, "type_uuid");
     const auto canonical_nullability = descriptor_field(
         column.value_descriptor.encoded_descriptor, "nullability");
@@ -2729,20 +2701,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                                 "precision", expected_precision) &&
            exact_optional_field(column.value_descriptor.encoded_descriptor,
                                 "scale", expected_scale) &&
-           exact_optional_field(column.value_descriptor.encoded_descriptor,
-                                "collation_uuid",
-                                descriptor.collation_uuid) &&
+           (descriptor_identity(column.value_descriptor.encoded_descriptor, "collation_uuid").valid &&
+            descriptor_identity(column.value_descriptor.encoded_descriptor, "collation_uuid").value == descriptor.collation_uuid) &&
            exact_optional_field(column.value_descriptor.encoded_descriptor,
                                 "timezone_profile_id",
                                 descriptor.timezone_profile_id) &&
            (descriptor.collation_uuid.has_value()
                 ? column.collation_uuid == *descriptor.collation_uuid
-                : column.collation_uuid.empty());
+                : column.collation_uuid.is_nil());
   };
 
-  std::unordered_map<std::string, std::string> type_names_by_uuid;
+  std::map<api::EngineUuid, std::string> type_names_by_uuid;
   for (const auto& column : persisted_relation.columns) {
-    const auto type_uuid = descriptor_field(
+    const auto type_uuid = descriptor_identity(
         column.value_descriptor.encoded_descriptor, "type_uuid");
     const auto existing_type =
         type_uuid.value.has_value()
@@ -2768,10 +2739,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   }
   for (const auto& row : core_manifest.manifest.descriptor_rows) {
     const auto descriptor_uuid =
-        scratchbird::core::uuid::UuidToString(row.descriptor_uuid.value);
+        row.descriptor_uuid.value;
     type_names_by_uuid.emplace(descriptor_uuid, row.stable_name);
     const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-        "019d0000-0000-7000-8000-00000000d701",
+        scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
         core_manifest.manifest.catalog_epoch, 1, descriptor_uuid,
         row.descriptor_epoch);
     if (identity.ok) {
@@ -2780,11 +2751,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   }
   CanonicalRelationalExpressionRuntimeServices expression_services;
   expression_services.descriptor_type_resolver =
-      [type_names_by_uuid](const std::string_view type_uuid,
+      [type_names_by_uuid](const api::EngineUuid& type_uuid,
                            std::string* canonical_type_name,
                            std::string* diagnostic_id,
                            std::string* refusal_detail) {
-        const auto found = type_names_by_uuid.find(std::string(type_uuid));
+        const auto found = type_names_by_uuid.find(type_uuid);
         if (found == type_names_by_uuid.end()) {
           if (diagnostic_id != nullptr) {
             *diagnostic_id = "SB_MODEL_TYPED_EXCHANGE_INVALID_V1";
@@ -2942,7 +2913,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
         if (existing.path != path ||
             existing.column_uuid !=
                 (persisted_column == persisted_relation.columns.end()
-                     ? std::string{}
+                     ? api::EngineUuid{}
                      : persisted_column->column_uuid) ||
             existing.descriptor.descriptor_uuid !=
                 runtime_descriptor.descriptor_uuid ||
@@ -2958,7 +2929,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                                          dependencies.size());
         dependencies.push_back(
             {persisted_column == persisted_relation.columns.end()
-                 ? std::string{}
+                 ? api::EngineUuid{}
                  : persisted_column->column_uuid,
              path, descriptor->descriptor_id, runtime_descriptor,
              descriptor->nullability ==
@@ -3632,18 +3603,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + input.context.current_monotonic_ns,
-          "document.execution-attempt");
+      owned_identities[25];
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id) + ":" +
-              std::to_string(
-                  input.context.snapshot_visible_through_local_transaction_id),
-          "document.transaction-effect-unchanged");
+      owned_identities[26];
   selected.result_publication_request.maximum_row_count =
       source_input.maximum_rows;
   for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {

@@ -475,16 +475,14 @@ UdrResult BridgeDispatch(std::string_view request_packet,
   return {true, out.str(), scratchbird::parser::sbsql::MessageVectorToJson({})};
 }
 
-scratchbird::parser::sbsql::SessionContext SessionFromContext(std::string_view context_packet) {
+scratchbird::parser::sbsql::SessionContext SessionFromContext(std::string_view context_packet,
+    const runtime::UdrIdentityContext& identities) {
   scratchbird::parser::sbsql::SessionContext session;
   session.authenticated = HasContextFlag(context_packet, "engine_context=trusted") ||
                           HasContextFlag(context_packet, "authenticated=true");
-  session.session_uuid = ContextValueOr(
-      context_packet, "session_uuid=", "019e13c0-0000-7000-8000-000000000008");
-  session.connection_uuid = ContextValueOr(
-      context_packet, "connection_uuid=", "019e13c0-0000-7000-8000-000000000108");
-  session.database_uuid = ContextValueOr(
-      context_packet, "database_uuid=", "019e13c0-0000-7000-8000-000000000208");
+  session.session_uuid = identities.session_uuid;
+  session.connection_uuid = identities.connection_uuid;
+  session.database_uuid = identities.database_uuid;
   session.catalog_epoch = ContextU64Or(context_packet, "catalog_epoch=", 1);
   session.security_policy_epoch =
       ContextU64Or(context_packet, "security_policy_epoch=", 1);
@@ -494,11 +492,11 @@ scratchbird::parser::sbsql::SessionContext SessionFromContext(std::string_view c
   return session;
 }
 
-scratchbird::parser::sbsql::ParserConfig ParserConfigFromContext(std::string_view context_packet) {
+scratchbird::parser::sbsql::ParserConfig ParserConfigFromContext(std::string_view context_packet,
+    const runtime::UdrIdentityContext& identities) {
   scratchbird::parser::sbsql::ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = ContextValueOr(
-      context_packet, "parser_uuid=", "019e13c0-0000-7000-8000-000000000308");
+  config.parser_uuid = identities.parser_uuid;
   config.bundle_contract_id = ContextValueOr(
       context_packet, "bundle_contract_id=", "sbu_sbsql_parser_support@1");
   config.build_id =
@@ -509,23 +507,20 @@ scratchbird::parser::sbsql::ParserConfig ParserConfigFromContext(std::string_vie
   return config;
 }
 
-UdrResult ParseBindLower(std::string_view sql_text, std::string_view context_packet) {
+UdrResult ParseBindLower(std::string_view sql_text, std::string_view context_packet,
+    const runtime::UdrIdentityContext& identities) {
   if (!HasContextFlag(context_packet, "engine_context=trusted")) {
     return RefuseMissingContext("sbu_sbsql_parse_to_sblr",
                                 "engine_context=trusted;resolver=public");
   }
-  const auto session = SessionFromContext(context_packet);
-  auto config = ParserConfigFromContext(context_packet);
+  const auto session = SessionFromContext(context_packet, identities);
+  auto config = ParserConfigFromContext(context_packet, identities);
   auto cst = scratchbird::parser::sbsql::BuildCst(sql_text);
   auto ast = scratchbird::parser::sbsql::BuildAst(cst);
   if (ast.messages.has_errors()) {
     return {false, {}, scratchbird::parser::sbsql::MessageVectorToJson(ast.messages)};
   }
-  std::vector<std::string> resolved;
-  const auto resolved_uuid = ContextValue(context_packet, "resolved_uuid=");
-  if (ast.requires_name_resolution && !resolved_uuid.empty()) {
-    resolved.push_back(resolved_uuid);
-  }
+  const auto& resolved = identities.resolved_objects;
   auto bound = scratchbird::parser::sbsql::BindAst(ast, cst, config, session, resolved);
   if (bound.messages.has_errors() || !bound.bound) {
     return {false, {}, scratchbird::parser::sbsql::MessageVectorToJson(bound.messages)};
@@ -542,8 +537,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus SbsqlLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuSbsqlPackageUuid) {
+scratchbird::udr::runtime::UdrStatus SbsqlLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuSbsqlPackageIdentity) {
     return {false, "UDR.SBSQL.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -556,7 +551,7 @@ scratchbird::udr::runtime::UdrCallResult RuntimeValidateSyntax(
 
 scratchbird::udr::runtime::UdrCallResult RuntimeParseToSblr(
     const scratchbird::udr::runtime::UdrCallInput& input) {
-  return ToRuntimeResult(sbu_sbsql_parse_to_sblr(input.payload, input.context_packet));
+  return ToRuntimeResult(sbu_sbsql_parse_to_sblr(input.payload, input.context_packet, input.identities));
 }
 
 scratchbird::udr::runtime::UdrCallResult RuntimeParseExpression(
@@ -602,8 +597,9 @@ UdrResult sbu_sbsql_validate_syntax(std::string_view sql_text, std::string_view 
   return {!messages.has_errors(), {}, scratchbird::parser::sbsql::MessageVectorToJson(messages)};
 }
 
-UdrResult sbu_sbsql_parse_to_sblr(std::string_view sql_text, std::string_view context_packet) {
-  return ParseBindLower(sql_text, context_packet);
+UdrResult sbu_sbsql_parse_to_sblr(std::string_view sql_text, std::string_view context_packet,
+    const runtime::UdrIdentityContext& identities) {
+  return ParseBindLower(sql_text, context_packet, identities);
 }
 
 UdrResult sbu_sbsql_parse_expression(std::string_view sql_text, std::string_view descriptor_context) {
@@ -714,7 +710,7 @@ UdrResult sbu_sbsql_bridge_dispatch(std::string_view request_packet,
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_sbsql_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuSbsqlPackageUuid);
+  descriptor.package_uuid = kSbuSbsqlPackageIdentity;
   descriptor.package_name = std::string(kSbuSbsqlPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "sbsql-parser-support-db-lifecycle";

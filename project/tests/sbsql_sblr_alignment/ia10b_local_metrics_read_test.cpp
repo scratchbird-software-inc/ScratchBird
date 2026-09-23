@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_dispatch.hpp"
 #include "engine/sblr/sblr_local_metrics_read.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
@@ -30,8 +31,8 @@ sb::SblrLocalMetricsReadRequest Request() {
 sb::SblrOperationEnvelope Envelope(const sb::SblrLocalMetricsReadCodecResult& encoded) {
   auto envelope = sb::MakeSblrEnvelope("engine.op.read_metrics", "SBLR_READ_METRICS", "ia10b.local-metrics");
   envelope.opcode_code = 0x0c01;
-  envelope.parser_package_uuid = "11111111-1111-1111-1111-111111111111";
-  envelope.registry_snapshot_uuid = "22222222-2222-2222-2222-222222222222";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("11111111-1111-1111-1111-111111111111");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("22222222-2222-2222-2222-222222222222");
   envelope.operands = {sb::MakeSblrLocalMetricsReadOperand(encoded)};
   return envelope;
 }

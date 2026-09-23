@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -52,14 +53,14 @@ functions::FunctionCallRequest RequestFor(const functions::FunctionRegistryEntry
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
-  request.context.sblr_context.cluster_uuid = "UDR-function-classification-cluster";
-  request.context.sblr_context.node_uuid = "UDR-function-classification-node";
-  request.context.sblr_context.database_uuid = "UDR-function-classification-db";
-  request.context.sblr_context.transaction_uuid = "UDR-function-classification-tx";
-  request.context.sblr_context.statement_uuid = "UDR-function-classification-stmt";
-  request.context.sblr_context.user_uuid = "UDR-function-classification-user";
-  request.context.sblr_context.current_role_uuid = "UDR-function-classification-role";
-  request.context.sblr_context.current_schema_uuid = "UDR-function-classification-schema";
+  request.context.sblr_context.cluster_uuid = scratchbird::tests::FixtureUuid(1482, 201);
+  request.context.sblr_context.node_uuid = scratchbird::tests::FixtureUuid(1482, 202);
+  request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuid(1482, 203);
+  request.context.sblr_context.transaction_uuid = scratchbird::tests::FixtureUuid(1482, 204);
+  request.context.sblr_context.statement_uuid = scratchbird::tests::FixtureUuid(1274, 1601);
+  request.context.sblr_context.user_uuid = scratchbird::tests::FixtureUuid(1482, 205);
+  request.context.sblr_context.current_role_uuid = scratchbird::tests::FixtureUuid(1482, 206);
+  request.context.sblr_context.current_schema_uuid = scratchbird::tests::FixtureUuid(1482, 207);
   request.context.sblr_context.transaction_context_present = true;
   request.context.sblr_context.security_context_present = true;
   request.context.sblr_context.current_timestamp = "2026-07-06T12:00:00Z";
@@ -101,7 +102,7 @@ int main() {
 
   for (const auto& entry : entries) {
     Require(!entry.function_id.empty(), "function_id must be present");
-    Require(!entry.function_uuid.empty(), entry.function_id + ": function_uuid must be present");
+    Require(!entry.function_uuid.is_nil(), entry.function_id + ": function_uuid must be present");
     Require(!entry.family.empty(), entry.function_id + ": family must be present");
     Require(!entry.short_name.empty(), entry.function_id + ": short_name must be present");
     Require(!entry.owner_source.empty(), entry.function_id + ": owner_source must be present");

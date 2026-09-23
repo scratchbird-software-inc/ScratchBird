@@ -70,15 +70,15 @@ struct EngineGraphProperty {
 };
 
 struct EngineGraphVertexInput {
-  std::string vertex_id;
+  EngineUuid vertex_id;
   std::vector<std::string> labels;
   std::vector<EngineGraphProperty> properties;
 };
 
 struct EngineGraphEdgeInput {
-  std::string edge_id;
-  std::string source_vertex_id;
-  std::string target_vertex_id;
+  EngineUuid edge_id;
+  EngineUuid source_vertex_id;
+  EngineUuid target_vertex_id;
   std::string edge_type;
   std::vector<EngineGraphProperty> properties;
   double weight = 1.0;
@@ -101,16 +101,16 @@ struct EngineGraphPhysicalProof {
 struct EngineGraphQueryRequest : EngineApiRequest {
   bool physical_query = false;
   bool persistent_graph_source = false;
-  std::string graph_object_uuid;
+  EngineUuid graph_object_uuid;
   std::uint64_t provider_generation = 0;
   std::string typed_pattern_literal;
   std::vector<EngineGraphVertexInput> vertices;
   std::vector<EngineGraphEdgeInput> edges;
-  std::vector<std::string> seed_vertex_ids;
+  std::vector<EngineUuid> seed_vertex_ids;
   std::string seed_label;
   std::string seed_property_key;
   std::string seed_property_value;
-  std::vector<std::string> fused_candidate_seed_vertex_ids;
+  std::vector<EngineUuid> fused_candidate_seed_vertex_ids;
   EngineGraphFusionSourceKind fusion_source_kind =
       EngineGraphFusionSourceKind::kNone;
   EngineGraphTraversalDirection direction =
@@ -122,8 +122,8 @@ struct EngineGraphQueryRequest : EngineApiRequest {
   EngineApiU64 maximum_decoded_bytes = 4 * 1024 * 1024;
   EngineApiU64 maximum_output_rows = 4096;
   EngineGraphCyclePolicy cycle_policy = EngineGraphCyclePolicy::kVisitedSet;
-  std::string bidirectional_start_vertex_id;
-  std::string bidirectional_end_vertex_id;
+  EngineUuid bidirectional_start_vertex_id;
+  EngineUuid bidirectional_end_vertex_id;
   EngineGraphPhysicalProof physical_proof;
 };
 struct EngineGraphQueryResult : EngineApiResult {};
@@ -133,7 +133,7 @@ EngineGraphQueryResult EngineGraphQuery(const EngineGraphQueryRequest& request);
 
 struct EngineGraphWriteRequest : EngineApiRequest {
   bool structured_graph_persist = false;
-  std::string graph_object_uuid;
+  EngineUuid graph_object_uuid;
   std::uint64_t provider_generation = 0;
   std::vector<EngineGraphVertexInput> vertices;
   std::vector<EngineGraphEdgeInput> edges;

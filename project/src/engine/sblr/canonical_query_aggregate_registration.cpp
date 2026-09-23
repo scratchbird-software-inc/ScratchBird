@@ -32,7 +32,7 @@ namespace api = scratchbird::engine::internal_api;
 namespace dt = scratchbird::core::datatypes;
 
 // SEARCH_KEY: SB_ENGINE_CANONICAL_QUERY_AGGREGATE_REGISTRATION_AUTHORITY
-std::string ExactCanonicalCoreDatatypeUuidV1(
+core::platform::Uuid ExactCanonicalCoreDatatypeUuidV1(
     const std::string_view stable_name) {
   static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -44,16 +44,15 @@ std::string ExactCanonicalCoreDatatypeUuidV1(
       [&](const auto& row) { return row.stable_name == stable_name; });
   return count == 1 && found != manifest.manifest.descriptor_rows.end() &&
                  found->descriptor_uuid.valid()
-             ? scratchbird::core::uuid::UuidToString(
-                   found->descriptor_uuid.value)
-             : std::string{};
+             ? found->descriptor_uuid.value
+             : core::platform::Uuid{};
 }
 
-std::string ExactCanonicalInt64TypeUuidV1() {
+core::platform::Uuid ExactCanonicalInt64TypeUuidV1() {
   return ExactCanonicalCoreDatatypeTypeUuidV1("int64");
 }
 
-std::string ExactCanonicalCoreDatatypeTypeUuidV1(
+core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(
     const std::string_view stable_name) {
   static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -67,10 +66,9 @@ std::string ExactCanonicalCoreDatatypeTypeUuidV1(
       !found->descriptor_uuid.valid()) {
     return {};
   }
-  const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
-      found->descriptor_uuid.value);
+  const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701",
+      core::platform::Uuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x01}},
       manifest.manifest.catalog_epoch, 1, descriptor_uuid,
       found->descriptor_epoch);
   // Core rows that have a registered codec identity carry a distinct type
@@ -120,11 +118,11 @@ bool RevalidatePreparedAggregateValueBindings(
     }();
     const auto canonical_type_uuid =
         canonical_stable_name.empty()
-            ? std::string{}
+            ? core::platform::Uuid{}
             : ExactCanonicalCoreDatatypeTypeUuidV1(canonical_stable_name);
-    if (canonical_stable_name.empty() || canonical_type_uuid.empty() ||
+    if (canonical_stable_name.empty() || canonical_type_uuid.is_nil() ||
         receipt.type_uuid != canonical_type_uuid ||
-        receipt.descriptor_uuid.empty() || receipt.type_uuid.empty() ||
+        receipt.descriptor_uuid.is_nil() || receipt.type_uuid.is_nil() ||
         receipt.encoded_descriptor.empty() ||
         column.descriptor_id != receipt.descriptor_id ||
         column.nullable != receipt.nullable ||
@@ -145,7 +143,7 @@ bool RevalidatePreparedAggregateValueBindings(
           ":type_uuid=" +
           (receipt.type_uuid == canonical_type_uuid ? "1" : "0") +
           ":receipt_descriptor=" +
-          (!receipt.descriptor_uuid.empty() ? "1" : "0") +
+          (!receipt.descriptor_uuid.is_nil() ? "1" : "0") +
           ":receipt_encoded=" +
           (!receipt.encoded_descriptor.empty() ? "1" : "0") +
           ":column_id=" +
@@ -256,10 +254,10 @@ bool RevalidatePreparedGroupedKeyBindings(
         receipt.nullable ? std::string_view("nullable")
                          : std::string_view("non_null");
     if (receipt.canonical_type_name != "int64" ||
-        receipt.descriptor_uuid.empty() || receipt.type_uuid.empty() ||
+        receipt.descriptor_uuid.is_nil() || receipt.type_uuid.is_nil() ||
+        column.descriptor.type_uuid != receipt.type_uuid ||
         receipt.encoded_descriptor !=
-            "type_uuid=" + receipt.type_uuid +
-                ";nullability=" + std::string(expected_nullability) ||
+            "nullability=" + std::string(expected_nullability) ||
         column.descriptor_id != receipt.descriptor_id ||
         column.nullable != receipt.nullable ||
         column.descriptor.descriptor_uuid !=
@@ -477,17 +475,16 @@ bool BindCanonicalDescriptorEqualityTerm(
   const auto& type = column.descriptor.canonical_type_name;
   if (type == "text" || type == "varchar" || type == "char" ||
       type == "character") {
-    const auto collation_uuid = ExactEncodedDescriptorField(
-        column.descriptor.encoded_descriptor, "collation_uuid");
-    if (!collation_uuid.has_value()) {
+    const auto collation_uuid = column.descriptor.collation_uuid;
+    if (!core::uuid::IsEngineIdentityUuid(collation_uuid)) {
       *detail =
           "aggregate character equality lacks an exact bound collation";
       return false;
     }
-    term->collation_uuid = *collation_uuid;
+    term->collation_uuid = collation_uuid;
 #if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
-    constexpr std::string_view kContractCollationUuid =
-        "019f0000-0000-7200-8000-00000000c011";
+    constexpr core::platform::Uuid kContractCollationUuid{{
+        0x01, 0x9f, 0, 0, 0, 0, 0x72, 0, 0x80, 0, 0, 0, 0, 0, 0xc0, 0x11}};
     if (term->collation_uuid != kContractCollationUuid ||
         context.resource_epoch == 0 || context.catalog_generation_id == 0) {
       *term = {};
@@ -666,7 +663,7 @@ bool BindCanonicalAggregateEqualityTerms(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveAggregateRegistryRegistration(
     PreparedGlobalAggregateRoot prepared,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::uint64_t maximum_filter_truth_memory_bytes,
     api::EngineRequestContext mga_context,
@@ -972,7 +969,7 @@ MakeLiveAggregateRegistryRegistration(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveGroupedCountSumRegistration(
     PreparedGroupedCountSumRoot prepared,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::size_t maximum_output_row_count,
     api::EngineRequestContext mga_context) {

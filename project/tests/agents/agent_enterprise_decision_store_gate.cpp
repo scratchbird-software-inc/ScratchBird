@@ -6,6 +6,12 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+using scratchbird::tests::FixtureIdentityForLabel;
+#include "../support/binary_uuid_fixture.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "agents/agent_enterprise_decision_store_api.hpp"
 
@@ -40,8 +46,8 @@ void Require(bool condition, const std::string& message) {
 
 struct TestDatabase {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
 };
 
@@ -99,8 +105,8 @@ TestDatabase CreateActiveDatabase(const char* basename) {
 
   TestDatabase result;
   result.path = path;
-  result.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  result.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
+  result.database_uuid = database_uuid.value.value;
+  result.transaction_uuid = transaction_uuid.value.value;
   result.local_transaction_id = begun.entry.identity.local_id.value;
   return result;
 }
@@ -109,14 +115,13 @@ api::EngineRequestContext Context(const TestDatabase& database) {
   api::EngineRequestContext context;
   context.request_id = "aeic-enterprise-decision-store";
   context.database_path = database.path.string();
-  context.database_uuid.canonical = database.database_uuid;
-  context.transaction_uuid.canonical = database.transaction_uuid;
+  context.database_uuid = database.database_uuid;
+  context.transaction_uuid = database.transaction_uuid;
   context.local_transaction_id = database.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       database.local_transaction_id;
   context.security_context_present = true;
-  context.principal_uuid.canonical =
-      "018f0000-0000-7000-8000-00000000ee10";
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ee10");
   return context;
 }
 
@@ -124,7 +129,7 @@ void SeedCatalog(const api::EngineRequestContext& context) {
   api::AgentDurableCatalogStoreRequest seed;
   seed.context = context;
   seed.image = agents::DurableAgentCatalogImage{};
-  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000ee11";
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ee11"));
   seed.production_live_path = true;
   seed.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(seed).ok,
@@ -146,7 +151,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
                                   : dependency.namespace_prefix + ".observed";
     snapshot.generation = 15;
     snapshot.observed_wall_microseconds = observed_wall_microseconds;
-    snapshot.scope_uuid = scope_uuid;
+    snapshot.scope_uuid = NativeFixtureIdentity(scope_uuid);
     snapshot.digest = "sha256:decision-store:" + dependency.metric_family;
     snapshot.source_quality = agents::AgentMetricSourceQuality::trusted;
     snapshot.present = true;
@@ -154,8 +159,8 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
     snapshot.schema_compatible = true;
     snapshot.trust_provenance = "test_metric_registry";
     snapshot.evidence_uuid =
-        agents::DeterministicAgentRuntimeObjectUuidFromKey(
-            "decision-store-metric-evidence|" + dependency.metric_family);
+        NativeFixtureIdentity(FixtureIdentityForLabel(FixtureIdentityForLabel(
+            "decision-store-metric-evidence|" + dependency.metric_family)));
     snapshot.snapshot_id = "decision-store:" + dependency.metric_family;
     snapshot.value_digest = snapshot.digest;
     snapshot.schema_digest = "schema:" + snapshot.metric_family + ":" +
@@ -174,7 +179,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
     source_a.attestation_key_id = "metric-key:" + source_a.source_id;
     source_a.attestation_digest = "attestation:" + source_a.metric_family +
                                   ":" + source_a.source_id;
-    source_a.evidence_uuid += ":source-a";
+    source_a.evidence_uuid = NativeFixtureIdentity(FixtureIdentityForLabel(BinaryFixtureIdentity(snapshot.evidence_uuid) + ":source-a"));
     source_a.snapshot_id += ":source-a";
     snapshots.push_back(std::move(source_a));
 
@@ -185,7 +190,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
     source_b.attestation_key_id = "metric-key:" + source_b.source_id;
     source_b.attestation_digest = "attestation:" + source_b.metric_family +
                                   ":" + source_b.source_id;
-    source_b.evidence_uuid += ":source-b";
+    source_b.evidence_uuid = NativeFixtureIdentity(FixtureIdentityForLabel(BinaryFixtureIdentity(snapshot.evidence_uuid) + ":source-b"));
     source_b.snapshot_id += ":source-b";
     snapshots.push_back(std::move(source_b));
   }
@@ -196,11 +201,11 @@ agents::AgentEnterpriseDecisionEvidenceRequest Decision(
     std::string diagnostic_code = "SB_AGENT_NODE_RESOURCE_CAPABILITY_READY") {
   agents::AgentEnterpriseDecisionEvidenceRequest request;
   request.agent_type_id = "node_resource_agent";
-  request.instance_uuid = "018f0000-0000-7000-8000-00000000ee20";
+  request.instance_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ee20"));
   request.operation_id = "node_resource.publish_capability";
-  request.principal_uuid = "018f0000-0000-7000-8000-00000000ee21";
+  request.principal_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ee21"));
   request.rights_used = {"agent.execute", "agent.observe"};
-  request.scope_uuids = {"018f0000-0000-7000-8000-00000000ee22"};
+  request.scope_uuids = {BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ee22"))};
   request.policy_generation = 5;
   request.decision_kind = "publish_node_capability";
   request.result_state = "completed";
@@ -208,13 +213,13 @@ agents::AgentEnterpriseDecisionEvidenceRequest Decision(
   request.decision_fields = {{"cpu_count", "16"},
                              {"memory_pressure_percent", "12"}};
   request.outcome_verification_evidence_uuid =
-      "018f0000-0000-7000-8000-00000000ee23";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ee23"));
   request.created_at_microseconds = 1800000002010ull;
-  request.metric_context.database_uuid = request.scope_uuids.front();
-  request.metric_context.principal_uuid = request.principal_uuid;
+  request.metric_context.database_uuid = NativeFixtureIdentity(request.scope_uuids.front());
+  request.metric_context.principal_uuid = NativeFixtureIdentity(request.principal_uuid);
   request.metric_context.security_context_present = true;
   request.metric_context.wall_now_microseconds = request.created_at_microseconds;
-  request.metric_snapshot_options.expected_scope_uuid = request.scope_uuids.front();
+  request.metric_snapshot_options.expected_scope_uuid = NativeFixtureIdentity(request.scope_uuids.front());
   request.observed_metric_snapshots = ObservedSnapshotsFor(
       request.agent_type_id,
       request.scope_uuids.front(),

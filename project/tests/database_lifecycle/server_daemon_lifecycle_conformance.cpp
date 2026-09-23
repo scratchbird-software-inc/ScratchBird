@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -83,13 +84,13 @@ ServerBootstrapConfig Config(std::string_view scope = "dedicated") {
   return config;
 }
 
-HostedDatabaseSnapshot Database(std::string_view uuid,
+HostedDatabaseSnapshot Database(scratchbird::core::platform::Uuid uuid,
                                 std::string_view path,
                                 HostedDatabaseState state,
                                 bool open) {
   HostedDatabaseSnapshot database;
   database.state = state;
-  database.database_uuid = std::string(uuid);
+  database.database_uuid = uuid;
   database.database_path = std::string(path);
   database.database_open = open;
   database.write_admission_fenced = !open;
@@ -112,11 +113,11 @@ HostedEngineState Engine(std::initializer_list<HostedDatabaseSnapshot> databases
 void TestSharedDaemonRefused() {
   auto config = Config("shared");
   const auto engine = Engine({
-      Database("019e1305-0000-7000-8000-000000000001",
+      Database(scratchbird::tests::FixtureUuidLiteral("019e1305-0000-7000-8000-000000000001"),
                "/tmp/sb_dblc013e_target.sbdb",
                HostedDatabaseState::kOpen,
                true),
-      Database("019e1305-0000-7000-8000-000000000002",
+      Database(scratchbird::tests::FixtureUuidLiteral("019e1305-0000-7000-8000-000000000002"),
                "/tmp/sb_dblc013e_other.sbdb",
                HostedDatabaseState::kOpen,
                true),
@@ -139,7 +140,7 @@ void TestSharedDaemonRefused() {
 void TestDedicatedDaemonExclusiveStopDecision() {
   auto config = Config("dedicated");
   const auto engine = Engine({
-      Database("019e1305-0000-7000-8000-000000000101",
+      Database(scratchbird::tests::FixtureUuidLiteral("019e1305-0000-7000-8000-000000000101"),
                "/tmp/sb_dblc013e_dedicated.sbdb",
                HostedDatabaseState::kOpen,
                true),
@@ -159,11 +160,11 @@ void TestDedicatedDaemonExclusiveStopDecision() {
 void TestDedicatedDaemonRefusesAmbiguousScope() {
   auto config = Config("dedicated");
   const auto engine = Engine({
-      Database("019e1305-0000-7000-8000-000000000201",
+      Database(scratchbird::tests::FixtureUuidLiteral("019e1305-0000-7000-8000-000000000201"),
                "/tmp/sb_dblc013e_a.sbdb",
                HostedDatabaseState::kOpen,
                true),
-      Database("019e1305-0000-7000-8000-000000000202",
+      Database(scratchbird::tests::FixtureUuidLiteral("019e1305-0000-7000-8000-000000000202"),
                "/tmp/sb_dblc013e_b.sbdb",
                HostedDatabaseState::kOpen,
                true),
@@ -178,7 +179,7 @@ void TestDedicatedDaemonRefusesAmbiguousScope() {
 void TestHostedDatabaseFailureRequiresQuarantine() {
   auto config = Config();
   const auto engine = Engine({
-      Database("019e1305-0000-7000-8000-000000000301",
+      Database(scratchbird::tests::FixtureUuidLiteral("019e1305-0000-7000-8000-000000000301"),
                "/tmp/sb_dblc013e_failed.sbdb",
                HostedDatabaseState::kFailed,
                false),
@@ -328,10 +329,10 @@ void TestHostedEnginePublishesDurableDatabaseUuid(const std::filesystem::path& d
   Require(hosted.ok(), "DBLC-013E hosted engine open failed");
   Require(hosted.state.databases.size() == 1,
           "DBLC-013E hosted engine database count mismatch");
-  const auto expected = uuid::UuidToString(database_uuid.value.value);
+  const auto expected = database_uuid.value.value;
   Require(hosted.state.databases.front().database_uuid == expected,
           "hosted engine did not publish durable database UUID");
-  Require(!Contains(hosted.state.databases.front().database_uuid, "engine-public-abi:"),
+  Require(uuid::IsEngineIdentityUuid(hosted.state.databases.front().database_uuid),
           "hosted engine published synthetic database UUID");
 
   const auto status_before = scratchbird::server::HostedEngineStatusJson(hosted.state);

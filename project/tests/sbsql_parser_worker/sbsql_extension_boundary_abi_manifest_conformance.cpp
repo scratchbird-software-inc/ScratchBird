@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "database_lifecycle.hpp"
 #include "extensibility/extension_boundary_manifest.hpp"
@@ -40,7 +41,7 @@ namespace uuid = scratchbird::core::uuid;
 
 constexpr std::string_view kDatabaseUuid = "019f6c00-0000-7000-8000-000000000020";
 
-std::string g_database_uuid = std::string(kDatabaseUuid);
+api::EngineUuid g_database_uuid = scratchbird::tests::FixtureUuidLiteral("019f6c00-0000-7000-8000-000000000020");
 std::uint64_t g_local_transaction_id = 0;
 api::EngineUuid g_transaction_uuid;
 std::uint64_t g_snapshot_visible_through_local_transaction_id = 0;
@@ -78,9 +79,9 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "sbsql-extension-boundary-abi-manifest";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = g_database_uuid;
-  context.principal_uuid.canonical = "019f6c00-0000-7000-8000-000000000201";
-  context.session_uuid.canonical = "019f6c00-0000-7000-8000-000000000202";
+  context.database_uuid = g_database_uuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f6c00-0000-7000-8000-000000000201");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f6c00-0000-7000-8000-000000000202");
   if (tx == 77 && g_local_transaction_id != 0) {
     context.transaction_uuid = g_transaction_uuid;
     context.local_transaction_id = g_local_transaction_id;
@@ -90,7 +91,7 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
   } else {
     context.local_transaction_id = tx;
     if (tx != 0) {
-      context.transaction_uuid.canonical = "019f6c00-0000-7000-8000-000000000203";
+      context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f6c00-0000-7000-8000-000000000203");
     }
   }
   context.security_context_present = true;
@@ -136,7 +137,7 @@ void CreateBoundaryDatabase(const std::filesystem::path& database_path) {
           "failed to generate UUIDs for extension boundary database");
   Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
           "failed to create extension boundary database");
-  g_database_uuid = uuid::UuidToString(create.database_uuid.value);
+  g_database_uuid = create.database_uuid.value;
 }
 
 void BeginBoundaryTransaction(const std::filesystem::path& database_path) {
@@ -182,7 +183,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -227,9 +228,9 @@ TRequest UdrRequest(const std::filesystem::path& database_path,
                     const udr_runtime::UdrPackageDescriptor& descriptor) {
   TRequest request;
   request.context = Context(database_path);
-  request.target_database.uuid.canonical = g_database_uuid;
+  request.target_database.uuid = g_database_uuid;
   request.target_database.object_kind = "database";
-  request.target_object.uuid.canonical = descriptor.package_uuid;
+  request.target_object.uuid = descriptor.package_uuid;
   request.target_object.object_kind = "udr_package";
   request.localized_names.push_back(LocalizedName(descriptor.package_name, "sys.udr"));
   return request;
@@ -304,10 +305,9 @@ void TestManifestRows() {
 void TestParserPackageBoundary(const std::filesystem::path& database_path) {
   api::EngineRegisterParserPackageRequest request;
   request.context = Context(database_path);
-  request.target_database.uuid.canonical = g_database_uuid;
+  request.target_database.uuid = g_database_uuid;
   request.target_database.object_kind = "database";
-  request.target_object.uuid.canonical =
-      "019f6c00-0000-7000-8000-000000000301";
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f6c00-0000-7000-8000-000000000301");
   request.target_object.object_kind = "parser_package";
   request.localized_names.push_back(LocalizedName("sbp_extension_boundary_fixture",
                                                   "sys.parser"));
@@ -328,8 +328,7 @@ void TestParserPackageBoundary(const std::filesystem::path& database_path) {
           "parser package registration claimed engine mutation authority");
 
   auto cluster_request = request;
-  cluster_request.target_object.uuid.canonical =
-      "019f6c00-0000-7000-8000-000000000302";
+  cluster_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f6c00-0000-7000-8000-000000000302");
   cluster_request.option_envelopes.push_back("cluster_deploy:true");
   const auto cluster_result = api::EngineRegisterParserPackage(cluster_request);
   Require(!cluster_result.ok && cluster_result.cluster_authority_required,

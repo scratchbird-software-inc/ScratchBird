@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "dml/mutation_savepoint_capability.hpp"
+#include "mga_relation_store/mga_binary_identity_codec.hpp"
 
 #include "dml/constraint_enforcement.hpp"
 #include "dml/dml_executable_trigger_runtime.hpp"
@@ -160,7 +161,7 @@ EngineApiDiagnostic AdmitMgaSavepointOperation(
 }
 
 EngineApiDiagnostic AdmitMgaDmlSavepointMutation(
-    const EngineRequestContext& context, std::string_view target_relation_uuid,
+    const EngineRequestContext& context, const EngineUuid& target_relation_uuid,
     MgaDmlMutationKind mutation, bool require_statement_boundary) {
   const auto markers = ParseSavepoints(context);
   if (markers.marker_authority_corrupt || markers.update_statement_authority_corrupt)
@@ -170,7 +171,7 @@ EngineApiDiagnostic AdmitMgaDmlSavepointMutation(
   if (!require_statement_boundary &&
       (active == markers.active_savepoints.end() || active->second.empty()))
     return MakeEngineApiDiagnostic("OK", "", "", false);
-  if (context.local_transaction_id == 0 || target_relation_uuid.empty())
+  if (context.local_transaction_id == 0 || target_relation_uuid.is_nil())
     return Refuse("mutation_owner_missing");
   if (mutation != MgaDmlMutationKind::insert && mutation != MgaDmlMutationKind::update &&
       mutation != MgaDmlMutationKind::delete_rows) return Admit(P::unknown);
@@ -184,10 +185,10 @@ EngineApiDiagnostic AdmitMgaDmlSavepointMutation(
   TransactionalRelationStore store(context);
   // This metadata-only route expands the same parent/child relation scope as
   // constraint execution, but never scans row payloads or index entries.
-  auto loaded = store.LoadInsertTargetMetadata(std::string(target_relation_uuid));
+  auto loaded = store.LoadInsertTargetMetadata(target_relation_uuid);
   if (!loaded.ok) return loaded.diagnostic;
   const auto view = store.BuildReadView(&loaded);
-  const auto table = FindVisibleMgaTable(view, std::string(target_relation_uuid),
+  const auto table = FindVisibleMgaTable(view, target_relation_uuid,
                                        context.local_transaction_id);
   if (!table) return Refuse("target_relation_not_visible");
   // Row INSERT/UPDATE/DELETE on an existing temporary relation does not
@@ -224,7 +225,9 @@ EngineApiDiagnostic AdmitMgaDmlSavepointMutation(
         object.deleted || object.invalidated) continue;
     const auto target = dml_trigger_runtime::PayloadFieldValue(
         object.payload, "trigger_target_table_uuid:");
-    if (target.empty() || target == table->table_uuid) return Admit(P::trigger_body);
+    const EngineUuid target_identity = BinaryViewUuid(target);
+    if (target_identity.is_nil() ||
+        target_identity == table->table_uuid) return Admit(P::trigger_body);
   }
   for (const auto producer : {P::row_version, P::row_directory, P::relation_descriptor,
        P::index_membership, P::index_candidate_pages, P::overflow_payload,

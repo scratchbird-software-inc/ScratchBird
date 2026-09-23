@@ -119,18 +119,8 @@ SblrDdlCreateSchemaJournalHashV1 RecordHash(
   return Hash(material.data(), material.size());
 }
 
-std::string UuidText(const SblrDdlCreateSchemaJournalUuidV1& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string text;
-  text.reserve(36);
-  for (std::size_t index = 0; index != value.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      text.push_back('-');
-    }
-    text.push_back(kHex[value[index] >> 4U]);
-    text.push_back(kHex[value[index] & 0x0fU]);
-  }
-  return text;
+EngineUuid NativeUuid(const SblrDdlCreateSchemaJournalUuidV1& value) {
+  EngineUuid id; id.bytes=value; return id;
 }
 
 bool DecodeDescriptor(
@@ -164,32 +154,32 @@ bool HasAuthority(
          context.statement_metadata_snapshot_engine_owned &&
          !context.database_path.empty() && !context.cluster_authority_available &&
          !context.cluster_transaction_active && !context.route_fence_present &&
-         context.database_uuid == UuidText(descriptor.database_uuid) &&
-         context.statement_receipt_uuid == UuidText(descriptor.receipt) &&
+         context.database_uuid == NativeUuid(descriptor.database_uuid) &&
+         context.statement_receipt_uuid == NativeUuid(descriptor.receipt) &&
          context.transaction_uuid ==
-             UuidText(descriptor.owning_transaction_uuid) &&
+             NativeUuid(descriptor.owning_transaction_uuid) &&
          context.local_transaction_id ==
              descriptor.owning_local_transaction_id &&
          context.statement_snapshot_uuid ==
-             UuidText(descriptor.statement_snapshot_uuid) &&
+             NativeUuid(descriptor.statement_snapshot_uuid) &&
          context.catalog_epoch_uuid ==
-             UuidText(descriptor.catalog_epoch_uuid) &&
+             NativeUuid(descriptor.catalog_epoch_uuid) &&
          context.catalog_generation_id == descriptor.catalog_generation &&
          context.security_epoch == descriptor.security_epoch &&
          context.authorization_context.present &&
          context.authorization_context.authority_uuid ==
-             UuidText(descriptor.security_context_uuid) &&
+             NativeUuid(descriptor.security_context_uuid) &&
          context.authorization_context.security_epoch ==
              descriptor.security_epoch &&
          context.transaction_policy_snapshot_uuid ==
-             UuidText(descriptor.policy_snapshot_uuid) &&
+             NativeUuid(descriptor.policy_snapshot_uuid) &&
          context.transaction_policy_snapshot_generation ==
              descriptor.policy_generation &&
          context.resource_admission_uuid ==
-             UuidText(descriptor.resource_grant_uuid) &&
+             NativeUuid(descriptor.resource_grant_uuid) &&
          context.resource_epoch == descriptor.resource_generation &&
          context.principal_uuid ==
-             UuidText(descriptor.owner_principal_uuid) &&
+             NativeUuid(descriptor.owner_principal_uuid) &&
          std::find(context.trace_tags.begin(), context.trace_tags.end(),
                    kJournalTraceTag) != context.trace_tags.end();
 }
@@ -210,9 +200,9 @@ bool RecoverySessionAuthenticated(
   return context.security_context_present &&
          context.authorization_context.present &&
          !context.database_path.empty() &&
-         context.database_uuid == UuidText(descriptor.database_uuid) &&
+         context.database_uuid == NativeUuid(descriptor.database_uuid) &&
          context.principal_uuid ==
-             UuidText(descriptor.owner_principal_uuid) &&
+             NativeUuid(descriptor.owner_principal_uuid) &&
          !context.cluster_authority_available &&
          !context.cluster_transaction_active && !context.route_fence_present;
 }
@@ -279,25 +269,20 @@ bool ExactRecoveryPostcondition(
   if (!ResultMatches(descriptor, snapshot, &result)) {
     return mismatch("journal_result_mismatch");
   }
-  const auto schema_uuid = UuidText(descriptor.schema_uuid);
+  const auto schema_uuid = NativeUuid(descriptor.schema_uuid);
   const auto parent_uuid = NonZero(descriptor.parent_schema_uuid)
-                               ? UuidText(descriptor.parent_schema_uuid)
-                               : std::string{};
-  const auto recovery_uuid = UuidText(descriptor.recovery_uuid);
+                               ? NativeUuid(descriptor.parent_schema_uuid)
+                               : EngineUuid{};
+  const auto recovery_uuid = NativeUuid(descriptor.recovery_uuid);
   const std::vector<EngineLocalizedName> names{
       {"en", "primary", canonical_path, leaf_name, true}};
-  auto expected_payload = SchemaTreePayload(parent_uuid, names, {});
-  const std::array<std::string, 5> extensions{
-      "catalog_ddl_mutation_audit=" + recovery_uuid,
-      "catalog_ddl_recovery_operation=" + recovery_uuid,
-      "catalog_ddl_result_row_uuid=" + UuidText(result.catalog_row_uuid),
-      "catalog_ddl_mutation_uuid=" + UuidText(result.mutation_uuid),
-      "catalog_ddl_statement_publication_barrier=" +
-          UuidText(result.publication_barrier)};
-  for (const auto& extension : extensions) {
-    if (!expected_payload.empty()) expected_payload.push_back(';');
-    expected_payload.append(extension);
-  }
+  BinaryCatalogMetadata extensions;
+  extensions.identities={{"catalog_ddl_mutation_audit",recovery_uuid},
+      {"catalog_ddl_recovery_operation",recovery_uuid},
+      {"catalog_ddl_result_row_uuid",NativeUuid(result.catalog_row_uuid)},
+      {"catalog_ddl_mutation_uuid",NativeUuid(result.mutation_uuid)},
+      {"catalog_ddl_statement_publication_barrier",NativeUuid(result.publication_barrier)}};
+  const auto expected_payload=SchemaTreePayload(parent_uuid,names,{},extensions);
 
   EngineApiDiagnostic schema_diagnostic;
   const auto schemas = VisibleSchemaTreeRecords(context, observer_transaction_id, schema_diagnostic);
@@ -520,11 +505,61 @@ bool Decode(const std::vector<std::uint8_t>& bytes,
   return true;
 }
 
+// One database-local container indexes recovery identities in binary. No
+// recovery UUID, UUID rendering, or UUID-derived hash participates in paths.
 std::string Path(const EngineRequestContext& context,
-                 const SblrDdlCreateSchemaJournalKeyV1& key) {
-  return context.database_path +
-         ".sb.sblr_ddl_create_schema_execution_journal.v1." +
-         UuidText(key.recovery_uuid);
+                 const SblrDdlCreateSchemaJournalKeyV1&) {
+  return context.database_path + ".sb.sblr_ddl_create_schema_execution_journal.v2";
+}
+constexpr std::size_t kMaximumJournalRecords=65536;
+constexpr std::size_t kContainerHeaderBytes=16;
+constexpr std::size_t kMaximumContainerBytes=kContainerHeaderBytes+kMaximumJournalRecords*kRecordBytes+32;
+using JournalRecords=std::vector<std::vector<std::uint8_t>>;
+
+bool DecodeContainer(const std::vector<std::uint8_t>& bytes, JournalRecords* output) {
+  if(!output||bytes.size()<48||bytes.size()>kMaximumContainerBytes||
+      std::string_view(reinterpret_cast<const char*>(bytes.data()),8)!="SBSCJ002")return false;
+  const auto count=GetLe(bytes.data()+8,8);
+  if(count>kMaximumJournalRecords||bytes.size()!=48+count*kRecordBytes)return false;
+  const auto digest=Hash(bytes.data(),bytes.size()-32);
+  if(!NonZero(digest)||!std::equal(digest.begin(),digest.end(),bytes.end()-32))return false;
+  JournalRecords records;
+  std::set<SblrDdlCreateSchemaJournalUuidV1> identities;
+  SblrDdlCreateSchemaJournalUuidV1 database{};
+  for(std::size_t n=0;n<count;++n) {
+    const auto begin=bytes.begin()+kContainerHeaderBytes+n*kRecordBytes;
+    std::vector<std::uint8_t> record(begin,begin+kRecordBytes);
+    SblrDdlCreateSchemaJournalSnapshotV1 decoded;
+    if(!Decode(record,&decoded)||!identities.insert(decoded.key.recovery_uuid).second)return false;
+    if(n==0)database=decoded.key.database_uuid;
+    else if(database!=decoded.key.database_uuid)return false;
+    records.push_back(std::move(record));
+  }
+  output->swap(records);return true;
+}
+std::vector<std::uint8_t> EncodeContainer(const JournalRecords& records) {
+  if(records.size()>kMaximumJournalRecords)return {};
+  std::vector<std::uint8_t> bytes={'S','B','S','C','J','0','0','2'};
+  PutLe(&bytes,records.size(),8);
+  for(const auto& record:records){if(record.size()!=kRecordBytes)return {};bytes.insert(bytes.end(),record.begin(),record.end());}
+  const auto digest=Hash(bytes.data(),bytes.size());if(!NonZero(digest))return {};
+  Put(&bytes,digest);
+  JournalRecords checked;if(!DecodeContainer(bytes,&checked))return {};
+  return bytes;
+}
+
+bool LegacyJournalPresentOrUnreadable(const EngineRequestContext& context) {
+  const std::filesystem::path database(context.database_path);
+  const auto directory=database.parent_path().empty()?std::filesystem::path("."):database.parent_path();
+  const auto prefix=database.filename().string()+".sb.sblr_ddl_create_schema_execution_journal.v1.";
+  std::error_code error;
+  std::filesystem::directory_iterator it(directory,error),end;
+  if(error)return true;
+  while(it!=end){
+    if(it->path().filename().string().starts_with(prefix))return true;
+    it.increment(error);if(error)return true;
+  }
+  return false;
 }
 
 enum class ReadStatus { absent, ok, invalid, io_error };
@@ -539,7 +574,7 @@ ReadStatus ReadFile(const std::string& path,
                                          : ReadStatus::absent;
   }
   const auto end = input.tellg();
-  if (end < 0 || static_cast<std::uint64_t>(end) != kRecordBytes) {
+  if (end < 0 || (static_cast<std::uint64_t>(end) < 48 || static_cast<std::uint64_t>(end) > kMaximumContainerBytes)) {
     return ReadStatus::invalid;
   }
   bytes->resize(static_cast<std::size_t>(end));
@@ -552,11 +587,11 @@ ReadStatus ReadFile(const std::string& path,
                                      : ReadStatus::io_error;
   struct stat metadata {};
   if (::fstat(fd, &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
-      metadata.st_size != static_cast<off_t>(kRecordBytes)) {
+      (metadata.st_size < 48 || static_cast<std::uint64_t>(metadata.st_size) > kMaximumContainerBytes)) {
     ::close(fd);
     return ReadStatus::invalid;
   }
-  bytes->resize(kRecordBytes);
+  bytes->resize(static_cast<std::size_t>(metadata.st_size));
   std::size_t offset = 0;
   while (offset != bytes->size()) {
     const auto count =
@@ -601,6 +636,48 @@ bool ReplaceFile(const std::string& path,
   return true;
 }
 
+// All container reads and transitions occur under the database journal lock.
+ReadStatus ReadRecord(const EngineRequestContext& context,const SblrDdlCreateSchemaJournalKeyV1& key,
+                      std::vector<std::uint8_t>* output) {
+  if(LegacyJournalPresentOrUnreadable(context))return ReadStatus::invalid;
+  std::vector<std::uint8_t> bytes;
+  const auto status=ReadFile(Path(context,key),&bytes);
+  if(status!=ReadStatus::ok)return status;
+  JournalRecords records;if(!DecodeContainer(bytes,&records))return ReadStatus::invalid;
+  for(auto& record:records){
+    SblrDdlCreateSchemaJournalSnapshotV1 decoded;
+    if(!Decode(record,&decoded)||decoded.key.database_uuid!=key.database_uuid)return ReadStatus::invalid;
+    if(decoded.key.recovery_uuid==key.recovery_uuid){*output=std::move(record);return ReadStatus::ok;}
+  }
+  return ReadStatus::absent;
+}
+CreateStatus StoreRecord(const EngineRequestContext& context,const SblrDdlCreateSchemaJournalKeyV1& key,
+                         const std::vector<std::uint8_t>& record,bool replace) {
+  if(LegacyJournalPresentOrUnreadable(context))return CreateStatus::failed;
+  SblrDdlCreateSchemaJournalSnapshotV1 candidate;
+  if(!Decode(record,&candidate)||candidate.key.database_uuid!=key.database_uuid||
+      candidate.key.recovery_uuid!=key.recovery_uuid||candidate.key.canonical_descriptor_bytes!=key.canonical_descriptor_bytes)return CreateStatus::failed;
+  const auto path=Path(context,key);
+  std::vector<std::uint8_t> bytes;JournalRecords records;
+  const auto status=ReadFile(path,&bytes);
+  if(status==ReadStatus::ok){if(!DecodeContainer(bytes,&records))return CreateStatus::failed;}
+  else if(status!=ReadStatus::absent)return CreateStatus::failed;
+  bool found=false;
+  for(auto& current:records){
+    SblrDdlCreateSchemaJournalSnapshotV1 decoded;
+    if(!Decode(current,&decoded)||decoded.key.database_uuid!=key.database_uuid)return CreateStatus::failed;
+    if(decoded.key.recovery_uuid!=key.recovery_uuid)continue;
+    if(!replace)return CreateStatus::exists;
+    if(decoded.key.canonical_descriptor_bytes!=key.canonical_descriptor_bytes)return CreateStatus::failed;
+    current=record;found=true;
+  }
+  if(replace&&!found)return CreateStatus::failed;
+  if(!replace)records.push_back(record);
+  const auto encoded=EncodeContainer(records);if(encoded.empty())return CreateStatus::failed;
+  if(status==ReadStatus::absent)return CreateFile(path,encoded);
+  return ReplaceFile(path,encoded)?CreateStatus::created:CreateStatus::failed;
+}
+
 using ScopedFileLock = detail::ScopedCreateSchemaJournalLock;
 
 SblrDdlCreateSchemaJournalResultV1 Refused(std::string code,
@@ -626,7 +703,7 @@ SblrDdlCreateSchemaJournalResultV1 LoadExact(
     const EngineRequestContext& context,
     const SblrDdlCreateSchemaJournalKeyV1& key) {
   std::vector<std::uint8_t> bytes;
-  const auto status = ReadFile(Path(context, key), &bytes);
+  const auto status = ReadRecord(context, key, &bytes);
   if (status == ReadStatus::absent) {
     SblrDdlCreateSchemaJournalResultV1 result;
     result.ok = true;
@@ -749,7 +826,7 @@ SblrDdlCreateSchemaJournalResultV1 EnsureLocked(
     return Refused("SBLR.OPERAND_INVALID",
                    "sblr.ddl_create_schema.execution_journal_key_invalid");
   }
-  const auto created = CreateFile(Path(context, key), bytes);
+  const auto created = StoreRecord(context, key, bytes, false);
   if (created == CreateStatus::exists) return LoadExact(context, key);
   if (created != CreateStatus::created || !Decode(bytes, &snapshot)) {
     return Refused(
@@ -786,7 +863,7 @@ SblrDdlCreateSchemaJournalResultV1 PublishLocked(
   ++published.journal_generation;
   published.record_evidence_sha256 = {};
   const auto bytes = Encode(published);
-  if (bytes.empty() || !ReplaceFile(Path(context, key), bytes) ||
+  if (bytes.empty() || StoreRecord(context, key, bytes, true) != CreateStatus::created ||
       !Decode(bytes, &published)) {
     return Refused(
         "DDL.CREATE_SCHEMA_FAILED",
@@ -1027,28 +1104,28 @@ RecoverSblrDdlCreateSchemaExecutionJournalV1(
   operation_context.statement_transaction_inventory_snapshot =
       inventory.snapshot;
   operation_context.statement_receipt_uuid =
-      UuidText(descriptor.receipt);
+      NativeUuid(descriptor.receipt);
   operation_context.transaction_uuid =
-      UuidText(descriptor.owning_transaction_uuid);
+      NativeUuid(descriptor.owning_transaction_uuid);
   operation_context.local_transaction_id =
       descriptor.owning_local_transaction_id;
   operation_context.snapshot_visible_through_local_transaction_id =
       original_transaction.entry.begin_visible_through_local_transaction_id;
   operation_context.statement_snapshot_uuid =
-      UuidText(descriptor.statement_snapshot_uuid);
+      NativeUuid(descriptor.statement_snapshot_uuid);
   operation_context.statement_metadata_snapshot_uuid =
       operation_context.statement_snapshot_uuid;
   operation_context.statement_metadata_snapshot_engine_owned = true;
   operation_context.catalog_epoch_uuid =
-      UuidText(descriptor.catalog_epoch_uuid);
+      NativeUuid(descriptor.catalog_epoch_uuid);
   operation_context.catalog_generation_id = descriptor.catalog_generation;
   operation_context.security_epoch = descriptor.security_epoch;
   operation_context.transaction_policy_snapshot_uuid =
-      UuidText(descriptor.policy_snapshot_uuid);
+      NativeUuid(descriptor.policy_snapshot_uuid);
   operation_context.transaction_policy_snapshot_generation =
       descriptor.policy_generation;
   operation_context.resource_admission_uuid =
-      UuidText(descriptor.resource_grant_uuid);
+      NativeUuid(descriptor.resource_grant_uuid);
   operation_context.resource_epoch = descriptor.resource_generation;
   operation_context.trace_tags.push_back(std::string(kJournalTraceTag));
   operation_context.trace_tags.push_back(std::string(kRecoveryTraceTag));
@@ -1144,22 +1221,22 @@ RecoverSblrDdlCreateSchemaExecutionJournalV1(
   create.target_database.object_kind = "database";
   create.target_schema.uuid =
       NonZero(descriptor.parent_schema_uuid)
-          ? UuidText(descriptor.parent_schema_uuid)
-          : std::string{};
+          ? NativeUuid(descriptor.parent_schema_uuid)
+          : EngineUuid{};
   create.target_schema.object_kind = "schema";
-  create.target_object.uuid = UuidText(descriptor.schema_uuid);
+  create.target_object.uuid = NativeUuid(descriptor.schema_uuid);
   create.target_object.object_kind = "schema";
   create.localized_names.push_back(
       {"en", "primary", canonical_path, leaf_name, true});
-  create.recovery_operation_uuid = UuidText(descriptor.recovery_uuid);
+  create.recovery_operation_uuid = NativeUuid(descriptor.recovery_uuid);
   create.requested_catalog_row_uuid =
-      UuidText(planned_result.catalog_row_uuid);
-  create.mutation_uuid = UuidText(planned_result.mutation_uuid);
+      NativeUuid(planned_result.catalog_row_uuid);
+  create.mutation_uuid = NativeUuid(planned_result.mutation_uuid);
   create.statement_publication_barrier_uuid =
-      UuidText(planned_result.publication_barrier);
-  create.option_envelopes.push_back(
-      "catalog_ddl_mutation_audit:" +
-      create.recovery_operation_uuid);
+      NativeUuid(planned_result.publication_barrier);
+  std::string audit_option="catalog_ddl_mutation_audit:";
+  audit_option.append(reinterpret_cast<const char*>(create.recovery_operation_uuid.bytes.data()),16);
+  create.option_envelopes.push_back(std::move(audit_option));
   const auto created = EngineCreateSchema(create);
   if (!created.ok || created.primary_object.object_kind != "schema" ||
       created.primary_object.uuid !=

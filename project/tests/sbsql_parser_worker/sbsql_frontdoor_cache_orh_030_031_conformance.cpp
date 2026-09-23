@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -50,7 +51,7 @@ sbsql::CacheKey BaseKey(std::uint64_t shape_hash = 1001) {
   key.memory_pressure_generation = 67;
   key.normalized_statement_hash = 71 + shape_hash;
   key.parameter_type_shape_hash = 73;
-  key.connection_uuid = "connection/orh-cache";
+  key.connection_uuid = scratchbird::tests::FixtureUuid(1453, 5);
   key.transaction_context_hash = "txn/read_only_prepare";
   key.dialect = "sbsql";
   key.role_set_hash = "roles/app_reader";
@@ -59,7 +60,7 @@ sbsql::CacheKey BaseKey(std::uint64_t shape_hash = 1001) {
   key.language_profile = "en-US";
   key.language_tag = "en-US";
   key.input_syntax_profile = "sbsql.syntax.standard";
-  key.policy_profile = "policy/default";
+  key.policy_profile = scratchbird::tests::FixtureUuid(1453, 6);
   key.parser_profile = "parser/default";
   key.common_resource_hash = "common.hash.en-US";
   key.language_resource_epoch = 31;
@@ -164,9 +165,9 @@ void VerifyCompactKeyAndStableDiagnostics() {
   const auto key = BaseKey(91);
   const auto stable_key = key.StableKey();
   const auto compact_key = key.CompactKey();
-  Require(Contains(stable_key, "sbsql-cache-v8"),
+  Require(Contains(stable_key, "sbsql-cache-v9"),
           "stable diagnostic key lost cache version");
-  Require(Contains(stable_key, "connection/orh-cache"),
+  Require(Contains(stable_key, std::string(reinterpret_cast<const char*>(key.connection_uuid.bytes.data()), 16)),
           "stable diagnostic key lost full connection dimension");
   Require(Contains(compact_key, "sbsql-cache-k1:"),
           "compact key lost deterministic prefix");
@@ -183,8 +184,8 @@ void VerifyCompactKeyAndStableDiagnostics() {
   const auto snapshot = cache.SnapshotJson();
   Require(Contains(snapshot, "\"map_key\":\"compact_fnv1a64\""),
           "snapshot did not disclose compact map key strategy");
-  Require(Contains(snapshot, stable_key),
-          "snapshot did not retain stable diagnostic key rendering");
+  Require(Contains(snapshot, compact_key),
+          "snapshot did not expose cache key fingerprint");
   Require(Contains(snapshot, "\"visibility\":false"),
           "snapshot did not report visibility authority refusal state");
 }

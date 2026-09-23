@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -51,9 +52,9 @@ bool HasValue(const std::vector<std::string>& values, std::string_view token) {
 sb::SessionContext Session() {
   sb::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019e1059-db14-7000-8000-000000000001";
-  session.connection_uuid = "019e1059-db14-7000-8000-000000000002";
-  session.database_uuid = "019e1059-db14-7000-8000-000000000003";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e1059-db14-7000-8000-000000000001");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019e1059-db14-7000-8000-000000000002");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e1059-db14-7000-8000-000000000003");
   session.catalog_epoch = 14;
   session.security_policy_epoch = 15;
   session.descriptor_epoch = 16;
@@ -64,7 +65,7 @@ sb::ParserConfig Config() {
   sb::ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "unix:/tmp/sb_server.sbps.sock";
-  config.parser_uuid = "019e1059-db14-7000-8000-000000000004";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019e1059-db14-7000-8000-000000000004");
   config.bundle_contract_id = "sbp_sbsql@dblc14";
   config.build_id = "dblc-014-reference-mapping";
   return config;

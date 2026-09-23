@@ -19,6 +19,7 @@
 #include "query/canonical_heap_optimizer_admission.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -44,8 +45,7 @@ namespace plan = scratchbird::engine::planner;
 namespace {
 constexpr std::string_view kGenerateSeriesFunctionId =
     "sb.rowset.generate_series";
-constexpr std::string_view kGenerateSeriesFunctionUuid =
-    "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+constexpr api::EngineUuid kGenerateSeriesFunctionUuid{{0x01, 0x9d, 0xff, 0xbb, 0xf0, 0x00, 0x7e, 0x2c, 0xb4, 0x37, 0xeb, 0xbb, 0xc2, 0xd4, 0xf3, 0x5b}};
 constexpr std::size_t kGenerateSeriesMaximumRowCount = 10000;
 
 bool MaterializeCanonicalGenerateSeriesBatch(
@@ -186,8 +186,8 @@ ExecuteCanonicalGenerateSeriesTableFunctionQuery(
       node.semantic_variant_id !=
           "table-function.generate-series.v1" ||
       node.required_object_uuids !=
-          std::vector<std::string>{
-              std::string(kGenerateSeriesFunctionUuid)} ||
+          std::vector<api::EngineUuid>{
+              kGenerateSeriesFunctionUuid} ||
       !node.input_node_ids.empty() || node.shareable ||
       (node.argument_expression_ids.size() != 2 &&
        node.argument_expression_ids.size() != 3) ||
@@ -262,11 +262,17 @@ ExecuteCanonicalGenerateSeriesTableFunctionQuery(
       input.context, input.relational_dag, admission.request,
       admission.admission};
   const auto& graph = admission.request.logical_graph;
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
+  std::array<api::EngineUuid, 3> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live table_function identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto capability_uuid =
-      DerivedCanonicalUuid(identity_scope,
-                           "table-function.generate-series.capability");
+      owned_identities[0];
   LivePhysicalNodeProfile profile;
   profile.logical_node_id = node.node_id;
   profile.implementation_id = "table-function.generate-series.v1";
@@ -332,18 +338,11 @@ ExecuteCanonicalGenerateSeriesTableFunctionQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + input.context.current_monotonic_ns,
-          "table-function.generate-series.execution-attempt");
+      owned_identities[1];
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id) + ":" +
-              std::to_string(
-                  input.context.snapshot_visible_through_local_transaction_id),
-          "table-function.generate-series.transaction-effect-unchanged");
+      owned_identities[2];
   selected.result_publication_request.maximum_row_count =
       std::max<std::size_t>(1, generated_row_count);
   exec::CanonicalResultColumnBinding binding;
@@ -424,8 +423,7 @@ ExecuteCanonicalGenerateSeriesMatchRecognizeQuery(
                                 std::move(detail));
     return result;
   };
-  constexpr std::string_view kFunctionUuid =
-      "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+  constexpr api::EngineUuid kFunctionUuid{{0x01, 0x9d, 0xff, 0xbb, 0xf0, 0x00, 0x7e, 0x2c, 0xb4, 0x37, 0xeb, 0xbb, 0xc2, 0xd4, 0xf3, 0x5b}};
   const auto& pattern = dag.row_patterns.empty()
                             ? api::RelationalRowPatternRecord{}
                             : dag.row_patterns.front();
@@ -441,7 +439,7 @@ ExecuteCanonicalGenerateSeriesMatchRecognizeQuery(
       source->semantic_variant_id !=
           "table-function.generate-series.v1" ||
       source->required_object_uuids !=
-          std::vector<std::string>{std::string(kFunctionUuid)} ||
+          std::vector<api::EngineUuid>{kFunctionUuid} ||
       !source->input_node_ids.empty() || source->shareable ||
       (source->argument_expression_ids.size() != 2 &&
        source->argument_expression_ids.size() != 3) ||
@@ -464,7 +462,7 @@ ExecuteCanonicalGenerateSeriesMatchRecognizeQuery(
           api::RelationalPropertySortDirection::kAscending ||
       pattern.ordering_terms.front().null_placement !=
           api::RelationalPropertyNullPlacement::kNullsLast ||
-      !pattern.ordering_terms.front().collation_uuid.empty() ||
+      !pattern.ordering_terms.front().collation_uuid.is_nil() ||
       pattern.variables.size() != 1 ||
       pattern.variables.front().canonical_name_key != "a" ||
       pattern.variables.front().minimum_occurrences != 1 ||
@@ -558,12 +556,17 @@ ExecuteCanonicalGenerateSeriesMatchRecognizeQuery(
       input.context, input.relational_dag, admission.request,
       admission.admission};
   const auto& graph = admission.request.logical_graph;
-  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              input.context.statement_uuid;
-  const auto source_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "table-function.generate-series.capability");
-  const auto match_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "match-recognize.a-plus.capability");
+  std::array<api::EngineUuid, 4> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live table_function identity allocation failed");
+    }
+    identity = *issued;
+  }
+  const auto source_capability_uuid = owned_identities[0];
+  const auto match_capability_uuid = owned_identities[1];
   std::vector<LivePhysicalNodeProfile> profiles;
   LivePhysicalNodeProfile source_profile;
   source_profile.logical_node_id = source->node_id;
@@ -662,18 +665,11 @@ ExecuteCanonicalGenerateSeriesMatchRecognizeQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + input.context.current_monotonic_ns,
-          "match-recognize.execution-attempt");
+      owned_identities[2];
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id) + ":" +
-              std::to_string(
-                  input.context.snapshot_visible_through_local_transaction_id),
-          "match-recognize.transaction-effect-unchanged");
+      owned_identities[3];
   selected.result_publication_request.maximum_row_count =
       std::max<std::size_t>(1, generated_row_count);
   exec::CanonicalResultColumnBinding binding;

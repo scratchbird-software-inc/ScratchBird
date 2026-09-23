@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_ddl_drop_synonym_coordinator.hpp"
 #include <cassert>
 
@@ -6,10 +7,10 @@ int main() {
   EngineRequestContext c;
   c.security_context_present = true;
   c.statement_metadata_snapshot_engine_owned = true;
-  c.statement_uuid.canonical = "019d0000-0000-7000-8000-000000002948";
+  c.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002948");
   c.trace_tags = {"private_ddl_drop_synonym_binder"};
   auto compiled = CompileSblrDdlDropSynonymDescriptor(
-      c, c.statement_uuid.canonical, 1, 2, 7);
+      c, c.statement_uuid, 1, 2, 7);
   assert(compiled.ok);
   c.trace_tags = {"private_ddl_drop_synonym"};
   c.query_cancellation_requested = [] { return true; };

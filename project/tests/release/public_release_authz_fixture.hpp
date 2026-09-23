@@ -9,23 +9,17 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <initializer_list>
 #include <string>
 
 namespace scratchbird::tests::release {
 
-inline scratchbird::engine::internal_api::EngineUuid ReleaseGateUuid(
-    std::string canonical) {
-  scratchbird::engine::internal_api::EngineUuid uuid;
-  uuid.canonical = std::move(canonical);
-  return uuid;
-}
-
 inline void GrantMaterializedRight(
     scratchbird::engine::internal_api::EngineRequestContext* context,
     const std::string& right,
-    const std::string& target_uuid = {}) {
+    const scratchbird::engine::internal_api::EngineUuid& target_uuid = {}) {
   if (context == nullptr) {
     return;
   }
@@ -39,9 +33,12 @@ inline void GrantMaterializedRight(
 
   auto& authz = context->authorization_context;
   authz.present = true;
-  if (authz.authority_uuid.canonical.empty()) {
+  if (authz.security_context_generation == 0) {
+    authz.security_context_generation = 1;
+  }
+  if (authz.authority_uuid.is_nil()) {
     authz.authority_uuid =
-        ReleaseGateUuid("release-test-materialized-authority");
+        FixtureUuid(0xfeed, 1);
   }
   authz.principal_uuid = context->principal_uuid;
   authz.security_epoch = context->security_epoch;
@@ -52,10 +49,10 @@ inline void GrantMaterializedRight(
   }
 
   scratchbird::engine::internal_api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid = ReleaseGateUuid("release-test-grant:" + right);
+  grant.grant_uuid = FixtureUuid(0xfeed, static_cast<std::uint32_t>(authz.grants.size()) + 2);
   grant.subject_uuid = context->principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid = ReleaseGateUuid(target_uuid);
+  grant.target_uuid = target_uuid;
   grant.right = right;
   grant.security_epoch = context->security_epoch;
   authz.grants.push_back(std::move(grant));

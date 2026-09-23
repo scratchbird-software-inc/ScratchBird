@@ -77,10 +77,10 @@ SblrPreparedStatementRegistryUuidV1 NewUuid(
   return bytes;
 }
 
-std::string UuidText(const SblrPreparedStatementRegistryUuidV1& bytes) {
+scratchbird::core::platform::Uuid NativeUuid(const SblrPreparedStatementRegistryUuidV1& bytes) {
   scratchbird::core::platform::Uuid uuid{};
   std::copy(bytes.begin(), bytes.end(), uuid.bytes.begin());
-  return scratchbird::core::uuid::UuidToString(uuid);
+  return uuid;
 }
 
 sb_engine_uuid_t PublicUuid(
@@ -104,9 +104,9 @@ EngineRequestContext Context(const std::filesystem::path& database_path,
                              const SblrPreparedStatementRegistryUuidV1& principal) {
   EngineRequestContext context;
   context.database_path = database_path.string();
-  context.database_uuid.canonical = UuidText(database);
-  context.principal_uuid.canonical = UuidText(principal);
-  context.session_uuid.canonical = UuidText(session);
+  context.database_uuid = NativeUuid(database);
+  context.principal_uuid = NativeUuid(principal);
+  context.session_uuid = NativeUuid(session);
   context.security_context_present = true;
   context.statement_metadata_snapshot_engine_owned = true;
   context.trace_tags.push_back("private_prepared_statement_registry");
@@ -145,12 +145,12 @@ SblrPreparedStatementRegistryRecordV1 ParameterizedRecord(
   auto record = Record(std::move(name), seed);
   record.source_free_parameterless_query_template = false;
   record.source_free_parameterized_query_template = true;
-  record.parameter_set_uuid = UuidText(
+  record.parameter_set_uuid = NativeUuid(
       NewUuid(scratchbird::core::platform::UuidKind::object));
-  record.parameter_prepared_statement_uuid = UuidText(
+  record.parameter_prepared_statement_uuid = NativeUuid(
       NewUuid(scratchbird::core::platform::UuidKind::object));
   record.parameter_set_generation = 1;
-  record.parameter_set_snapshot_uuid = UuidText(
+  record.parameter_set_snapshot_uuid = NativeUuid(
       NewUuid(scratchbird::core::platform::UuidKind::object));
   record.parameter_set_snapshot_generation = 1;
   record.ordered_slot_table_sha256 = "sha256:" + std::string(64, 'a');
@@ -218,14 +218,14 @@ SblrPreparedStatementExecutionRecordV1 Execution(
   execution.terminal_api_result.result_shape.result_kind =
       "query_projection_result";
   scratchbird::engine::internal_api::EngineDescriptor column;
-  column.descriptor_uuid.canonical = UuidText(
+  column.descriptor_uuid = NativeUuid(
       NewUuid(scratchbird::core::platform::UuidKind::object));
   column.descriptor_kind = "typed_scalar_descriptor";
   column.canonical_type_name = "int64";
   column.encoded_descriptor = "canonical_int64_v1";
   execution.terminal_api_result.result_shape.columns.push_back(column);
   scratchbird::engine::internal_api::EngineRowValue row;
-  row.requested_row_uuid.canonical = UuidText(
+  row.requested_row_uuid = NativeUuid(
       NewUuid(scratchbird::core::platform::UuidKind::object));
   scratchbird::engine::internal_api::EngineTypedValue value;
   value.descriptor = column;
@@ -241,13 +241,13 @@ SblrPreparedStatementExecutionRecordV1 Execution(
   notice.error = false;
   notice.fields.push_back({"seed", std::to_string(value_seed)});
   execution.terminal_api_result.diagnostics.push_back(std::move(notice));
-  execution.terminal_api_result.primary_object.uuid.canonical = UuidText(
+  execution.terminal_api_result.primary_object.uuid = NativeUuid(
       NewUuid(scratchbird::core::platform::UuidKind::object));
   execution.terminal_api_result.primary_object.object_kind = "result_object";
-  execution.terminal_api_result.catalog_row_uuid.canonical = UuidText(
+  execution.terminal_api_result.catalog_row_uuid = NativeUuid(
       NewUuid(scratchbird::core::platform::UuidKind::row));
-  execution.terminal_api_result.transaction_uuid.canonical =
-      UuidText(execution.owning_transaction_uuid);
+  execution.terminal_api_result.transaction_uuid =
+      NativeUuid(execution.owning_transaction_uuid);
   execution.terminal_api_result.local_transaction_id = value_seed;
   execution.terminal_api_result.dml_summary.rows_changed = value_seed;
   execution.terminal_api_result.dml_summary.fallback_reasons.push_back(
@@ -260,9 +260,12 @@ SblrPreparedStatementExecutionRecordV1 Execution(
 }
 
 std::string PathFor(const EngineRequestContext& context) {
-  return context.database_path +
-         ".sb.sblr_prepared_statement_registry.v1." +
-         context.session_uuid.canonical;
+  const auto session = scratchbird::core::uuid::EngineIdentityPathComponent(context.session_uuid);
+  Require(session.has_value(), "native session path component");
+  auto path = std::filesystem::path(context.database_path +
+      ".sb.sblr_prepared_statement_registry.v1.");
+  path += *session;
+  return path.string();
 }
 
 void Remove(const EngineRequestContext& context) {
@@ -286,15 +289,11 @@ void RequirePublicSessionLifecycle(
   create.path = database_path.string();
   create.database_uuid = scratchbird::core::uuid::MakeTypedUuid(
                              scratchbird::core::platform::UuidKind::database,
-                             scratchbird::core::uuid::ParseUuid(
-                                 UuidText(database_uuid))
-                                 .value)
+                             NativeUuid(database_uuid))
                              .value;
   create.filespace_uuid = scratchbird::core::uuid::MakeTypedUuid(
                               scratchbird::core::platform::UuidKind::filespace,
-                              scratchbird::core::uuid::ParseUuid(
-                                  UuidText(filespace_uuid))
-                                  .value)
+                              NativeUuid(filespace_uuid))
                               .value;
   create.creation_unix_epoch_millis = 1'950'000'000'000ULL;
   create.page_size = 16384;
@@ -621,7 +620,7 @@ int main() {
 
     auto coordination_context = context;
     coordination_context.trace_tags.push_back("private_prepared_coordination");
-    const auto prepare_operation = UuidText(
+    const auto prepare_operation = NativeUuid(
         NewUuid(scratchbird::core::platform::UuidKind::object));
     const auto coordinated_begin =
         BeginSblrPreparedCoordination(coordination_context, prepare_operation);
@@ -658,7 +657,7 @@ int main() {
     const auto first_execution_coordination =
         BeginSblrPreparedExecutionCoordination(
         coordination_context,
-        UuidText(NewUuid(scratchbird::core::platform::UuidKind::object)),
+        NativeUuid(NewUuid(scratchbird::core::platform::UuidKind::object)),
         coordinated.parameter_prepared_statement_uuid);
     Require(first_execution_coordination.ok &&
                 first_execution_coordination.snapshot.kind ==
@@ -688,7 +687,7 @@ int main() {
     const auto second_execution_coordination =
         BeginSblrPreparedExecutionCoordination(
             coordination_context,
-            UuidText(NewUuid(scratchbird::core::platform::UuidKind::object)),
+            NativeUuid(NewUuid(scratchbird::core::platform::UuidKind::object)),
             coordinated.parameter_prepared_statement_uuid);
     Require(second_execution_coordination.ok &&
                 second_execution_coordination.snapshot.kind ==
@@ -710,7 +709,7 @@ int main() {
             "coordinated durable FREE publication failed");
     const auto post_free_execution = BeginSblrPreparedExecutionCoordination(
         coordination_context,
-        UuidText(NewUuid(scratchbird::core::platform::UuidKind::object)),
+        NativeUuid(NewUuid(scratchbird::core::platform::UuidKind::object)),
         coordinated.parameter_prepared_statement_uuid);
     Require(!post_free_execution.ok &&
                 post_free_execution.diagnostic.code ==

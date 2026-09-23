@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_bulk_import_stream_coordinator.hpp"
 #include "core/hash/hash_digest.hpp"
 #include "uuid.hpp"
@@ -75,19 +76,16 @@ SblrBulkImportStreamAuthorityInputV1 Authority() {
 
 EngineRequestContext Context(const SblrBulkImportStreamAuthorityInputV1& a) {
   EngineRequestContext c;
-  c.statement_receipt_uuid.canonical =
-      "10000000-0000-4000-8000-000000000001";
-  c.transaction_uuid.canonical = "10000000-0000-4000-8000-000000000004";
+  c.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000001");
+  c.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000004");
   c.local_transaction_id = a.owning_local_transaction_id;
-  c.statement_snapshot_uuid.canonical = "10000000-0000-4000-8000-000000000005";
-  c.catalog_epoch_uuid.canonical = "10000000-0000-4000-8000-000000000006";
+  c.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000005");
+  c.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000006");
   c.catalog_generation_id = a.catalog_generation;
   c.authorization_context.present = true;
-  c.authorization_context.authority_uuid.canonical =
-      "10000000-0000-4000-8000-000000000007";
+  c.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000007");
   c.authorization_context.security_epoch = a.security_epoch;
-  c.resource_admission_uuid.canonical =
-      "10000000-0000-4000-8000-00000000000b";
+  c.resource_admission_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-00000000000b");
   c.resource_epoch = a.resource_grant_generation;
   c.security_context_present = true;
   c.statement_metadata_snapshot_engine_owned = true;
@@ -124,8 +122,7 @@ int main() {
   assert(!CoordinateDurableSblrBulkImportStreamDescriptorV1(
               hidden, registry, authority).ok);
   auto transaction_mismatch = context;
-  transaction_mismatch.transaction_uuid.canonical =
-      "10000000-0000-4000-8000-000000000099";
+  transaction_mismatch.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000099");
   assert(!CoordinateDurableSblrBulkImportStreamDescriptorV1(
               transaction_mismatch, registry, authority).ok);
   auto cluster = context;

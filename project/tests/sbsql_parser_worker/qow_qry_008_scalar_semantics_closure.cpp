@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "query/expression_api.hpp"
 #include "engine/sblr/canonical_relational_expression.hpp"
 
@@ -232,8 +233,7 @@ int main() {
   }
 
   auto character_descriptor = text_descriptor;
-  character_descriptor.descriptor_uuid.canonical =
-      "019e0000-0000-7000-8000-000000000108";
+  character_descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000108");
   character_descriptor.canonical_type_name = "character";
   request.operation = api::EngineCanonicalExpressionOperation::equal;
   request.left_value = Value(text_descriptor, "ScratchBird");
@@ -465,7 +465,7 @@ int main() {
           result.value.descriptor.descriptor_uuid.canonical ==
               text_descriptor.descriptor_uuid.canonical,
       "canonical function-result validation failed: " + detail);
-  function_value.descriptor.descriptor_uuid.canonical.clear();
+  function_value.descriptor.descriptor_uuid = {};
   request.precomputed_value = function_value;
   detail.clear();
   passed &= Require(

@@ -87,7 +87,7 @@ bool CreateFixtureDatabase(const std::filesystem::path& path) {
   const auto bootstrap =
       scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
           path, "server_shutdown_stops_listener_smoke");
-  const auto transaction_uuid = bootstrap.transaction_uuid.canonical;
+  const auto transaction_uuid = bootstrap.transaction_uuid;
   const auto transaction_id = bootstrap.local_transaction_id;
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       path, database_uuid_text, kAliceUuid, "alice", kVerifier, transaction_id,

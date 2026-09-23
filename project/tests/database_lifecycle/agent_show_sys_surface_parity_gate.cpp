@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "agents/agent_management_api.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "uuid.hpp"
@@ -38,9 +39,9 @@ api::EngineRequestContext AgentContext() {
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.cluster_authority_available = false;
-  context.database_uuid.canonical = "019f015c-0000-7000-8000-000000000001";
-  context.principal_uuid.canonical = "principal.management-ui.local";
-  context.session_uuid.canonical = "session.management-ui.local";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f015c-0000-7000-8000-000000000001");
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1001);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 1002);
   context.catalog_generation_id = 15;
   context.trace_tags = {
       "right:OBS_AGENT_STATE_READ",
@@ -120,7 +121,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && (id.empty() || evidence.evidence_id == id)) {
+    if (evidence.evidence_kind == kind && (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }

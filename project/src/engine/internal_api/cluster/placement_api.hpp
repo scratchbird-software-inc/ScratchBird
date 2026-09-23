@@ -22,9 +22,9 @@ struct EnginePlaceClusterObjectResult : EngineApiResult {};
 EnginePlaceClusterObjectResult EnginePlaceClusterObject(const EnginePlaceClusterObjectRequest& request);
 
 struct EngineShardPlacementDescriptor {
-  std::string shard_uuid;
-  std::string source_filespace_uuid;
-  std::string target_filespace_uuid;
+  EngineUuid shard_uuid;
+  EngineUuid source_filespace_uuid;
+  EngineUuid target_filespace_uuid;
   std::string range_begin;
   std::string range_end;
   std::uint64_t placement_epoch = 0;

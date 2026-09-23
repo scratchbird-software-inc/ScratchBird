@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "auth/auth_relay.hpp"
 #include "cache/sblr_template_cache.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -107,7 +108,7 @@ server::HostedEngineState MakeEngineState() {
   database.state = server::HostedDatabaseState::kOpen;
   database.database_open = true;
   database.database_path = "/tmp/sbsql_sml022_shared_parser_runtime_authority.sbdb";
-  database.database_uuid = "019f0220-0000-7000-8000-000000000022";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0220-0000-7000-8000-000000000022");
   state.databases.push_back(database);
   return state;
 }
@@ -123,7 +124,7 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   session.principal_claim = "sml022-user";
   session.provider_family = "local_password";
   session.database_path = "/tmp/sbsql_sml022_shared_parser_runtime_authority.sbdb";
-  session.database_uuid = "019f0220-0000-7000-8000-000000000022";
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0220-0000-7000-8000-000000000022");
   session.catalog_generation = 1;
   session.security_epoch = 1;
   session.descriptor_epoch = 1;
@@ -138,7 +139,7 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   session.admitted_parser_package_version_major = 1;
   session.local_transaction_id = 1001;
   session.snapshot_visible_through_local_transaction_id = 1001;
-  session.transaction_uuid = "019f0220-0000-7000-8000-000000000123";
+  session.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0220-0000-7000-8000-000000000123");
   session.transaction_timestamp = "2026-06-12T00:00:00Z";
   *session_uuid = session.session_uuid;
   registry.channel_state = server::ServerChannelState::kReady;
@@ -249,7 +250,7 @@ parser::CacheKey CacheKeyForEpochProof() {
   key.security_authority_epoch = 12;
   key.normalized_statement_hash = 2203;
   key.parameter_type_shape_hash = 2204;
-  key.connection_uuid = "019f0220-0000-7000-8000-000000000301";
+  key.connection_uuid = scratchbird::tests::FixtureUuid(1453, 7);
   key.transaction_context_hash = "mga:txn:1001";
   key.dialect = "sbsql";
   key.role_set_hash = "roles/sml022";

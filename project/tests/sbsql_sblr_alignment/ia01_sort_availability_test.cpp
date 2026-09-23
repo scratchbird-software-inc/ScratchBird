@@ -3,7 +3,7 @@
 int main() {
   namespace api = scratchbird::engine::internal_api;
   scratchbird::tests::ia01::RequireMissingExecutorEvidence(
-      "sort", "019d0000-0000-7000-8000-000000002547", ".sort",
+      "sort", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002547"), ".sort",
       {api::kSblrSortExecutorId, api::kSblrSortOpcodeCode,
        api::kSblrSortOpcodeVersion, api::kSblrSortOperandDescriptorId,
        api::kSblrSortResultDescriptorId,

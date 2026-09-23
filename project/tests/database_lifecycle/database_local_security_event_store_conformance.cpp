@@ -6,7 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
+#include "security_lifecycle_event_codec.hpp"
 #include "database_local_private_relation_locator.hpp"
 #include "security/database_local_security_event_store.hpp"
 #include "database_format.hpp"
@@ -37,6 +39,8 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
+namespace event_codec = db::security_event_codec;
+using scratchbird::tests::FixtureUuidLiteral;
 namespace disk = scratchbird::storage::disk;
 namespace core_hash = scratchbird::core::hash;
 namespace mga = scratchbird::transaction::mga;
@@ -52,22 +56,14 @@ constexpr std::string_view kCredentialFingerprint =
     "salt=0123456789abcdef0123456789abcdef:"
     "verifier=4ce03aa5a5657aaf221192635ed9c63a"
     "cdb76d78a0994ec6e6ab55286e29e6a5";
-constexpr std::string_view kAlicePrincipal =
-    "019e108d-1700-7000-8000-0000000007aa";
-constexpr std::string_view kSysarchRole =
-    "019e108d-1700-7000-8000-0000000007a1";
-constexpr std::string_view kPublicGroup =
-    "019e108d-1700-7000-8000-0000000007a2";
-constexpr std::string_view kRoleMembership =
-    "019e108d-1700-7000-8000-0000000007b1";
-constexpr std::string_view kGroupMembership =
-    "019e108d-1700-7000-8000-0000000007b2";
-constexpr std::string_view kConnectGrant =
-    "019e108d-1700-7000-8000-0000000007c1";
-constexpr std::string_view kConnectDeny =
-    "019e108d-1700-7000-8000-0000000007d1";
-constexpr std::string_view kRowPolicy =
-    "019e108d-1700-7000-8000-0000000007e1";
+constexpr auto kAlicePrincipal = FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007aa");
+constexpr auto kSysarchRole = FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007a1");
+constexpr auto kPublicGroup = FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007a2");
+constexpr auto kRoleMembership = FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007b1");
+constexpr auto kGroupMembership = FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007b2");
+constexpr auto kConnectGrant = FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007c1");
+constexpr auto kConnectDeny = FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007d1");
+constexpr auto kRowPolicy = FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007e1");
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -143,11 +139,9 @@ Fixture CreateFixture(const std::filesystem::path& path,
   fixture.database_path = path;
   fixture.context.trust_mode = api::EngineTrustMode::embedded_in_process;
   fixture.context.database_path = path.string();
-  fixture.context.database_uuid.canonical =
-      uuid::UuidToString(database_uuid.value.value);
+  fixture.context.database_uuid = database_uuid.value.value;
   fixture.context.database_page_size_bytes = create.page_size;
-  fixture.context.principal_uuid.canonical =
-      uuid::UuidToString(bootstrap.state.principal_uuid.value);
+  fixture.context.principal_uuid = bootstrap.state.principal_uuid.value;
   fixture.context.security_context_present = true;
   fixture.context.trace_tags.emplace_back(
       api::kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1);
@@ -175,8 +169,7 @@ api::EngineRequestContext BeginTransaction(
 
   auto context = base;
   context.local_transaction_id = begun.entry.identity.local_id.value;
-  context.transaction_uuid.canonical =
-      uuid::UuidToString(begun.entry.identity.transaction_uuid.value);
+  context.transaction_uuid = begun.entry.identity.transaction_uuid.value;
   context.snapshot_visible_through_local_transaction_id =
       begun.entry.begin_visible_through_local_transaction_id;
   return context;
@@ -196,55 +189,40 @@ void Finalize(const api::EngineRequestContext& context,
   Require(finalized.ok(), "private security transaction finality failed");
 }
 
-std::string AuditUuid(std::uint64_t generation) {
+api::EngineUuid AuditUuid(std::uint64_t generation) {
   const auto generated = uuid::GenerateDurableEngineIdentityV7(
       UuidKind::object, 1788100000000ull + generation);
   Require(generated.ok(), "private security audit identity generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 std::vector<std::string> Batch(std::string authority,
                                const api::EngineRequestContext& context,
                                std::uint64_t generation,
-                               std::string_view target) {
-  return {
-      std::move(authority),
-      "SBSECPL1\tAUDIT\t" + std::to_string(context.local_transaction_id) +
-          "\t" + AuditUuid(generation) +
-          "\t746573742e707269766174655f6c6966656379636c65\t" +
-          context.principal_uuid.canonical + "\t" + std::string(target) +
-          "\tsuccess\t7265646163746564\t" + std::to_string(generation),
-      "SBSECPL1\tCACHE_INVALIDATE\t" +
-          std::to_string(context.local_transaction_id) +
-          "\t746573742e707269766174655f6c6966656379636c65\t" +
-          std::string(target) + "\t" + std::to_string(generation),
-  };
-}
-
-std::string Prefix(const api::EngineRequestContext& context,
-                   std::string_view kind) {
-  return "SBSECPL1\t" + std::string(kind) + "\t" +
-         std::to_string(context.local_transaction_id) + "\t";
+                               const api::EngineUuid& target) {
+  return {std::move(authority),
+      event_codec::Encode("AUDIT",context.local_transaction_id,
+          {AuditUuid(generation), std::string("746573742e707269766174655f6c6966656379636c65"),
+           context.principal_uuid,target,std::string("success"),std::string("7265646163746564"),
+           std::to_string(generation),api::EngineUuid{},std::string{}}),
+      event_codec::Encode("CACHE_INVALIDATE",context.local_transaction_id,
+          {std::string("746573742e707269766174655f6c6966656379636c65"),target,std::to_string(generation)})};
 }
 
 std::vector<std::string> SingleRoleBatch(
     const api::EngineRequestContext& context,
     std::uint64_t generation,
-    std::string_view role_uuid =
-        "019e108d-1700-7000-8000-000000000798") {
-  return Batch(Prefix(context, "ROLE") + std::string(role_uuid) +
-                   "\t746573745f726f6c65\t" +
-                   context.principal_uuid.canonical + "\tactive\t" +
-                   std::to_string(generation) + "\t0",
+    api::EngineUuid role_uuid =
+        FixtureUuidLiteral("019e108d-1700-7000-8000-000000000798")) {
+  return Batch(event_codec::Encode("ROLE", context.local_transaction_id, {role_uuid, std::string("746573745f726f6c65"), context.principal_uuid, std::string("active"), std::to_string(generation), std::string("0")}),
                context, generation, role_uuid);
 }
 
 std::size_t CountEventKind(const std::vector<std::string>& events,
                            std::string_view kind) {
-  const std::string needle = "SBSECPL1\t" + std::string(kind) + "\t";
   return static_cast<std::size_t>(
       std::count_if(events.begin(), events.end(), [&](const std::string& event) {
-        return event.starts_with(needle);
+        return event_codec::Decode(event)[1] == kind;
       }));
 }
 
@@ -443,19 +421,13 @@ std::vector<std::uint64_t> ConvertCurrentSecurityChainToLegacy(
     const std::uint64_t predecessor_page_number =
         carrier.predecessor_page_number;
     if (substitute_authenticated_payload && page_numbers.size() == 1) {
-      const std::string actor =
-          uuid::UuidToString(carrier.actor_principal_uuid);
-      const auto actor_offset = carrier.events[1].find(actor);
-      Require(actor_offset != std::string::npos,
-              "private security payload substitution actor missing");
-      carrier.events[1][actor_offset] =
-          carrier.events[1][actor_offset] == '0' ? '1' : '0';
+      auto audit = event_codec::Decode(carrier.events[1]);
+      Require(audit.size() == 12, "private security payload substitution audit missing");
+      audit.fields[5] = FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007ff");
+      std::vector<event_codec::Field> fields(audit.fields.begin()+3,audit.fields.end());
+      carrier.events[1] = event_codec::Encode("AUDIT", carrier.creator_local_transaction_id, std::move(fields));
     }
-    std::string payload;
-    for (const auto& event : carrier.events) {
-      payload.append(event);
-      payload.push_back('\n');
-    }
+    const std::string payload = event_codec::Frame(carrier.events);
     const std::vector<byte> payload_bytes(payload.begin(), payload.end());
     const auto digest = core_hash::ComputeSha256Digest(payload_bytes);
     Require(digest.ok(),
@@ -595,9 +567,7 @@ void TestPageBackedLifecycle() {
     missing_authority.trace_tags.clear();
     const std::uint64_t generation = fixture.bootstrap_generation + 1;
     auto rows = Batch(
-        Prefix(transaction, "PRINCIPAL") + std::string(kAlicePrincipal) +
-            "\t616c696365\tuser\tactive\t66696e6765727072696e74\t" +
-            std::to_string(generation) + "\t0",
+        event_codec::Encode("PRINCIPAL", transaction.local_transaction_id, {kAlicePrincipal, std::string("616c696365"), std::string("user"), std::string("active"), std::string("66696e6765727072696e74"), std::to_string(generation), std::string("0")}),
         transaction, generation, kAlicePrincipal);
     const auto refused =
         api::AppendDatabaseLocalSecurityEventBatchV1(missing_authority, rows);
@@ -611,9 +581,7 @@ void TestPageBackedLifecycle() {
     ++wrong_transaction.local_transaction_id;
     const std::uint64_t generation = fixture.bootstrap_generation + 1;
     auto rows = Batch(
-        Prefix(wrong_transaction, "PRINCIPAL") + std::string(kAlicePrincipal) +
-            "\t616c696365\tuser\tactive\t66696e6765727072696e74\t" +
-            std::to_string(generation) + "\t0",
+        event_codec::Encode("PRINCIPAL", wrong_transaction.local_transaction_id, {kAlicePrincipal, std::string("616c696365"), std::string("user"), std::string("active"), std::string("66696e6765727072696e74"), std::to_string(generation), std::string("0")}),
         wrong_transaction, generation, kAlicePrincipal);
     const auto refused =
         api::AppendDatabaseLocalSecurityEventBatchV1(wrong_transaction, rows);
@@ -625,15 +593,10 @@ void TestPageBackedLifecycle() {
   {
     const std::uint64_t generation = fixture.bootstrap_generation + 1;
     auto rows = Batch(
-        Prefix(transaction, "PRINCIPAL") + std::string(kAlicePrincipal) +
-            "\t616c696365\tuser\tactive\t66696e6765727072696e74\t" +
-            std::to_string(generation) + "\t0",
+        event_codec::Encode("PRINCIPAL", transaction.local_transaction_id, {kAlicePrincipal, std::string("616c696365"), std::string("user"), std::string("active"), std::string("66696e6765727072696e74"), std::to_string(generation), std::string("0")}),
         transaction, generation, kAlicePrincipal);
     rows.insert(rows.begin() + 1,
-                Prefix(transaction, "ROLE") + std::string(kSysarchRole) +
-                    "\t73797361726368\t" +
-                    transaction.principal_uuid.canonical + "\tactive\t" +
-                    std::to_string(generation) + "\t0");
+                event_codec::Encode("ROLE", transaction.local_transaction_id, {kSysarchRole, std::string("73797361726368"), transaction.principal_uuid, std::string("active"), std::to_string(generation), std::string("0")}));
     const auto refused =
         api::AppendDatabaseLocalSecurityEventBatchV1(transaction, rows);
     Require(!refused.ok &&
@@ -654,8 +617,7 @@ void TestPageBackedLifecycle() {
                 appended.prior_security_context_generation == generation &&
                 appended.security_context_generation == generation + 1 &&
                 appended.sealed_events.size() == 4 &&
-                appended.sealed_events.back().starts_with(
-                    "SBSECPL1\tAUTH_CONTEXT_SUCCESSOR\t") &&
+                event_codec::Decode(appended.sealed_events.back())[1] == "AUTH_CONTEXT_SUCCESSOR" &&
                 appended.page_number >= db::kCatalogOverflowFirstPageNumber &&
                 appended.page_number > unallocated_page,
             "private security exact append result invalid");
@@ -664,9 +626,7 @@ void TestPageBackedLifecycle() {
   };
 
   append(Batch(
-      Prefix(transaction, "PRINCIPAL") + std::string(kAlicePrincipal) +
-          "\t616c696365\tuser\tactive\t66696e6765727072696e74\t" +
-          std::to_string(generation + 1) + "\t0",
+      event_codec::Encode("PRINCIPAL", transaction.local_transaction_id, {kAlicePrincipal, std::string("616c696365"), std::string("user"), std::string("active"), std::string("66696e6765727072696e74"), std::to_string(generation + 1), std::string("0")}),
       transaction, generation + 1, kAlicePrincipal));
 
   // The exclusive private-security writer lease is checked before page
@@ -681,11 +641,11 @@ void TestPageBackedLifecycle() {
             "private security direct publication locator inspection failed");
     const std::uint32_t committed_slot =
         inspected.anchored_locator_slot == 0 ? 1 : 0;
-    const auto database_uuid = uuid::ParseDurableEngineIdentityUuid(
-        UuidKind::database, fixture.context.database_uuid.canonical);
-    const auto transaction_uuid = uuid::ParseDurableEngineIdentityUuid(
+    const auto database_uuid = uuid::MakeDurableEngineIdentityUuid(
+        UuidKind::database, fixture.context.database_uuid);
+    const auto transaction_uuid = uuid::MakeDurableEngineIdentityUuid(
         UuidKind::transaction,
-        competing_transaction.transaction_uuid.canonical);
+        competing_transaction.transaction_uuid);
     const auto fake_head = uuid::GenerateDurableEngineIdentityV7(
         UuidKind::page, 1788101002125ull);
     Require(database_uuid.ok() && transaction_uuid.ok() && fake_head.ok(),
@@ -715,12 +675,9 @@ void TestPageBackedLifecycle() {
             "private security direct publisher bypassed writer lease");
   }
   auto competing_rows = Batch(
-      Prefix(competing_transaction, "ROLE") +
-          "019e108d-1700-7000-8000-000000000799\t636f6e63757272656e74\t" +
-          competing_transaction.principal_uuid.canonical + "\tactive\t" +
-          std::to_string(generation + 1) + "\t0",
+      event_codec::Encode("ROLE", competing_transaction.local_transaction_id, {FixtureUuidLiteral("019e108d-1700-7000-8000-000000000799"), std::string("636f6e63757272656e74"), competing_transaction.principal_uuid, std::string("active"), std::to_string(generation + 1), std::string("0")}),
       competing_transaction, generation + 1,
-      "019e108d-1700-7000-8000-000000000799");
+      FixtureUuidLiteral("019e108d-1700-7000-8000-000000000799"));
   const auto competing_refused =
       api::AppendDatabaseLocalSecurityEventBatchV1(competing_transaction,
                                                    competing_rows);
@@ -735,41 +692,22 @@ void TestPageBackedLifecycle() {
            1788101002150ull);
 
   append(Batch(
-      Prefix(transaction, "ROLE") + std::string(kSysarchRole) +
-          "\t73797361726368\t" + transaction.principal_uuid.canonical +
-          "\tactive\t" + std::to_string(generation + 1) + "\t0",
+      event_codec::Encode("ROLE", transaction.local_transaction_id, {kSysarchRole, std::string("73797361726368"), transaction.principal_uuid, std::string("active"), std::to_string(generation + 1), std::string("0")}),
       transaction, generation + 1, kSysarchRole));
   append(Batch(
-      Prefix(transaction, "GROUP") + std::string(kPublicGroup) +
-          "\t5055424c4943\t\tactive\t" + std::to_string(generation + 1) +
-          "\t0",
+      event_codec::Encode("GROUP", transaction.local_transaction_id, {kPublicGroup, std::string("5055424c4943"), std::string{}, std::string("active"), std::to_string(generation + 1), std::string("0")}),
       transaction, generation + 1, kPublicGroup));
   append(Batch(
-      Prefix(transaction, "MEMBERSHIP") + std::string(kRoleMembership) +
-          "\t" + std::string(kAlicePrincipal) + "\t" +
-          std::string(kSysarchRole) + "\trole\t" +
-          transaction.principal_uuid.canonical + "\t" +
-          std::to_string(generation + 1) + "\t0",
+      event_codec::Encode("MEMBERSHIP", transaction.local_transaction_id, {kRoleMembership, kAlicePrincipal, kSysarchRole, std::string("role"), transaction.principal_uuid, std::to_string(generation + 1), std::string("0")}),
       transaction, generation + 1, kRoleMembership));
   append(Batch(
-      Prefix(transaction, "MEMBERSHIP") + std::string(kGroupMembership) +
-          "\t" + std::string(kAlicePrincipal) + "\t" +
-          std::string(kPublicGroup) + "\tgroup\t" +
-          transaction.principal_uuid.canonical + "\t" +
-          std::to_string(generation + 1) + "\t0",
+      event_codec::Encode("MEMBERSHIP", transaction.local_transaction_id, {kGroupMembership, kAlicePrincipal, kPublicGroup, std::string("group"), transaction.principal_uuid, std::to_string(generation + 1), std::string("0")}),
       transaction, generation + 1, kGroupMembership));
   append(Batch(
-      Prefix(transaction, "GRANT") + std::string(kConnectGrant) + "\t" +
-          std::string(kSysarchRole) + "\trole\t\t\tCONNECT\t" +
-          transaction.principal_uuid.canonical + "\tallow\t" +
-          std::to_string(generation + 1) + "\t0",
+      event_codec::Encode("GRANT", transaction.local_transaction_id, {kConnectGrant, kSysarchRole, std::string("role"), api::EngineUuid{}, std::string{}, std::string("CONNECT"), transaction.principal_uuid, std::string("allow"), std::to_string(generation + 1), std::string("0")}),
       transaction, generation + 1, kConnectGrant));
   append(Batch(
-      Prefix(transaction, "GRANT") + std::string(kConnectDeny) + "\t" +
-          std::string(kAlicePrincipal) +
-          "\tprincipal\t\t\tCONNECT\t" +
-          transaction.principal_uuid.canonical + "\tdeny\t" +
-          std::to_string(generation + 1) + "\t0",
+      event_codec::Encode("GRANT", transaction.local_transaction_id, {kConnectDeny, kAlicePrincipal, std::string("principal"), api::EngineUuid{}, std::string{}, std::string("CONNECT"), transaction.principal_uuid, std::string("deny"), std::to_string(generation + 1), std::string("0")}),
       transaction, generation + 1, kConnectDeny));
   const auto staged_after_seven = InspectLocator(fixture.database_path);
   Require(staged_after_seven.ok() &&
@@ -782,17 +720,7 @@ void TestPageBackedLifecycle() {
                       .security_context_generation == generation,
           "private security seventh same-transaction candidate changed committed-lineage generation");
   const std::string row_policy_event =
-      Prefix(transaction, "ROW_POLICY") + std::string(kRowPolicy) + "\t" +
-      std::string(kConnectGrant) + "\trelation\tallow_if\t01020304\t" +
-      transaction.principal_uuid.canonical + "\tactive\t" +
-      std::to_string(generation + 1) +
-      "\t0\t019e108d-1700-7000-8000-0000000007e2\t92\t7\t2\t" +
-      std::string(kRowPolicy) +
-      "\t3\t019e108d-1700-7000-8000-0000000007e3\t4\t" +
-      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t" +
-      "019e108d-1700-7000-8000-0000000007e4\t5\t" +
-      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t" +
-      "019e108d-1700-7000-8000-0000000007e5\t6\t7";
+      event_codec::Encode("ROW_POLICY", transaction.local_transaction_id, {kRowPolicy, kConnectGrant, std::string("relation"), std::string("allow_if"), std::string("01020304"), transaction.principal_uuid, std::string("active"), std::to_string(generation + 1), std::string("0"), FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007e2"), std::string("92"), std::string("7"), std::string("2"), kRowPolicy, std::string("3"), FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007e3"), std::string("4"), std::string("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007e4"), std::string("5"), std::string("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007e5"), std::string("6"), std::string("7")});
   append(Batch(row_policy_event, transaction, generation + 1, kRowPolicy));
 
   const auto own_view = api::LoadDatabaseLocalSecurityEventStoreV1(
@@ -954,12 +882,9 @@ void TestPageBackedLifecycle() {
   auto rollback_transaction =
       BeginTransaction(fixture.context, 1788101004000ull);
   auto rollback_rows = Batch(
-      Prefix(rollback_transaction, "ROLE") +
-          "019e108d-1700-7000-8000-0000000007e1\t726f6c6c6261636b\t" +
-          rollback_transaction.principal_uuid.canonical + "\tactive\t" +
-          std::to_string(generation + 1) + "\t0",
+      event_codec::Encode("ROLE", rollback_transaction.local_transaction_id, {FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007e1"), std::string("726f6c6c6261636b"), rollback_transaction.principal_uuid, std::string("active"), std::to_string(generation + 1), std::string("0")}),
       rollback_transaction, generation + 1,
-      "019e108d-1700-7000-8000-0000000007e1");
+      FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007e1"));
   const auto staged_rollback =
       api::AppendDatabaseLocalSecurityEventBatchV1(rollback_transaction,
                                                    rollback_rows);
@@ -1014,8 +939,7 @@ void TestPageBackedLifecycle() {
           "private security page corruption did not fail closed");
 
   auto wrong_database = fixture.context;
-  wrong_database.database_uuid.canonical =
-      "019e108d-1700-7000-8000-0000000007ff";
+  wrong_database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007ff");
   const auto wrong_identity = api::LoadDatabaseLocalSecurityEventStoreV1(
       wrong_database,
       api::DatabaseLocalSecurityEventVisibilityV1::latest_committed);
@@ -1144,7 +1068,7 @@ void TestSealedLegacyMigration() {
           second_transaction,
           SingleRoleBatch(second_transaction,
                           fixture.bootstrap_generation + 2,
-                          "019e108d-1700-7000-8000-000000000797"));
+                          FixtureUuidLiteral("019e108d-1700-7000-8000-000000000797")));
   Require(second_appended.ok &&
               second_appended.prior_security_context_generation ==
                   fixture.bootstrap_generation + 1,

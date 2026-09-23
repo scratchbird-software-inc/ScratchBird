@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -88,9 +89,9 @@ scratchbird::server::ServerSessionRecord ActiveSession() {
   session.principal_claim = "alice";
   session.provider_family = "local_password";
   session.database_path = "/tmp/eler063.sbdb";
-  session.database_uuid = "db-eler063";
+  session.database_uuid = scratchbird::tests::FixtureUuid(1208, 2801);
   session.local_transaction_id = 77;
-  session.transaction_uuid = scratchbird::server::UuidBytesToText(Uuid(0x60));
+  session.transaction_uuid = scratchbird::core::platform::Uuid{Uuid(0x60)};
   return session;
 }
 

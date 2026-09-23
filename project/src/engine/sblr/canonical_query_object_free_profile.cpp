@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <ranges>
 #include <unordered_set>
 
@@ -71,10 +72,16 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
     return result;
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
-  const auto calibration_uuid =
-      DerivedCanonicalUuid(identity_scope, "relational.calibration");
+  // These immutable planning records belong to this publication. Their
+  // identities are issued once and retained in the planning request/result.
+  const auto calibration_uuid = core::uuid::IssueRuntimeIdentityV7();
+  const auto selected_plan_uuid = core::uuid::IssueRuntimeIdentityV7();
+  if (!calibration_uuid || !selected_plan_uuid) {
+    result.diagnostic_id = "QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1";
+    result.detail = "live planning identity allocation failed";
+    return result;
+  }
+  (void)selected_plan_purpose;
   std::unordered_set<std::uint32_t> covered_nodes;
   opt::CanonicalOptimizerExecutorAvailability executor_availability;
   executor_availability.engine_owned = true;
@@ -84,14 +91,14 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
       request.optimizer_admission.policy_epoch;
   executor_availability.capability_catalog.engine_owned = true;
   executor_availability.node_bindings.reserve(profiles.size());
-  std::unordered_map<std::string, std::size_t> capability_indexes;
+  std::map<core::platform::Uuid, std::size_t> capability_indexes;
   for (const auto& profile : profiles) {
     const auto node = std::ranges::find_if(graph.nodes, [&](const auto& item) {
       return item.logical_node_id == profile.logical_node_id;
     });
     if (profile.logical_node_id == 0 || node == graph.nodes.end() ||
         node->node_kind != profile.logical_node_kind ||
-        profile.implementation_id.empty() || profile.capability_uuid.empty() ||
+        profile.implementation_id.empty() || !core::uuid::IsEngineIdentityUuid(profile.capability_uuid) ||
         profile.memory_bytes_required == 0) {
       result.diagnostic_id = "QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1";
       result.detail = std::string(operation_name) +
@@ -166,15 +173,14 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
   planning_input.admission_request = request.optimizer_request;
   planning_input.admission = request.optimizer_admission;
   planning_input.executor_availability = std::move(executor_availability);
-  planning_input.identity_scope = identity_scope;
-  planning_input.calibration_profile_uuid = calibration_uuid;
+  planning_input.calibration_profile_uuid = *calibration_uuid;
   planning_input.search_policy.maximum_exhaustive_plan_count = 1;
   planning_input.search_policy.bounded_beam_width = 1;
   planning_input.search_policy.deterministic_step_cost_ns = 1;
   planning_input.search_policy.engine_owned = true;
   planning_input.search_policy.allow_timeout_degradation = true;
   planning_input.publication_identity.selected_plan_uuid =
-      DerivedCanonicalUuid(identity_scope, selected_plan_purpose);
+      *selected_plan_uuid;
   planning_input.publication_identity.first_causal_counter_id = 1;
   planning_input.publication_identity.engine_owned = true;
   auto planning = opt::PlanCanonicalRelationalDag(planning_input);

@@ -25,9 +25,9 @@ std::string OperationIdOr(const EngineApiRequest& request,
   return request.operation_id.empty() ? fallback : request.operation_id;
 }
 
-std::string ProjectionTargetUuid(
+EngineUuid ProjectionTargetUuid(
     const EngineEvaluateClusterProjectionRedactionRequest& request) {
-  if (!request.target_uuid.empty()) { return request.target_uuid; }
+  if (!request.target_uuid.is_nil()) { return request.target_uuid; }
   return request.target_object.uuid;
 }
 
@@ -228,7 +228,7 @@ EngineEvaluateClusterProjectionRedaction(
         "support_export_right_required");
   }
 
-  const std::string target_uuid = ProjectionTargetUuid(request);
+  const EngineUuid target_uuid = ProjectionTargetUuid(request);
   const std::string required_right =
       ClusterProjectionRedactionRequiredRight(request.sensitivity);
   const bool visible = SecurityContextHasRight(request.context,

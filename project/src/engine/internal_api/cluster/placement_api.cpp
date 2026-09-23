@@ -1,3 +1,4 @@
+#include "uuid.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -61,7 +62,10 @@ std::string RecommendedActionForOperation(std::string_view operation) {
 }
 
 bool DescriptorHasRequiredIdentity(const EngineShardPlacementDescriptor& descriptor) {
-  return !descriptor.shard_uuid.empty() && !descriptor.target_filespace_uuid.empty();
+  return scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.shard_uuid) &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.target_filespace_uuid) &&
+         (descriptor.source_filespace_uuid.is_nil() ||
+          scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.source_filespace_uuid));
 }
 
 EngineShardPlacementOperationResult PlacementFailure(
@@ -126,8 +130,12 @@ EngineShardPlacementOperationResult EnginePlanShardPlacementOperation(
   if (request.placement_operation == "merge" && request.merge_inputs.size() < 2) {
     return PlacementFailure(request, "merge_requires_two_input_shards");
   }
+  for (const auto& input : request.merge_inputs) {
+    if (!DescriptorHasRequiredIdentity(input))
+      return PlacementFailure(request, "merge_input_identity_invalid");
+  }
   if ((request.placement_operation == "split" || request.placement_operation == "move") &&
-      request.descriptor.source_filespace_uuid.empty()) {
+      request.descriptor.source_filespace_uuid.is_nil()) {
     return PlacementFailure(request, "source_filespace_required");
   }
   if (request.physical_data_movement_requested) {

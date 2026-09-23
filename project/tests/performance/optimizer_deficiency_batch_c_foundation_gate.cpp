@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -233,11 +234,12 @@ bool LegacyGradeCostVectorModelsRequiredEffects() {
 
 bool AccessPathEnumerationUsesSelectivityRows() {
   auto logical = plan::BuildQueryShapePlan({plan::QueryShapeKind::kPointLookup});
-  logical.nodes.front().required_object_uuids.push_back("rel.batch_c");
+  logical.nodes.front().required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1266, 10));
 
   opt::OptimizerStatisticsCatalog catalog;
   const auto add = [&](const std::string& name, double value) {
-    catalog.Add(opt::MakeStatistic(name, "relation", "rel.batch_c", value,
+    catalog.Add(opt::MakeStatistic(name, "relation", opt::OptimizerStatisticTarget::Object(
+        scratchbird::tests::FixtureUuid(1266, 10)), value,
                                    opt::StatisticSource::kCatalogExact, 9, 0,
                                    opt::CostConfidence::kHigh));
   };

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -262,7 +263,7 @@ bool HasScrubbedMgaStatementContext(
 
 sbsql::ParserConfig ParserConfigForTest() {
   sbsql::ParserConfig config;
-  config.parser_uuid = "019f0000-0000-7500-8000-000000000108";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000000108");
   config.bundle_contract_id = "sbp_sbsql@qow-qry-001-binding-v1";
   config.build_id = "qow-qry-001-binding-v1";
   return config;

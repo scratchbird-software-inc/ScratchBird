@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "api_types.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "database_lifecycle.hpp"
@@ -79,17 +81,12 @@ std::uint64_t CurrentUnixMillis() {
   return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
-std::string NewUuid(UuidKind kind) {
+api::EngineUuid NewUuid(UuidKind kind) {
   static std::uint64_t sequence = 0;
   const auto seed = CurrentUnixMillis() + (++sequence);
-  if (kind == UuidKind::session) {
-    const auto generated = uuid::GenerateCompatibilityUnixTimeV7(seed);
-    Require(generated.ok(), "test UUID generation failed");
-    return uuid::UuidToString(generated.value);
-  }
   const auto generated = uuid::GenerateEngineIdentityV7(kind, seed);
   Require(generated.ok(), "test UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 api::EngineLocalizedName Name(std::string name) {
@@ -98,9 +95,9 @@ api::EngineLocalizedName Name(std::string name) {
 
 void AddAdminGrant(api::EngineRequestContext* context,
                    std::string right,
-                   std::string grant_uuid) {
+                   api::EngineUuid grant_uuid) {
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = std::move(grant_uuid);
+  grant.grant_uuid = std::move(grant_uuid);
   grant.subject_uuid = context->principal_uuid;
   grant.subject_kind = "principal";
   grant.right = std::move(right);
@@ -110,8 +107,7 @@ void AddAdminGrant(api::EngineRequestContext* context,
 
 void ConfigureAuthorizationContext(api::EngineRequestContext* context) {
   context->authorization_context.present = true;
-  context->authorization_context.authority_uuid.canonical =
-      "019e0b21-5eed-7000-8000-00000000a001";
+  context->authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019e0b21-5eed-7000-8000-00000000a001");
   context->authorization_context.principal_uuid = context->principal_uuid;
   context->authorization_context.security_epoch = context->security_epoch;
   context->authorization_context.policy_epoch = context->resource_epoch;
@@ -121,20 +117,20 @@ void ConfigureAuthorizationContext(api::EngineRequestContext* context) {
       {context->principal_uuid, "principal"});
   AddAdminGrant(context,
                 "SEC_IDENTITY_ADMIN",
-                "019e0b21-5eed-7000-8000-00000000a101");
+                scratchbird::tests::FixtureUuidLiteral("019e0b21-5eed-7000-8000-00000000a101"));
 }
 
 api::EngineRequestContext Context(const std::filesystem::path& database_path,
-                                  const std::string& database_uuid) {
-  static const std::string gate_principal_uuid = NewUuid(UuidKind::principal);
-  static const std::string gate_session_uuid = NewUuid(UuidKind::session);
+                                  const api::EngineUuid& database_uuid) {
+  static const api::EngineUuid gate_principal_uuid = NewUuid(UuidKind::principal);
+  static const api::EngineUuid gate_session_uuid = NewUuid(UuidKind::session);
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "sbsql-database-create-schema-bootstrap-gate";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = gate_principal_uuid;
-  context.session_uuid.canonical = gate_session_uuid;
+  context.database_uuid = database_uuid;
+  context.principal_uuid = gate_principal_uuid;
+  context.session_uuid = gate_session_uuid;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -150,7 +146,7 @@ std::filesystem::path TestDatabasePath() {
          ("sbsql_schema_bootstrap_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
 }
 
-std::string CreateDatabase(const std::filesystem::path& database_path) {
+api::EngineUuid CreateDatabase(const std::filesystem::path& database_path) {
   const auto now = CurrentUnixMillis();
   const auto database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, now);
   const auto filespace_uuid = uuid::GenerateEngineIdentityV7(UuidKind::filespace, now + 1);
@@ -175,7 +171,7 @@ std::string CreateDatabase(const std::filesystem::path& database_path) {
     std::cerr << created.diagnostic.diagnostic_code << '\n';
     std::exit(EXIT_FAILURE);
   }
-  return uuid::UuidToString(database_uuid.value.value);
+  return database_uuid.value.value;
 }
 
 std::uint32_t TypedKindCount(const std::vector<std::string>& counts, const std::string& kind) {
@@ -295,7 +291,7 @@ void RequireBootstrapSchemas(const std::set<std::string>& paths) {
 }
 
 void CreateUserThroughEnginePolicy(const std::filesystem::path& database_path,
-                                   const std::string& database_uuid) {
+                                   const api::EngineUuid& database_uuid) {
   api::EngineBeginTransactionRequest begin_request;
   begin_request.context = Context(database_path, database_uuid);
   const auto begin = api::EngineBeginTransaction(begin_request);
@@ -313,7 +309,7 @@ void CreateUserThroughEnginePolicy(const std::filesystem::path& database_path,
 
   api::EngineCreateIdentityRequest identity;
   identity.context = context;
-  identity.target_object.uuid.canonical = NewUuid(UuidKind::principal);
+  identity.target_object.uuid = NewUuid(UuidKind::principal);
   identity.target_object.object_kind = "security_identity";
   identity.localized_names.push_back(Name("benchmark_user"));
   identity.option_envelopes.push_back("identity_kind:user");
@@ -326,13 +322,16 @@ void CreateUserThroughEnginePolicy(const std::filesystem::path& database_path,
   Require(created.ok, "engine identity policy did not create the test user");
   bool saw_home_schema = false;
   bool saw_home_schema_path = false;
-  std::string home_schema_uuid;
+  api::EngineUuid home_schema_uuid;
   for (const auto& evidence : created.evidence) {
-    if (evidence.evidence_kind == "home_schema" && !evidence.evidence_id.empty()) {
+    if (evidence.evidence_kind == "home_schema") {
+      const auto* identity = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+      Require(identity && uuid::IsEngineIdentityUuid(*identity),
+              "home schema evidence must contain a binary engine UUID");
       saw_home_schema = true;
-      home_schema_uuid = evidence.evidence_id;
+      home_schema_uuid = *identity;
     }
-    if (evidence.evidence_kind == "home_schema_path" && evidence.evidence_id == "users.benchmark_user") {
+    if (evidence.evidence_kind == "home_schema_path" && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, "users.benchmark_user")) {
       saw_home_schema_path = true;
     }
   }
@@ -385,7 +384,7 @@ void RequireCleanShutdownWritesFinalTransaction(const std::filesystem::path& dat
 int main() {
   ConfigureMemoryFixture();
   const auto database_path = TestDatabasePath();
-  const std::string database_uuid = CreateDatabase(database_path);
+  const auto database_uuid = CreateDatabase(database_path);
   auto context = Context(database_path, database_uuid);
   RequireBootstrapSchemas(VisibleSchemaPaths(context));
   RequireBootstrapCatalogRowsPersisted(database_path);

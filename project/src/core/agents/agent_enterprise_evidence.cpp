@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_enterprise_evidence.hpp"
+#include "uuid.hpp"
 
 #include <cstddef>
 #include <iomanip>
@@ -106,25 +107,24 @@ AgentMetricSnapshotEvaluation EvaluateStrictMetricEvidence(
   }
 
   AgentRuntimeContext context = request.metric_context;
-  if (context.database_uuid.empty() && !request.scope_uuids.empty()) {
-    context.database_uuid = request.scope_uuids.front();
-  }
-  if (context.principal_uuid.empty()) {
-    context.principal_uuid = request.principal_uuid;
+  // Metric evaluation consumes the native engine context. Legacy string
+  // annotations in the evidence request are not identity or security authority.
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(context.database_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(context.principal_uuid) ||
+      !context.security_context_present) {
+    evaluation.status = AgentError("SB_AGENT_ENTERPRISE_EVIDENCE.NATIVE_CONTEXT_REQUIRED",
+        "native database, principal and security context are required");
+    return evaluation;
   }
   if (context.wall_now_microseconds == 0) {
     context.wall_now_microseconds =
         request.created_at_microseconds == 0 ? 1 : request.created_at_microseconds;
   }
-  context.security_context_present = true;
 
   AgentMetricSnapshotEvaluationOptions options =
       request.metric_snapshot_options;
   if (request.production_live_path) {
     options.mode = AgentMetricRuntimeMode::production_strict;
-  }
-  if (options.expected_scope_uuid.empty() && !request.scope_uuids.empty()) {
-    options.expected_scope_uuid = request.scope_uuids.front();
   }
   return EvaluateAgentObservedMetricSnapshots(
       *descriptor, context, request.observed_metric_snapshots, options);

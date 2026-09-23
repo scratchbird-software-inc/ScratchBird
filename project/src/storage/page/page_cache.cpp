@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <sstream>
 #include <utility>
+#include <tuple>
 
 namespace scratchbird::storage::page {
 namespace {
@@ -25,7 +26,6 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::IsEngineIdentityUuid;
-using scratchbird::core::uuid::UuidToString;
 using scratchbird::core::memory::DefaultMemoryManager;
 using scratchbird::core::memory::MemoryCategory;
 using scratchbird::core::memory::MemoryLifetime;
@@ -108,31 +108,27 @@ PageCacheResult Error(std::string diagnostic_code, std::string message_key, std:
 }
 
 // MMCH_PAGE_CACHE_FRAME_OWNERSHIP
-std::string PageFrameKey(const TypedUuid& page_uuid) {
-  return UuidToString(page_uuid.value);
+scratchbird::core::platform::Uuid PageFrameKey(const TypedUuid& page_uuid) {
+  return page_uuid.value;
 }
 
-u64 DeterministicFrameShardHash(std::string_view value) {
+u64 DeterministicFrameShardHash(const scratchbird::core::platform::Uuid& value) {
   u64 hash = 1469598103934665603ull;
-  for (const unsigned char ch : value) {
+  for (const auto ch : value.bytes) {
     hash ^= static_cast<u64>(ch);
     hash *= 1099511628211ull;
   }
   return hash;
 }
 
-std::size_t FrameShardIndexForKey(std::string_view key) {
+std::size_t FrameShardIndexForKey(const scratchbird::core::platform::Uuid& key) {
   return static_cast<std::size_t>(
       DeterministicFrameShardHash(key) % kPageCacheFrameShardCount);
 }
 
-std::string PageFrameScopeId(const PageCacheEntry& entry,
-                             PageCacheIoContext context,
+std::string PageFrameScopeId(PageCacheIoContext context,
                              std::size_t shard_index) {
-  return "database=" + UuidToString(entry.database_uuid.value) +
-         ";filespace=" + UuidToString(entry.filespace_uuid.value) +
-         ";context=" + PageCacheIoContextName(context) +
-         ";page=" + UuidToString(entry.page_uuid.value) +
+  return std::string("context=") + PageCacheIoContextName(context) +
          ";shard=" + std::to_string(shard_index);
 }
 
@@ -169,9 +165,10 @@ MemoryTag PageCacheFrameTag(const PageCacheEntry& entry,
   tag.purpose = "page_cache_resident_frame";
   tag.category = MemoryCategory::page_buffer;
   tag.lifetime = MemoryLifetime::page_buffer;
-  tag.owner = "page_cache:" + UuidToString(entry.database_uuid.value);
-  tag.context_id = PageFrameKey(entry.page_uuid);
-  tag.database_id = UuidToString(entry.database_uuid.value);
+  using scratchbird::core::memory::MemoryBinaryScopeKind;
+  tag.binary_ownership[MemoryBinaryScopeKind::owner] = entry.database_uuid.value.bytes;
+  tag.binary_ownership[MemoryBinaryScopeKind::context] = entry.page_uuid.value.bytes;
+  tag.binary_ownership[MemoryBinaryScopeKind::database] = entry.database_uuid.value.bytes;
   tag.callsite = std::string("storage.page_cache.") + PageCacheIoContextName(context);
   return tag;
 }
@@ -205,7 +202,7 @@ PageCacheResidentFrame MakeResidentFrameRecord(PageCacheEntry entry,
   record.page_number = entry.page_number;
   record.page_generation = entry.page_generation;
   record.page_size = entry.page_size;
-  record.scope_id = PageFrameScopeId(entry, context, shard_index);
+  record.scope_id = PageFrameScopeId(context, shard_index);
   return record;
 }
 
@@ -332,9 +329,32 @@ PageCacheSnapshot SnapshotUnlocked(const PageCacheLedger& ledger) {
     snapshot.contexts.push_back(std::move(context_snapshot));
   }
   for (const auto& entry : ledger.entries) {
+    auto scope = std::find_if(snapshot.metric_scopes.begin(), snapshot.metric_scopes.end(),
+        [&](const PageCacheMetricScopeSnapshot& value) {
+          return value.database_uuid == entry.database_uuid.value &&
+                 value.filespace_uuid == entry.filespace_uuid.value;
+        });
+    if (scope == snapshot.metric_scopes.end()) {
+      PageCacheMetricScopeSnapshot value;
+      value.database_uuid = entry.database_uuid.value;
+      value.filespace_uuid = entry.filespace_uuid.value;
+      for (std::size_t index = 0; index < kPageCacheIoContextCount; ++index) {
+        value.contexts[index].context = ContextFromIndex(index);
+        value.contexts[index].context_name = PageCacheIoContextName(ContextFromIndex(index));
+      }
+      snapshot.metric_scopes.push_back(std::move(value));
+      scope = std::prev(snapshot.metric_scopes.end());
+    }
     if (!entry.resident) {
       continue;
     }
+    auto& scoped_context = scope->contexts[ContextIndex(entry.io_context)];
+    ++scope->resident_pages;
+    scope->resident_bytes += entry.resident_bytes;
+    ++scoped_context.resident_pages;
+    scoped_context.resident_bytes += entry.resident_bytes;
+    if (entry.pin_count != 0) { ++scope->pinned_pages; ++scoped_context.pinned_pages; }
+    if (entry.dirty) { ++scope->dirty_pages; ++scoped_context.dirty_pages; }
     auto& context_snapshot = snapshot.contexts[ContextIndex(entry.io_context)];
     ++context_snapshot.resident_pages;
     context_snapshot.resident_bytes += entry.resident_bytes;
@@ -463,9 +483,13 @@ u64 CountResidentByContext(const PageCacheLedger& ledger, PageCacheIoContext con
   return count;
 }
 
+using PageCacheMetricScopeKey = std::tuple<scratchbird::core::platform::Uuid,
+    scratchbird::core::platform::Uuid, PageCacheIoContext>;
+using PageCacheScopedEvictions = std::map<PageCacheMetricScopeKey, u64>;
+
 void EvictUnlocked(PageCacheLedger* ledger,
                    PageCacheEntry* entry,
-                   std::array<u64, kPageCacheIoContextCount>* evictions_by_context) {
+                   PageCacheScopedEvictions* evictions_by_context) {
   if (ledger == nullptr || entry == nullptr) {
     return;
   }
@@ -478,104 +502,95 @@ void EvictUnlocked(PageCacheLedger* ledger,
   entry->frame_scope_id.clear();
   ++ledger->context_counters[index].evictions;
   if (evictions_by_context != nullptr) {
-    ++(*evictions_by_context)[index];
+    ++(*evictions_by_context)[{entry->database_uuid.value, entry->filespace_uuid.value, entry->io_context}];
   }
 }
 
 void PublishSnapshot(const PageCacheSnapshot& snapshot) {
-  (void)scratchbird::core::metrics::PublishPageCacheSnapshot(static_cast<double>(snapshot.resident_pages),
-                                                            static_cast<double>(snapshot.resident_bytes),
-                                                            static_cast<double>(snapshot.pinned_pages),
-                                                            static_cast<double>(snapshot.dirty_pages),
-                                                            "all",
-                                                            "all",
-                                                            "all");
-  for (const auto& context : snapshot.contexts) {
-    (void)scratchbird::core::metrics::PublishPageCacheContextSnapshot(
-        static_cast<double>(context.resident_pages),
-        static_cast<double>(context.resident_bytes),
-        static_cast<double>(context.pinned_pages),
-        static_cast<double>(context.dirty_pages),
-        "all",
-        "all",
-        "all",
-        context.context_name,
-        "current",
-        "snapshot");
+  for (const auto& scope : snapshot.metric_scopes) {
+    (void)scratchbird::core::metrics::PublishPageCacheSnapshot(
+        static_cast<double>(scope.resident_pages), static_cast<double>(scope.resident_bytes),
+        static_cast<double>(scope.pinned_pages), static_cast<double>(scope.dirty_pages),
+        scope.database_uuid, scope.filespace_uuid, "all");
+    for (const auto& context : scope.contexts) {
+      (void)scratchbird::core::metrics::PublishPageCacheContextSnapshot(
+          static_cast<double>(context.resident_pages), static_cast<double>(context.resident_bytes),
+          static_cast<double>(context.pinned_pages), static_cast<double>(context.dirty_pages),
+          scope.database_uuid, scope.filespace_uuid, "all", context.context_name,
+          "current", "snapshot");
+    }
   }
 }
 
-void RecordAdmissionMetric(PageCacheIoContext context, u64 count, const char* reason) {
+void RecordAdmissionMetric(const PageCacheEntry& scope, PageCacheIoContext context, u64 count, const char* reason) {
   if (count == 0) {
     return;
   }
   (void)scratchbird::core::metrics::RecordPageCacheContextAdmission(
       static_cast<double>(count),
-      "all",
-      "all",
+      scope.database_uuid.value,
+      scope.filespace_uuid.value,
       "all",
       PageCacheIoContextName(context),
       "ok",
       reason);
 }
 
-void RecordReuseMetric(PageCacheIoContext context, u64 count, const char* reason) {
+void RecordReuseMetric(const PageCacheEntry& scope, PageCacheIoContext context, u64 count, const char* reason) {
   if (count == 0) {
     return;
   }
   (void)scratchbird::core::metrics::RecordPageCacheContextReuse(
       static_cast<double>(count),
-      "all",
-      "all",
+      scope.database_uuid.value,
+      scope.filespace_uuid.value,
       "all",
       PageCacheIoContextName(context),
       "ok",
       reason);
 }
 
-void RecordProtectedSkipMetric(PageCacheIoContext context, u64 count, const char* reason) {
+void RecordProtectedSkipMetric(const PageCacheEntry& scope, PageCacheIoContext context, u64 count, const char* reason) {
   if (count == 0) {
     return;
   }
   (void)scratchbird::core::metrics::RecordPageCacheContextProtectedNormalHotSkip(
       static_cast<double>(count),
-      "all",
-      "all",
+      scope.database_uuid.value,
+      scope.filespace_uuid.value,
       "all",
       PageCacheIoContextName(context),
       "protected",
       reason);
 }
 
-void RecordRefusalMetric(PageCacheIoContext context, u64 count, const char* reason) {
+void RecordRefusalMetric(const PageCacheEntry& scope, PageCacheIoContext context, u64 count, const char* reason) {
   if (count == 0) {
     return;
   }
   (void)scratchbird::core::metrics::RecordPageCacheContextRefusal(
       static_cast<double>(count),
-      "all",
-      "all",
+      scope.database_uuid.value,
+      scope.filespace_uuid.value,
       "all",
       PageCacheIoContextName(context),
       "refused",
       reason);
 }
 
-void RecordContextEvictionMetrics(const std::array<u64, kPageCacheIoContextCount>& evictions,
+void RecordContextEvictionMetrics(const PageCacheScopedEvictions& evictions,
                                   const char* result,
-                                  const char* reason) {
-  for (std::size_t index = 0; index < evictions.size(); ++index) {
-    if (evictions[index] == 0) {
-      continue;
-    }
+                                  const char* reason,
+                                  const char* aggregate_result = nullptr) {
+  for (const auto& [key, count] : evictions) {
+    const auto& [database_uuid, filespace_uuid, context] = key;
+    if (count == 0) continue;
+    for (u64 i = 0; i < count; ++i)
+      (void)scratchbird::core::metrics::RecordPageCacheEviction(
+          database_uuid, filespace_uuid, "all", aggregate_result ? aggregate_result : reason);
     (void)scratchbird::core::metrics::RecordPageCacheContextEviction(
-        static_cast<double>(evictions[index]),
-        "all",
-        "all",
-        "all",
-        PageCacheIoContextName(ContextFromIndex(index)),
-        result,
-        reason);
+        static_cast<double>(count), database_uuid, filespace_uuid, "all",
+        PageCacheIoContextName(context), result, reason);
   }
 }
 
@@ -606,8 +621,8 @@ PageCacheCheckpointPublication BasePublication(const PageCacheLifecycleInput& in
                                                PageCacheLifecycleState state,
                                                PageCacheCheckpointMode mode) {
   PageCacheCheckpointPublication publication;
-  publication.database_uuid = scratchbird::core::uuid::UuidToString(input.database_uuid.value);
-  publication.filespace_uuid = scratchbird::core::uuid::UuidToString(input.filespace_uuid.value);
+  publication.database_uuid = input.database_uuid.value;
+  publication.filespace_uuid = input.filespace_uuid.value;
   publication.database_lifecycle_state = input.database_lifecycle_state;
   publication.lifecycle_state = state;
   publication.checkpoint_mode = mode;
@@ -943,7 +958,7 @@ PageCacheResult AdmitPageCacheEntryForContext(PageCacheLedger* ledger,
   u64 context_refusals = 0;
   const char* refusal_reason = nullptr;
   const char* eviction_metric_reason = "budget_or_ring";
-  std::array<u64, kPageCacheIoContextCount> evictions_by_context{};
+  PageCacheScopedEvictions evictions_by_context;
   {
     std::lock_guard<std::mutex> lock(ledger->mutex);
     PageCacheEntry* existing = FindMutable(ledger, entry.page_uuid);
@@ -1017,7 +1032,7 @@ PageCacheResult AdmitPageCacheEntryForContext(PageCacheLedger* ledger,
         const auto key = PageFrameKey(admitted.page_uuid);
         const std::size_t shard_index = FrameShardIndexForKey(key);
         admitted.frame_shard_id = static_cast<u64>(shard_index);
-        admitted.frame_scope_id = PageFrameScopeId(admitted, context, shard_index);
+        admitted.frame_scope_id = PageFrameScopeId(context, shard_index);
       }
       if (existing != nullptr) {
         *existing = admitted;
@@ -1029,11 +1044,11 @@ PageCacheResult AdmitPageCacheEntryForContext(PageCacheLedger* ledger,
             InsertResidentFrameUnlocked(ledger, admitted, context, std::move(resident_frame));
         if (existing != nullptr) {
           existing->frame_shard_id = static_cast<u64>(shard_index);
-          existing->frame_scope_id = PageFrameScopeId(*existing, context, shard_index);
+          existing->frame_scope_id = PageFrameScopeId(context, shard_index);
         } else {
           ledger->entries.back().frame_shard_id = static_cast<u64>(shard_index);
           ledger->entries.back().frame_scope_id =
-              PageFrameScopeId(ledger->entries.back(), context, shard_index);
+              PageFrameScopeId(context, shard_index);
         }
       }
       ++context_admissions;
@@ -1050,24 +1065,17 @@ PageCacheResult AdmitPageCacheEntryForContext(PageCacheLedger* ledger,
     }
   }
   if (refusal_reason != nullptr) {
-    RecordProtectedSkipMetric(context, protected_normal_hot_skips, "bulk_context_budget");
-    RecordRefusalMetric(context, context_refusals, refusal_reason);
-    RecordContextEvictionMetrics(evictions_by_context, "evicted", eviction_metric_reason);
+    RecordProtectedSkipMetric(entry, context, protected_normal_hot_skips, "bulk_context_budget");
+    RecordRefusalMetric(entry, context, context_refusals, refusal_reason);
+    RecordContextEvictionMetrics(evictions_by_context, "evicted", eviction_metric_reason, "budget");
     PublishSnapshot(result.snapshot);
     AppendFrameOwnershipEvidence(&result.evidence, result.snapshot);
     return result;
   }
-  u64 budget_evictions = 0;
-  for (const auto count : evictions_by_context) {
-    budget_evictions += count;
-  }
-  for (u64 i = 0; i < budget_evictions; ++i) {
-    (void)scratchbird::core::metrics::RecordPageCacheEviction("all", "all", "all", "budget");
-  }
-  RecordAdmissionMetric(context, context_admissions, "admit");
-  RecordReuseMetric(context, context_reuses, "ring_or_slot_reuse");
-  RecordProtectedSkipMetric(context, protected_normal_hot_skips, "bulk_context_budget");
-  RecordContextEvictionMetrics(evictions_by_context, "evicted", "budget_or_ring");
+  RecordAdmissionMetric(entry, context, context_admissions, "admit");
+  RecordReuseMetric(entry, context, context_reuses, "ring_or_slot_reuse");
+  RecordProtectedSkipMetric(entry, context, protected_normal_hot_skips, "bulk_context_budget");
+  RecordContextEvictionMetrics(evictions_by_context, "evicted", "budget_or_ring", "budget");
   PublishSnapshot(result.snapshot);
   AppendFrameOwnershipEvidence(&result.evidence, result.snapshot);
   return result;
@@ -1166,7 +1174,7 @@ PageCacheResult EvictOnePageCacheEntryForContext(PageCacheLedger* ledger,
   }
   PageCacheResult result;
   u64 protected_normal_hot_skips = 0;
-  std::array<u64, kPageCacheIoContextCount> evictions_by_context{};
+  PageCacheScopedEvictions evictions_by_context;
   {
     std::lock_guard<std::mutex> lock(ledger->mutex);
     PageCacheEntry* selected = SelectEvictionCandidate(ledger,
@@ -1195,8 +1203,7 @@ PageCacheResult EvictOnePageCacheEntryForContext(PageCacheLedger* ledger,
     }
     result.snapshot = SnapshotUnlocked(*ledger);
   }
-  (void)scratchbird::core::metrics::RecordPageCacheEviction("all", "all", "all", "explicit");
-  RecordProtectedSkipMetric(context, protected_normal_hot_skips, "explicit");
+  RecordProtectedSkipMetric(result.entry, context, protected_normal_hot_skips, "explicit");
   RecordContextEvictionMetrics(evictions_by_context, "evicted", "explicit");
   PublishSnapshot(result.snapshot);
   AppendFrameOwnershipEvidence(&result.evidence, result.snapshot);
@@ -1395,7 +1402,7 @@ PageCacheLifecycleResult ApplyPageCacheMemoryPressure(PageCacheLedger* ledger,
   u64 flushed = 0;
   u64 evicted = 0;
   bool pinned_blocked = false;
-  std::array<u64, kPageCacheIoContextCount> evictions_by_context{};
+  PageCacheScopedEvictions evictions_by_context;
   {
     std::lock_guard<std::mutex> lock(ledger->mutex);
     before = SnapshotUnlocked(*ledger);
@@ -1422,9 +1429,6 @@ PageCacheLifecycleResult ApplyPageCacheMemoryPressure(PageCacheLedger* ledger,
       current = SnapshotUnlocked(*ledger);
     }
     after = SnapshotUnlocked(*ledger);
-  }
-  for (u64 i = 0; i < evicted; ++i) {
-    (void)scratchbird::core::metrics::RecordPageCacheEviction("all", "all", "all", "memory_pressure");
   }
   RecordContextEvictionMetrics(evictions_by_context, "evicted", "memory_pressure");
   PublishSnapshot(after);
@@ -1487,7 +1491,7 @@ PageCacheLifecycleResult ShutdownFlushPageCacheLifecycle(PageCacheLedger* ledger
   PageCacheSnapshot after;
   u64 flushed = 0;
   u64 evicted = 0;
-  std::array<u64, kPageCacheIoContextCount> evictions_by_context{};
+  PageCacheScopedEvictions evictions_by_context;
   {
     std::lock_guard<std::mutex> lock(ledger->mutex);
     before = SnapshotUnlocked(*ledger);
@@ -1515,9 +1519,6 @@ PageCacheLifecycleResult ShutdownFlushPageCacheLifecycle(PageCacheLedger* ledger
     ++ledger->shutdown_flush_count;
     after = SnapshotUnlocked(*ledger);
   }
-  for (u64 i = 0; i < evicted; ++i) {
-    (void)scratchbird::core::metrics::RecordPageCacheEviction("all", "all", "all", "shutdown_flush");
-  }
   RecordContextEvictionMetrics(evictions_by_context, "evicted", "shutdown_flush");
   PublishSnapshot(after);
 
@@ -1538,12 +1539,10 @@ PageCacheLifecycleResult ShutdownFlushPageCacheLifecycle(PageCacheLedger* ledger
   return result;
 }
 
-std::string SerializePageCacheCheckpointJson(const PageCacheCheckpointPublication& publication,
+std::string SerializePageCacheCheckpoint(const PageCacheCheckpointPublication& publication,
                                              bool diagnostic_role) {
   std::ostringstream out;
   out << "{\"page_cache_checkpoint\":{"
-      << "\"database_uuid\":\"" << JsonEscape(publication.database_uuid) << "\","
-      << "\"filespace_uuid\":\"" << JsonEscape(publication.filespace_uuid) << "\","
       << "\"database_lifecycle_state\":\"" << JsonEscape(publication.database_lifecycle_state) << "\","
       << "\"lifecycle_state\":\"" << PageCacheLifecycleStateName(publication.lifecycle_state) << "\","
       << "\"checkpoint_mode\":\"" << PageCacheCheckpointModeName(publication.checkpoint_mode) << "\","
@@ -1580,7 +1579,32 @@ std::string SerializePageCacheCheckpointJson(const PageCacheCheckpointPublicatio
     out << "\"" << JsonEscape(diagnostic) << "\"";
   }
   out << "]}}";
-  return out.str();
+  const auto details = out.str();
+  std::string bytes("SBPCCP02", 8);
+  for (const auto* uuid : {&publication.database_uuid, &publication.filespace_uuid})
+    bytes.append(reinterpret_cast<const char*>(uuid->bytes.data()), uuid->bytes.size());
+  const u64 size = details.size();
+  for (unsigned shift = 0; shift < 64; shift += 8)
+    bytes.push_back(static_cast<char>((size >> shift) & 255u));
+  bytes.append(details);
+  return bytes;
+}
+
+bool DecodePageCacheCheckpoint(std::string_view bytes, PageCacheCheckpointEnvelope* output) {
+  if (output == nullptr || bytes.size() < 48 || bytes.substr(0, 8) != "SBPCCP02")
+    return false;
+  u64 size = 0;
+  for (unsigned index = 0; index < 8; ++index)
+    size |= static_cast<u64>(static_cast<unsigned char>(bytes[40 + index])) << (index * 8);
+  if (size != bytes.size() - 48) return false;
+  PageCacheCheckpointEnvelope decoded;
+  for (unsigned index = 0; index < 16; ++index) {
+    decoded.database_uuid.bytes[index] = static_cast<unsigned char>(bytes[8 + index]);
+    decoded.filespace_uuid.bytes[index] = static_cast<unsigned char>(bytes[24 + index]);
+  }
+  decoded.details_json.assign(bytes.substr(48));
+  *output = std::move(decoded);
+  return true;
 }
 
 std::vector<std::string> PageCacheDiagnosticCodes() {

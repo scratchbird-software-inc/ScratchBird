@@ -1,3 +1,4 @@
+#include <stdexcept>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -30,11 +31,18 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
-std::string Uuid(const std::uint64_t suffix) {
-  auto text = std::string("019f0000-0000-7700-8000-000000000000");
-  const auto digits = std::to_string(suffix);
-  text.replace(text.size() - digits.size(), digits.size(), digits);
-  return text;
+scratchbird::core::platform::Uuid Uuid(std::uint64_t suffix) {
+  // Retain the original fixture's decimal digits in the UUID's low nibbles.
+  scratchbird::core::platform::Uuid id{};
+  id.bytes[0] = 0x01; id.bytes[1] = 0x9f;
+  id.bytes[6] = 0x77; id.bytes[8] = 0x80;
+  for (unsigned i = 0; i < 6; ++i) {
+    const auto low = suffix % 10; suffix /= 10;
+    const auto high = suffix % 10; suffix /= 10;
+    id.bytes[15 - i] = static_cast<std::uint8_t>((high << 4) | low);
+  }
+  if (suffix != 0) throw std::out_of_range("UUID fixture suffix");
+  return id;
 }
 
 plan::CanonicalMgaStatementContext MgaContext() {

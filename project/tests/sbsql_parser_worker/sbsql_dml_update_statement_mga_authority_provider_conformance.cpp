@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "dml/update_statement_mga_authority_provider.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "uuid.hpp"
@@ -26,32 +27,19 @@ namespace {
 
 namespace engine_api = scratchbird::engine::internal_api;
 
-constexpr std::string_view kDatabaseUuid =
-    "019d5200-0000-7000-8000-000000000001";
-constexpr std::string_view kTransactionUuid =
-    "019d5200-0000-7000-8000-000000000002";
-constexpr std::string_view kOtherTransactionUuid =
-    "019d5200-0000-7000-8000-000000000003";
-constexpr std::string_view kReceiptUuid =
-    "019d5200-0000-7000-8000-000000000004";
-constexpr std::string_view kOtherReceiptUuid =
-    "019d5200-0000-7000-8000-000000000005";
-constexpr std::string_view kOperationUuid =
-    "019d5200-0000-7000-8000-000000000006";
-constexpr std::string_view kOtherOperationUuid =
-    "019d5200-0000-7000-8000-000000000007";
-constexpr std::string_view kDescriptorUuid =
-    "019d5200-0000-7000-8000-000000000008";
-constexpr std::string_view kOtherDescriptorUuid =
-    "019d5200-0000-7000-8000-000000000009";
-constexpr std::string_view kRecoveryUuid =
-    "019d5200-0000-7000-8000-00000000000a";
-constexpr std::string_view kOtherRecoveryUuid =
-    "019d5200-0000-7000-8000-00000000000b";
-constexpr std::string_view kReservedBarrierUuid =
-    "019d5200-0000-7000-8000-00000000000e";
-constexpr std::string_view kOtherReservedBarrierUuid =
-    "019d5200-0000-7000-8000-00000000000f";
+constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000001");
+constexpr auto kTransactionUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000002");
+constexpr auto kOtherTransactionUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000003");
+constexpr auto kReceiptUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000004");
+constexpr auto kOtherReceiptUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000005");
+constexpr auto kOperationUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000006");
+constexpr auto kOtherOperationUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000007");
+constexpr auto kDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000008");
+constexpr auto kOtherDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-000000000009");
+constexpr auto kRecoveryUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-00000000000a");
+constexpr auto kOtherRecoveryUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-00000000000b");
+constexpr auto kReservedBarrierUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-00000000000e");
+constexpr auto kOtherReservedBarrierUuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-00000000000f");
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -76,11 +64,8 @@ bool Nonzero(const engine_api::MgaDmlUpdateStatementAuthoritySha256V1& sha) {
                      [](std::uint8_t value) { return value != 0; });
 }
 
-bool ExactNonzeroUuid(std::string_view text) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() &&
-         !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == text;
+bool ExactNonzeroUuid(const engine_api::EngineUuid& value) {
+  return !value.is_nil() && scratchbird::core::uuid::IsValidUuidVariant(value);
 }
 
 class TemporaryDirectory final {
@@ -109,30 +94,28 @@ engine_api::EngineDmlUpdateStatementMgaAuthorityOpenRequestV1 Request(
   request.context.trust_mode =
       engine_api::EngineTrustMode::server_isolated;
   request.context.database_path = database_path.string();
-  request.context.database_uuid.canonical = std::string(kDatabaseUuid);
-  request.context.transaction_uuid.canonical = std::string(kTransactionUuid);
+  request.context.database_uuid = kDatabaseUuid;
+  request.context.transaction_uuid = kTransactionUuid;
   request.context.local_transaction_id = 901;
-  request.context.statement_receipt_uuid.canonical =
-      std::string(kReceiptUuid);
-  request.context.statement_snapshot_uuid.canonical =
-      "019d5200-0000-7000-8000-00000000000c";
+  request.context.statement_receipt_uuid =
+      kReceiptUuid;
+  request.context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-00000000000c");
   request.context.statement_metadata_snapshot_engine_owned = true;
-  request.context.statement_metadata_snapshot_uuid.canonical =
-      "019d5200-0000-7000-8000-00000000000d";
+  request.context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d5200-0000-7000-8000-00000000000d");
   request.context.security_context_present = true;
   request.context.authorization_context.present = true;
-  request.context.authorization_context.authority_uuid.canonical =
-      std::string(kDatabaseUuid);
+  request.context.authorization_context.authority_uuid =
+      kDatabaseUuid;
   request.context.authorization_context.security_context_generation = 1;
   request.context.trace_tags.push_back("private_dml_update_rows_consumer");
-  request.authenticated_statement_receipt_uuid = std::string(kReceiptUuid);
-  request.operation_uuid = std::string(kOperationUuid);
-  request.descriptor_uuid = std::string(kDescriptorUuid);
+  request.authenticated_statement_receipt_uuid = kReceiptUuid;
+  request.operation_uuid = kOperationUuid;
+  request.descriptor_uuid = kDescriptorUuid;
   request.descriptor_generation = 17;
-  request.recovery_token_uuid = std::string(kRecoveryUuid);
+  request.recovery_token_uuid = kRecoveryUuid;
   request.recovery_generation = 23;
   request.reserved_publication_barrier_uuid =
-      std::string(kReservedBarrierUuid);
+      kReservedBarrierUuid;
   request.reserved_publication_barrier_generation = 1;
   return request;
 }
@@ -162,11 +145,9 @@ engine_api::EngineDmlUpdateStatementMgaAuthorityRecoverRequestV1 Recover(
   return result;
 }
 
-std::string PrivateMarker(std::string_view uuid) {
-  std::string marker = "__sblr_dml_update_rows_";
-  for (const char value : uuid) {
-    if (value != '-') marker.push_back(value);
-  }
+std::string PrivateMarker(const engine_api::EngineUuid& uuid) {
+  std::string marker(1, '\0');
+  marker.append(reinterpret_cast<const char*>(uuid.bytes.data()), uuid.bytes.size());
   return marker;
 }
 
@@ -202,11 +183,11 @@ void TestFreshIdentityAndStaleRefusals(
   const auto request = Request(database_path);
   const auto first = engine_api::OpenDmlUpdateStatementMgaAuthorityV1(request);
   auto second_request = request;
-  second_request.operation_uuid = std::string(kOtherOperationUuid);
-  second_request.descriptor_uuid = std::string(kOtherDescriptorUuid);
-  second_request.recovery_token_uuid = std::string(kOtherRecoveryUuid);
+  second_request.operation_uuid = kOtherOperationUuid;
+  second_request.descriptor_uuid = kOtherDescriptorUuid;
+  second_request.recovery_token_uuid = kOtherRecoveryUuid;
   second_request.reserved_publication_barrier_uuid =
-      std::string(kOtherReservedBarrierUuid);
+      kOtherReservedBarrierUuid;
   const auto second =
       engine_api::OpenDmlUpdateStatementMgaAuthorityV1(second_request);
   Require(first.ok && second.ok,
@@ -238,9 +219,9 @@ void TestFreshIdentityAndStaleRefusals(
 
   auto cross_receipt = request;
   cross_receipt.authenticated_statement_receipt_uuid =
-      std::string(kOtherReceiptUuid);
-  cross_receipt.context.statement_receipt_uuid.canonical =
-      std::string(kOtherReceiptUuid);
+      kOtherReceiptUuid;
+  cross_receipt.context.statement_receipt_uuid =
+      kOtherReceiptUuid;
   const auto receipt_refused =
       engine_api::RevalidateDmlUpdateStatementMgaAuthorityV1(
           Transition(cross_receipt, first.authority));
@@ -249,8 +230,8 @@ void TestFreshIdentityAndStaleRefusals(
                     "cross-receipt MGA savepoint was accepted");
 
   auto cross_transaction = request;
-  cross_transaction.context.transaction_uuid.canonical =
-      std::string(kOtherTransactionUuid);
+  cross_transaction.context.transaction_uuid =
+      kOtherTransactionUuid;
   cross_transaction.context.local_transaction_id = 902;
   const auto transaction_refused =
       engine_api::RevalidateDmlUpdateStatementMgaAuthorityV1(
@@ -260,7 +241,7 @@ void TestFreshIdentityAndStaleRefusals(
                     "cross-transaction MGA savepoint was accepted");
 
   auto cross_operation = request;
-  cross_operation.operation_uuid = std::string(kOtherOperationUuid);
+  cross_operation.operation_uuid = kOtherOperationUuid;
   const auto operation_refused =
       engine_api::RevalidateDmlUpdateStatementMgaAuthorityV1(
           Transition(cross_operation, first.authority));
@@ -269,7 +250,7 @@ void TestFreshIdentityAndStaleRefusals(
                     "cross-operation MGA savepoint was accepted");
 
   auto cross_descriptor = request;
-  cross_descriptor.descriptor_uuid = std::string(kOtherDescriptorUuid);
+  cross_descriptor.descriptor_uuid = kOtherDescriptorUuid;
   const auto descriptor_refused =
       engine_api::RevalidateDmlUpdateStatementMgaAuthorityV1(
           Transition(cross_descriptor, first.authority));
@@ -278,7 +259,7 @@ void TestFreshIdentityAndStaleRefusals(
                     "cross-descriptor MGA savepoint was accepted");
 
   auto cross_recovery = request;
-  cross_recovery.recovery_token_uuid = std::string(kOtherRecoveryUuid);
+  cross_recovery.recovery_token_uuid = kOtherRecoveryUuid;
   const auto recovery_refused =
       engine_api::RevalidateDmlUpdateStatementMgaAuthorityV1(
           Transition(cross_recovery, first.authority));
@@ -288,7 +269,7 @@ void TestFreshIdentityAndStaleRefusals(
 
   auto cross_barrier = request;
   cross_barrier.reserved_publication_barrier_uuid =
-      std::string(kOtherReservedBarrierUuid);
+      kOtherReservedBarrierUuid;
   const auto barrier_refused =
       engine_api::RevalidateDmlUpdateStatementMgaAuthorityV1(
           Transition(cross_barrier, first.authority));
@@ -354,7 +335,7 @@ void TestReleaseBarrierRecoveryAndContradiction(
   const auto request = Request(database_path);
   const auto opened = engine_api::OpenDmlUpdateStatementMgaAuthorityV1(request);
   Require(opened.ok, "release savepoint creation failed");
-  const std::string prepared_durs_barrier_uuid =
+  const engine_api::EngineUuid prepared_durs_barrier_uuid =
       opened.authority.publication_barrier_uuid;
   const std::uint64_t prepared_durs_barrier_generation =
       opened.authority.publication_barrier_generation;

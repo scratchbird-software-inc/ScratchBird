@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -41,7 +42,7 @@ api::EngineUuid MakeUuid(UuidKind kind, u64 offset) {
   const auto generated =
       uuid::GenerateEngineIdentityV7(kind, kBaseMillis + offset);
   api::EngineUuid out;
-  if (generated.ok()) { out.canonical = uuid::UuidToString(generated.value.value); }
+  if (generated.ok()) { out = generated.value.value; }
   return out;
 }
 
@@ -68,11 +69,21 @@ std::string FlattenResult(const api::EngineApiResult& result) {
     out << diagnostic.code << '\n' << diagnostic.detail << '\n';
   }
   for (const auto& evidence : result.evidence) {
-    out << evidence.evidence_kind << '\n' << evidence.evidence_id << '\n';
+    out << evidence.evidence_kind << '\n';
+    if (const auto* text = std::get_if<std::string>(&evidence.evidence_id)) {
+      out << *text;
+    } else {
+      const auto& id = std::get<api::EngineUuid>(evidence.evidence_id);
+      out.write(reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size());
+    }
+    out << '\n';
   }
   for (const auto& row : result.result_shape.rows) {
     for (const auto& field : row.fields) {
       out << field.first << '=' << field.second.encoded_value << '\n';
+      if (!field.second.binary_value.empty())
+        out.write(reinterpret_cast<const char*>(field.second.binary_value.data()),
+                  field.second.binary_value.size());
     }
   }
   return out.str();
@@ -164,11 +175,11 @@ api::EngineRequestContext Context(const Fixture& fixture,
 api::EngineProtectedMaterialPolicySet Policy(u64 offset,
                                              u64 retention_until = 0) {
   api::EngineProtectedMaterialPolicySet policy;
-  policy.retention_policy_uuid = MakeUuid(UuidKind::object, offset).canonical;
-  policy.access_policy_uuid = MakeUuid(UuidKind::object, offset + 1).canonical;
-  policy.release_policy_uuid = MakeUuid(UuidKind::object, offset + 2).canonical;
-  policy.purge_policy_uuid = MakeUuid(UuidKind::object, offset + 3).canonical;
-  policy.audit_policy_uuid = MakeUuid(UuidKind::object, offset + 4).canonical;
+  policy.retention_policy_uuid = MakeUuid(UuidKind::object, offset);
+  policy.access_policy_uuid = MakeUuid(UuidKind::object, offset + 1);
+  policy.release_policy_uuid = MakeUuid(UuidKind::object, offset + 2);
+  policy.purge_policy_uuid = MakeUuid(UuidKind::object, offset + 3);
+  policy.audit_policy_uuid = MakeUuid(UuidKind::object, offset + 4);
   policy.retention_until_epoch_millis = retention_until;
   policy.release_purposes.push_back("security_use");
   return policy;
@@ -185,12 +196,12 @@ std::filesystem::path CatalogTempPath(const Fixture& fixture) {
 api::EngineCreateProtectedMaterialResult CreateMaterial(const Fixture& fixture) {
   api::EngineCreateProtectedMaterialRequest request;
   request.context = Context(fixture, 101, 101);
-  request.protected_material_uuid = fixture.material.canonical;
-  request.owner_scope_uuid = fixture.principal.canonical;
+  request.protected_material_uuid = fixture.material;
+  request.owner_scope_uuid = fixture.principal;
   request.purpose_class = "security_use";
   request.storage_class = "wrapped";
   request.policy = Policy(50);
-  request.initial_version_uuid = fixture.version_one.canonical;
+  request.initial_version_uuid = fixture.version_one;
   request.protected_reference = "wrapped-ref:v1:eler033-initial";
   request.envelope_reference = "envelope-ref:v1:eler033-initial";
   request.payload_hash = "sha256:" + api::SecuritySha256Hex("eler033-initial");
@@ -213,8 +224,8 @@ api::EngineAddProtectedMaterialVersionResult AddVersionTwo(const Fixture& fixtur
 
   api::EngineAddProtectedMaterialVersionRequest request;
   request.context = Context(fixture, 102, 102);
-  request.protected_material_uuid = fixture.material.canonical;
-  request.protected_material_version_uuid = fixture.version_two.canonical;
+  request.protected_material_uuid = fixture.material;
+  request.protected_material_version_uuid = fixture.version_two;
   request.protected_reference = "wrapped-ref:v1:eler033-rotated";
   request.envelope_reference = "envelope-ref:v1:eler033-rotated";
   request.payload_hash = "sha256:" + api::SecuritySha256Hex("eler033-rotated");
@@ -242,7 +253,7 @@ void ProveDurableCatalogLifecycle(const Fixture& fixture) {
 
   api::EngineReleaseProtectedMaterialRequest wrong_purpose;
   wrong_purpose.context = Context(fixture, 0, 102);
-  wrong_purpose.protected_material_uuid = fixture.material.canonical;
+  wrong_purpose.protected_material_uuid = fixture.material;
   wrong_purpose.purpose = "wrong_purpose";
   wrong_purpose.option_envelopes.push_back("protected_material_authority:engine");
   const auto denied = api::EngineReleaseProtectedMaterial(wrong_purpose);
@@ -252,7 +263,7 @@ void ProveDurableCatalogLifecycle(const Fixture& fixture) {
 
   api::EngineReleaseProtectedMaterialRequest release;
   release.context = Context(fixture, 0, 102);
-  release.protected_material_uuid = fixture.material.canonical;
+  release.protected_material_uuid = fixture.material;
   release.purpose = "security_use";
   release.option_envelopes.push_back("protected_material_authority:engine");
   const auto released = api::EngineReleaseProtectedMaterial(release);
@@ -263,7 +274,7 @@ void ProveDurableCatalogLifecycle(const Fixture& fixture) {
 
   api::EngineInspectProtectedMaterialCatalogRequest inspect;
   inspect.context = Context(fixture, 0, 102);
-  inspect.protected_material_uuid = fixture.material.canonical;
+  inspect.protected_material_uuid = fixture.material;
   inspect.option_envelopes.push_back("protected_material_authority:engine");
   const auto inspected = api::EngineInspectProtectedMaterialCatalog(inspect);
   Require(inspected.ok && inspected.materials.size() == 1 &&
@@ -307,7 +318,7 @@ void ProveCatalogPathIsRequired(const Fixture& fixture) {
   api::EngineInspectProtectedMaterialCatalogRequest inspect;
   inspect.context = Context(fixture, 0, 102);
   inspect.context.database_path.clear();
-  inspect.protected_material_uuid = fixture.material.canonical;
+  inspect.protected_material_uuid = fixture.material;
   inspect.option_envelopes.push_back("protected_material_authority:engine");
   const auto result = api::EngineInspectProtectedMaterialCatalog(inspect);
   Require(!result.ok &&

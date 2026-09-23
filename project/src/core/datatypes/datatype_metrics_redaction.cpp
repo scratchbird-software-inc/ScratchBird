@@ -10,7 +10,7 @@
 
 #include "metric_contracts.hpp"
 
-#include <sstream>
+
 
 namespace scratchbird::core::datatypes {
 namespace {
@@ -36,26 +36,6 @@ void AddMetricFailure(DatatypeMetricsManagementResult* result,
 
 metrics::MetricLabelSet Labels(std::initializer_list<metrics::MetricLabel> labels) {
   return metrics::MetricLabelSet(labels.begin(), labels.end());
-}
-
-std::string Redacted(const std::string& value, bool allow_sensitive) {
-  if (value.empty()) {
-    return "none";
-  }
-  return allow_sensitive ? value : "[redacted]";
-}
-
-std::string RenderSupportBundleLine(const metrics::MetricValue& metric,
-                                    const std::string& principal_uuid,
-                                    const std::string& protected_payload,
-                                    bool allow_sensitive) {
-  std::ostringstream out;
-  out << "namespace=sys.metrics.datatypes"
-      << ";family=" << metric.family
-      << ";principal_uuid=" << Redacted(principal_uuid, allow_sensitive)
-      << ";protected_payload=" << Redacted(protected_payload, false)
-      << ";value=" << metric.value;
-  return out.str();
 }
 
 bool DatatypeMetricFamily(const std::string& family) {
@@ -165,21 +145,25 @@ DatatypeMetricsManagementResult PublishDatatypeMetricsManagementSurface(
     }
     const metrics::MetricDescriptor* descriptor =
         registry.FindDescriptor(value.family);
-    if (descriptor != nullptr) {
-      value = metrics::RedactSensitiveMetricValue(
-          *descriptor, std::move(value), request.allow_sensitive_labels);
+    DatatypeMetricSupportRecord record;
+    if (!descriptor || !metrics::ProjectMetricForSupport(
+        *descriptor, value, request.allow_sensitive_labels, &record.metric, &value)) {
+      result.visible_metrics.clear();
+      result.support_bundle_records.clear();
+      AddDiagnostic(&result, "SB-DATATYPE-METRICS-BINARY-PROJECTION-REFUSED");
+      return result;
     }
-    result.visible_metrics.push_back(value);
+    result.visible_metrics.push_back(std::move(value));
     if (request.support_bundle_requested) {
-      result.support_bundle_lines.push_back(RenderSupportBundleLine(
-          value,
-          request.principal_uuid,
-          request.protected_payload_sample,
-          request.allow_sensitive_labels));
+      record.principal_redacted = !request.allow_sensitive_labels && !request.principal_uuid.is_nil();
+      if (request.allow_sensitive_labels) record.principal_uuid = request.principal_uuid;
+      record.protected_payload_redacted = !request.protected_payload_sample.empty();
+      result.redaction_applied = result.redaction_applied || record.principal_redacted ||
+          record.protected_payload_redacted || !record.metric.omitted_sensitive_labels.empty();
+      result.support_bundle_records.push_back(std::move(record));
     }
   }
 
-  result.redaction_applied = request.support_bundle_requested;
   return result;
 }
 

@@ -23,7 +23,6 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::IsEngineIdentityUuid;
-using scratchbird::core::uuid::UuidToString;
 
 Status QuarantineOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::storage_disk};
@@ -69,8 +68,8 @@ void EmitMetric(const char* operation,
           {"operation", operation},
           {"result", result},
           {"reason", reason},
-          {"database_uuid", UuidToString(request.database_uuid.value)},
-          {"filespace_uuid", UuidToString(request.filespace_uuid.value)},
+          {"database_uuid", request.database_uuid.value},
+          {"filespace_uuid", request.filespace_uuid.value},
       }),
       1.0,
       "storage_filespace");
@@ -248,7 +247,7 @@ ForeignFilespaceQuarantineResult InspectForeignFilespaceQuarantine(
                  "storage.filespace.foreign.not_quarantined",
                  request);
   }
-  if (request.inspector_uuid.empty()) {
+  if (!IsEngineIdentityUuid(request.inspector_uuid)) {
     return Error("SB-FOREIGN-FILESPACE-INSPECTOR-REQUIRED",
                  "storage.filespace.foreign.inspector_required",
                  request);
@@ -289,7 +288,7 @@ ForeignFilespaceQuarantineResult ReleaseForeignFilespaceQuarantine(
                  request);
   }
   if (!request.header_inspection_passed || !request.release_authorized ||
-      request.release_authority_uuid.empty()) {
+      !IsEngineIdentityUuid(request.release_authority_uuid)) {
     return Error("SB-FOREIGN-FILESPACE-RELEASE-AUTHORITY-REQUIRED",
                  "storage.filespace.foreign.release_authority_required",
                  request);

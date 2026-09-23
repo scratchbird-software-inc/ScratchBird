@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -111,7 +112,7 @@ bool ApiResultHasEvidence(const api::EngineApiResult& result,
                           std::string_view kind,
                           std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -119,9 +120,9 @@ bool ApiResultHasEvidence(const api::EngineApiResult& result,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000002701";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000002702";
-  session.database_uuid = "019f0000-0000-7000-8000-000000002703";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002701");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002702");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002703");
   session.catalog_epoch = 31;
   session.security_policy_epoch = 37;
   session.descriptor_epoch = 41;
@@ -131,7 +132,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-000000002704";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002704");
   config.bundle_contract_id = "sbp_sbsql@parser-listener-management-route-test";
   config.build_id = "sbsql-parser-listener-management-route-test";
   return config;
@@ -224,7 +225,7 @@ void RequireExactLowering(const ManagementRowEvidence& row) {
                    "authority.parser.no_sql_text_execution"),
           EvidenceMessage(row, "no_sql_text_authority",
                           "parser no-SQL-execution authority step missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.management.runtime"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.management.runtime"),
           EvidenceMessage(row, "parser_bind_lower", "management runtime descriptor missing"));
   Require(HasValue(artifacts.envelope.required_rights, "right.management_runtime_read"),
           EvidenceMessage(row, "parser_bind_lower", "required right mismatch"));
@@ -267,12 +268,12 @@ api::EngineRequestContext EngineContext(const ManagementRowEvidence& row) {
   context.trace_tags.push_back("right:MANAGEMENT_RUNTIME_READ");
   context.trace_tags.push_back(std::string("sbsql_surface_id:") + std::string(row.surface_id));
   context.database_path = "/tmp/sbsql_parser_listener_management_exact_route_conformance.sbdb";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000002801";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000002802";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000002803";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000002804";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000002805";
-  context.current_diagnostic_uuid.canonical = "019f0000-0000-7000-8000-000000002806";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002801");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002802");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002803");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002804");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002805");
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002806");
   context.catalog_generation_id = 31;
   context.security_epoch = 37;
   context.resource_epoch = 41;

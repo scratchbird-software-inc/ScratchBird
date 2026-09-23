@@ -252,13 +252,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "vector public output coverage is not exact");
   }
-  std::unordered_set<std::string> public_descriptor_uuids;
+  std::set<api::EngineUuid> public_descriptor_uuids;
   std::vector<exec::ExecutorColumnDescriptor> public_columns;
   std::vector<api::EngineDescriptor> output_descriptors;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
-  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uuid");
-  const auto real64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("real64");
-  if (uuid_type_uuid.empty() || real64_type_uuid.empty()) {
+  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uuid");
+  const auto real64_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("real64");
+  if (uuid_type_uuid.is_nil() || real64_type_uuid.is_nil()) {
     return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                   "vector public core type registry is unavailable");
   }
@@ -270,8 +270,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
             source->output_descriptor_ids[ordinal] ||
         descriptor == dag.descriptors.end() ||
         descriptor->nullability != api::RelationalNullability::kNonNull ||
-        !CanonicalUuidText(descriptor->descriptor_uuid) ||
-        !CanonicalUuidText(descriptor->type_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(descriptor->descriptor_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(descriptor->type_uuid) ||
         !public_descriptor_uuids.insert(descriptor->descriptor_uuid).second ||
         descriptor->collation_uuid.has_value() ||
         descriptor->timezone_profile_id.has_value() ||
@@ -380,8 +380,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
       query_descriptor->descriptor_uuid !=
           persisted_relation.columns[0].value_descriptor.descriptor_uuid
                ||
-      stored_embedding_type.empty() || stored_metadata_type.empty() ||
-      top_k_type.empty() ||
+      stored_embedding_type.is_nil() || stored_metadata_type.is_nil() ||
+      top_k_type.is_nil() ||
       query_descriptor->type_uuid != stored_embedding_type ||
       metric_descriptor->type_uuid != stored_metadata_type ||
       top_k_descriptor->type_uuid != top_k_type ||
@@ -431,30 +431,37 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
     }
   }
 
-  const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
+  // Each admitted consumer kind occurs at most once; retain issued identities
+  // for the full planning/execution/publication invocation.
+  std::array<api::EngineUuid, 12> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                               "vector execution identity allocation failed");
+    identity = *issued;
+  }
   const auto provider_uuid =
-      DerivedCanonicalUuid(identity_scope, "vector.provider");
+      owned_identities[0];
   const auto capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "vector.capability");
+      owned_identities[1];
   const auto result_handle_uuid =
-      DerivedCanonicalUuid(identity_scope, "vector.result-handle");
+      owned_identities[2];
   const auto property_uuid =
-      DerivedCanonicalUuid(identity_scope, "vector.property");
+      owned_identities[3];
   const auto security_receipt_uuid =
-      DerivedCanonicalUuid(identity_scope, "vector.security-receipt");
+      owned_identities[4];
   const auto policy_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "vector.policy-snapshot");
+      owned_identities[5];
   const auto statistics_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "vector.statistics-snapshot");
+      owned_identities[6];
   const auto resource_contract_uuid =
-      DerivedCanonicalUuid(identity_scope, "vector.resource-contract");
+      owned_identities[7];
   const auto suffix = std::to_string(source->node_id) +
                       ".physical_vector_search_v1";
   const auto alternative_uuid =
-      DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
+      owned_identities[8];
   const auto cost_uuid =
-      DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
+      owned_identities[9];
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
 
@@ -494,13 +501,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
                                input.context.authorization_context.present;
   std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
   alternatives.push_back(MakeModelFamilyCapabilitySnapshotForCompositionV1(
-      planning, identity_scope + ".vector.native",
+      planning,
       opt::ModelFamilyAlternativeRouteClassV1::kNative, provider_uuid,
       capability_uuid, persisted_relation.descriptor_generation, true,
       std::max<std::uint64_t>(1, top_k_value), 1,
       std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2)));
   const auto planned = PlanCanonicalModelFamilySourceForCompositionV1(
-      planning, identity_scope + ".vector.inventory", std::move(alternatives));
+      planning, std::move(alternatives));
   if (!planned.accepted || !planned.selected ||
       !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
       planned.exact_fallback_selected ||
@@ -904,11 +911,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
         for (const auto& row : read.rows) {
           exec::DescriptorTuple tuple;
           const std::array<std::string, 3> encoded{
-              row.row_uuid, row.encoded_distance, row.encoded_score};
+              std::string{}, row.encoded_distance, row.encoded_score};
           for (std::size_t ordinal = 0; ordinal < encoded.size(); ++ordinal) {
             api::EngineTypedValue value;
             value.descriptor = public_columns[ordinal].descriptor;
-            value.encoded_value = encoded[ordinal];
+            if (ordinal == 0) {
+              value.binary_value.assign(row.row_uuid.bytes.begin(), row.row_uuid.bytes.end());
+            } else value.encoded_value = encoded[ordinal];
             value.setState(api::EngineValueState::value);
             tuple.values.push_back(std::move(value));
           }
@@ -1038,18 +1047,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(identity_scope + ":" +
-                               input.context.current_monotonic_ns,
-                           "vector.execution-attempt");
+      owned_identities[10];
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id) + ":" +
-              std::to_string(
-                  input.context.snapshot_visible_through_local_transaction_id),
-          "vector.transaction-effect-unchanged");
+      owned_identities[11];
   selected.result_publication_request.maximum_row_count =
       source_input.maximum_rows;
   selected.result_publication_request.column_bindings = result_bindings;

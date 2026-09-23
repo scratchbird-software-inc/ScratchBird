@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "access_path.hpp"
 #include "access_path_full.hpp"
 #include "logical_plan.hpp"
@@ -46,8 +47,13 @@ bool HasOptimizedKind(const opt::OptimizedPlan& optimized,
   });
 }
 
-opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
-                                          const std::string& statistic_uuid) {
+scratchbird::core::platform::Uuid NextStatisticFixtureIdentity() {
+  static std::uint64_t ordinal = 500;
+  return scratchbird::tests::FixtureUuid(1406, ++ordinal);
+}
+
+opt::OptimizerStatsIdentity FreshIdentity(const scratchbird::core::platform::Uuid& object_uuid,
+                                          const scratchbird::core::platform::Uuid& statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = object_uuid;
   identity.statistic_uuid = statistic_uuid;
@@ -60,9 +66,9 @@ opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
   return identity;
 }
 
-opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
+opt::TableCardinalityStats TableStats(const scratchbird::core::platform::Uuid& relation_uuid) {
   opt::TableCardinalityStats stats;
-  stats.identity = FreshIdentity(relation_uuid, relation_uuid + ":table");
+  stats.identity = FreshIdentity(relation_uuid, NextStatisticFixtureIdentity());
   stats.row_count = 10000;
   stats.visible_row_count = 9600;
   stats.page_count = 512;
@@ -70,13 +76,13 @@ opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
   return stats;
 }
 
-opt::IndexStats IndexStats(const std::string& relation_uuid,
-                           const std::string& index_uuid,
+opt::IndexStats IndexStats(const scratchbird::core::platform::Uuid& relation_uuid,
+                           const scratchbird::core::platform::Uuid& index_uuid,
                            const std::string& family,
                            bool unique,
                            bool covering) {
   opt::IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, index_uuid + ":index");
+  stats.identity = FreshIdentity(index_uuid, NextStatisticFixtureIdentity());
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = family;
@@ -104,11 +110,11 @@ opt::IndexStats IndexStats(const std::string& relation_uuid,
   return stats;
 }
 
-opt::OptimizerStatisticsCatalog ExactLocalCatalog(const std::string& relation_uuid,
+opt::OptimizerStatisticsCatalog ExactLocalCatalog(const scratchbird::core::platform::Uuid& relation_uuid,
                                                   bool include_memory_grant = true) {
   opt::OptimizerStatisticsCatalog catalog;
   const auto add = [&](const std::string& name, double value) {
-    catalog.Add(opt::MakeStatistic(name, "relation", relation_uuid, value,
+    catalog.Add(opt::MakeStatistic(name, "relation", opt::OptimizerStatisticTarget::Object(relation_uuid), value,
                                    opt::StatisticSource::kCatalogExact, 7, 0,
                                    opt::CostConfidence::kHigh));
   };
@@ -146,8 +152,8 @@ bool LogicalPlannerStaysShapeOnly() {
 
 bool LocalEnumerationIgnoresPreselectedAccessKind() {
   auto logical = plan::BuildQueryShapePlan({plan::QueryShapeKind::kPointLookup});
-  logical.nodes.front().required_object_uuids.push_back("rel.local");
-  const auto catalog = ExactLocalCatalog("rel.local");
+  logical.nodes.front().required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1406, 14));
+  const auto catalog = ExactLocalCatalog(scratchbird::tests::FixtureUuid(1406, 14));
   const auto candidates = opt::GenerateLocalAccessPathCandidates(logical.nodes.front(), catalog);
   return Require(HasKind(candidates, plan::PhysicalAccessKind::kTableScan), "local table scan candidate missing") &&
          Require(HasKind(candidates, plan::PhysicalAccessKind::kScalarBtreeLookup), "local btree candidate missing without preselected access kind") &&
@@ -156,19 +162,19 @@ bool LocalEnumerationIgnoresPreselectedAccessKind() {
 }
 
 bool FullCatalogBackedEnumerationCoversRequiredFamilies() {
-  const std::string relation_uuid = "rel.full";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1406, 13);
   opt::AccessPathPlanningRequest equality;
   equality.relation_uuid = relation_uuid;
   equality.predicate_kind = "scalar_eq";
   equality.descriptor_digest = "desc:int64";
-  equality.projected_column_uuids = {"col.full"};
+  equality.projected_column_uuids = {scratchbird::tests::FixtureUuid(1406, 2)};
   equality.visibility_proven = true;
   equality.grants_proven = true;
   equality.index_visibility_native = true;
   equality.table_stats = TableStats(relation_uuid);
   equality.candidate_indexes = {
-      IndexStats(relation_uuid, "idx.full.btree", "btree", true, true),
-      IndexStats(relation_uuid, "idx.full.hash", "hash", false, false),
+      IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1406, 6), "btree", true, true),
+      IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1406, 7), "hash", false, false),
   };
   const auto equality_candidates = opt::GenerateFullAccessPathCandidates(equality);
 
@@ -178,12 +184,12 @@ bool FullCatalogBackedEnumerationCoversRequiredFamilies() {
 
   opt::AccessPathPlanningRequest range = equality;
   range.predicate_kind = "scalar_range";
-  range.candidate_indexes = {IndexStats(relation_uuid, "idx.full.range", "btree", false, false)};
+  range.candidate_indexes = {IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1406, 8), "btree", false, false)};
   const auto range_candidates = opt::GenerateFullAccessPathCandidates(range);
 
   opt::AccessPathPlanningRequest specialized = equality;
   specialized.predicate_kind = "full_text";
-  specialized.candidate_indexes = {IndexStats(relation_uuid, "idx.full.text", "full_text", false, false)};
+  specialized.candidate_indexes = {IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1406, 9), "full_text", false, false)};
   const auto specialized_candidates = opt::GenerateFullAccessPathCandidates(specialized);
 
   auto logical = plan::BuildQueryShapePlan({plan::QueryShapeKind::kPointLookup});
@@ -203,7 +209,7 @@ bool FullCatalogBackedEnumerationCoversRequiredFamilies() {
 }
 
 bool BoundRequestUsesCatalogBackedMainPathAndBuildsPhysicalPlan() {
-  const std::string relation_uuid = "rel.bound";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1406, 11);
   auto logical = plan::BuildQueryShapePlan({plan::QueryShapeKind::kPointLookup});
   logical.nodes.front().required_object_uuids.push_back(relation_uuid);
   logical.nodes.front().required_descriptors.push_back("projection.covered");
@@ -212,14 +218,14 @@ bool BoundRequestUsesCatalogBackedMainPathAndBuildsPhysicalPlan() {
   access_request.relation_uuid = relation_uuid;
   access_request.predicate_kind = "scalar_eq";
   access_request.descriptor_digest = "desc:int64";
-  access_request.projected_column_uuids = {"col.bound"};
+  access_request.projected_column_uuids = {scratchbird::tests::FixtureUuid(1406, 1)};
   access_request.visibility_proven = true;
   access_request.grants_proven = true;
   access_request.index_visibility_native = true;
   access_request.table_stats = TableStats(relation_uuid);
   access_request.candidate_indexes = {
-      IndexStats(relation_uuid, "idx.bound.btree", "btree", true, true),
-      IndexStats(relation_uuid, "idx.bound.hash", "hash", false, false),
+      IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1406, 4), "btree", true, true),
+      IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1406, 5), "hash", false, false),
   };
 
   opt::BoundOptimizerRequest request;
@@ -271,11 +277,11 @@ bool BenchmarkCleanPolicyDefaultStatsAreDiagnosed() {
     return false;
   }
 
-  logical.nodes.front().required_object_uuids.push_back("rel.memory-default");
-  auto memory_default_catalog = ExactLocalCatalog("rel.memory-default", false);
+  logical.nodes.front().required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1406, 15));
+  auto memory_default_catalog = ExactLocalCatalog(scratchbird::tests::FixtureUuid(1406, 15), false);
   memory_default_catalog.Add(opt::MakeStatistic("memory_grant_available_bytes",
                                                 "session",
-                                                "local.default",
+                                                opt::OptimizerStatisticTarget::LocalDefault(),
                                                 1048576.0,
                                                 opt::StatisticSource::kPolicyDefault,
                                                 7,
@@ -289,8 +295,8 @@ bool BenchmarkCleanPolicyDefaultStatsAreDiagnosed() {
   }
 
   logical.nodes.front().required_object_uuids.clear();
-  logical.nodes.front().required_object_uuids.push_back("rel.clean");
-  const auto clean_plan = opt::OptimizeLogicalPlanWithStatistics(logical, ExactLocalCatalog("rel.clean"));
+  logical.nodes.front().required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1406, 12));
+  const auto clean_plan = opt::OptimizeLogicalPlanWithStatistics(logical, ExactLocalCatalog(scratchbird::tests::FixtureUuid(1406, 12)));
   const auto clean_status = opt::ValidateBenchmarkCleanOptimizedPlan(clean_plan);
   return Require(clean_plan.ok, "exact-stats clean plan not ok") &&
          Require(!clean_status.ok, "benchmark-clean accepted statistics-only exact stats") &&
@@ -300,13 +306,13 @@ bool BenchmarkCleanPolicyDefaultStatsAreDiagnosed() {
 }
 
 bool ExpandedStatsCatalogFeedsCostingAndStaleDiagnostics() {
-  const std::string relation_uuid = "rel.stats";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1406, 16);
   opt::OptimizerStatisticsStore store;
   store.UpsertTable(TableStats(relation_uuid));
 
   opt::ColumnStats column;
-  column.identity = FreshIdentity(relation_uuid, "stat.column");
-  column.column_uuid = "col.stats";
+  column.identity = FreshIdentity(relation_uuid, scratchbird::tests::FixtureUuid(1406, 17));
+  column.column_uuid = scratchbird::tests::FixtureUuid(1406, 3);
   column.descriptor_digest = "desc:int64";
   column.null_count = 100;
   column.distinct_count = 9000;
@@ -316,21 +322,21 @@ bool ExpandedStatsCatalogFeedsCostingAndStaleDiagnostics() {
   store.UpsertColumn(column);
 
   opt::HistogramStats histogram;
-  histogram.identity = FreshIdentity(relation_uuid, "stat.histogram");
-  histogram.column_uuid = "col.stats";
+  histogram.identity = FreshIdentity(relation_uuid, scratchbird::tests::FixtureUuid(1406, 18));
+  histogram.column_uuid = scratchbird::tests::FixtureUuid(1406, 3);
   histogram.buckets.push_back({"1", "100", 0.30, 3000});
   histogram.buckets.push_back({"101", "1000", 0.70, 7000});
   store.UpsertHistogram(histogram);
 
   opt::MostCommonValueStats mcv;
-  mcv.identity = FreshIdentity(relation_uuid, "stat.mcv");
-  mcv.column_uuid = "col.stats";
+  mcv.identity = FreshIdentity(relation_uuid, scratchbird::tests::FixtureUuid(1406, 19));
+  mcv.column_uuid = scratchbird::tests::FixtureUuid(1406, 3);
   mcv.value_encoded = "42";
   mcv.frequency = 0.05;
   store.UpsertMcv(mcv);
 
-  store.UpsertIndex(IndexStats(relation_uuid, "idx.stats", "btree", true, true));
-  auto snapshot = store.Snapshot("stats.snapshot");
+  store.UpsertIndex(IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1406, 10), "btree", true, true));
+  auto snapshot = store.Snapshot(scratchbird::tests::FixtureUuid(1406, 20));
   const auto statuses = opt::ValidateOptimizerStatsSnapshot(snapshot);
   if (!Require(std::all_of(statuses.begin(), statuses.end(), [](const opt::StatisticsContractStatus& status) {
         return status.ok;
@@ -339,19 +345,20 @@ bool ExpandedStatsCatalogFeedsCostingAndStaleDiagnostics() {
   }
 
   const auto legacy = store.ToLegacyCatalog();
-  if (!Require(legacy.Find("column_ndv", "col.stats").has_value(), "NDV not projected to costing catalog") ||
-      !Require(legacy.Find("column_null_fraction", "col.stats").has_value(), "null fraction not projected to costing catalog") ||
-      !Require(legacy.Find("histogram_bucket_count", "col.stats").has_value(), "histogram not projected to costing catalog") ||
-      !Require(legacy.Find("mcv_frequency", "col.stats").has_value(), "MCV not projected to costing catalog") ||
-      !Require(legacy.Find("index_depth", "idx.stats").has_value(), "index depth not projected to costing catalog") ||
-      !Require(legacy.Find("index_leaf_pages", "idx.stats").has_value(), "index leaf pages not projected to costing catalog") ||
-      !Require(legacy.Find("index_fragmentation_ratio", "idx.stats").has_value(), "index fragmentation not projected to costing catalog") ||
-      !Require(legacy.Find("index_visibility_coverage", "idx.stats").has_value(), "index coverage not projected to costing catalog")) {
+  if (!Require(legacy.has_value(), "statistics projection failed")) return false;
+  if (!Require(legacy->Find("column_ndv", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 3))).has_value(), "NDV not projected to costing catalog") ||
+      !Require(legacy->Find("column_null_fraction", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 3))).has_value(), "null fraction not projected to costing catalog") ||
+      !Require(legacy->Find("histogram_bucket_count", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 3))).has_value(), "histogram not projected to costing catalog") ||
+      !Require(legacy->Find("mcv_frequency", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 3))).has_value(), "MCV not projected to costing catalog") ||
+      !Require(legacy->Find("index_depth", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 10))).has_value(), "index depth not projected to costing catalog") ||
+      !Require(legacy->Find("index_leaf_pages", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 10))).has_value(), "index leaf pages not projected to costing catalog") ||
+      !Require(legacy->Find("index_fragmentation_ratio", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 10))).has_value(), "index fragmentation not projected to costing catalog") ||
+      !Require(legacy->Find("index_visibility_coverage", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 10))).has_value(), "index coverage not projected to costing catalog")) {
     return false;
   }
 
   store.MarkStaleByObject(relation_uuid, 9);
-  const auto stale_statuses = opt::ValidateOptimizerStatsSnapshot(store.Snapshot("stats.stale"));
+  const auto stale_statuses = opt::ValidateOptimizerStatsSnapshot(store.Snapshot(scratchbird::tests::FixtureUuid(1406, 21)));
   return Require(std::any_of(stale_statuses.begin(), stale_statuses.end(), [](const opt::StatisticsContractStatus& status) {
            return !status.ok && status.diagnostic_code == "SB_OPT_STATS_NOT_USABLE";
          }), "stale stats did not produce stale-proof diagnostic");

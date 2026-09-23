@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -33,8 +34,8 @@ agents::AgentRuntimeContext LocalContext() {
   context.private_features_available = true;
   context.standalone_edition = true;
   context.cluster_authority_available = false;
-  context.database_uuid = "019f0740-0000-7000-8000-000000000001";
-  context.principal_uuid = "019f0740-0000-7000-8000-000000000002";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0740-0000-7000-8000-000000000001");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0740-0000-7000-8000-000000000002");
   context.rights = {"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL"};
   context.wall_now_microseconds = 1800000000000000ull;
   context.monotonic_now_microseconds = 7400000ull;
@@ -44,7 +45,7 @@ agents::AgentRuntimeContext LocalContext() {
 agents::AgentRuntimeContext ClusterContext() {
   auto context = LocalContext();
   context.cluster_authority_available = true;
-  context.cluster_uuid = "019f0740-0000-7000-8000-0000000000c1";
+  context.cluster_uuid = scratchbird::tests::FixtureUuidLiteral("019f0740-0000-7000-8000-0000000000c1");
   return context;
 }
 
@@ -103,9 +104,8 @@ agents::AgentObservedMetricSnapshot SnapshotFor(
   snapshot.attestation_digest = "sha256:attestation:" +
                                 dependency.metric_family + ":" +
                                 snapshot.source_id;
-  snapshot.evidence_uuid = agents::DeterministicAgentRuntimeObjectUuidFromKey(
-      "ceic074-metric-evidence|" + dependency.metric_family + "|" +
-      snapshot.source_id);
+  static unsigned evidence_ordinal = 0;
+  snapshot.evidence_uuid = scratchbird::tests::FixtureUuid(1238, 1000 + ++evidence_ordinal);
   snapshot.snapshot_id = "ceic074:" + dependency.metric_family + ":" +
                          snapshot.source_id;
   snapshot.authority_claims = {"metric_evidence"};
@@ -120,7 +120,7 @@ std::vector<agents::AgentObservedMetricSnapshot> QuorumSnapshots(
   agents::u64 sequence = 1000;
   for (const auto& dependency : descriptor.metric_dependencies) {
     if (!dependency.required) { continue; }
-    if (dependency.cluster_only && context.cluster_uuid.empty()) { continue; }
+    if (dependency.cluster_only && context.cluster_uuid.is_nil()) { continue; }
     snapshots.push_back(SnapshotFor(dependency, context, "source-a",
                                     sequence++, external_provider_attested));
     snapshots.push_back(SnapshotFor(dependency, context, "source-b",

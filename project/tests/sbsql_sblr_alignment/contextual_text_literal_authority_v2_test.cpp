@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/query/contextual_text_graph_authority_verifier_v2.hpp"
 #include "engine/internal_api/query/contextual_text_policy_registry_v2.hpp"
 #include "engine/internal_api/query/contextual_text_target_authority_resolver_v2.hpp"
@@ -16,6 +17,8 @@
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "hash_digest.hpp"
 #include "uuid.hpp"
+#include "engine/sblr/relational_descriptor_codec.hpp"
+#include "../support/native_catalog_column_fixture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -45,22 +48,15 @@ using Bytes = std::vector<std::uint8_t>;
 using Sha256 = sblr::ContextualTextSha256V2;
 using Uuid = sblr::ContextualTextUuidV2;
 
-std::string NewIdentity(scratchbird::core::platform::UuidKind kind,
+api::EngineUuid NewIdentity(scratchbird::core::platform::UuidKind kind,
                         std::uint64_t ordinal) {
   const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(
       kind, 1787900000000ull + ordinal);
   assert(generated.ok());
-  return scratchbird::core::uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
-Uuid WireUuid(std::string_view text) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  assert(parsed.ok());
-  Uuid result{};
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            result.begin());
-  return result;
-}
+Uuid WireUuid(const api::EngineUuid& id) { return id.bytes; }
 
 Sha256 TaggedSha(std::uint8_t tag) {
   Sha256 result{};
@@ -98,19 +94,7 @@ void Append64(Bytes* bytes, std::uint64_t value) {
   }
 }
 
-std::string UuidText(const Uuid& value) {
-  constexpr char hex[] = "0123456789abcdef";
-  std::string result;
-  result.reserve(36);
-  for (std::size_t index = 0; index != value.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      result.push_back('-');
-    }
-    result.push_back(hex[value[index] >> 4]);
-    result.push_back(hex[value[index] & 0x0f]);
-  }
-  return result;
-}
+
 
 std::string HexText(const std::string_view value) {
   constexpr char hex[] = "0123456789abcdef";
@@ -143,7 +127,7 @@ sblr::SblrOperand TypedOperand(std::uint32_t ordinal,
 }
 
 sblr::SblrOperationEnvelope PackageFrame(
-    bool begin, std::string_view parser_uuid, std::string_view registry_uuid,
+    bool begin, const api::EngineUuid& parser_uuid, const api::EngineUuid& registry_uuid,
     const Uuid& package_uuid) {
   auto operation = sblr::MakeSblrEnvelope(
       begin ? "engine.op.package_begin" : "engine.op.package_end",
@@ -187,20 +171,19 @@ api::EngineRequestContext Context(std::uint64_t ordinal) {
       (std::filesystem::temp_directory_path() /
        ("sb_contextual_text_authority_v2_" + std::to_string(ordinal)))
           .string();
-  context.database_uuid.canonical = NewIdentity(
+  context.database_uuid = NewIdentity(
       scratchbird::core::platform::UuidKind::database, ordinal * 16 + 1);
-  context.session_uuid.canonical = NewIdentity(
+  context.session_uuid = NewIdentity(
       scratchbird::core::platform::UuidKind::object, ordinal * 16 + 2);
-  context.transaction_uuid.canonical = NewIdentity(
+  context.transaction_uuid = NewIdentity(
       scratchbird::core::platform::UuidKind::object, ordinal * 16 + 3);
-  context.statement_uuid.canonical = NewIdentity(
+  context.statement_uuid = NewIdentity(
       scratchbird::core::platform::UuidKind::object, ordinal * 16 + 4);
-  context.statement_snapshot_uuid.canonical = NewIdentity(
+  context.statement_snapshot_uuid = NewIdentity(
       scratchbird::core::platform::UuidKind::object, ordinal * 16 + 5);
-  context.statement_receipt_uuid.canonical = NewIdentity(
+  context.statement_receipt_uuid = NewIdentity(
       scratchbird::core::platform::UuidKind::object, ordinal * 16 + 6);
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.security_epoch = 1;
@@ -220,20 +203,20 @@ sblr::ContextualTextDescriptorV2 Descriptor(
   descriptor.malformed_sequence_policy = 1;
   descriptor.null_encoding = 1;
   descriptor.descriptor_uuid =
-      WireUuid("019d0000-0000-7000-8000-00000000d718");
+      WireUuid(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718"));
   descriptor.descriptor_generation = 1;
   descriptor.type_uuid =
-      WireUuid("019d0000-0000-7000-8000-00000000d719");
+      WireUuid(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719"));
   descriptor.type_generation = 1;
   descriptor.codec_uuid =
-      WireUuid("019d0000-0000-7000-8000-00000000d71a");
+      WireUuid(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71a"));
   descriptor.codec_version = 1;
   descriptor.codec_generation = 1;
   descriptor.character_limit = 256;
   descriptor.byte_limit = 1024;
-  descriptor.charset_uuid = WireUuid(context.session_uuid.canonical);
+  descriptor.charset_uuid = WireUuid(context.session_uuid);
   descriptor.charset_generation = 1;
-  descriptor.collation_uuid = WireUuid(context.transaction_uuid.canonical);
+  descriptor.collation_uuid = WireUuid(context.transaction_uuid);
   descriptor.collation_generation = 1;
   descriptor.normalization_policy_uuid =
       policies.rows.normalization.identity_uuid;
@@ -252,7 +235,7 @@ sblr::ContextualTextDescriptorV2 Descriptor(
   descriptor.equality_operation_uuid = policies.rows.equality.identity_uuid;
   descriptor.equality_operation_generation = policies.rows.equality.generation;
   descriptor.datatype_catalog_snapshot_uuid =
-      WireUuid(context.datatype_catalog_snapshot_uuid.canonical);
+      WireUuid(context.datatype_catalog_snapshot_uuid);
   descriptor.datatype_catalog_generation = 1;
   descriptor.datatype_registry_generation = 1;
   descriptor.resource_epoch = context.resource_epoch;
@@ -300,36 +283,34 @@ class FakeTargetResolver final
         descriptor, &exact_descriptor_, &diagnostic));
     api::EnginePublicRelationProjectionV3 projection;
     projection.relation_descriptor_uuid =
-        WireUuid(context.transaction_uuid.canonical);
-    projection.relation_uuid = WireUuid(context.session_uuid.canonical);
-    projection.schema_uuid = WireUuid(context.database_uuid.canonical);
+        WireUuid(context.transaction_uuid);
+    projection.relation_uuid = WireUuid(context.session_uuid);
+    projection.schema_uuid = WireUuid(context.database_uuid);
     projection.relation_descriptor_generation = 1;
     projection.resource_epoch = context.resource_epoch;
     projection.catalog_snapshot_uuid =
-        WireUuid(context.datatype_catalog_snapshot_uuid.canonical);
+        WireUuid(context.datatype_catalog_snapshot_uuid);
     projection.catalog_generation = context.datatype_catalog_generation;
     projection.registry_generation = context.datatype_registry_generation;
     api::EnginePublicRelationProjectionColumnV3 column;
-    column.column_uuid = WireUuid(context.statement_uuid.canonical);
+    column.column_uuid = WireUuid(context.statement_uuid);
     column.ordinal = 2;
     column.canonical_name =
         "value_text" + std::string(target_name_padding, 'p');
     column.descriptor_uuid = descriptor.descriptor_uuid;
     column.descriptor_kind = descriptor_kind;
     column.canonical_type_name = "text";
-    column.encoded_type_descriptor =
-        "canonical=text;datatype_descriptor_uuid=" +
-        UuidText(descriptor.descriptor_uuid) +
-        ";datatype_descriptor_generation=1;type_uuid=" +
-        UuidText(descriptor.type_uuid) +
-        ";type_generation=1;codec_uuid=" + UuidText(descriptor.codec_uuid) +
-        ";codec_id=" + std::string(sblr::kContextualTextCodecIdentifierV2) +
-        ";codec_version=1;codec_generation=1;null_encoding=1;"
-        "nullability=nullable;charset_uuid=" +
-        UuidText(descriptor.charset_uuid) +
-        ";charset_generation=1;collation_uuid=" +
-        UuidText(descriptor.collation_uuid) +
-        ";collation_generation=1;resource_epoch=1;character_length=256";
+    column.encoded_type_descriptor = scratchbird::tests::NativeCatalogColumnFixture({
+      {{"canonical", "text"}, {"datatype_descriptor_generation", "1"},
+       {"type_generation", "1"}, {"codec_id", std::string(sblr::kContextualTextCodecIdentifierV2)},
+       {"codec_version", "1"}, {"codec_generation", "1"}, {"null_encoding", "1"},
+       {"nullability", "nullable"}, {"charset_generation", "1"}, {"collation_generation", "1"},
+       {"resource_epoch", "1"}, {"character_length", "256"}},
+      {{"datatype_descriptor_uuid", api::EngineUuid{descriptor.descriptor_uuid}},
+       {"type_uuid", api::EngineUuid{descriptor.type_uuid}},
+       {"codec_uuid", api::EngineUuid{descriptor.codec_uuid}},
+       {"charset_uuid", api::EngineUuid{descriptor.charset_uuid}},
+       {"collation_uuid", api::EngineUuid{descriptor.collation_uuid}}}});
     column.attributes = 0x01;
     column.charset_uuid = descriptor.charset_uuid;
     column.charset_name = "utf8";
@@ -427,7 +408,7 @@ class FakeTargetResolver final
     value.charset_resource.present = true;
     value.charset_resource.resource_family = "charset";
     value.charset_resource.canonical_name = value.charset_name;
-    value.charset_resource.resource_uuid.canonical =
+    value.charset_resource.resource_uuid =
         value.charset_identity;
     value.charset_resource.resource_epoch = value.charset_resource_epoch;
     value.charset_resource.family_epoch = value.charset_family_epoch;
@@ -438,9 +419,9 @@ class FakeTargetResolver final
     value.collation_resource.present = true;
     value.collation_resource.resource_family = "collation";
     value.collation_resource.canonical_name = value.collation_name;
-    value.collation_resource.resource_uuid.canonical =
+    value.collation_resource.resource_uuid =
         value.collation_identity;
-    value.collation_resource.parent_resource_uuid.canonical =
+    value.collation_resource.parent_resource_uuid =
         value.charset_identity;
     value.collation_resource.parent_canonical_name = value.charset_name;
     value.collation_resource.seed_pack_name = value.text_seed.seed_pack_name;
@@ -552,15 +533,15 @@ sblr::ContextualTextLiteralNegotiationRequestV2 Request(
          literal_body.find('\'') == std::string_view::npos);
   sblr::ContextualTextLiteralNegotiationRequestV2 request;
   request.statement_receipt_uuid =
-      WireUuid(context.statement_receipt_uuid.canonical);
+      WireUuid(context.statement_receipt_uuid);
   request.catalog_snapshot_uuid =
-      WireUuid(context.datatype_catalog_snapshot_uuid.canonical);
+      WireUuid(context.datatype_catalog_snapshot_uuid);
   request.catalog_generation = context.datatype_catalog_generation;
   request.datatype_registry_generation = context.datatype_registry_generation;
   request.security_generation = context.security_epoch;
   request.resource_epoch = context.resource_epoch;
   request.mga_snapshot_uuid =
-      WireUuid(context.statement_snapshot_uuid.canonical);
+      WireUuid(context.statement_snapshot_uuid);
   sblr::ContextualTextLiteralDemandV2 demand;
   demand.literal_occurrence = 1;
   demand.literal_argument_ordinal = 1;
@@ -569,11 +550,11 @@ sblr::ContextualTextLiteralNegotiationRequestV2 Request(
   demand.source_node_id = 10;
   demand.source_operand_ordinal = 1;
   demand.source_ordinal = 0;
-  demand.relation_uuid = WireUuid(context.session_uuid.canonical);
+  demand.relation_uuid = WireUuid(context.session_uuid);
   demand.relation_descriptor_uuid =
-      WireUuid(context.transaction_uuid.canonical);
+      WireUuid(context.transaction_uuid);
   demand.relation_descriptor_generation = 1;
-  demand.column_uuid = WireUuid(context.statement_uuid.canonical);
+  demand.column_uuid = WireUuid(context.statement_uuid);
   demand.column_ordinal = 2;
   demand.parent_operand_ordinal = 1;
   demand.node_id = 101;
@@ -797,17 +778,23 @@ CanonicalGraphEvidence GraphEvidence(
         static_cast<std::uint32_t>(operands.size() + 1), type, name, payload,
         profile.descriptor_uuid));
   };
+  const auto push_binding = [&](std::uint32_t node, const std::vector<std::uint32_t>& expressions) {
+    sblr::RelationalNodeBindingRecord binding;
+    binding.node_id = node; binding.semantic_variant_id = "relation.source.v1";
+    binding.bound_expression_ids = expressions;
+    binding.required_object_uuids = {api::EngineUuid{profile.relation_uuid}};
+    sblr::SblrOperand operand;
+    operand.ordinal = static_cast<std::uint32_t>(operands.size() + 1);
+    operand.type = "relational_node_binding_v1"; operand.name = "slot_" + std::to_string(node);
+    operand.value_kind = sblr::SblrValueKind::relational_node_binding;
+    assert(sblr::EncodeRelationalNodeBindingV1(binding, &operand.value_body));
+    operands.push_back(std::move(operand));
+  };
   push_typed("relational_node_v1", "slot_10", "1|0|-|3|-");
-  push_typed("relational_node_binding_v1", "slot_10",
-             HexText("relation.source.v1") + "|" +
-                 HandleList(source_binding) + "|" +
-                 UuidText(profile.relation_uuid) + "|-|-");
+  push_binding(10, source_binding);
   if (!second_source_binding.empty()) {
     push_typed("relational_node_v1", "slot_11", "1|0|-|3|-");
-    push_typed("relational_node_binding_v1", "slot_11",
-               HexText("relation.source.v1") + "|" +
-                   HandleList(second_source_binding) + "|" +
-                   UuidText(profile.relation_uuid) + "|-|-");
+    push_binding(11, second_source_binding);
   }
 
   const auto literal_descriptor_fields = EncodeRelationalDescriptor(
@@ -822,16 +809,23 @@ CanonicalGraphEvidence GraphEvidence(
   };
   push_descriptor(3, target_descriptor_fields);
   push_descriptor(9, literal_descriptor_fields);
-  push_typed("relational_expression_v1", "slot_22",
-             "3|-|3|-|" + UuidText(profile.column_uuid) + "|-|-|-");
-  push_typed("relational_expression_v1", "slot_23",
-             "3|-|3|-|" + UuidText(profile.column_uuid) + "|-|-|-");
-  const std::string children =
-      mutation == CanonicalGraphMutation::reverse_comparison_children
-          ? "22,20"
-          : "20,22";
-  push_typed("relational_expression_v1", "slot_21",
-             "6|" + children + "|3|-|-|-|3d|-");
+  const auto push_expression = [&](std::uint32_t id, bool comparison) {
+    api::RelationalExpressionRecord record;
+    record.expression_id = id; record.result_descriptor_id = 3;
+    record.expression_kind = static_cast<api::RelationalExpressionKind>(comparison ? 6 : 3);
+    if (comparison) {
+      record.child_expression_ids = mutation == CanonicalGraphMutation::reverse_comparison_children
+          ? std::vector<std::uint32_t>{22, 20} : std::vector<std::uint32_t>{20, 22};
+      record.operator_name = "=";
+    } else record.bound_name_uuid = api::EngineUuid{profile.column_uuid};
+    sblr::SblrOperand operand;
+    operand.ordinal = static_cast<std::uint32_t>(operands.size() + 1);
+    operand.type = "relational_expression_v1"; operand.name = "slot_" + std::to_string(id);
+    operand.value_kind = sblr::SblrValueKind::relational_expression;
+    assert(sblr::EncodeRelationalExpressionV1(record, &operand.value_body));
+    operands.push_back(std::move(operand));
+  };
+  push_expression(22, false); push_expression(23, false); push_expression(21, true);
 
   sblr::SblrOperand reference;
   reference.ordinal = static_cast<std::uint32_t>(operands.size() + 1);
@@ -871,9 +865,9 @@ CanonicalGraphEvidence GraphEvidence(
   query.result_shape = "query_execute_result";
   query.diagnostic_shape = "diagnostic_vector";
   query.parser_package_uuid =
-      "019d0000-0000-7000-8000-00000000f201";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000f201");
   query.registry_snapshot_uuid =
-      context.datatype_catalog_snapshot_uuid.canonical;
+      context.datatype_catalog_snapshot_uuid;
   query.parser_resolved_names_to_uuids = true;
   query.operands = std::move(operands);
   sblr::SblrOperand contextual;
@@ -886,18 +880,18 @@ CanonicalGraphEvidence GraphEvidence(
   contextual.value_body = evidence.execute;
   query.operands.push_back(std::move(contextual));
 
-  const auto package_uuid = WireUuid(context.statement_snapshot_uuid.canonical);
+  const auto package_uuid = WireUuid(context.statement_snapshot_uuid);
   sblr::SblrOpcodeStream stream;
   stream.package_descriptor_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   stream.registry_snapshot_uuid =
-      context.datatype_catalog_snapshot_uuid.canonical;
+      context.datatype_catalog_snapshot_uuid;
   stream.operations = {
       PackageFrame(true, query.parser_package_uuid,
                    query.registry_snapshot_uuid, package_uuid),
       std::move(query),
-      PackageFrame(false, "019d0000-0000-7000-8000-00000000f201",
-                   context.datatype_catalog_snapshot_uuid.canonical,
+      PackageFrame(false, scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000f201"),
+                   context.datatype_catalog_snapshot_uuid,
                    package_uuid)};
   evidence.sbos = sblr::EncodeSblrOpcodeStream(stream);
   assert(!evidence.sbos.empty());
@@ -1445,7 +1439,7 @@ int main() {
       stale_context, AvailabilityIdentity());
   assert(installed.ok && installed.snapshot.installed);
   api::SblrExecutorAvailabilitySetRequest revoke;
-  revoke.database_uuid = stale_context.database_uuid.canonical;
+  revoke.database_uuid = stale_context.database_uuid;
   revoke.expected_snapshot_uuid = installed.snapshot.snapshot_uuid;
   revoke.expected_generation = installed.snapshot.generation;
   revoke.exact_row_identity = AvailabilityIdentity();

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "mga_binary_fields.hpp"
 #include "../../../core/uuid/uuid.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -13,12 +14,42 @@
 
 namespace scratchbird::engine::internal_api {
 
+// Explicit migration boundary for legacy storage TEXT identities. Never use
+// names/labels as identities; invalid input leaves the destination unchanged.
+inline bool ReadLegacyEngineUuidText(std::string_view text, EngineUuid* out,
+                                    bool optional = false) {
+  if (!out) return false;
+  if (text.empty() || text == "00000000-0000-0000-0000-000000000000") {
+    if (!optional) return false;
+    *out = {}; return true;
+  }
+  const auto parsed = core::uuid::ParseUuid(std::string(text));
+  if (!parsed.ok() || !(core::uuid::IsEngineIdentityUuid(parsed.value) ||
+                       (optional && parsed.value.is_nil()))) return false;
+  *out = parsed.value; return true;
+}
+
+// Legacy length-framed TEXT UUID boundary. Preserve cursor and output on
+// malformed length, spelling or engine-identity admission failure.
+inline bool ReadLegacyBinaryEngineUuid(std::span<const std::uint8_t> bytes,
+    std::size_t* cursor, EngineUuid* output, bool optional = false) {
+  if (!cursor || !output) return false;
+  auto next = *cursor;
+  std::string text;
+  EngineUuid identity;
+  if (!ReadBinaryString(bytes, &next, &text) ||
+      !ReadLegacyEngineUuidText(text, &identity, optional)) return false;
+  *cursor = next;
+  *output = identity;
+  return true;
+}
+
 // Binary row/version authority only. The string is an encoded-byte buffer,
 // not a UUID spelling. User UUID values use their datatype codec and policy.
 // No allocation or destination modification occurs for invalid identities.
-inline bool AppendBinaryEngineUuid(std::string* out, const EngineUuid& identity) {
+inline bool AppendBinaryEngineUuid(std::string* out, const EngineUuid& identity, bool optional = false) {
   if (out == nullptr ||
-      !scratchbird::core::uuid::IsEngineIdentityUuid(identity) ||
+      (!scratchbird::core::uuid::IsEngineIdentityUuid(identity) && !(optional && identity.is_nil())) ||
       out->max_size() - out->size() < identity.bytes.size()) return false;
   out->append(reinterpret_cast<const char*>(identity.bytes.data()),
               identity.bytes.size());
@@ -28,12 +59,12 @@ inline bool AppendBinaryEngineUuid(std::string* out, const EngineUuid& identity)
 // Exactly sixteen network-order octets. Rejection preserves both the cursor
 // and destination, including an out-of-range cursor near SIZE_MAX.
 inline bool ReadBinaryEngineUuid(std::span<const std::uint8_t> bytes,
-                                 std::size_t* offset, EngineUuid* out) {
+                                 std::size_t* offset, EngineUuid* out, bool optional = false) {
   if (offset == nullptr || out == nullptr || *offset > bytes.size() ||
       bytes.size() - *offset < 16) return false;
   EngineUuid candidate;
   std::copy_n(bytes.data() + *offset, candidate.bytes.size(), candidate.bytes.begin());
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(candidate)) return false;
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(candidate) && !(optional && candidate.is_nil())) return false;
   *out = candidate;
   *offset += candidate.bytes.size();
   return true;

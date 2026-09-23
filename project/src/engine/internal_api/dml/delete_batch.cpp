@@ -9,6 +9,8 @@
 #include "dml/delete_batch.hpp"
 
 #include "api_diagnostics.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <stdexcept>
 #include "deferred_secondary_index_runtime_policy.hpp"
 #include "dml/transactional_index_provider.hpp"
 #include "metric_producer.hpp"
@@ -23,8 +25,20 @@ namespace idx = scratchbird::core::index;
 
 constexpr const char* kDeleteMetricsProducer = "engine_delete";
 
-std::string MakeId(const std::string& prefix, const std::string& stable) {
-  return prefix + ":" + stable;
+std::string MakeId(const std::string& prefix, const EngineUuid& identity,
+                   std::vector<std::string> fields) {
+  fields.insert(fields.begin(), MetadataUuidBytes(identity));
+  const auto material = EncodeMgaMetadataFields(fields);
+  const auto digest = core::hash::ComputeSha256Digest(
+      reinterpret_cast<const core::platform::byte*>(material.data()), material.size());
+  if (!digest.ok()) throw std::runtime_error("batch_evidence_digest_failed");
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string result = prefix + ":sha256:";
+  for (auto byte : digest.digest) {
+    result.push_back(hex[byte >> 4]);
+    result.push_back(hex[byte & 15]);
+  }
+  return result;
 }
 
 EngineApiDiagnostic OkDiagnostic() {
@@ -229,8 +243,8 @@ BoundDeletePredicateTemplate BuildBoundDeletePredicateTemplate(const EngineDelet
   predicate_template.row_uuid_singleton = request.delete_predicate.predicate_kind == "row_uuid_match";
   predicate_template.touched_columns = PredicateTouchedColumns(request, table);
   predicate_template.template_id = MakeId("delete_predicate_template",
-                                          table.table_uuid + ":" + predicate_template.predicate_kind + ":" +
-                                              predicate_template.predicate_envelope);
+                                          table.table_uuid, {predicate_template.predicate_kind,
+                                              predicate_template.predicate_envelope});
   for (const auto& column : table.columns) {
     if (!CrudColumnDescriptorIsOpaqueRenderOnly(column.second)) {
       continue;
@@ -255,7 +269,7 @@ DeleteIndexMaintenancePlan BuildDeleteIndexMaintenancePlan(const EngineDeleteRow
                                                            const DeleteFeatureGates& feature_gates) {
   DeleteIndexMaintenancePlan plan;
   plan.table_uuid = table.table_uuid;
-  plan.plan_id = MakeId("delete_index_plan", table.table_uuid + ":" + std::to_string(indexes.size()));
+  plan.plan_id = MakeId("delete_index_plan", table.table_uuid, {std::to_string(indexes.size())});
   for (const auto& index : indexes) {
     DeleteIndexMaintenancePlanEntry entry;
     entry.index = index;
@@ -279,7 +293,7 @@ DeletePageReclamationPlan BuildDeletePageReclamationPlan(const EngineDeleteRowsR
   DeletePageReclamationPlan plan;
   plan.estimated_rows = estimated_matches;
   plan.notify_page_agent_after_tombstones = std::max<std::uint64_t>(1, estimated_matches / 2);
-  plan.plan_id = MakeId("delete_reclamation_notice", request.target_table.uuid + ":" + std::to_string(estimated_matches));
+  plan.plan_id = MakeId("delete_reclamation_notice", request.target_table.uuid, {std::to_string(estimated_matches)});
   plan.page_reclamation_notice_enabled = feature_gates.page_reclamation_notice == DeleteFeatureState::enabled;
   if (!plan.page_reclamation_notice_enabled) {
     plan.refusal_reason = "page_reclamation_notice_disabled";
@@ -310,7 +324,7 @@ DeleteBatchContext BuildDeleteBatchContext(const EngineDeleteRowsRequest& reques
                                            const CrudTableRecord& table,
                                            const std::vector<CrudIndexRecord>& indexes) {
   DeleteBatchContext context;
-  context.statement_uuid = request.context.request_id.empty() ? GenerateCrudEngineUuid("transaction") : request.context.request_id;
+  context.statement_uuid = request.context.statement_uuid;
   context.local_transaction_id = request.context.local_transaction_id;
   context.transaction_uuid = request.context.transaction_uuid;
   context.database_uuid = request.context.database_uuid;
@@ -378,7 +392,7 @@ EngineApiDiagnostic ValidateDeleteBatchMemoryBudget(const DeleteBatchContext& co
   return OkDiagnostic();
 }
 
-void AddDeleteTrace(DeleteBatchContext* context, std::string event_name, std::string phase, std::string detail) {
+void AddDeleteTrace(DeleteBatchContext* context, std::string event_name, std::string phase, EngineEvidenceValue detail) {
   if (context == nullptr) {
     return;
   }
@@ -393,7 +407,12 @@ void AddDeleteBatchEvidenceToResult(const DeleteBatchContext& context, EngineApi
     result->evidence.push_back(evidence);
   }
   for (const auto& trace : context.trace_events) {
-    result->evidence.push_back({"delete_trace", trace.event_name + ":" + trace.phase + ":" + trace.detail});
+    if (const auto* text = std::get_if<std::string>(&trace.detail)) {
+      result->evidence.push_back({"delete_trace", trace.event_name + ":" + trace.phase + ":" + *text});
+    } else {
+      result->evidence.push_back({"delete_trace", trace.event_name + ":" + trace.phase});
+      result->evidence.push_back({"delete_trace_identity", trace.detail});
+    }
   }
   result->evidence.push_back({"delete_feature_gate.secondary_index_delta_ledger", DeleteFeatureStateName(context.feature_gates.secondary_index_delta_ledger)});
   result->evidence.push_back({"delete_runtime.deferred_secondary_index", context.delta_ledger_policy.runtime_enabled ? "enabled" : "disabled"});

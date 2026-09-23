@@ -1,3 +1,5 @@
+#include "catalog/binary_catalog_metadata.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -89,8 +91,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -118,7 +120,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& entry : evidence) {
-    if (entry.evidence_kind == kind && entry.evidence_id == id) {
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(entry.evidence_id, id)) {
       return true;
     }
   }
@@ -130,9 +132,25 @@ bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
                       std::string_view token) {
   for (const auto& entry : evidence) {
     if (entry.evidence_kind == kind &&
-        entry.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(entry.evidence_id, token) != std::string::npos) {
       return true;
     }
+  }
+  return false;
+}
+
+bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
+                      std::string_view kind,
+                      const api::EngineUuid& identity) {
+  for (const auto& entry : evidence) {
+    if (entry.evidence_kind != kind) continue;
+    const auto* bytes = std::get_if<std::string>(&entry.evidence_id);
+    if (!bytes) continue;
+    api::BinaryCatalogMetadata decoded;
+    Require(api::DecodeBinaryCatalogMetadata(*bytes, "crud.index_evidence.v2", &decoded),
+            "index lookup evidence must use the binary metadata schema");
+    const auto found = decoded.identities.find("index_uuid");
+    if (found != decoded.identities.end() && found->second == identity) return true;
   }
   return false;
 }
@@ -141,7 +159,7 @@ bool AnyEvidenceContains(const std::vector<api::EngineEvidenceReference>& eviden
                          std::string_view token) {
   for (const auto& entry : evidence) {
     if (entry.evidence_kind.find(token) != std::string::npos ||
-        entry.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(entry.evidence_id, token) != std::string::npos) {
       return true;
     }
   }
@@ -154,7 +172,7 @@ std::uint64_t EvidenceCounter(
   for (const auto& entry : evidence) {
     if (entry.evidence_kind == kind) {
       try {
-        return static_cast<std::uint64_t>(std::stoull(entry.evidence_id));
+        return static_cast<std::uint64_t>(std::stoull(std::get<std::string>(entry.evidence_id)));
       } catch (...) {
         return 0;
       }
@@ -176,9 +194,12 @@ void RequireNoForbiddenEvidence(
                                  "contracts",
                                  "references"}) {
       if (entry.evidence_kind.find(forbidden) != std::string::npos ||
-          entry.evidence_id.find(forbidden) != std::string::npos) {
+          scratchbird::tests::EvidenceTextFind(entry.evidence_id, forbidden) != std::string::npos) {
         std::cerr << "Forbidden runtime evidence token in " << scenario << ": "
-                  << entry.evidence_kind << '=' << entry.evidence_id << '\n';
+                  << entry.evidence_kind << '=';
+        if (const auto* text = std::get_if<std::string>(&entry.evidence_id)) std::cerr << *text;
+        else std::cerr << "[binary UUID]";
+        std::cerr << '\n';
         Fail("ODF-111 runtime evidence leaked documentation dependency");
       }
     }
@@ -296,10 +317,10 @@ void FinalizeScenario(ScenarioEvidence* scenario) {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
-  std::string name_index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid id_index_uuid;
+  api::EngineUuid name_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -317,11 +338,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = security_context_present;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -381,7 +402,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
 
 api::CrudIndexRecord Index(const Fixture& fixture,
                            const api::EngineRequestContext& context,
-                           std::string index_uuid,
+                           api::EngineUuid index_uuid,
                            std::string column,
                            bool unique) {
   api::CrudIndexRecord index;
@@ -423,10 +444,10 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   }
   Require(created.ok(), "ODF-111 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
-  fixture.name_index_uuid = NewUuidText(platform::UuidKind::object, salt + 12);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.id_index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
+  fixture.name_index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
 
   auto context = Begin(fixture, "odf111-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
@@ -452,7 +473,7 @@ api::EngineInsertRowsResult InsertRows(
     std::vector<std::string> options = {}) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows = std::move(rows);
   request.estimated_row_count = request.input_rows.size();
@@ -465,7 +486,7 @@ api::EngineInsertRowsResult InsertRows(
   return api::EngineInsertRows(request);
 }
 
-std::string SeedRow(Fixture& fixture,
+api::EngineUuid SeedRow(Fixture& fixture,
                     std::string id,
                     std::string name,
                     std::string note,
@@ -480,7 +501,7 @@ std::string SeedRow(Fixture& fixture,
   Require(inserted.row_uuids.size() == 1, "ODF-111 seed row UUID missing");
   RequireNoForbiddenEvidence(inserted.evidence, "seed");
   Commit(context);
-  return inserted.row_uuids.front().canonical;
+  return inserted.row_uuids.front();
 }
 
 void SeedThreeRows(Fixture& fixture) {
@@ -489,10 +510,10 @@ void SeedThreeRows(Fixture& fixture) {
   SeedRow(fixture, "3", "cyd", "gamma seed", "red");
 }
 
-api::EnginePredicateEnvelope RowUuidPredicate(std::string row_uuid) {
+api::EnginePredicateEnvelope RowUuidPredicate(api::EngineUuid row_uuid) {
   api::EnginePredicateEnvelope predicate;
   predicate.predicate_kind = "row_uuid_match";
-  predicate.canonical_predicate_envelope = std::move(row_uuid);
+  predicate.row_uuid = row_uuid;
   return predicate;
 }
 
@@ -523,7 +544,7 @@ api::EngineUpdateRowsResult Update(const Fixture& fixture,
                                    std::vector<std::string> options = {}) {
   api::EngineUpdateRowsRequest request;
   request.context = std::move(context);
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = std::move(predicate);
   request.assignments.push_back({"note", TextValue(std::move(note))});
@@ -540,7 +561,7 @@ api::EngineUpdateRowsResult UpdateNameNote(
     std::vector<std::string> options = {}) {
   api::EngineUpdateRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = EqualsPredicate("id", std::move(id));
   request.assignments.push_back({"name", TextValue(std::move(name))});
@@ -555,7 +576,7 @@ api::EngineDeleteRowsResult Delete(const Fixture& fixture,
                                    std::vector<std::string> options = {}) {
   api::EngineDeleteRowsRequest request;
   request.context = std::move(context);
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate = std::move(predicate);
   request.option_envelopes = std::move(options);
@@ -575,7 +596,7 @@ api::MgaRelationStoreState LoadState(const Fixture& fixture,
 
 std::size_t CountVisibleIndexEntries(const Fixture& fixture,
                                      const api::EngineRequestContext& context,
-                                     const std::string& index_uuid) {
+                                     const api::EngineUuid& index_uuid) {
   const auto loaded = LoadState(fixture, context);
   const auto state = api::BuildMgaRelationReadView(loaded);
   std::size_t count = 0;

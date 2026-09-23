@@ -19,7 +19,7 @@ namespace {
 
 sblr::SblrOperationEnvelope NameResolveMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const std::vector<std::uint8_t>& descriptor_bytes) {
   auto member = sblr::MakeSblrEnvelope(
       "engine.op.name_resolve", "SBLR_NAME_RESOLVE",
@@ -50,8 +50,8 @@ int main() {
   std::atomic<unsigned> probes{0};
   std::atomic<unsigned> cancel_on_probe{0};
   auto context = BeginTransaction(fixture, &probes);
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 36160));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 36160));
+  context.current_package_uuid = parser_uuid;
   context.query_cancellation_requested = [&] {
     const auto ordinal = probes.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto target = cancel_on_probe.load(std::memory_order_relaxed);
@@ -60,7 +60,7 @@ int main() {
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;
@@ -136,7 +136,7 @@ int main() {
   journal_context.statement_metadata_snapshot_engine_owned = true;
   journal_context.trace_tags.push_back("private_name_resolve_journal");
   api::SblrNameResolveJournalKeyV1 journal_key;
-  journal_key.database_uuid = RawUuid(context.database_uuid.canonical);
+  journal_key.database_uuid = RawUuid(context.database_uuid);
   journal_key.statement_receipt_uuid =
       decoded_descriptor.statement_receipt_uuid;
   journal_key.resolution_uuid = decoded_descriptor.resolution_uuid;

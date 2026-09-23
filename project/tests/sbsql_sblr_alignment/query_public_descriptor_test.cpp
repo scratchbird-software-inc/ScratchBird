@@ -73,7 +73,7 @@ void VerifyDescriptor(sb_engine_result_t result,
                       schema.descriptor_generation != 0,
                   "public descriptor substituted the engine result shape identity");
   CheckDescriptor(schema.datatype_catalog_snapshot_uuid ==
-                      RawUuid(receipt.datatype_catalog_snapshot_uuid.canonical) &&
+                      RawUuid(receipt.datatype_catalog_snapshot_uuid) &&
                       schema.datatype_catalog_generation == receipt.datatype_catalog_generation &&
                       schema.datatype_registry_generation == receipt.datatype_registry_generation,
                   "public descriptor lost its actual datatype catalog cohort");
@@ -242,7 +242,7 @@ int main(int argc, char** argv) {
   context.query_cancellation_requested = [&] { ++probes; return false; };
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   CheckDescriptor(bridge::AcquireStatementContextReceipt(
@@ -252,7 +252,7 @@ int main(int argc, char** argv) {
   CheckDescriptor(bridge::CopyStatementContextEngineContextV1(
       receipt, &admitted_context, nullptr) == SB_ENGINE_STATUS_OK,
       "descriptor fixture live datatype context unavailable");
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 36503));
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 36503));
   auto literal = literal_fixture::FinalizeLiteral(receipt, view);
   auto member = ValuesQueryMember(view, parser_uuid, literal, admitted_context);
   if (batch_budget) {
@@ -358,9 +358,9 @@ int main(int argc, char** argv) {
   CheckDescriptor(sb_engine_result_descriptor_v1(nullptr, &nil) ==
                       SB_ENGINE_STATUS_INVALID_HANDLE,
                   "null engine result admitted");
-  const auto snapshot_uuid = uuid::ParseUuid(view.statement_snapshot_uuid);
-  CheckDescriptor(snapshot_uuid.ok(), "retained snapshot identity invalid");
-  const auto typed_snapshot = uuid::MakeTypedUuid(platform::UuidKind::object, snapshot_uuid.value);
+  const auto snapshot_uuid = view.statement_snapshot_uuid;
+  CheckDescriptor(uuid::IsEngineIdentityUuid(snapshot_uuid), "retained snapshot identity invalid");
+  const auto typed_snapshot = uuid::MakeTypedUuid(platform::UuidKind::object, snapshot_uuid);
   CheckDescriptor(typed_snapshot.ok(), "retained snapshot kind invalid");
   const auto snapshot = scratchbird::transaction::mga::ResolvePublishedSnapshotVector(typed_snapshot.value);
   CheckDescriptor(snapshot.ok(), "actual published snapshot unavailable");

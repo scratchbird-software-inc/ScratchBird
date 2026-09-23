@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -98,7 +99,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -108,9 +109,9 @@ bool HasEvidence(const api::EngineApiResult& result,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f013b-0000-7000-8000-000000000101";
-  session.connection_uuid = "019f013b-0000-7000-8000-000000000102";
-  session.database_uuid = "019f013b-0000-7000-8000-000000000103";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000103");
   session.catalog_epoch = 113;
   session.security_policy_epoch = 127;
   session.descriptor_epoch = 131;
@@ -120,7 +121,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f013b-0000-7000-8000-000000000104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000104");
   config.bundle_contract_id = "sbp_sbsql@pfar-013b-agent-command-surface";
   config.build_id = "pfar-013b-agent-command-surface";
   return config;
@@ -133,11 +134,11 @@ api::EngineRequestContext EngineContext(std::string_view right,
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.security_context_present = security_context_present;
   context.cluster_authority_available = cluster_provider::ClusterProviderSupportsExecution();
-  context.database_uuid.canonical = "019f013b-0000-7000-8000-000000000201";
-  context.cluster_uuid.canonical = "019f013b-0000-7000-8000-000000000202";
-  context.node_uuid.canonical = "019f013b-0000-7000-8000-000000000203";
-  context.principal_uuid.canonical = "019f013b-0000-7000-8000-000000000204";
-  context.session_uuid.canonical = "019f013b-0000-7000-8000-000000000205";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000201");
+  context.cluster_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000202");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000203");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000204");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000205");
   if (!right.empty()) {
     context.trace_tags.push_back("right:" + std::string(right));
     context.trace_tags.push_back("right:OBS_AGENT_CONTROL");
@@ -166,9 +167,9 @@ sblr::SblrDispatchRequest DispatchRequest(const OperationRow& row,
           std::string(row.operation_id) + " canonical opcode mismatch");
   request.envelope.opcode_code = registry->code;
   request.envelope.parser_package_uuid =
-      "019f013b-0000-7000-8000-000000000104";
+      scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000104");
   request.envelope.registry_snapshot_uuid =
-      "019f013b-0000-7000-8000-000000000106";
+      scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000106");
   request.envelope.result_shape = row.cluster_scoped ? "cluster.provider.stub.v1"
                                                      : "agent.command_surface.v1";
   request.envelope.diagnostic_shape = "diagnostic.canonical_message_vector";

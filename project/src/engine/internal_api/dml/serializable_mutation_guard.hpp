@@ -27,28 +27,28 @@ struct SerializableDmlAdmissionResult {
 SerializableDmlAdmissionResult RecordSerializableSelectRead(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     const EnginePredicateEnvelope& predicate,
     std::span<const std::string> option_envelopes = {});
 
 SerializableDmlAdmissionResult CheckSerializableInsertMutation(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     std::span<const EngineRowValue> rows,
     std::span<const std::string> option_envelopes = {});
 
 SerializableDmlAdmissionResult RecordSerializableInsertMutation(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     std::span<const EngineRowValue> rows,
     std::span<const std::string> option_envelopes = {});
 
 SerializableDmlAdmissionResult CheckSerializablePredicateMutation(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     const EnginePredicateEnvelope& predicate,
     bool delete_row,
     std::span<const std::string> option_envelopes = {});
@@ -56,7 +56,7 @@ SerializableDmlAdmissionResult CheckSerializablePredicateMutation(
 SerializableDmlAdmissionResult RecordSerializablePredicateMutation(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     const EnginePredicateEnvelope& predicate,
     bool delete_row,
     std::span<const std::string> option_envelopes = {});

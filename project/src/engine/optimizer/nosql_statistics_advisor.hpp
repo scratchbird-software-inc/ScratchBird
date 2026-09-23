@@ -9,6 +9,7 @@
 #pragma once
 
 #include "nosql/nosql_physical_provider_contract.hpp"
+#include "runtime_platform.hpp"
 
 #include <cstdint>
 #include <string>
@@ -51,7 +52,7 @@ struct NoSqlFamilyStatisticRow {
 struct NoSqlAdaptiveIndexCandidate {
   scratchbird::engine::internal_api::EngineNoSqlProviderFamily family =
       scratchbird::engine::internal_api::EngineNoSqlProviderFamily::kUnknown;
-  std::string candidate_index_uuid;
+  scratchbird::core::platform::Uuid candidate_index_uuid;
   std::string index_kind;
   std::string promotion_state = "invisible";
   std::uint64_t benefit_score = 0;
@@ -61,7 +62,7 @@ struct NoSqlAdaptiveIndexCandidate {
 };
 
 struct NoSqlStatisticsAdvisorRequest {
-  std::string object_uuid;
+  scratchbird::core::platform::Uuid object_uuid;
   std::uint64_t stats_epoch = 0;
   std::uint64_t required_stats_epoch = 0;
   std::uint64_t catalog_epoch = 0;

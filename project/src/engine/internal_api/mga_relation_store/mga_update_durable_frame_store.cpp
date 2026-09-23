@@ -133,20 +133,14 @@ bool DmlUpdateDurableZero(std::span<const std::uint8_t> bytes) {
 }
 
 bool DmlUpdateDurableUuidBytes(
-    std::string_view uuid, std::array<std::uint8_t, 16>* bytes) {
-  if (bytes == nullptr || uuid.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(uuid));
-  if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
-      scratchbird::core::uuid::UuidToString(parsed.value) != uuid) {
-    return false;
-  }
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            bytes->begin());
+    const EngineUuid& uuid, std::array<std::uint8_t, 16>* bytes) {
+  if (!bytes || uuid.is_nil() || !scratchbird::core::uuid::IsValidUuidVariant(uuid)) return false;
+  *bytes = uuid.bytes;
   return true;
 }
 
 bool DmlUpdateDurableTypedUuid(
-    std::string_view uuid, scratchbird::wire::TypedUpdateUuid* bytes) {
+    const EngineUuid& uuid, scratchbird::wire::TypedUpdateUuid* bytes) {
   if (bytes == nullptr) return false;
   std::array<std::uint8_t, 16> parsed{};
   if (!DmlUpdateDurableUuidBytes(uuid, &parsed)) return false;
@@ -154,22 +148,22 @@ bool DmlUpdateDurableTypedUuid(
   return true;
 }
 
-std::string DmlUpdateDurableUuidText(
+EngineUuid DmlUpdateDurableUuidValue(
     std::span<const std::uint8_t> bytes) {
   if (bytes.size() != 16 || DmlUpdateDurableZero(bytes)) return {};
   scratchbird::core::platform::Uuid value{};
   std::copy(bytes.begin(), bytes.end(), value.bytes.begin());
-  return scratchbird::core::uuid::UuidToString(value);
+  return value;
 }
 
-std::string DmlUpdateDurableTypedUuidText(
+EngineUuid DmlUpdateDurableTypedUuidValue(
     const scratchbird::wire::TypedUpdateUuid& bytes) {
-  return DmlUpdateDurableUuidText(
+  return DmlUpdateDurableUuidValue(
       std::span<const std::uint8_t>(bytes.data(), bytes.size()));
 }
 
 bool DmlUpdateDurablePutUuid(std::vector<std::uint8_t>* bytes,
-                             std::size_t offset, std::string_view uuid) {
+                             std::size_t offset, const EngineUuid& uuid) {
   if (bytes == nullptr || offset > bytes->size() ||
       bytes->size() - offset < 16) {
     return false;
@@ -226,13 +220,13 @@ std::string DmlUpdateDurableDescriptorPath(
     const EngineRequestContext& context,
     const MgaDmlUpdateDurableOperationIdentityV1& identity) {
   return DmlUpdateDurableOperationStorePath(context) + "/" +
-         identity.descriptor_uuid + ".duop";
+         scratchbird::core::uuid::UuidToString(identity.descriptor_uuid) + ".duop";
 }
 
 std::string DmlUpdateDurableSavepointPath(
-    const EngineRequestContext& context, std::string_view savepoint_uuid) {
+    const EngineRequestContext& context, const EngineUuid& savepoint_uuid) {
   return DmlUpdateStatementSavepointBinaryStorePath(context) + "/" +
-         std::string(savepoint_uuid) + ".dups";
+         scratchbird::core::uuid::UuidToString(savepoint_uuid) + ".dups";
 }
 
 MgaDmlUpdateDurableSha256V1 DmlUpdateDurableSha256(
@@ -375,21 +369,21 @@ bool DmlUpdateDurableDecodeFrame(
   }
   frame->kind = static_cast<DmlUpdateDurableFrameKindV1>(kind);
   frame->identity.database_uuid =
-      DmlUpdateDurableUuidText(encoded.subspan(32, 16));
+      DmlUpdateDurableUuidValue(encoded.subspan(32, 16));
   frame->identity.owning_transaction_uuid =
-      DmlUpdateDurableUuidText(encoded.subspan(48, 16));
+      DmlUpdateDurableUuidValue(encoded.subspan(48, 16));
   frame->identity.authenticated_statement_receipt_uuid =
-      DmlUpdateDurableUuidText(encoded.subspan(72, 16));
+      DmlUpdateDurableUuidValue(encoded.subspan(72, 16));
   frame->identity.operation_uuid =
-      DmlUpdateDurableUuidText(encoded.subspan(88, 16));
+      DmlUpdateDurableUuidValue(encoded.subspan(88, 16));
   frame->identity.descriptor_uuid =
-      DmlUpdateDurableUuidText(encoded.subspan(112, 16));
+      DmlUpdateDurableUuidValue(encoded.subspan(112, 16));
   frame->identity.recovery_token_uuid =
-      DmlUpdateDurableUuidText(encoded.subspan(136, 16));
+      DmlUpdateDurableUuidValue(encoded.subspan(136, 16));
   frame->identity.validated_durable_handle_uuid =
-      DmlUpdateDurableUuidText(encoded.subspan(160, 16));
+      DmlUpdateDurableUuidValue(encoded.subspan(160, 16));
   frame->identity.reserved_statement_barrier_uuid =
-      DmlUpdateDurableUuidText(encoded.subspan(184, 16));
+      DmlUpdateDurableUuidValue(encoded.subspan(184, 16));
   if (!DmlUpdateDurableReadU64(
           encoded, 64, &frame->identity.owning_local_transaction_id) ||
       !DmlUpdateDurableReadU64(

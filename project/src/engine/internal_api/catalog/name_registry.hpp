@@ -22,17 +22,17 @@ namespace scratchbird::engine::internal_api {
 // Durable SQL-object name registry. This is the canonical name-to-UUID lookup
 // surface for the current event-store implementation.
 
-inline constexpr const char* kNameRegistryEventMagic = "SBNAME1";
+inline constexpr const char* kNameRegistryEventMagic = "SBNAME02";
 
 struct NameRegistryEntry {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string name_entry_uuid;
-  std::string object_uuid;
+  EngineUuid name_entry_uuid;
+  EngineUuid object_uuid;
   std::string object_class;
-  std::string scope_uuid;
-  std::string parent_object_uuid;
-  std::string parent_schema_uuid;
+  EngineUuid scope_uuid;
+  EngineUuid parent_object_uuid;
+  EngineUuid parent_schema_uuid;
   std::string language_tag = "en";
   std::string name_class = "primary";
   std::string reference_id;
@@ -89,9 +89,9 @@ std::string NameRegistryLookupKey(std::string text,
                                   bool requires_exact_match);
 
 NameRegistryEntry MakeNameRegistryEntry(const EngineRequestContext& context,
-                                        const std::string& object_uuid,
+                                        const EngineUuid& object_uuid,
                                         const std::string& object_class,
-                                        const std::string& scope_uuid,
+                                        const EngineUuid& scope_uuid,
                                         const EngineLocalizedName& name,
                                         const std::string& fallback_name);
 
@@ -101,15 +101,15 @@ EngineApiDiagnostic AppendNameRegistryEntry(const EngineRequestContext& context,
 
 EngineApiDiagnostic PersistNameRegistryEntriesForObject(const EngineRequestContext& context,
                                                         const std::string& operation_id,
-                                                        const std::string& object_uuid,
+                                                        const EngineUuid& object_uuid,
                                                         const std::string& object_class,
-                                                        const std::string& scope_uuid,
+                                                        const EngineUuid& scope_uuid,
                                                         const std::vector<EngineLocalizedName>& names,
                                                         const std::string& fallback_name);
 
 EngineApiDiagnostic RetireNameRegistryEntriesForObject(const EngineRequestContext& context,
                                                        const std::string& operation_id,
-                                                       const std::string& object_uuid);
+                                                       const EngineUuid& object_uuid);
 
 NameRegistryResolveResult ResolveNameRegistryPrivate(const EngineApiRequest& request,
                                                      const std::string& requested_object_class = {});
@@ -121,21 +121,21 @@ NameRegistryResolveResult ResolveNameRegistry(const EngineApiRequest& request,
                                               const std::string& requested_object_class = {});
 
 NameRegistryNameResult MapNameRegistryUuidToNamePrivate(const EngineApiRequest& request,
-                                                        const std::string& object_uuid = {},
+                                                        const EngineUuid& object_uuid = {},
                                                         const std::string& requested_object_class = {});
 
 NameRegistryNameResult MapNameRegistryUuidToNamePublic(const EngineApiRequest& request,
-                                                       const std::string& object_uuid = {},
+                                                       const EngineUuid& object_uuid = {},
                                                        const std::string& requested_object_class = {});
 
 NameRegistryNameResult MapNameRegistryUuidToName(const EngineApiRequest& request,
-                                                 const std::string& object_uuid = {},
+                                                 const EngineUuid& object_uuid = {},
                                                  const std::string& requested_object_class = {});
 
 bool NameRegistryWouldConflict(const EngineRequestContext& context,
-                               const std::string& object_uuid,
+                               const EngineUuid& object_uuid,
                                const std::string& object_class,
-                               const std::string& scope_uuid,
+                               const EngineUuid& scope_uuid,
                                const std::vector<EngineLocalizedName>& names,
                                std::uint64_t observer_tx,
                                std::string* conflict_name,

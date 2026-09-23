@@ -78,7 +78,7 @@ struct IparResidencyEpoch {
 
 struct IparResidencyEntry {
   std::string entry_id;
-  std::string object_uuid;
+  scratchbird::core::platform::Uuid object_uuid;
   IparResidencyKind kind = IparResidencyKind::table_descriptor;
   IparResidencyEpoch epoch;
   u64 bytes = 0;
@@ -162,7 +162,7 @@ struct IparResourceGovernanceDecision {
 
 struct IparPrewarmCandidate {
   std::string candidate_id;
-  std::string object_uuid;
+  scratchbird::core::platform::Uuid object_uuid;
   IparResidencyKind kind = IparResidencyKind::table_descriptor;
   IparResidencyEpoch required_epoch;
   IparResidencyEpoch observed_epoch;

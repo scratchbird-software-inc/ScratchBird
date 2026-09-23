@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/canonical_query_aggregate_registration.hpp"
 #include "engine/sblr/canonical_query_node_composition.hpp"
 #include "engine/sblr/canonical_query_object_free_composition_support.hpp"
@@ -37,17 +38,15 @@ struct Results {
   }
 };
 
-std::string Id(unsigned ordinal) {
-  char text[37];
-  std::snprintf(text, sizeof(text), "019f0000-0000-7200-8000-%012x", ordinal);
-  return text;
+api::EngineUuid Id(unsigned ordinal) {
+  return scratchbird::tests::FixtureUuid(1401, ordinal);
 }
 
-std::string Type(std::string_view name) {
+api::EngineUuid Type(std::string_view name) {
   return sblr::ExactCanonicalCoreDatatypeTypeUuidV1(name);
 }
 
-std::array<std::string, 4> SignedTypes() {
+std::array<api::EngineUuid, 4> SignedTypes() {
   return {Type("int8"), Type("int16"), Type("int32"), Type("int64")};
 }
 
@@ -65,11 +64,11 @@ api::RelationalTypeDescriptor Descriptor(unsigned id, std::string_view type,
 api::EngineDescriptor Runtime(const api::RelationalTypeDescriptor& descriptor,
                               std::string_view name) {
   api::EngineDescriptor result;
-  result.descriptor_uuid.canonical = descriptor.descriptor_uuid;
+  result.descriptor_uuid = descriptor.descriptor_uuid;
   result.descriptor_kind = "scalar";
   result.canonical_type_name = name;
-  result.encoded_descriptor = "type_uuid=" + descriptor.type_uuid +
-      ";nullability=" +
+  result.type_uuid = descriptor.type_uuid;
+  result.encoded_descriptor = std::string("nullability=") +
       (descriptor.nullability == api::RelationalNullability::kNullable
            ? "nullable" : "non_null");
   return result;
@@ -83,7 +82,7 @@ struct Fixture {
   plan::CanonicalLogicalRelationalNode previous;
   sblr::PreparedSortRoot sort;
   sblr::GlobalRankingWindowProfile profile;
-  std::string result_type;
+  api::EngineUuid result_type;
 
   explicit Fixture(sblr::GlobalRankingWindowProfile selected,
                    bool count_star = false) : profile(selected) {
@@ -124,7 +123,7 @@ struct Fixture {
     function.expression_id = 3;
     function.expression_kind = api::RelationalExpressionKind::kFunctionCall;
     function.result_descriptor_id = 103;
-    function.function_uuid = std::string(selected.function_uuid);
+    function.function_uuid = selected.function_uuid;
     if (value) function.child_expression_ids.push_back(2);
     if (ntile || nth) function.child_expression_ids.push_back(4);
     dag.expressions.push_back(function);
@@ -248,7 +247,7 @@ void BindingMatrix(Results& results) {
   refuse("wrong ABI", [](auto& f) { f.dag.window_invocations[0].function_abi_version = 2; });
   refuse("unexpected partition", [](auto& f) { f.dag.window_definitions[0].partition_expression_ids = {1}; });
   refuse("wrong property origin", [](auto& f) { f.properties.properties[0].origin_logical_node_id = 2; });
-  refuse("missing frame identity", [](auto& f) { f.properties.properties[0].window_frame_descriptor_uuid.clear(); });
+  refuse("missing frame identity", [](auto& f) { f.properties.properties[0].window_frame_descriptor_uuid = {}; });
   refuse("missing ordering", [](auto& f) { f.dag.nodes[2].required_property_uuids.clear(); });
   refuse("nullable ranking result", [](auto& f) { f.dag.descriptors[2].nullability = api::RelationalNullability::kNullable; });
   refuse("aliased ranking identity", [](auto& f) { f.dag.descriptors[2].descriptor_uuid = f.result_type; });
@@ -338,7 +337,7 @@ void DescriptorMatrix(Results& results) {
         Type("boolean"), Id(201), Id(202), Id(301), Id(302), Id(303));
   };
   results.Check(bool_source(), "nullable boolean source");
-  runtime.descriptor_uuid.canonical = Id(999);
+  runtime.descriptor_uuid = Id(999);
   results.Check(!bool_source(), "boolean runtime identity mismatch");
 
   const auto scalar = Descriptor(101, "int64", true);
@@ -349,7 +348,7 @@ void DescriptorMatrix(Results& results) {
         Id(301), Id(302), Id(303));
   };
   results.Check(operand(), "exact scalar operand");
-  runtime.encoded_descriptor = "type_uuid=" + scalar.type_uuid + ";nullable=true";
+  runtime.encoded_descriptor = "nullable=true";
   results.Check(operand(), "legacy scalar nullability adapter");
   runtime.encoded_descriptor += ";nullability=nullable";
   results.Check(!operand(), "ambiguous scalar nullability");

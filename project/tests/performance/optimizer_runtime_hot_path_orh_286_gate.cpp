@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -76,7 +77,7 @@ bool HasEvidence(
     std::string_view id) {
   return std::any_of(evidence.begin(), evidence.end(), [&](const auto& item) {
     return item.evidence_kind == kind &&
-           item.evidence_id.find(id) != std::string::npos;
+           scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos;
   });
 }
 
@@ -196,7 +197,8 @@ exec::LateMaterializationIndexedRuntimeResult LateMaterialize(
         provided.ok = true;
         provided.row.row_uuid = locator.row_uuid;
         provided.row.version_uuid = locator.version_uuid;
-        provided.row.projected_values = {"base:" + locator.row_uuid};
+        provided.row.projected_values = {std::string(
+            reinterpret_cast<const char*>(locator.row_uuid.bytes.data()), 16)};
         return provided;
       });
 }
@@ -215,7 +217,10 @@ exec::IndexPlanShapeRegressionGuardRequest GuardRequest(
 std::string ResultHash(const exec::IndexedPhysicalOperatorResult& result) {
   std::vector<std::string> rows;
   for (const auto& locator : result.locators) {
-    rows.push_back(locator.row_uuid + ":" + locator.version_uuid);
+    std::string identity_pair;
+    identity_pair.append(reinterpret_cast<const char*>(locator.row_uuid.bytes.data()),16);
+    identity_pair.append(reinterpret_cast<const char*>(locator.version_uuid.bytes.data()),16);
+    rows.push_back(std::move(identity_pair));
   }
   return StableHash(rows);
 }
@@ -227,7 +232,9 @@ std::string ObservedShapeHash(
   std::string operator_name = "missing";
   for (const auto& evidence : physical.evidence) {
     if (evidence.evidence_kind == "indexed_physical_operator") {
-      operator_name = evidence.evidence_id;
+      const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+      Require(text != nullptr, "physical operator evidence must be text");
+      operator_name = *text;
       break;
     }
   }

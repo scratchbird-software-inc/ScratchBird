@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
@@ -126,14 +127,14 @@ void Authenticate(sbsql::SbsqlTestWireSession* parser,
   Require(authenticated && parser->session().authenticated,
           "embedded canonical streaming authentication failed");
   Require(parser->session().local_transaction_id != 0 &&
-              !parser->session().transaction_uuid.empty(),
+              !parser->session().transaction_uuid.is_nil(),
           "embedded canonical streaming attach did not publish an active transaction");
-  if (parser->session().admitted_parser_package_uuid.empty() ||
+  if (parser->session().admitted_parser_package_uuid.is_nil() ||
       parser->session().catalog_epoch == 0 ||
       parser->session().security_policy_epoch == 0 ||
       parser->session().descriptor_epoch == 0) {
     std::cerr << "streaming_session_scope="
-              << parser->session().admitted_parser_package_uuid << ','
+              << uuid::UuidToString(parser->session().admitted_parser_package_uuid) << ','
               << parser->session().catalog_epoch << ','
               << parser->session().security_policy_epoch << ','
               << parser->session().descriptor_epoch << '\n';
@@ -145,7 +146,7 @@ sbsql::PipelineResult OpenCursor(sbsql::SbsqlTestWireSession* parser) {
   if (!opened.accepted) PrintMessages(opened.messages);
   Require(opened.accepted && opened.server_operation_id == "query.execute",
           "canonical query.execute cursor request was rejected");
-  Require(!opened.server_cursor_uuid.empty() && opened.server_row_count == 5,
+  Require(!opened.server_cursor_uuid.is_nil() && opened.server_row_count == 5,
           "canonical query.execute did not publish the five-row cursor");
   return opened;
 }
@@ -164,7 +165,7 @@ int main() {
   auto fixture = CreateFixtureDatabase();
 
   sbsql::ParserConfig config;
-  config.parser_uuid = "019f08a0-5100-7000-8000-000000000001";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f08a0-5100-7000-8000-000000000001");
   config.probe_mode = true;
   config.embedded_engine_direct = true;
   config.allow_uncredentialed_fixture_database = true;

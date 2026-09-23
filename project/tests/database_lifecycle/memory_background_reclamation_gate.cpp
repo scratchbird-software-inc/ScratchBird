@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -332,6 +333,8 @@ std::filesystem::path TempRoot() {
 mem::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
   mem::TempWorkspacePolicy policy;
   policy.policy_name = "mmch019_temp";
+  policy.database_uuid = scratchbird::tests::FixtureUuid(1458, 201);
+  policy.engine_uuid = scratchbird::tests::FixtureUuid(1458, 202);
   policy.root_path = root;
   policy.filespace_quota_bytes = 1024 * 1024;
   policy.session_quota_bytes = 1024 * 1024;
@@ -348,13 +351,17 @@ mem::TempWorkspaceAllocationRequest SpillRequest() {
   mem::TempWorkspaceAllocationRequest request;
   request.storage_class = mem::TempStorageClass::spill_file;
   request.lifetime = mem::TempWorkspaceLifetime::operation_lifetime;
-  request.owner.temp_object_uuid = "mmch019-temp";
-  request.owner.database_id = "db";
-  request.owner.engine_id = "engine";
-  request.owner.session_id = "session";
-  request.owner.transaction_id = "txn";
-  request.owner.statement_id = "stmt";
-  request.owner.operation_id = "mmch019-spill";
+  request.owner.temp_object_uuid = scratchbird::tests::FixtureUuid(1458, 210);
+  request.owner.database_id = scratchbird::tests::FixtureUuid(1458, 201);
+  request.owner.engine_id = scratchbird::tests::FixtureUuid(1458, 202);
+  request.owner.session_id = scratchbird::tests::FixtureUuid(1458, 203);
+  request.owner.transaction_id = scratchbird::tests::FixtureUuid(1458, 204);
+  request.owner.statement_id = scratchbird::tests::FixtureUuid(1458, 205);
+  request.owner.operation_id = scratchbird::tests::FixtureUuid(1458, 206);
+  request.owner.security_generation = 1;
+  request.owner.resource_budget_reference = scratchbird::tests::FixtureUuid(1458, 209);
+  request.owner.snapshot_boundary = scratchbird::tests::FixtureUuid(1458, 207);
+  request.owner.metadata_boundary = scratchbird::tests::FixtureUuid(1458, 208);
   request.owner.policy_generation = 1;
   request.bytes = 4096;
   request.purpose = "mmch019_spill";
@@ -415,7 +422,7 @@ void PageCacheAndSpillRecordsUseRealSubsystemPaths() {
       false,
       false,
       [&temp](std::vector<std::string>* evidence) -> Status {
-        auto cleanup = temp.CleanupOperation("mmch019-spill");
+        auto cleanup = temp.CleanupOperation(scratchbird::tests::FixtureUuid(1458, 206));
         if (evidence != nullptr) {
           evidence->push_back("MMCH-019 spill_cleanup_cleaned_count=" +
                               std::to_string(cleanup.cleaned_count));

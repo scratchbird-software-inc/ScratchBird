@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
@@ -78,8 +79,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -110,10 +111,10 @@ std::vector<std::string> DeferredOptions() {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string non_unique_index_uuid;
-  std::string unique_index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid non_unique_index_uuid;
+  api::EngineUuid unique_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -128,11 +129,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -197,7 +198,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
 
 api::CrudIndexRecord Index(const Fixture& fixture,
                            const api::EngineRequestContext& context,
-                           std::string index_uuid,
+                           api::EngineUuid index_uuid,
                            std::string column,
                            bool unique) {
   api::CrudIndexRecord index;
@@ -233,10 +234,10 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "DPC-025 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.non_unique_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
-  fixture.unique_index_uuid = NewUuidText(platform::UuidKind::object, salt + 12);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.non_unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
+  fixture.unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
 
   auto context = Begin(fixture, "dpc025-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
@@ -262,7 +263,7 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
                                       std::vector<std::string> options = {}) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), std::move(name)));
   request.estimated_row_count = 1;
@@ -285,13 +286,13 @@ api::EngineSelectRowsResult SelectEquals(const Fixture& fixture,
                                          std::string value) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate = EqualsPredicate(std::move(column), std::move(value));
   return api::EngineSelectRows(request);
 }
 
-std::string SeedCommittedRow(Fixture& fixture,
+api::EngineUuid SeedCommittedRow(Fixture& fixture,
                              std::string id,
                              std::string name,
                              bool deferred) {
@@ -304,7 +305,7 @@ std::string SeedCommittedRow(Fixture& fixture,
                                            : std::vector<std::string>{});
   RequireOk(inserted, "DPC-025 seed insert failed");
   Require(inserted.row_uuids.size() == 1, "DPC-025 seed row UUID missing");
-  const std::string row_uuid = inserted.row_uuids.front().canonical;
+  const api::EngineUuid row_uuid = inserted.row_uuids.front();
   Commit(context);
   return row_uuid;
 }
@@ -320,7 +321,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
 std::string EvidenceValue(const std::vector<api::EngineEvidenceReference>& evidence,
                           std::string_view kind) {
   for (const auto& entry : evidence) {
-    if (entry.evidence_kind == kind) { return entry.evidence_id; }
+    if (entry.evidence_kind == kind) { return scratchbird::tests::EvidenceTextFields(entry.evidence_id); }
   }
   return {};
 }

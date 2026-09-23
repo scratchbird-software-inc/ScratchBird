@@ -9,6 +9,8 @@
 #include "dml/merge_api.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "catalog/binary_view_options.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/delete_api.hpp"
@@ -37,6 +39,14 @@
 
 namespace scratchbird::engine::internal_api {
 namespace {
+
+EngineUuid RequiredBinaryIdentity(const std::string& bytes) {
+  if (bytes.empty()) return {};
+  EngineUuid identity;
+  if (!ReadMetadataUuid(bytes, &identity))
+    throw std::invalid_argument("dml_binary_identity_required");
+  return identity;
+}
 
 EngineObjectReference MergeTarget(const EngineMergeRowsRequest& request) {
   return !request.target_table.uuid.is_nil() ? request.target_table : request.target_object;
@@ -118,7 +128,7 @@ EngineRowValue MergeRowFromCrudRow(const CrudRowVersionRecord& source_row) {
 std::vector<EngineRowValue> MergeRowsFromSourceTable(
     const MgaRelationReadView& state,
     const EngineRequestContext& context,
-    const std::string& source_table_uuid) {
+    const EngineUuid& source_table_uuid) {
   std::vector<EngineRowValue> rows;
   for (const auto& source_row :
        VisibleMgaRowsForContext(state, source_table_uuid, context)) {
@@ -218,14 +228,13 @@ DmlTargetAccessPlanRequest BuildMergeTargetAccessPlanRequest(
   plan_request.predicate_descriptor_digest = PredicateDigest(predicate);
   plan_request.access_descriptor_present = true;
   plan_request.security_policy_digest =
-      request.context.principal_uuid + ":" +
-      request.context.current_role_uuid + ":" +
-      std::to_string(request.context.security_epoch);
+      EncodeMgaMetadataFields({"merge.security.policy.v2", MetadataUuidBytes(request.context.principal_uuid),
+          MetadataUuidBytes(request.context.current_role_uuid), std::to_string(request.context.security_epoch)});
   plan_request.redaction_policy_digest =
       "resource_epoch:" + std::to_string(request.context.resource_epoch);
   plan_request.access_policy_digest =
-      request.context.session_uuid + ":" +
-      std::to_string(request.context.resource_epoch);
+      EncodeMgaMetadataFields({"merge.access.policy.v2", MetadataUuidBytes(request.context.session_uuid),
+          std::to_string(request.context.resource_epoch)});
   plan_request.collation_profile_digest =
       request.context.identifier_profile_uuid + ":" +
       request.context.language_context.language_tag;
@@ -391,8 +400,8 @@ struct MergeTargetSnapshot {
 
 bool MergePredicateEligibleForTargetSnapshot(
     const EnginePredicateEnvelope& predicate,
-    const std::string& source_table_uuid) {
-  return !source_table_uuid.empty() &&
+    const EngineUuid& source_table_uuid) {
+  return !source_table_uuid.is_nil() &&
          predicate.predicate_kind == "column_equals" &&
          !predicate.canonical_predicate_envelope.empty() &&
          predicate.bound_values.empty();
@@ -400,10 +409,10 @@ bool MergePredicateEligibleForTargetSnapshot(
 
 MergeTargetSnapshot BuildMergeTargetSnapshot(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EngineRequestContext& context,
     const EnginePredicateEnvelope& predicate,
-    const std::string& source_table_uuid) {
+    const EngineUuid& source_table_uuid) {
   MergeTargetSnapshot lookup;
   if (!MergePredicateEligibleForTargetSnapshot(predicate, source_table_uuid)) {
     return lookup;
@@ -430,7 +439,7 @@ MergeMatchLookupResult FindMergeMatchesInSnapshot(
 
 MergeMatchLookupResult FindMergeMatchWithPlan(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EnginePredicateEnvelope& predicate,
     const EngineRequestContext& context,
     const DmlTargetAccessPlanRequest& plan_request,
@@ -717,9 +726,9 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
       !delete_branch_requested) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "no_merge_action_enabled"));
   }
-  const std::string source_table_uuid = MergeOptionValue(request, "source_uuid:");
-  std::vector<std::string> relation_scope_targets{target.uuid};
-  if (!source_table_uuid.empty() &&
+  const EngineUuid source_table_uuid = RequiredBinaryIdentity(MergeOptionValue(request, "source_uuid:"));
+  std::vector<EngineUuid> relation_scope_targets{target.uuid};
+  if (!source_table_uuid.is_nil() &&
       source_table_uuid != target.uuid) {
     relation_scope_targets.push_back(source_table_uuid);
   }
@@ -729,7 +738,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
                     : relation_store.LoadConstraintScopes(relation_scope_targets);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", loaded.diagnostic); }
   MgaRelationReadView state = relation_store.BuildReadView(&loaded);
-  if (source_rows.empty() && !source_table_uuid.empty()) {
+  if (source_rows.empty() && !source_table_uuid.is_nil()) {
     const auto source_table =
         FindVisibleMgaTable(state,
                              source_table_uuid,
@@ -750,10 +759,10 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     }
     source_rows = MergeRowsFromSourceTable(state, request.context, source_table_uuid);
   }
-  if (source_rows.empty() && source_table_uuid.empty()) {
+  if (source_rows.empty() && source_table_uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "source_row_required"));
   }
-  const std::string table_uuid = target.uuid;
+  const EngineUuid table_uuid = target.uuid;
   const auto table = FindVisibleMgaTable(state, table_uuid, request.context.local_transaction_id);
   if (!table) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "target_table_not_visible"));
@@ -800,7 +809,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
                              relation_scope_targets.size() == 1
                                  ? "target_table_merge_scope"
                                  : "target_and_source_table_merge_scope"});
-  if (!source_table_uuid.empty()) {
+  if (!source_table_uuid.is_nil()) {
     result.evidence.push_back({"merge_source_kind", "table"});
     result.evidence.push_back({"merge_source_visibility", "mga_filtered"});
   }

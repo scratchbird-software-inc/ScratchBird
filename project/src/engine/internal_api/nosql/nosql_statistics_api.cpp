@@ -41,7 +41,7 @@ opt::NoSqlStatisticsAdvisorRequest ToOptimizerRequest(
     const EnginePlanNoSqlStatisticsAdvisorRequest& request) {
   opt::NoSqlStatisticsAdvisorRequest advisor_request;
   advisor_request.object_uuid = request.target_object.uuid;
-  if (advisor_request.object_uuid.empty()) {
+  if (advisor_request.object_uuid.is_nil()) {
     advisor_request.object_uuid = request.bound_object_identity.object_uuid;
   }
   advisor_request.stats_epoch = request.stats_epoch;

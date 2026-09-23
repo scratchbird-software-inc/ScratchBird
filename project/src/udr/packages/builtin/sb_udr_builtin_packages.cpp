@@ -33,55 +33,55 @@ constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 
 // SEARCH_KEY: SB_UDR_BUILTIN_PACKAGE_CATALOG
 constexpr std::array<BuiltinUdrPackageSpec, 49> kBuiltinPackages{{
-    {"csv_file_provider", "file_provider", "019f7100-0000-7000-8000-000000000001", "sbup_file_csv", "connector.file_provider.csv", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
-    {"tsv_file_provider", "file_provider", "019f7100-0000-7000-8000-000000000002", "sbup_file_tsv", "connector.file_provider.tsv", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
-    {"json_file_provider", "file_provider", "019f7100-0000-7000-8000-000000000003", "sbup_file_json", "connector.file_provider.json", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
-    {"xml_file_provider", "file_provider", "019f7100-0000-7000-8000-000000000004", "sbup_file_xml", "connector.file_provider.xml", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
-    {"parquet_file_provider", "file_provider", "019f7100-0000-7000-8000-000000000005", "sbup_file_parquet", "connector.file_provider.parquet", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
-    {"arrow_file_provider", "file_provider", "019f7100-0000-7000-8000-000000000006", "sbup_file_arrow", "connector.file_provider.arrow", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
-    {"avro_file_provider", "file_provider", "019f7100-0000-7000-8000-000000000007", "sbup_file_avro", "connector.file_provider.avro", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
-    {"protobuf_file_provider", "file_provider", "019f7100-0000-7000-8000-000000000008", "sbup_file_protobuf", "connector.file_provider.protobuf", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
-    {"blob_filter", "cross_cutting", "019f7100-0000-7000-8000-000000000009", "sbup_blob_filter", "udr.blob_filter", "policy_admitted_metadata_only", "UDR.BLOB_FILTER.POLICY_REQUIRED", false, false, false, false},
-    {"remote_engine_connector", "connector", "019f7100-0000-7000-8000-000000000010", "sbup_remote_engine", "connector.remote_engine", "policy_admitted_metadata_only", "UDR.REMOTE_ENGINE.CONNECTOR_POLICY_REQUIRED", true, false, false, false},
-    {"emulated_engine_support", "compatibility", "019f7100-0000-7000-8000-000000000011", "sbup_emulated_engine", "compatibility.emulated_engine", "policy_admitted_metadata_only", "UDR.EMULATED_ENGINE.POLICY_REQUIRED", false, false, false, false},
-    {"generic_remote_engine_emulation", "connector", "019f7100-0000-7000-8000-000000000012", "sbup_remote_engine_emulation", "connector.remote_engine_emulation", "policy_admitted_metadata_only", "UDR.REMOTE_ENGINE_EMULATION.POLICY_REQUIRED", true, false, false, false},
-    {"cluster_fabric", "cluster", "019f7100-0000-7000-8000-000000000013", "sbup_cluster_fabric", "cluster.fabric", "cluster_provider_required", "UDR.CLUSTER.PROVIDER_REQUIRED", false, false, false, true},
-    {"side_effects_outbox", "cross_cutting", "019f7100-0000-7000-8000-000000000014", "sbup_side_effects_outbox", "udr.side_effects_outbox", "mga_outbox_required", "UDR.SIDE_EFFECTS.OUTBOX_REQUIRED", false, true, false, false},
-    {"security_definer_context", "security", "019f7100-0000-7000-8000-000000000015", "sbup_security_definer_context", "security.definer_context", "security_context_required", "UDR.SECURITY_DEFINER.CONTEXT_REQUIRED", false, false, true, false},
-    {"financial_analytics", "vertical", "019f7100-0000-7000-8000-000000000016", "sbup_financial_analytics", "vertical.financial_analytics", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"domain_finance_science_education", "vertical", "019f7100-0000-7000-8000-000000000017", "sbup_domain_finance_science_education", "vertical.domain_finance_science_education", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"healthcare_fhir", "vertical", "019f7100-0000-7000-8000-000000000018", "sbup_healthcare_fhir", "vertical.healthcare_fhir", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"dicom_metadata", "vertical", "019f7100-0000-7000-8000-000000000019", "sbup_dicom_metadata", "vertical.dicom_metadata", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"geospatial_crs", "vertical", "019f7100-0000-7000-8000-000000000020", "sbup_geospatial_crs", "vertical.geospatial_crs", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"business_calendar", "vertical", "019f7100-0000-7000-8000-000000000021", "sbup_business_calendar", "vertical.business_calendar", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"industry_interchange", "vertical", "019f7100-0000-7000-8000-000000000022", "sbup_industry_interchange", "vertical.industry_interchange", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"bayesian_modeling", "scientific", "019f7100-0000-7000-8000-000000000023", "sbup_bayesian_modeling", "vertical.bayesian_modeling", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"autodiff", "scientific", "019f7100-0000-7000-8000-000000000024", "sbup_autodiff", "vertical.autodiff", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"probability_stochastic", "scientific", "019f7100-0000-7000-8000-000000000025", "sbup_probability_stochastic", "vertical.probability_stochastic", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"optimization_solver", "scientific", "019f7100-0000-7000-8000-000000000026", "sbup_optimization_solver", "vertical.optimization_solver", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"graph_science", "scientific", "019f7100-0000-7000-8000-000000000027", "sbup_graph_science", "vertical.graph_science", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"differential_equations", "scientific", "019f7100-0000-7000-8000-000000000028", "sbup_differential_equations", "vertical.differential_equations", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"scientific_statistics_timeseries", "scientific", "019f7100-0000-7000-8000-000000000029", "sbup_scientific_statistics_timeseries", "vertical.scientific_statistics_timeseries", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"science_verticals_education", "scientific", "019f7100-0000-7000-8000-000000000030", "sbup_science_verticals_education", "vertical.science_verticals_education", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"numeric_array_expression", "numeric", "019f7100-0000-7000-8000-000000000031", "sbup_numeric_array_expression", "vertical.numeric_array_expression", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"labeled_nd_array", "numeric", "019f7100-0000-7000-8000-000000000032", "sbup_labeled_nd_array", "vertical.labeled_nd_array", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"units_uncertainty_exact_math", "numeric", "019f7100-0000-7000-8000-000000000033", "sbup_units_uncertainty_exact_math", "vertical.units_uncertainty_exact_math", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"symbolic_formula_codegen", "numeric", "019f7100-0000-7000-8000-000000000034", "sbup_symbolic_formula_codegen", "vertical.symbolic_formula_codegen", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"machine_learning", "ml_ai", "019f7100-0000-7000-8000-000000000035", "sbup_machine_learning", "vertical.machine_learning", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"columnar_interchange_parquet", "data_format", "019f7100-0000-7000-8000-000000000036", "sbup_columnar_interchange_parquet", "vertical.columnar_interchange_parquet", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", true, false, false, false},
-    {"delimited_text_file", "data_format", "019f7100-0000-7000-8000-000000000037", "sbup_delimited_text_file", "vertical.delimited_text_file", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", true, false, false, false},
-    {"document_extraction", "data_processing", "019f7100-0000-7000-8000-000000000038", "sbup_document_extraction", "vertical.document_extraction", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"text_language_nlp", "data_processing", "019f7100-0000-7000-8000-000000000039", "sbup_text_language_nlp", "vertical.text_language_nlp", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"entity_matching", "data_processing", "019f7100-0000-7000-8000-000000000040", "sbup_entity_matching", "vertical.entity_matching", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"data_contract_validation", "governance", "019f7100-0000-7000-8000-000000000041", "sbup_data_contract_validation", "vertical.data_contract_validation", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"data_quality_expectations", "governance", "019f7100-0000-7000-8000-000000000042", "sbup_data_quality_expectations", "vertical.data_quality_expectations", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"rules_policy_decision", "business_logic", "019f7100-0000-7000-8000-000000000043", "sbup_rules_policy_decision", "vertical.rules_policy_decision", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
-    {"python_inspired_program", "procedural_runtime", "019f7100-0000-7000-8000-000000000044", "sbup_python_inspired_program", "external_tool_boundary", "trusted_cpp_wrapper_required", "UDR.RUNTIME.NON_CPP_RUNTIME_FORBIDDEN", false, false, false, false},
-    {"managed_wasm_wasi", "procedural_runtime", "019f7100-0000-7000-8000-000000000045", "sbup_managed_wasm_wasi", "external_tool_boundary", "trusted_cpp_wrapper_required", "UDR.RUNTIME.NON_CPP_RUNTIME_FORBIDDEN", false, false, false, false},
-    {"mssql_tds_bridge", "connector", "019f7100-0000-7000-8000-000000000046", "sbup_mssql_tds_bridge", "connector.mssql_tds", "policy_admitted_metadata_only", "UDR.CONNECTOR.POLICY_REQUIRED", true, false, false, false},
-    {"odbc_datasource_connector", "connector", "019f7100-0000-7000-8000-000000000047", "sbup_odbc_datasource_connector", "connector.odbc_datasource", "policy_admitted_metadata_only", "UDR.CONNECTOR.POLICY_REQUIRED", true, false, false, false},
-    {"function_dispatch_catalog", "function_dispatch", "019f7100-0000-7000-8000-000000000048", "sbup_function_dispatch_catalog", "udr.function_dispatch", "canonical_function_id_required", "UDR.FUNCTION_DISPATCH.CANONICAL_ID_REQUIRED", false, false, false, false},
-    {"package_deployment_manifest", "deployment", "019f7100-0000-7000-8000-000000000049", "sbup_package_deployment_manifest", "udr.package_deployment", "descriptor_manifest_required", "UDR.PACKAGE_DEPLOYMENT.MANIFEST_REQUIRED", false, false, false, false},
+    {"csv_file_provider", "file_provider", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}}, "sbup_file_csv", "connector.file_provider.csv", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
+    {"tsv_file_provider", "file_provider", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02}}, "sbup_file_tsv", "connector.file_provider.tsv", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
+    {"json_file_provider", "file_provider", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03}}, "sbup_file_json", "connector.file_provider.json", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
+    {"xml_file_provider", "file_provider", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04}}, "sbup_file_xml", "connector.file_provider.xml", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
+    {"parquet_file_provider", "file_provider", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05}}, "sbup_file_parquet", "connector.file_provider.parquet", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
+    {"arrow_file_provider", "file_provider", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06}}, "sbup_file_arrow", "connector.file_provider.arrow", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
+    {"avro_file_provider", "file_provider", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07}}, "sbup_file_avro", "connector.file_provider.avro", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
+    {"protobuf_file_provider", "file_provider", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08}}, "sbup_file_protobuf", "connector.file_provider.protobuf", "policy_admitted_metadata_only", "UDR.FILE_PROVIDER.EXTERNAL_IO_POLICY_REQUIRED", true, false, false, false},
+    {"blob_filter", "cross_cutting", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09}}, "sbup_blob_filter", "udr.blob_filter", "policy_admitted_metadata_only", "UDR.BLOB_FILTER.POLICY_REQUIRED", false, false, false, false},
+    {"remote_engine_connector", "connector", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10}}, "sbup_remote_engine", "connector.remote_engine", "policy_admitted_metadata_only", "UDR.REMOTE_ENGINE.CONNECTOR_POLICY_REQUIRED", true, false, false, false},
+    {"emulated_engine_support", "compatibility", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11}}, "sbup_emulated_engine", "compatibility.emulated_engine", "policy_admitted_metadata_only", "UDR.EMULATED_ENGINE.POLICY_REQUIRED", false, false, false, false},
+    {"generic_remote_engine_emulation", "connector", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12}}, "sbup_remote_engine_emulation", "connector.remote_engine_emulation", "policy_admitted_metadata_only", "UDR.REMOTE_ENGINE_EMULATION.POLICY_REQUIRED", true, false, false, false},
+    {"cluster_fabric", "cluster", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13}}, "sbup_cluster_fabric", "cluster.fabric", "cluster_provider_required", "UDR.CLUSTER.PROVIDER_REQUIRED", false, false, false, true},
+    {"side_effects_outbox", "cross_cutting", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14}}, "sbup_side_effects_outbox", "udr.side_effects_outbox", "mga_outbox_required", "UDR.SIDE_EFFECTS.OUTBOX_REQUIRED", false, true, false, false},
+    {"security_definer_context", "security", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x15}}, "sbup_security_definer_context", "security.definer_context", "security_context_required", "UDR.SECURITY_DEFINER.CONTEXT_REQUIRED", false, false, true, false},
+    {"financial_analytics", "vertical", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16}}, "sbup_financial_analytics", "vertical.financial_analytics", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"domain_finance_science_education", "vertical", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17}}, "sbup_domain_finance_science_education", "vertical.domain_finance_science_education", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"healthcare_fhir", "vertical", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18}}, "sbup_healthcare_fhir", "vertical.healthcare_fhir", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"dicom_metadata", "vertical", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x19}}, "sbup_dicom_metadata", "vertical.dicom_metadata", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"geospatial_crs", "vertical", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20}}, "sbup_geospatial_crs", "vertical.geospatial_crs", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"business_calendar", "vertical", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21}}, "sbup_business_calendar", "vertical.business_calendar", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"industry_interchange", "vertical", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22}}, "sbup_industry_interchange", "vertical.industry_interchange", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"bayesian_modeling", "scientific", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x23}}, "sbup_bayesian_modeling", "vertical.bayesian_modeling", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"autodiff", "scientific", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24}}, "sbup_autodiff", "vertical.autodiff", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"probability_stochastic", "scientific", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x25}}, "sbup_probability_stochastic", "vertical.probability_stochastic", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"optimization_solver", "scientific", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x26}}, "sbup_optimization_solver", "vertical.optimization_solver", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"graph_science", "scientific", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x27}}, "sbup_graph_science", "vertical.graph_science", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"differential_equations", "scientific", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28}}, "sbup_differential_equations", "vertical.differential_equations", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"scientific_statistics_timeseries", "scientific", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x29}}, "sbup_scientific_statistics_timeseries", "vertical.scientific_statistics_timeseries", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"science_verticals_education", "scientific", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30}}, "sbup_science_verticals_education", "vertical.science_verticals_education", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"numeric_array_expression", "numeric", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x31}}, "sbup_numeric_array_expression", "vertical.numeric_array_expression", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"labeled_nd_array", "numeric", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32}}, "sbup_labeled_nd_array", "vertical.labeled_nd_array", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"units_uncertainty_exact_math", "numeric", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33}}, "sbup_units_uncertainty_exact_math", "vertical.units_uncertainty_exact_math", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"symbolic_formula_codegen", "numeric", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34}}, "sbup_symbolic_formula_codegen", "vertical.symbolic_formula_codegen", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"machine_learning", "ml_ai", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x35}}, "sbup_machine_learning", "vertical.machine_learning", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"columnar_interchange_parquet", "data_format", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36}}, "sbup_columnar_interchange_parquet", "vertical.columnar_interchange_parquet", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", true, false, false, false},
+    {"delimited_text_file", "data_format", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37}}, "sbup_delimited_text_file", "vertical.delimited_text_file", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", true, false, false, false},
+    {"document_extraction", "data_processing", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38}}, "sbup_document_extraction", "vertical.document_extraction", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"text_language_nlp", "data_processing", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x39}}, "sbup_text_language_nlp", "vertical.text_language_nlp", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"entity_matching", "data_processing", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40}}, "sbup_entity_matching", "vertical.entity_matching", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"data_contract_validation", "governance", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x41}}, "sbup_data_contract_validation", "vertical.data_contract_validation", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"data_quality_expectations", "governance", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x42}}, "sbup_data_quality_expectations", "vertical.data_quality_expectations", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"rules_policy_decision", "business_logic", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43}}, "sbup_rules_policy_decision", "vertical.rules_policy_decision", "policy_admitted_metadata_only", "UDR.VERTICAL.PACKAGE_POLICY_REQUIRED", false, false, false, false},
+    {"python_inspired_program", "procedural_runtime", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x44}}, "sbup_python_inspired_program", "external_tool_boundary", "trusted_cpp_wrapper_required", "UDR.RUNTIME.NON_CPP_RUNTIME_FORBIDDEN", false, false, false, false},
+    {"managed_wasm_wasi", "procedural_runtime", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x45}}, "sbup_managed_wasm_wasi", "external_tool_boundary", "trusted_cpp_wrapper_required", "UDR.RUNTIME.NON_CPP_RUNTIME_FORBIDDEN", false, false, false, false},
+    {"mssql_tds_bridge", "connector", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}}, "sbup_mssql_tds_bridge", "connector.mssql_tds", "policy_admitted_metadata_only", "UDR.CONNECTOR.POLICY_REQUIRED", true, false, false, false},
+    {"odbc_datasource_connector", "connector", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47}}, "sbup_odbc_datasource_connector", "connector.odbc_datasource", "policy_admitted_metadata_only", "UDR.CONNECTOR.POLICY_REQUIRED", true, false, false, false},
+    {"function_dispatch_catalog", "function_dispatch", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x48}}, "sbup_function_dispatch_catalog", "udr.function_dispatch", "canonical_function_id_required", "UDR.FUNCTION_DISPATCH.CANONICAL_ID_REQUIRED", false, false, false, false},
+    {"package_deployment_manifest", "deployment", runtime::UdrUuid{{0x01, 0x9f, 0x71, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x49}}, "sbup_package_deployment_manifest", "udr.package_deployment", "descriptor_manifest_required", "UDR.PACKAGE_DEPLOYMENT.MANIFEST_REQUIRED", false, false, false, false},
 }};
 
 bool HasContextToken(std::string_view packet, std::string_view token) {
@@ -203,8 +203,7 @@ std::string BoolJson(bool value) {
 
 std::string SpecJson(const BuiltinUdrPackageSpec& spec) {
   std::ostringstream out;
-  out << "{\"package_uuid\":\"" << EscapeJson(spec.package_uuid) << "\","
-      << "\"package_name\":\"" << EscapeJson(spec.package_name) << "\","
+  out << "{\"package_name\":\"" << EscapeJson(spec.package_name) << "\","
       << "\"family_id\":\"" << EscapeJson(spec.family_id) << "\","
       << "\"category\":\"" << EscapeJson(spec.category) << "\","
       << "\"capability_role\":\"" << EscapeJson(spec.capability_role) << "\","
@@ -675,7 +674,7 @@ std::span<const BuiltinUdrPackageSpec> BuiltinUdrPackageSpecs() {
   return kBuiltinPackages;
 }
 
-const BuiltinUdrPackageSpec* FindBuiltinUdrPackageSpec(std::string_view package_uuid) {
+const BuiltinUdrPackageSpec* FindBuiltinUdrPackageSpec(const runtime::UdrUuid& package_uuid) {
   for (const auto& spec : kBuiltinPackages) {
     if (spec.package_uuid == package_uuid) return &spec;
   }
@@ -744,35 +743,5 @@ BuiltinUdrPackageDeploymentManifest() {
   return rows;
 }
 
-std::string BuiltinUdrPackageDeploymentManifestJson() {
-  const auto rows = BuiltinUdrPackageDeploymentManifest();
-  std::ostringstream out;
-  out << "{\"manifest_kind\":\"builtin_trusted_cpp_udr_packages\","
-      << "\"public_abi_status\":\"frozen_builtin_udr_sb_udr_v1\","
-      << "\"abi_version\":\"sb_udr_v1\","
-      << "\"package_count\":" << rows.size() << ","
-      << "\"packages\":[";
-  for (std::size_t index = 0; index < rows.size(); ++index) {
-    const auto& row = rows[index];
-    if (index != 0) out << ',';
-    out << "{\"package_uuid\":\"" << EscapeJson(row.package_uuid) << "\","
-        << "\"package_name\":\"" << EscapeJson(row.package_name) << "\","
-        << "\"family_id\":\"" << EscapeJson(row.family_id) << "\","
-        << "\"category\":\"" << EscapeJson(row.category) << "\","
-        << "\"abi_version\":\"" << EscapeJson(row.abi_version) << "\","
-        << "\"runtime_language\":\"" << EscapeJson(row.runtime_language) << "\","
-        << "\"source_revision\":\"" << EscapeJson(row.source_revision) << "\","
-        << "\"binary_hash\":\"" << EscapeJson(row.binary_hash) << "\","
-        << "\"signature_policy\":\"" << EscapeJson(row.signature_policy) << "\","
-        << "\"capability_role\":\"" << EscapeJson(row.capability_role) << "\","
-        << "\"release_policy\":\"" << EscapeJson(row.release_policy) << "\","
-        << "\"diagnostic_code\":\"" << EscapeJson(row.diagnostic_code) << "\","
-        << "\"entrypoints_csv\":\"" << EscapeJson(row.entrypoints_csv) << "\","
-        << "\"install_component\":\"" << EscapeJson(row.install_component) << "\","
-        << "\"public_abi_status\":\"" << EscapeJson(row.public_abi_status) << "\"}";
-  }
-  out << "]}";
-  return out.str();
-}
 
 }  // namespace scratchbird::udr::builtin_packages

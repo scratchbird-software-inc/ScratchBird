@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "query/expression_api.hpp"
 
 #include <array>
@@ -39,8 +40,7 @@ api::EngineDescriptor DecimalDescriptor(const std::string& uuid) {
 
 api::EngineDescriptor BooleanDescriptor() {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical =
-      "019f0000-0000-7200-8000-000000000902";
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000902");
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "boolean";
   descriptor.encoded_descriptor =

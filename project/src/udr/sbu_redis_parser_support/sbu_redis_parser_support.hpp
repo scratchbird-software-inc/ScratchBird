@@ -17,6 +17,7 @@ namespace scratchbird::udr::redis_parser_support {
 
 inline constexpr std::string_view kSbuRedisPackageUuid =
     "019e13c0-0000-7000-8000-00000000030f";
+inline constexpr scratchbird::udr::runtime::UdrUuid kSbuRedisPackageIdentity{{0x01, 0x9e, 0x13, 0xc0, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0f}};
 inline constexpr std::string_view kSbuRedisPackageName = "sbup_redis";
 
 struct UdrResult {

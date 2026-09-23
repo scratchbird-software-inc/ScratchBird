@@ -42,7 +42,7 @@ struct FilespacePackageManifest {
   TypedUuid package_uuid;
   TypedUuid source_database_uuid;
   std::string package_name;
-  u32 format_version = 1;
+  u32 format_version = 2;
   std::vector<FilespacePackageMember> members;
   std::string manifest_checksum;
   bool root_authority_present = false;
@@ -56,7 +56,7 @@ struct FilespacePackageRequest {
   std::string package_name;
   std::vector<FilespaceDescriptor> descriptors;
   FilespacePackageManifest manifest;
-  std::string operator_identity;
+  scratchbird::core::platform::Uuid operator_identity;
   bool inspection_passed = false;
   bool admission_authorized = false;
   bool reject_authorized = false;
@@ -74,6 +74,7 @@ struct FilespacePackageEvent {
 };
 
 struct FilespacePackageResult {
+  scratchbird::core::platform::Uuid operator_identity;
   Status status;
   DiagnosticRecord diagnostic;
   FilespacePackageManifest manifest;

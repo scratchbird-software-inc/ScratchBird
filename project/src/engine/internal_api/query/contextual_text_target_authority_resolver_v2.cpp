@@ -9,6 +9,7 @@
 #include "query/contextual_text_target_authority_resolver_v2.hpp"
 
 #include "api_diagnostics.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "uuid.hpp"
 #include <algorithm>
@@ -47,36 +48,19 @@ bool Nonzero(const Uuid& value) {
                              [](std::uint8_t byte) { return byte != 0; });
 }
 
-bool ParseUuid(std::string_view text, Uuid* out) {
-  if (out == nullptr) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
-      scratchbird::core::uuid::UuidToString(parsed.value) != text) {
-    return false;
-  }
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), out->begin());
-  return true;
-}
-
 EngineContextualTextCoordinationPolicyV2 ExactCoordinationPolicy() {
   EngineContextualTextCoordinationPolicyV2 policy;
-  (void)ParseUuid("b3217577-26d4-5d9e-bf58-5cfdb29c3687",
-                  &policy.literal_budget_policy_uuid);
+  policy.literal_budget_policy_uuid = {0xb3,0x21,0x75,0x77,0x26,0xd4,0x5d,0x9e,0xbf,0x58,0x5c,0xfd,0xb2,0x9c,0x36,0x87};
   policy.literal_budget_policy_generation = 1;
-  (void)ParseUuid("3cd930a5-cf22-51a5-b36c-5a1b62d74f89",
-                  &policy.descriptor_format_uuid);
+  policy.descriptor_format_uuid = {0x3c,0xd9,0x30,0xa5,0xcf,0x22,0x51,0xa5,0xb3,0x6c,0x5a,0x1b,0x62,0xd7,0x4f,0x89};
   policy.descriptor_format_generation = 2;
-  (void)ParseUuid("d13c373f-afca-552e-89ef-43a4f1ec5100",
-                  &policy.profile_set_namespace_uuid);
+  policy.profile_set_namespace_uuid = {0xd1,0x3c,0x37,0x3f,0xaf,0xca,0x55,0x2e,0x89,0xef,0x43,0xa4,0xf1,0xec,0x51,0x00};
   policy.profile_set_namespace_generation = 1;
-  (void)ParseUuid("9932194a-7dda-5dec-8600-c6800d195f66",
-                  &policy.source_occurrence_namespace_uuid);
+  policy.source_occurrence_namespace_uuid = {0x99,0x32,0x19,0x4a,0x7d,0xda,0x5d,0xec,0x86,0x00,0xc6,0x80,0x0d,0x19,0x5f,0x66};
   policy.source_occurrence_namespace_generation = 1;
-  (void)ParseUuid("2f299fd4-9e29-5dae-9a39-5c4f8a3f4fd5",
-                  &policy.budget_grant_namespace_uuid);
+  policy.budget_grant_namespace_uuid = {0x2f,0x29,0x9f,0xd4,0x9e,0x29,0x5d,0xae,0x9a,0x39,0x5c,0x4f,0x8a,0x3f,0x4f,0xd5};
   policy.budget_grant_namespace_generation = 1;
-  (void)ParseUuid("dc31437d-be8b-5469-984e-2c1cefa9ca66",
-                  &policy.raw_token_codec_uuid);
+  policy.raw_token_codec_uuid = {0xdc,0x31,0x43,0x7d,0xbe,0x8b,0x54,0x69,0x98,0x4e,0x2c,0x1c,0xef,0xa9,0xca,0x66};
   policy.raw_token_codec_generation = 1;
   policy.literal_budget_is_private_receipt_policy = true;
   policy.descriptor_format_is_sbtltd02_v2 = true;
@@ -97,43 +81,13 @@ EngineContextualTextCoordinationPolicyV2 ExactCoordinationPolicy() {
   return policy;
 }
 
-std::string UuidText(const Uuid& value) {
-  constexpr char hex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(36);
-  for (std::size_t index = 0; index != value.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      out.push_back('-');
-    }
-    out.push_back(hex[value[index] >> 4]);
-    out.push_back(hex[value[index] & 0x0f]);
-  }
-  return out;
-}
-
-std::optional<std::string> ExactEncodedDescriptorField(
-    const std::string_view descriptor,
-    const std::string_view requested_key) {
-  std::optional<std::string> result;
-  std::size_t start = 0;
-  while (start <= descriptor.size()) {
-    const auto end = descriptor.find(';', start);
-    const auto field = descriptor.substr(
-        start, end == std::string_view::npos ? std::string_view::npos
-                                             : end - start);
-    const auto equals = field.find('=');
-    if (field.empty() || equals == std::string_view::npos || equals == 0 ||
-        equals + 1 == field.size()) {
-      return std::nullopt;
-    }
-    if (field.substr(0, equals) == requested_key) {
-      if (result.has_value()) return std::nullopt;
-      result = std::string(field.substr(equals + 1));
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
-  return result;
+std::optional<EngineUuid> ExactEncodedDescriptorIdentity(
+    std::string_view descriptor, std::string_view key) {
+  CatalogColumnMetadata fields;
+  if (!DecodeCatalogColumnMetadata(descriptor, &fields)) return std::nullopt;
+  const auto it = fields.identities.find(std::string(key));
+  if (it == fields.identities.end() || it->second.is_nil()) return std::nullopt;
+  return it->second;
 }
 
 bool SameContext(const EngineRequestContext& left,
@@ -416,7 +370,7 @@ bool DecodeProjectionV3(const std::vector<std::uint8_t>& exact,
     return false;
   }
   std::set<std::uint32_t> ordinals;
-  std::set<std::string> column_uuids;
+  std::set<Uuid> column_uuids;
   for (std::size_t index = 0; index != count; ++index) {
     EnginePublicRelationProjectionColumnV3 column;
     if (!TakeUuid(bytes, &cursor, &column.column_uuid) ||
@@ -477,7 +431,7 @@ bool DecodeProjectionV3(const std::vector<std::uint8_t>& exact,
         column.canonical_name.empty() || column.descriptor_kind.empty() ||
         column.canonical_type_name.empty() ||
         !ordinals.insert(column.ordinal).second ||
-        !column_uuids.insert(UuidText(column.column_uuid)).second) {
+        !column_uuids.insert(column.column_uuid).second) {
       return false;
     }
     projection.columns.push_back(std::move(column));
@@ -490,7 +444,7 @@ bool DecodeProjectionV3(const std::vector<std::uint8_t>& exact,
 bool SameExpectedColumn(const MgaContextualTextProjectedColumnV2& expected,
                         const EnginePublicRelationProjectionColumnV3& projected) {
   const auto& descriptor = expected.expected_text_descriptor;
-  const auto embedded_datatype_descriptor_uuid = ExactEncodedDescriptorField(
+  const auto embedded_datatype_descriptor_uuid = ExactEncodedDescriptorIdentity(
       projected.encoded_type_descriptor, "datatype_descriptor_uuid");
   const bool character_limit_matches =
       descriptor.character_limit == std::numeric_limits<std::uint64_t>::max()
@@ -503,7 +457,7 @@ bool SameExpectedColumn(const MgaContextualTextProjectedColumnV2& expected,
          expected.comparable_persisted_text && projected.identity_present &&
          embedded_datatype_descriptor_uuid.has_value() &&
          *embedded_datatype_descriptor_uuid ==
-             UuidText(expected.projected_datatype_descriptor_uuid) &&
+             EngineUuid{expected.projected_datatype_descriptor_uuid} &&
          expected.projected_datatype_descriptor_generation ==
              projected.descriptor_generation &&
          expected.projected_datatype_catalog_snapshot_uuid ==
@@ -722,8 +676,8 @@ class Resolver final : public EngineContextualTextTargetAuthorityResolverV2 {
         projection.relation_descriptor_generation !=
             demand.relation_descriptor_generation ||
         projection.resource_epoch != context.resource_epoch ||
-        UuidText(projection.catalog_snapshot_uuid) !=
-            context.datatype_catalog_snapshot_uuid ||
+        projection.catalog_snapshot_uuid !=
+            context.datatype_catalog_snapshot_uuid.bytes ||
         projection.catalog_generation != context.datatype_catalog_generation ||
         projection.registry_generation !=
             context.datatype_registry_generation ||
@@ -945,7 +899,7 @@ bool EncodeEnginePublicRelationProjectionV3(
 
   std::vector<std::uint8_t> encoded;
   std::set<std::uint32_t> ordinals;
-  std::set<std::string> column_uuids;
+  std::set<Uuid> column_uuids;
   const auto fail_text_encoding = [&]() {
     exact->clear();
     if (diagnostic != nullptr) {
@@ -971,7 +925,7 @@ bool EncodeEnginePublicRelationProjectionV3(
           column.canonical_name.empty() || column.descriptor_kind.empty() ||
           column.canonical_type_name.empty() ||
           !ordinals.insert(column.ordinal).second ||
-          !column_uuids.insert(UuidText(column.column_uuid)).second ||
+          !column_uuids.insert(column.column_uuid).second ||
           (column.identity_present &&
            (column.descriptor_generation == 0 || !Nonzero(column.type_uuid) ||
             column.type_generation == 0 || column.codec_id.empty() ||

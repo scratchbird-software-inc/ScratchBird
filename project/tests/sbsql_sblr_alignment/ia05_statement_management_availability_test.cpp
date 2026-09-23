@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 
 #include <array>
@@ -103,12 +104,11 @@ class Fixture {
 };
 
 api::EngineRequestContext Context(const Fixture& fixture,
-                                  const char* statement_uuid) {
+                                  const api::EngineUuid& statement_uuid) {
   api::EngineRequestContext context;
   context.database_path = fixture.database_path;
-  context.database_uuid.canonical =
-      "019d0000-0000-7000-8000-000000003575";
-  context.statement_uuid.canonical = statement_uuid;
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000003575");
+  context.statement_uuid = statement_uuid;
   context.security_context_present = true;
   context.trace_tags = {"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};
   return context;
@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
 
   Fixture fixture(mode);
   auto admission_context = Context(
-      fixture, "019d0000-0000-7000-8000-000000003576");
+      fixture, scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000003576"));
 
   std::vector<api::SblrExecutorAvailabilityRowIdentity> identities;
   identities.reserve(profiles.size());
@@ -173,7 +173,7 @@ int main(int argc, char** argv) {
   const auto& pinned = admitted.rows[selected_index].snapshot;
 
   api::SblrExecutorAvailabilitySetRequest revoke;
-  revoke.database_uuid = admission_context.database_uuid.canonical;
+  revoke.database_uuid = admission_context.database_uuid;
   revoke.expected_snapshot_uuid = pinned.snapshot_uuid;
   revoke.expected_generation = pinned.generation;
   revoke.exact_row_identity = selected->identity;
@@ -198,7 +198,7 @@ int main(int argc, char** argv) {
           "pinned statement cohort hid current exact-row revocation");
 
   auto next_statement = Context(
-      fixture, "019d0000-0000-7000-8000-000000003577");
+      fixture, scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000003577"));
   const std::vector selected_identity{selected->identity};
   const auto observed = api::LoadSblrExecutorAvailabilitySnapshots(
       next_statement,

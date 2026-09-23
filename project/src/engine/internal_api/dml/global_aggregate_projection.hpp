@@ -108,7 +108,7 @@ EngineDescriptor EngineGlobalAggregateCountResultDescriptor();
 
 // Canonical global aggregate-registry identity for COUNT. No independently
 // copied or retired COUNT UUID is admitted by this ABI.
-std::string_view EngineGlobalAggregateCountFunctionUuid();
+EngineUuid EngineGlobalAggregateCountFunctionUuid();
 
 // Stable nullable result descriptors for direct-relation AVG. Integer inputs
 // yield int64 with division truncated toward zero; real64 inputs yield finite
@@ -125,7 +125,7 @@ EngineDescriptor EngineGlobalAggregateExpressionInt64ResultDescriptor();
 
 // Canonical global aggregate-registry identity for AVG. Independently copied
 // or retired AVG UUIDs are rejected by the envelope validator.
-std::string_view EngineGlobalAggregateAvgFunctionUuid();
+EngineUuid EngineGlobalAggregateAvgFunctionUuid();
 
 // Performs operation/alias/result-descriptor validation without consulting
 // catalog or row state.  Callers must run this before loading relation rows.

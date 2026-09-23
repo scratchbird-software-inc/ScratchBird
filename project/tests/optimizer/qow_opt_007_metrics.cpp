@@ -17,7 +17,7 @@ int main() {
       executed.rule_receipts.size() == 24 &&
       std::ranges::all_of(executed.rule_receipts, [](const auto& receipt) {
         return receipt.complete && receipt.causal_counter_id != 0 &&
-               !receipt.receipt_uuid.empty();
+               !receipt.receipt_uuid.is_nil();
       });
   bool passed = Require(executed.accepted && executed.root_published &&
                             executed.rows_received == 9 &&

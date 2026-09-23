@@ -16,6 +16,7 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -117,7 +118,8 @@ bool EvidenceContains(const api::EngineApiResult& result,
                      result.evidence.end(),
                      [&](const auto& evidence) {
                        return evidence.evidence_kind == kind &&
-                              evidence.evidence_id == id;
+                              (std::holds_alternative<std::string>(evidence.evidence_id) &&
+                               std::get<std::string>(evidence.evidence_id) == id);
                      });
 }
 
@@ -146,10 +148,10 @@ api::EngineRequestContext Context(const std::filesystem::path& path,
                                   std::uint64_t tx) {
   api::EngineRequestContext context;
   context.database_path = path.string();
-  context.database_uuid.canonical = api::GenerateCrudEngineUuid("database");
-  context.current_schema_uuid.canonical = api::GenerateCrudEngineUuid("schema");
+  context.database_uuid = api::GenerateCrudEngineUuid("database");
+  context.current_schema_uuid = api::GenerateCrudEngineUuid("schema");
   context.local_transaction_id = tx;
-  context.transaction_uuid.canonical = api::GenerateCrudEngineUuid("transaction");
+  context.transaction_uuid = api::GenerateCrudEngineUuid("transaction");
   context.catalog_generation_id = 7;
   context.security_epoch = 11;
   context.resource_epoch = 13;
@@ -226,7 +228,7 @@ api::EngineDocumentInsertResult InsertDocument(
     const std::vector<std::pair<std::string, std::string>>& values) {
   api::EngineDocumentInsertRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = api::GenerateCrudEngineUuid("row");
+  request.target_object.uuid = api::GenerateCrudEngineUuid("row");
   for (const auto& [path, value] : values) {
     request.assignments.push_back({path, Value(value)});
   }
@@ -298,7 +300,7 @@ api::EngineDocumentPhysicalProof Proof(
   contract.provider_generation.catalog_epoch = context.catalog_generation_id;
   contract.provider_generation.generation_uuid = generation.generation_uuid;
   contract.provider_generation.provider_id = generation.provider_id;
-  contract.provider_generation.database_uuid = context.database_uuid.canonical;
+  contract.provider_generation.database_uuid = context.database_uuid;
   contract.provider_generation.collection_uuid = generation.collection_uuid;
   contract.provider_generation.publish_state = "published";
   contract.provider_generation.validation_state = "validated";
@@ -395,8 +397,7 @@ void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
               uuid::IsEngineIdentityUuid(
                   reader_entry->identity.transaction_uuid.value),
           "reader transaction inventory UUID is invalid");
-  reader.transaction_uuid.canonical = uuid::UuidToString(
-      reader_entry->identity.transaction_uuid.value);
+  reader.transaction_uuid = reader_entry->identity.transaction_uuid.value;
   api::EngineDocumentProviderCleanup(reader, false);
 
   api::EngineDocumentFindRequest exact;
@@ -516,9 +517,9 @@ void DirectProviderScenario(const std::filesystem::path& base_path) {
   auto build = BuildFixtureRequest(artifact_path, context);
   auto built = api::BuildDocumentPathPhysicalProvider(build);
   Require(built.ok, "direct provider build failed");
-  Require(!built.artifact.identity.index_uuid.empty(),
+  Require(!built.artifact.identity.index_uuid.is_nil(),
           "document path provider index UUID missing");
-  Require(!built.artifact.identity.segment_uuid.empty(),
+  Require(!built.artifact.identity.segment_uuid.is_nil(),
           "document path provider segment UUID missing");
   Require(built.artifact.identity.index_uuid != built.artifact.identity.segment_uuid,
           "document path provider reused one UUID for index and segment");
@@ -591,7 +592,7 @@ void DirectProviderScenario(const std::filesystem::path& base_path) {
           "authoritative rebuild lost retained posting");
 
   auto invalid = build;
-  invalid.identity.database_uuid = "not-a-uuid";
+  invalid.identity.database_uuid = {};
   Require(!api::BuildDocumentPathPhysicalProvider(invalid).ok,
           "invalid UUID was accepted");
   auto unsafe = build;
@@ -731,12 +732,14 @@ void DirectProviderScenario(const std::filesystem::path& base_path) {
 
 int main() {
   try {
-    const auto suffix = api::GenerateCrudEngineUuid("database");
-    const auto base =
-        std::filesystem::temp_directory_path() /
-        ("scratchbird_document_path_provider_" + suffix);
+    auto directory_template = (std::filesystem::temp_directory_path() /
+        "scratchbird_document_path_provider_XXXXXX").string();
+    const char* directory = ::mkdtemp(directory_template.data());
+    Require(directory != nullptr, "temporary fixture directory creation failed");
+    const auto base = std::filesystem::path(directory) / "database.sbdb";
     ProviderRuntimeScenario(base);
     DirectProviderScenario(base.string() + "_direct");
+    std::filesystem::remove_all(directory);
   } catch (const std::exception& ex) {
     std::cerr << "document_path_physical_provider_gate failed: " << ex.what()
               << '\n';

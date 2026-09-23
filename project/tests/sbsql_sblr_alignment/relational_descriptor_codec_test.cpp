@@ -1,3 +1,5 @@
+#include "security/native_identity_option.hpp"
+#include "engine/sblr/native_shard_placement.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 // Structural codec evidence, not receipt authority or query execution.
@@ -9,6 +11,10 @@
 #include "wire/parser_server_ipc/public_relation_projection_codec.hpp"
 #include "wire/parser_server_ipc/sbps_name_metadata_reply_codec.hpp"
 #include "hash_digest.hpp"
+#include "wire/projection_fields.hpp"
+#include "wire/language_bundle_identity.hpp"
+#include "engine/sblr/native_row_field.hpp"
+#include "server/native_identity_selector.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #include "binder/descriptor_authority.hpp"
 #include "binder/relational_property_identity.hpp"
@@ -1844,8 +1850,13 @@ void TestNativeDescriptorBinaryKeys() {
     const auto row = std::find_if(manifest.manifest.descriptor_rows.begin(), manifest.manifest.descriptor_rows.end(),
                                  [type](const auto& value) { return value.type_id == type; });
     Require(row != manifest.manifest.descriptor_rows.end(), "expected catalog type row absent");
-    Require(parser::LookupNativeCanonicalTypeIdentity(manifest.manifest, type) == row->descriptor_uuid.value,
-            "native type lookup changed binary manifest identity");
+    const auto registry = dt::CurrentDatatypeTypeCodecIdentityRowsV1();
+    const auto binding = std::find_if(registry.begin(), registry.end(), [&](const auto& candidate) {
+      return candidate.descriptor_uuid == row->descriptor_uuid.value && candidate.descriptor_generation == row->descriptor_epoch;
+    });
+    const auto actual = parser::LookupNativeCanonicalTypeIdentity(manifest.manifest, type);
+    Require(binding == registry.end() ? !actual : actual == binding->type_uuid,
+            "native type lookup confused the descriptor identity with its registered type");
   }
   Require(!parser::LookupNativeCanonicalTypeIdentity(manifest.manifest, dt::CanonicalTypeId::unknown),
           "native type lookup guessed unknown type");
@@ -4468,6 +4479,223 @@ void TestPublicRelationTypeShape() {
           "null shape outputs accepted");
 }
 
+void TestNativeUuidRowField() {
+  wire::SblrOperand operand;
+  operand.ordinal = 1; operand.type = "row_field_binary16.uuid"; operand.name = "id";
+  operand.value_kind = wire::SblrValueKind::literal_typed;
+  const auto type = Id(40), row = Id(41);
+  operand.value_body.assign(type.bytes.begin(), type.bytes.end());
+  operand.value_body.insert(operand.value_body.end(), {32,0,0,0,0,0,0,0});
+  operand.value_body.insert(operand.value_body.end(), row.bytes.begin(), row.bytes.end());
+  const Bytes uuid{0,0x0a,0x0d,0x7c,0xff,0x5c,0x40,0,0x80,0,0,0,0,0,0,1};
+  operand.value_body.insert(operand.value_body.end(), uuid.begin(), uuid.end());
+  const auto decoded = wire::DecodeNativeRowField(operand);
+  Require(decoded && decoded->row_uuid == row && decoded->payload.size() == 16 &&
+          std::equal(uuid.begin(), uuid.end(), reinterpret_cast<const std::uint8_t*>(decoded->payload.data())),
+          "UUID row field must preserve raw bytes including arbitrary user UUID versions");
+  for (std::size_t size = 0; size < operand.value_body.size(); ++size) {
+    auto truncated = operand; truncated.value_body.resize(size);
+    Require(!wire::DecodeNativeRowField(truncated), "truncated UUID row field admitted");
+  }
+  auto envelope = wire::MakeSblrEnvelope("query.execute", "SBLR_QUERY_EXECUTE", "row.codec.fixture");
+  envelope.opcode_code = 4615; envelope.parser_package_uuid = Id(6); envelope.registry_snapshot_uuid = Id(7);
+  envelope.result_shape = "query_execute_result"; envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.operands = {operand};
+  const auto sbop = wire::DecodeSblrEnvelope(wire::EncodeSblrEnvelope(envelope));
+  Require(sbop.ok && sbop.envelope.operands.size() == 1 &&
+          wire::DecodeNativeRowField(sbop.envelope.operands.front()).has_value() &&
+          sbop.envelope.operands.front().value_body == operand.value_body,
+          "native UUID row field did not survive canonical SBOP framing");
+  auto wrong = operand; wrong.value_body.push_back(0); wrong.value_body[16] = 33;
+  Require(!wire::DecodeNativeRowField(wrong), "oversized UUID value admitted");
+  wrong = operand; wrong.value_body[30] = 0x40;
+  Require(!wire::DecodeNativeRowField(wrong), "nonengine row UUID admitted");
+  wrong = operand; wrong.type = "row_null_field_binary16.uuid";
+  Require(!wire::DecodeNativeRowField(wrong), "null row UUID value retained payload");
+  wrong.value_body.resize(40); wrong.value_body[16] = 16;
+  Require(wire::DecodeNativeRowField(wrong).has_value(), "null UUID row field rejected");
+}
+
+void TestNativeSecurityIdentityOption() {
+  namespace api = scratchbird::engine::internal_api;
+  api::EngineApiRequest request;
+  const auto identity = Id(91);
+  const auto sentinel = Id(92);
+  const std::string prefix = "internal_group_uuid:";
+  const std::string bytes(reinterpret_cast<const char*>(identity.bytes.data()), 16);
+  api::EngineUuid output = sentinel;
+  request.option_envelopes = {"external_group:example", prefix + bytes};
+  Require(api::ReadSecurityIdentityOption(request, "internal_group_uuid", &output) &&
+              output == identity, "security identity option must preserve binary16");
+  Require(!api::ReadSecurityIdentityOption(request, "internal_group_uuid", nullptr),
+          "security identity option accepted null output");
+  const auto refuse = [&](std::vector<std::string> options) {
+    request.option_envelopes = std::move(options);
+    output = sentinel;
+    Require(!api::ReadSecurityIdentityOption(request, "internal_group_uuid", &output) &&
+                output == sentinel, "security identity option must refuse without output mutation");
+  };
+  refuse({});
+  refuse({prefix});
+  refuse({prefix + bytes.substr(0, 15)});
+  refuse({prefix + bytes + "x"});
+  refuse({prefix + "018f0000-0000-7000-8000-00000000d001"});
+  refuse({prefix + std::string(16, '\0')});
+  auto wrong_version = bytes;
+  wrong_version[6] = static_cast<char>((wrong_version[6] & 0x0f) | 0x40);
+  refuse({prefix + wrong_version});
+  refuse({prefix + bytes, prefix + bytes});
+  refuse({prefix + bytes, prefix + "bad"});
+}
+
+void TestNativeShardPlacement() {
+  wire::SblrOperationEnvelope envelope;
+  const auto id_operand = [](std::string name, Uuid id) {
+    wire::SblrOperand operand;
+    operand.type = "uuid"; operand.name = std::move(name);
+    operand.value_kind = wire::SblrValueKind::uuid_ref;
+    operand.value_body.assign(id.bytes.begin(),id.bytes.end());
+    return operand;
+  };
+  envelope.operands = {id_operand("shard_uuid",Id(61)),
+                       id_operand("source_filespace_uuid",Id(62)),
+                       id_operand("target_filespace_uuid",Id(63))};
+  api::EngineShardPlacementDescriptor output;
+  Require(wire::ReadNativeShardPlacementDescriptor(envelope,"",&output) &&
+          output.shard_uuid==Id(61) && output.source_filespace_uuid==Id(62) &&
+          output.target_filespace_uuid==Id(63), "shard descriptor binary16 changed");
+  const auto refused = [&](const wire::SblrOperationEnvelope& bad) {
+    auto sentinel=output;
+    Require(!wire::ReadNativeShardPlacementDescriptor(bad,"",&sentinel) &&
+            sentinel.shard_uuid==output.shard_uuid &&
+            sentinel.target_filespace_uuid==output.target_filespace_uuid,
+            "malformed shard descriptor published output");
+  };
+  for (std::size_t size : {0U,15U,17U,36U}) {
+    auto bad=envelope;bad.operands[0].value_body.resize(size);refused(bad);
+  }
+  auto bad=envelope;bad.operands[0].value_kind=wire::SblrValueKind::literal_typed;refused(bad);
+  bad=envelope;bad.operands[0].value="019d0000-0000-7000-8000-000000000001";refused(bad);
+  bad=envelope;bad.operands[0].value_body[6]=0x40;refused(bad);
+  bad=envelope;bad.operands.push_back(bad.operands[0]);refused(bad);
+  bad=envelope;bad.operands.erase(bad.operands.begin());refused(bad);
+  bad=envelope;bad.operands[0].value_flags=1;refused(bad);
+  wire::SblrOperand epoch;
+  epoch.type="text";epoch.name="placement_epoch";
+  epoch.value_kind=wire::SblrValueKind::literal_typed;
+  epoch.value_body.resize(24);epoch.value_body[16]=2;
+  epoch.value_body.push_back('4');epoch.value_body.push_back('1');
+  auto numeric=envelope;numeric.operands.push_back(epoch);
+  Require(wire::ReadNativeShardPlacementDescriptor(numeric,"",&output) &&
+          output.placement_epoch==41, "shard epoch changed");
+  bad=numeric;bad.operands.back().value_body[16]=3;refused(bad);
+  bad=numeric;bad.operands.back().value_body.back()='x';refused(bad);
+  bad=numeric;bad.operands.push_back(epoch);refused(bad);
+  auto prefixed=envelope;
+  for (auto& operand:prefixed.operands) operand.name="merge_input_0_"+operand.name;
+  Require(wire::ReadNativeShardPlacementDescriptor(prefixed,"merge_input_0_",&output) &&
+          output.shard_uuid==Id(61), "merge descriptor binary identity mismatch");
+  Require(!wire::ReadNativeShardPlacementDescriptor(prefixed,"merge_input_1_",&output),
+          "missing merge descriptor fabricated identity");
+}
+
+void TestNativeIdentitySelector() {
+  namespace server = scratchbird::server;
+  const auto expected = Id(44);
+  const std::string bytes(reinterpret_cast<const char*>(expected.bytes.data()),16);
+  Require(server::NativeIdentitySelectorMatches(bytes, expected), "native database selector mismatch");
+  Require(!server::NativeIdentitySelectorMatches(bytes, Id(45)), "different native selector matched");
+  Uuid output = Id(46);
+  for (const auto size : {0,15,17,36}) {
+    Require(!server::ReadNativeIdentitySelector(std::string(size,'0'), &output) && output == Id(46),
+            "bad identity selector admitted or mutated output");
+  }
+  auto invalid = bytes; invalid[6] = 0x40;
+  Require(!server::ReadNativeIdentitySelector(invalid, &output), "nonengine selector admitted");
+  Require(!server::NativeIdentitySelectorMatches("01a07c0a-0d5c-7000-8000-ff000000002c",expected),
+          "text UUID selector admitted by server");
+}
+
+void TestLanguageBundleIdentity() {
+  namespace w = scratchbird::wire;
+  w::LanguageBundleIdentityV1 input{Id(41), {}, Id(43)};
+  w::LanguageBundleIdentityBytesV1 bytes{};
+  Require(w::EncodeLanguageBundleIdentityV1(input, &bytes), "bundle identity encode");
+  const w::LanguageBundleIdentityBytesV1 expected{
+      0x01,0xa0,0x7c,0x0a,0x0d,0x5c,0x70,0,0x80,0,0xff,0,0,0,0,41,
+      0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+      0x01,0xa0,0x7c,0x0a,0x0d,0x5c,0x70,0,0x80,0,0xff,0,0,0,0,43};
+  Require(bytes == expected, "bundle UUID16 byte oracle");
+  w::LanguageBundleIdentityV1 decoded;
+  Require(w::DecodeLanguageBundleIdentityV1(bytes, &decoded) && decoded == input,
+          "bundle identity round trip");
+  const auto saved = decoded;
+  for (std::size_t size = 0; size < bytes.size(); ++size) {
+    Require(!w::DecodeLanguageBundleIdentityV1(std::span(bytes).first(size), &decoded) && decoded == saved,
+            "truncated bundle packet mutated output");
+  }
+  std::vector<std::uint8_t> trailing(bytes.begin(), bytes.end()); trailing.push_back(0);
+  Require(!w::DecodeLanguageBundleIdentityV1(trailing, &decoded) && decoded == saved,
+          "bundle trailing byte admitted");
+  for (std::size_t offset : {0u, 16u, 32u}) {
+    auto invalid = bytes;
+    invalid[offset + 6] = 0x40; invalid[offset + 8] = 0x80;
+    Require(!w::DecodeLanguageBundleIdentityV1(invalid, &decoded) && decoded == saved,
+            "bundle nonengine UUID admitted");
+  }
+  auto nil_bundle = bytes; std::fill_n(nil_bundle.begin(), 16, 0);
+  Require(!w::DecodeLanguageBundleIdentityV1(nil_bundle, &decoded) && decoded == saved,
+          "nil bundle admitted");
+  input.bundle_uuid = {};
+  Require(!w::EncodeLanguageBundleIdentityV1(input, &bytes) && bytes == expected,
+          "failed bundle encode changed bytes");
+}
+
+void TestBinaryProjectionFields() {
+  namespace fields = scratchbird::wire::projection_fields;
+  const auto id = Id(0x7c);
+  const std::vector<std::string> input = {
+      "rpvs1", fields::Identity(id), fields::Identity({}),
+      std::string("a\0|b", 4)};
+  const auto bytes = fields::Encode(input);
+  Require(bytes.size() == 12 + 4 * 4 + 5 + 32 + 4,
+          "binary projection field byte count");
+  Require(bytes.substr(0, 8) == "SBPF0001" &&
+          static_cast<unsigned char>(bytes[8]) == 4 &&
+          bytes.substr(25, 16) == fields::Identity(id),
+          "projection byte oracle");
+  std::vector<std::string_view> decoded;
+  Require(fields::Decode(bytes, &decoded) && decoded.size() == input.size(),
+          "projection round trip");
+  for (std::size_t i=0; i<input.size(); ++i)
+    Require(decoded[i] == input[i], "projection field bytes changed");
+  Uuid identity;
+  Require(fields::Read(decoded[1], &identity) && identity == id,
+          "projection identity decode");
+  Require(fields::Read(decoded[2], &identity) && identity.is_nil(),
+          "projection optional nil identity");
+  for (std::size_t n=0; n<bytes.size(); ++n) {
+    const auto previous = decoded;
+    const auto before = allocations;
+    Require(!fields::Decode(std::string_view(bytes).substr(0,n), &decoded),
+            "projection accepted truncated carrier");
+    Require(allocations == before && decoded == previous,
+            "projection malformed carrier allocated or mutated output");
+  }
+  Require(!fields::Decode(bytes + "x", &decoded), "projection trailing byte");
+  auto excessive = bytes; excessive[8] = static_cast<char>(255); excessive[9] = 127;
+  Require(!fields::Decode(excessive, &decoded), "projection unbounded count");
+  excessive = bytes; excessive[12] = static_cast<char>(255); excessive[15] = 127;
+  Require(!fields::Decode(excessive, &decoded), "projection unbounded field");
+  Require(!fields::Decode("rpvs1|legacy|text", &decoded), "legacy projection accepted");
+  identity=id;
+  Require(!fields::Read("019d0000-0000-7000-8000-00000000d711", &identity) && identity==id,
+          "text UUID accepted or modified output");
+  auto invalid=fields::Identity(id); invalid[6]=0x40;
+  Require(!fields::Read(invalid, &identity) && identity==id,
+          "invalid system UUID accepted");
+}
+
 void TestPublicRelationProjection() {
   namespace ipc = scratchbird::parser::ipc;
   constexpr auto limit = ipc::kPublicRelationProjectionMaximumBytesV4;
@@ -4478,6 +4706,7 @@ void TestPublicRelationProjection() {
   p.datatype_catalog_generation = 3; p.datatype_registry_generation = 4;
   ipc::PublicRelationProjectionColumnV4 c;
   c.column_uuid = Id(5); c.descriptor_uuid = Id(6); c.type_uuid = Id(7);
+  c.datatype_descriptor_uuid = Id(8);
   c.canonical_name = "c"; c.descriptor_kind = "scalar"; c.canonical_type_name = "type";
   c.codec_id = "codec"; c.codec_version = 1; c.codec_generation = 2;
   c.descriptor_generation = 3; c.type_generation = 4;
@@ -4501,10 +4730,10 @@ void TestPublicRelationProjection() {
   const auto attributes_offset = expected.size();
   Append(expected, 0, 1); id({}); text(""); id({}); text("");
   Append(expected, 0, 4); Append(expected, 0, 4); Append(expected, 0, 4);
-  Append(expected, 3, 8); id(Id(7)); Append(expected, 4, 8); text("codec");
+  text(""); id(Id(8)); Append(expected, 3, 8); id(Id(7)); Append(expected, 4, 8); text("codec");
   Append(expected, 1, 2); Append(expected, 2, 8); Append(expected, 8, 4);
   Append(expected, 2, 1);
-  Require(expected.size() == 288, "projection column oracle extent");
+  Require(expected.size() == 308, "projection column oracle extent");
   Bytes encoded;
   Require(ipc::EncodePublicRelationProjectionV4(p, limit, &encoded) && encoded == expected,
           "projection independent byte oracle mismatch");
@@ -4522,7 +4751,7 @@ void TestPublicRelationProjection() {
   for (std::size_t n = 0; n != expected.size(); ++n)
     rejects(Bytes(expected.begin(), expected.begin() + n));
   auto bad = expected; bad.push_back(0); rejects(bad);
-  for (const auto offset : {0u, 16u, 32u, 64u, 100u, 125u, 240u}) {
+  for (const auto offset : {0u, 16u, 32u, 64u, 100u, 125u, 236u, 260u}) {
     for (unsigned version = 0; version != 16; ++version)
       for (unsigned variant = 0; variant != 4; ++variant) {
         if (version == 7 && variant == 2) continue;
@@ -4545,6 +4774,26 @@ void TestPublicRelationProjection() {
   bad = expected; bad[124] = 0xff; rejects(bad);
   bad = expected; std::fill_n(bad.begin() + 120, 4, 0xff); rejects(bad);
   bad.assign(limit + 1, 0); rejects(bad);
+  auto scalar = p;
+  scalar.columns.front().shape.width = 64;
+  scalar.columns.front().scalar_metadata = "width=64;nullable=false";
+  Bytes scalar_bytes;
+  Require(ipc::EncodePublicRelationProjectionV4(scalar, limit, &scalar_bytes), "consistent scalar metadata refused");
+  auto scalar_bad = scalar_bytes;
+  const std::string scalar_needle = "width=64";
+  const auto scalar_at = std::search(scalar_bad.begin(), scalar_bad.end(), scalar_needle.begin(), scalar_needle.end());
+  Require(scalar_at != scalar_bad.end(), "scalar metadata oracle missing");
+  scalar_at[6] = '5';
+  rejects(scalar_bad);
+  scalar.columns.front().scalar_metadata = "width=65";
+  Bytes scalar_unchanged{0xcc};
+  Require(!ipc::EncodePublicRelationProjectionV4(scalar, limit, &scalar_unchanged) && scalar_unchanged == Bytes{0xcc},
+          "conflicting scalar metadata admitted");
+  auto identity_text = p;
+  identity_text.columns.front().scalar_metadata = "type_uuid=019d0000-0000-7000-8000-00000000d719";
+  Bytes refused{0xcc};
+  Require(!ipc::EncodePublicRelationProjectionV4(identity_text, limit, &refused) && refused == Bytes{0xcc},
+          "textual UUID descriptor attribute entered the binary projection");
   auto duplicate = p; duplicate.columns.push_back(c); duplicate.columns.back().ordinal = 1;
   Bytes unchanged{0xaa};
   Require(!ipc::EncodePublicRelationProjectionV4(p, expected.size() - 1, &unchanged) &&
@@ -4552,7 +4801,7 @@ void TestPublicRelationProjection() {
   auto previous = p;
   Require(!ipc::DecodePublicRelationProjectionV4(expected, expected.size() - 1, &previous) &&
               previous == p, "projection decoder ignored resource ceiling");
-  for (const auto offset : {0u, 16u, 32u, 64u, 100u, 125u, 240u}) {
+  for (const auto offset : {0u, 16u, 32u, 64u, 100u, 125u, 236u, 260u}) {
     bad = expected; std::fill_n(bad.begin() + offset, 16, 0); rejects(bad);
   }
   Require(!ipc::EncodePublicRelationProjectionV4(duplicate, limit, &unchanged) &&
@@ -4983,6 +5232,7 @@ void TestTransactionalNameReply() {
   p.validated_resource_epoch = 2; p.datatype_catalog_generation = 3; p.datatype_registry_generation = 4;
   ipc::PublicRelationProjectionColumnV4 column;
   column.column_uuid = Id(5); column.descriptor_uuid = Id(6); column.type_uuid = Id(7);
+  column.datatype_descriptor_uuid = Id(8);
   column.canonical_name = "c"; column.descriptor_kind = "scalar"; column.canonical_type_name = "type";
   column.codec_id = "codec"; column.codec_version = 1; column.codec_generation = 2;
   column.descriptor_generation = 3; column.type_generation = 4;
@@ -4999,9 +5249,9 @@ void TestTransactionalNameReply() {
   Append(projection, 16, 4); projection.insert(projection.end(), {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0});
   Append(projection, 0, 1); id({}); text(""); id({}); text("");
   Append(projection, 0, 4); Append(projection, 0, 4); Append(projection, 0, 4);
-  Append(projection, 3, 8); id(Id(7)); Append(projection, 4, 8); text("codec");
+  text(""); id(Id(8)); Append(projection, 3, 8); id(Id(7)); Append(projection, 4, 8); text("codec");
   Append(projection, 1, 2); Append(projection, 2, 8); Append(projection, 8, 4); Append(projection, 2, 1);
-  Require(projection.size() == 288, "transaction reply projection oracle size");
+  Require(projection.size() == 308, "transaction reply projection oracle size");
   const auto oracle = [&](const ipc::PsNameResolveResponseV2& value) {
     auto bytes = NameReplyOracle(value.name); bytes[0] = 2;
     Append(bytes, 10, 2); Append(bytes, 24, 4); Append(bytes, value.local_transaction_id, 8);
@@ -5203,6 +5453,12 @@ int main() {
     TestCanonicalRenderReplies();
     TestPublicRelationTypeShape();
     TestPublicRelationProjection();
+    TestBinaryProjectionFields();
+    TestLanguageBundleIdentity();
+    TestNativeUuidRowField();
+    TestNativeIdentitySelector();
+    TestNativeShardPlacement();
+    TestNativeSecurityIdentityOption();
     std::cout << "PASS relational descriptor checks=" << checks << " allocation_faults=" << faults << '\n';
     return 0;
   } catch (const std::exception& error) {

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "memory.hpp"
 #include "public_release_authz_fixture.hpp"
@@ -166,11 +167,11 @@ api::EnginePolicyMutationRequest BaseMutationRequest(const std::filesystem::path
   request.context.security_context_present = true;
   request.context.security_epoch = 7;
   request.context.catalog_generation_id = 9;
-  request.context.principal_uuid.canonical = "018f7a10-1280-7000-8000-000000000050";
+  request.context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f7a10-1280-7000-8000-000000000050");
   request.context.trace_tags.push_back("right:POLICY_ADMIN");
   scratchbird::tests::release::GrantMaterializedRight(
       &request.context, "POLICY_ADMIN");
-  request.target_object.uuid.canonical = "018f7a10-1280-7000-8000-000000000409";
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("018f7a10-1280-7000-8000-000000000409");
   request.target_object.object_kind = "policy";
   request.mutation_kind = "modify";
   request.policy_area = "diagnostics";
@@ -184,7 +185,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }

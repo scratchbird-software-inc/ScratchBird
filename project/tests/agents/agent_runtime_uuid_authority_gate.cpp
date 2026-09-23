@@ -6,6 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
 #include "agent_runtime.hpp"
 #include "agent_runtime_manager.hpp"
 #include "metric_registry.hpp"
@@ -47,7 +50,7 @@ std::string Id(platform::UuidKind kind, platform::u64 seed) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, 1917017000000ull + seed);
   Require(generated.ok(), "fixture UUID generation failed");
   const auto [inserted, _] =
-      generated_ids.emplace(key, uuid::UuidToString(generated.value.value));
+      generated_ids.emplace(key, BinaryFixtureIdentity(generated.value.value));
   return inserted->second;
 }
 
@@ -64,7 +67,7 @@ void RequireUuid(const std::string& value,
                  const std::string& field_name) {
   Require(!value.empty(), field_name + " is empty");
   RequireNoLabelPrefix(value, field_name);
-  Require(uuid::ParseDurableEngineIdentityUuid(kind, value).ok(),
+  Require(uuid::MakeTypedUuid(kind, NativeFixtureIdentity(value)).ok(),
           field_name + " is not a typed durable engine UUID: " + value);
 }
 
@@ -144,8 +147,8 @@ void TestRuntimeManagerDoesNotParsePolicyUuidLabels() {
 void TestTickSecurityActionAndFaultEvidenceUuidAuthority() {
   agents::AgentTickHealthRequest tick;
   tick.context.security_context_present = true;
-  tick.context.database_uuid = Id(platform::UuidKind::database, 30);
-  tick.context.principal_uuid = Id(platform::UuidKind::principal, 31);
+  tick.context.database_uuid = NativeFixtureIdentity(Id(platform::UuidKind::database, 30));
+  tick.context.principal_uuid = NativeFixtureIdentity(Id(platform::UuidKind::principal, 31));
   tick.context.wall_now_microseconds = 1000;
   tick.policy_generation = 17;
   for (const auto& descriptor : agents::CanonicalAgentRegistry()) {
@@ -167,8 +170,8 @@ void TestTickSecurityActionAndFaultEvidenceUuidAuthority() {
 
   agents::AgentRuntimeContext context;
   context.security_context_present = true;
-  context.database_uuid = Id(platform::UuidKind::database, 40);
-  context.principal_uuid = Id(platform::UuidKind::principal, 41);
+  context.database_uuid = NativeFixtureIdentity(Id(platform::UuidKind::database, 40));
+  context.principal_uuid = NativeFixtureIdentity(Id(platform::UuidKind::principal, 41));
   context.rights.push_back("OBS_AGENT_STATE_READ");
   context.rights.push_back("OBS_AGENT_CONTROL");
   const auto grant = agents::EvaluateAgentSecurityGrant(
@@ -196,7 +199,7 @@ void TestTickSecurityActionAndFaultEvidenceUuidAuthority() {
   action.idempotency_key = "uuid-authority-action";
   action.dry_run = false;
   action.inputs["policy_uuid"] = policy.policy_uuid;
-  action.inputs["scope_uuid"] = tick.context.database_uuid;
+  action.inputs["scope_uuid"] = BinaryFixtureIdentity(tick.context.database_uuid);
   const auto decision = agents::EvaluateAgentAction(context, *descriptor, policy, action);
   RequireObjectUuid(decision.evidence_uuid, "action.evidence_uuid");
   const auto candidate = agents::NormalizeAgentActionForArbitration(context, action);

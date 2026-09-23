@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../../support/binary_uuid_fixture.hpp"
+
 #include "dispatch/function_dispatch.hpp"
 #include "registry/function_seed_registry.hpp"
 #include "api_types.hpp"
@@ -150,20 +152,20 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
-  request.context.sblr_context.session_uuid = "019e1600-0000-7000-8000-000000000016";
-  request.context.sblr_context.node_uuid = "019e1600-0000-7000-8000-0000000000dd";
-  request.context.sblr_context.database_uuid = "019e1600-0000-7000-8000-0000000000db";
-  request.context.sblr_context.user_uuid = "019e1600-0000-7000-8000-000000000001";
-  request.context.sblr_context.transaction_uuid = "019e1600-0000-7000-8000-0000000000aa";
-  request.context.sblr_context.statement_uuid = "019e1600-0000-7000-8000-0000000000bb";
-  request.context.sblr_context.current_diagnostic_uuid = "019e1600-0000-7000-8000-0000000000cc";
+  request.context.sblr_context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-000000000016");
+  request.context.sblr_context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000dd");
+  request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000db");
+  request.context.sblr_context.user_uuid = scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-000000000001");
+  request.context.sblr_context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000aa");
+  request.context.sblr_context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000bb");
+  request.context.sblr_context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000cc");
   request.context.sblr_context.local_transaction_id = 16016;
   request.context.sblr_context.transaction_isolation_level = "snapshot";
   request.context.sblr_context.current_sqlstate = "00000";
   if (current_sqlstate.has_value()) {
     request.context.sblr_context.current_sqlstate = *current_sqlstate;
   }
-  request.context.sblr_context.client_protocol_uuid = "019e1600-0000-7000-8000-0000000000ee";
+  request.context.sblr_context.client_protocol_uuid = scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000ee");
   request.context.sblr_context.application_name = "sbsql_conformance";
   request.context.sblr_context.transaction_context_present = true;
   if (last_row_count.has_value()) {
@@ -172,15 +174,15 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
   }
   scratchbird::engine::internal_api::EngineRequestContext engine_context;
   if (policy_observer) {
-    engine_context.database_uuid.canonical =
+    engine_context.database_uuid =
         request.context.sblr_context.database_uuid;
-    engine_context.principal_uuid.canonical =
+    engine_context.principal_uuid =
         request.context.sblr_context.user_uuid;
-    engine_context.session_uuid.canonical =
+    engine_context.session_uuid =
         request.context.sblr_context.session_uuid;
-    engine_context.transaction_uuid.canonical =
+    engine_context.transaction_uuid =
         request.context.sblr_context.transaction_uuid;
-    engine_context.statement_uuid.canonical =
+    engine_context.statement_uuid =
         request.context.sblr_context.statement_uuid;
     engine_context.local_transaction_id =
         request.context.sblr_context.local_transaction_id;
@@ -188,15 +190,15 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
     engine_context.catalog_generation_id = 11;
     engine_context.security_epoch = 7;
     engine_context.resource_epoch = 13;
-    engine_context.current_diagnostic_uuid.canonical =
+    engine_context.current_diagnostic_uuid =
         request.context.sblr_context.current_diagnostic_uuid;
-    engine_context.transaction_policy_snapshot_uuid.canonical =
-        "019e1600-0000-7000-8000-0000000000f1";
+    engine_context.transaction_policy_snapshot_uuid =
+        scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000f1");
     engine_context.transaction_policy_snapshot_generation = 3;
     auto& authorization = engine_context.authorization_context;
     authorization.present = true;
-    authorization.authority_uuid.canonical =
-        "019e1600-0000-7000-8000-0000000000f2";
+    authorization.authority_uuid =
+        scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000f2");
     authorization.security_context_generation = 2;
     authorization.principal_uuid = engine_context.principal_uuid;
     authorization.security_epoch = engine_context.security_epoch;
@@ -248,6 +250,21 @@ bool ExpectText(std::string_view case_id,
   if (value.is_null || value.text_value != expected || value.descriptor_id != descriptor) {
     std::cerr << case_id << ": expected " << descriptor << " " << expected << ", got "
               << value.descriptor_id << " " << value.text_value << "\n";
+    return false;
+  }
+  return true;
+}
+
+bool ExpectUuid(std::string_view case_id,
+                const scratchbird::engine::sblr::SblrResult& result,
+                const scratchbird::engine::sblr::SblrUuid& expected) {
+  if (!ExpectOkScalar(result, case_id)) return false;
+  const auto& value = result.scalar_values.front();
+  if (value.is_null || value.descriptor_id != "uuid" ||
+      value.payload_kind != SblrValuePayloadKind::uuid_binary ||
+      value.uuid_value != expected || !value.text_value.empty() ||
+      !value.encoded_value.empty() || !value.binary_value.empty()) {
+    std::cerr << case_id << ": expected the exact binary UUID value\n";
     return false;
   }
   return true;
@@ -326,41 +343,34 @@ int main() {
   const auto& registry = package.registry;
   bool ok = true;
 
-  ok = ExpectText("session_id",
+  ok = ExpectUuid("session_id",
                   Run(registry, "sb.session.session_id"),
-                  "019e1600-0000-7000-8000-000000000016",
-                  "uuid") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-000000000016")) && ok;
   ok = ExpectUint64("transaction_id", Run(registry, "sb.session.transaction_id"), 16016) && ok;
-  ok = ExpectText("transaction_uuid",
+  ok = ExpectUuid("transaction_uuid",
                   Run(registry, "sb.session.transaction_uuid"),
-                  "019e1600-0000-7000-8000-0000000000aa",
-                  "uuid") && ok;
-  ok = ExpectText("current_statement_uuid",
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000aa")) && ok;
+  ok = ExpectUuid("current_statement_uuid",
                   Run(registry, "sb.session.current_statement_uuid"),
-                  "019e1600-0000-7000-8000-0000000000bb",
-                  "uuid") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000bb")) && ok;
   ok = ExpectUint64("row_count",
                     Run(registry, "sb.fn.diagnostic.row_count", {}, std::uint64_t{7}),
                     7) && ok;
   ok = ExpectNull("row_count_no_context",
                   Run(registry, "sb.fn.diagnostic.row_count"),
                   "uint64") && ok;
-  ok = ExpectText("session_user",
+  ok = ExpectUuid("session_user",
                   Run(registry, "sb.session.session_user"),
-                  "019e1600-0000-7000-8000-000000000001",
-                  "uuid") && ok;
-  ok = ExpectText("system_user",
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-000000000001")) && ok;
+  ok = ExpectUuid("system_user",
                   Run(registry, "sb.session.system_user"),
-                  "019e1600-0000-7000-8000-000000000001",
-                  "uuid") && ok;
-  ok = ExpectText("user",
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-000000000001")) && ok;
+  ok = ExpectUuid("user",
                   Run(registry, "sb.session.user"),
-                  "019e1600-0000-7000-8000-000000000001",
-                  "uuid") && ok;
-  ok = ExpectText("current_server",
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-000000000001")) && ok;
+  ok = ExpectUuid("current_server",
                   Run(registry, "sb.session.current_server"),
-                  "019e1600-0000-7000-8000-0000000000dd",
-                  "uuid") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000dd")) && ok;
 
   ok = ExpectText("server_version", Run(registry, "sb.scalar.server_version"), "ScratchBird 0.1.0") && ok;
   ok = ExpectUint64("server_version_num", Run(registry, "sb.scalar.server_version_num"), 100) && ok;
@@ -553,10 +563,9 @@ int main() {
   ok = ExpectText("SBSQL-52A87230C51F-current_locale-metadata",
                   Run(registry, "sb.scalar.current_locale"),
                   "en-US") && ok;
-  ok = ExpectText("SBSQL-9F79AF739250-client_protocol-metadata",
+  ok = ExpectUuid("SBSQL-9F79AF739250-client_protocol-metadata",
                   Run(registry, "sb.scalar.client_protocol"),
-                  "019e1600-0000-7000-8000-0000000000ee",
-                  "uuid") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000ee")) && ok;
   ok = ExpectBoolean("SBSQL-8EF55DAAC17F-private_profile_active-metadata",
                      Run(registry, "sb.scalar.private_profile_active"),
                      false) && ok;
@@ -641,10 +650,9 @@ int main() {
   ok = ExpectText("SBSQL-BB0BB989E8B2-comment_block-metadata",
                   Run(registry, "sb.scalar.comment_block"),
                   "lexeme.comment_block") && ok;
-  ok = ExpectText("SBSQL-80864EB79EEB-current_request_uuid-metadata",
+  ok = ExpectUuid("SBSQL-80864EB79EEB-current_request_uuid-metadata",
                   Run(registry, "sb.scalar.current_request_uuid"),
-                  "019e1600-0000-7000-8000-0000000000bb",
-                  "uuid") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000bb")) && ok;
   ok = ExpectText("SBSQL-5CDBD2168B18-current_dialect_version-metadata",
                   Run(registry, "sb.scalar.current_dialect_version"),
                   "sbsql.v3") && ok;
@@ -720,10 +728,9 @@ int main() {
   ok = ExpectText("SBSQL-B845A701EF3C-private_profile_read-metadata",
                   Run(registry, "sb.scalar.private_profile_read"),
                   "authority.private_profile_read") && ok;
-  ok = ExpectText("SBSQL-C9883DF74D82-evidence_chain_uuid-metadata",
+  ok = ExpectUuid("SBSQL-C9883DF74D82-evidence_chain_uuid-metadata",
                   Run(registry, "sb.scalar.evidence_chain_uuid"),
-                  "019e1600-0000-7000-8000-0000000000bb",
-                  "uuid") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000bb")) && ok;
   ok = ExpectText("SBSQL-CE7F2EE0D34E-parameter_marker-metadata",
                   Run(registry, "sb.scalar.parameter_marker"),
                   "token.parameter_marker") && ok;
@@ -871,10 +878,9 @@ int main() {
   ok = ExpectText("SBSQL-A57396612A09-object_resolution_failed-metadata",
                   Run(registry, "sb.scalar.object_resolution_failed"),
                   "diagnostic.object_resolution_failed") && ok;
-  ok = ExpectText("SBSQL-B8E49C049ECB-error_diagnostic_uuid-metadata",
+  ok = ExpectUuid("SBSQL-B8E49C049ECB-error_diagnostic_uuid-metadata",
                   Run(registry, "sb.scalar.error_diagnostic_uuid"),
-                  "019e1600-0000-7000-8000-0000000000cc",
-                  "uuid") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000cc")) && ok;
   ok = ExpectText("SBSQL-91F466E96DE4-transaction-metadata",
                   Run(registry, "sb.scalar.transaction"),
                   "fixture.identifier.transaction") && ok;

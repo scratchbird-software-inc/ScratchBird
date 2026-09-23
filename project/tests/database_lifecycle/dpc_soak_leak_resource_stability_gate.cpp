@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "ddl/create_api.hpp"
@@ -22,6 +23,7 @@
 #include "session_registry.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
+#include "sblr_opcode_registry.hpp"
 
 #include <algorithm>
 #include <array>
@@ -94,7 +96,7 @@ struct ExecuteDecoded {
 struct Fixture {
   std::filesystem::path root;
   std::filesystem::path database_path;
-  std::string database_uuid;
+  api::EngineUuid database_uuid;
 };
 
 struct ResourceSnapshot {
@@ -193,7 +195,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -306,7 +308,7 @@ Fixture CreateFixture() {
   Require(opened.ok(), "DPC-070 database first open failed");
   const auto clean = db::MarkDatabaseCleanShutdown(fixture.database_path.string());
   Require(clean.ok(), "DPC-070 clean shutdown marker failed");
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
 
   const auto bootstrap =
       scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
@@ -319,7 +321,7 @@ Fixture CreateFixture() {
       kVerifier,
       bootstrap.local_transaction_id,
       "DPC-070",
-      bootstrap.transaction_uuid.canonical);
+      bootstrap.transaction_uuid);
   for (const std::string_view right : {
            "CONNECT", "CREATE", "INSERT", "SELECT", "OBS_RUNTIME_ALL",
            "OBS_MANAGEMENT_INSPECT", "OBS_MANAGEMENT_CONTROL", "SUPPORT_EXPORT",
@@ -329,7 +331,7 @@ Fixture CreateFixture() {
         fixture.database_uuid, "database", right,
         bootstrap.local_transaction_id,
         std::string("DPC-070:") + std::string(right),
-        bootstrap.transaction_uuid.canonical);
+        bootstrap.transaction_uuid);
   }
   scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
       bootstrap);
@@ -448,21 +450,13 @@ sbps::Frame DisconnectFrame(const std::array<std::uint8_t, 16>& session_uuid) {
 
 std::string TransactionEnvelope(std::string_view operation_id,
                                 bool requires_transaction_context) {
-  std::string out;
-  out += "operation_id=";
-  out += operation_id;
-  out += "\n";
-  out += "sblr_operation_family=sblr.transaction.control.v3\n";
-  out += "result_shape=engine.api.result.v1\n";
-  out += "diagnostic_shape=engine.diagnostic.v1\n";
-  out += "trace_key=DPC_SOAK_LEAK_RESOURCE_STABILITY_GATE\n";
-  out += "contains_sql_text=false\n";
-  out += "parser_resolved_names_to_uuids=true\n";
-  out += "requires_security_context=true\n";
-  out += requires_transaction_context ? "requires_transaction_context=true\n"
-                                      : "requires_transaction_context=false\n";
-  out += "requires_cluster_authority=false\n";
-  return out;
+  const auto* entry = sblr::LookupSblrOperation(operation_id);
+  Require(entry != nullptr, "DPC-070 transaction opcode missing");
+  auto envelope = sblr::MakeSblrEnvelope(std::string(operation_id), entry->opcode,
+      "DPC_SOAK_LEAK_RESOURCE_STABILITY_GATE");
+  envelope.requires_transaction_context = requires_transaction_context;
+  envelope.requires_security_context = true;
+  return sblr::EncodeSblrEnvelope(envelope);
 }
 
 ExecuteDecoded DecodeExecute(const SessionOperationResult& result) {
@@ -544,19 +538,21 @@ bool TransactionHasState(const Fixture& fixture,
   return lookup.ok() && lookup.entry.state == expected;
 }
 
-std::string NewUuidText(UuidKind kind, std::uint64_t millis) {
-  return uuid::UuidToString(uuid::GenerateEngineIdentityV7(kind, millis).value.value);
+api::EngineUuid NewIdentity(UuidKind kind, std::uint64_t millis) {
+  const auto generated = uuid::GenerateEngineIdentityV7(kind, millis);
+  Require(generated.ok(), "DPC-070 native identity generation failed");
+  return generated.value.value;
 }
 
-std::string AnyUuidText(UuidKind kind, std::uint64_t millis) {
+api::EngineUuid AnyIdentity(UuidKind kind, std::uint64_t millis) {
   if (uuid::UuidKindAllowsDurableIdentity(kind)) {
-    return NewUuidText(kind, millis);
+    return NewIdentity(kind, millis);
   }
   const auto raw = uuid::GenerateCompatibilityUnixTimeV7(millis);
   Require(raw.ok(), "DPC-070 compatibility UUID generation failed");
   const auto typed = uuid::MakeTypedUuid(kind, raw.value);
   Require(typed.ok(), "DPC-070 typed UUID generation failed");
-  return uuid::UuidToString(typed.value.value);
+  return typed.value.value;
 }
 
 api::EngineRequestContext ObservabilityContext(const Fixture& fixture,
@@ -565,11 +561,11 @@ api::EngineRequestContext ObservabilityContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "dpc070-soak-resource-stability-observability";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.node_uuid.canonical = NewUuidText(UuidKind::object, 1782809000001);
-  context.session_uuid.canonical = AnyUuidText(UuidKind::session, 1782809000002);
-  context.principal_uuid.canonical = NewUuidText(UuidKind::principal, 1782809000003);
-  context.transaction_uuid.canonical = NewUuidText(UuidKind::transaction, 1782809000004);
+  context.database_uuid = fixture.database_uuid;
+  context.node_uuid = NewIdentity(UuidKind::object, 1782809000001);
+  context.session_uuid = AnyIdentity(UuidKind::session, 1782809000002);
+  context.principal_uuid = NewIdentity(UuidKind::principal, 1782809000003);
+  context.transaction_uuid = NewIdentity(UuidKind::transaction, 1782809000004);
   context.local_transaction_id = local_transaction_id;
   context.catalog_generation_id = 7070;
   context.name_resolution_epoch = 7071;
@@ -611,12 +607,12 @@ api::EngineTypedValue TextValue(std::string value) {
 
 api::EngineColumnDefinition TextColumn(std::uint32_t ordinal,
                                        std::string name,
-                                       std::string column_uuid,
-                                       std::string descriptor_uuid) {
+                                       api::EngineUuid column_uuid,
+                                       api::EngineUuid descriptor_uuid) {
   api::EngineColumnDefinition column;
   (void)descriptor_uuid;
   column.ordinal = ordinal;
-  column.requested_column_uuid.canonical = std::move(column_uuid);
+  column.requested_column_uuid = std::move(column_uuid);
   column.names.push_back(Name(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
@@ -625,9 +621,9 @@ api::EngineColumnDefinition TextColumn(std::uint32_t ordinal,
   return column;
 }
 
-api::EngineRowValue Row(std::string row_uuid, std::string id, std::string note) {
+api::EngineRowValue Row(api::EngineUuid row_uuid, std::string id, std::string note) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", TextValue(std::move(id))});
   row.fields.push_back({"note", TextValue(std::move(note))});
   return row;
@@ -640,10 +636,10 @@ api::EngineRequestContext EngineApiContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "dpc070-stress-resource-leak";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = scratchbird::server::UuidBytesToText(session.principal_uuid);
-  context.session_uuid.canonical = scratchbird::server::UuidBytesToText(session.session_uuid);
-  context.transaction_uuid.canonical = session.transaction_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = api::EngineUuid{session.principal_uuid};
+  context.session_uuid = api::EngineUuid{session.session_uuid};
+  context.transaction_uuid = session.transaction_uuid;
   context.local_transaction_id = local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
@@ -651,8 +647,7 @@ api::EngineRequestContext EngineApiContext(const Fixture& fixture,
   context.catalog_generation_id = session.catalog_generation;
   context.security_epoch = session.security_epoch;
   context.resource_epoch = session.resource_epoch;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = session.name_resolution_epoch;
@@ -691,51 +686,29 @@ sblr::SblrDispatchResult DispatchExact(api::EngineRequestContext context,
   return result;
 }
 
-std::string ExactServerEnvelope(std::string_view operation_id,
-                                std::string_view opcode,
-                                std::string_view family,
-                                bool requires_transaction_context) {
-  std::string out;
-  out += "operation_id=";
-  out += operation_id;
-  out += "\n";
-  out += "opcode=";
-  out += opcode;
-  out += "\n";
-  out += "sblr_operation_family=";
-  out += family;
-  out += "\n";
-  out += "result_shape=engine.api.result.v1\n";
-  out += "diagnostic_shape=engine.diagnostic.v1\n";
-  out += "trace_key=DPC_SOAK_LEAK_RESOURCE_STABILITY_GATE\n";
-  out += "contains_sql_text=false\n";
-  out += "parser_resolved_names_to_uuids=true\n";
-  out += "requires_security_context=true\n";
-  out += requires_transaction_context ? "requires_transaction_context=true\n"
-                                      : "requires_transaction_context=false\n";
-  out += "requires_cluster_authority=false\n";
-  return out;
-}
-
 std::string ServerCreateSequenceEnvelope(std::uint64_t index, bool autocommit_emulation = false) {
   const std::uint64_t base = 1782800500000 + index * 10;
-  std::string out = ExactServerEnvelope("ddl.create_sequence",
-                                        "SBLR_DDL_CREATE_SEQUENCE",
-                                        "sblr.catalog.mutation.v3",
-                                        true);
-  out += "sequence_object_uuid=";
-  out += NewUuidText(UuidKind::object, base);
-  out += "\n";
-  out += "sequence_name=dpc070_sequence_";
-  out += std::to_string(index);
-  out += "\n";
-  out += "target_schema_uuid=";
-  out += NewUuidText(UuidKind::object, base + 1);
-  out += "\n";
-  if (autocommit_emulation) {
-    out += "autocommit_emulation=true\n";
-  }
-  return out;
+  auto envelope = sblr::MakeSblrEnvelope("ddl.create_sequence", "SBLR_DDL_CREATE_SEQUENCE",
+      "DPC_SOAK_LEAK_RESOURCE_STABILITY_GATE");
+  envelope.requires_transaction_context = true;
+  envelope.requires_security_context = true;
+  const auto identity_operand = [&](const char* name, const api::EngineUuid& id) {
+    sblr::SblrOperand operand;
+    operand.ordinal = static_cast<std::uint32_t>(envelope.operands.size() + 1);
+    operand.type = "option";
+    operand.name = name;
+    operand.value_kind = sblr::SblrValueKind::uuid_ref;
+    operand.value_body.assign(id.bytes.begin(), id.bytes.end());
+    envelope.operands.push_back(std::move(operand));
+  };
+  const auto text_operand = [&](const char* name, const std::string& text) {
+    envelope.operands.push_back({"text", name, text});
+  };
+  identity_operand("sequence_object_uuid", NewIdentity(UuidKind::object, base));
+  identity_operand("target_schema_uuid", NewIdentity(UuidKind::object, base + 1));
+  text_operand("sequence_name", "dpc070_sequence_" + std::to_string(index));
+  if (autocommit_emulation) text_operand("autocommit_emulation", "true");
+  return sblr::EncodeSblrEnvelope(envelope);
 }
 
 void RunExactDdlDmlApiRoutes(const Fixture& fixture,
@@ -743,35 +716,35 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
                              std::uint64_t local_transaction_id,
                              std::uint64_t index) {
   const std::uint64_t base = 1782801000000 + index * 100;
-  const std::string schema_uuid = NewUuidText(UuidKind::object, base);
-  const std::string table_uuid = NewUuidText(UuidKind::object, base + 1);
-  const std::string row_uuid = NewUuidText(UuidKind::object, base + 6);
+  const api::EngineUuid schema_uuid = NewIdentity(UuidKind::object, base);
+  const api::EngineUuid table_uuid = NewIdentity(UuidKind::object, base + 1);
+  const api::EngineUuid row_uuid = NewIdentity(UuidKind::object, base + 6);
   const auto context = EngineApiContext(fixture, session, local_transaction_id);
 
   api::EngineCreateSchemaRequest schema;
   schema.operation_id = "ddl.create_schema";
   schema.context = context;
-  schema.target_object.uuid.canonical = schema_uuid;
+  schema.target_object.uuid = schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("dpc070_schema_" + std::to_string(index)));
   const auto created_schema = api::EngineCreateSchema(schema);
   Require(created_schema.ok &&
-              created_schema.primary_object.uuid.canonical == schema_uuid,
+              created_schema.primary_object.uuid == schema_uuid,
           "DPC-070 exact schema create did not preserve UUID");
 
   api::EngineCreateTableRequest table;
   table.operation_id = "ddl.create_table";
   table.context = context;
-  table.target_schema.uuid.canonical = schema_uuid;
+  table.target_schema.uuid = schema_uuid;
   table.target_schema.object_kind = "schema";
-  table.requested_table_uuid.canonical = table_uuid;
+  table.requested_table_uuid = table_uuid;
   table.table_names.push_back(Name("dpc070_table_" + std::to_string(index)));
   table.table_columns.push_back(TextColumn(
-      0, "id", NewUuidText(UuidKind::object, base + 2),
-      NewUuidText(UuidKind::object, base + 3)));
+      0, "id", NewIdentity(UuidKind::object, base + 2),
+      NewIdentity(UuidKind::object, base + 3)));
   table.table_columns.push_back(TextColumn(
-      1, "note", NewUuidText(UuidKind::object, base + 4),
-      NewUuidText(UuidKind::object, base + 5)));
+      1, "note", NewIdentity(UuidKind::object, base + 4),
+      NewIdentity(UuidKind::object, base + 5)));
   const auto created_table = api::EngineCreateTable(table);
   if (!created_table.ok) {
     for (const auto& diagnostic : created_table.diagnostics) {
@@ -779,13 +752,13 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
     }
   }
   Require(created_table.ok &&
-              created_table.table_object.uuid.canonical == table_uuid,
+              created_table.table_object.uuid == table_uuid,
           "DPC-070 exact table create did not preserve UUID");
 
   api::EngineInsertRowsRequest insert;
   insert.operation_id = "dml.insert_rows";
   insert.context = context;
-  insert.target_table.uuid.canonical = table_uuid;
+  insert.target_table.uuid = table_uuid;
   insert.target_table.object_kind = "table";
   insert.input_rows.push_back(Row(
       row_uuid, std::to_string(index),
@@ -797,7 +770,7 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   api::EngineSelectRowsRequest select;
   select.operation_id = "dml.select_rows";
   select.context = context;
-  select.source_object.uuid.canonical = table_uuid;
+  select.source_object.uuid = table_uuid;
   select.source_object.object_kind = "table";
   const auto selected = api::EngineSelectRows(select);
   Require(selected.ok && !selected.result_shape.rows.empty(),
@@ -1066,10 +1039,10 @@ api::PerformanceOptimizationSurfaceSnapshot SoakSurfaceSnapshot(
 api::EngineSupportBundleAgentEvidenceSource AgentEvidence(const Fixture& fixture) {
   api::EngineSupportBundleAgentEvidenceSource source;
   source.agent_type_id = "soak_resource_stability";
-  source.agent_uuid = NewUuidText(UuidKind::object, 1782809100001);
-  source.filespace_uuid = NewUuidText(UuidKind::filespace, 1782809100002);
-  source.policy_uuid = NewUuidText(UuidKind::object, 1782809100003);
-  source.evidence_uuid = NewUuidText(UuidKind::object, 1782809100004);
+  source.agent_uuid = NewIdentity(UuidKind::object, 1782809100001);
+  source.filespace_uuid = NewIdentity(UuidKind::filespace, 1782809100002);
+  source.policy_uuid = NewIdentity(UuidKind::object, 1782809100003);
+  source.evidence_uuid = NewIdentity(UuidKind::object, 1782809100004);
   source.evidence_kind = "dpc070_resource_stability";
   source.result_state = "success";
   source.diagnostic_code = "DPC.SOAK.RESOURCE_STABLE";

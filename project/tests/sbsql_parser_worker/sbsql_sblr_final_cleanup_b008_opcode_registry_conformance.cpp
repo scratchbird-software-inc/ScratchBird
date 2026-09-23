@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -382,9 +383,9 @@ void RequireUnknownAndMismatchDiagnostics() {
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.database_uuid.canonical = "opcode-registry-database";
-  context.session_uuid.canonical = "opcode-registry-session";
-  context.principal_uuid.canonical = "opcode-registry-principal";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 4401);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 4402);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 4403);
   context.local_transaction_id = 1;
   return context;
 }

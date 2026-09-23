@@ -504,8 +504,8 @@ struct SblrExecutorAvailabilityLoadResult {
 
 struct SblrExecutorAvailabilityStatementCohort {
   std::string database_path;
-  std::string database_uuid;
-  std::string statement_uuid;
+  EngineUuid database_uuid;
+  EngineUuid statement_uuid;
   std::vector<SblrExecutorAvailabilityRowIdentity> identities;
   std::vector<SblrExecutorAvailabilityLoadResult> rows;
   std::map<SblrExecutorAvailabilityRowIdentity, std::size_t>
@@ -525,8 +525,8 @@ struct SblrExecutorAvailabilityBatchLoadResult {
 };
 
 struct SblrExecutorAvailabilitySetRequest {
-  std::string database_uuid;
-  std::string expected_snapshot_uuid;
+  EngineUuid database_uuid;
+  EngineUuid expected_snapshot_uuid;
   std::uint64_t expected_generation{0};
   SblrExecutorAvailabilityRowIdentity exact_row_identity;
   SblrExecutorAvailabilityState requested_state{

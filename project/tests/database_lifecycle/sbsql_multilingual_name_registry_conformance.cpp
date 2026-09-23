@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -77,7 +78,7 @@ std::filesystem::path TestPath() {
          ("sb_sml_004_name_registry_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
 }
 
-std::string CreateDatabase(const std::filesystem::path& path) {
+catalog_api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, 1779810040000).value;
@@ -92,21 +93,23 @@ std::string CreateDatabase(const std::filesystem::path& path) {
     std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "SML-004 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 catalog_api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                              const std::string& database_uuid,
-                                              std::string principal,
+                                              const catalog_api::EngineUuid& database_uuid,
+                                              catalog_api::EngineUuid principal,
                                               std::string language,
                                               std::string default_language) {
   catalog_api::EngineRequestContext context;
   context.trust_mode = catalog_api::EngineTrustMode::server_isolated;
   context.request_id = "sml-004-name-registry-conformance";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = std::move(principal);
-  context.session_uuid.canonical = "session-" + std::to_string(CurrentUnixMillis());
+  context.database_uuid = database_uuid;
+  context.principal_uuid = std::move(principal);
+  const auto session = uuid::GenerateEngineIdentityV7(UuidKind::session, CurrentUnixMillis());
+  Require(session.ok(), "name registry session identity generation failed");
+  context.session_uuid = session.value.value;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = std::move(language);
@@ -119,8 +122,8 @@ catalog_api::EngineRequestContext BaseContext(const std::filesystem::path& path,
 }
 
 catalog_api::EngineRequestContext Begin(const std::filesystem::path& path,
-                                        const std::string& database_uuid,
-                                        std::string principal,
+                                        const catalog_api::EngineUuid& database_uuid,
+                                        catalog_api::EngineUuid principal,
                                         std::string language = "en",
                                         std::string default_language = "en") {
   catalog_api::EngineBeginTransactionRequest request;
@@ -189,15 +192,15 @@ catalog_api::EngineLocalizedName AliasName(std::string language, std::string val
 
 catalog_api::EngineCatalogCreateObjectRequest CreateRequest(
     const catalog_api::EngineRequestContext& context,
-    std::string object_uuid,
+    catalog_api::EngineUuid object_uuid,
     std::string object_kind,
-    std::string schema_uuid,
+    catalog_api::EngineUuid schema_uuid,
     std::vector<catalog_api::EngineLocalizedName> names) {
   catalog_api::EngineCatalogCreateObjectRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = std::move(object_uuid);
+  request.target_object.uuid = std::move(object_uuid);
   request.target_object.object_kind = std::move(object_kind);
-  request.target_schema.uuid.canonical = std::move(schema_uuid);
+  request.target_schema.uuid = std::move(schema_uuid);
   request.localized_names = std::move(names);
   return request;
 }
@@ -205,79 +208,79 @@ catalog_api::EngineCatalogCreateObjectRequest CreateRequest(
 catalog_api::EngineCatalogResolveObjectNameRequest ResolveRequest(
     const catalog_api::EngineRequestContext& context,
     std::string object_kind,
-    std::string schema_uuid,
+    catalog_api::EngineUuid schema_uuid,
     std::string language,
     std::string name) {
   catalog_api::EngineCatalogResolveObjectNameRequest request;
   request.context = context;
   request.target_object.object_kind = std::move(object_kind);
-  request.target_schema.uuid.canonical = std::move(schema_uuid);
+  request.target_schema.uuid = std::move(schema_uuid);
   request.localized_names.push_back(LocalizedName(std::move(language), "primary", std::move(name), true));
   return request;
 }
 
-void CreateSchema(const std::filesystem::path& path, const std::string& database_uuid) {
-  auto context = Begin(path, database_uuid, "principal-owner");
+void CreateSchema(const std::filesystem::path& path, const catalog_api::EngineUuid& database_uuid) {
+  auto context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1533, 1));
   const auto created = catalog_api::EngineCatalogCreateObject(
-      CreateRequest(context, "schema-app", "schema", "", {PrimaryName("en", "app")}));
+      CreateRequest(context, scratchbird::tests::FixtureUuid(1533, 2), "schema", {}, {PrimaryName("en", "app")}));
   RequireOk(created, "schema create failed");
   Commit(context);
 }
 
 void TestDefaultLanguageCollisionPolicy(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
-  auto create_orders_context = Begin(path, database_uuid, "principal-owner");
+                                        const catalog_api::EngineUuid& database_uuid) {
+  auto create_orders_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1533, 1));
   const auto created_orders = catalog_api::EngineCatalogCreateObject(
       CreateRequest(create_orders_context,
-                    "table-orders",
+                    scratchbird::tests::FixtureUuid(1533, 7),
                     "table",
-                    "schema-app",
+                    scratchbird::tests::FixtureUuid(1533, 2),
                     {PrimaryName("en", "orders"),
                      AliasName("fr", "commandes"),
                      AliasName("es", "orders")}));
   RequireOk(created_orders, "same-object localized alias reuse was rejected");
   Commit(create_orders_context);
 
-  auto resolve_same_object_context = Begin(path, database_uuid, "principal-owner", "es", "en");
+  auto resolve_same_object_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1533, 1), "es", "en");
   const auto resolved_same_object = catalog_api::EngineCatalogResolveObjectName(
-      ResolveRequest(resolve_same_object_context, "table", "schema-app", "es", "orders"));
+      ResolveRequest(resolve_same_object_context, "table", scratchbird::tests::FixtureUuid(1533, 2), "es", "orders"));
   RequireOk(resolved_same_object, "same-object alternate alias did not resolve");
-  Require(resolved_same_object.bound_object_identity.object_uuid.canonical == "table-orders",
+  Require(resolved_same_object.bound_object_identity.object_uuid == scratchbird::tests::FixtureUuid(1533, 7),
           "same-object alternate alias resolved to the wrong object");
   Rollback(resolve_same_object_context);
 
-  auto blocked_default_context = Begin(path, database_uuid, "principal-owner");
+  auto blocked_default_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1533, 1));
   RequireDiagnostic(
       catalog_api::EngineCatalogCreateObject(
           CreateRequest(blocked_default_context,
-                        "table-default-collision",
+                        scratchbird::tests::FixtureUuid(1533, 5),
                         "table",
-                        "schema-app",
+                        scratchbird::tests::FixtureUuid(1533, 2),
                         {PrimaryName("en", "commandes")})),
       catalog_api::kCatalogObjectDiagnosticDuplicateName,
       "default-language canonical name was allowed to collide with an alternate alias");
   Rollback(blocked_default_context);
 
-  auto blocked_alias_context = Begin(path, database_uuid, "principal-owner", "fr", "en");
+  auto blocked_alias_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1533, 1), "fr", "en");
   RequireDiagnostic(
       catalog_api::EngineCatalogCreateObject(
           CreateRequest(blocked_alias_context,
-                        "table-alias-collision",
+                        scratchbird::tests::FixtureUuid(1533, 3),
                         "table",
-                        "schema-app",
+                        scratchbird::tests::FixtureUuid(1533, 2),
                         {PrimaryName("en", "invoices"), AliasName("fr", "orders")})),
       catalog_api::kCatalogObjectDiagnosticDuplicateName,
       "alternate-language alias was allowed to bind another object's canonical name");
   Rollback(blocked_alias_context);
 
   auto blocked_cross_language_alias_context =
-      Begin(path, database_uuid, "principal-owner", "de", "en");
+      Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1533, 1), "de", "en");
   RequireDiagnostic(
       catalog_api::EngineCatalogCreateObject(
           CreateRequest(blocked_cross_language_alias_context,
-                        "table-cross-language-alias-collision",
+                        scratchbird::tests::FixtureUuid(1533, 4),
                         "table",
-                        "schema-app",
+                        scratchbird::tests::FixtureUuid(1533, 2),
                         {PrimaryName("en", "shipments"),
                          AliasName("de", "commandes")})),
       catalog_api::kCatalogObjectDiagnosticDuplicateName,
@@ -286,24 +289,24 @@ void TestDefaultLanguageCollisionPolicy(const std::filesystem::path& path,
 }
 
 void TestDeterministicFallbackDisplay(const std::filesystem::path& path,
-                                      const std::string& database_uuid) {
-  auto create_context = Begin(path, database_uuid, "principal-owner");
+                                      const catalog_api::EngineUuid& database_uuid) {
+  auto create_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1533, 1));
   const auto created = catalog_api::EngineCatalogCreateObject(
       CreateRequest(create_context,
-                    "table-fallback",
+                    scratchbird::tests::FixtureUuid(1533, 6),
                     "table",
-                    "schema-app",
+                    scratchbird::tests::FixtureUuid(1533, 2),
                     {LocalizedName("fr", "primary", "nom_fr", false),
                      LocalizedName("es", "primary", "nombre_es", false)}));
   RequireOk(created, "fallback display probe create failed");
   Commit(create_context);
 
-  auto map_context = Begin(path, database_uuid, "principal-owner", "de", "en");
+  auto map_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuid(1533, 1), "de", "en");
   catalog_api::EngineApiRequest map_request;
   map_request.context = map_context;
-  map_request.target_object.uuid.canonical = "table-fallback";
+  map_request.target_object.uuid = scratchbird::tests::FixtureUuid(1533, 6);
   map_request.target_object.object_kind = "table";
-  const auto mapped = catalog_api::MapNameRegistryUuidToName(map_request, "table-fallback", "table");
+  const auto mapped = catalog_api::MapNameRegistryUuidToName(map_request, scratchbird::tests::FixtureUuid(1533, 6), "table");
   RequireNameOk(mapped, "fallback UUID-to-name mapping failed");
   Require(mapped.entry.language_tag == "es", "fallback display did not choose deterministic language order");
   Require(mapped.entry.display_name == "nombre_es", "fallback display returned the wrong localized name");

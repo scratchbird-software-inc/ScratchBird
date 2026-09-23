@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "security/audit_api.hpp"
 #include "security/auth_provider_plugin_api.hpp"
 #include "security/auth_provider_policy_api.hpp"
@@ -78,15 +79,12 @@ std::filesystem::path MakeTempDir() {
 }
 
 void CreateDatabaseFixture(const std::filesystem::path& database_path) {
-  const auto database_uuid = uuid::ParseUuid(std::string(kDatabaseUuid));
-  const auto filespace_uuid = uuid::ParseUuid(std::string(kFilespaceUuid));
-  Require(database_uuid.ok() && filespace_uuid.ok(),
-          "P4 database fixture UUID parse failed");
-
   db::DatabaseCreateConfig create;
   create.path = database_path.string();
-  create.database_uuid = {platform::UuidKind::database, database_uuid.value};
-  create.filespace_uuid = {platform::UuidKind::filespace, filespace_uuid.value};
+  create.database_uuid = {platform::UuidKind::database,
+      scratchbird::tests::FixtureUuidLiteral("019e1d7e-7000-7000-8000-0000000000a4")};
+  create.filespace_uuid = {platform::UuidKind::filespace,
+      scratchbird::tests::FixtureUuidLiteral("019e1d7e-7001-7000-8000-0000000000b4")};
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1950000000000ull;
   create.allow_minimal_resource_bootstrap = true;
@@ -101,7 +99,7 @@ void CreateDatabaseFixture(const std::filesystem::path& database_path) {
 }
 
 void GrantAdminAuthority(api::EngineRequestContext* context) {
-  context->principal_uuid.canonical = std::string(kAdminPrincipalUuid);
+  context->principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7002-7000-8000-0000000000a4");
   context->security_context_present = true;
   context->trace_tags.push_back("security.bootstrap");
   context->trace_tags.push_back("group:SEC");
@@ -120,8 +118,8 @@ void BeginFixtureTransaction(const std::filesystem::path& database_path) {
   api::EngineBeginTransactionRequest begin;
   begin.context.trust_mode = api::EngineTrustMode::server_isolated;
   begin.context.database_path = database_path.string();
-  begin.context.database_uuid.canonical = std::string(kDatabaseUuid);
-  begin.context.session_uuid.canonical = std::string(kSessionUuid);
+  begin.context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7000-7000-8000-0000000000a4");
+  begin.context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7004-7000-8000-0000000000a4");
   begin.context.resource_epoch = 1000;
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 2;
@@ -149,7 +147,7 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
   api::EngineRequestContext context = g_transaction_context;
   context.database_path = database_path.string();
   if (admin) {
-    context.principal_uuid.canonical = std::string(kAdminPrincipalUuid);
+    context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7002-7000-8000-0000000000a4");
     const auto current = api::LoadSecurityPrincipalLifecycleState(context);
     if (!current.ok) {
       std::cerr << current.diagnostic.code << ':'
@@ -160,7 +158,7 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
     context.authorization_context.security_context_generation =
         current.state.security_context_generation;
   } else {
-    context.principal_uuid.canonical = std::string(kAlicePrincipalUuid);
+    context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7003-7000-8000-0000000000a4");
     context.trace_tags.clear();
     context.authorization_context = {};
   }
@@ -258,11 +256,21 @@ std::string FlattenResult(const api::EngineApiResult& result) {
     out << diagnostic.code << '\n' << diagnostic.detail << '\n';
   }
   for (const auto& evidence : result.evidence) {
-    out << evidence.evidence_kind << '\n' << evidence.evidence_id << '\n';
+    out << evidence.evidence_kind << '\n';
+    if (const auto* text = std::get_if<std::string>(&evidence.evidence_id)) {
+      out.write(text->data(), static_cast<std::streamsize>(text->size()));
+    } else {
+      const auto& identity = std::get<platform::Uuid>(evidence.evidence_id);
+      out.write(reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size());
+    }
+    out << '\n';
   }
   for (const auto& row : result.result_shape.rows) {
     for (const auto& field : row.fields) {
-      out << field.first << '=' << field.second.encoded_value << '\n';
+      out << field.first << '=' << field.second.encoded_value;
+      out.write(reinterpret_cast<const char*>(field.second.binary_value.data()),
+                static_cast<std::streamsize>(field.second.binary_value.size()));
+      out << '\n';
     }
   }
   return out.str();
@@ -287,9 +295,9 @@ void RequireProviderFailClosed(
 void WriteAuthStore(const std::filesystem::path& database_path) {
   api::EngineSecurityCreatePrincipalRequest request;
   request.context = Context(database_path);
-  request.target_object.uuid.canonical = std::string(kAlicePrincipalUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7003-7000-8000-0000000000a4");
   request.target_object.object_kind = "security_principal";
-  request.principal_uuid = std::string(kAlicePrincipalUuid);
+  request.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7003-7000-8000-0000000000a4");
   request.principal_name = "alice";
   request.credential_fingerprint = LocalPasswordCredentialFingerprint(kVerifier);
   request.option_envelopes.push_back("principal_authority:engine");
@@ -308,9 +316,9 @@ void WriteTemporaryTokenStore(const std::filesystem::path& database_path,
                               std::string_view state = "active") {
   api::EngineSecurityAlterPrincipalRequest request;
   request.context = Context(database_path);
-  request.target_object.uuid.canonical = std::string(kAlicePrincipalUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7003-7000-8000-0000000000a4");
   request.target_object.object_kind = "security_principal";
-  request.principal_uuid = std::string(kAlicePrincipalUuid);
+  request.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7003-7000-8000-0000000000a4");
   request.principal_name = std::string(principal);
   request.credential_fingerprint =
       TemporaryTokenCredentialFingerprint(token,
@@ -333,7 +341,7 @@ api::EngineAuthenticateRequest AuthRequest(const std::filesystem::path& database
   request.principal_claim = "alice";
   request.credential_evidence = std::string(verifier);
   request.credential_evidence_present = true;
-  request.target_database.uuid.canonical = std::string(kDatabaseUuid);
+  request.target_database.uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7000-7000-8000-0000000000a4");
   request.option_envelopes.push_back("auth_authority:engine");
   request.option_envelopes.push_back("policy_generation_current:2");
   request.option_envelopes.push_back("policy_generation_observed:2");
@@ -365,7 +373,7 @@ api::EngineAuthenticateRequest TemporaryTokenAuthRequest(
       std::string(token) + ";token_digest=" + token_digest + ";state=active" +
       ";expires_at_ms=0;token=" + std::string(token) + ";issuer=manager";
   request.credential_evidence_present = true;
-  request.target_database.uuid.canonical = std::string(kDatabaseUuid);
+  request.target_database.uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7000-7000-8000-0000000000a4");
   request.option_envelopes.push_back("auth_authority:engine");
   request.option_envelopes.push_back("policy_generation_current:2");
   request.option_envelopes.push_back("policy_generation_observed:2");
@@ -419,7 +427,7 @@ void AddChannelBinding(api::EngineApiRequest* request) {
 void TestAuthProviderManifestAndPolicy(const std::filesystem::path& database_path) {
   api::EngineRegisterAuthProviderRequest register_request;
   register_request.context = Context(database_path);
-  register_request.target_object.uuid.canonical = "auth-provider-p4-local";
+  register_request.target_object.uuid = scratchbird::tests::FixtureUuid(1573, 1);
   register_request.option_envelopes.push_back("provider:local_password");
   register_request.option_envelopes.push_back("provider_version:1");
   register_request.option_envelopes.push_back("implementation_version:p4-conformance");
@@ -435,7 +443,7 @@ void TestAuthProviderManifestAndPolicy(const std::filesystem::path& database_pat
 
   api::EngineReloadAuthProviderPolicyRequest policy_request;
   policy_request.context = Context(database_path);
-  policy_request.target_object.uuid.canonical = "auth-provider-p4-local";
+  policy_request.target_object.uuid = scratchbird::tests::FixtureUuid(1573, 1);
   policy_request.option_envelopes.push_back("provider:local_password");
   policy_request.option_envelopes.push_back("policy_uuid:auth-provider-policy-p4");
   policy_request.option_envelopes.push_back("provider_enabled:true");
@@ -557,10 +565,8 @@ void TestEngineAuthenticationAndPolicy(const std::filesystem::path& database_pat
   api::EngineEvaluatePolicyRequest policy;
   policy.context = Context(database_path);
   policy.operation_id = "security.evaluate_policy";
-  policy.context.statement_uuid.canonical =
-      "019e1d7e-7010-7000-8000-0000000000a4";
-  policy.context.transaction_policy_snapshot_uuid.canonical =
-      "019e1d7e-7011-7000-8000-0000000000a4";
+  policy.context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7010-7000-8000-0000000000a4");
+  policy.context.transaction_policy_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7011-7000-8000-0000000000a4");
   policy.context.transaction_policy_snapshot_generation = 1;
   policy.context.current_policy_gate.present = true;
   policy.context.current_policy_gate.blocked = false;
@@ -598,7 +604,7 @@ void TestEngineAuthenticationAndPolicy(const std::filesystem::path& database_pat
           "P4 engine-owned blocked policy state was not observed");
 
   api::EngineEvaluatePolicyRequest invalid_policy = policy;
-  invalid_policy.target_object.uuid.canonical = "security-policy-p4";
+  invalid_policy.target_object.uuid = scratchbird::tests::FixtureUuid(1573, 2);
   invalid_policy.policy_profile.encoded_profiles.push_back("caller-policy");
   const auto denied = api::EngineEvaluatePolicy(invalid_policy);
   Require(!denied.ok && HasDiagnostic(denied, "SBLR.OPERAND_INVALID"),
@@ -926,8 +932,8 @@ void TestAuditAndProtectedMaterial(const std::filesystem::path& database_path) {
 
   api::EngineAdmitEncryptionKeyRequest key;
   key.context = Context(database_path);
-  key.key_uuid = "key-p4";
-  key.filespace_uuid = std::string(kFilespaceUuid);
+  key.key_uuid = scratchbird::tests::FixtureUuid(1573, 3);
+  key.filespace_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7001-7000-8000-0000000000b4");
   key.secret_evidence = "kms-ref:v1:p4-proof";
   key.option_envelopes.push_back("key_authority:engine");
   const auto admitted = api::EngineAdmitEncryptionKey(key);
@@ -936,9 +942,9 @@ void TestAuditAndProtectedMaterial(const std::filesystem::path& database_path) {
 
   api::EngineOpenEncryptedFilespaceRequest open;
   open.context = Context(database_path);
-  open.database_uuid = std::string(kDatabaseUuid);
-  open.filespace_uuid = std::string(kFilespaceUuid);
-  open.key_uuid = "key-p4";
+  open.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7000-7000-8000-0000000000a4");
+  open.filespace_uuid = scratchbird::tests::FixtureUuidLiteral("019e1d7e-7001-7000-8000-0000000000b4");
+  open.key_uuid = scratchbird::tests::FixtureUuid(1573, 3);
   open.key_handle = admitted.key_handle;
   open.option_envelopes.push_back("filespace_open_authority:engine");
   const auto opened = api::EngineOpenEncryptedFilespace(open);
@@ -946,7 +952,7 @@ void TestAuditAndProtectedMaterial(const std::filesystem::path& database_path) {
           "P4 encrypted filespace open did not use active protected-material key");
 
   api::EngineAdmitEncryptionKeyRequest plaintext = key;
-  plaintext.key_uuid = "key-p4-plaintext";
+  plaintext.key_uuid = scratchbird::tests::FixtureUuid(1573, 4);
   plaintext.secret_evidence = std::string("password=") + std::string(kPlaintextSecret);
   const auto plaintext_key = api::EngineAdmitEncryptionKey(plaintext);
   Require(!plaintext_key.ok && HasDiagnostic(plaintext_key, "SECURITY.KEY.PLAINTEXT_REFUSED"),

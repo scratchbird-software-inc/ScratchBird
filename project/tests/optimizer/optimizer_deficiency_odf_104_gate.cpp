@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -180,8 +181,7 @@ Request BaseRequest(Kind kind) {
   Request request;
   request.kind = kind;
   request.identity.stable_template_id =
-      std::string("odf104.stable_template.") +
-      native::NativeSblrSpecializationKindName(kind);
+      scratchbird::tests::FixtureUuid(1088, 1 + static_cast<unsigned>(kind));
   request.identity.sblr_digest =
       std::string("odf104.sblr_digest.") +
       native::NativeSblrSpecializationKindName(kind);

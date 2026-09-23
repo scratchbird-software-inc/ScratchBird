@@ -669,6 +669,8 @@ struct TypedUpdateResultCarrier {
 struct TypedUpdateResultEvidenceReference {
   std::string evidence_kind;
   std::string evidence_id;
+  // Binary alternatives are mutually exclusive with the textual evidence label.
+  std::optional<TypedUpdateUuid> identity;
 };
 
 struct TypedUpdateJournalRecord {

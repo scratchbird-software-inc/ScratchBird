@@ -15,6 +15,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include <algorithm>
+#include "uuid.hpp"
 #include <optional>
 #include <openssl/sha.h>
 #include <sstream>
@@ -27,7 +28,14 @@ namespace {
 namespace agents = scratchbird::core::agents;
 
 constexpr const char* kAgentCatalogRecordKind = "agent_catalog_image";
-constexpr const char* kAgentCatalogRowUuid = "agent-catalog-runtime-root";
+std::string IdentityBytes(const EngineUuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+bool ReadIdentity(std::string_view bytes, EngineUuid* id) {
+  if (bytes.size() != id->bytes.size()) return false;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), id->bytes.size(), id->bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(*id);
+}
 
 EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -66,10 +74,10 @@ std::string Sha256Hex(const std::string& value) {
 std::vector<std::pair<std::string, std::string>> CatalogColumns() {
   return {{"record_kind", "text:not_null"},
           {"catalog_root_digest", "text:not_null"},
-          {"encoded_catalog_image", "text:not_null"},
+          {"encoded_catalog_image", "bytea:not_null"},
           {"catalog_generation", "u64:not_null"},
-          {"authority_evidence_uuid", "text:not_null"},
-          {"storage_commit_evidence_uuid", "text:not_null"},
+          {"authority_evidence_uuid", "uuid:not_null"},
+          {"storage_commit_evidence_uuid", "uuid:not_null"},
           {"storage_linkage_digest", "text:not_null"}};
 }
 
@@ -123,16 +131,16 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
   AgentDurableCatalogStoreResult result;
   result.ok = true;
   result.diagnostic = OkDiagnostic();
-  result.table_uuid = table.table_uuid;
+  result.table_uuid = IdentityBytes(table.table_uuid);
   return result;
 }
 
 std::optional<CrudRowVersionRecord> LatestCatalogRow(const RelationReadSnapshot& state,
                                                      const EngineRequestContext& context,
-                                                     const std::string& table_uuid) {
+                                                     const EngineUuid& table_uuid) {
   std::optional<CrudRowVersionRecord> latest;
   for (const auto& row : VisibleCrudRowsForContext(state, table_uuid, context)) {
-    if (row.deleted || row.row_uuid != kAgentCatalogRowUuid) { continue; }
+    if (row.deleted) { continue; }
     if (CrudFieldValue(row.values, "record_kind") != kAgentCatalogRecordKind) {
       continue;
     }
@@ -145,12 +153,11 @@ std::optional<CrudRowVersionRecord> LatestCatalogRow(const RelationReadSnapshot&
 
 std::string MissingCatalogRowDetail(const RelationReadSnapshot& state,
                                     const EngineRequestContext& context,
-                                    const std::string& table_uuid) {
+                                    const EngineUuid& table_uuid) {
   std::size_t table_row_versions = 0;
   std::size_t matching_catalog_rows = 0;
   std::ostringstream detail;
   detail << "catalog_image_not_found"
-         << ":table_uuid=" << table_uuid
          << ":row_versions=" << state.row_versions.size()
          << ":context_tx=" << context.local_transaction_id
          << ":snapshot_tx="
@@ -158,7 +165,7 @@ std::string MissingCatalogRowDetail(const RelationReadSnapshot& state,
   for (const auto& row : state.row_versions) {
     if (row.table_uuid != table_uuid) { continue; }
     ++table_row_versions;
-    if (row.row_uuid == kAgentCatalogRowUuid) {
+    if (CrudFieldValue(row.values, "record_kind") == kAgentCatalogRecordKind) {
       ++matching_catalog_rows;
       const auto tx = state.transactions.find(row.creator_tx);
       detail << ":catalog_row_tx=" << row.creator_tx
@@ -183,8 +190,9 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
   if (request.production_live_path && !request.fsync_or_checkpoint_evidence) {
     return ErrorResult("fsync_or_checkpoint_evidence_required");
   }
-  if (request.evidence_uuid.empty()) {
-    return ErrorResult("evidence_uuid_required");
+  EngineUuid evidence_uuid;
+  if (!ReadIdentity(request.evidence_uuid, &evidence_uuid)) {
+    return ErrorResult("evidence_uuid_binary16_required");
   }
   if (request.context.local_transaction_id == 0 ||
       request.context.transaction_uuid.is_nil()) {
@@ -197,7 +205,9 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
   auto loaded = LoadMgaRelationStoreState(request.context);
   if (!loaded.ok) { return ErrorResult(std::move(loaded.diagnostic)); }
   const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
-  const auto previous = LatestCatalogRow(state, request.context, table.table_uuid);
+  EngineUuid table_uuid;
+  if (!ReadIdentity(table.table_uuid, &table_uuid)) return ErrorResult("catalog_table_identity_invalid");
+  const auto previous = LatestCatalogRow(state, request.context, table_uuid);
   if (previous) {
     const std::string previous_root =
         CrudFieldValue(previous->values, "catalog_root_digest");
@@ -218,8 +228,8 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
   image.source = agents::AgentCatalogStateSource::durable_catalog_image;
   image.authority.durable_catalog_authority = true;
   image.authority.mga_transaction_evidence = true;
-  image.authority.mga_transaction_uuid = request.context.transaction_uuid;
-  image.authority.database_uuid = request.context.database_uuid;
+  image.authority.mga_transaction_uuid = IdentityBytes(request.context.transaction_uuid);
+  image.authority.database_uuid = IdentityBytes(request.context.database_uuid);
   image.authority.catalog_storage_uuid = table.table_uuid;
   image.authority.local_transaction_id = request.context.local_transaction_id;
   image.authority.storage_catalog_record_evidence = true;
@@ -237,14 +247,17 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
   if (!refreshed.ok) { return ErrorResult(refreshed.diagnostic_code); }
 
   const std::string encoded = agents::SerializeDurableAgentCatalogImage(image);
+  const EngineUuid row_uuid = previous ? previous->row_uuid : GenerateCrudEngineUuid("row");
+  if (row_uuid.is_nil()) return ErrorResult("catalog_row_identity_allocation_failed");
   const std::string storage_linkage =
-      Sha256Hex(table.table_uuid + "|" + kAgentCatalogRowUuid + "|" +
-                image.authority.catalog_root_digest + "|" + request.evidence_uuid);
+      Sha256Hex(table.table_uuid + IdentityBytes(row_uuid) +
+                image.authority.catalog_root_digest + request.evidence_uuid);
 
   CrudRowVersionRecord row;
   row.creator_tx = request.context.local_transaction_id;
-  row.table_uuid = table.table_uuid;
-  row.row_uuid = kAgentCatalogRowUuid;
+  row.creator_transaction_uuid = request.context.transaction_uuid;
+  row.table_uuid = table_uuid;
+  row.row_uuid = row_uuid;
   row.version_uuid = GenerateCrudEngineUuid("row");
   if (previous) {
     row.previous_version_uuid = previous->version_uuid;
@@ -269,8 +282,8 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
   result.diagnostic = OkDiagnostic();
   result.image = std::move(image);
   result.table_uuid = table.table_uuid;
-  result.row_uuid = row.row_uuid;
-  result.version_uuid = row.version_uuid;
+  result.row_uuid = IdentityBytes(row.row_uuid);
+  result.version_uuid = IdentityBytes(row.version_uuid);
   result.row_event_sequence = event_sequence;
   result.storage_linkage_digest = storage_linkage;
   return result;
@@ -341,9 +354,9 @@ AgentDurableCatalogStoreResult LoadAgentDurableCatalogImage(
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   result.image = std::move(validation.image);
-  result.table_uuid = table->table_uuid;
-  result.row_uuid = latest->row_uuid;
-  result.version_uuid = latest->version_uuid;
+  result.table_uuid = IdentityBytes(table->table_uuid);
+  result.row_uuid = IdentityBytes(latest->row_uuid);
+  result.version_uuid = IdentityBytes(latest->version_uuid);
   result.row_event_sequence = latest->sequence;
   result.storage_linkage_digest =
       CrudFieldValue(latest->values, "storage_linkage_digest");

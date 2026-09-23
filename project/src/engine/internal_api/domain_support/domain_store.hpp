@@ -25,12 +25,12 @@ inline constexpr const char* kDomainFoundationEventMagic = "SBDOMAIN1";
 
 struct DomainRecord {
   std::uint64_t creator_tx = 0;
-  std::string domain_uuid;
-  std::string catalog_row_uuid;
-  std::string schema_uuid;
+  EngineUuid domain_uuid;
+  EngineUuid catalog_row_uuid;
+  EngineUuid schema_uuid;
   // Migration/display cache only. SQL object name authority is SBNAME1 name registry.
   std::string default_name;
-  std::string base_descriptor_uuid;
+  EngineUuid base_descriptor_uuid;
   std::string base_descriptor_kind;
   std::string base_canonical_type_name;
   std::string base_encoded_descriptor;
@@ -89,13 +89,14 @@ DomainStoreResult LoadDomainState(const EngineRequestContext& context);
 EngineApiDiagnostic AppendDomainEvent(const EngineRequestContext& context, const std::string& event);
 std::string MakeDomainCreateEvent(const DomainRecord& record);
 std::string MakeDomainAlterEvent(const DomainRecord& record);
-std::string MakeDomainDropEvent(std::uint64_t creator_tx, const std::string& domain_uuid);
+std::string MakeDomainDropEvent(std::uint64_t creator_tx, const EngineUuid& domain_uuid);
 std::optional<DomainRecord> FindVisibleDomain(const EngineRequestContext& context,
-                                              const std::string& domain_uuid,
+                                              const EngineUuid& domain_uuid,
                                               std::uint64_t observer_tx);
 EngineDescriptor DomainDescriptor(const DomainRecord& record);
-std::string DomainUuidFromDescriptor(const EngineDescriptor& descriptor);
-std::string DomainUuidFromColumnDescriptor(const std::string& column_descriptor);
+EngineUuid DomainUuidFromDescriptor(const EngineDescriptor& descriptor);
+std::string DomainColumnDescriptor(const EngineUuid& domain_uuid);
+EngineUuid DomainUuidFromColumnDescriptor(const std::string& column_descriptor);
 bool IsSupportedDomainCheckEnvelope(const std::string& envelope);
 DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext& context,
                                                      const EngineDescriptor& domain_descriptor,
@@ -113,11 +114,11 @@ DomainReadPolicyResult ApplyDomainReadPoliciesToCrudValues(
     const std::vector<std::pair<std::string, std::string>>& input_values,
     std::uint64_t observer_tx);
 bool DomainHasCrudDependencies(const EngineRequestContext& context,
-                               const std::string& domain_uuid,
+                               const EngineUuid& domain_uuid,
                                std::uint64_t observer_tx);
 bool DomainChainContainsUuid(const EngineRequestContext& context,
-                             const std::string& start_domain_uuid,
-                             const std::string& searched_domain_uuid,
+                             const EngineUuid& start_domain_uuid,
+                             const EngineUuid& searched_domain_uuid,
                              std::uint64_t observer_tx);
 
 }  // namespace scratchbird::engine::internal_api

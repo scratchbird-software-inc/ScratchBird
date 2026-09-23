@@ -1,3 +1,5 @@
+#include "catalog/constraint_metadata_codec.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +8,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/ddl_support_service.hpp"
 #include "catalog/pinned_descriptor_cache.hpp"
@@ -26,14 +29,14 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 
-constexpr const char* kSchemaUuid = "019f4000-0000-7000-8000-000000000001";
-constexpr const char* kTableUuid = "019f4000-0000-7000-8000-000000000101";
-constexpr const char* kDomainUuid = "019f4000-0000-7000-8000-000000000102";
-constexpr const char* kViewUuid = "019f4000-0000-7000-8000-000000000201";
-constexpr const char* kTriggerUuid = "019f4000-0000-7000-8000-000000000202";
-constexpr const char* kConstraintUuid = "019f4000-0000-7000-8000-000000000203";
-constexpr const char* kPolicyUuid = "019f4000-0000-7000-8000-000000000204";
-constexpr const char* kUnrelatedUuid = "019f4000-0000-7000-8000-000000000301";
+constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000001");
+constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000101");
+constexpr auto kDomainUuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000102");
+constexpr auto kViewUuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000201");
+constexpr auto kTriggerUuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000202");
+constexpr auto kConstraintUuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000203");
+constexpr auto kPolicyUuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000204");
+constexpr auto kUnrelatedUuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000301");
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -84,11 +87,11 @@ api::EngineRequestContext Context(const std::filesystem::path& path) {
   api::EngineRequestContext context;
   context.request_id = "ipar-catalog-ddl-support-service-gate";
   context.database_path = path.string();
-  context.database_uuid.canonical = "019f4000-0000-7000-8000-00000000db01";
-  context.principal_uuid.canonical = "019f4000-0000-7000-8000-00000000aa01";
-  context.session_uuid.canonical = "019f4000-0000-7000-8000-00000000bb01";
-  context.transaction_uuid.canonical = "019f4000-0000-7000-8000-00000000cc01";
-  context.current_schema_uuid.canonical = kSchemaUuid;
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-00000000db01");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-00000000aa01");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-00000000bb01");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-00000000cc01");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000001");
   context.local_transaction_id = 42;
   context.snapshot_visible_through_local_transaction_id = 42;
   context.catalog_generation_id = 7;
@@ -113,17 +116,17 @@ api::EngineLocalizedName Name(std::string value) {
   return name;
 }
 
-api::EngineObjectReference Object(std::string uuid, std::string kind) {
+api::EngineObjectReference Object(api::EngineUuid uuid, std::string kind) {
   api::EngineObjectReference object;
-  object.uuid.canonical = std::move(uuid);
+  object.uuid = std::move(uuid);
   object.object_kind = std::move(kind);
   return object;
 }
 
 api::EngineColumnDefinition Column(std::string name, std::uint32_t ordinal) {
   api::EngineColumnDefinition column;
-  column.requested_column_uuid.canonical =
-      "019f4000-0000-7000-8000-00000000c" + std::to_string(ordinal + 10);
+  column.requested_column_uuid =
+      scratchbird::tests::FixtureUuid(1557, ordinal + 10);
   column.names.push_back(Name(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "int64";
@@ -135,20 +138,21 @@ api::EngineColumnDefinition Column(std::string name, std::uint32_t ordinal) {
 
 api::EngineConstraintDefinition ConstraintDefinition() {
   api::EngineConstraintDefinition constraint;
-  constraint.requested_constraint_uuid.canonical =
-      "019f4000-0000-7000-8000-000000000901";
+  constraint.requested_constraint_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000901");
   constraint.names.push_back(Name("ipar_support_constraint_stage"));
   constraint.constraint_kind = "unique_key";
-  constraint.canonical_constraint_envelope =
-      "constraint_hash=stage-hash;support_uuid=019f4000-0000-7000-8000-000000000902;"
-      "support_family=btree";
+  api::CatalogConstraintMetadata metadata;
+  metadata.text = {{"constraint_hash", "stage-hash"}, {"support_family", "btree"}};
+  metadata.identities = {{"support_uuid", scratchbird::tests::FixtureUuidLiteral(
+      "019f4000-0000-7000-8000-000000000902")}};
+  Require(api::EncodeCatalogConstraintMetadata(metadata, &constraint.canonical_constraint_envelope),
+          "constraint fixture metadata encoding failed");
   return constraint;
 }
 
 api::EngineIndexDefinition IndexDefinition() {
   api::EngineIndexDefinition index;
-  index.requested_index_uuid.canonical =
-      "019f4000-0000-7000-8000-000000000903";
+  index.requested_index_uuid = scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000903");
   index.names.push_back(Name("ipar_support_index_stage"));
   index.index_kind = "btree";
   index.key_envelopes.push_back("id");
@@ -156,15 +160,15 @@ api::EngineIndexDefinition IndexDefinition() {
 }
 
 void CreateCatalogObject(const api::EngineRequestContext& context,
-                         std::string uuid,
+                         api::EngineUuid uuid,
                          std::string kind,
-                         std::string schema_uuid,
+                         api::EngineUuid schema_uuid,
                          std::string name,
                          std::vector<api::EngineObjectReference> related = {}) {
   api::EngineCatalogCreateObjectRequest request;
   request.context = context;
   request.target_object = Object(std::move(uuid), std::move(kind));
-  request.target_schema.uuid.canonical = std::move(schema_uuid);
+  request.target_schema.uuid = std::move(schema_uuid);
   request.localized_names.push_back(Name(std::move(name)));
   request.related_objects = std::move(related);
   RequireOk(api::EngineCatalogCreateObject(request),
@@ -209,7 +213,7 @@ void CreateDependencyFixture(const api::EngineRequestContext& context) {
 
 api::CatalogPinnedDescriptorCacheKey CacheKey(const api::EngineRequestContext& context,
                                               std::string family,
-                                              std::vector<std::string> objects) {
+                                              std::vector<api::EngineUuid> objects) {
   api::CatalogPinnedDescriptorCacheKey key;
   key.descriptor_family = std::move(family);
   key.catalog_epoch = context.catalog_generation_id;
@@ -225,11 +229,11 @@ api::CatalogPinnedDescriptorCacheKey CacheKey(const api::EngineRequestContext& c
 }
 
 void PutDescriptorSnapshot(const api::CatalogPinnedDescriptorCacheKey& key,
-                           std::string object_uuid,
+                           api::EngineUuid object_uuid,
                            std::string object_kind) {
   api::CatalogPinnedDescriptorSnapshot snapshot;
   snapshot.key = key;
-  snapshot.descriptor.descriptor_uuid.canonical = std::move(object_uuid);
+  snapshot.descriptor.descriptor_uuid = std::move(object_uuid);
   snapshot.descriptor.descriptor_kind = std::move(object_kind);
   snapshot.descriptor.canonical_type_name = snapshot.descriptor.descriptor_kind;
   snapshot.descriptor.encoded_descriptor = "immutable_descriptor=true";
@@ -245,13 +249,14 @@ void PutDescriptorSnapshot(const api::CatalogPinnedDescriptorCacheKey& key,
   Require(put.ok, "IPAR support descriptor cache put failed");
 }
 
-bool Contains(const std::vector<std::string>& values, std::string_view value) {
+template <typename T, typename U>
+bool Contains(const std::vector<T>& values, const U& value) {
   return std::find(values.begin(), values.end(), value) != values.end();
 }
 
 bool ContainsCacheInvalidation(const std::vector<api::CatalogDdlCacheInvalidation>& values,
                                std::string_view family,
-                               std::string_view object_uuid) {
+                               const api::EngineUuid& object_uuid) {
   for (const auto& value : values) {
     if (value.cache_family == family && value.object_uuid == object_uuid) {
       return true;
@@ -286,11 +291,22 @@ std::string FieldValue(const api::EngineRowValue& row, std::string_view field_na
   return {};
 }
 
+bool IdentityFieldEquals(const api::EngineRowValue& row, std::string_view name,
+                         const api::EngineUuid& identity) {
+  for (const auto& [field, value] : row.fields) {
+    if (field != name) continue;
+    return !value.isSqlNull() && value.encoded_value.empty() &&
+           value.binary_value.size() == identity.bytes.size() &&
+           std::equal(value.binary_value.begin(), value.binary_value.end(), identity.bytes.begin());
+  }
+  return false;
+}
+
 bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) {
       return true;
     }
   }
@@ -300,7 +316,7 @@ bool HasEvidence(const api::EngineApiResult& result,
 void ValidateDdlPublicationOptimizationEvidence(const api::EngineRequestContext& context) {
   api::EngineCreateSchemaRequest request;
   request.context = context;
-  request.target_object = Object("019f4000-0000-7000-8000-000000000777", "schema");
+  request.target_object = Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000777"), "schema");
   request.localized_names.push_back(Name("ipar_support_publication_schema"));
   const auto result = api::EngineCreateSchema(request);
   RequireOk(result, "IPAR DDL support create schema failed");
@@ -315,8 +331,7 @@ void ValidateDdlPublicationOptimizationEvidence(const api::EngineRequestContext&
   Require(HasEvidence(result, "ddl_uuid_result_shape", "uuid_first"),
           "IPAR DDL UUID result shape evidence missing");
   for (const auto& row : result.result_shape.rows) {
-    if (FieldValue(row, "ddl_result_object_uuid") !=
-        request.target_object.uuid.canonical) {
+    if (!IdentityFieldEquals(row, "ddl_result_object_uuid", request.target_object.uuid)) {
       continue;
     }
     Require(FieldValue(row, "ddl_validation_before_publish") == "true",
@@ -383,21 +398,21 @@ api::EngineCatalogDdlSupportRequest SupportRequest(
   request.apply_descriptor_cache_invalidation = apply_invalidation;
   request.stage_objects = {
       Object(kTableUuid, "table"),
-      Object("019f4000-0000-7000-8000-000000000401", "index"),
-      Object("019f4000-0000-7000-8000-000000000402", "view"),
-      Object("019f4000-0000-7000-8000-000000000403", "procedure"),
-      Object("019f4000-0000-7000-8000-000000000404", "package"),
-      Object("019f4000-0000-7000-8000-000000000405", "trigger"),
-      Object("019f4000-0000-7000-8000-000000000406", "constraint"),
-      Object("019f4000-0000-7000-8000-000000000407", "filespace"),
-      Object("019f4000-0000-7000-8000-000000000408", "policy"),
+      Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000401"), "index"),
+      Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000402"), "view"),
+      Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000403"), "procedure"),
+      Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000404"), "package"),
+      Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000405"), "trigger"),
+      Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000406"), "constraint"),
+      Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000407"), "filespace"),
+      Object(scratchbird::tests::FixtureUuidLiteral("019f4000-0000-7000-8000-000000000408"), "policy"),
   };
   request.columns.push_back(Column("id", 0));
   request.indexes.push_back(IndexDefinition());
   request.constraints.push_back(ConstraintDefinition());
 
   api::CatalogDdlPreparedContextProof dependent;
-  dependent.prepared_context_uuid = "prepared-context-dependent";
+  dependent.prepared_context_uuid = scratchbird::tests::FixtureUuid(1557, 1);
   dependent.dependent_object_uuids = {kTableUuid, kViewUuid};
   dependent.catalog_epoch = 100;
   dependent.security_epoch = context.security_epoch;
@@ -405,7 +420,7 @@ api::EngineCatalogDdlSupportRequest SupportRequest(
   request.prepared_contexts.push_back(std::move(dependent));
 
   api::CatalogDdlPreparedContextProof unrelated;
-  unrelated.prepared_context_uuid = "prepared-context-unrelated";
+  unrelated.prepared_context_uuid = scratchbird::tests::FixtureUuid(1557, 2);
   unrelated.dependent_object_uuids = {kUnrelatedUuid};
   unrelated.catalog_epoch = 100;
   unrelated.security_epoch = context.security_epoch;
@@ -469,7 +484,7 @@ void ValidateSupportService(const api::EngineRequestContext& context) {
   Require(result.prepared_context_invalidations.size() == 1,
           "IPAR prepared context invalidation count mismatch");
   Require(result.prepared_context_invalidations.front().prepared_context_uuid ==
-              "prepared-context-dependent",
+              scratchbird::tests::FixtureUuid(1557, 1),
           "IPAR prepared context invalidation targeted wrong context");
 
   const auto staged_kinds = StagedKinds(result.staged_descriptors);

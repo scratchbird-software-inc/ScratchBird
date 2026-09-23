@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 
@@ -595,12 +596,12 @@ int main() {
     }
   }
 
-  constexpr std::string_view package_uuid =
-      "018f1234-5678-7abc-8def-0123456789ab";
-  constexpr std::string_view registry_uuid =
-      "018f4321-8765-7cba-8fed-ba9876543210";
-  constexpr std::string_view parser_uuid =
-      "018faaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+  constexpr auto package_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "018f1234-5678-7abc-8def-0123456789ab");
+  constexpr auto registry_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "018f4321-8765-7cba-8fed-ba9876543210");
+  constexpr auto parser_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "018faaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee");
   const std::array<std::uint8_t, 16> package_bytes{
       0x01, 0x8f, 0x12, 0x34, 0x56, 0x78, 0x7a, 0xbc,
       0x8d, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab};
@@ -715,7 +716,7 @@ int main() {
 
     auto stale_member = frame(false);
     stale_member.registry_snapshot_uuid =
-        "018f4321-8765-7cba-8fed-ba9876543211";
+        scratchbird::tests::FixtureUuidLiteral("018f4321-8765-7cba-8fed-ba9876543211");
     auto mismatched_registry = EncodeUncheckedStream(
         {frame(true), stale_member}, package_bytes, registry_bytes);
     expect_decode(mismatched_registry, "DATATYPE.DESCRIPTOR.INVALID",

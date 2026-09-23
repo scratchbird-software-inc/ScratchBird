@@ -1,3 +1,6 @@
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "dml/mga_relation_read_view.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -53,9 +56,9 @@ platform::TypedUuid TypedUuid(platform::UuidKind kind, unsigned char salt) {
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.request_id = "p3-write-profile";
-  context.database_uuid.canonical = "database-p3-write-profile";
-  context.principal_uuid.canonical = "principal-p3-write-profile";
-  context.transaction_uuid.canonical = "transaction-p3-write-profile";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 1701);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1702);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 1703);
   context.local_transaction_id = 42;
   context.snapshot_visible_through_local_transaction_id = 42;
   context.security_context_present = true;
@@ -65,7 +68,7 @@ api::EngineRequestContext Context() {
 api::CrudTableRecord Table() {
   api::CrudTableRecord table;
   table.creator_tx = 42;
-  table.table_uuid = "table-p3-write-profile";
+  table.table_uuid = scratchbird::tests::FixtureUuid(1486, 205);
   table.default_name = "profile_table";
   table.columns.push_back({"id", "canonical=int64"});
   table.columns.push_back({"name", "canonical=character"});
@@ -73,14 +76,14 @@ api::CrudTableRecord Table() {
   return table;
 }
 
-api::CrudIndexRecord Index(std::string uuid,
+api::CrudIndexRecord Index(scratchbird::core::platform::Uuid uuid,
                            std::string column,
                            std::string family,
                            bool unique) {
   api::CrudIndexRecord index;
   index.creator_tx = 42;
   index.index_uuid = std::move(uuid);
-  index.table_uuid = "table-p3-write-profile";
+  index.table_uuid = scratchbird::tests::FixtureUuid(1486, 205);
   index.column_name = std::move(column);
   index.family = std::move(family);
   index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
@@ -89,15 +92,15 @@ api::CrudIndexRecord Index(std::string uuid,
   return index;
 }
 
-api::CrudState State() {
-  api::CrudState state;
+api::MgaRelationReadView State() {
+  api::MgaRelationReadView state;
   state.transactions[42] = "active";
   state.tables.push_back(Table());
   api::CrudRowVersionRecord row;
   row.creator_tx = 42;
-  row.table_uuid = "table-p3-write-profile";
-  row.row_uuid = "row-p3-write-profile";
-  row.version_uuid = "version-p3-write-profile";
+  row.table_uuid = scratchbird::tests::FixtureUuid(1486, 205);
+  row.row_uuid = scratchbird::tests::FixtureUuid(1486, 203);
+  row.version_uuid = scratchbird::tests::FixtureUuid(1486, 206);
   row.values.push_back({"id", "1"});
   row.values.push_back({"name", "alpha"});
   row.deleted = false;
@@ -121,8 +124,8 @@ api::EngineRowValue InputRow(std::string id, std::string name) {
 api::EngineInsertRowsRequest InsertRequest() {
   api::EngineInsertRowsRequest request;
   request.context = Context();
-  request.target_table.uuid.canonical = "table-p3-write-profile";
-  request.target_schema.uuid.canonical = "schema-p3-write-profile";
+  request.target_table.uuid = scratchbird::tests::FixtureUuid(1486, 205);
+  request.target_schema.uuid = scratchbird::tests::FixtureUuid(1486, 204);
   request.estimated_row_count = 2;
   request.input_rows.push_back(InputRow("1", "alpha"));
   request.input_rows.push_back(InputRow("2", "beta"));
@@ -132,7 +135,7 @@ api::EngineInsertRowsRequest InsertRequest() {
 api::EngineUpdateRowsRequest UpdateRequest() {
   api::EngineUpdateRowsRequest request;
   request.context = Context();
-  request.target_table.uuid.canonical = "table-p3-write-profile";
+  request.target_table.uuid = scratchbird::tests::FixtureUuid(1486, 205);
   request.update_predicate.predicate_kind = "column_eq";
   request.update_predicate.canonical_predicate_envelope = "name";
   api::EngineTypedValue value;
@@ -216,8 +219,8 @@ void TestInsertWriteProfiles() {
   const auto table = Table();
   const auto state = State();
   const std::vector<api::CrudIndexRecord> indexes = {
-      Index("index-name", "name", api::kCrudIndexFamilyBtree, false),
-      Index("index-id-unique", "id", api::kCrudIndexFamilyBtree, true)};
+      Index(scratchbird::tests::FixtureUuid(1486, 202), "name", api::kCrudIndexFamilyBtree, false),
+      Index(scratchbird::tests::FixtureUuid(1486, 201), "id", api::kCrudIndexFamilyBtree, true)};
 
   auto unsafe_request = InsertRequest();
   unsafe_request.option_envelopes.push_back("feature.secondary_index_delta_ledger=enabled");
@@ -237,13 +240,14 @@ void TestInsertWriteProfiles() {
   safe_request.option_envelopes.push_back("delta_ledger.reader_overlay=enabled");
   safe_request.option_envelopes.push_back("delta_ledger.cleanup_horizon_bound=true");
   safe_request.option_envelopes.push_back("delta_ledger.recovery_classifiable=true");
-  safe_request.option_envelopes.push_back("policy_snapshot_uuid=policy-p3-insert");
+  safe_request.context.transaction_policy_snapshot_uuid = scratchbird::tests::FixtureUuid(1486, 302);
+  safe_request.context.transaction_policy_snapshot_generation = 1;
   auto safe_context = api::BeginInsertBatchContext(safe_request, state, table, indexes);
   Require(safe_context.accepted, "insert context with safe delta proofs was refused");
   Require(safe_context.delta_ledger_policy.enabled, "insert delta ledger proofs were not accepted");
   Require(HasInsertAction(safe_context.index_plan, api::InsertIndexMaintenanceAction::committed_delta_ledger),
           "insert did not select committed delta ledger after proofs");
-  Require(safe_context.policy_snapshot_uuid == "policy-p3-insert", "insert policy snapshot was not bound");
+  Require(safe_context.policy_snapshot_uuid == scratchbird::tests::FixtureUuid(1486, 302), "insert policy snapshot was not bound");
 
   auto bulk_request = InsertRequest();
   bulk_request.strict_bulk_load_requested = true;
@@ -263,8 +267,8 @@ void TestUpdateWriteProfiles() {
   const auto table = Table();
   const auto state = State();
   const std::vector<api::CrudIndexRecord> indexes = {
-      Index("index-name", "name", api::kCrudIndexFamilyBtree, false),
-      Index("index-id-unique", "id", api::kCrudIndexFamilyBtree, true)};
+      Index(scratchbird::tests::FixtureUuid(1486, 202), "name", api::kCrudIndexFamilyBtree, false),
+      Index(scratchbird::tests::FixtureUuid(1486, 201), "id", api::kCrudIndexFamilyBtree, true)};
 
   auto unsafe_request = UpdateRequest();
   unsafe_request.option_envelopes.push_back("feature.secondary_index_delta_ledger=enabled");
@@ -287,13 +291,13 @@ void TestUpdateWriteProfiles() {
   safe_request.option_envelopes.push_back("delta_ledger.reader_overlay=enabled");
   safe_request.option_envelopes.push_back("delta_ledger.cleanup_horizon_bound=true");
   safe_request.option_envelopes.push_back("delta_ledger.recovery_classifiable=true");
-  safe_request.option_envelopes.push_back("policy_snapshot_uuid=policy-p3-update");
+  safe_request.option_envelopes.push_back("policy_snapshot_uuid=" + api::MetadataUuidBytes(scratchbird::tests::FixtureUuid(1486, 303)));
   auto safe_context = api::BuildUpdateBatchContext(safe_request, state, table, indexes);
   Require(safe_context.accepted, "update context with safe delta proofs was refused");
   Require(safe_context.delta_ledger_policy.enabled, "update delta ledger proofs were not accepted");
   Require(HasUpdateAction(safe_context.index_plan, api::UpdateIndexMaintenanceAction::committed_delta_ledger),
           "update did not select committed delta ledger after proofs");
-  Require(safe_context.policy_snapshot_uuid == "policy-p3-update", "update policy snapshot was not bound");
+  Require(safe_context.policy_snapshot_uuid == scratchbird::tests::FixtureUuid(1486, 303), "update policy snapshot was not bound");
 
   auto disabled_page_request = UpdateRequest();
   disabled_page_request.option_envelopes.push_back("feature.page_reservation=disabled");
@@ -316,12 +320,12 @@ void TestIndexMetrics() {
   Require(descriptors.ok, "index metric descriptors did not register");
 
   index_api::IndexMetricIdentity identity;
-  identity.index_uuid = "index-p3-metrics";
+  identity.index_uuid = scratchbird::tests::FixtureUuid(1274, 301);
   identity.index_family = "btree";
   identity.semantic_profile_id = "sbsql_v3";
   identity.operation = "lookup";
   identity.result = "ok";
-  identity.filespace_uuid = "filespace-p3";
+  identity.filespace_uuid = scratchbird::tests::FixtureUuid(1486, 301);
 
   index_api::IndexLogicalMetricDelta logical;
   logical.candidates = 10;

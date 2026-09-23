@@ -1,3 +1,7 @@
+#include "wire/binary_status_packet.hpp"
+#include "uuid.hpp"
+#include <algorithm>
+#include <chrono>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -8,6 +12,7 @@
 
 // SEARCH_KEY: SB_SERVER_MANAGEMENT_LISTENER_COORDINATION
 
+#include "management_request_codec.hpp"
 #include "manager_control.hpp"
 
 #include "lifecycle/engine_lifecycle_api.hpp"
@@ -25,6 +30,19 @@
 namespace scratchbird::server {
 
 namespace {
+
+using NativeUuid = scratchbird::core::platform::Uuid;
+std::string IdentityBytes(const NativeUuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+std::string IdentityBytes(const std::array<std::uint8_t,16>& id) { return IdentityBytes(NativeUuid{id}); }
+NativeUuid BinaryIdentity(std::string_view bytes) {
+  NativeUuid id;
+  if (bytes.size()!=id.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()),id.bytes.size(),id.bytes.begin());
+  return scratchbird::core::uuid::IsEngineIdentityUuid(id) ? id : NativeUuid{};
+}
+
 
 namespace engine_api = scratchbird::engine::internal_api;
 
@@ -95,23 +113,6 @@ ServerDiagnostic ManagementDiagnostic(std::string code,
                           std::move(fields)};
 }
 
-std::map<std::string, std::string> DecodeFields(const std::vector<std::uint8_t>& payload) {
-  std::map<std::string, std::string> fields;
-  if (payload.size() < 2) return fields;
-  std::size_t offset = 0;
-  const auto count = GetU16(payload, offset);
-  offset += 2;
-  for (std::uint16_t index = 0; index < count; ++index) {
-    std::string key;
-    std::string value;
-    if (!ReadString(payload, &offset, &key) || !ReadString(payload, &offset, &value)) {
-      fields.clear();
-      return fields;
-    }
-    fields[key] = value;
-  }
-  return fields;
-}
 
 std::string RequiredRightForOperation(const std::string& operation_key) {
   if (operation_key == "show_server_health" ||
@@ -194,8 +195,12 @@ void AddManagementSessionGrant(
     std::string right,
     bool deny) {
   engine_api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid =
-      "server-management-session-grant:" + right + (deny ? ":deny" : ":allow");
+  const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::object, now);
+  if (!generated.ok()) return;
+  grant.grant_uuid = generated.value.value;
   grant.subject_uuid = subject_uuid;
   grant.subject_kind = "principal";
   grant.right = std::move(right);
@@ -211,7 +216,7 @@ MaterializeManagementSessionAuthorizationContext(
   engine_api::EngineMaterializedAuthorizationContext authorization;
   authorization.authority_uuid = context.database_uuid;
   if (authorization.authority_uuid.is_nil()) {
-    authorization.authority_uuid = "server-management-authority";
+    authorization.authority_uuid = NativeUuid{session.auth_context_uuid};
   }
   authorization.principal_uuid = context.principal_uuid;
   authorization.security_epoch = context.security_epoch;
@@ -277,11 +282,11 @@ engine_api::EngineRequestContext EngineContextForManagement(
   engine_context.trust_mode = session.embedded_in_process
                                   ? engine_api::EngineTrustMode::embedded_in_process
                                   : engine_api::EngineTrustMode::server_isolated;
-  engine_context.request_id = UuidBytesToText(frame.header.request_uuid);
+  engine_context.request_id = IdentityBytes(frame.header.request_uuid);
   engine_context.database_path = session.database_path;
   engine_context.database_uuid = session.database_uuid;
-  engine_context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
-  engine_context.session_uuid = UuidBytesToText(session.session_uuid);
+  engine_context.principal_uuid = NativeUuid{session.effective_user_uuid};
+  engine_context.session_uuid = NativeUuid{session.session_uuid};
   engine_context.local_transaction_id = session.local_transaction_id;
   engine_context.transaction_uuid = session.transaction_uuid;
   engine_context.snapshot_visible_through_local_transaction_id =
@@ -301,7 +306,7 @@ engine_api::EngineRequestContext EngineContextForManagement(
       if (!database.database_open) continue;
       const bool path_matches = !session.database_path.empty() &&
                                 session.database_path == database.database_path;
-      const bool uuid_matches = !session.database_uuid.empty() &&
+      const bool uuid_matches = !session.database_uuid.is_nil() &&
                                 session.database_uuid == database.database_uuid;
       if (path_matches || uuid_matches) {
         engine_context.cluster_authority_available = false;
@@ -364,7 +369,7 @@ std::string ServerStatusJson(const ServerManagementContext& context,
                              const std::string& state_before = {},
                              const std::string& state_after = {}) {
   const auto generation = context.listener_orchestrator == nullptr ? 1 : context.listener_orchestrator->generation;
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "{\"server_management_response\":{\"operation_key\":\"" << JsonEscape(operation_key)
       << "\",\"outcome\":\"" << JsonEscape(outcome)
       << "\",\"state_generation\":" << generation
@@ -377,13 +382,13 @@ std::string ServerStatusJson(const ServerManagementContext& context,
 }
 
 std::string HostedDatabasesRecordsJson(const HostedEngineState& state) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "[";
   for (std::size_t i = 0; i < state.databases.size(); ++i) {
     if (i != 0) out << ',';
     const auto& database = state.databases[i];
     out << "{\"state\":\"" << HostedDatabaseStateName(database.state)
-        << "\",\"database_uuid\":\"" << JsonEscape(database.database_uuid)
+        << "\",\"database_uuid\":\"" << scratchbird::wire::binary_status::Identity(database.database_uuid)
         << "\",\"database_ref\":\"" << JsonEscape(RedactedPathRecord(database.database_path))
         << "\",\"database_open\":" << (database.database_open ? "true" : "false")
         << ",\"read_only\":" << (database.read_only ? "true" : "false")
@@ -532,8 +537,8 @@ void RecordManagementLifecycleObservability(const ServerManagementContext& conte
   event.outcome = outcome;
   event.diagnostic_code = diagnostic_code;
   event.route_family = RouteFamilyForOperation(operation_key);
-  event.request_uuid = UuidBytesToText(frame.header.request_uuid);
-  event.session_uuid = UuidBytesToText(frame.header.session_uuid);
+  event.request_uuid = IdentityBytes(frame.header.request_uuid);
+  event.session_uuid = IdentityBytes(frame.header.session_uuid);
   event.database_uuid = database_uuid;
   event.state_before = state_before;
   event.state_after = state_after;
@@ -551,7 +556,7 @@ void RecordManagementLifecycleObservability(const ServerManagementContext& conte
 bool SessionMatchesDatabase(const ServerSessionRecord& session,
                             const std::string& database_path,
                             const std::string& database_uuid) {
-  if (!database_uuid.empty() && session.database_uuid == database_uuid) return true;
+  if (!database_uuid.empty() && session.database_uuid == BinaryIdentity(database_uuid)) return true;
   if (!database_path.empty() && session.database_path == database_path) return true;
   return false;
 }
@@ -695,15 +700,15 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
       if (!SessionMatchesDatabase(session, snapshot.database_path, snapshot.database_uuid)) continue;
       ProcessAssociationRecord session_record;
       session_record.kind = ProcessAssociationKind::kSession;
-      session_record.database_uuid = session.database_uuid.empty()
+      session_record.database_uuid = session.database_uuid.is_nil()
           ? snapshot.database_uuid
-          : session.database_uuid;
+          : IdentityBytes(session.database_uuid);
       session_record.database_path = session.database_path.empty()
           ? snapshot.database_path
           : session.database_path;
-      session_record.session_uuid = UuidBytesToText(session.session_uuid);
+      session_record.session_uuid = IdentityBytes(session.session_uuid);
       session_record.attachment_uuid = session_record.session_uuid;
-      session_record.route_uuid = UuidBytesToText(session.connection_uuid);
+      session_record.route_uuid = IdentityBytes(session.connection_uuid);
       session_record.component_uuid = session_record.session_uuid;
       session_record.process_uuid = session_record.route_uuid;
       session_record.lifecycle_generation = registry.generation;
@@ -730,7 +735,7 @@ const HostedDatabaseSnapshot* TargetDatabase(const ServerManagementContext& cont
     if (!database.database_open) continue;
     if (open_database_count != nullptr) ++(*open_database_count);
     if (first_open == nullptr) first_open = &database;
-    if (!request.target_uuid.empty() && request.target_uuid == database.database_uuid) {
+    if (!request.target_uuid.empty() && BinaryIdentity(request.target_uuid) == database.database_uuid) {
       matched = &database;
     }
     if (context.config != nullptr &&
@@ -750,7 +755,7 @@ ServerShutdownRuntimeSnapshot BuildShutdownRuntimeSnapshot(
   const auto* database = TargetDatabase(context, request, &open_database_count);
   if (database != nullptr) {
     snapshot.database_path = database->database_path;
-    snapshot.database_uuid = database->database_uuid;
+    snapshot.database_uuid = IdentityBytes(database->database_uuid);
   } else if (context.config != nullptr && !context.config->database_default_path.empty()) {
     snapshot.database_path = context.config->database_default_path.string();
   }
@@ -932,15 +937,15 @@ void ApplyDatabaseDropRuntimeActions(const ServerManagementContext& context,
 }
 
 std::string SessionRecordsJson(const ServerSessionRegistry& registry) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "[";
   bool first = true;
   for (const auto& [_, session] : registry.sessions_by_uuid) {
     if (!first) out << ',';
     first = false;
-    out << "{\"session_uuid\":\"" << UuidBytesToText(session.session_uuid)
+    out << "{\"session_uuid\":\"" << scratchbird::wire::binary_status::Identity(session.session_uuid)
         << "\",\"principal_present\":" << (!session.principal_claim.empty() ? "true" : "false")
-        << ",\"database_uuid\":\"" << JsonEscape(session.database_uuid)
+        << ",\"database_uuid\":\"" << scratchbird::wire::binary_status::Identity(session.database_uuid)
         << "\",\"attach_mode\":\"" << JsonEscape(session.attach_mode) << "\"}";
   }
   out << "]";
@@ -969,14 +974,7 @@ ServerManagementResponse ErrorResponse(const sbps::Frame& request,
 
 std::vector<std::string> ModeTokensForEngineOptions(const std::string& mode) {
   std::vector<std::string> tokens;
-  std::size_t start = 0;
-  while (start <= mode.size()) {
-    const auto end = mode.find_first_of(";,\n", start);
-    auto token = mode.substr(start, end == std::string::npos ? std::string::npos : end - start);
-    if (!token.empty()) tokens.push_back(std::move(token));
-    if (end == std::string::npos) break;
-    start = end + 1;
-  }
+  if (!scratchbird::wire::SplitManagementMode(mode, &tokens)) return {};
   return tokens;
 }
 
@@ -993,7 +991,7 @@ TRequest EngineLifecycleRequestForManagement(const ServerManagementContext& cont
     engine_request.context.database_path = context.config->database_default_path.string();
   }
   if (!request.target_uuid.empty()) {
-    engine_request.context.database_uuid = request.target_uuid;
+    engine_request.context.database_uuid = BinaryIdentity(request.target_uuid);
   }
   if (engine_request.context.database_uuid.is_nil()) {
     engine_request.context.database_uuid = session.database_uuid;
@@ -1005,17 +1003,8 @@ TRequest EngineLifecycleRequestForManagement(const ServerManagementContext& cont
   engine_request.option_envelopes.push_back("operation_key:" + request.operation_key);
   engine_request.option_envelopes.push_back("admin_cli_route:true");
   engine_request.option_envelopes.push_back("audit_reason:" + request.audit_reason);
-  if (request.operation_key == "create_database" &&
-      engine_request.context.transaction_uuid.is_nil()) {
-    // CREATE owns its bootstrap transaction inside the engine lifecycle
-    // boundary. The management request identity is the replay-stable receipt;
-    // it is never a parser-selected database or storage identity.
-    engine_request.context.transaction_uuid =
-        engine_request.context.request_id;
-    engine_request.context.local_transaction_id = 1;
-    engine_request.option_envelopes.push_back(
-        "engine_owned_management_transaction:true");
-  }
+  // Database creation obtains its bootstrap transaction from the engine.
+  // A management request identity is never a transaction inventory identity.
   for (const auto& token : ModeTokensForEngineOptions(request.mode)) {
     engine_request.option_envelopes.push_back(token);
   }
@@ -1035,7 +1024,7 @@ ServerDiagnostic EngineApiDiagnosticToManagement(const engine_api::EngineApiDiag
 
 std::string EngineLifecycleResultRecordsJson(const engine_api::EngineApiResult& result,
                                              const std::string& operation_key) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "[";
   bool first_record = true;
   for (const auto& row : result.result_shape.rows) {
@@ -1043,8 +1032,12 @@ std::string EngineLifecycleResultRecordsJson(const engine_api::EngineApiResult& 
     first_record = false;
     out << "{\"operation_key\":\"" << JsonEscape(operation_key) << "\"";
     for (const auto& field : row.fields) {
-      out << ",\"" << JsonEscape(field.first) << "\":\""
-          << JsonEscape(field.second.encoded_value) << "\"";
+      out << ",\"" << JsonEscape(field.first) << "\":\"";
+      const auto& type = field.second.descriptor.canonical_type_name;
+      if (!field.second.is_null && (type == "uuid" || type == "uuid16"))
+        out << scratchbird::wire::binary_status::Identity(field.second.encoded_value);
+      else out << JsonEscape(field.second.encoded_value);
+      out << "\"";
     }
     out << ",\"authorization_authority\":\"engine\""
         << ",\"audit_marker\":\"DBLC_STATIC_ADMIN_AUTH_AUDIT_ROUTE\"}";
@@ -1052,7 +1045,7 @@ std::string EngineLifecycleResultRecordsJson(const engine_api::EngineApiResult& 
   if (first_record) {
     out << "{\"operation_key\":\"" << JsonEscape(operation_key)
         << "\",\"operation_id\":\"" << JsonEscape(result.operation_id)
-        << "\",\"primary_object_uuid\":\"" << JsonEscape(result.primary_object.uuid)
+        << "\",\"primary_object_uuid\":\"" << scratchbird::wire::binary_status::Identity(result.primary_object.uuid)
         << "\",\"primary_object_kind\":\"" << JsonEscape(result.primary_object.object_kind)
         << "\",\"authorization_authority\":\"engine\""
         << ",\"audit_marker\":\"DBLC_STATIC_ADMIN_AUTH_AUDIT_ROUTE\"}";
@@ -1124,40 +1117,30 @@ ServerManagementResponse ErrorResponse(const sbps::Frame& request,
 
 std::vector<std::uint8_t> EncodeServerManagementRequestForTest(
     const ServerManagementRequest& request) {
-  std::vector<std::pair<std::string, std::string>> fields{
-      {"operation_key", request.operation_key},
-      {"target_uuid", request.target_uuid},
-      {"mode", request.mode},
-      {"audit_reason", request.audit_reason},
-      {"timeout_ms", std::to_string(request.timeout_ms)},
-      {"include_history", request.include_history ? "true" : "false"},
-  };
+  scratchbird::wire::ManagementRequestV1 value;
+  value.operation_key = request.operation_key;
+  if (!request.target_uuid.empty() &&
+      !scratchbird::wire::DecodeManagementTarget(request.target_uuid, &value.target_uuid)) return {};
+  value.mode = request.mode;
+  value.audit_reason = request.audit_reason;
+  value.timeout_ms = request.timeout_ms;
+  value.include_history = request.include_history;
   std::vector<std::uint8_t> out;
-  PutU16(&out, static_cast<std::uint16_t>(fields.size()));
-  for (const auto& [key, value] : fields) {
-    PutString(&out, key);
-    PutString(&out, value);
-  }
+  if (!scratchbird::wire::EncodeManagementRequestV1(value, &out)) return {};
   return out;
 }
 
 std::optional<ServerManagementRequest> DecodeServerManagementRequest(
     const std::vector<std::uint8_t>& payload) {
-  const auto fields = DecodeFields(payload);
-  if (!fields.contains("operation_key")) return std::nullopt;
+  scratchbird::wire::ManagementRequestV1 value;
+  if (!scratchbird::wire::DecodeManagementRequestV1(payload, &value)) return std::nullopt;
   ServerManagementRequest request;
-  request.operation_key = CanonicalManagementOperationKey(fields.at("operation_key"));
-  if (fields.contains("target_uuid")) request.target_uuid = fields.at("target_uuid");
-  if (fields.contains("mode")) request.mode = fields.at("mode");
-  if (fields.contains("audit_reason")) request.audit_reason = fields.at("audit_reason");
-  if (fields.contains("include_history")) request.include_history = fields.at("include_history") == "true";
-  if (fields.contains("timeout_ms")) {
-    try {
-      request.timeout_ms = static_cast<std::uint64_t>(std::stoull(fields.at("timeout_ms")));
-    } catch (...) {
-      request.timeout_ms = 30000;
-    }
-  }
+  request.operation_key = CanonicalManagementOperationKey(value.operation_key);
+  if (!value.target_uuid.is_nil()) request.target_uuid = scratchbird::wire::ManagementTargetBytes(value.target_uuid);
+  request.mode = std::move(value.mode);
+  request.audit_reason = std::move(value.audit_reason);
+  request.timeout_ms = value.timeout_ms;
+  request.include_history = value.include_history;
   return request;
 }
 
@@ -1208,7 +1191,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                            denial->code,
                                            {},
                                            {},
-                                           session->database_uuid,
+                                           IdentityBytes(session->database_uuid),
                                            "engine authorization denied management route");
     return ErrorResponse(frame, {*denial});
   }
@@ -1275,7 +1258,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                              FirstDiagnosticCode(lifecycle_response.diagnostics),
                                              state_before,
                                              state_after,
-                                             session->database_uuid,
+                                             IdentityBytes(session->database_uuid),
                                              "engine lifecycle management operation refused");
       return lifecycle_response;
     }
@@ -1428,7 +1411,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                              state_after,
                                              IsDatabaseShutdownOperation(decoded->operation_key)
                                                  ? shutdown_snapshot.database_uuid
-                                                 : session->database_uuid,
+                                                 : IdentityBytes(session->database_uuid),
                                              "maintenance coordinator refused lifecycle operation");
       return ErrorResponse(frame, maintenance.diagnostics);
     }
@@ -1494,7 +1477,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                                  : prepared.diagnostics.front().code,
                                              state_before,
                                              state_after,
-                                             session->database_uuid,
+                                             IdentityBytes(session->database_uuid),
                                              "engine refused support bundle preparation");
       std::vector<ServerDiagnostic> diagnostics;
       for (const auto& diagnostic : prepared.diagnostics) {
@@ -1521,7 +1504,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                              "OPS.SUPPORT_BUNDLE.OBSERVABILITY_REQUIRED",
                                              state_before,
                                              state_after,
-                                             session->database_uuid,
+                                             IdentityBytes(session->database_uuid),
                                              "server observability state missing");
       return ErrorResponse(frame,
                            {ManagementDiagnostic("OPS.SUPPORT_BUNDLE.OBSERVABILITY_REQUIRED",
@@ -1551,7 +1534,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                              export_result.diagnostic_code,
                                              state_before,
                                              state_after,
-                                             session->database_uuid,
+                                             IdentityBytes(session->database_uuid),
                                              "support bundle export failed before visible success");
       return ErrorResponse(frame,
                            {ManagementDiagnostic(export_result.diagnostic_code,
@@ -1630,7 +1613,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                            {},
                                            state_before,
                                            state_after,
-                                           session->database_uuid,
+                                           IdentityBytes(session->database_uuid),
                                            "management lifecycle route completed");
   }
   if (context.observability != nullptr) {

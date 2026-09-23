@@ -28,7 +28,6 @@ using scratchbird::core::platform::HostToLittle32;
 using scratchbird::core::platform::HostToLittle64;
 using scratchbird::core::platform::LittleToHost32;
 using scratchbird::core::platform::LittleToHost64;
-using scratchbird::core::uuid::UuidToString;
 
 constexpr byte kQueueMagic[] = {'S', 'B', 'P', 'F', 'A', 'R', '4', 'Q'};
 constexpr u32 kQueueMinVersion = 1;
@@ -241,6 +240,14 @@ PageFilespaceAgentQueueResult QueueError(std::string diagnostic_code,
                                                         std::move(diagnostic_code),
                                                         std::move(message_key),
                                                         std::move(detail));
+  return result;
+}
+
+PageFilespaceAgentQueueResult QueueIdentityError(std::string code,
+                                                 std::string message_key,
+                                                 const TypedUuid& request_uuid) {
+  auto result = QueueError(std::move(code), std::move(message_key), "request_uuid");
+  result.request_uuid = request_uuid;
   return result;
 }
 
@@ -883,12 +890,12 @@ PageFilespaceAgentDecision EvaluatePageFilespaceAgentRequest(const PageFilespace
                                                           "storage.page.filespace_agent.request_accepted",
                                                           "page/filespace agent request accepted");
   if (decision.filespace_agent_action_required) {
-    (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(UuidToString(request.filespace_uuid.value),
+    (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(request.filespace_uuid.value,
                                                                           PageFilespaceAgentRequestKindName(request.kind),
                                                                           "accepted");
   }
   if (decision.page_agent_action_required) {
-    (void)scratchbird::core::metrics::RecordPageAllocationAgentRequest(UuidToString(request.filespace_uuid.value),
+    (void)scratchbird::core::metrics::RecordPageAllocationAgentRequest(request.filespace_uuid.value,
                                                                        request.page_family.empty() ? "all" : request.page_family,
                                                                        PageFilespaceAgentRequestKindName(request.kind),
                                                                        "accepted");
@@ -913,9 +920,9 @@ PageFilespaceAgentQueueResult EnqueuePageFilespaceAgentRequest(PageFilespaceAgen
   if (normalized.request_uuid.valid()) {
     if (const auto* existing = FindQueueRecord(*queue, normalized.request_uuid);
         existing != nullptr && !RequestPayloadMatches(existing->request, normalized)) {
-      return QueueError("page_filespace_agent_request_idempotency_conflict",
+      return QueueIdentityError("page_filespace_agent_request_idempotency_conflict",
                         "storage.page.filespace_agent.request_idempotency_conflict",
-                        UuidToString(normalized.request_uuid.value));
+                        normalized.request_uuid);
     }
   }
 
@@ -1010,9 +1017,9 @@ PageFilespaceAgentQueueResult TransitionPageFilespaceAgentRequest(PageFilespaceA
 
   PageFilespaceAgentQueueRecord* record = FindQueueRecord(queue, request_uuid);
   if (record == nullptr) {
-    return QueueError("page_filespace_agent_request_not_found",
+    return QueueIdentityError("page_filespace_agent_request_not_found",
                       "storage.page.filespace_agent.request_not_found",
-                      UuidToString(request_uuid.value));
+                      request_uuid);
   }
 
   const PageFilespaceAgentRequestState previous = record->request.state;
@@ -1126,9 +1133,9 @@ PageFilespaceAgentQueueResult CancelPageFilespaceAgentRequest(PageFilespaceAgent
   }
   PageFilespaceAgentQueueRecord* record = FindQueueRecord(queue, request_uuid);
   if (record == nullptr) {
-    return QueueError("page_filespace_agent_request_not_found",
+    return QueueIdentityError("page_filespace_agent_request_not_found",
                       "storage.page.filespace_agent.request_not_found",
-                      request_uuid.valid() ? UuidToString(request_uuid.value) : "invalid");
+                      request_uuid);
   }
   if (record->request.state == PageFilespaceAgentRequestState::cancelled ||
       record->request.state == PageFilespaceAgentRequestState::refused ||
@@ -1527,10 +1534,10 @@ PageFilespaceHandoffResult NotifyFilespaceLowReserve(PageFilespaceHandoffLedger*
   ledger->evidence.push_back(result.evidence);
   (void)scratchbird::core::metrics::PublishFilespaceAgentFreeReservePages(
       static_cast<double>(event.released_free_pages),
-      UuidToString(event.filespace_uuid.value),
+      event.filespace_uuid.value,
       notify ? "below_half_target" : "above_half_target");
   if (notify) {
-    (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(UuidToString(event.filespace_uuid.value),
+    (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(event.filespace_uuid.value,
                                                                           "low_reserve",
                                                                           "notified");
   }
@@ -1635,9 +1642,9 @@ PageFilespaceHandoffResult NotifyFilespaceLowReserve(PageFilespaceAgentRequestQu
   if (result.ok()) {
     (void)scratchbird::core::metrics::PublishFilespaceAgentFreeReservePages(
         static_cast<double>(event.released_free_pages),
-        UuidToString(event.filespace_uuid.value),
+        event.filespace_uuid.value,
         "below_half_target");
-    (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(UuidToString(event.filespace_uuid.value),
+    (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(event.filespace_uuid.value,
                                                                           "low_reserve",
                                                                           "queued");
   }
@@ -1719,7 +1726,7 @@ PageFilespaceHandoffResult NotifyFilespaceShrinkReady(PageFilespaceHandoffLedger
   ledger->evidence.push_back(result.evidence);
   (void)scratchbird::core::metrics::RecordPageAllocationAgentRelocatedPages(
       static_cast<double>(event.relocated_pages),
-      UuidToString(event.filespace_uuid.value),
+      event.filespace_uuid.value,
       event.page_family,
       blocked ? "blocked" : "ready");
   return result;
@@ -1787,7 +1794,7 @@ PageFilespaceHandoffResult NotifyFilespaceShrinkReady(PageFilespaceAgentRequestQ
   if (result.ok()) {
     (void)scratchbird::core::metrics::RecordPageAllocationAgentRelocatedPages(
         static_cast<double>(event.relocated_pages),
-        UuidToString(event.filespace_uuid.value),
+        event.filespace_uuid.value,
         event.page_family,
         "ready_queued");
   }
@@ -1857,7 +1864,7 @@ PageFilespaceHandoffResult NotifyFilespaceShrinkBlocked(PageFilespaceAgentReques
       "pinned, active, or reserved pages remain");
   (void)scratchbird::core::metrics::RecordPageAllocationAgentRelocatedPages(
       static_cast<double>(event.relocated_pages),
-      UuidToString(event.filespace_uuid.value),
+      event.filespace_uuid.value,
       event.page_family,
       "blocked_queued");
   return result;

@@ -324,10 +324,18 @@ void AppendBackendControlEvidence(
   }
 }
 
-std::string SessionAdvisoryLockOwnerToken(
+scratchbird::engine::sblr::SblrAdvisoryLockOwner SessionAdvisoryLockOwnerEvidence(
     const scratchbird::engine::sblr::SblrExecutionContext& context) {
-  if (!context.session_uuid.empty()) return context.session_uuid;
-  return "process:" + std::to_string(EffectiveBackendProcessId(context));
+  using Kind = scratchbird::engine::sblr::SblrAdvisoryLockOwnerKind;
+  if (!context.session_uuid.is_nil()) return {Kind::session, context.session_uuid, 0};
+  return {Kind::process, {}, EffectiveBackendProcessId(context)};
+}
+
+scratchbird::engine::sblr::SblrAdvisoryLockEvidence MakeAdvisoryLockEvidence(
+    std::string_view function_name, std::string action, std::int64_t key,
+    scratchbird::engine::sblr::SblrAdvisoryLockOwner owner,
+    std::uint64_t remaining = 0) {
+  return {std::string(function_name), std::move(action), key, owner, remaining};
 }
 
 scratchbird::engine::sblr::SblrSessionAdvisoryLockEntry* FindSessionAdvisoryLockEntry(
@@ -352,7 +360,7 @@ scratchbird::engine::sblr::SblrTransactionAdvisoryLockEntry* FindTransactionAdvi
 
 void AppendAdvisoryLockEvidence(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
-    std::string evidence) {
+    scratchbird::engine::sblr::SblrAdvisoryLockEvidence evidence) {
   if (context.session_runtime_state) {
     context.session_runtime_state->advisory_lock_evidence.push_back(std::move(evidence));
   }
@@ -360,26 +368,26 @@ void AppendAdvisoryLockEvidence(
 
 void AppendTransactionAdvisoryLockEvidence(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
-    std::string evidence) {
+    scratchbird::engine::sblr::SblrAdvisoryLockEvidence evidence) {
   if (context.session_runtime_state) {
     context.session_runtime_state->transaction_advisory_lock_evidence.push_back(
         std::move(evidence));
   }
 }
 
-bool TransactionAdvisoryLockOwnerToken(
-    const scratchbird::engine::sblr::SblrExecutionContext& context,
-    std::string* owner) {
-  if (owner == nullptr || !context.transaction_context_present) return false;
-  if (!context.transaction_uuid.empty()) {
-    *owner = "transaction:" + context.transaction_uuid;
-    return true;
-  }
-  if (context.local_transaction_id != 0) {
-    *owner = "local_transaction_id:" + std::to_string(context.local_transaction_id);
-    return true;
-  }
-  return false;
+scratchbird::engine::sblr::SblrAdvisoryLockOwner TransactionAdvisoryLockOwnerEvidence(
+    const scratchbird::engine::sblr::SblrTransactionAdvisoryLockEntry& owner) {
+  using Kind = scratchbird::engine::sblr::SblrAdvisoryLockOwnerKind;
+  if (!owner.owner_transaction_uuid.is_nil())
+    return {Kind::transaction, owner.owner_transaction_uuid, 0};
+  return {Kind::local_transaction, {}, owner.owner_local_transaction_id};
+}
+
+scratchbird::engine::sblr::SblrAdvisoryLockOwner SessionAdvisoryLockEntryEvidence(
+    const scratchbird::engine::sblr::SblrSessionAdvisoryLockEntry& owner) {
+  using Kind = scratchbird::engine::sblr::SblrAdvisoryLockOwnerKind;
+  if (!owner.owner_session_uuid.is_nil()) return {Kind::session, owner.owner_session_uuid, 0};
+  return {Kind::process, {}, owner.owner_process_id};
 }
 
 bool AcquireSessionAdvisoryLock(
@@ -388,29 +396,30 @@ bool AcquireSessionAdvisoryLock(
     std::int64_t key,
     bool* acquired) {
   if (acquired == nullptr || !context.session_runtime_state) return false;
-  const auto owner = SessionAdvisoryLockOwnerToken(context);
+  const auto owner = SessionAdvisoryLockOwnerEvidence(context);
   auto* entry = FindSessionAdvisoryLockEntry(context.session_runtime_state.get(), key);
   if (entry == nullptr) {
     context.session_runtime_state->advisory_lock_entries.push_back(
-        scratchbird::engine::sblr::SblrSessionAdvisoryLockEntry{key, owner, 1});
+        scratchbird::engine::sblr::SblrSessionAdvisoryLockEntry{
+            key, context.session_uuid, 1,
+            context.session_uuid.is_nil() ? EffectiveBackendProcessId(context) : 0});
     *acquired = true;
     AppendAdvisoryLockEvidence(context,
-                               std::string(function_name) + ".acquired:" +
-                                   std::to_string(key) + ":" + owner);
+                               MakeAdvisoryLockEvidence(function_name, "acquired", key, owner));
     return true;
   }
-  if (entry->owner_session_uuid == owner) {
+  if (entry->owner_session_uuid == context.session_uuid &&
+      (!context.session_uuid.is_nil() ||
+       entry->owner_process_id == EffectiveBackendProcessId(context))) {
     ++entry->acquisition_count;
     *acquired = true;
     AppendAdvisoryLockEvidence(context,
-                               std::string(function_name) + ".reentrant:" +
-                                   std::to_string(key) + ":" + owner);
+                               MakeAdvisoryLockEvidence(function_name, "reentrant", key, owner));
     return true;
   }
   *acquired = false;
   AppendAdvisoryLockEvidence(context,
-                             std::string(function_name) + ".other_owner:" +
-                                 std::to_string(key) + ":" + entry->owner_session_uuid);
+                             MakeAdvisoryLockEvidence(function_name, "other_owner", key, SessionAdvisoryLockEntryEvidence(*entry)));
   return true;
 }
 
@@ -420,36 +429,33 @@ bool ReleaseSessionAdvisoryLock(
     std::int64_t key,
     bool* released) {
   if (released == nullptr || !context.session_runtime_state) return false;
-  const auto owner = SessionAdvisoryLockOwnerToken(context);
+  const auto owner = SessionAdvisoryLockOwnerEvidence(context);
   auto& entries = context.session_runtime_state->advisory_lock_entries;
   for (auto it = entries.begin(); it != entries.end(); ++it) {
     if (it->key != key) continue;
-    if (it->owner_session_uuid != owner) {
+    if (it->owner_session_uuid != context.session_uuid ||
+        (context.session_uuid.is_nil() &&
+         it->owner_process_id != EffectiveBackendProcessId(context))) {
       *released = false;
       AppendAdvisoryLockEvidence(context,
-                                 std::string(function_name) + ".other_owner:" +
-                                     std::to_string(key) + ":" + it->owner_session_uuid);
+                                 MakeAdvisoryLockEvidence(function_name, "other_owner", key, SessionAdvisoryLockEntryEvidence(*it)));
       return true;
     }
     *released = true;
     if (it->acquisition_count > 1) {
       --it->acquisition_count;
       AppendAdvisoryLockEvidence(context,
-                                 std::string(function_name) + ".released:" +
-                                     std::to_string(key) + ":" + owner +
-                                     ":remaining=" + std::to_string(it->acquisition_count));
+                                 MakeAdvisoryLockEvidence(function_name, "released", key, owner, it->acquisition_count));
       return true;
     }
     AppendAdvisoryLockEvidence(context,
-                               std::string(function_name) + ".released_final:" +
-                                   std::to_string(key) + ":" + owner);
+                               MakeAdvisoryLockEvidence(function_name, "released_final", key, owner));
     entries.erase(it);
     return true;
   }
   *released = false;
   AppendAdvisoryLockEvidence(context,
-                             std::string(function_name) + ".not_found:" +
-                                 std::to_string(key) + ":" + owner);
+                             MakeAdvisoryLockEvidence(function_name, "not_found", key, owner));
   return true;
 }
 
@@ -468,31 +474,32 @@ bool AcquireTransactionAdvisoryLock(
     std::int64_t key,
     bool* acquired) {
   if (acquired == nullptr || !context.session_runtime_state) return false;
-  std::string owner;
-  if (!TransactionAdvisoryLockOwnerToken(context, &owner)) return false;
+  if (!context.transaction_context_present ||
+      (context.transaction_uuid.is_nil() && context.local_transaction_id == 0)) return false;
+  const scratchbird::engine::sblr::SblrTransactionAdvisoryLockEntry owner_entry{
+      key, context.transaction_uuid, 1,
+      context.transaction_uuid.is_nil() ? context.local_transaction_id : 0};
+  const auto owner = TransactionAdvisoryLockOwnerEvidence(owner_entry);
   auto* entry = FindTransactionAdvisoryLockEntry(context.session_runtime_state.get(), key);
   if (entry == nullptr) {
     context.session_runtime_state->transaction_advisory_lock_entries.push_back(
-        scratchbird::engine::sblr::SblrTransactionAdvisoryLockEntry{key, owner, 1});
+        owner_entry);
     *acquired = true;
     AppendTransactionAdvisoryLockEvidence(context,
-                                          std::string(function_name) + ".acquired:" +
-                                              std::to_string(key) + ":" + owner);
+                                          MakeAdvisoryLockEvidence(function_name, "acquired", key, owner));
     return true;
   }
-  if (entry->owner_transaction_token == owner) {
+  if (entry->owner_transaction_uuid == owner_entry.owner_transaction_uuid &&
+      entry->owner_local_transaction_id == owner_entry.owner_local_transaction_id) {
     ++entry->acquisition_count;
     *acquired = true;
     AppendTransactionAdvisoryLockEvidence(context,
-                                          std::string(function_name) + ".reentrant:" +
-                                              std::to_string(key) + ":" + owner);
+                                          MakeAdvisoryLockEvidence(function_name, "reentrant", key, owner));
     return true;
   }
   *acquired = false;
   AppendTransactionAdvisoryLockEvidence(context,
-                                        std::string(function_name) + ".other_owner:" +
-                                            std::to_string(key) + ":" +
-                                            entry->owner_transaction_token);
+                                        MakeAdvisoryLockEvidence(function_name, "other_owner", key, TransactionAdvisoryLockOwnerEvidence(*entry)));
   return true;
 }
 
@@ -632,7 +639,10 @@ std::string ValueStateName(const scratchbird::engine::sblr::SblrValue& value) {
     case scratchbird::engine::sblr::SblrValuePayloadKind::binary:
       return "binary_value";
     case scratchbird::engine::sblr::SblrValuePayloadKind::uuid_text:
+    case scratchbird::engine::sblr::SblrValuePayloadKind::uuid_binary:
       return "uuid_value";
+    case scratchbird::engine::sblr::SblrValuePayloadKind::uuid_array_binary:
+      return "uuid_array_value";
     case scratchbird::engine::sblr::SblrValuePayloadKind::temporal_text:
       return "temporal_value";
     case scratchbird::engine::sblr::SblrValuePayloadKind::descriptor_payload:
@@ -661,6 +671,10 @@ std::string PayloadKindName(const scratchbird::engine::sblr::SblrValue& value) {
       return "binary";
     case scratchbird::engine::sblr::SblrValuePayloadKind::uuid_text:
       return "uuid_text";
+    case scratchbird::engine::sblr::SblrValuePayloadKind::uuid_binary:
+      return "uuid_binary";
+    case scratchbird::engine::sblr::SblrValuePayloadKind::uuid_array_binary:
+      return "uuid_array_binary";
     case scratchbird::engine::sblr::SblrValuePayloadKind::temporal_text:
       return "temporal_text";
     case scratchbird::engine::sblr::SblrValuePayloadKind::descriptor_payload:
@@ -688,10 +702,10 @@ std::string DescriptorDocumentJson(const scratchbird::engine::sblr::SblrValue& v
 }
 
 struct CatalogContextObject {
-  std::string uuid;
+  scratchbird::engine::sblr::SblrUuid uuid;
   std::string name;
   std::string object_class;
-  std::string owner_uuid;
+  scratchbird::engine::sblr::SblrUuid owner_uuid;
 };
 
 bool ClassFilterMatches(std::string_view object_class, std::string_view filter) {
@@ -707,10 +721,10 @@ bool ClassFilterMatches(std::string_view object_class, std::string_view filter) 
 
 std::vector<CatalogContextObject> CatalogContextObjects(
     const scratchbird::engine::sblr::SblrExecutionContext& context) {
-  const std::string owner_uuid = context.user_uuid;
+  const auto owner_uuid = context.user_uuid;
   std::vector<CatalogContextObject> objects;
-  auto add = [&](const std::string& uuid, std::string name, std::string object_class) {
-    if (uuid.empty()) return;
+  auto add = [&](const scratchbird::engine::sblr::SblrUuid& uuid, std::string name, std::string object_class) {
+    if (uuid.is_nil()) return;
     objects.push_back(CatalogContextObject{uuid, std::move(name), std::move(object_class), owner_uuid});
   };
   add(context.database_uuid, "current_database", "database");
@@ -727,13 +741,20 @@ std::vector<CatalogContextObject> CatalogContextObjects(
 
 std::optional<CatalogContextObject> CatalogObjectForUuid(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
-    std::string_view uuid) {
-  const std::string wanted = LowerAscii(TrimAscii(std::string(uuid)));
-  if (wanted.empty()) return std::nullopt;
+    const scratchbird::engine::sblr::SblrUuid& uuid) {
+  if (uuid.is_nil()) return std::nullopt;
   for (const auto& object : CatalogContextObjects(context)) {
-    if (LowerAscii(object.uuid) == wanted) return object;
+    if (object.uuid == uuid) return object;
   }
   return std::nullopt;
+}
+
+std::optional<CatalogContextObject> CatalogObjectForUuid(
+    const scratchbird::engine::sblr::SblrExecutionContext& context,
+    const scratchbird::engine::sblr::SblrValue& value) {
+  std::vector<std::uint8_t> payload;
+  if (!scratchbird::engine::sblr::CopySblrUuidPayload(value, &payload)) return std::nullopt;
+  return CatalogObjectForUuid(context, value.uuid_value);
 }
 
 std::optional<CatalogContextObject> CatalogObjectForName(
@@ -763,23 +784,23 @@ std::string ExecutionTypeDescriptorJson(
   std::string out = "{";
   out += "\"descriptor_kind\":\"ExecutionTypeDescriptor\"";
   out += ",\"database_uuid\":";
-  out += JsonStringEscape(context.database_uuid);
+  out += JsonStringEscape(context.database_uuid.is_nil() ? std::string{} : scratchbird::core::uuid::UuidToString(context.database_uuid));
   out += ",\"transaction_context_present\":";
   out += context.transaction_context_present ? "true" : "false";
   out += ",\"transaction_uuid\":";
-  out += JsonStringEscape(context.transaction_uuid);
+  out += JsonStringEscape(context.transaction_uuid.is_nil() ? std::string{} : scratchbird::core::uuid::UuidToString(context.transaction_uuid));
   out += ",\"transaction_isolation_level\":";
   out += JsonStringEscape(context.transaction_isolation_level);
   out += ",\"statement_uuid\":";
-  out += JsonStringEscape(context.statement_uuid);
+  out += JsonStringEscape(context.statement_uuid.is_nil() ? std::string{} : scratchbird::core::uuid::UuidToString(context.statement_uuid));
   out += ",\"user_uuid\":";
-  out += JsonStringEscape(context.user_uuid);
+  out += JsonStringEscape(context.user_uuid.is_nil() ? std::string{} : scratchbird::core::uuid::UuidToString(context.user_uuid));
   out += ",\"security_context_present\":";
   out += context.security_context_present ? "true" : "false";
   out += ",\"parser_profile_uuid\":";
-  out += JsonStringEscape(context.parser_profile_uuid);
+  out += JsonStringEscape(context.parser_profile_uuid.is_nil() ? std::string{} : scratchbird::core::uuid::UuidToString(context.parser_profile_uuid));
   out += ",\"client_protocol_uuid\":";
-  out += JsonStringEscape(context.client_protocol_uuid);
+  out += JsonStringEscape(context.client_protocol_uuid.is_nil() ? std::string{} : scratchbird::core::uuid::UuidToString(context.client_protocol_uuid));
   out += ",\"read_only_mode\":";
   out += context.read_only_mode ? "true" : "false";
   out += ",\"restricted_open_mode\":";
@@ -793,7 +814,7 @@ std::string ContextColumnDescriptorSummaryJson(
   std::string out = "{";
   out += "\"descriptor_kind\":\"column_descriptor_set\"";
   out += ",\"table_uuid\":";
-  out += JsonStringEscape(context.database_uuid);
+  out += JsonStringEscape(context.database_uuid.is_nil() ? std::string{} : scratchbird::core::uuid::UuidToString(context.database_uuid));
   out += ",\"source\":\"sblr_execution_context\"";
   out += ",\"column_names\":[\"database_uuid\",\"current_schema_uuid\",\"user_uuid\","
          "\"current_role_uuid\",\"statement_uuid\",\"transaction_uuid\"]";
@@ -805,10 +826,10 @@ std::optional<std::string> ContextColumnDescriptorJson(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
     std::string_view table_uuid,
     std::string_view column_name) {
-  const std::string table = LowerAscii(TrimAscii(std::string(table_uuid)));
-  if (table.empty()) return std::nullopt;
-  if (table != LowerAscii(context.database_uuid) &&
-      table != LowerAscii(context.current_schema_uuid)) {
+  const auto table = scratchbird::core::uuid::ParseUuid(TrimAscii(std::string(table_uuid)));
+  if (!table.ok() || table.value.is_nil()) return std::nullopt;
+  if (table.value != context.database_uuid &&
+      table.value != context.current_schema_uuid) {
     return std::nullopt;
   }
   const std::string column = LowerAscii(TrimAscii(std::string(column_name)));
@@ -816,22 +837,22 @@ std::optional<std::string> ContextColumnDescriptorJson(
   bool nullable = true;
   if (column == "database_uuid") {
     descriptor_id = "uuid";
-    nullable = context.database_uuid.empty();
+    nullable = context.database_uuid.is_nil();
   } else if (column == "current_schema_uuid") {
     descriptor_id = "uuid";
-    nullable = context.current_schema_uuid.empty();
+    nullable = context.current_schema_uuid.is_nil();
   } else if (column == "user_uuid") {
     descriptor_id = "uuid";
-    nullable = context.user_uuid.empty();
+    nullable = context.user_uuid.is_nil();
   } else if (column == "current_role_uuid") {
     descriptor_id = "uuid";
-    nullable = context.current_role_uuid.empty();
+    nullable = context.current_role_uuid.is_nil();
   } else if (column == "statement_uuid") {
     descriptor_id = "uuid";
-    nullable = context.statement_uuid.empty();
+    nullable = context.statement_uuid.is_nil();
   } else if (column == "transaction_uuid") {
     descriptor_id = "uuid";
-    nullable = !context.transaction_context_present || context.transaction_uuid.empty();
+    nullable = !context.transaction_context_present || context.transaction_uuid.is_nil();
   } else {
     return std::nullopt;
   }
@@ -857,7 +878,7 @@ std::string IndexDescriptorSummaryJson() {
 }
 
 std::uint64_t DiagnosticCount(const scratchbird::engine::sblr::SblrExecutionContext& context) {
-  if (!context.current_diagnostic_id.empty() || !context.current_diagnostic_uuid.empty()) return 1;
+  if (!context.current_diagnostic_id.empty() || !context.current_diagnostic_uuid.is_nil()) return 1;
   return (!context.current_sqlstate.empty() && context.current_sqlstate != "00000") ? 1 : 0;
 }
 
@@ -893,8 +914,8 @@ std::optional<std::string> DiagnosticFieldText(
     return context.current_diagnostic_id;
   }
   if (field == "diagnostic_uuid") {
-    if (context.current_diagnostic_uuid.empty()) return std::nullopt;
-    return context.current_diagnostic_uuid;
+    if (context.current_diagnostic_uuid.is_nil()) return std::nullopt;
+    return scratchbird::core::uuid::UuidToString(context.current_diagnostic_uuid);
   }
   if (field == "error_class") return ErrorClassForSqlstate(context.current_sqlstate);
   if (field == "gdscode") return std::to_string(GdscodeForContext(context));
@@ -958,10 +979,10 @@ scratchbird::engine::sblr::SblrValue MakeBooleanValue(bool input) {
 }
 
 struct PrivilegeObjectDescriptor {
-  std::string uuid;
+  scratchbird::engine::sblr::SblrUuid uuid;
   std::string name;
   std::string object_class;
-  std::string owner_uuid;
+  scratchbird::engine::sblr::SblrUuid owner_uuid;
   std::vector<std::pair<std::string, std::string>> columns;
 };
 
@@ -994,9 +1015,10 @@ bool PrincipalMatchesCurrentUser(
   if (user.empty()) return false;
   if (user == "current_user" || user == "session_user" || user == "user" ||
       user == "current_principal") {
-    return !context.user_uuid.empty();
+    return !context.user_uuid.is_nil();
   }
-  return !context.user_uuid.empty() && user == LowerAscii(context.user_uuid);
+  const auto parsed = scratchbird::core::uuid::ParseUuid(user);
+  return !context.user_uuid.is_nil() && parsed.ok() && parsed.value == context.user_uuid;
 }
 
 PrivilegeTextRule NormalizePrivilegeText(std::string privilege_text,
@@ -1040,7 +1062,7 @@ PrivilegeTextRule NormalizePrivilegeText(std::string privilege_text,
 
 PrivilegeObjectDescriptor PrivilegeObjectFromCrudTable(
     const scratchbird::engine::internal_api::CrudTableRecord& table,
-    std::string owner_uuid) {
+    scratchbird::engine::sblr::SblrUuid owner_uuid) {
   return PrivilegeObjectDescriptor{table.table_uuid,
                                    table.default_name,
                                    "table",
@@ -1048,58 +1070,56 @@ PrivilegeObjectDescriptor PrivilegeObjectFromCrudTable(
                                    table.columns};
 }
 
-std::optional<scratchbird::engine::internal_api::EngineCatalogObjectRecord>
-ResolvePrivilegeCatalogObject(
+struct PrivilegeCatalogIdentity {
+  scratchbird::engine::sblr::SblrUuid object_uuid;
+  scratchbird::engine::sblr::SblrUuid owner_principal_uuid;
+};
+
+std::optional<PrivilegeCatalogIdentity> LookupPrivilegeCatalogIdentity(
+    const auto& state,
+    const scratchbird::engine::sblr::SblrUuid& identifier,
+    std::string_view object_kind) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(identifier)) return std::nullopt;
+  for (const auto& object : state.objects) {
+    if (object.deleted || object.lifecycle_state != "active" ||
+        LowerAscii(object.object_kind) != LowerAscii(std::string(object_kind))) continue;
+    if (object.object_uuid != identifier) continue;
+    if (!object.owner_principal_uuid.is_nil() &&
+        !scratchbird::core::uuid::IsEngineIdentityUuid(object.owner_principal_uuid))
+      return std::nullopt;
+    return PrivilegeCatalogIdentity{identifier, object.owner_principal_uuid};
+  }
+  return std::nullopt;
+}
+
+std::optional<PrivilegeCatalogIdentity> ResolvePrivilegeCatalogObject(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const scratchbird::engine::sblr::SblrUuid& identifier,
+    std::string_view object_kind) {
+  if (context.database_path.empty() || identifier.is_nil()) return std::nullopt;
+  const auto loaded = scratchbird::engine::internal_api::LoadCatalogObjectLifecycleState(context);
+  if (!loaded.ok) return std::nullopt;
+  return LookupPrivilegeCatalogIdentity(loaded.state, identifier, object_kind);
+}
+
+std::optional<PrivilegeCatalogIdentity> ResolvePrivilegeCatalogObject(
     const scratchbird::engine::internal_api::EngineRequestContext& context,
     std::string_view identifier,
     std::string_view object_kind) {
-  if (context.database_path.empty()) return std::nullopt;
-  const auto loaded =
-      scratchbird::engine::internal_api::LoadCatalogObjectLifecycleState(
-          context);
+  const auto wanted = NormalizeCatalogToken(std::string(identifier));
+  if (wanted.empty() || context.database_path.empty()) return std::nullopt;
+  const auto loaded = scratchbird::engine::internal_api::LoadCatalogObjectLifecycleState(context);
   if (!loaded.ok) return std::nullopt;
-  const std::string wanted = NormalizeCatalogToken(std::string(identifier));
-  if (wanted.empty()) return std::nullopt;
-
-  std::string object_uuid;
-  for (const auto& object : loaded.state.objects) {
-    if (object.deleted || object.lifecycle_state != "active" ||
-        LowerAscii(object.object_kind) != LowerAscii(std::string(object_kind))) {
-      continue;
-    }
-    if (LowerAscii(object.object_uuid) == wanted) {
-      object_uuid = object.object_uuid;
-      break;
-    }
+  for (const auto& name : loaded.state.names) {
+    if (name.deleted || LowerAscii(name.object_kind) != LowerAscii(std::string(object_kind))) continue;
+    if (NormalizeCatalogToken(name.raw_name_text) != wanted &&
+        NormalizeCatalogToken(name.display_name) != wanted &&
+        NormalizeCatalogToken(name.normalized_lookup_key) != wanted &&
+        NormalizeCatalogToken(name.exact_lookup_key) != wanted) continue;
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(name.object_uuid)) return std::nullopt;
+    return LookupPrivilegeCatalogIdentity(loaded.state, name.object_uuid, object_kind);
   }
-  if (object_uuid.empty()) {
-    for (const auto& name : loaded.state.names) {
-      if (name.deleted ||
-          LowerAscii(name.object_kind) != LowerAscii(std::string(object_kind))) {
-        continue;
-      }
-      if (NormalizeCatalogToken(name.raw_name_text) == wanted ||
-          NormalizeCatalogToken(name.display_name) == wanted ||
-          NormalizeCatalogToken(name.normalized_lookup_key) == wanted ||
-          NormalizeCatalogToken(name.exact_lookup_key) == wanted) {
-        object_uuid = name.object_uuid;
-        break;
-      }
-    }
-  }
-  if (object_uuid.empty()) return std::nullopt;
-  const auto object = std::find_if(
-      loaded.state.objects.begin(), loaded.state.objects.end(),
-      [&](const auto& candidate) {
-        return !candidate.deleted && candidate.lifecycle_state == "active" &&
-               candidate.object_uuid == object_uuid &&
-               LowerAscii(candidate.object_kind) ==
-                   LowerAscii(std::string(object_kind));
-      });
-  return object == loaded.state.objects.end()
-             ? std::nullopt
-             : std::optional<scratchbird::engine::internal_api::
-                                 EngineCatalogObjectRecord>(*object);
+  return std::nullopt;
 }
 
 std::optional<scratchbird::engine::internal_api::EngineBoundObjectIdentity>
@@ -1203,14 +1223,17 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
     if (loaded.ok) {
       const auto state =
           scratchbird::engine::internal_api::BuildCrudCompatibilityStateFromMga(loaded.state);
-      if (const auto table = scratchbird::engine::internal_api::FindVisibleCrudTable(
-              state, wanted_text, api_context.local_transaction_id)) {
+      const auto presented_uuid = scratchbird::core::uuid::ParseUuid(wanted_text);
+      if (const auto table = presented_uuid.ok()
+              ? scratchbird::engine::internal_api::FindVisibleCrudTable(
+                    state, presented_uuid.value, api_context.local_transaction_id)
+              : std::nullopt) {
         const auto object = ResolvePrivilegeCatalogObject(
             api_context, table->table_uuid, "table");
         return PrivilegeObjectFromCrudTable(
             *table, object ? object->owner_principal_uuid
                            : (allow_legacy_owner_fallback ? context.user_uuid
-                                                          : std::string{}));
+                                                          : scratchbird::engine::sblr::SblrUuid{}));
       }
       if (const auto resolved = ResolvePrivilegePresentedObject(
               api_context, wanted_text, "table")) {
@@ -1224,7 +1247,7 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
               *table, object ? object->owner_principal_uuid
                              : (allow_legacy_owner_fallback
                                     ? context.user_uuid
-                                    : std::string{}));
+                                    : scratchbird::engine::sblr::SblrUuid{}));
         }
       }
       for (const auto& candidate : state.tables) {
@@ -1237,7 +1260,7 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
               *table, object ? object->owner_principal_uuid
                              : (allow_legacy_owner_fallback
                                     ? context.user_uuid
-                                    : std::string{}));
+                                    : scratchbird::engine::sblr::SblrUuid{}));
         }
       }
     }
@@ -1262,11 +1285,10 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeSchema(
         api_context, resolved->object_uuid, "schema");
     return PrivilegeObjectDescriptor{
         resolved->object_uuid, std::string(schema_identifier),
-        "schema", object ? object->owner_principal_uuid : std::string{}, {}};
+        "schema", object ? object->owner_principal_uuid : scratchbird::engine::sblr::SblrUuid{}, {}};
   }
   const std::string wanted = UnquoteCatalogToken(std::string(schema_identifier));
-  std::optional<CatalogContextObject> object = CatalogObjectForUuid(context, wanted);
-  if (!object) object = CatalogObjectForName(context, wanted, "schema");
+  const auto object = CatalogObjectForName(context, wanted, "schema");
   if (!object || !ClassFilterMatches(object->object_class, "schema")) return std::nullopt;
   return PrivilegeObjectDescriptor{object->uuid, object->name, "schema", object->owner_uuid, {}};
 }
@@ -1298,7 +1320,9 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeFunction(
   for (const auto& function : kPrivilegeFunctions) {
     if (wanted == function.builtin_id || wanted == function.canonical_name ||
         wanted == LowerAscii(std::string(function.builtin_uuid))) {
-      return PrivilegeObjectDescriptor{std::string(function.builtin_uuid),
+      const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(function.builtin_uuid));
+      if (!parsed.ok()) return std::nullopt;
+      return PrivilegeObjectDescriptor{parsed.value,
                                        std::string(function.builtin_id),
                                        "function",
                                        context.user_uuid,
@@ -1364,7 +1388,7 @@ PrivilegeVisibilityDecision PrivilegeObjectAllowsCurrentPrincipal(
 bool PrivilegePrincipalAllowed(const FunctionCallRequest& request,
                                std::size_t user_arg_index,
                                bool has_user_arg) {
-  if (!has_user_arg) return !request.context.sblr_context.user_uuid.empty();
+  if (!has_user_arg) return !request.context.sblr_context.user_uuid.is_nil();
   return PrincipalMatchesCurrentUser(
       request.context.sblr_context,
       ValueAsText(request.arguments[user_arg_index].value));

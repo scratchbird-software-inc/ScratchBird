@@ -319,8 +319,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus FoundationdbLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuFoundationdbPackageUuid) {
+scratchbird::udr::runtime::UdrStatus FoundationdbLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuFoundationdbPackageIdentity) {
     return {false, "UDR.FOUNDATIONDB.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -533,7 +533,7 @@ UdrResult sbu_foundationdb_debug_capabilities(std::string_view render_policy) {
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_foundationdb_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuFoundationdbPackageUuid);
+  descriptor.package_uuid = kSbuFoundationdbPackageIdentity;
   descriptor.package_name = std::string(kSbuFoundationdbPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "foundationdb-parser-support-beta-closure";

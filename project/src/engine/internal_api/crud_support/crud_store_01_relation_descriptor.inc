@@ -71,33 +71,30 @@ std::string CrudLargeValueHash(const std::string& value) {
   return "fnv1a64_" + std::to_string(hash);
 }
 
-std::string MakeCrudLargeValueLocator(const std::string& overflow_uuid,
+std::string MakeCrudLargeValueLocator(const EngineUuid& overflow_uuid,
                                       const std::string& content_hash,
                                       std::uint64_t total_bytes) {
-  return std::string(kCrudLargeValueLocatorPrefix) + overflow_uuid + ":" + content_hash + ":" +
-         std::to_string(total_bytes);
+  if (!core::uuid::IsEngineIdentityUuid(overflow_uuid)) return {};
+  return std::string(kCrudLargeValueLocatorPrefix) + EncodeMgaMetadataFields(
+      {"crud.overflow.locator.v2",MetadataUuidBytes(overflow_uuid),content_hash,std::to_string(total_bytes)});
 }
-
-bool ParseCrudLargeValueLocator(const std::string& value,
-                                std::string* overflow_uuid,
-                                std::string* content_hash,
-                                std::uint64_t* total_bytes) {
-  if (!StartsWith(value, kCrudLargeValueLocatorPrefix)) {
-    return false;
-  }
-  const std::string body = value.substr(std::string(kCrudLargeValueLocatorPrefix).size());
-  const auto first = body.find(':');
-  const auto second = first == std::string::npos ? std::string::npos : body.find(':', first + 1);
-  if (first == std::string::npos || second == std::string::npos) {
-    return false;
-  }
-  if (overflow_uuid != nullptr) { *overflow_uuid = body.substr(0, first); }
-  if (content_hash != nullptr) { *content_hash = body.substr(first + 1, second - first - 1); }
-  if (total_bytes != nullptr) { *total_bytes = ParseU64(body.substr(second + 1)); }
+bool ParseCrudLargeValueLocator(const std::string& value, EngineUuid* overflow_uuid,
+                                std::string* content_hash, std::uint64_t* total_bytes) {
+  if (!value.starts_with(kCrudLargeValueLocatorPrefix)) return false;
+  std::vector<std::string> fields;
+  EngineUuid identity;
+  std::uint64_t length=0;
+  if(!DecodeMgaMetadataFields(std::string_view(value).substr(8),&fields)||fields.size()!=4||
+     fields[0]!="crud.overflow.locator.v2"||!ReadMetadataUuid(fields[1],&identity)) return false;
+  const auto parsed=std::from_chars(fields[3].data(),fields[3].data()+fields[3].size(),length);
+  if(parsed.ec!=std::errc{}||parsed.ptr!=fields[3].data()+fields[3].size()||std::to_string(length)!=fields[3]) return false;
+  if(overflow_uuid) *overflow_uuid=identity;
+  if(content_hash) *content_hash=fields[2];
+  if(total_bytes) *total_bytes=length;
   return true;
 }
 
-CrudLargeValueRecord* FindMutableCrudLargeValue(CrudState* state, const std::string& overflow_uuid) {
+CrudLargeValueRecord* FindMutableCrudLargeValue(CrudState* state, const EngineUuid& overflow_uuid) {
   if (state == nullptr) { return nullptr; }
   auto found = std::find_if(state->large_values.begin(),
                             state->large_values.end(),
@@ -107,7 +104,7 @@ CrudLargeValueRecord* FindMutableCrudLargeValue(CrudState* state, const std::str
   return found == state->large_values.end() ? nullptr : &(*found);
 }
 
-const CrudLargeValueRecord* FindCrudLargeValue(const RelationReadSnapshot& state, const std::string& overflow_uuid) {
+const CrudLargeValueRecord* FindCrudLargeValue(const RelationReadSnapshot& state, const EngineUuid& overflow_uuid) {
   auto found = std::find_if(state.large_values.begin(),
                             state.large_values.end(),
                             [&](const CrudLargeValueRecord& record) {
@@ -159,10 +156,12 @@ EngineApiDiagnostic MaterializeCrudLargeValues(CrudState* state) {
   }
   for (auto& row : state->row_versions) {
     for (auto& [field, value] : row.values) {
-      std::string overflow_uuid;
+      EngineUuid overflow_uuid;
       std::string content_hash;
       std::uint64_t total_bytes = 0;
       if (!ParseCrudLargeValueLocator(value, &overflow_uuid, &content_hash, &total_bytes)) {
+        if (value.starts_with(kCrudLargeValueLocatorPrefix) || value.starts_with("@SB_OVERFLOW_V1:"))
+          return MakeInvalidRequestDiagnostic("crud.large_value", "binary_overflow_locator_invalid");
         continue;
       }
       const auto* record = FindCrudLargeValue(*state, overflow_uuid);

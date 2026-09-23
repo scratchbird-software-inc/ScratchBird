@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_dml_conditional_mutate_coordinator.hpp"
 
 #include <cassert>
@@ -7,10 +8,10 @@ int main() {
   EngineRequestContext context;
   context.security_context_present = true;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_uuid.canonical = "conditional-receipt";
+  context.statement_uuid=scratchbird::tests::FixtureUuid(0xc008, 1);
   context.trace_tags.push_back("private_dml_conditional_mutate_binder");
   auto compiled = CompileSblrDmlConditionalMutateDescriptor(
-      context, "conditional-receipt", 7, 9, 1);
+      context, context.statement_uuid, 7, 9, 1);
   assert(compiled.ok);
   const auto descriptor_wire =
       scratchbird::engine::sblr::EncodeSblrDmlConditionalMutateDescriptorV1(

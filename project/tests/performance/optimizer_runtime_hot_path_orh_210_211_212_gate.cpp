@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -71,16 +72,16 @@ platform::TypedUuid NewTypedUuid(platform::UuidKind kind,
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewTypedUuid(kind, salt).value);
+api::EngineUuid NativeIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewTypedUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid index_uuid;
   std::string index_family = api::kCrudIndexFamilyBtree;
   std::string index_profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
   bool index_unique = false;
@@ -140,11 +141,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NativeIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NativeIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -215,9 +216,9 @@ Fixture MakeFixture(std::string name,
   }
   Require(created.ok(), "ORH-210 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NativeIdentity(platform::UuidKind::object, salt + 10);
+  fixture.index_uuid = NativeIdentity(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "orh-batch4-metadata");
   const auto table = api::AppendMgaTableMetadata(metadata, Table(fixture, metadata));
@@ -245,7 +246,7 @@ api::EngineExecuteNativeBulkIngestRequest NativeRequest(
     std::vector<api::EngineRowValue> rows) {
   api::EngineExecuteNativeBulkIngestRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
   request.estimated_row_count =
@@ -269,7 +270,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, id)) {
       return true;
     }
   }
@@ -280,7 +281,7 @@ std::string EvidenceValue(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view kind) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind) {
-      return item.evidence_id;
+      return scratchbird::tests::EvidenceTextFields(item.evidence_id);
     }
   }
   return {};
@@ -291,7 +292,7 @@ std::size_t EvidenceIndex(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view id) {
   for (std::size_t index = 0; index < evidence.size(); ++index) {
     if (evidence[index].evidence_kind == kind &&
-        evidence[index].evidence_id == id) {
+        scratchbird::tests::EvidenceTextEquals(evidence[index].evidence_id, id)) {
       return index;
     }
   }
@@ -381,10 +382,10 @@ void RequireIndexLookup(const api::MgaRelationStoreState& state,
   Require(lookup.rows.size() == expected_count, message);
   if (expected_count > 0) {
     Require(lookup.index_used, "ORH-211 indexed lookup did not consume index");
-    Require(lookup.index_evidence_id.find("row_recheck_applied=true") !=
+    Require(scratchbird::tests::EvidenceTextFields(lookup.index_evidence_id).find("row_recheck_applied=true") !=
                 std::string::npos,
             "ORH-211 exact row recheck evidence missing");
-    Require(lookup.index_evidence_id.find("visible_count=" +
+    Require(scratchbird::tests::EvidenceTextFields(lookup.index_evidence_id).find("visible_count=" +
                                           std::to_string(expected_count)) !=
                 std::string::npos,
             "ORH-211 visible index lookup count evidence drifted");

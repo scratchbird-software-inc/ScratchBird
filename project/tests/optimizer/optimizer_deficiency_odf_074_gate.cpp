@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "nosql/vector_api.hpp"
 
 #include <cstdlib>
@@ -30,8 +32,8 @@ void Require(bool condition, std::string_view message) {
 api::EngineRequestContext Context(api::EngineApiU64 tx = 74) {
   api::EngineRequestContext context;
   context.database_path = "/tmp/sb_odf_074_gate_api.sbdb";
-  context.database_uuid.canonical = "019df074-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical = "019df074-0000-7000-8000-000000000074";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019df074-0000-7000-8000-000000000001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019df074-0000-7000-8000-000000000074");
   context.local_transaction_id = tx;
   context.security_context_present = true;
   return context;
@@ -69,7 +71,7 @@ api::EngineVectorPhysicalProof VectorProof() {
   proof.provider_contract.index_generation.covers_predicate = true;
   proof.provider_contract.index_generation.required_generation = 74;
   proof.provider_contract.index_generation.available_generation = 74;
-  proof.provider_contract.index_generation.index_uuid = "odf074-vector-index";
+  proof.provider_contract.index_generation.index_uuid = scratchbird::tests::FixtureUuid(74, 1);
   proof.provider_contract.policy.proof_present = true;
   proof.provider_contract.policy.allowed = true;
   proof.provider_contract.mga_recheck.proof_present = true;
@@ -116,7 +118,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
                       std::string_view id) {
   for (const auto& item : result.evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -156,7 +158,7 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
           "parser_transaction_finality_authority=true",
           "client_autocommit_authority=true"}) {
       Require(item.evidence_kind.find(forbidden) == std::string::npos &&
-                  item.evidence_id.find(forbidden) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFind(item.evidence_id, forbidden) == std::string::npos,
               "ODF-074 evidence leaked forbidden authority or fallback token");
     }
   }
@@ -419,7 +421,7 @@ void ProviderContractRefusalsFailClosed() {
 void LegacyFallbackStillWorksForOldBasicRequest() {
   api::EngineVectorSearchRequest request;
   request.context = Context();
-  request.target_object.uuid.canonical = "legacy-vector-collection";
+  request.target_object.uuid = scratchbird::tests::FixtureUuid(74, 2);
   request.target_object.object_kind = "vector_collection";
   const auto result = api::EngineVectorSearch(request);
   Require(result.ok, "ODF-074 legacy vector fallback failed");

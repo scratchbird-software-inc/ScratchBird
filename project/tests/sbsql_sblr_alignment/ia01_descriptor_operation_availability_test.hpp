@@ -1,4 +1,5 @@
 #pragma once
+#include "../support/binary_uuid_fixture.hpp"
 
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 
@@ -27,7 +28,7 @@ inline void RequireAvailabilityTest(bool condition, std::string_view message) {
 class AvailabilityFixture final {
  public:
   AvailabilityFixture(std::string_view tag,
-                      std::string_view database_uuid,
+                      const api::EngineUuid& database_uuid,
                       std::string_view store_suffix)
       : database_uuid_(database_uuid),
         store_suffix_(store_suffix) {
@@ -55,7 +56,7 @@ class AvailabilityFixture final {
   [[nodiscard]] api::EngineRequestContext Context(bool admin) const {
     api::EngineRequestContext context;
     context.database_path = database_path_;
-    context.database_uuid.canonical = database_uuid_;
+    context.database_uuid = database_uuid_;
     context.security_context_present = true;
     if (admin) {
       context.trace_tags.push_back(
@@ -66,13 +67,13 @@ class AvailabilityFixture final {
 
  private:
   std::string database_path_;
-  std::string database_uuid_;
+  api::EngineUuid database_uuid_;
   std::string store_suffix_;
 };
 
 inline void RequireMissingExecutorEvidence(
     std::string_view tag,
-    std::string_view database_uuid,
+    const api::EngineUuid& database_uuid,
     std::string_view store_suffix,
     const api::SblrExecutorAvailabilityRowIdentity& identity) {
   RequireAvailabilityTest(

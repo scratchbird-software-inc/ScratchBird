@@ -1,3 +1,4 @@
+#include "wire/binary_status_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -87,7 +88,7 @@ ServerDaemonLifecycleSnapshot EvaluateServerDaemonLifecycle(
 
   for (const auto& database : engine_state.databases) {
     ServerDaemonDatabaseAssociation association;
-    association.database_uuid = database.database_uuid;
+    association.database_uuid.assign(reinterpret_cast<const char*>(database.database_uuid.bytes.data()),database.database_uuid.bytes.size());
     association.database_path = database.database_path;
     association.state = HostedDatabaseStateName(database.state);
     association.database_open = database.database_open;
@@ -182,7 +183,7 @@ bool ServerDaemonShouldStopForDatabaseShutdown(
 
 std::string ServerDaemonLifecycleStatusJson(
     const ServerDaemonLifecycleSnapshot& snapshot) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "{\"server_daemon_lifecycle\":{\"state\":\"" << JsonEscape(snapshot.state)
       << "\",\"service_ready\":" << (snapshot.service_ready ? "true" : "false")
       << ",\"daemon_scope\":\"" << JsonEscape(snapshot.daemon_scope)
@@ -215,7 +216,7 @@ std::string ServerDaemonLifecycleStatusJson(
   for (std::size_t i = 0; i < snapshot.databases.size(); ++i) {
     if (i != 0) out << ',';
     const auto& database = snapshot.databases[i];
-    out << "{\"database_uuid\":\"" << JsonEscape(database.database_uuid)
+    out << "{\"database_uuid\":\"" << scratchbird::wire::binary_status::Identity(database.database_uuid)
         << "\",\"database_ref\":\""
         << JsonEscape(database.database_path.empty() ? "" : "[path-redacted]")
         << "\",\"state\":\"" << JsonEscape(database.state)

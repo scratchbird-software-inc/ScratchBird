@@ -11,6 +11,7 @@
 #include "server_ipc_lifecycle.hpp"
 
 #include "sbps.hpp"
+#include "../core/uuid/uuid.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -61,9 +62,9 @@ bool AllowsUnauthenticated(ServerIpcEndpointOperation operation) {
          operation == ServerIpcEndpointOperation::kShutdown;
 }
 
-std::string FirstOpenDatabaseUuid(const HostedEngineState& engine_state) {
+scratchbird::core::platform::Uuid FirstOpenDatabaseUuid(const HostedEngineState& engine_state) {
   for (const auto& database : engine_state.databases) {
-    if (database.database_open && !database.database_uuid.empty()) return database.database_uuid;
+    if (database.database_open && !database.database_uuid.is_nil()) return database.database_uuid;
   }
   return {};
 }
@@ -313,7 +314,9 @@ std::string ServerIpcEndpointDescriptorText(const ServerIpcEndpointDescriptor& d
   out << "protocol_family=" << descriptor.protocol_family << "\n";
   out << "transport=" << descriptor.transport << "\n";
   out << "endpoint=" << descriptor.endpoint_path.string() << "\n";
-  out << "database_uuid=" << descriptor.database_uuid << "\n";
+  out << "database_uuid="
+      << (descriptor.database_uuid.is_nil() ? std::string{}
+          : scratchbird::core::uuid::UuidToString(descriptor.database_uuid)) << "\n";
   out << "database_path=" << descriptor.database_path << "\n";
   out << "protocol_major=" << descriptor.protocol_major << "\n";
   out << "protocol_minor=" << descriptor.protocol_minor << "\n";

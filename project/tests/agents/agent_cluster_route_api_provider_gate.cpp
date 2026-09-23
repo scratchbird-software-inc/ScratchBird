@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "agents/agent_management_api.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "cluster_provider/cluster_provider.hpp"
@@ -57,7 +58,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) {
       return true;
     }
   }
@@ -97,12 +98,12 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   // supplies cluster authority so the request reaches the configured
   // provider boundary and can prove its exact no-provider/stub refusal.
   context.cluster_authority_available = true;
-  context.database_uuid.canonical = "019f013a-0000-7000-8000-000000000001";
-  context.cluster_uuid.canonical = "019f013a-0000-7000-8000-000000000002";
-  context.node_uuid.canonical = "019f013a-0000-7000-8000-000000000003";
-  context.principal_uuid.canonical = "019f013a-0000-7000-8000-000000000004";
-  context.session_uuid.canonical = "019f013a-0000-7000-8000-000000000005";
-  context.statement_uuid.canonical = "019f013a-0000-7000-8000-000000000006";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f013a-0000-7000-8000-000000000001");
+  context.cluster_uuid = scratchbird::tests::FixtureUuidLiteral("019f013a-0000-7000-8000-000000000002");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f013a-0000-7000-8000-000000000003");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f013a-0000-7000-8000-000000000004");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f013a-0000-7000-8000-000000000005");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f013a-0000-7000-8000-000000000006");
   context.trace_tags = {
       "security.fixture_trace_authority",
       "right:OBS_AGENT_STATE_READ",

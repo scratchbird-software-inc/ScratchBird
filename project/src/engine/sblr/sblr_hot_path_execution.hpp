@@ -93,6 +93,7 @@ struct SblrHotPathExecutionResult {
   std::uint64_t dispatch_us_saved = 0;
   std::uint64_t opcode_dispatches_saved = 0;
   std::vector<std::string> evidence;
+  std::vector<std::pair<std::string, core::platform::Uuid>> identity_evidence;
 };
 
 SblrHotPathExecutionResult ExecuteSblrHotPath(

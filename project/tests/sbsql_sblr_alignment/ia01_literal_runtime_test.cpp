@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "hash_digest.hpp"
@@ -306,8 +307,8 @@ int main(){
   carrier.operation_id="query.execute"; carrier.opcode="SBLR_QUERY_EXECUTE";
   carrier.opcode_code=0x1207; carrier.operation_version_major=1;
   carrier.result_shape="query_execute_result.v1";carrier.diagnostic_shape="engine.diagnostic.v1";carrier.trace_key="literal-test";
-  carrier.parser_package_uuid="019dffbb-f000-7000-8000-000000000001";
-  carrier.registry_snapshot_uuid="019dffbb-f000-7000-8000-000000000002";
+  carrier.parser_package_uuid=scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000001");
+  carrier.registry_snapshot_uuid=scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000002");
   sblr::SblrOperand operand;operand.ordinal=1;operand.type="expression.node_table.v1";operand.name="expression_nodes";
   operand.value_kind=sblr::SblrValueKind::expression_node_table;operand.value_body=encoded;carrier.operands.push_back(operand);
   const auto table_hash=scratchbird::core::hash::ComputeSha256Digest(encoded);

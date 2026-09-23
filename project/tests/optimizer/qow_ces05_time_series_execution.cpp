@@ -1,6 +1,8 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_query_execute.hpp"
 #include "cst/cst.hpp"
@@ -41,6 +43,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "catalog/binary_catalog_metadata.hpp"
+#include <tuple>
+#include <type_traits>
 
 namespace {
 namespace api = scratchbird::engine::internal_api;
@@ -56,36 +61,21 @@ namespace sblr = scratchbird::engine::sblr;
 namespace txn = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 
-constexpr std::string_view kBaseObjectUuid =
-    "40000000-0000-4000-8000-000000007600";
-constexpr std::string_view kMetricOneUuid =
-    "40000000-0000-4000-8000-000000007601";
-constexpr std::string_view kMetricTwoUuid =
-    "40000000-0000-4000-8000-000000007602";
-constexpr std::string_view kPreEpochObjectUuid =
-    "40000000-0000-4000-8000-000000007610";
-constexpr std::string_view kDuplicateTagObjectUuid =
-    "40000000-0000-4000-8000-000000007611";
-constexpr std::string_view kNonfiniteObjectUuid =
-    "40000000-0000-4000-8000-000000007612";
-constexpr std::string_view kInvisibleInvalidObjectUuid =
-    "40000000-0000-4000-8000-000000007613";
-constexpr std::string_view kJoinObjectUuid =
-    "40000000-0000-4000-8000-000000007614";
-constexpr std::string_view kUnicodeOrderObjectUuid =
-    "40000000-0000-4000-8000-000000007615";
-constexpr std::string_view kLoneSurrogateObjectUuid =
-    "40000000-0000-4000-8000-000000007616";
-constexpr std::string_view kReversedSurrogateObjectUuid =
-    "40000000-0000-4000-8000-000000007617";
-constexpr std::string_view kOutputBoundObjectUuid =
-    "40000000-0000-4000-8000-000000007618";
-constexpr std::string_view kAsofRightObjectUuid =
-    "40000000-0000-4000-8000-000000007619";
-constexpr std::string_view kPreferredProviderUuid =
-    "40000000-0000-4000-8000-0000000076f0";
-constexpr std::string_view kAmbiguousProviderUuid =
-    "40000000-0000-4000-8000-0000000076f1";
+constexpr auto kBaseObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007600");
+constexpr auto kMetricOneUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007601");
+constexpr auto kMetricTwoUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007602");
+constexpr auto kPreEpochObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007610");
+constexpr auto kDuplicateTagObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007611");
+constexpr auto kNonfiniteObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007612");
+constexpr auto kInvisibleInvalidObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007613");
+constexpr auto kJoinObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007614");
+constexpr auto kUnicodeOrderObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007615");
+constexpr auto kLoneSurrogateObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007616");
+constexpr auto kReversedSurrogateObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007617");
+constexpr auto kOutputBoundObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007618");
+constexpr auto kAsofRightObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007619");
+constexpr auto kPreferredProviderUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-0000000076f0");
+constexpr auto kAmbiguousProviderUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-0000000076f1");
 constexpr std::string_view kRangeStart =
     "2026-08-10T12:00:00.000000000Z";
 constexpr std::string_view kRangeEnd =
@@ -93,31 +83,31 @@ constexpr std::string_view kRangeEnd =
 constexpr std::int64_t kMinuteNs = 60'000'000'000LL;
 
 struct SignedPoint {
-  const char* row_uuid;
-  const char* metric_uuid;
+  api::EngineUuid row_uuid;
+  api::EngineUuid metric_uuid;
   const char* timestamp;
   const char* tags;
   const char* value;
 };
 
 constexpr std::array<SignedPoint, 9> kBaseRows{{
-    {"40000000-0000-4000-8000-000000000001", kMetricOneUuid.data(),
+    {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000001"), kMetricOneUuid,
      "2026-08-10T12:00:00.000000000Z", "{\"zone\":\"east\",\"host\":\"a\"}", "1"},
-    {"40000000-0000-4000-8000-000000000002", kMetricOneUuid.data(),
+    {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000002"), kMetricOneUuid,
      "2026-08-10T12:00:30.000000000Z", "{\"host\":\"a\",\"zone\":\"east\"}", "3"},
-    {"40000000-0000-4000-8000-000000000004", kMetricOneUuid.data(),
+    {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000004"), kMetricOneUuid,
      "2026-08-10T12:01:00.000000000Z", "{\"host\":\"a\",\"zone\":\"east\"}", "5"},
-    {"40000000-0000-4000-8000-000000000005", kMetricOneUuid.data(),
+    {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000005"), kMetricOneUuid,
      "2026-08-10T12:01:00.000000000Z", "{\"host\":\"a\",\"zone\":\"east\"}", "7"},
-    {"40000000-0000-4000-8000-000000000006", kMetricOneUuid.data(),
+    {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000006"), kMetricOneUuid,
      "2026-08-10T12:01:30.000000000Z", "{\"host\":\"a\",\"zone\":\"west\"}", "9"},
-    {"40000000-0000-4000-8000-000000000007", kMetricTwoUuid.data(),
+    {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000007"), kMetricTwoUuid,
      "2026-08-10T12:00:15.000000000Z", "{\"host\":\"a\",\"zone\":\"east\"}", "2"},
-    {"40000000-0000-4000-8000-000000000003", kMetricOneUuid.data(),
+    {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000003"), kMetricOneUuid,
      "2026-08-10T12:00:45.000000000Z", "{\"host\":\"a\",\"zone\":\"east\"}", "4"},
-    {"40000000-0000-4000-8000-000000000008", kMetricOneUuid.data(),
+    {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000008"), kMetricOneUuid,
      "2026-08-10T12:02:00.000000000Z", "{\"host\":\"a\",\"zone\":\"east\"}", "11"},
-    {"40000000-0000-4000-8000-000000000009", kMetricOneUuid.data(),
+    {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000009"), kMetricOneUuid,
      "2026-08-10T11:59:59.999999999Z", "{\"host\":\"a\",\"zone\":\"east\"}", "13"},
 }};
 
@@ -139,35 +129,42 @@ platform::TypedUuid NewUuid(const platform::UuidKind kind) {
   return uuid::GenerateEngineIdentityV7(kind, Seed()).value;
 }
 
-std::string NewUuidText(const platform::UuidKind kind) {
-  return uuid::UuidToString(NewUuid(kind).value);
+api::EngineUuid NewIdentity(const platform::UuidKind kind) {
+  return NewUuid(kind).value;
 }
 
-std::string StatementDescriptorUuid(const api::EngineRequestContext& context,
+api::EngineUuid StatementDescriptorUuid(const api::EngineRequestContext& context,
                                     const std::string_view purpose) {
-  using Key = std::pair<std::string, std::string>;
-  static std::map<Key, std::string> identities;
-  const Key key{context.statement_uuid.canonical, std::string(purpose)};
+  using Key = std::pair<api::EngineUuid, std::string>;
+  static std::map<Key, api::EngineUuid> identities;
+  const Key key{context.statement_uuid, std::string(purpose)};
   const auto [found, inserted] = identities.try_emplace(key);
   if (inserted) {
-    found->second = NewUuidText(platform::UuidKind::object);
+    found->second = NewIdentity(platform::UuidKind::object);
   }
   return found->second;
 }
 
+std::string ProviderName(const api::EngineUuid& identity) {
+  if (identity == kPreferredProviderUuid) return "nosql.time_series.preferred";
+  if (identity == kAmbiguousProviderUuid) return "nosql.time_series.ambiguous";
+  std::abort();
+}
+
 api::EngineNoSqlProviderGenerationMetadata TimeSeriesProviderGeneration(
     const api::EngineRequestContext& context,
-    const std::string_view provider_uuid,
-    const std::string_view object_uuid,
+    const api::EngineUuid& provider_uuid,
+    const api::EngineUuid& object_uuid,
     const std::uint64_t generation_id) {
   api::EngineNoSqlProviderGenerationMetadata metadata;
   metadata.family = api::EngineNoSqlProviderFamily::kTimeSeries;
-  metadata.provider_id = provider_uuid;
+  metadata.provider_id = ProviderName(provider_uuid);
+  metadata.provider_uuid = provider_uuid;
   metadata.database_identity =
       api::EngineNoSqlProviderDatabaseIdentity(context);
-  metadata.database_uuid = context.database_uuid.canonical;
+  metadata.database_uuid = context.database_uuid;
   metadata.collection_uuid = object_uuid;
-  metadata.generation_uuid = NewUuidText(platform::UuidKind::object);
+  metadata.generation_uuid = NewIdentity(platform::UuidKind::object);
   metadata.generation_id = generation_id;
   metadata.descriptor_epoch =
       std::max<std::uint64_t>(1, context.resource_epoch);
@@ -180,13 +177,13 @@ api::EngineNoSqlProviderGenerationMetadata TimeSeriesProviderGeneration(
   metadata.publish_state = "published";
   metadata.validation_state = "validated";
   metadata.backup_metadata_ref =
-      "backup.time_series_provider_generation:" + metadata.generation_uuid;
+      "backup.time_series_provider_generation:" + std::to_string(generation_id);
   metadata.restore_metadata_ref =
-      "restore.time_series_provider_generation:" + metadata.generation_uuid;
+      "restore.time_series_provider_generation:" + std::to_string(generation_id);
   metadata.repair_metadata_ref =
-      "repair.time_series_provider_generation:" + metadata.generation_uuid;
+      "repair.time_series_provider_generation:" + std::to_string(generation_id);
   metadata.support_bundle_evidence_id =
-      "support.time_series_provider_generation:" + metadata.generation_uuid;
+      "support.time_series_provider_generation:" + std::to_string(generation_id);
   return metadata;
 }
 
@@ -203,35 +200,36 @@ void AttachExactTimeSeriesRollupCarrier(
   metadata->time_series_rollup_exactness_attestation_state =
       "TIME_SERIES_ROLLUP_SECTION_8_EXACT_V1";
   metadata->time_series_rollup_statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   metadata->time_series_rollup_statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   metadata->time_series_rollup_owning_transaction_uuid =
-      context.transaction_uuid.canonical;
+      context.transaction_uuid;
   metadata->time_series_rollup_local_transaction_id =
       context.local_transaction_id;
   metadata
       ->time_series_rollup_snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
   metadata->time_series_rollup_security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
+      context.authorization_context.authority_uuid;
   metadata->time_series_rollup_catalog_epoch_uuid =
-      context.catalog_epoch_uuid.canonical;
+      context.catalog_epoch_uuid;
   metadata->time_series_rollup_exact_residual_recheck_required = true;
   metadata->time_series_rollup_base_row_mga_recheck_required = true;
   metadata->time_series_rollup_security_recheck_required = true;
-  metadata->time_series_rollup_capability_uuid =
-      api::DeriveTimeSeriesRollupCapabilityUuidV1(*metadata);
+  if (!api::SealTimeSeriesRollupCapabilityV2(metadata)) std::abort();
 }
 
 bool ExactTimeSeriesRollupCapabilityKnownAnswer() {
   api::EngineNoSqlProviderGenerationMetadata metadata;
   metadata.family = api::EngineNoSqlProviderFamily::kTimeSeries;
-  metadata.provider_id = "11111111-1111-4111-8111-111111111111";
+  metadata.provider_id = "time-series-rollup-kat";
+  metadata.provider_uuid = scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111111");
+  metadata.time_series_rollup_capability_uuid = scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa");
   metadata.database_identity = "/fixed/rcp076/database.sbdb";
-  metadata.database_uuid = "22222222-2222-4222-8222-222222222222";
-  metadata.collection_uuid = "33333333-3333-4333-8333-333333333333";
-  metadata.generation_uuid = "44444444-4444-4444-8444-444444444444";
+  metadata.database_uuid = scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222");
+  metadata.collection_uuid = scratchbird::tests::FixtureUuidLiteral("33333333-3333-7333-8333-333333333333");
+  metadata.generation_uuid = scratchbird::tests::FixtureUuidLiteral("44444444-4444-7444-8444-444444444444");
   metadata.generation_id = 76;
   metadata.descriptor_epoch = 77;
   metadata.security_epoch = 78;
@@ -246,41 +244,42 @@ bool ExactTimeSeriesRollupCapabilityKnownAnswer() {
   metadata.time_series_rollup_exactness_attestation_state =
       "TIME_SERIES_ROLLUP_SECTION_8_EXACT_V1";
   metadata.time_series_rollup_statement_snapshot_uuid =
-      "55555555-5555-4555-8555-555555555555";
+      scratchbird::tests::FixtureUuidLiteral("55555555-5555-7555-8555-555555555555");
   metadata.time_series_rollup_statement_metadata_snapshot_uuid =
-      "66666666-6666-4666-8666-666666666666";
+      scratchbird::tests::FixtureUuidLiteral("66666666-6666-7666-8666-666666666666");
   metadata.time_series_rollup_owning_transaction_uuid =
-      "77777777-7777-4777-8777-777777777777";
+      scratchbird::tests::FixtureUuidLiteral("77777777-7777-7777-8777-777777777777");
   metadata.time_series_rollup_local_transaction_id = 850;
   metadata.time_series_rollup_snapshot_visible_through_local_transaction_id =
       900;
   metadata.time_series_rollup_security_context_uuid =
-      "88888888-8888-4888-8888-888888888888";
+      scratchbird::tests::FixtureUuidLiteral("88888888-8888-7888-8888-888888888888");
   metadata.time_series_rollup_catalog_epoch_uuid =
-      "99999999-9999-4999-8999-999999999999";
+      scratchbird::tests::FixtureUuidLiteral("99999999-9999-7999-8999-999999999999");
   metadata.time_series_rollup_exact_residual_recheck_required = true;
   metadata.time_series_rollup_base_row_mga_recheck_required = true;
   metadata.time_series_rollup_security_recheck_required = true;
 
-  const auto derived =
-      api::DeriveTimeSeriesRollupCapabilityUuidV1(metadata);
-  static constexpr std::string_view kExpected =
-      "0c4dfc10-09bc-8874-9744-5fe33947709b";
-  if (derived != kExpected || derived.size() != 36 || derived[14] != '8' ||
-      (derived[19] != '8' && derived[19] != '9' && derived[19] != 'a' &&
-       derived[19] != 'b')) {
-    return false;
-  }
-  metadata.time_series_rollup_capability_uuid = derived;
-  return api::ValidateTimeSeriesRollupCapabilityBindingV1(metadata);
+  const auto digest = api::ComputeTimeSeriesRollupBindingDigestV2(metadata);
+  hash::Digest256 digest_bytes{};
+  if (digest.size() != digest_bytes.size()) return false;
+  std::copy(digest.begin(), digest.end(), digest_bytes.begin());
+  if (hash::HexLower(digest_bytes) != "1982d3a3b01e11a1806e6b9712460ac47a1e87d7d6ffba664cee01d41e9769a6") return false;
+  metadata.time_series_rollup_binding_digest = digest;
+  if (!api::ValidateTimeSeriesRollupCapabilityBindingV1(metadata)) return false;
+  auto changed = metadata;
+  changed.time_series_rollup_capability_uuid.bytes.back() ^= 1;
+  if (api::ValidateTimeSeriesRollupCapabilityBindingV1(changed)) return false;
+  return api::SealTimeSeriesRollupCapabilityV2(&changed) &&
+         api::ValidateTimeSeriesRollupCapabilityBindingV1(changed);
 }
 
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string schema_uuid;
-  std::map<std::string, api::MgaRelationStorageDescriptor> descriptors;
+  api::EngineUuid database_uuid;
+  api::EngineUuid schema_uuid;
+  std::map<api::EngineUuid, api::MgaRelationStorageDescriptor> descriptors;
 
   ~Fixture() {
     std::error_code ignored;
@@ -294,9 +293,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = NewUuidText(platform::UuidKind::principal);
-  context.session_uuid.canonical = NewUuidText(platform::UuidKind::object);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = NewIdentity(platform::UuidKind::principal);
+  context.session_uuid = NewIdentity(platform::UuidKind::object);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -305,8 +304,7 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.security_epoch = 77;
   context.resource_epoch = 78;
   context.name_resolution_epoch = 79;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   return context;
@@ -362,7 +360,7 @@ api::EngineColumnDefinition Column(const std::uint32_t ordinal,
                                    std::string name,
                                    const std::string_view type) {
   api::EngineColumnDefinition column;
-  column.requested_column_uuid.canonical = NewUuidText(platform::UuidKind::object);
+  column.requested_column_uuid = NewIdentity(platform::UuidKind::object);
   column.names.push_back(Name(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name =
@@ -374,11 +372,11 @@ api::EngineColumnDefinition Column(const std::uint32_t ordinal,
 }
 
 void AddAuthorization(api::EngineRequestContext* context,
-                      const std::string& object_uuid) {
+                      const api::EngineUuid& object_uuid) {
   if (!context->authorization_context.present) {
     auto& auth = context->authorization_context;
     auth.present = true;
-    auth.authority_uuid.canonical = NewUuidText(platform::UuidKind::object);
+    auth.authority_uuid = NewIdentity(platform::UuidKind::object);
     auth.principal_uuid = context->principal_uuid;
     auth.security_epoch = context->security_epoch;
     auth.policy_epoch = 80;
@@ -386,10 +384,10 @@ void AddAuthorization(api::EngineRequestContext* context,
     auth.effective_subjects.push_back({context->principal_uuid, "principal"});
   }
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = NewUuidText(platform::UuidKind::object);
+  grant.grant_uuid = NewIdentity(platform::UuidKind::object);
   grant.subject_uuid = context->principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = object_uuid;
+  grant.target_uuid = object_uuid;
   grant.right = "SELECT";
   grant.security_epoch = context->security_epoch;
   context->authorization_context.grants.push_back(std::move(grant));
@@ -415,21 +413,21 @@ bool MakeFixture(Fixture* fixture) {
   if (!db::CreateDatabaseFile(create).ok()) {
     return Require(false, "fixture database creation failed");
   }
-  fixture->database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture->schema_uuid = NewUuidText(platform::UuidKind::schema);
+  fixture->database_uuid = create.database_uuid.value;
+  fixture->schema_uuid = NewIdentity(platform::UuidKind::schema);
 
   api::EngineRequestContext context;
   if (!Begin(*fixture, "rcp076-metadata", &context)) return false;
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
-  schema.target_object.uuid.canonical = fixture->schema_uuid;
+  schema.target_object.uuid = fixture->schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("time_series_schema"));
   if (!api::EngineCreateSchema(schema).ok) {
     Rollback(context);
     return Require(false, "fixture schema creation failed");
   }
-  const std::array<std::pair<std::string_view, std::string_view>, 11> tables{{
+  const std::array<std::pair<api::EngineUuid, std::string_view>, 11> tables{{
       {kBaseObjectUuid, "base"},
       {kPreEpochObjectUuid, "pre_epoch"},
       {kDuplicateTagObjectUuid, "duplicate_tag"},
@@ -445,10 +443,10 @@ bool MakeFixture(Fixture* fixture) {
   for (const auto& [object_uuid, name] : tables) {
     api::EngineCreateTableRequest table;
     table.context = context;
-    table.context.current_schema_uuid.canonical.clear();
-    table.target_schema.uuid.canonical = fixture->schema_uuid;
+    table.context.current_schema_uuid = {};
+    table.target_schema.uuid = fixture->schema_uuid;
     table.target_schema.object_kind = "schema";
-    table.requested_table_uuid.canonical = std::string(object_uuid);
+    table.requested_table_uuid = object_uuid;
     table.table_names.push_back(Name(std::string(name)));
     if (object_uuid == kJoinObjectUuid ||
         object_uuid == kAsofRightObjectUuid) {
@@ -478,7 +476,7 @@ bool MakeFixture(Fixture* fixture) {
       return Require(false, "time-series fixture table creation failed");
     }
     const auto loaded = api::LoadMgaRelationStorageDescriptor(
-        context, std::string(object_uuid));
+        context, object_uuid);
     const auto expected_columns =
         object_uuid == kJoinObjectUuid || object_uuid == kAsofRightObjectUuid
             ? 5U
@@ -489,11 +487,11 @@ bool MakeFixture(Fixture* fixture) {
       Rollback(context);
       return Require(false, "time-series fixture descriptor load failed");
     }
-    fixture->descriptors.emplace(std::string(object_uuid), loaded.descriptor);
+    fixture->descriptors.emplace(object_uuid, loaded.descriptor);
   }
   const auto preferred_generation = TimeSeriesProviderGeneration(
       context, kPreferredProviderUuid, kBaseObjectUuid,
-      fixture->descriptors.at(std::string(kBaseObjectUuid))
+      fixture->descriptors.at(kBaseObjectUuid)
               .descriptor_generation +
           1'000);
   const auto published_preferred =
@@ -504,32 +502,35 @@ bool MakeFixture(Fixture* fixture) {
                    "time-series preferred provider generation publish failed");
   }
   const auto& join_descriptor =
-      fixture->descriptors.at(std::string(kJoinObjectUuid));
+      fixture->descriptors.at(kJoinObjectUuid);
   const auto typed = [](const api::EngineDescriptor& descriptor,
-                        std::string encoded) {
+                        auto encoded) {
     api::EngineTypedValue value;
     value.descriptor = descriptor;
-    value.encoded_value = std::move(encoded);
+    if constexpr (std::is_same_v<decltype(encoded), api::EngineUuid>)
+      value.binary_value.assign(encoded.bytes.begin(), encoded.bytes.end());
+    else value.encoded_value = std::move(encoded);
     value.setState(api::EngineValueState::value);
     return value;
   };
+  struct JoinSeed { api::EngineUuid row_uuid; api::EngineUuid join_uuid; const char* payload; const char* timestamp; };
   api::EngineInsertRowsRequest join_rows;
   join_rows.context = context;
-  join_rows.target_table.uuid.canonical = std::string(kJoinObjectUuid);
+  join_rows.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007614");
   join_rows.target_table.object_kind = "table";
   join_rows.require_generated_row_uuid = false;
   join_rows.estimated_row_count = 2;
   for (const auto& [row_uuid, join_uuid, payload, event_timestamp] :
-       std::array<std::array<const char*, 4>, 2>{{
-           {{"40000000-0000-4000-8000-000000000078",
-             "40000000-0000-4000-8000-000000000001", "matched",
-             "2026-08-10T12:00:20.000000000Z"}},
-           {{"40000000-0000-4000-8000-000000000079",
-             "40000000-0000-4000-8000-000000000099", "unmatched",
-             "2026-08-10T12:00:46.000000000Z"}},
+       std::array<JoinSeed, 2>{{
+           {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000078"),
+             scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000001"), "matched",
+             "2026-08-10T12:00:20.000000000Z"},
+           {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000079"),
+             scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000099"), "unmatched",
+             "2026-08-10T12:00:46.000000000Z"},
        }}) {
     api::EngineRowValue row;
-    row.requested_row_uuid.canonical = row_uuid;
+    row.requested_row_uuid = row_uuid;
     row.fields = {
         {"join_uuid",
          typed(join_descriptor.columns[0].value_descriptor, join_uuid)},
@@ -540,7 +541,7 @@ bool MakeFixture(Fixture* fixture) {
                event_timestamp)},
         {"metric_uuid",
          typed(join_descriptor.columns[3].value_descriptor,
-               std::string(kMetricOneUuid))},
+               kMetricOneUuid)},
         {"tags",
          typed(join_descriptor.columns[4].value_descriptor,
                "{\"host\":\"a\",\"zone\":\"east\"}")},
@@ -553,25 +554,25 @@ bool MakeFixture(Fixture* fixture) {
     return Require(false, "supplemental relational join rows failed");
   }
   const auto& asof_right_descriptor =
-      fixture->descriptors.at(std::string(kAsofRightObjectUuid));
+      fixture->descriptors.at(kAsofRightObjectUuid);
   api::EngineInsertRowsRequest asof_right_rows;
   asof_right_rows.context = context;
-  asof_right_rows.target_table.uuid.canonical =
-      std::string(kAsofRightObjectUuid);
+  asof_right_rows.target_table.uuid =
+      kAsofRightObjectUuid;
   asof_right_rows.target_table.object_kind = "table";
   asof_right_rows.require_generated_row_uuid = false;
   asof_right_rows.estimated_row_count = 2;
   for (const auto& [row_uuid, join_uuid, payload, event_timestamp] :
-       std::array<std::array<const char*, 4>, 2>{{
-           {{"40000000-0000-4000-8000-000000000080",
-             "40000000-0000-4000-8000-000000000010", "right-10",
-             "2026-08-10T12:00:10.000000000Z"}},
-           {{"40000000-0000-4000-8000-000000000081",
-             "40000000-0000-4000-8000-000000000040", "right-40",
-             "2026-08-10T12:00:40.000000000Z"}},
+       std::array<JoinSeed, 2>{{
+           {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000080"),
+             scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000010"), "right-10",
+             "2026-08-10T12:00:10.000000000Z"},
+           {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000081"),
+             scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000040"), "right-40",
+             "2026-08-10T12:00:40.000000000Z"},
        }}) {
     api::EngineRowValue row;
-    row.requested_row_uuid.canonical = row_uuid;
+    row.requested_row_uuid = row_uuid;
     row.fields = {
         {"join_uuid",
          typed(asof_right_descriptor.columns[0].value_descriptor,
@@ -583,7 +584,7 @@ bool MakeFixture(Fixture* fixture) {
                event_timestamp)},
         {"metric_uuid",
          typed(asof_right_descriptor.columns[3].value_descriptor,
-               std::string(kMetricOneUuid))},
+               kMetricOneUuid)},
         {"tags",
          typed(asof_right_descriptor.columns[4].value_descriptor,
                "{\"host\":\"a\",\"zone\":\"east\"}")},
@@ -608,10 +609,27 @@ api::EngineTypedValue TypedValue(const api::EngineDescriptor& descriptor,
   return value;
 }
 
+std::string IdentityBytes(const api::EngineUuid& identity) {
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
+}
+bool IdentityValueEquals(const api::EngineTypedValue& value, const api::EngineUuid& identity) {
+  return !value.is_null && value.encoded_value.empty() && value.binary_value.size() == 16 &&
+      std::equal(value.binary_value.begin(), value.binary_value.end(), identity.bytes.begin());
+}
+
+api::EngineTypedValue TypedValue(const api::EngineDescriptor& descriptor,
+                                 const api::EngineUuid& identity) {
+  api::EngineTypedValue value;
+  value.descriptor = descriptor;
+  value.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
+  value.setState(api::EngineValueState::value);
+  return value;
+}
+
 api::EngineRowValue Row(const api::MgaRelationStorageDescriptor& descriptor,
                         const SignedPoint& point) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = point.row_uuid;
+  row.requested_row_uuid = point.row_uuid;
   row.fields = {
       {"metric_uuid", TypedValue(descriptor.columns[0].value_descriptor,
                                  point.metric_uuid)},
@@ -623,16 +641,16 @@ api::EngineRowValue Row(const api::MgaRelationStorageDescriptor& descriptor,
   return row;
 }
 
-bool Insert(const Fixture& fixture, const std::string& object_uuid,
+bool Insert(const Fixture& fixture, const api::EngineUuid& object_uuid,
             const SignedPoint& point, const bool commit,
             api::EngineRequestContext* retained = nullptr) {
   api::EngineRequestContext context;
-  if (!Begin(fixture, "rcp076-insert-" + std::string(point.row_uuid), &context)) {
+  if (!Begin(fixture, "rcp076-insert", &context)) {
     return false;
   }
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = object_uuid;
+  request.target_table.uuid = object_uuid;
   request.target_table.object_kind = "table";
   request.require_generated_row_uuid = false;
   request.estimated_row_count = 1;
@@ -649,18 +667,18 @@ bool Insert(const Fixture& fixture, const std::string& object_uuid,
   return commit ? Commit(context) : Rollback(context);
 }
 
-bool AppendInvalid(const Fixture& fixture, const std::string& object_uuid,
+bool AppendInvalid(const Fixture& fixture, const api::EngineUuid& object_uuid,
                    const SignedPoint& point, const bool commit) {
   api::EngineRequestContext context;
-  if (!Begin(fixture, "rcp076-invalid-" + std::string(point.row_uuid), &context)) {
+  if (!Begin(fixture, "rcp076-invalid", &context)) {
     return false;
   }
   api::CrudRowVersionRecord row;
   row.creator_tx = context.local_transaction_id;
   row.table_uuid = object_uuid;
   row.row_uuid = point.row_uuid;
-  row.version_uuid = NewUuidText(platform::UuidKind::object);
-  row.values = {{"metric_uuid", point.metric_uuid},
+  row.version_uuid = NewIdentity(platform::UuidKind::object);
+  row.values = {{"metric_uuid", IdentityBytes(point.metric_uuid)},
                 {"point_timestamp", point.timestamp},
                 {"tags", point.tags},
                 {"value", point.value}};
@@ -675,88 +693,88 @@ bool AppendInvalid(const Fixture& fixture, const std::string& object_uuid,
 
 bool SeedFixture(Fixture* fixture, api::EngineRequestContext* active_other) {
   for (const auto& point : kBaseRows) {
-    if (!Insert(*fixture, std::string(kBaseObjectUuid), point, true)) return false;
+    if (!Insert(*fixture, kBaseObjectUuid, point, true)) return false;
   }
   const SignedPoint rolled_back{
-      "40000000-0000-4000-8000-000000000010", kMetricOneUuid.data(),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000010"), kMetricOneUuid,
       "2026-08-10T12:00:20.000000000Z", "{\"host\":\"a\",\"zone\":\"east\"}",
       "100"};
-  if (!Insert(*fixture, std::string(kBaseObjectUuid), rolled_back, false)) return false;
+  if (!Insert(*fixture, kBaseObjectUuid, rolled_back, false)) return false;
   const SignedPoint pre_epoch{
-      "40000000-0000-4000-8000-000000000012", kMetricOneUuid.data(),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000012"), kMetricOneUuid,
       "1969-12-31T23:59:30.000000000Z", "{}", "1"};
-  if (!Insert(*fixture, std::string(kPreEpochObjectUuid), pre_epoch, true)) return false;
+  if (!Insert(*fixture, kPreEpochObjectUuid, pre_epoch, true)) return false;
   const SignedPoint duplicate_tag{
-      "40000000-0000-4000-8000-000000000013", kMetricOneUuid.data(),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000013"), kMetricOneUuid,
       "2026-08-10T12:00:10.000000000Z", "{\"host\":\"a\",\"host\":\"b\"}", "1"};
-  if (!Insert(*fixture, std::string(kDuplicateTagObjectUuid), duplicate_tag, true)) {
+  if (!Insert(*fixture, kDuplicateTagObjectUuid, duplicate_tag, true)) {
     return false;
   }
   const SignedPoint nonfinite{
-      "40000000-0000-4000-8000-000000000014", kMetricOneUuid.data(),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000014"), kMetricOneUuid,
       "2026-08-10T12:00:10.000000000Z", "{\"host\":\"a\",\"zone\":\"east\"}",
       "NaN"};
-  if (!AppendInvalid(*fixture, std::string(kNonfiniteObjectUuid), nonfinite, true)) {
+  if (!AppendInvalid(*fixture, kNonfiniteObjectUuid, nonfinite, true)) {
     return false;
   }
   const SignedPoint invisible_invalid{
-      "40000000-0000-4000-8000-000000000015", kMetricOneUuid.data(),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000015"), kMetricOneUuid,
       "malformed", "{\"host\":\"a\",\"host\":\"b\"}", "NaN"};
-  if (!AppendInvalid(*fixture, std::string(kInvisibleInvalidObjectUuid),
+  if (!AppendInvalid(*fixture, kInvisibleInvalidObjectUuid,
                      invisible_invalid, false)) {
     return false;
   }
   const SignedPoint unicode_low{
-      "40000000-0000-4000-8000-000000000016", kMetricOneUuid.data(),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000016"), kMetricOneUuid,
       "2026-08-10T12:00:10.000000000Z",
       "{\"label\":\"\xc2\x80\"}", "1"};
   const SignedPoint unicode_surrogate_pair{
-      "40000000-0000-4000-8000-000000000017", kMetricOneUuid.data(),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000017"), kMetricOneUuid,
       "2026-08-10T12:00:10.000000000Z",
       "{\"label\":\"\\uD83D\\uDE00\"}", "2"};
-  if (!Insert(*fixture, std::string(kUnicodeOrderObjectUuid), unicode_low,
+  if (!Insert(*fixture, kUnicodeOrderObjectUuid, unicode_low,
               true) ||
-      !Insert(*fixture, std::string(kUnicodeOrderObjectUuid),
+      !Insert(*fixture, kUnicodeOrderObjectUuid,
               unicode_surrogate_pair, true)) {
     return false;
   }
   const SignedPoint lone_surrogate{
-      "40000000-0000-4000-8000-000000000018", kMetricOneUuid.data(),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000018"), kMetricOneUuid,
       "2026-08-10T12:00:10.000000000Z",
       "{\"label\":\"\\uD83D\"}", "1"};
   const SignedPoint reversed_surrogate{
-      "40000000-0000-4000-8000-000000000019", kMetricOneUuid.data(),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000019"), kMetricOneUuid,
       "2026-08-10T12:00:10.000000000Z",
       "{\"label\":\"\\uDE00\\uD83D\"}", "1"};
-  if (!Insert(*fixture, std::string(kLoneSurrogateObjectUuid),
+  if (!Insert(*fixture, kLoneSurrogateObjectUuid,
               lone_surrogate, true) ||
-      !Insert(*fixture, std::string(kReversedSurrogateObjectUuid),
+      !Insert(*fixture, kReversedSurrogateObjectUuid,
               reversed_surrogate, true)) {
     return false;
   }
   const std::array<SignedPoint, 5> output_bound_points{{
-      {"40000000-0000-4000-8000-000000000020", kMetricOneUuid.data(),
+      {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000020"), kMetricOneUuid,
        "2026-08-10T11:58:00.000000000Z", "{}", "1"},
-      {"40000000-0000-4000-8000-000000000021", kMetricOneUuid.data(),
+      {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000021"), kMetricOneUuid,
        "2026-08-10T11:59:00.000000000Z", "{}", "2"},
-      {"40000000-0000-4000-8000-000000000022", kMetricOneUuid.data(),
+      {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000022"), kMetricOneUuid,
        "2026-08-10T12:01:00.000000000Z", "{}", "3"},
-      {"40000000-0000-4000-8000-000000000023", kMetricOneUuid.data(),
+      {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000023"), kMetricOneUuid,
        "2026-08-10T12:02:00.000000000Z", "{}", "4"},
-      {"40000000-0000-4000-8000-000000000024", kMetricOneUuid.data(),
+      {scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000024"), kMetricOneUuid,
        "2026-08-10T12:03:00.000000000Z", "{}", "5"},
   }};
   for (const auto& point : output_bound_points) {
-    if (!Insert(*fixture, std::string(kOutputBoundObjectUuid), point, true)) {
+    if (!Insert(*fixture, kOutputBoundObjectUuid, point, true)) {
       return false;
     }
   }
   if (!SetNextTransactionId(*fixture, 850)) return false;
   const SignedPoint pending{
-      "40000000-0000-4000-8000-000000000011", kMetricOneUuid.data(),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000011"), kMetricOneUuid,
       "2026-08-10T12:00:25.000000000Z", "{\"host\":\"a\",\"zone\":\"east\"}",
       "200"};
-  if (!Insert(*fixture, std::string(kBaseObjectUuid), pending, false,
+  if (!Insert(*fixture, kBaseObjectUuid, pending, false,
               active_other) ||
       active_other->local_transaction_id != 850 ||
       !SetNextTransactionId(*fixture, 900)) {
@@ -772,7 +790,7 @@ bool SeedFixture(Fixture* fixture, api::EngineRequestContext* active_other) {
 bool PublishReaderContext(const Fixture& fixture,
                           api::EngineRequestContext* context) {
   if (!Begin(fixture, "rcp076-reader", context)) return false;
-  context->statement_uuid.canonical = NewUuidText(platform::UuidKind::object);
+  context->statement_uuid = NewIdentity(platform::UuidKind::object);
   context->statement_timestamp = std::string(kRangeStart);
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = *context;
@@ -782,17 +800,17 @@ bool PublishReaderContext(const Fixture& fixture,
   context->snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
   context->statement_metadata_snapshot_engine_owned = true;
-  context->statement_metadata_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  context->statement_metadata_snapshot_uuid =
+      NewIdentity(platform::UuidKind::object);
   context->statement_metadata_snapshot_visible_through_local_transaction_id =
       context->snapshot_visible_through_local_transaction_id;
-  context->catalog_epoch_uuid.canonical = NewUuidText(platform::UuidKind::object);
-  context->optimizer_capability_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
-  context->optimizer_resource_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
-  context->optimizer_route_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  context->catalog_epoch_uuid = NewIdentity(platform::UuidKind::object);
+  context->optimizer_capability_snapshot_uuid =
+      NewIdentity(platform::UuidKind::object);
+  context->optimizer_resource_snapshot_uuid =
+      NewIdentity(platform::UuidKind::object);
+  context->optimizer_route_snapshot_uuid =
+      NewIdentity(platform::UuidKind::object);
   context->optimizer_route_epoch = 80;
   context->optimizer_route_generation = 81;
   context->optimizer_memory_budget_bytes = 16 * 1024 * 1024;
@@ -815,7 +833,7 @@ bool PublishReaderContext(const Fixture& fixture,
         kJoinObjectUuid, kUnicodeOrderObjectUuid,
         kLoneSurrogateObjectUuid, kReversedSurrogateObjectUuid,
         kOutputBoundObjectUuid, kAsofRightObjectUuid}) {
-    AddAuthorization(context, std::string(object_uuid));
+    AddAuthorization(context, object_uuid);
   }
   return true;
 }
@@ -831,7 +849,7 @@ api::EngineBoundTimeSeriesReadRequestV1 Request(
   request.context = context;
   request.operation = operation;
   request.aggregate = aggregate;
-  request.object_uuid = descriptor.relation_uuid.canonical;
+  request.object_uuid = descriptor.relation_uuid;
   request.range_start = TypedValue(descriptor.columns[1].value_descriptor,
                                    std::move(start));
   request.range_end = TypedValue(descriptor.columns[1].value_descriptor,
@@ -840,11 +858,11 @@ api::EngineBoundTimeSeriesReadRequestV1 Request(
       operation == api::EngineBoundTimeSeriesReadOperationV1::kBucketDownsample
           ? kMinuteNs
           : 0;
-  request.expected_descriptor_uuid = descriptor.descriptor_uuid.canonical;
+  request.expected_descriptor_uuid = descriptor.descriptor_uuid;
   request.expected_descriptor_generation = descriptor.descriptor_generation;
-  request.selected_alternative_uuid = NewUuidText(platform::UuidKind::object);
-  request.capability_uuid = NewUuidText(platform::UuidKind::object);
-  request.provider_uuid = NewUuidText(platform::UuidKind::object);
+  request.selected_alternative_uuid = NewIdentity(platform::UuidKind::object);
+  request.capability_uuid = NewIdentity(platform::UuidKind::object);
+  request.provider_uuid = NewIdentity(platform::UuidKind::object);
   request.provider_generation = descriptor.descriptor_generation + 3'000;
   request.maximum_scanned_row_versions = 4096;
   request.maximum_decoded_bytes = 1024 * 1024;
@@ -867,6 +885,11 @@ std::string DiagnosticDetail(const api::EngineApiResult& result) {
                                     : result.diagnostics.front().detail;
 }
 
+std::string EvidenceBytes(const api::EngineEvidenceValue& value) {
+  if (const auto* text = std::get_if<std::string>(&value)) return *text;
+  return IdentityBytes(std::get<api::EngineUuid>(value));
+}
+
 std::string RealBits(const double value) {
   std::ostringstream out;
   out << std::hex << std::nouppercase << std::setfill('0') << std::setw(16)
@@ -877,7 +900,7 @@ std::string RealBits(const double value) {
 std::string RawStream(const api::EngineBoundTimeSeriesReadResultV1& result) {
   std::string bytes;
   for (const auto& row : result.rows) {
-    bytes += row.row_uuid + "\t" + row.series_uuid + "\t" + row.metric_uuid +
+    bytes += IdentityBytes(row.row_uuid) + "\t" + IdentityBytes(row.series_uuid) + "\t" + IdentityBytes(row.metric_uuid) +
              "\t" + row.point_timestamp + "\t" + row.tags + "\t" +
              RealBits(row.value) + "\n";
   }
@@ -892,7 +915,7 @@ std::string DownsampleStream(
     const auto value = aggregate == api::EngineBoundTimeSeriesAggregateV1::kCount
                            ? std::to_string(row.aggregate_count)
                            : RealBits(row.aggregate_value);
-    bytes += row.series_uuid + "\t" + row.metric_uuid + "\t" +
+    bytes += IdentityBytes(row.series_uuid) + "\t" + IdentityBytes(row.metric_uuid) + "\t" +
              row.bucket_start + "\t" + row.bucket_end + "\t" + row.tags +
              "\t" + std::to_string(row.sample_count) + "\t" + value + "\n";
   }
@@ -942,12 +965,12 @@ exec::PhysicalMgaStatementContext PhysicalMga(
   exec::PhysicalMgaStatementContext mga;
   if (!snapshot.ok) return mga;
   const auto& vector = snapshot.snapshot_vector;
-  mga.statement_uuid = context.statement_uuid.canonical;
+  mga.statement_uuid = context.statement_uuid;
   mga.statement_timestamp = context.statement_timestamp;
-  mga.owning_transaction_uuid = context.transaction_uuid.canonical;
-  mga.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  mga.owning_transaction_uuid = context.transaction_uuid;
+  mga.statement_snapshot_uuid = context.statement_snapshot_uuid;
   mga.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   mga.owning_local_transaction_id = vector.owning_transaction.value;
   mga.visible_committed_high_watermark =
       vector.visible_committed_high_watermark;
@@ -1005,7 +1028,7 @@ plan::CanonicalMgaStatementContext LogicalMga(
   return logical;
 }
 
-std::string CoreTypeUuid(const std::string_view stable_name) {
+api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
   static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
   const auto count = std::ranges::count_if(
@@ -1019,9 +1042,9 @@ std::string CoreTypeUuid(const std::string_view stable_name) {
     return {};
   }
   const auto descriptor_uuid =
-      uuid::UuidToString(descriptor->descriptor_uuid.value);
+      descriptor->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701",
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
       manifest.manifest.catalog_epoch, 1, descriptor_uuid,
       descriptor->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
@@ -1029,7 +1052,7 @@ std::string CoreTypeUuid(const std::string_view stable_name) {
 
 std::vector<opt::MultilegDescriptorProfileV1>
 Rcp079DirectProofMultilegProfilesV10() {
-  const std::array<std::string, 5> type_uuids{
+  const std::array<api::EngineUuid, 5> type_uuids{
       CoreTypeUuid("uuid"), CoreTypeUuid("uint64"),
       CoreTypeUuid("real64"), CoreTypeUuid("boolean"),
       CoreTypeUuid("geometry")};
@@ -1042,7 +1065,7 @@ Rcp079DirectProofMultilegProfilesV10() {
           static_cast<std::uint8_t>(14 + type_pair * 2 + nullable);
       for (std::uint16_t slot = 0; slot < 32; ++slot) {
         profiles.push_back(
-            {kind, slot, NewUuidText(platform::UuidKind::object),
+            {kind, slot, NewIdentity(platform::UuidKind::object),
              type_uuids[type_pair], nullable != 0});
       }
     }
@@ -1067,16 +1090,17 @@ std::string DescriptorField(const std::string& encoded,
   return {};
 }
 
-api::EngineDescriptor DerivedDescriptor(const std::string& instance_uuid,
+api::EngineDescriptor DerivedDescriptor(const api::EngineUuid& instance_uuid,
                                         const std::string_view public_type,
                                         const std::string_view core_type) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = instance_uuid;
+  descriptor.descriptor_uuid = instance_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::string(public_type);
   descriptor.encoded_descriptor =
       "canonical=" + std::string(public_type) +
-      ";type_uuid=" + CoreTypeUuid(core_type) + ";nullable=false";
+      ";nullable=false";
+  descriptor.type_uuid = CoreTypeUuid(core_type);
   return descriptor;
 }
 
@@ -1128,14 +1152,14 @@ std::string ExactExchangeStream(
   out << '\n';
   for (const auto& column : output.batch.columns) {
     out << column.descriptor_id << '|' << column.stable_name << '|'
-        << column.descriptor.descriptor_uuid.canonical << '|'
+        << IdentityBytes(column.descriptor.descriptor_uuid) << IdentityBytes(column.descriptor.type_uuid) << '|'
         << column.descriptor.canonical_type_name << '|'
         << column.descriptor.encoded_descriptor << '|'
         << column.nullable << '\n';
   }
   for (const auto& identity : output.ordered_row_identities) {
-    out << identity.row_uuid << '|' << identity.series_uuid << '|'
-        << identity.metric_uuid << '|' << identity.tags << '|'
+    out << IdentityBytes(identity.row_uuid) << '|' << IdentityBytes(identity.series_uuid) << '|'
+        << IdentityBytes(identity.metric_uuid) << '|' << identity.tags << '|'
         << identity.point_timestamp_ns << '|' << identity.bucket_start_ns
         << '|' << identity.time_series_payload_kind << '|'
         << identity.time_series_raw_value << '|'
@@ -1146,7 +1170,7 @@ std::string ExactExchangeStream(
   for (const auto& row : output.batch.rows) {
     for (const auto& value : row.values) {
       out << static_cast<unsigned>(value.state) << ':' << value.is_null << ':'
-          << value.descriptor.descriptor_uuid.canonical << ':'
+          << IdentityBytes(value.descriptor.descriptor_uuid) << IdentityBytes(value.descriptor.type_uuid) << ':'
           << value.descriptor.canonical_type_name << ':'
           << value.descriptor.encoded_descriptor << ':'
           << value.encoded_value << ':';
@@ -1192,9 +1216,9 @@ ExchangeRun ExecuteThroughCommonSpine(
         coordinated->exact_fallback_selected;
   } else {
     provider_request.selected_alternative_uuid =
-        NewUuidText(platform::UuidKind::object);
-    provider_request.capability_uuid = NewUuidText(platform::UuidKind::object);
-    provider_request.provider_uuid = NewUuidText(platform::UuidKind::object);
+        NewIdentity(platform::UuidKind::object);
+    provider_request.capability_uuid = NewIdentity(platform::UuidKind::object);
+    provider_request.provider_uuid = NewIdentity(platform::UuidKind::object);
   }
 
   exec::ModelFamilyExecutionRequestV1 request;
@@ -1214,7 +1238,7 @@ ExchangeRun ExecuteThroughCommonSpine(
   input.capability_uuid = provider_request.capability_uuid;
   input.provider_uuid = provider_request.provider_uuid;
   input.provider_generation = provider_request.provider_generation;
-  input.result_handle_uuid = NewUuidText(platform::UuidKind::object);
+  input.result_handle_uuid = NewIdentity(platform::UuidKind::object);
   input.causal_counter_id =
       coordinated != nullptr && coordinated->accepted &&
               coordinated->selected &&
@@ -1229,12 +1253,12 @@ ExchangeRun ExecuteThroughCommonSpine(
                                                                  207};
   input.mga_statement_context = mga;
   input.catalog_epoch_uuid =
-      provider_request.context.catalog_epoch_uuid.canonical;
+      provider_request.context.catalog_epoch_uuid;
   input.security_context_uuid = provider_request.context
                                     .authorization_context.authority_uuid
-                                    .canonical;
-  input.policy_snapshot_uuid = NewUuidText(platform::UuidKind::object);
-  input.resource_contract_uuid = NewUuidText(platform::UuidKind::object);
+                                    ;
+  input.policy_snapshot_uuid = NewIdentity(platform::UuidKind::object);
+  input.resource_contract_uuid = NewIdentity(platform::UuidKind::object);
   input.catalog_generation = provider_request.context.catalog_generation_id;
   input.descriptor_generation = descriptor.descriptor_generation;
   input.security_generation = provider_request.context.security_epoch;
@@ -1287,10 +1311,10 @@ ExchangeRun ExecuteThroughCommonSpine(
   if (raw) {
     columns = {
         {"row_uuid",
-         DerivedDescriptor(descriptor.descriptor_uuid.canonical, "uuid", "uuid"),
+         DerivedDescriptor(descriptor.descriptor_uuid, "uuid", "uuid"),
          false, 101},
         {"series_uuid",
-         DerivedDescriptor(descriptor.schema_uuid.canonical, "uuid", "uuid"),
+         DerivedDescriptor(descriptor.schema_uuid, "uuid", "uuid"),
          false, 102},
         {"metric_uuid", descriptor.columns[0].value_descriptor, false, 103},
         {"point_timestamp", descriptor.columns[1].value_descriptor, false, 104},
@@ -1302,12 +1326,12 @@ ExchangeRun ExecuteThroughCommonSpine(
                        api::EngineBoundTimeSeriesAggregateV1::kCount;
     columns = {
         {"series_uuid",
-         DerivedDescriptor(descriptor.schema_uuid.canonical, "uuid", "uuid"),
+         DerivedDescriptor(descriptor.schema_uuid, "uuid", "uuid"),
          false, 201},
         {"metric_uuid", descriptor.columns[0].value_descriptor, false, 202},
         {"bucket_start", descriptor.columns[1].value_descriptor, false, 203},
         {"bucket_end",
-         DerivedDescriptor(descriptor.columns[1].column_uuid.canonical,
+         DerivedDescriptor(descriptor.columns[1].column_uuid,
                            "timestamp_tz", "timestamp"),
          false, 204},
         {"tags", descriptor.columns[2].value_descriptor, false, 205},
@@ -1315,7 +1339,7 @@ ExchangeRun ExecuteThroughCommonSpine(
          DerivedDescriptor(CoreTypeUuid("int64"), "int64", "int64"),
          false, 206},
         {"aggregate_value",
-         count ? DerivedDescriptor(descriptor.columns[3].column_uuid.canonical,
+         count ? DerivedDescriptor(descriptor.columns[3].column_uuid,
                                    "int64", "int64")
                : descriptor.columns[3].value_descriptor,
          false, 207},
@@ -1371,8 +1395,8 @@ ExchangeRun ExecuteThroughCommonSpine(
         if (output_substituted) ++batch.output_descriptor_ids.front();
         batch.batch.columns = columns;
         batch.mga_statement_context = selected.mga_statement_context;
-        batch.security_receipt_uuid = NewUuidText(platform::UuidKind::object);
-        batch.properties.property_uuid = NewUuidText(platform::UuidKind::object);
+        batch.security_receipt_uuid = NewIdentity(platform::UuidKind::object);
+        batch.properties.property_uuid = NewIdentity(platform::UuidKind::object);
         batch.properties.ordering_id = read.ordering_id;
         batch.properties.partitioning_id = "single_local_partition";
         batch.properties.uniqueness_id = read.rows.empty()
@@ -1520,17 +1544,17 @@ bool CoordinatorMatrix(const api::EngineRequestContext& context,
   request.operation_id = "TIME_SERIES_RANGE_READ";
   request.logical_operator_id = "LOGICAL_TIME_SERIES_SOURCE_V1";
   request.logical_node_id = 76;
-  request.object_uuid = descriptor.relation_uuid.canonical;
+  request.object_uuid = descriptor.relation_uuid;
   request.output_descriptor_ids = {101, 102, 103, 104, 105, 106};
   request.mga_statement_context = PhysicalMga(context);
-  request.bound_sblr_tree_uuid = NewUuidText(platform::UuidKind::object);
-  request.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  request.bound_sblr_tree_uuid = NewIdentity(platform::UuidKind::object);
+  request.catalog_epoch_uuid = context.catalog_epoch_uuid;
   request.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
-  request.capability_snapshot_uuid = NewUuidText(platform::UuidKind::object);
-  request.resource_snapshot_uuid = NewUuidText(platform::UuidKind::object);
-  request.statistics_snapshot_uuid = NewUuidText(platform::UuidKind::object);
-  request.route_snapshot_uuid = NewUuidText(platform::UuidKind::object);
+      context.authorization_context.authority_uuid;
+  request.capability_snapshot_uuid = NewIdentity(platform::UuidKind::object);
+  request.resource_snapshot_uuid = NewIdentity(platform::UuidKind::object);
+  request.statistics_snapshot_uuid = NewIdentity(platform::UuidKind::object);
+  request.route_snapshot_uuid = NewIdentity(platform::UuidKind::object);
   request.catalog_generation = context.catalog_generation_id;
   request.current_catalog_generation = context.catalog_generation_id;
   request.security_epoch = context.security_epoch;
@@ -1542,15 +1566,15 @@ bool CoordinatorMatrix(const api::EngineRequestContext& context,
   request.memory_budget_bytes = 2 * 1024 * 1024;
   const auto candidate = [&](const bool fallback, const std::uint64_t cost) {
     opt::ModelFamilyCandidateV1 candidate;
-    candidate.alternative_uuid = NewUuidText(platform::UuidKind::object);
-    candidate.provider_uuid = NewUuidText(platform::UuidKind::object);
-    candidate.capability_uuid = NewUuidText(platform::UuidKind::object);
+    candidate.alternative_uuid = NewIdentity(platform::UuidKind::object);
+    candidate.provider_uuid = NewIdentity(platform::UuidKind::object);
+    candidate.capability_uuid = NewIdentity(platform::UuidKind::object);
     candidate.implementation_id = "physical_time_series_range_scan_v1";
     candidate.provider_generation = descriptor.descriptor_generation + 3'000;
     candidate.available = true;
     candidate.exact = true;
     candidate.exact_collection_fallback = fallback;
-    candidate.cost.cost_vector_uuid = NewUuidText(platform::UuidKind::object);
+    candidate.cost.cost_vector_uuid = NewIdentity(platform::UuidKind::object);
     candidate.cost.cpu_units = cost;
     candidate.cost.memory_bytes_required = 4096;
     return candidate;
@@ -1590,7 +1614,7 @@ bool ExchangeMatrix(const Fixture& fixture,
                     const api::EngineRequestContext& context,
                     std::set<std::string>* completed) {
   bool passed = true;
-  const auto& base = fixture.descriptors.at(std::string(kBaseObjectUuid));
+  const auto& base = fixture.descriptors.at(kBaseObjectUuid);
   const auto raw_request =
       Request(context, base,
               api::EngineBoundTimeSeriesReadOperationV1::kRangeRead,
@@ -1602,24 +1626,24 @@ bool ExchangeMatrix(const Fixture& fixture,
                                : "TIME_SERIES_DOWNSAMPLE";
     request.logical_operator_id = "LOGICAL_TIME_SERIES_SOURCE_V1";
     request.logical_node_id = 76;
-    request.object_uuid = base.relation_uuid.canonical;
+    request.object_uuid = base.relation_uuid;
     request.output_descriptor_ids =
         raw ? std::vector<std::uint32_t>{101, 102, 103, 104, 105, 106}
             : std::vector<std::uint32_t>{201, 202, 203, 204, 205, 206,
                                          207};
     request.mga_statement_context = PhysicalMga(context);
-    request.bound_sblr_tree_uuid = NewUuidText(platform::UuidKind::object);
-    request.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+    request.bound_sblr_tree_uuid = NewIdentity(platform::UuidKind::object);
+    request.catalog_epoch_uuid = context.catalog_epoch_uuid;
     request.security_context_uuid =
-        context.authorization_context.authority_uuid.canonical;
+        context.authorization_context.authority_uuid;
     request.capability_snapshot_uuid =
-        context.optimizer_capability_snapshot_uuid.canonical;
+        context.optimizer_capability_snapshot_uuid;
     request.resource_snapshot_uuid =
-        context.optimizer_resource_snapshot_uuid.canonical;
+        context.optimizer_resource_snapshot_uuid;
     request.statistics_snapshot_uuid =
-        NewUuidText(platform::UuidKind::object);
+        NewIdentity(platform::UuidKind::object);
     request.route_snapshot_uuid =
-        context.optimizer_route_snapshot_uuid.canonical;
+        context.optimizer_route_snapshot_uuid;
     request.catalog_generation = context.catalog_generation_id;
     request.current_catalog_generation = context.catalog_generation_id;
     request.security_epoch = context.security_epoch;
@@ -1632,9 +1656,9 @@ bool ExchangeMatrix(const Fixture& fixture,
     const auto candidate = [&](const bool fallback,
                                const std::uint64_t cost) {
       opt::ModelFamilyCandidateV1 candidate;
-      candidate.alternative_uuid = NewUuidText(platform::UuidKind::object);
-      candidate.provider_uuid = NewUuidText(platform::UuidKind::object);
-      candidate.capability_uuid = NewUuidText(platform::UuidKind::object);
+      candidate.alternative_uuid = NewIdentity(platform::UuidKind::object);
+      candidate.provider_uuid = NewIdentity(platform::UuidKind::object);
+      candidate.capability_uuid = NewIdentity(platform::UuidKind::object);
       candidate.implementation_id =
           "physical_time_series_range_scan_v1";
       candidate.provider_generation = base.descriptor_generation + 3'000;
@@ -1642,7 +1666,7 @@ bool ExchangeMatrix(const Fixture& fixture,
       candidate.exact = true;
       candidate.exact_collection_fallback = fallback;
       candidate.cost.cost_vector_uuid =
-          NewUuidText(platform::UuidKind::object);
+          NewIdentity(platform::UuidKind::object);
       candidate.cost.cpu_units = cost;
       candidate.cost.sequential_read_units = cost;
       candidate.cost.memory_bytes_required = 4096;
@@ -1809,11 +1833,11 @@ bool ExchangeMatrix(const Fixture& fixture,
           ExactExchangeStream(fallback_count.result) ==
               ExactExchangeStream(preferred_count.result) &&
           Digest(fallback_raw.provider_stream) ==
-              "bd587d51678f2da5ae92b9a57a0f646bdff6fc750b06d6159ee6179616d0696c" &&
+              "18af7d53df4dbfaf19ebed8db586f57f322e8b7beb51777d83a6d02bb65348f7" &&
           Digest(fallback_sum.provider_stream) ==
-              "8b5d48cff675200e1abe0e83f9bbb1656a59020de9f05497d85b18571bb66191" &&
+              "c6713ff2f509f7403588a48b7252dfd4e5e2fcd1f199740c2b11987b557ccf0c" &&
           Digest(fallback_count.provider_stream) ==
-              "84d41074a7c4b7fc9b2c09ef32df0b879b24cade6687800adc224d999fde0fce" &&
+              "f702ee2dd409223ea0ea9b0b872e9536f10cdb3f5356e013e9da8dc305d3585b" &&
           exact_fallback_receipt(fallback_raw_replay) &&
           exact_fallback_receipt(fallback_sum_replay) &&
           exact_fallback_receipt(fallback_count_replay) &&
@@ -1837,7 +1861,7 @@ bool ExchangeMatrix(const Fixture& fixture,
           ExactExchangeStream(stale_rollup.result) ==
               ExactExchangeStream(preferred_sum.result) &&
           Digest(stale_rollup.provider_stream) ==
-              "8b5d48cff675200e1abe0e83f9bbb1656a59020de9f05497d85b18571bb66191" &&
+              "c6713ff2f509f7403588a48b7252dfd4e5e2fcd1f199740c2b11987b557ccf0c" &&
           stale_rollup.provider_stream.find("\t3\t4020000000000000\n") !=
               std::string::npos,
       "TS-34 stale rollup did not use the exact raw reconstruction fallback");
@@ -2080,10 +2104,10 @@ bool FrontdoorMatrix(const api::EngineRequestContext& context,
       "TS-19/20/22/23/24 frontdoor refusal identity drifted");
   plan::CanonicalLogicalRelationalGraph substituted_graph;
   substituted_graph.bound_sblr_tree_uuid =
-      NewUuidText(platform::UuidKind::object);
-  substituted_graph.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+      NewIdentity(platform::UuidKind::object);
+  substituted_graph.catalog_epoch_uuid = context.catalog_epoch_uuid;
   substituted_graph.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
+      context.authorization_context.authority_uuid;
   substituted_graph.local_transaction_id = context.local_transaction_id;
   substituted_graph.statement_snapshot_id =
       context.snapshot_visible_through_local_transaction_id;
@@ -2101,7 +2125,7 @@ bool FrontdoorMatrix(const api::EngineRequestContext& context,
                                                  6, 7, 8, 9};
   substituted_aggregate.origin_relational_node_ids = {1};
   substituted_aggregate.required_object_uuids = {
-      std::string(kBaseObjectUuid)};
+      kBaseObjectUuid};
   substituted_aggregate.semantic_variant_id = "SBLR_MODEL_AGGREGATE_V1";
   substituted_aggregate.model_family_identity =
       plan::CanonicalLogicalModelFamilyIdentity::kDocument;
@@ -2124,7 +2148,7 @@ bool FrontdoorMatrix(const api::EngineRequestContext& context,
 }
 
 api::RelationalTypeDescriptor DagDescriptor(
-    const std::uint32_t descriptor_id, const std::string& descriptor_uuid,
+    const std::uint32_t descriptor_id, const api::EngineUuid& descriptor_uuid,
     const std::string_view core_type, const bool timestamp = false) {
   api::RelationalTypeDescriptor descriptor;
   descriptor.descriptor_id = descriptor_id;
@@ -2143,16 +2167,16 @@ api::TypedRelationalDag TimeSeriesDag(
       aggregate != api::EngineBoundTimeSeriesAggregateV1::kNone;
   api::TypedRelationalDag dag;
   dag.wire_version = 2;
-  dag.bound_sblr_tree_uuid = NewUuidText(platform::UuidKind::object);
-  dag.bound_catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  dag.bound_sblr_tree_uuid = NewIdentity(platform::UuidKind::object);
+  dag.bound_catalog_epoch_uuid = context.catalog_epoch_uuid;
   dag.bound_security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
-  dag.statement_uuid = context.statement_uuid.canonical;
+      context.authorization_context.authority_uuid;
+  dag.statement_uuid = context.statement_uuid;
   dag.statement_timestamp = context.statement_timestamp;
-  dag.owning_transaction_uuid = context.transaction_uuid.canonical;
-  dag.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  dag.owning_transaction_uuid = context.transaction_uuid;
+  dag.statement_snapshot_uuid = context.statement_snapshot_uuid;
   dag.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   dag.local_transaction_id = context.local_transaction_id;
   dag.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
@@ -2160,19 +2184,19 @@ api::TypedRelationalDag TimeSeriesDag(
 
   if (!downsample) {
     dag.descriptors = {
-        DagDescriptor(101, storage.descriptor_uuid.canonical, "uuid"),
-        DagDescriptor(102, storage.schema_uuid.canonical, "uuid"),
+        DagDescriptor(101, storage.descriptor_uuid, "uuid"),
+        DagDescriptor(102, storage.schema_uuid, "uuid"),
         DagDescriptor(103,
-                      storage.columns[0].value_descriptor.descriptor_uuid.canonical,
+                      storage.columns[0].value_descriptor.descriptor_uuid,
                       "uuid"),
         DagDescriptor(104,
-                      storage.columns[1].value_descriptor.descriptor_uuid.canonical,
+                      storage.columns[1].value_descriptor.descriptor_uuid,
                       "timestamp", true),
         DagDescriptor(105,
-                      storage.columns[2].value_descriptor.descriptor_uuid.canonical,
+                      storage.columns[2].value_descriptor.descriptor_uuid,
                       "character"),
         DagDescriptor(106,
-                      storage.columns[3].value_descriptor.descriptor_uuid.canonical,
+                      storage.columns[3].value_descriptor.descriptor_uuid,
                       "real64"),
         DagDescriptor(107,
                       StatementDescriptorUuid(context, "raw.range.truth"),
@@ -2180,18 +2204,18 @@ api::TypedRelationalDag TimeSeriesDag(
     };
   } else {
     dag.descriptors = {
-        DagDescriptor(200, storage.descriptor_uuid.canonical, "uuid"),
-        DagDescriptor(201, storage.schema_uuid.canonical, "uuid"),
+        DagDescriptor(200, storage.descriptor_uuid, "uuid"),
+        DagDescriptor(201, storage.schema_uuid, "uuid"),
         DagDescriptor(202,
-                      storage.columns[0].value_descriptor.descriptor_uuid.canonical,
+                      storage.columns[0].value_descriptor.descriptor_uuid,
                       "uuid"),
         DagDescriptor(203,
-                      storage.columns[1].value_descriptor.descriptor_uuid.canonical,
+                      storage.columns[1].value_descriptor.descriptor_uuid,
                       "timestamp", true),
-        DagDescriptor(204, storage.columns[1].column_uuid.canonical,
+        DagDescriptor(204, storage.columns[1].column_uuid,
                       "timestamp", true),
         DagDescriptor(205,
-                      storage.columns[2].value_descriptor.descriptor_uuid.canonical,
+                      storage.columns[2].value_descriptor.descriptor_uuid,
                       "character"),
         DagDescriptor(
             206, StatementDescriptorUuid(context, "downsample.sample-count"),
@@ -2203,12 +2227,12 @@ api::TypedRelationalDag TimeSeriesDag(
             209, StatementDescriptorUuid(context, "downsample.range.truth"),
             "boolean"),
         DagDescriptor(212,
-                      storage.columns[3].value_descriptor.descriptor_uuid.canonical,
+                      storage.columns[3].value_descriptor.descriptor_uuid,
                       "real64"),
     };
     if (aggregate == api::EngineBoundTimeSeriesAggregateV1::kCount) {
       dag.descriptors.push_back(
-          DagDescriptor(207, storage.columns[3].column_uuid.canonical,
+          DagDescriptor(207, storage.columns[3].column_uuid,
                         "int64"));
     }
   }
@@ -2237,25 +2261,25 @@ api::TypedRelationalDag TimeSeriesDag(
     if (!downsample) {
       expression.bound_name_uuid =
           ordinal < 2
-              ? (ordinal == 0 ? storage.descriptor_uuid.canonical
-                              : storage.schema_uuid.canonical)
-              : storage.columns[ordinal - 2].column_uuid.canonical;
+              ? (ordinal == 0 ? storage.descriptor_uuid
+                              : storage.schema_uuid)
+              : storage.columns[ordinal - 2].column_uuid;
     } else {
       expression.bound_name_uuid =
           ordinal == 0
-              ? storage.schema_uuid.canonical
+              ? storage.schema_uuid
               : ordinal == 1
-                    ? storage.columns[0].column_uuid.canonical
+                    ? storage.columns[0].column_uuid
                     : ordinal == 2 || ordinal == 3
-                          ? storage.columns[1].column_uuid.canonical
+                          ? storage.columns[1].column_uuid
                           : ordinal == 4
-                                ? storage.columns[2].column_uuid.canonical
+                                ? storage.columns[2].column_uuid
                                 : ordinal == 5
-                                      ? storage.relation_uuid.canonical
+                                      ? storage.relation_uuid
                                       : aggregate ==
                                                 api::EngineBoundTimeSeriesAggregateV1::kCount
-                                            ? storage.relation_uuid.canonical
-                                            : storage.columns[3].column_uuid.canonical;
+                                            ? storage.relation_uuid
+                                            : storage.columns[3].column_uuid;
     }
     dag.expressions.push_back(std::move(expression));
     dag.outputs.push_back(
@@ -2269,7 +2293,7 @@ api::TypedRelationalDag TimeSeriesDag(
   alias.expression_id = 20;
   alias.expression_kind = api::RelationalExpressionKind::kIdentifier;
   alias.result_descriptor_id = downsample ? 201 : 102;
-  alias.bound_name_uuid = storage.relation_uuid.canonical;
+  alias.bound_name_uuid = storage.relation_uuid;
   dag.expressions.push_back(std::move(alias));
   for (const auto [id, encoded] :
        {std::pair<std::uint32_t, std::string_view>{21, kRangeStart},
@@ -2329,7 +2353,7 @@ api::TypedRelationalDag TimeSeriesDag(
     value.expression_id = 26;
     value.expression_kind = api::RelationalExpressionKind::kIdentifier;
     value.result_descriptor_id = 212;
-    value.bound_name_uuid = storage.columns[3].column_uuid.canonical;
+    value.bound_name_uuid = storage.columns[3].column_uuid;
     dag.expressions.push_back(std::move(value));
     api::RelationalExpressionRecord operation;
     operation.expression_id = 27;
@@ -2350,7 +2374,7 @@ api::TypedRelationalDag TimeSeriesDag(
   }
   if (downsample) source.bound_expression_ids.push_back(27);
   source.bound_expression_ids.push_back(23);
-  source.required_object_uuids = {storage.relation_uuid.canonical};
+  source.required_object_uuids = {storage.relation_uuid};
   source.semantic_variant_id = downsample ? "SBLR_MODEL_AGGREGATE_V1"
                                           : "SBLR_MODEL_SOURCE_V1";
   dag.nodes.push_back(std::move(source));
@@ -2420,7 +2444,7 @@ api::TypedRelationalDag TimeSeriesBucketDownsampleDag(
   timestamp.expression_id = 29;
   timestamp.expression_kind = api::RelationalExpressionKind::kIdentifier;
   timestamp.result_descriptor_id = 203;
-  timestamp.bound_name_uuid = storage.columns[1].column_uuid.canonical;
+  timestamp.bound_name_uuid = storage.columns[1].column_uuid;
   dag.expressions.push_back(std::move(timestamp));
   api::RelationalExpressionRecord bucket;
   bucket.expression_id = 30;
@@ -2482,7 +2506,7 @@ api::TypedRelationalDag TimeSeriesUnaryCompositionDag(
   auto dag = TimeSeriesFilterProjectDag(context, storage);
   dag.root_node_id = 5;
 
-  const auto ordering_uuid = NewUuidText(platform::UuidKind::object);
+  const auto ordering_uuid = NewIdentity(platform::UuidKind::object);
   api::RelationalPropertyRecord ordering;
   ordering.property_uuid = ordering_uuid;
   ordering.property_kind = api::RelationalPropertyKind::kOrdering;
@@ -2504,13 +2528,12 @@ api::TypedRelationalDag TimeSeriesUnaryCompositionDag(
 
   dag.descriptors.push_back(DagDescriptor(
       110, StatementDescriptorUuid(context, "window.row-number"), "int64"));
-  constexpr std::string_view kRowNumberFunctionUuid =
-      "019de5fc-2400-7539-bcce-00eef3ae7220";
+  constexpr auto kRowNumberFunctionUuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7539-bcce-00eef3ae7220");
   api::RelationalExpressionRecord row_number;
   row_number.expression_id = 41;
   row_number.expression_kind = api::RelationalExpressionKind::kFunctionCall;
   row_number.result_descriptor_id = 110;
-  row_number.function_uuid = std::string(kRowNumberFunctionUuid);
+  row_number.function_uuid = kRowNumberFunctionUuid;
   dag.expressions.push_back(std::move(row_number));
   static constexpr std::array<std::string_view, 6> kNames{
       "row_uuid", "series_uuid", "metric_uuid", "point_timestamp", "tags",
@@ -2523,14 +2546,14 @@ api::TypedRelationalDag TimeSeriesUnaryCompositionDag(
          static_cast<std::uint32_t>(ordinal)});
   }
   dag.outputs.push_back({46, 5, 41, "row_number", 110, true, 6});
-  const auto window_uuid = NewUuidText(platform::UuidKind::object);
+  const auto window_uuid = NewIdentity(platform::UuidKind::object);
   api::RelationalPropertyRecord window_property;
   window_property.property_uuid = window_uuid;
   window_property.property_kind = api::RelationalPropertyKind::kWindow;
   window_property.origin_node_id = 5;
   window_property.dependency_property_uuids = {ordering_uuid};
   window_property.window_frame_descriptor_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   dag.properties.push_back(std::move(window_property));
   api::RelationalDagNode window;
   window.node_id = 5;
@@ -2556,7 +2579,7 @@ api::TypedRelationalDag TimeSeriesUnaryCompositionDag(
   invocation.window_definition_id = 1;
   invocation.function_abi_version = 1;
   invocation.builtin_id = "sb.window.row_number";
-  invocation.function_uuid = std::string(kRowNumberFunctionUuid);
+  invocation.function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7539-bcce-00eef3ae7220");
   invocation.result_descriptor_id = 110;
   invocation.output_name_utf8 = "row_number";
   dag.window_invocations.push_back(std::move(invocation));
@@ -2579,7 +2602,7 @@ api::TypedRelationalDag TimeSeriesCteLimitDag(
   cte.semantic_variant_id = "cte.bound.v1";
   dag.nodes.push_back(std::move(cte));
   dag.descriptors.push_back(DagDescriptor(
-      110, NewUuidText(platform::UuidKind::object), "int64"));
+      110, NewIdentity(platform::UuidKind::object), "int64"));
   api::RelationalExpressionRecord limit;
   limit.expression_id = 41;
   limit.expression_kind = api::RelationalExpressionKind::kLiteral;
@@ -2605,7 +2628,7 @@ api::TypedRelationalDag TimeSeriesCountDag(
       context, storage, api::EngineBoundTimeSeriesAggregateV1::kNone);
   dag.root_node_id = 2;
   dag.descriptors.push_back(DagDescriptor(
-      110, NewUuidText(platform::UuidKind::object), "int64"));
+      110, NewIdentity(platform::UuidKind::object), "int64"));
   const auto count = exec::LookupCanonicalAggregateByFunctionV1(
       exec::CanonicalAggregateFunction::count);
   api::RelationalExpressionRecord aggregate;
@@ -2677,7 +2700,7 @@ api::TypedRelationalDag TimeSeriesSetDag(
   literal.result_descriptor_id = 101;
   literal.literal_kind = api::RelationalLiteralKind::kUuid;
   literal.literal_or_parameter_ref =
-      "40000000-0000-4000-8000-000000000099";
+      IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000099"));
   dag.expressions.push_back(std::move(literal));
   dag.values_rows.push_back({1, {40}});
   dag.outputs.push_back({41, 3, 40, "row_uuid", 101, true, 0});
@@ -2713,9 +2736,8 @@ api::TypedRelationalDag TimeSeriesMixedJoinDag(
     api::RelationalTypeDescriptor type;
     type.descriptor_id = descriptor_id;
     type.descriptor_uuid =
-        column.value_descriptor.descriptor_uuid.canonical;
-    type.type_uuid = DescriptorField(
-        column.value_descriptor.encoded_descriptor, "type_uuid");
+        column.value_descriptor.descriptor_uuid;
+    type.type_uuid = column.value_descriptor.type_uuid;
     type.nullability = column.nullable
                            ? api::RelationalNullability::kNullable
                            : api::RelationalNullability::kNonNull;
@@ -2724,7 +2746,7 @@ api::TypedRelationalDag TimeSeriesMixedJoinDag(
     expression.expression_id = expression_id;
     expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
     expression.result_descriptor_id = descriptor_id;
-    expression.bound_name_uuid = column.column_uuid.canonical;
+    expression.bound_name_uuid = column.column_uuid;
     dag.expressions.push_back(std::move(expression));
     dag.outputs.push_back(
         {expression_id, 2, expression_id, column.canonical_name_key,
@@ -2735,7 +2757,7 @@ api::TypedRelationalDag TimeSeriesMixedJoinDag(
   heap.node_kind = api::RelationalDagNodeKind::kScan;
   heap.output_descriptor_ids = {201, 202};
   heap.bound_expression_ids = {50, 51};
-  heap.required_object_uuids = {heap_storage.relation_uuid.canonical};
+  heap.required_object_uuids = {heap_storage.relation_uuid};
   heap.semantic_variant_id = "relation.source.v1";
   dag.nodes.push_back(std::move(heap));
 
@@ -2796,13 +2818,12 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
     api::RelationalTypeDescriptor type;
     type.descriptor_id = descriptor_id;
     type.descriptor_uuid =
-        column.value_descriptor.descriptor_uuid.canonical;
-    type.type_uuid = DescriptorField(
-        column.value_descriptor.encoded_descriptor, "type_uuid");
+        column.value_descriptor.descriptor_uuid;
+    type.type_uuid = column.value_descriptor.type_uuid;
     type.nullability = column.nullable
                            ? api::RelationalNullability::kNullable
                            : api::RelationalNullability::kNonNull;
-    if (!column.collation_uuid.empty()) {
+    if (!column.collation_uuid.is_nil()) {
       type.collation_uuid = column.collation_uuid;
     }
     const auto timezone_profile = DescriptorField(
@@ -2815,7 +2836,7 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
     expression.expression_id = expression_id;
     expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
     expression.result_descriptor_id = descriptor_id;
-    expression.bound_name_uuid = column.column_uuid.canonical;
+    expression.bound_name_uuid = column.column_uuid;
     dag.expressions.push_back(std::move(expression));
     dag.outputs.push_back(
         {expression_id, 2, expression_id, column.canonical_name_key,
@@ -2826,7 +2847,7 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
   heap.node_kind = api::RelationalDagNodeKind::kScan;
   heap.output_descriptor_ids = {301, 302, 303, 304, 305};
   heap.bound_expression_ids = {50, 51, 52, 53, 54};
-  heap.required_object_uuids = {heap_storage.relation_uuid.canonical};
+  heap.required_object_uuids = {heap_storage.relation_uuid};
   if (heap_is_columnar_model) {
     api::RelationalExpressionRecord source_expression;
     source_expression.expression_id = 61;
@@ -2835,7 +2856,7 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
     source_expression.result_descriptor_id = 301;
     source_expression.operator_name = "COLUMNAR_SOURCE";
     source_expression.bound_name_uuid =
-        heap_storage.relation_uuid.canonical;
+        heap_storage.relation_uuid;
     dag.expressions.push_back(std::move(source_expression));
     heap.bound_expression_ids.push_back(61);
     heap.semantic_variant_id = "SBLR_MODEL_SOURCE_V1";
@@ -2926,8 +2947,13 @@ std::string ApiRowField(const api::EngineApiResult& result,
   const auto field = std::ranges::find_if(row.fields, [&](const auto& item) {
     return item.first == field_name;
   });
-  return field == row.fields.end() ? std::string{}
-                                   : field->second.encoded_value;
+  if (field == row.fields.end()) return {};
+  const auto& value = field->second;
+  if (value.descriptor.canonical_type_name == "uuid") {
+    if (value.is_null || !value.encoded_value.empty() || value.binary_value.size() != 16) return {};
+    return {reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size()};
+  }
+  return value.encoded_value;
 }
 
 std::string ApiRealBits(const std::string_view encoded) {
@@ -2984,7 +3010,7 @@ std::string ProductionDescriptorStream(
     const sblr::CanonicalObjectFreeValuesExecutionResult& execution) {
   std::ostringstream stream;
   for (const auto& descriptor : execution.api_result.result_shape.columns) {
-    stream << descriptor.descriptor_uuid.canonical << '\t'
+    stream << IdentityBytes(descriptor.descriptor_uuid) << IdentityBytes(descriptor.type_uuid) << '\t'
            << descriptor.descriptor_kind << '\t'
            << descriptor.canonical_type_name << '\t'
            << descriptor.encoded_descriptor << '\n';
@@ -3001,10 +3027,10 @@ std::string ProductionResultProofStream(
         });
     return found == execution.api_result.evidence.end()
                ? std::string{}
-               : found->evidence_id;
+               : EvidenceBytes(found->evidence_id);
   };
   std::ostringstream stream;
-  stream << execution.selected_plan_uuid << '\n'
+  stream << IdentityBytes(execution.selected_plan_uuid) << '\n'
          << Digest(ProductionDescriptorStream(execution)) << '\n';
   for (const auto& row : execution.api_result.result_shape.rows) {
     for (const auto& [name, value] : row.fields) {
@@ -3023,7 +3049,7 @@ std::string ProductionResultProofStream(
 bool ProductionRouteMatrix(const Fixture& fixture,
                            const api::EngineRequestContext& context,
                            std::set<std::string>* completed) {
-  const auto& storage = fixture.descriptors.at(std::string(kBaseObjectUuid));
+  const auto& storage = fixture.descriptors.at(kBaseObjectUuid);
   const bool rollup_binding_known_answer =
       ExactTimeSeriesRollupCapabilityKnownAnswer();
   std::set<std::string> frontdoor_outcomes;
@@ -3134,7 +3160,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
         });
     if (alias_expression != wrong_alias_dag.expressions.end()) {
       alias_expression->bound_name_uuid =
-          NewUuidText(platform::UuidKind::object);
+          NewIdentity(platform::UuidKind::object);
     }
   }
   const auto wrong_alias = sblr::ExecuteCanonicalCurrentHeapQuery(
@@ -3150,17 +3176,17 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   const auto unsupported_aggregate = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, std::move(unsupported_aggregate_dag)});
   const auto& duplicate_tag_storage =
-      fixture.descriptors.at(std::string(kDuplicateTagObjectUuid));
+      fixture.descriptors.at(kDuplicateTagObjectUuid);
   const auto duplicate_tag = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, TimeSeriesDag(context, duplicate_tag_storage,
                               api::EngineBoundTimeSeriesAggregateV1::kNone)});
   const auto& nonfinite_storage =
-      fixture.descriptors.at(std::string(kNonfiniteObjectUuid));
+      fixture.descriptors.at(kNonfiniteObjectUuid);
   const auto nonfinite = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, TimeSeriesDag(context, nonfinite_storage,
                               api::EngineBoundTimeSeriesAggregateV1::kNone)});
   const auto& invisible_storage =
-      fixture.descriptors.at(std::string(kInvisibleInvalidObjectUuid));
+      fixture.descriptors.at(kInvisibleInvalidObjectUuid);
   const auto invisible = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, TimeSeriesDag(context, invisible_storage,
                               api::EngineBoundTimeSeriesAggregateV1::kNone)});
@@ -3173,10 +3199,10 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       execute(api::EngineBoundTimeSeriesAggregateV1::kNone);
   const auto dropped_ambiguous = api::DropNoSqlProviderGeneration(
       context, api::EngineNoSqlProviderFamily::kTimeSeries,
-      std::string(kAmbiguousProviderUuid), std::string(kBaseObjectUuid));
+      ProviderName(kAmbiguousProviderUuid), kBaseObjectUuid);
   const auto dropped_preferred = api::DropNoSqlProviderGeneration(
       context, api::EngineNoSqlProviderFamily::kTimeSeries,
-      std::string(kPreferredProviderUuid), std::string(kBaseObjectUuid));
+      ProviderName(kPreferredProviderUuid), kBaseObjectUuid);
   const auto fallback_raw_dag = TimeSeriesDag(
       context, storage, api::EngineBoundTimeSeriesAggregateV1::kNone);
   const auto fallback_raw = sblr::ExecuteCanonicalCurrentHeapQuery(
@@ -3209,25 +3235,24 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       stale_rollup_generation.time_series_rollup_capability_uuid;
   auto mismatched_rollup_generation = stale_rollup_generation;
   mismatched_rollup_generation.time_series_rollup_capability_uuid =
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
   const auto refused_mismatched_rollup_publish =
       api::PublishNoSqlProviderGeneration(context,
                                           mismatched_rollup_generation);
-  auto uppercase_rollup_generation = stale_rollup_generation;
-  uppercase_rollup_generation.provider_id =
-      "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
-  const bool uppercase_rollup_derivation_empty =
-      api::DeriveTimeSeriesRollupCapabilityUuidV1(
-          uppercase_rollup_generation)
+  auto non_v7_provider_rollup_generation = stale_rollup_generation;
+  non_v7_provider_rollup_generation.provider_uuid = scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+  const bool non_v7_provider_rollup_derivation_empty =
+      api::ComputeTimeSeriesRollupBindingDigestV2(
+          non_v7_provider_rollup_generation)
           .empty();
-  const auto refused_uppercase_rollup_publish =
+  const auto refused_non_v7_provider_rollup_publish =
       api::PublishNoSqlProviderGeneration(context,
-                                          uppercase_rollup_generation);
+                                          non_v7_provider_rollup_generation);
   auto zero_uuid_rollup_generation = stale_rollup_generation;
   zero_uuid_rollup_generation.database_uuid =
-      "00000000-0000-0000-0000-000000000000";
+      scratchbird::tests::FixtureUuidLiteral("00000000-0000-0000-0000-000000000000");
   const bool zero_uuid_rollup_derivation_empty =
-      api::DeriveTimeSeriesRollupCapabilityUuidV1(
+      api::ComputeTimeSeriesRollupBindingDigestV2(
           zero_uuid_rollup_generation)
           .empty();
   const auto refused_zero_uuid_rollup_publish =
@@ -3239,13 +3264,13 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       api::CleanupNoSqlProviderGenerations(context, false);
   const auto loaded_stale_rollup = api::LoadNoSqlProviderGeneration(
       context, api::EngineNoSqlProviderFamily::kTimeSeries,
-      std::string(kPreferredProviderUuid), std::string(kBaseObjectUuid));
+      ProviderName(kPreferredProviderUuid), kBaseObjectUuid);
   const auto listed_stale_rollups =
       api::ListNoSqlProviderGenerations(context);
   api::EngineNoSqlProviderGenerationRepairRequest repair_rollup;
   repair_rollup.family = api::EngineNoSqlProviderFamily::kTimeSeries;
-  repair_rollup.provider_id = std::string(kPreferredProviderUuid);
-  repair_rollup.collection_uuid = std::string(kBaseObjectUuid);
+  repair_rollup.provider_id = ProviderName(kPreferredProviderUuid);
+  repair_rollup.collection_uuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007600");
   repair_rollup.repair_admitted = true;
   repair_rollup.authoritative_source_generations.push_back(
       stale_rollup_generation);
@@ -3253,19 +3278,19 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       api::RepairNoSqlProviderGeneration(context, repair_rollup);
   const auto rewrite_probe_generation = TimeSeriesProviderGeneration(
       context, kAmbiguousProviderUuid, kPreEpochObjectUuid,
-      fixture.descriptors.at(std::string(kPreEpochObjectUuid))
+      fixture.descriptors.at(kPreEpochObjectUuid)
               .descriptor_generation +
           2'000);
   const auto published_rewrite_probe =
       api::PublishNoSqlProviderGeneration(context, rewrite_probe_generation);
   const auto dropped_rewrite_probe = api::DropNoSqlProviderGeneration(
       context, api::EngineNoSqlProviderFamily::kTimeSeries,
-      std::string(kAmbiguousProviderUuid), std::string(kPreEpochObjectUuid));
+      ProviderName(kAmbiguousProviderUuid), kPreEpochObjectUuid);
   const auto cleared_rewritten_rollup_cache =
       api::CleanupNoSqlProviderGenerations(context, false);
   const auto loaded_rewritten_rollup = api::LoadNoSqlProviderGeneration(
       context, api::EngineNoSqlProviderFamily::kTimeSeries,
-      std::string(kPreferredProviderUuid), std::string(kBaseObjectUuid));
+      ProviderName(kPreferredProviderUuid), kBaseObjectUuid);
 
   using PersistedGenerationPairs =
       std::vector<std::pair<std::string, std::string>>;
@@ -3294,51 +3319,62 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   std::vector<std::string> unrelated_generation_records;
   PersistedGenerationPairs valid_rollup_pairs;
   bool captured_single_valid_rollup_record = false;
+  std::set<std::string> identity_fields;
   {
     std::ifstream in(generation_store_path, std::ios::binary);
-    std::string line;
-    while (std::getline(in, line)) {
-      const auto first_tab = line.find('\t');
-      const auto second_tab =
-          first_tab == std::string::npos
-              ? std::string::npos
-              : line.find('\t', first_tab + 1);
-      const bool generation_record =
-          first_tab != std::string::npos &&
-          second_tab != std::string::npos &&
-          line.substr(0, first_tab) == "SBNOSQLPG1" &&
-          line.substr(first_tab + 1, second_tab - first_tab - 1) ==
-              "GENERATION";
-      if (!generation_record) {
-        unrelated_generation_records.push_back(line);
-        continue;
-      }
-      auto pairs = api::DecodeCrudPairs(line.substr(second_tab + 1));
-      const bool target_record =
-          pair_value(pairs, "family") == "time_series" &&
-          pair_value(pairs, "provider_id") == kPreferredProviderUuid &&
-          pair_value(pairs, "collection_uuid") == kBaseObjectUuid;
-      if (target_record) {
-        valid_rollup_pairs = std::move(pairs);
-        captured_single_valid_rollup_record = true;
-      } else {
-        unrelated_generation_records.push_back(line);
+    const std::string bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    constexpr std::string_view magic = "SBNOSQLPG2";
+    const std::span<const std::uint8_t> input(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
+    std::size_t cursor = magic.size();
+    bool valid_store = bytes.starts_with(magic);
+    std::size_t target_count = 0;
+    while (valid_store && cursor < input.size()) {
+      const auto frame_start = cursor;
+      std::uint32_t size = 0;
+      if (!api::ReadBinaryU32(input, &cursor, &size) || size > input.size() - cursor) { valid_store = false; break; }
+      api::BinaryCatalogMetadata fields;
+      if (!api::DecodeBinaryCatalogMetadata(std::string_view(bytes).substr(cursor, size),
+              "nosql.provider_generation.v2", &fields)) { valid_store = false; break; }
+      cursor += size;
+      if (fields.text["family"] == "time_series" &&
+          fields.text["provider_id"] == ProviderName(kPreferredProviderUuid) &&
+          fields.identities["collection_uuid"] == kBaseObjectUuid) {
+        ++target_count;
+        for (const auto& [key, value] : fields.text) valid_rollup_pairs.emplace_back(key, value);
+        for (const auto& [key, value] : fields.identities) {
+          identity_fields.insert(key);
+          valid_rollup_pairs.emplace_back(key, IdentityBytes(value));
+        }
+      } else unrelated_generation_records.push_back(bytes.substr(frame_start, cursor - frame_start));
+    }
+    captured_single_valid_rollup_record = valid_store && cursor == input.size() && target_count == 1;
+  }
+  const auto write_target_generation = [&](const PersistedGenerationPairs& pairs) {
+    std::string payload = "SBMETA02";
+    if (!api::AppendBinaryString(&payload, "nosql.provider_generation.v2")) return false;
+    std::uint32_t identities = 0;
+    for (const auto& [key, value] : pairs) if (identity_fields.contains(key)) ++identities;
+    api::AppendBinaryU32(&payload, static_cast<std::uint32_t>(pairs.size()) - identities);
+    api::AppendBinaryU32(&payload, identities);
+    for (bool identity : {false, true}) {
+      for (const auto& [key, value] : pairs) {
+        if (identity_fields.contains(key) != identity) continue;
+        if (!api::catalog_record_codec::Put(payload, key)) return false;
+        if (identity) {
+          if (value.size() != 16) return false;
+          payload.append(value);
+        } else if (!api::catalog_record_codec::Put(payload, value)) return false;
       }
     }
-  }
-  const auto write_target_generation =
-      [&](const PersistedGenerationPairs& pairs) {
-        std::ofstream out(generation_store_path,
-                          std::ios::binary | std::ios::trunc);
-        if (!out) return false;
-        for (const auto& line : unrelated_generation_records) {
-          out << line << '\n';
-        }
-        out << "SBNOSQLPG1\tGENERATION\t"
-            << api::EncodeCrudPairs(pairs) << '\n';
-        out.flush();
-        return static_cast<bool>(out);
-      };
+    std::string bytes = "SBNOSQLPG2";
+    for (const auto& frame : unrelated_generation_records) bytes.append(frame);
+    api::AppendBinaryU32(&bytes, static_cast<std::uint32_t>(payload.size()));
+    bytes.append(payload);
+    std::ofstream out(generation_store_path, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), bytes.size());
+    out.flush();
+    return static_cast<bool>(out);
+  };
   struct PersistedMutationCase {
     std::string label;
     std::string field;
@@ -3347,31 +3383,31 @@ bool ProductionRouteMatrix(const Fixture& fixture,
     bool security_redaction = false;
   };
   const auto substituted_capability =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto substituted_generation =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto substituted_statement_snapshot =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto substituted_metadata_snapshot =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto substituted_transaction =
-      NewUuidText(platform::UuidKind::transaction);
+      NewIdentity(platform::UuidKind::transaction);
   const auto substituted_security_context =
-      NewUuidText(platform::UuidKind::principal);
+      NewIdentity(platform::UuidKind::principal);
   const auto substituted_catalog_epoch =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto substituted_provider =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto substituted_database =
-      NewUuidText(platform::UuidKind::database);
+      NewIdentity(platform::UuidKind::database);
   const auto substituted_collection =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const std::vector<PersistedMutationCase> persisted_mutation_cases{
       {"capability_uuid", "time_series_rollup_capability_uuid",
-       substituted_capability, "SB_MODEL_PROVIDER_GENERATION_STALE_V1"},
+       IdentityBytes(substituted_capability), "SB_MODEL_PROVIDER_GENERATION_STALE_V1"},
       {"family", "family", "document",
        "SB_MODEL_PROVIDER_GENERATION_STALE_V1"},
-      {"generation_uuid", "generation_uuid", substituted_generation,
+      {"generation_uuid", "generation_uuid", IdentityBytes(substituted_generation),
        "SB_MODEL_PROVIDER_GENERATION_STALE_V1"},
       {"generation_id", "generation_id",
        std::to_string(stale_rollup_generation.generation_id + 1),
@@ -3415,12 +3451,12 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       {"security_recheck", "time_series_rollup_security_recheck_required",
        "false", "SB_MODEL_SECURITY_ADMISSION_REFUSED_V1", true},
       {"statement_snapshot", "time_series_rollup_statement_snapshot_uuid",
-       substituted_statement_snapshot, "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"},
+       IdentityBytes(substituted_statement_snapshot), "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"},
       {"metadata_snapshot",
        "time_series_rollup_statement_metadata_snapshot_uuid",
-       substituted_metadata_snapshot, "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"},
+       IdentityBytes(substituted_metadata_snapshot), "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"},
       {"owning_transaction", "time_series_rollup_owning_transaction_uuid",
-       substituted_transaction, "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"},
+       IdentityBytes(substituted_transaction), "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"},
       {"local_transaction", "time_series_rollup_local_transaction_id",
        std::to_string(context.local_transaction_id + 1),
        "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"},
@@ -3430,7 +3466,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
            context.snapshot_visible_through_local_transaction_id + 1),
        "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"},
       {"security_context", "time_series_rollup_security_context_uuid",
-       substituted_security_context, "SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+       IdentityBytes(substituted_security_context), "SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
        true},
       {"security_epoch", "security_epoch",
        std::to_string(std::max<std::uint64_t>(1, context.security_epoch) + 1),
@@ -3439,7 +3475,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
        std::to_string(std::max<std::uint64_t>(1, context.security_epoch) + 1),
        "SB_MODEL_SECURITY_ADMISSION_REFUSED_V1", true},
       {"catalog_epoch_uuid", "time_series_rollup_catalog_epoch_uuid",
-       substituted_catalog_epoch, "SB_MODEL_CATALOG_GENERATION_STALE_V1"},
+       IdentityBytes(substituted_catalog_epoch), "SB_MODEL_CATALOG_GENERATION_STALE_V1"},
       {"catalog_epoch", "catalog_epoch",
        std::to_string(
            std::max<std::uint64_t>(1, context.catalog_generation_id) + 1),
@@ -3447,14 +3483,14 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       {"descriptor_epoch", "descriptor_epoch",
        std::to_string(std::max<std::uint64_t>(1, context.resource_epoch) + 1),
        "SB_MODEL_CATALOG_GENERATION_STALE_V1"},
-      {"provider_id", "provider_id", substituted_provider,
+      {"provider_uuid", "provider_uuid", IdentityBytes(substituted_provider),
        "SB_MODEL_PROVIDER_GENERATION_STALE_V1"},
       {"database_identity", "database_identity",
        api::EngineNoSqlProviderDatabaseIdentity(context) + ".substituted",
        "SB_MODEL_PROVIDER_GENERATION_STALE_V1"},
-      {"database_uuid", "database_uuid", substituted_database,
+      {"database_uuid", "database_uuid", IdentityBytes(substituted_database),
        "SB_MODEL_PROVIDER_GENERATION_STALE_V1"},
-      {"collection_uuid", "collection_uuid", substituted_collection,
+      {"collection_uuid", "collection_uuid", IdentityBytes(substituted_collection),
        "SB_MODEL_PROVIDER_GENERATION_STALE_V1"},
   };
   struct PersistedMutationObservation {
@@ -3467,7 +3503,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   bool mutation_fixture_exact =
       captured_single_valid_rollup_record &&
       pair_value(valid_rollup_pairs, "time_series_rollup_capability_uuid") ==
-          rollup_capability_uuid;
+          IdentityBytes(rollup_capability_uuid);
   if (mutation_fixture_exact) {
     for (const auto& mutation : persisted_mutation_cases) {
       auto mutated_pairs = valid_rollup_pairs;
@@ -3489,7 +3525,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
           api::CleanupNoSqlProviderGenerations(context, false);
       const auto reloaded_valid_rollup = api::LoadNoSqlProviderGeneration(
           context, api::EngineNoSqlProviderFamily::kTimeSeries,
-          std::string(kPreferredProviderUuid), std::string(kBaseObjectUuid));
+          ProviderName(kPreferredProviderUuid), kBaseObjectUuid);
       observation.restored_and_revalidated =
           valid_record_restored && cleared_restored_cache.ok &&
           reloaded_valid_rollup.ok &&
@@ -3508,26 +3544,39 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   const auto stale_rollup_count =
       execute(api::EngineBoundTimeSeriesAggregateV1::kCount);
 
-  auto legacy_no_key_pairs = valid_rollup_pairs;
-  legacy_no_key_pairs.erase(
-      std::remove_if(legacy_no_key_pairs.begin(), legacy_no_key_pairs.end(),
+  auto missing_carrier_pairs = valid_rollup_pairs;
+  missing_carrier_pairs.erase(
+      std::remove_if(missing_carrier_pairs.begin(), missing_carrier_pairs.end(),
                      [](const auto& pair) {
                        return pair.first.starts_with("time_series_");
                      }),
-      legacy_no_key_pairs.end());
-  const bool legacy_no_key_physically_omitted =
+      missing_carrier_pairs.end());
+  const bool missing_carrier_physically_omitted =
       captured_single_valid_rollup_record &&
-      std::ranges::none_of(legacy_no_key_pairs, [](const auto& pair) {
+      std::ranges::none_of(missing_carrier_pairs, [](const auto& pair) {
         return pair.first.starts_with("time_series_");
       }) &&
-      write_target_generation(legacy_no_key_pairs);
-  const auto cleared_legacy_no_key_cache =
+      write_target_generation(missing_carrier_pairs);
+  const auto cleared_missing_carrier_cache =
       api::CleanupNoSqlProviderGenerations(context, false);
-  const auto loaded_legacy_no_key = api::LoadNoSqlProviderGeneration(
+  const auto loaded_missing_carrier = api::LoadNoSqlProviderGeneration(
       context, api::EngineNoSqlProviderFamily::kTimeSeries,
-      std::string(kPreferredProviderUuid), std::string(kBaseObjectUuid));
-  const auto legacy_no_key_downsample =
+      ProviderName(kPreferredProviderUuid), kBaseObjectUuid);
+  const auto missing_carrier_downsample =
       execute(api::EngineBoundTimeSeriesAggregateV1::kSum);
+  if (!write_target_generation(valid_rollup_pairs) ||
+      !api::CleanupNoSqlProviderGenerations(context, false).ok)
+    return Require(false, "failed to restore metadata after missing-field refusal");
+  const auto restored_legacy_generation = TimeSeriesProviderGeneration(
+      context, kPreferredProviderUuid, kBaseObjectUuid,
+      storage.descriptor_generation + 1'000);
+  const auto restored_legacy_provider =
+      api::PublishNoSqlProviderGeneration(context, restored_legacy_generation);
+  const auto cleared_legacy_cache =
+      api::CleanupNoSqlProviderGenerations(context, false);
+  const auto loaded_legacy_provider = api::LoadNoSqlProviderGeneration(
+      context, api::EngineNoSqlProviderFamily::kTimeSeries,
+      ProviderName(kPreferredProviderUuid), kBaseObjectUuid);
   auto request_only_rollup = Request(
       context, storage,
       api::EngineBoundTimeSeriesReadOperationV1::kBucketDownsample,
@@ -3538,16 +3587,6 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   request_only_rollup.exact_fallback_selected = true;
   const auto request_only_rollup_supplement =
       api::EngineBoundTimeSeriesReadV1(request_only_rollup);
-  const auto restored_legacy_generation = TimeSeriesProviderGeneration(
-      context, kPreferredProviderUuid, kBaseObjectUuid,
-      storage.descriptor_generation + 1'000);
-  const auto restored_legacy_provider =
-      api::PublishNoSqlProviderGeneration(context, restored_legacy_generation);
-  const auto cleared_legacy_cache =
-      api::CleanupNoSqlProviderGenerations(context, false);
-  const auto loaded_legacy_provider = api::LoadNoSqlProviderGeneration(
-      context, api::EngineNoSqlProviderFamily::kTimeSeries,
-      std::string(kPreferredProviderUuid), std::string(kBaseObjectUuid));
   auto stale_provider_generation = TimeSeriesProviderGeneration(
       context, kPreferredProviderUuid, kBaseObjectUuid,
       storage.descriptor_generation + 1'000);
@@ -3565,7 +3604,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   const auto bucket = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, TimeSeriesBucketDag(context, storage)});
   const auto& pre_epoch_storage =
-      fixture.descriptors.at(std::string(kPreEpochObjectUuid));
+      fixture.descriptors.at(kPreEpochObjectUuid);
   const auto pre_epoch_bucket = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context,
        TimeSeriesBucketDag(context, pre_epoch_storage,
@@ -3594,13 +3633,13 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   auto substituted_raw_descriptor = TimeSeriesDag(
       context, storage, api::EngineBoundTimeSeriesAggregateV1::kNone);
   substituted_raw_descriptor.descriptors[3].descriptor_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto refused_raw_descriptor =
       execute_dag(std::move(substituted_raw_descriptor));
   auto substituted_raw_binding = TimeSeriesDag(
       context, storage, api::EngineBoundTimeSeriesAggregateV1::kNone);
   substituted_raw_binding.expressions[3].bound_name_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto refused_raw_binding =
       execute_dag(std::move(substituted_raw_binding));
   auto substituted_raw_name = TimeSeriesDag(
@@ -3614,7 +3653,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       });
   if (bucket_timestamp != substituted_bucket.expressions.end()) {
     bucket_timestamp->bound_name_uuid =
-        NewUuidText(platform::UuidKind::object);
+        NewIdentity(platform::UuidKind::object);
   }
   const auto refused_bucket_binding =
       execute_dag(std::move(substituted_bucket));
@@ -3630,22 +3669,21 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       });
   if (downsample_value != substituted_downsample.expressions.end()) {
     downsample_value->bound_name_uuid =
-        NewUuidText(platform::UuidKind::object);
+        NewIdentity(platform::UuidKind::object);
   }
   const auto refused_downsample_binding =
       execute_dag(std::move(substituted_downsample));
   auto substituted_object = TimeSeriesDag(
       context, storage, api::EngineBoundTimeSeriesAggregateV1::kNone);
   substituted_object.nodes.front().required_object_uuids.front() =
-      std::string(kPreEpochObjectUuid);
+      kPreEpochObjectUuid;
   const auto refused_object = execute_dag(std::move(substituted_object));
-  constexpr std::string_view kUnavailableObjectUuid =
-      "40000000-0000-4000-8000-0000000076ff";
+  constexpr auto kUnavailableObjectUuid = scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-0000000076ff");
   auto unavailable_storage = storage;
-  unavailable_storage.relation_uuid.canonical =
-      std::string(kUnavailableObjectUuid);
+  unavailable_storage.relation_uuid =
+      kUnavailableObjectUuid;
   auto unavailable_context = context;
-  AddAuthorization(&unavailable_context, std::string(kUnavailableObjectUuid));
+  AddAuthorization(&unavailable_context, kUnavailableObjectUuid);
   const auto unavailable = sblr::ExecuteCanonicalCurrentHeapQuery(
       {unavailable_context,
        TimeSeriesDag(unavailable_context, unavailable_storage,
@@ -3684,7 +3722,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   const auto set_replay = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, set_dag});
   const auto& heap_storage =
-      fixture.descriptors.at(std::string(kJoinObjectUuid));
+      fixture.descriptors.at(kJoinObjectUuid);
   const auto direct_multileg_profiles =
       Rcp079DirectProofMultilegProfilesV10();
   bool direct_multileg_scope_exact = direct_multileg_profiles.size() == 320;
@@ -3695,7 +3733,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
         bool installed = false;
         {
           opt::MultilegDescriptorDispatchScopeV1 descriptor_scope(
-              request_context.statement_uuid.canonical,
+              request_context.statement_uuid,
               direct_multileg_profiles);
           installed = descriptor_scope.installed();
           if (installed) {
@@ -3704,7 +3742,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
           }
         }
         const auto released = opt::LookupMultilegDescriptorDispatchScopeV1(
-            request_context.statement_uuid.canonical);
+            request_context.statement_uuid);
         direct_multileg_scope_exact &= Require(
             installed && !released.accepted && released.profiles.empty() &&
                 released.diagnostic_id ==
@@ -3737,8 +3775,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   const auto execute_asof =
       [&](const api::EngineBoundTimeSeriesAggregateV1 aggregate,
           const bool time_series_left, const bool left_outer) {
-        const auto& selected_heap = fixture.descriptors.at(std::string(
-            time_series_left ? kAsofRightObjectUuid : kJoinObjectUuid));
+        const auto& selected_heap = fixture.descriptors.at((time_series_left ? kAsofRightObjectUuid : kJoinObjectUuid));
         return execute_multileg(
             context, TimeSeriesAsofJoinDag(context, storage, selected_heap,
                                            aggregate, time_series_left,
@@ -3753,7 +3790,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
           context,
           TimeSeriesAsofJoinDag(
               context, storage,
-              fixture.descriptors.at(std::string(kAsofRightObjectUuid)),
+              fixture.descriptors.at(kAsofRightObjectUuid),
               api::EngineBoundTimeSeriesAggregateV1::kNone, true, true,
               true));
   const auto raw_series_right_dag = TimeSeriesAsofJoinDag(
@@ -3785,14 +3822,14 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   auto stale_catalog_context = context;
   ++stale_catalog_context.catalog_generation_id;
   ++stale_catalog_context.authorization_context.catalog_generation_id;
-  stale_catalog_context.catalog_epoch_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  stale_catalog_context.catalog_epoch_uuid =
+      NewIdentity(platform::UuidKind::object);
   const auto stale_catalog = sblr::ExecuteCanonicalCurrentHeapQuery(
       {stale_catalog_context, stale_catalog_dag});
   auto denied_context = context;
   std::erase_if(denied_context.authorization_context.grants,
                 [](const auto& grant) {
-                  return grant.target_uuid.canonical == kBaseObjectUuid;
+                  return grant.target_uuid == scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000007600");
                 });
   const auto denied = sblr::ExecuteCanonicalCurrentHeapQuery(
       {denied_context,
@@ -3808,7 +3845,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   auto substituted_mga_dag = TimeSeriesDag(
       context, storage, api::EngineBoundTimeSeriesAggregateV1::kNone);
   substituted_mga_dag.statement_snapshot_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto substituted_mga = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, std::move(substituted_mga_dag)});
   auto cancelled_context = context;
@@ -3834,7 +3871,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
         low_memory_context,
         TimeSeriesAsofJoinDag(
             low_memory_context, storage,
-            fixture.descriptors.at(std::string(kAsofRightObjectUuid)),
+            fixture.descriptors.at(kAsofRightObjectUuid),
             api::EngineBoundTimeSeriesAggregateV1::kNone, true, true));
     combined_peak_attempts << '[' << memory_budget << ':'
                            << first_diagnostic(low_memory) << ']';
@@ -3904,11 +3941,11 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   };
   const auto has_evidence = [](const auto& result,
                                const std::string_view kind,
-                               const std::string_view id) {
+                               const auto& id) {
     return std::ranges::any_of(result.api_result.evidence,
                                [&](const auto& evidence) {
                                   return evidence.evidence_kind == kind &&
-                                        evidence.evidence_id == id;
+                                        ([&] { if constexpr (std::is_same_v<std::decay_t<decltype(id)>, api::EngineUuid>) { const auto* native = std::get_if<api::EngineUuid>(&evidence.evidence_id); return native && *native == id; } else { return scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id); } })();
                                });
   };
   const auto evidence_id = [](const auto& result,
@@ -3919,7 +3956,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
         });
     return found == result.api_result.evidence.end()
                ? std::string("absent")
-               : found->evidence_id;
+               : EvidenceBytes(found->evidence_id);
   };
   const auto atomic_no_root = [](const auto& execution) {
     return !execution.api_result.ok && !execution.physical_dag_executed &&
@@ -3927,7 +3964,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
            execution.physical_node_count == 0 &&
            execution.canonical_result_column_count == 0 &&
            execution.canonical_result_row_count == 0 &&
-           execution.selected_plan_uuid.empty() &&
+           execution.selected_plan_uuid.is_nil() &&
            execution.canonical_result_bytes.empty() &&
            execution.api_result.result_shape.columns.empty() &&
            execution.api_result.result_shape.rows.empty();
@@ -3972,11 +4009,12 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                  "canonical.time_series_root_causal_counter";
         });
     return atomic_success_cleanup_once(execution) &&
-           !execution.selected_plan_uuid.empty() &&
+           !execution.selected_plan_uuid.is_nil() &&
            has_evidence(execution, "canonical.selected_plan",
                         execution.selected_plan_uuid) &&
            counter != execution.api_result.evidence.end() &&
-           !counter->evidence_id.empty() && counter->evidence_id != "0";
+           std::holds_alternative<std::string>(counter->evidence_id) &&
+           !std::get<std::string>(counter->evidence_id).empty() && std::get<std::string>(counter->evidence_id) != "0";
   };
   const auto rendered_execution = [](const auto& execution) {
     std::ostringstream observed;
@@ -3989,39 +4027,39 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       }
     }
     for (const auto& evidence : execution.api_result.evidence) {
-      observed << evidence.evidence_kind << evidence.evidence_id;
+      observed << evidence.evidence_kind << EvidenceBytes(evidence.evidence_id);
     }
     return observed.str();
   };
   const auto protected_identity_absent = [&](const auto& execution) {
     const auto rendered = rendered_execution(execution);
-    return rendered.find(kBaseObjectUuid) == std::string::npos &&
-           rendered.find(kPreferredProviderUuid) == std::string::npos;
+    return rendered.find(IdentityBytes(kBaseObjectUuid)) == std::string::npos &&
+           rendered.find(IdentityBytes(kPreferredProviderUuid)) == std::string::npos;
   };
   const auto rollup_protected_identities_absent =
       [&](const auto& execution, const std::string_view extra = {}) {
     const auto rendered = rendered_execution(execution);
-    const std::array<std::string_view, 8> protected_identities{
+    const std::array<api::EngineUuid, 8> protected_identities{
         kBaseObjectUuid,
         kPreferredProviderUuid,
         rollup_capability_uuid,
-        context.transaction_uuid.canonical,
-        context.statement_snapshot_uuid.canonical,
-        context.statement_metadata_snapshot_uuid.canonical,
-        context.authorization_context.authority_uuid.canonical,
-        context.catalog_epoch_uuid.canonical,
+        context.transaction_uuid,
+        context.statement_snapshot_uuid,
+        context.statement_metadata_snapshot_uuid,
+        context.authorization_context.authority_uuid,
+        context.catalog_epoch_uuid,
     };
     return std::ranges::none_of(
-               protected_identities, [&](const std::string_view identity) {
-                 return !identity.empty() &&
-                        rendered.find(identity) != std::string::npos;
+               protected_identities, [&](const api::EngineUuid& identity) {
+                 return !identity.is_nil() &&
+                        rendered.find(IdentityBytes(identity)) != std::string::npos;
                }) &&
            (extra.empty() || rendered.find(extra) == std::string::npos);
   };
   const auto exact_groups = [](const auto& execution,
                                const std::array<std::string_view, 4>& values,
                                const bool real_bits) {
-    static constexpr std::array<std::string_view, 4> kMetrics{
+    static constexpr std::array<api::EngineUuid, 4> kMetrics{
         kMetricOneUuid, kMetricOneUuid, kMetricOneUuid, kMetricTwoUuid};
     static constexpr std::array<std::string_view, 4> kBuckets{
         "2026-08-10T12:00:00.000000000Z",
@@ -4043,9 +4081,9 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       const auto aggregate =
           ApiRowField(execution.api_result, row, "aggregate_value");
       if (ApiRowField(execution.api_result, row, "series_uuid") !=
-              kBaseObjectUuid ||
+              IdentityBytes(kBaseObjectUuid) ||
           ApiRowField(execution.api_result, row, "metric_uuid") !=
-              kMetrics[row] ||
+              IdentityBytes(kMetrics[row]) ||
           ApiRowField(execution.api_result, row, "bucket_start") !=
               kBuckets[row] ||
           ApiRowField(execution.api_result, row, "tags") != kTags[row] ||
@@ -4059,7 +4097,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   };
   const auto exact_rollup_metadata = [&](const auto& metadata) {
     return metadata.family == api::EngineNoSqlProviderFamily::kTimeSeries &&
-           metadata.provider_id == kPreferredProviderUuid &&
+           metadata.provider_id == ProviderName(kPreferredProviderUuid) &&
            metadata.collection_uuid == kBaseObjectUuid &&
            metadata.time_series_rollup_candidate_present &&
            metadata.time_series_rollup_capability_uuid ==
@@ -4070,20 +4108,20 @@ bool ProductionRouteMatrix(const Fixture& fixture,
            metadata.time_series_rollup_exactness_attestation_state ==
                "TIME_SERIES_ROLLUP_SECTION_8_EXACT_V1" &&
            metadata.time_series_rollup_statement_snapshot_uuid ==
-               context.statement_snapshot_uuid.canonical &&
+               context.statement_snapshot_uuid &&
            metadata.time_series_rollup_statement_metadata_snapshot_uuid ==
-               context.statement_metadata_snapshot_uuid.canonical &&
+               context.statement_metadata_snapshot_uuid &&
            metadata.time_series_rollup_owning_transaction_uuid ==
-               context.transaction_uuid.canonical &&
+               context.transaction_uuid &&
            metadata.time_series_rollup_local_transaction_id ==
                context.local_transaction_id &&
            metadata
                    .time_series_rollup_snapshot_visible_through_local_transaction_id ==
                context.snapshot_visible_through_local_transaction_id &&
            metadata.time_series_rollup_security_context_uuid ==
-               context.authorization_context.authority_uuid.canonical &&
+               context.authorization_context.authority_uuid &&
            metadata.time_series_rollup_catalog_epoch_uuid ==
-               context.catalog_epoch_uuid.canonical &&
+               context.catalog_epoch_uuid &&
            metadata.time_series_rollup_exact_residual_recheck_required &&
            metadata.time_series_rollup_base_row_mga_recheck_required &&
            metadata.time_series_rollup_security_recheck_required &&
@@ -4094,8 +4132,8 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   const bool rollup_persistence_exact =
       rollup_binding_known_answer &&
       !refused_mismatched_rollup_publish.ok &&
-      uppercase_rollup_derivation_empty &&
-      !refused_uppercase_rollup_publish.ok &&
+      non_v7_provider_rollup_derivation_empty &&
+      !refused_non_v7_provider_rollup_publish.ok &&
       zero_uuid_rollup_derivation_empty &&
       !refused_zero_uuid_rollup_publish.ok && published_stale_rollup.ok &&
       cleared_rollup_cache.ok &&
@@ -4121,46 +4159,33 @@ bool ProductionRouteMatrix(const Fixture& fixture,
           loaded_rewritten_rollup.evidence.end();
   const auto exact_default_rollup_metadata = [](const auto& metadata) {
     return !metadata.time_series_rollup_candidate_present &&
-           metadata.time_series_rollup_capability_uuid.empty() &&
+           metadata.time_series_rollup_capability_uuid.is_nil() &&
+           metadata.time_series_rollup_binding_digest.empty() &&
            metadata.time_series_rollup_generation == 0 &&
            metadata.time_series_visible_late_arrival_generation == 0 &&
            metadata.time_series_rollup_interval_ns == 0 &&
            metadata.time_series_rollup_exactness_attestation_state.empty() &&
-           metadata.time_series_rollup_statement_snapshot_uuid.empty() &&
-           metadata.time_series_rollup_statement_metadata_snapshot_uuid.empty() &&
-           metadata.time_series_rollup_owning_transaction_uuid.empty() &&
+           metadata.time_series_rollup_statement_snapshot_uuid.is_nil() &&
+           metadata.time_series_rollup_statement_metadata_snapshot_uuid.is_nil() &&
+           metadata.time_series_rollup_owning_transaction_uuid.is_nil() &&
            metadata.time_series_rollup_local_transaction_id == 0 &&
            metadata
                    .time_series_rollup_snapshot_visible_through_local_transaction_id ==
                0 &&
-           metadata.time_series_rollup_security_context_uuid.empty() &&
-           metadata.time_series_rollup_catalog_epoch_uuid.empty() &&
+           metadata.time_series_rollup_security_context_uuid.is_nil() &&
+           metadata.time_series_rollup_catalog_epoch_uuid.is_nil() &&
            !metadata.time_series_rollup_exact_residual_recheck_required &&
            !metadata.time_series_rollup_base_row_mga_recheck_required &&
            !metadata.time_series_rollup_security_recheck_required;
   };
-  const bool legacy_rollup_defaults_exact =
-      legacy_no_key_physically_omitted && cleared_legacy_no_key_cache.ok &&
-      loaded_legacy_no_key.ok &&
-      exact_default_rollup_metadata(loaded_legacy_no_key.metadata) &&
+  const bool missing_carrier_refusal_and_default_restore_exact =
+      missing_carrier_physically_omitted && cleared_missing_carrier_cache.ok &&
+      !loaded_missing_carrier.ok &&
       restored_legacy_provider.ok && cleared_legacy_cache.ok &&
       loaded_legacy_provider.ok &&
       exact_default_rollup_metadata(loaded_legacy_provider.metadata);
-  const bool legacy_no_key_route_exact =
-      exact_groups(legacy_no_key_downsample,
-                   {"4020000000000000", "4028000000000000",
-                    "4022000000000000", "4000000000000000"},
-                   true) &&
-      has_evidence(legacy_no_key_downsample,
-                   "canonical.time_series_provider_route",
-                   "TIME_SERIES_PREFERRED_PROVIDER_V1") &&
-      std::ranges::none_of(
-          legacy_no_key_downsample.api_result.evidence,
-          [](const auto& evidence) {
-            return evidence.evidence_kind.starts_with(
-                "canonical.time_series_rollup_");
-          }) &&
-      atomic_success_cleanup_once(legacy_no_key_downsample);
+  const bool missing_carrier_route_exact =
+      !missing_carrier_downsample.api_result.ok && atomic_no_root(missing_carrier_downsample);
   const bool request_only_rollup_remains_supplemental =
       request_only_rollup_supplement.ok &&
       request_only_rollup_supplement.exact_fallback_observed &&
@@ -4244,15 +4269,15 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       }
     }
   }
-  if (!legacy_rollup_defaults_exact || !legacy_no_key_route_exact ||
+  if (!missing_carrier_refusal_and_default_restore_exact || !missing_carrier_route_exact ||
       !request_only_rollup_remains_supplemental) {
     std::cerr << "TS-34 legacy defaults="
-              << (legacy_rollup_defaults_exact ? "true" : "false")
-              << " route=" << (legacy_no_key_route_exact ? "true" : "false")
+              << (missing_carrier_refusal_and_default_restore_exact ? "true" : "false")
+              << " route=" << (missing_carrier_route_exact ? "true" : "false")
               << " request-only="
               << (request_only_rollup_remains_supplemental ? "true" : "false")
               << " route-diagnostic="
-              << route_diagnostic(legacy_no_key_downsample) << '\n';
+              << route_diagnostic(missing_carrier_downsample) << '\n';
   }
   std::set<std::string> observed_cancellation_checkpoints;
   const auto cancellation_at_checkpoint =
@@ -4294,7 +4319,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       for (const auto& evidence : injected.api_result.evidence) {
         if (evidence.evidence_kind ==
             "canonical.time_series_cancellation_checkpoint") {
-          observed_cancellation_checkpoints.insert(evidence.evidence_id);
+          if (const auto* label = std::get_if<std::string>(&evidence.evidence_id)) observed_cancellation_checkpoints.insert(*label);
         }
       }
       if (atomic_no_root(injected) &&
@@ -4327,7 +4352,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       [&](const auto& cancellation_context) {
         return TimeSeriesAsofJoinDag(
             cancellation_context, storage,
-            fixture.descriptors.at(std::string(kAsofRightObjectUuid)),
+            fixture.descriptors.at(kAsofRightObjectUuid),
             api::EngineBoundTimeSeriesAggregateV1::kNone, true, true);
       },
       "time-series ASOF bridge was cancelled before execution", true);
@@ -4452,10 +4477,10 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       join_complete(downsample_series_right_inner, 12, 1) &&
       ApiRowField(raw_series_right_outer.api_result, 0,
                   "row_uuid") ==
-          "40000000-0000-4000-8000-000000000001" &&
+          IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000001")) &&
       ApiRowField(raw_series_right_outer.api_result, 1,
                   "row_uuid") ==
-          "40000000-0000-4000-8000-000000000003" &&
+          IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000003")) &&
       ApiRowField(raw_series_left_outer.api_result, 0,
                   "event_timestamp").empty() &&
       ApiRowField(raw_series_left_outer.api_result, 1,
@@ -4718,7 +4743,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                          [](const auto& evidence) {
                            return evidence.evidence_kind ==
                                       "canonical.time_series_composition_root" &&
-                                  evidence.evidence_id == "3";
+                                  scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, "3");
                          }),
                  "ordinary FILTER/PROJECT root was not executed: " +
                      route_diagnostic(composition)) &&
@@ -4738,7 +4763,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                          [](const auto& evidence) {
                            return evidence.evidence_kind ==
                                       "canonical.time_series_composition_root" &&
-                                  evidence.evidence_id == "5";
+                                  scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, "5");
                          }),
                  "ordinary SORT/WINDOW root was not executed: " +
                      route_diagnostic(unary)) &&
@@ -4758,7 +4783,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                          [](const auto& evidence) {
                            return evidence.evidence_kind ==
                                       "canonical.time_series_composition_root" &&
-                                  evidence.evidence_id == "5";
+                                  scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, "5");
                          }),
                  "ordinary CTE/LIMIT root was not executed: " +
                      route_diagnostic(cte_limit)) &&
@@ -4778,7 +4803,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                          [](const auto& evidence) {
                            return evidence.evidence_kind ==
                                       "canonical.time_series_composition_root" &&
-                                  evidence.evidence_id == "2";
+                                  scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, "2");
                          }),
                  "ordinary global COUNT(*) root was not executed: " +
                      route_diagnostic(counted)) &&
@@ -4816,7 +4841,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                      set_union.canonical_result_column_count == 1 &&
                      set_union.canonical_result_row_count == 8 &&
                      ApiRowField(set_union.api_result, 7, "row_uuid") ==
-                         "40000000-0000-4000-8000-000000000099" &&
+                         IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000099")) &&
                      set_replay.api_result.ok &&
                      set_replay.canonical_result_bytes ==
                          set_union.canonical_result_bytes,
@@ -4886,11 +4911,11 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   credit("TS-01", raw.api_result.ok &&
                       raw.canonical_result_row_count == 7 &&
                       Digest(ProductionRawStream(raw)) ==
-                          "bd587d51678f2da5ae92b9a57a0f646bdff6fc750b06d6159ee6179616d0696c" &&
+                          "18af7d53df4dbfaf19ebed8db586f57f322e8b7beb51777d83a6d02bb65348f7" &&
                       ApiRowField(raw.api_result, 0, "row_uuid") ==
-                          "40000000-0000-4000-8000-000000000001" &&
+                          IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000001")) &&
                       ApiRowField(raw.api_result, 6, "row_uuid") ==
-                          "40000000-0000-4000-8000-000000000007" &&
+                          IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000007")) &&
                       post_access_cleanup_once(raw),
          "TS-01 ordinary raw signed range drifted");
   credit("TS-02", ApiRowField(raw.api_result, 0, "point_timestamp") ==
@@ -4902,8 +4927,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                         return std::ranges::any_of(
                             row.fields, [](const auto& field) {
                               return field.first == "row_uuid" &&
-                                     field.second.encoded_value ==
-                                         "40000000-0000-4000-8000-000000000008";
+                                     IdentityValueEquals(field.second, scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000008"));
                             });
                       }),
          "TS-03 ordinary exclusive end boundary drifted");
@@ -4919,9 +4943,9 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                       atomic_success_cleanup_once(offset_range),
          "TS-05 ordinary offset-equivalent endpoints drifted");
   credit("TS-06", ApiRowField(raw.api_result, 3, "row_uuid") ==
-                          "40000000-0000-4000-8000-000000000004" &&
+                          IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000004")) &&
                       ApiRowField(raw.api_result, 4, "row_uuid") ==
-                          "40000000-0000-4000-8000-000000000005" &&
+                          IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000005")) &&
                       ApiRowField(sum.api_result, 1, "sample_count") == "2" &&
                       ApiRealBits(ApiRowField(sum.api_result, 1,
                                               "aggregate_value")) ==
@@ -4946,12 +4970,12 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                       sum, {"4020000000000000", "4028000000000000",
                             "4022000000000000", "4000000000000000"}, true) &&
                       Digest(ProductionDownsampleStream(sum, false)) ==
-                          "8b5d48cff675200e1abe0e83f9bbb1656a59020de9f05497d85b18571bb66191" &&
+                          "c6713ff2f509f7403588a48b7252dfd4e5e2fcd1f199740c2b11987b557ccf0c" &&
                       post_access_cleanup_once(sum),
          "TS-09 ordinary SUM groups drifted");
   credit("TS-10", exact_groups(count, {"3", "2", "1", "1"}, false) &&
                       Digest(ProductionDownsampleStream(count, true)) ==
-                          "84d41074a7c4b7fc9b2c09ef32df0b879b24cade6687800adc224d999fde0fce" &&
+                          "f702ee2dd409223ea0ea9b0b872e9536f10cdb3f5356e013e9da8dc305d3585b" &&
                       post_access_cleanup_once(count),
          "TS-10 ordinary COUNT groups drifted");
   credit("TS-11", exact_groups(
@@ -5076,7 +5100,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                       ProductionRawStream(stale_provider_fallback) ==
                           ProductionRawStream(raw) &&
                       Digest(ProductionRawStream(stale_provider_fallback)) ==
-                          "bd587d51678f2da5ae92b9a57a0f646bdff6fc750b06d6159ee6179616d0696c" &&
+                          "18af7d53df4dbfaf19ebed8db586f57f322e8b7beb51777d83a6d02bb65348f7" &&
                       has_evidence(
                           stale_provider_fallback,
                           "canonical.time_series_provider_route",
@@ -5221,13 +5245,13 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                       ProductionDownsampleStream(fallback_count, true) ==
                           ProductionDownsampleStream(count, true) &&
                       Digest(ProductionRawStream(fallback_raw)) ==
-                          "bd587d51678f2da5ae92b9a57a0f646bdff6fc750b06d6159ee6179616d0696c" &&
+                          "18af7d53df4dbfaf19ebed8db586f57f322e8b7beb51777d83a6d02bb65348f7" &&
                       Digest(ProductionDownsampleStream(fallback_sum,
                                                         false)) ==
-                          "8b5d48cff675200e1abe0e83f9bbb1656a59020de9f05497d85b18571bb66191" &&
+                          "c6713ff2f509f7403588a48b7252dfd4e5e2fcd1f199740c2b11987b557ccf0c" &&
                       Digest(ProductionDownsampleStream(fallback_count,
                                                         true)) ==
-                          "84d41074a7c4b7fc9b2c09ef32df0b879b24cade6687800adc224d999fde0fce" &&
+                          "f702ee2dd409223ea0ea9b0b872e9536f10cdb3f5356e013e9da8dc305d3585b" &&
                       post_access_cleanup_once(fallback_raw) &&
                       post_access_cleanup_once(fallback_sum) &&
                       post_access_cleanup_once(fallback_count),
@@ -5239,8 +5263,8 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                       pre_access_cleanup_zero(unavailable),
          "TS-33 ordinary absent provider/fallback refusal drifted");
   credit("TS-34", rollup_persistence_exact &&
-                      legacy_rollup_defaults_exact &&
-                      legacy_no_key_route_exact &&
+                      missing_carrier_refusal_and_default_restore_exact &&
+                      missing_carrier_route_exact &&
                       request_only_rollup_remains_supplemental &&
                       persisted_mutation_matrix_exact &&
                       exact_groups(
@@ -5252,10 +5276,10 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                                    {"3", "2", "1", "1"}, false) &&
                       Digest(ProductionDownsampleStream(stale_rollup_sum,
                                                         false)) ==
-                          "8b5d48cff675200e1abe0e83f9bbb1656a59020de9f05497d85b18571bb66191" &&
+                          "c6713ff2f509f7403588a48b7252dfd4e5e2fcd1f199740c2b11987b557ccf0c" &&
                       Digest(ProductionDownsampleStream(stale_rollup_count,
                                                         true)) ==
-                          "84d41074a7c4b7fc9b2c09ef32df0b879b24cade6687800adc224d999fde0fce" &&
+                          "f702ee2dd409223ea0ea9b0b872e9536f10cdb3f5356e013e9da8dc305d3585b" &&
                       has_evidence(stale_rollup_sum,
                                    "canonical.time_series_rollup_candidate",
                                    rollup_capability_uuid) &&
@@ -5289,10 +5313,10 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   credit("TS-35", join_complete(raw_series_right_outer, 11, 2) &&
                       ApiRowField(raw_series_right_outer.api_result, 0,
                                   "row_uuid") ==
-                          "40000000-0000-4000-8000-000000000001" &&
+                          IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000001")) &&
                       ApiRowField(raw_series_right_outer.api_result, 1,
                                   "row_uuid") ==
-                          "40000000-0000-4000-8000-000000000003" &&
+                          IdentityBytes(scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000003")) &&
                       std::ranges::all_of(
                           std::array{&raw_series_right_outer,
                                      &raw_series_right_inner,
@@ -5381,10 +5405,10 @@ bool ProductionRouteMatrix(const Fixture& fixture,
 
 void BindPublishedNodeContexts(exec::TypedPhysicalNodeDag* dag) {
   for (auto& node : dag->nodes) {
-    node.selected_alternative_uuid = NewUuidText(platform::UuidKind::object);
-    node.executor_capability_uuid = NewUuidText(platform::UuidKind::object);
+    node.selected_alternative_uuid = NewIdentity(platform::UuidKind::object);
+    node.executor_capability_uuid = NewIdentity(platform::UuidKind::object);
     node.executor_capability_abi_version = 1;
-    node.cost_vector_uuid = NewUuidText(platform::UuidKind::object);
+    node.cost_vector_uuid = NewIdentity(platform::UuidKind::object);
     node.memory_bytes_required = 4096;
     node.engine_capability_validated = true;
     node.mga_statement_context = dag->mga_statement_context;
@@ -5403,20 +5427,20 @@ exec::TypedPhysicalNodeDag AsofDag(
     const std::uint64_t maximum_output_rows = 16) {
   exec::TypedPhysicalNodeDag dag;
   dag.abi_version = 2;
-  dag.selected_plan_uuid = NewUuidText(platform::UuidKind::object);
+  dag.selected_plan_uuid = NewIdentity(platform::UuidKind::object);
   dag.root_physical_node_id = 3;
   dag.local_transaction_id = context.local_transaction_id;
   dag.statement_snapshot_id =
       context.snapshot_visible_through_local_transaction_id;
   dag.mga_statement_context = PhysicalMga(context);
-  dag.bound_sblr_tree_uuid = NewUuidText(platform::UuidKind::object);
-  dag.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  dag.bound_sblr_tree_uuid = NewIdentity(platform::UuidKind::object);
+  dag.catalog_epoch_uuid = context.catalog_epoch_uuid;
   dag.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
-  dag.capability_snapshot_uuid = NewUuidText(platform::UuidKind::object);
-  dag.resource_snapshot_uuid = NewUuidText(platform::UuidKind::object);
-  dag.statistics_snapshot_uuid = NewUuidText(platform::UuidKind::object);
-  dag.route_snapshot_uuid = NewUuidText(platform::UuidKind::object);
+      context.authorization_context.authority_uuid;
+  dag.capability_snapshot_uuid = NewIdentity(platform::UuidKind::object);
+  dag.resource_snapshot_uuid = NewIdentity(platform::UuidKind::object);
+  dag.statistics_snapshot_uuid = NewIdentity(platform::UuidKind::object);
+  dag.route_snapshot_uuid = NewIdentity(platform::UuidKind::object);
   dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest, dag.bound_sblr_tree_uuid},
       {exec::PhysicalAdmissionStage::kCatalogEpoch, dag.catalog_epoch_uuid},
@@ -5457,7 +5481,7 @@ exec::TypedPhysicalNodeDag AsofDag(
   join.causal_counter_id = 3;
   join.logical_semantic_variant_id = left_outer ? "join.asof.left.v1"
                                                 : "join.asof.inner.v1";
-  join.transformation_uuid = NewUuidText(platform::UuidKind::object);
+  join.transformation_uuid = NewIdentity(platform::UuidKind::object);
   exec::CanonicalTimeSeriesAsofJoinRequestV1 receipt;
   receipt.tolerance_ns = tolerance_ns;
   receipt.maximum_comparisons = maximum_comparisons;
@@ -5504,20 +5528,20 @@ exec::DescriptorBatch RelationalTimestampBatch(
     const std::vector<std::string>& timestamps) {
   exec::DescriptorBatch batch;
   auto descriptor = timestamp_descriptor;
-  descriptor.descriptor_uuid.canonical = NewUuidText(platform::UuidKind::object);
+  descriptor.descriptor_uuid = NewIdentity(platform::UuidKind::object);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "timestamp_tz";
   descriptor.encoded_descriptor =
-      "canonical=timestamp_tz;type_uuid=" + CoreTypeUuid("timestamp") +
-      ";nullable=" + (nullable ? std::string("true") : std::string("false"));
+      "canonical=timestamp_tz;nullable=" + (nullable ? std::string("true") : std::string("false"));
+  descriptor.type_uuid = CoreTypeUuid("timestamp");
   batch.columns.push_back({"event_timestamp", descriptor, nullable,
                            descriptor_id});
   auto metric_descriptor =
-      DerivedDescriptor(NewUuidText(platform::UuidKind::object), "uuid",
+      DerivedDescriptor(NewIdentity(platform::UuidKind::object), "uuid",
                         "uuid");
   metric_descriptor.descriptor_kind = "scalar";
   auto tags_descriptor =
-      DerivedDescriptor(NewUuidText(platform::UuidKind::object), "text",
+      DerivedDescriptor(NewIdentity(platform::UuidKind::object), "text",
                         "character");
   tags_descriptor.descriptor_kind = "scalar";
   batch.columns.push_back(
@@ -5528,7 +5552,7 @@ exec::DescriptorBatch RelationalTimestampBatch(
     exec::DescriptorTuple row;
     row.values = {
         TypedValue(descriptor, timestamp),
-        TypedValue(metric_descriptor, std::string(kMetricOneUuid)),
+        TypedValue(metric_descriptor, kMetricOneUuid),
         TypedValue(tags_descriptor,
                    "{\"host\":\"a\",\"zone\":\"east\"}"),
     };
@@ -5592,19 +5616,19 @@ bool AsofMatrix(const Fixture& fixture,
     std::ostringstream out;
     for (const auto& column : batch.columns) {
       out << column.descriptor_id << ':' << column.stable_name << ':'
-          << column.descriptor.descriptor_uuid.canonical << '\n';
+          << IdentityBytes(column.descriptor.descriptor_uuid) << IdentityBytes(column.descriptor.type_uuid) << '\n';
     }
     for (const auto& row : batch.rows) {
       for (const auto& value : row.values) {
         out << static_cast<unsigned>(value.state) << ':'
-            << value.descriptor.descriptor_uuid.canonical << ':'
+            << IdentityBytes(value.descriptor.descriptor_uuid) << IdentityBytes(value.descriptor.type_uuid) << ':'
             << value.encoded_value << ';';
       }
       out << '\n';
     }
     return out.str();
   };
-  const auto& base = fixture.descriptors.at(std::string(kBaseObjectUuid));
+  const auto& base = fixture.descriptors.at(kBaseObjectUuid);
   const auto raw = ExecuteThroughCommonSpine(
       Request(context, base,
               api::EngineBoundTimeSeriesReadOperationV1::kRangeRead,
@@ -5616,7 +5640,7 @@ bool AsofMatrix(const Fixture& fixture,
   const std::string east = "{\"host\":\"a\",\"zone\":\"east\"}";
   const auto key = [&](const std::int64_t timestamp_ns) {
     return exec::CanonicalTimeSeriesAsofKeyV1{
-        std::string(kMetricOneUuid), east, timestamp_ns};
+        kMetricOneUuid, east, timestamp_ns};
   };
   const auto seconds = [](const std::int64_t value) {
     return 1'786'363'200'000'000'000LL + value * 1'000'000'000LL;
@@ -5727,7 +5751,7 @@ bool AsofMatrix(const Fixture& fixture,
       exec::ExecuteCanonicalTimeSeriesAsofJoinV1(key_substitution);
   auto tie_substitution = request35;
   tie_substitution.right_tie_break_row_uuids.front() =
-      "40000000-0000-4000-8000-000000000099";
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000099");
   const auto tie_substitution_refused =
       exec::ExecuteCanonicalTimeSeriesAsofJoinV1(tie_substitution);
   auto duplicate_raw_identity = request35;
@@ -5808,10 +5832,8 @@ bool AsofMatrix(const Fixture& fixture,
               std::vector<std::int64_t>{-1, 0, 2} &&
           result35.output_batch.rows[0].values[3].state ==
               api::EngineValueState::sql_null &&
-          result35.output_batch.rows[1].values[3].encoded_value ==
-              "40000000-0000-4000-8000-000000000001" &&
-          result35.output_batch.rows[2].values[3].encoded_value ==
-              "40000000-0000-4000-8000-000000000003" &&
+          IdentityValueEquals(result35.output_batch.rows[1].values[3], scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000001")) &&
+          IdentityValueEquals(result35.output_batch.rows[2].values[3], scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000003")) &&
           std::ranges::all_of(
               result35.output_batch.columns |
                   std::views::drop(request35.left_batch.columns.size()),
@@ -5916,21 +5938,17 @@ bool AsofMatrix(const Fixture& fixture,
   tie.left_batch.rows = {request35.left_batch.rows[1]};
   tie.left_keys = {key(seconds(20))};
   tie.right_batch.rows = {right_raw.rows[0], right_raw.rows[0]};
-  tie.right_batch.rows[0].values[0].encoded_value =
-      "40000000-0000-4000-8000-000000000009";
-  tie.right_batch.rows[1].values[0].encoded_value =
-      "40000000-0000-4000-8000-000000000001";
+  tie.right_batch.rows[0].values[0] = TypedValue(tie.right_batch.rows[0].values[0].descriptor, scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000009"));
+  tie.right_batch.rows[1].values[0] = TypedValue(tie.right_batch.rows[1].values[0].descriptor, scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000001"));
   tie.right_keys = {key(seconds(0)), key(seconds(0))};
   tie.right_tie_break_row_uuids = {
-      "40000000-0000-4000-8000-000000000009",
-      "40000000-0000-4000-8000-000000000001"};
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000009"),
+      scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000001")};
   const auto tie_result = exec::ExecuteCanonicalTimeSeriesAsofJoinV1(tie);
   passed &= Require(tie_result.diagnostic.ok &&
                         tie_result.matched_right_ordinals ==
                             std::vector<std::int64_t>{1} &&
-                        tie_result.output_batch.rows.front().values[3]
-                                .encoded_value ==
-                            "40000000-0000-4000-8000-000000000001",
+                        IdentityValueEquals(tie_result.output_batch.rows.front().values[3], scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000001")),
                     "TS-35 equal-timestamp raw row-UUID tie-break drifted");
   completed->insert("TS-35");
   completed->insert("TS-31");
@@ -6233,7 +6251,7 @@ bool AsofMatrix(const Fixture& fixture,
 bool DirectCompositionMatrix(const Fixture& fixture,
                              const api::EngineRequestContext& context,
                              std::set<std::string>* completed) {
-  const auto& base = fixture.descriptors.at(std::string(kBaseObjectUuid));
+  const auto& base = fixture.descriptors.at(kBaseObjectUuid);
   auto dag = AsofDag(context, {101}, {102});
   const auto cte = std::ranges::find_if(dag.nodes, [](const auto& node) {
     return node.physical_node_id == 2;
@@ -6504,7 +6522,7 @@ bool DirectCompositionMatrix(const Fixture& fixture,
   }
   aggregate_request.result_column = {
       "point_count",
-      DerivedDescriptor(NewUuidText(platform::UuidKind::object), "int64",
+      DerivedDescriptor(NewIdentity(platform::UuidKind::object), "int64",
                         "int64"),
       false, 110};
   aggregate_request.mga_authority = AsofAuthority(aggregate_dag);
@@ -6522,7 +6540,7 @@ bool DirectCompositionMatrix(const Fixture& fixture,
   order_term.expression_descriptor_id = 101;
   sort_request.order_terms = {order_term};
   sort_request.deterministic_tie_evidence_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   sort_request.maximum_pair_comparisons = 128;
   sort_request.mga_authority = AsofAuthority(sort_dag);
   const auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
@@ -6533,11 +6551,11 @@ bool DirectCompositionMatrix(const Fixture& fixture,
       window_dag.nodes,
       [](const auto& node) { return node.physical_node_id == 3; });
   const auto window_property_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto ordering_property_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   const auto partition_property_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   window_root->required_property_uuids = {partition_property_uuid,
                                           ordering_property_uuid};
   window_root->delivered_property_uuids = {window_property_uuid};
@@ -6552,9 +6570,9 @@ bool DirectCompositionMatrix(const Fixture& fixture,
   window_request.partition_property_uuid = partition_property_uuid;
   window_request.ordering_property_uuid = ordering_property_uuid;
   window_request.term_binding_evidence_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   window_request.deterministic_tie_evidence_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   window_request.maximum_pair_comparisons = 128;
   window_request.mga_authority = AsofAuthority(window_dag);
   const auto window_ordered =
@@ -6562,9 +6580,9 @@ bool DirectCompositionMatrix(const Fixture& fixture,
   exec::CanonicalWindowFrameRequest frame_request;
   frame_request.partition_order = window_ordered;
   frame_request.frame.frame_descriptor_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   frame_request.frame_property_binding_evidence_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   frame_request.mga_authority = AsofAuthority(window_dag);
   const auto framed = exec::ExecuteCanonicalWindowFrames(frame_request);
 
@@ -6643,13 +6661,13 @@ bool DirectCompositionMatrix(const Fixture& fixture,
       exec::ExecuteCanonicalRecursiveCteWorking(recursive_request);
 
   exec::CanonicalResultPublicationRequest publication_request;
-  publication_request.statement_uuid = context.statement_uuid.canonical;
+  publication_request.statement_uuid = context.statement_uuid;
   publication_request.mga_authority = AsofAuthority(limit_dag);
   publication_request.selected_physical_dag = limit_dag;
   publication_request.selected_catalog_epoch_uuid =
-      context.catalog_epoch_uuid.canonical;
+      context.catalog_epoch_uuid;
   publication_request.execution_attempt_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   publication_request.result_kind = exec::CanonicalResultKind::kRows;
   publication_request.physical_output_batch = recursive.output_batch;
   exec::CanonicalResultColumnBinding result_binding;
@@ -6658,19 +6676,16 @@ bool DirectCompositionMatrix(const Fixture& fixture,
   result_binding.published_descriptor = exec::CanonicalResultColumnDescriptor{
       0, "row_uuid",
       recursive.output_batch.columns.empty()
-          ? std::string{}
+          ? api::EngineUuid{}
           : recursive.output_batch.columns.front().descriptor.descriptor_uuid
-                .canonical,
+                ,
       recursive.output_batch.columns.empty()
-          ? std::string{}
-          : DescriptorField(
-                recursive.output_batch.columns.front()
-                    .descriptor.encoded_descriptor,
-                "type_uuid"),
+          ? api::EngineUuid{}
+          : recursive.output_batch.columns.front().descriptor.type_uuid,
       exec::CanonicalResultNullability::kNonNull, std::nullopt, std::nullopt};
   publication_request.column_bindings = {std::move(result_binding)};
   publication_request.transaction_effect_evidence_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   publication_request.maximum_row_count = 4;
   const auto publication =
       exec::PublishCanonicalResultEnvelope(publication_request);
@@ -6733,7 +6748,7 @@ bool ProviderMatrix(const Fixture& fixture,
                     const api::EngineRequestContext& context,
                     std::set<std::string>* completed) {
   bool passed = true;
-  const auto& base = fixture.descriptors.at(std::string(kBaseObjectUuid));
+  const auto& base = fixture.descriptors.at(kBaseObjectUuid);
   const auto range = api::EngineBoundTimeSeriesReadOperationV1::kRangeRead;
   const auto downsample =
       api::EngineBoundTimeSeriesReadOperationV1::kBucketDownsample;
@@ -6754,16 +6769,16 @@ bool ProviderMatrix(const Fixture& fixture,
           raw.provider_generation != raw.descriptor_generation &&
           raw.ordering_id == "series_metric_timestamp_tags_row_ascending_v1" &&
           Digest(RawStream(raw)) ==
-              "bd587d51678f2da5ae92b9a57a0f646bdff6fc750b06d6159ee6179616d0696c",
+              "18af7d53df4dbfaf19ebed8db586f57f322e8b7beb51777d83a6d02bb65348f7",
       "TS-01 raw stream/digest drifted");
   completed->insert("TS-01");
   passed &= Require(raw.ok && raw.rows.front().row_uuid ==
-                                  "40000000-0000-4000-8000-000000000001",
+                                  scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000001"),
                     "TS-02 start boundary drifted");
   completed->insert("TS-02");
   passed &= Require(raw.ok && std::none_of(raw.rows.begin(), raw.rows.end(), [](const auto& row) {
                       return row.row_uuid ==
-                             "40000000-0000-4000-8000-000000000008";
+                             scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000008");
                     }),
                     "TS-03 end boundary leaked");
   completed->insert("TS-03");
@@ -6789,7 +6804,7 @@ bool ProviderMatrix(const Fixture& fixture,
   completed->insert("TS-07");
 
   auto output_bound_request = Request(
-      context, fixture.descriptors.at(std::string(kOutputBoundObjectUuid)),
+      context, fixture.descriptors.at(kOutputBoundObjectUuid),
       range, none);
   output_bound_request.maximum_output_rows = 1;
   output_bound_request.maximum_scanned_row_versions = 5;
@@ -6798,11 +6813,11 @@ bool ProviderMatrix(const Fixture& fixture,
   passed &= Require(
       output_bound.ok && output_bound.rows.size() == 1 &&
           output_bound.rows.front().row_uuid ==
-              "40000000-0000-4000-8000-000000000022",
+              scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000022"),
       "TS-07 out-of-range visible rows consumed the selected-output bound");
 
   const auto& pre_descriptor =
-      fixture.descriptors.at(std::string(kPreEpochObjectUuid));
+      fixture.descriptors.at(kPreEpochObjectUuid);
   const auto pre = api::EngineBoundTimeSeriesReadV1(Request(
       context, pre_descriptor, downsample,
       api::EngineBoundTimeSeriesAggregateV1::kCount,
@@ -6820,14 +6835,14 @@ bool ProviderMatrix(const Fixture& fixture,
       sum.ok && sum.downsample_rows.size() == 4 &&
           Digest(DownsampleStream(
               sum, api::EngineBoundTimeSeriesAggregateV1::kSum)) ==
-              "8b5d48cff675200e1abe0e83f9bbb1656a59020de9f05497d85b18571bb66191",
+              "c6713ff2f509f7403588a48b7252dfd4e5e2fcd1f199740c2b11987b557ccf0c",
       "TS-09 SUM stream/digest drifted");
   completed->insert("TS-09");
   passed &= Require(
       count.ok && count.downsample_rows.size() == 4 &&
           Digest(DownsampleStream(
               count, api::EngineBoundTimeSeriesAggregateV1::kCount)) ==
-              "84d41074a7c4b7fc9b2c09ef32df0b879b24cade6687800adc224d999fde0fce",
+              "f702ee2dd409223ea0ea9b0b872e9536f10cdb3f5356e013e9da8dc305d3585b",
       "TS-10 COUNT stream/digest drifted");
   completed->insert("TS-10");
   const auto avg = run(downsample, api::EngineBoundTimeSeriesAggregateV1::kAvg);
@@ -6917,7 +6932,7 @@ bool ProviderMatrix(const Fixture& fixture,
                                   "{\"host\":\"a\",\"zone\":\"east\"}",
                     "TS-15 tag canonicalization drifted");
   const auto& unicode_descriptor =
-      fixture.descriptors.at(std::string(kUnicodeOrderObjectUuid));
+      fixture.descriptors.at(kUnicodeOrderObjectUuid);
   const auto unicode = api::EngineBoundTimeSeriesReadV1(
       Request(context, unicode_descriptor, range, none));
   const std::string unicode_low = "{\"label\":\"\xc2\x80\"}";
@@ -6928,14 +6943,14 @@ bool ProviderMatrix(const Fixture& fixture,
           unicode.rows[0].tags == unicode_low &&
           unicode.rows[1].tags == unicode_high &&
           unicode.rows[0].row_uuid ==
-              "40000000-0000-4000-8000-000000000016" &&
+              scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000016") &&
           unicode.rows[1].row_uuid ==
-              "40000000-0000-4000-8000-000000000017",
+              scratchbird::tests::FixtureUuidLiteral("40000000-0000-7000-8000-000000000017"),
       "TS-15 unsigned UTF-8 ordering or surrogate-pair canonicalization drifted");
   completed->insert("TS-15");
 
   const auto duplicate = api::EngineBoundTimeSeriesReadV1(Request(
-      context, fixture.descriptors.at(std::string(kDuplicateTagObjectUuid)),
+      context, fixture.descriptors.at(kDuplicateTagObjectUuid),
       range, none));
   passed &= Require(!duplicate.ok && duplicate.rows.empty() &&
                         Diagnostic(duplicate) ==
@@ -6943,11 +6958,11 @@ bool ProviderMatrix(const Fixture& fixture,
                         duplicate.data_access_observed,
                     "TS-16 duplicate tag refusal drifted");
   const auto lone_surrogate = api::EngineBoundTimeSeriesReadV1(Request(
-      context, fixture.descriptors.at(std::string(kLoneSurrogateObjectUuid)),
+      context, fixture.descriptors.at(kLoneSurrogateObjectUuid),
       range, none));
   const auto reversed_surrogate = api::EngineBoundTimeSeriesReadV1(Request(
       context,
-      fixture.descriptors.at(std::string(kReversedSurrogateObjectUuid)),
+      fixture.descriptors.at(kReversedSurrogateObjectUuid),
       range, none));
   passed &= Require(
       !lone_surrogate.ok && lone_surrogate.rows.empty() &&
@@ -6959,7 +6974,7 @@ bool ProviderMatrix(const Fixture& fixture,
       "TS-16 lone/reversed UTF-16 surrogate refusal drifted");
   completed->insert("TS-16");
   const auto nonfinite = api::EngineBoundTimeSeriesReadV1(Request(
-      context, fixture.descriptors.at(std::string(kNonfiniteObjectUuid)), range,
+      context, fixture.descriptors.at(kNonfiniteObjectUuid), range,
       none));
   passed &= Require(!nonfinite.ok && nonfinite.rows.empty() &&
                         Diagnostic(nonfinite) ==
@@ -7094,7 +7109,7 @@ bool ProviderMatrix(const Fixture& fixture,
     return false;
   };
   const bool duplicate_scan_cancelled = tag_cancellation_atomic(
-      fixture.descriptors.at(std::string(kDuplicateTagObjectUuid)));
+      fixture.descriptors.at(kDuplicateTagObjectUuid));
   const bool canonical_output_cancelled =
       tag_cancellation_atomic(unicode_descriptor);
   std::size_t downsample_checkpoint_count = 0;
@@ -7367,7 +7382,7 @@ bool ProviderMatrix(const Fixture& fixture,
                     "TS-38 deterministic replay drifted");
   completed->insert("TS-38");
   const auto invisible = api::EngineBoundTimeSeriesReadV1(Request(
-      context, fixture.descriptors.at(std::string(kInvisibleInvalidObjectUuid)),
+      context, fixture.descriptors.at(kInvisibleInvalidObjectUuid),
       range, none));
   passed &= Require(invisible.ok && invisible.rows.empty(),
                     "TS-39 MGA-invisible invalid row was observed");
@@ -7391,7 +7406,7 @@ int main() {
   passed = passed && ProviderMatrix(fixture, reader, &completed) &&
            CoordinatorMatrix(
                reader,
-               fixture.descriptors.at(std::string(kBaseObjectUuid)),
+               fixture.descriptors.at(kBaseObjectUuid),
                &completed) &&
            ExchangeMatrix(fixture, reader, &completed) &&
            FrontdoorMatrix(reader, &completed) &&

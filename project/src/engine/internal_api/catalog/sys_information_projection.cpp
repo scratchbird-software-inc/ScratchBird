@@ -106,6 +106,14 @@ SysInformationProjectionResult Failure(std::string code, std::string detail) {
   return result;
 }
 
+SysInformationProjectionResult Failure(std::string code, EngineUuid identity) {
+  SysInformationProjectionResult result;
+  result.ok = false;
+  result.diagnostic_code = std::move(code);
+  result.diagnostic_identity = identity;
+  return result;
+}
+
 bool StartsWith(std::string_view value, std::string_view prefix) {
   return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
 }
@@ -163,6 +171,13 @@ std::string ProjectionToken(std::string_view value) {
   return out.empty() ? "unspecified" : out;
 }
 
+void AddUniqueUuid(std::vector<EngineUuid>* values, EngineUuid value) {
+  if (value.is_nil()) { return; }
+  if (std::find(values->begin(), values->end(), value) == values->end()) {
+    values->push_back(value);
+  }
+}
+
 void AddUniqueText(std::vector<std::string>* values, std::string value) {
   if (values == nullptr || value.empty()) { return; }
   if (std::find(values->begin(), values->end(), value) == values->end()) {
@@ -170,20 +185,20 @@ void AddUniqueText(std::vector<std::string>* values, std::string value) {
   }
 }
 
-std::vector<std::string> EffectiveRoleUuids(const SysInformationProjectionContext& context) {
-  std::vector<std::string> roles;
+std::vector<EngineUuid> EffectiveRoleUuids(const SysInformationProjectionContext& context) {
+  std::vector<EngineUuid> roles;
   for (const auto& role_uuid : context.effective_role_uuids) {
-    AddUniqueText(&roles, role_uuid);
+    AddUniqueUuid(&roles, role_uuid);
   }
-  AddUniqueText(&roles, context.active_role_uuid);
+  AddUniqueUuid(&roles, context.active_role_uuid);
   return roles;
 }
 
 std::string RoleDisplayNameAt(const SysInformationProjectionContext& context,
                               std::size_t index,
-                              std::string_view role_uuid) {
-  if (!context.active_role_uuid.empty() &&
-      EqualsInsensitiveAscii(context.active_role_uuid, role_uuid)) {
+                              const EngineUuid& role_uuid) {
+  if (!context.active_role_uuid.is_nil() &&
+      (context.active_role_uuid == role_uuid)) {
     if (!context.active_role_name.empty()) { return context.active_role_name; }
     if (!context.requested_role_name.empty()) { return context.requested_role_name; }
   }
@@ -200,6 +215,10 @@ std::string PrincipalDisplayName(const SysInformationProjectionContext& context)
 }
 
 std::string LogicalTypeForProjectionColumn(std::string_view column_name) {
+  if (column_name == "node_id" || column_name == "parent_node_id") { return "binary"; }
+  if (column_name.ends_with("_uuid") || column_name == "object_id" ||
+      column_name == "parent_object_id" || column_name == "column_id" ||
+      column_name == "table_id" || column_name == "schema_id") { return "uuid"; }
   if (column_name == "ordinal_position" || column_name == "version_number" ||
       column_name == "active_version_number" || column_name == "port" ||
       column_name == "blocker_count" || column_name == "scan_generation" ||
@@ -445,7 +464,7 @@ bool ProjectionSourceVisible(bool hidden,
 
 bool HasTemporaryVisibilityDescriptor(const SysInformationCatalogObjectSource& object) {
   return object.temporary || !object.temporary_scope.empty() ||
-         !object.temporary_session_uuid.empty() ||
+         !object.temporary_session_uuid.is_nil() ||
          !object.on_commit_action.empty();
 }
 
@@ -455,7 +474,7 @@ bool TemporaryMetadataVisible(const SysInformationCatalogObjectSource& object,
   if (!object.temporary) { return false; }
   if (object.temporary_scope == "global") { return true; }
   if (object.temporary_scope == "private") {
-    return !context.session_uuid.empty() &&
+    return !context.session_uuid.is_nil() &&
            object.temporary_session_uuid == context.session_uuid;
   }
   return false;
@@ -504,7 +523,7 @@ std::vector<std::string> LanguageOrder(const SysInformationProjectionContext& co
 
 const SysInformationCatalogObjectSource* FindObject(
     const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
-    const std::string& object_uuid,
+    const EngineUuid& object_uuid,
     const SysInformationProjectionContext& context) {
   for (const auto& object : catalog_objects) {
     if (object.object_uuid == object_uuid && ObjectVisible(object, context)) {
@@ -517,11 +536,11 @@ const SysInformationCatalogObjectSource* FindObject(
 std::string SelectResolverDisplayName(
     const std::vector<SysInformationResolverNameSource>& resolver_names,
     const SysInformationProjectionContext& context,
-    const std::string& object_uuid,
+    const EngineUuid& object_uuid,
     const std::string& object_class,
     bool* found) {
   *found = false;
-  auto rank_name = [&object_uuid](const SysInformationResolverNameSource& name) {
+  auto rank_name = [](const SysInformationResolverNameSource& name) {
     int rank = 0;
     if (name.name_class == "primary") {
       rank = 300;
@@ -529,9 +548,6 @@ std::string SelectResolverDisplayName(
       rank = 200;
     } else if (name.name_class == "alias") {
       rank = 100;
-    }
-    if (name.display_name == object_uuid || name.raw_name_text == object_uuid) {
-      rank -= 50;
     }
     return rank;
   };
@@ -564,7 +580,7 @@ std::string SelectResolverDisplayName(
 
 std::string SelectCommentText(const std::vector<SysInformationCommentSource>& comments,
                               const SysInformationProjectionContext& context,
-                              const std::string& object_uuid,
+                              const EngineUuid& object_uuid,
                               const std::string& object_class) {
   const auto languages = LanguageOrder(context);
   for (const auto& language : languages) {
@@ -598,7 +614,7 @@ std::string SchemaDisplayName(const std::vector<SysInformationResolverNameSource
                               const SysInformationProjectionContext& context,
                               const SysInformationCatalogObjectSource& object,
                               bool* found) {
-  if (object.schema_uuid.empty()) {
+  if (object.schema_uuid.is_nil()) {
     *found = true;
     return {};
   }
@@ -618,8 +634,8 @@ std::string ObjectDisplayPath(const std::vector<SysInformationResolverNameSource
   return schema_name.empty() ? object_name : schema_name + "." + object_name;
 }
 
-std::string TreeParentObjectId(const SysInformationCatalogObjectSource& object) {
-  if (!object.parent_object_uuid.empty()) { return object.parent_object_uuid; }
+EngineUuid TreeParentObjectId(const SysInformationCatalogObjectSource& object) {
+  if (!object.parent_object_uuid.is_nil()) { return object.parent_object_uuid; }
   if (object.object_class != "schema") { return object.schema_uuid; }
   return {};
 }
@@ -635,8 +651,8 @@ bool AppendTreePathParts(const std::vector<SysInformationCatalogObjectSource>& c
   const std::string object_name = ObjectDisplayName(resolver_names, context, object, &found_name);
   if (!found_name) { return false; }
 
-  const std::string parent_id = TreeParentObjectId(object);
-  if (!parent_id.empty()) {
+  const EngineUuid parent_id = TreeParentObjectId(object);
+  if (!parent_id.is_nil()) {
     const auto* parent = FindObject(catalog_objects, parent_id, context);
     if (parent == nullptr ||
         !AppendTreePathParts(catalog_objects, resolver_names, context, *parent, parts, depth + 1)) {
@@ -671,8 +687,8 @@ std::string TreeParentPath(const std::vector<SysInformationCatalogObjectSource>&
                            const SysInformationProjectionContext& context,
                            const SysInformationCatalogObjectSource& object,
                            bool* found) {
-  const std::string parent_id = TreeParentObjectId(object);
-  if (parent_id.empty()) {
+  const EngineUuid parent_id = TreeParentObjectId(object);
+  if (parent_id.is_nil()) {
     *found = true;
     return {};
   }
@@ -688,8 +704,8 @@ std::uint32_t TreeDepth(const std::vector<SysInformationCatalogObjectSource>& ca
                         const SysInformationProjectionContext& context,
                         const SysInformationCatalogObjectSource& object) {
   std::uint32_t depth = 0;
-  std::string cursor = TreeParentObjectId(object);
-  while (!cursor.empty() && depth < 64) {
+  EngineUuid cursor = TreeParentObjectId(object);
+  while (!cursor.is_nil() && depth < 64) {
     const auto* parent = FindObject(catalog_objects, cursor, context);
     if (parent == nullptr) { break; }
     ++depth;
@@ -698,7 +714,7 @@ std::uint32_t TreeDepth(const std::vector<SysInformationCatalogObjectSource>& ca
   return depth;
 }
 
-void AddField(SysInformationProjectionRow* row, std::string name, std::string value) {
+void AddField(SysInformationProjectionRow* row, std::string name, SysInformationProjectionValue value) {
   row->fields.push_back({std::move(name), std::move(value)});
 }
 
@@ -847,13 +863,29 @@ std::uint32_t ProgrammabilityChildSortGroup(const SysInformationCatalogObjectSou
   return 90;
 }
 
+// Navigator keys are opaque binary tuples. UUID components remain exactly 16 bytes.
+std::string NavigatorKey(std::initializer_list<std::string_view> parts) {
+  std::string key;
+  for (const auto part : parts) {
+    const std::uint64_t length = part.size();
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      key.push_back(static_cast<char>((length >> shift) & 0xff));
+    }
+    key.append(part);
+  }
+  return key;
+}
+std::string_view NativeUuidBytes(const EngineUuid& uuid) {
+  return {reinterpret_cast<const char*>(uuid.bytes.data()), uuid.bytes.size()};
+}
+
 std::string NavigatorObjectNodeId(const SysInformationCatalogObjectSource& object) {
-  return object.object_class + ":" + object.object_uuid;
+  return NavigatorKey({"object", object.object_class, NativeUuidBytes(object.object_uuid)});
 }
 
 std::string NavigatorFolderNodeId(std::string_view parent_node_id,
                                   std::string_view folder_name) {
-  return "folder:" + std::string(parent_node_id) + ":" + std::string(folder_name);
+  return NavigatorKey({"folder", parent_node_id, folder_name});
 }
 
 std::string NavigatorChildPath(std::string_view parent_path, std::string_view child_name) {
@@ -864,8 +896,7 @@ std::string NavigatorChildPath(std::string_view parent_path, std::string_view ch
 std::string NavigatorProjectedObjectNodeId(std::string_view parent_node_id,
                                            std::string_view node_role,
                                            const SysInformationCatalogObjectSource& object) {
-  return "projection:" + std::string(parent_node_id) + ":" + std::string(node_role) +
-         ":" + object.object_uuid;
+  return NavigatorKey({"projection", parent_node_id, node_role, NativeUuidBytes(object.object_uuid)});
 }
 
 struct NavigatorSurfaceContract {
@@ -880,8 +911,8 @@ struct NavigatorSurfaceContract {
 void AddNavigatorRow(SysInformationProjectionResult* result,
                      std::string node_id,
                      std::string parent_node_id,
-                     std::string object_id,
-                     std::string parent_object_id,
+                     EngineUuid object_id,
+                     EngineUuid parent_object_id,
                      std::string node_path,
                      std::string node_name,
                      std::string node_kind,
@@ -897,8 +928,8 @@ void AddNavigatorRow(SysInformationProjectionResult* result,
                      bool is_expandable,
                      NavigatorSurfaceContract contract = {}) {
   SysInformationProjectionRow row;
-  AddField(&row, "node_id", std::move(node_id));
-  AddField(&row, "parent_node_id", std::move(parent_node_id));
+  AddField(&row, "node_id", SysInformationBinaryValue{std::move(node_id)});
+  AddField(&row, "parent_node_id", SysInformationBinaryValue{std::move(parent_node_id)});
   AddField(&row, "object_id", std::move(object_id));
   AddField(&row, "parent_object_id", std::move(parent_object_id));
   AddField(&row, "node_path", std::move(node_path));
@@ -930,7 +961,7 @@ struct NavigatorObjectRow {
   std::string object_name;
   std::string object_path;
   std::string parent_path;
-  std::string parent_object_uuid;
+  EngineUuid parent_object_uuid;
   std::string schema_path;
   std::uint32_t depth = 0;
   std::uint32_t sort_group = 0;
@@ -965,7 +996,7 @@ std::string ObjectSchemaTreePath(const std::vector<SysInformationCatalogObjectSo
                                  const SysInformationCatalogObjectSource& object,
                                  std::string_view fallback_parent_path) {
   if (IsSchemaObject(object)) { return std::string(fallback_parent_path); }
-  if (object.schema_uuid.empty()) { return std::string(fallback_parent_path); }
+  if (object.schema_uuid.is_nil()) { return std::string(fallback_parent_path); }
   const auto* schema = FindObject(catalog_objects, object.schema_uuid, context);
   if (schema == nullptr) { return std::string(fallback_parent_path); }
   bool found_schema_path = false;
@@ -1051,8 +1082,8 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
   AddNavigatorRow(&result,
                   database_node_id,
                   "",
-                  "",
-                  "",
+                  {},
+                  {},
                   database_name,
                   database_name,
                   "database",
@@ -1068,7 +1099,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                   true);
 
   auto emit_folder = [&](std::string_view parent_node_id,
-                         std::string_view parent_object_id,
+                         const EngineUuid& parent_object_id,
                          std::string_view parent_node_path,
                          std::string_view schema_path,
                          std::string_view role,
@@ -1081,8 +1112,8 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
     AddNavigatorRow(&result,
                     folder_id,
                     std::string(parent_node_id),
-                    "",
-                    std::string(parent_object_id),
+                    {},
+                    parent_object_id,
                     NavigatorChildPath(parent_node_path, label),
                     std::string(label),
                     "folder",
@@ -1117,8 +1148,8 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
   };
 
   const auto nav_objects = VisibleNavigatorObjects(catalog_objects, resolver_names, context);
-  std::map<std::string, const NavigatorObjectRow*> by_object_uuid;
-  std::map<std::string, std::vector<const NavigatorObjectRow*>> children_by_parent_uuid;
+  std::map<EngineUuid, const NavigatorObjectRow*> by_object_uuid;
+  std::map<EngineUuid, std::vector<const NavigatorObjectRow*>> children_by_parent_uuid;
   for (const auto& row : nav_objects) {
     if (row.object == nullptr) { continue; }
     by_object_uuid[row.object->object_uuid] = &row;
@@ -1139,7 +1170,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
 
   const std::string management_id =
       emit_folder(database_node_id,
-                  "",
+                  {},
                   database_name,
                   "",
                   "database.management",
@@ -1156,7 +1187,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
   const std::string management_path = NavigatorChildPath(database_name, "management");
 
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.overview",
@@ -1171,7 +1202,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "open,properties,reports,refresh,source_status",
                                   "show source-status refusal when any overview source is hidden or denied"));
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.sessions",
@@ -1186,7 +1217,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "open,properties,reports,refresh,source_status",
                                   "filter to authorized sessions or refuse with security diagnostic"));
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.workload",
@@ -1201,7 +1232,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "open,properties,reports,refresh,source_status",
                                   "show deterministic source-status refusal when statement details are denied"));
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.storage",
@@ -1216,7 +1247,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "open,properties,reports,refresh,source_status",
                                   "redact device paths and hide unauthorized filespaces"));
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.memory",
@@ -1233,7 +1264,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
 
   const std::string security_id =
       emit_folder(management_id,
-                  "",
+                  {},
                   management_path,
                   "",
                   "management.security",
@@ -1249,16 +1280,16 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                       "hide unauthorized principals; refuse mutation previews without server admission"));
   const std::string security_path = NavigatorChildPath(management_path, "security");
   const std::string security_users_id =
-      emit_folder(security_id, "", security_path, "", "security.users", "users", 3, 10);
+      emit_folder(security_id, {}, security_path, "", "security.users", "users", 3, 10);
   const std::string security_groups_id =
-      emit_folder(security_id, "", security_path, "", "security.groups", "groups", 3, 20);
+      emit_folder(security_id, {}, security_path, "", "security.groups", "groups", 3, 20);
   const std::string security_roles_id =
-      emit_folder(security_id, "", security_path, "", "security.roles", "roles", 3, 30);
+      emit_folder(security_id, {}, security_path, "", "security.roles", "roles", 3, 30);
   const std::string security_policies_id =
-      emit_folder(security_id, "", security_path, "", "security.policies", "policies", 3, 40);
+      emit_folder(security_id, {}, security_path, "", "security.policies", "policies", 3, 40);
   const std::string security_configurations_id =
       emit_folder(security_id,
-                  "",
+                  {},
                   security_path,
                   "",
                   "security.configurations",
@@ -1267,10 +1298,10 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                   50);
 
   auto children_matching =
-      [&](std::string_view parent_uuid,
+      [&](const EngineUuid& parent_uuid,
           const std::function<bool(const SysInformationCatalogObjectSource&)>& predicate) {
         std::vector<const NavigatorObjectRow*> out;
-        const auto found = children_by_parent_uuid.find(std::string(parent_uuid));
+        const auto found = children_by_parent_uuid.find(parent_uuid);
         if (found == children_by_parent_uuid.end()) { return out; }
         for (const auto* child : found->second) {
           if (child == nullptr || child->object == nullptr) { continue; }
@@ -1454,7 +1485,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
 
   const std::string programmability_id =
       emit_folder(management_id,
-                  "",
+                  {},
                   management_path,
                   "",
                   "management.programmability",
@@ -1471,7 +1502,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
   const std::string programmability_path = NavigatorChildPath(management_path, "programmability");
   const std::string domains_id =
       emit_folder(management_id,
-                  "",
+                  {},
                   management_path,
                   "",
                   "management.domains",
@@ -1487,7 +1518,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                       "hide invisible domains; refuse datatype-management actions without server admission"));
   const std::string domains_path = NavigatorChildPath(management_path, "domains");
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.jobs",
@@ -1502,7 +1533,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "open,properties,tasks,reports,refresh,source_status",
                                   "show job source-status refusal when scheduler surfaces are denied"));
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.agents",
@@ -1517,7 +1548,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "open,properties,tasks,reports,refresh,source_status",
                                   "show agent source-status refusal when agent details are denied"));
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.configuration",
@@ -1532,7 +1563,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "open,properties,reports,refresh,source_status",
                                   "redact secret values and refuse writes without server admission"));
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.parser_and_language",
@@ -1547,7 +1578,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "open,properties,reports,refresh,source_status",
                                   "show language-resource refusal when parser/language sources are denied"));
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.listener_and_manager",
@@ -1562,7 +1593,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "open,properties,reports,refresh,source_status",
                                   "show listener/manager refusal when runtime inspection is denied"));
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.diagnostics",
@@ -1577,7 +1608,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "open,properties,reports,refresh,source_status",
                                   "show deterministic source-status refusal when diagnostic sources are denied"));
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.support",
@@ -1593,7 +1624,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "support bundle actions require server admission and redaction proof"));
   const std::string triggers_id =
       emit_folder(management_id,
-                  "",
+                  {},
                   management_path,
                   "",
                   "management.triggers",
@@ -1609,7 +1640,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                       "hide invisible triggers; refuse mutation previews without server admission"));
   const std::string triggers_path = NavigatorChildPath(management_path, "triggers");
   emit_folder(management_id,
-              "",
+              {},
               management_path,
               "",
               "management.filespaces",
@@ -1625,7 +1656,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                                   "redact paths by policy and hide unauthorized filespaces"));
   if (context.cluster_authority_available && has_visible_descendant_under_root("cluster")) {
     emit_folder(management_id,
-                "",
+                {},
                 management_path,
                 "",
                 "management.cluster",
@@ -1642,7 +1673,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
   }
   if (has_visible_descendant_under_root("emulated")) {
     emit_folder(management_id,
-                "",
+                {},
                 management_path,
                 "",
                 "management.emulation",
@@ -1659,7 +1690,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
   }
   if (has_visible_descendant_under_root("remote")) {
     emit_folder(management_id,
-                "",
+                {},
                 management_path,
                 "",
                 "management.remote",
@@ -1752,7 +1783,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
     if (children.empty()) { return; }
     SortNavigatorRows(&children);
     const std::string folder_id =
-        emit_folder(parent_node_id, "", parent_path, "", role, label, 3, sort_group);
+        emit_folder(parent_node_id, {}, parent_path, "", role, label, 3, sort_group);
     const std::string folder_path = NavigatorChildPath(parent_path, label);
     for (const auto* child : children) {
       emit_projected_object(*child,
@@ -1835,7 +1866,7 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
     return false;
   };
 
-  for (const auto* root : children_matching("", IsSchemaObject)) {
+  for (const auto* root : children_matching({}, IsSchemaObject)) {
     if (root == nullptr || root->object == nullptr) { continue; }
     if (IsContextualSchemaRoot(root->object_path) && !has_visible_children(*root)) {
       continue;
@@ -1945,7 +1976,7 @@ std::string StableRef(std::string value, std::string fallback) {
 }
 
 std::string VisibleRef(std::string ref,
-                       std::string raw_uuid,
+                       EngineUuid raw_uuid,
                        std::string redacted_value,
                        bool visible = true) {
   if (!visible) {
@@ -1954,16 +1985,11 @@ std::string VisibleRef(std::string ref,
   if (!ref.empty()) {
     return std::move(ref);
   }
-  return raw_uuid.empty() ? std::string{} : std::move(redacted_value);
+  return raw_uuid.is_nil() ? std::string{} : std::move(redacted_value);
 }
 
-std::string VisibleUuid(std::string raw_uuid,
-                        std::string redacted_value,
-                        bool visible = true) {
-  if (!visible) {
-    return std::move(redacted_value);
-  }
-  return std::move(raw_uuid);
+EngineUuid VisibleUuid(EngineUuid raw_uuid, bool visible = true) {
+  return visible ? raw_uuid : EngineUuid{};
 }
 
 bool IsSupportedProjection(std::string_view view_path) {
@@ -2798,6 +2824,9 @@ SysInformationProjectionResult BuildSysInformationProjection(
     const std::vector<SysInformationIparTelemetryControlSource>& ipar_telemetry_controls,
     const std::vector<SysInformationIparSlowPathReasonSource>& ipar_slow_path_reasons,
     const std::vector<SysInformationIparContentionQuotaSource>& ipar_contention_quota) {
+  if (!context.source_diagnostic_code.empty()) {
+    return Failure(context.source_diagnostic_code, context.source_diagnostic_detail);
+  }
   if (SysInformationPathIsClusterScoped(view_path)) {
     return Failure(kSysInformationDiagnosticClusterScopeForbidden, std::string(view_path));
   }
@@ -3057,12 +3086,10 @@ SysInformationProjectionResult BuildSysInformationProjection(
         }
         continue;
       }
-      const std::string column_id =
-          column.relation_object_uuid + ":" + std::to_string(column.ordinal_position);
       SysInformationProjectionRow row;
-      AddField(&row, "column_id", column_id);
+      AddField(&row, "column_id", column.column_uuid);
       AddField(&row, "table_id", column.relation_object_uuid);
-      AddField(&row, "schema_id", relation->schema_uuid.empty() ? column.schema_uuid
+      AddField(&row, "schema_id", relation->schema_uuid.is_nil() ? column.schema_uuid
                                                                  : relation->schema_uuid);
       AddField(&row, "column_name", column.column_name);
       AddField(&row, "ordinal_position", std::to_string(column.ordinal_position));
@@ -3088,7 +3115,7 @@ SysInformationProjectionResult BuildSysInformationProjection(
         continue;
       }
       SysInformationProjectionRow row;
-      AddField(&row, "row_uuid", domain.row_uuid.empty() ? domain.domain_uuid : domain.row_uuid);
+      AddField(&row, "row_uuid", domain.row_uuid.is_nil() ? domain.domain_uuid : domain.row_uuid);
       AddField(&row, "domain_uuid", domain.domain_uuid);
       AddField(&row, "schema_uuid", domain.schema_uuid);
       AddField(&row, "source_type_name", domain.source_type_name);
@@ -3116,8 +3143,8 @@ SysInformationProjectionResult BuildSysInformationProjection(
       AddField(&row, "role_name", role_name);
       AddField(&row,
                "is_default",
-               !context.active_role_uuid.empty() &&
-                       EqualsInsensitiveAscii(context.active_role_uuid, role_uuids[index])
+               !context.active_role_uuid.is_nil() &&
+                       (context.active_role_uuid == role_uuids[index])
                    ? "YES"
                    : "NO");
       AddField(&row,
@@ -3253,7 +3280,7 @@ SysInformationProjectionResult BuildSysInformationProjection(
           }
           continue;
         }
-        const std::string parent_id = TreeParentObjectId(object);
+        const EngineUuid parent_id = TreeParentObjectId(object);
         AddField(&row, "object_id", object.object_uuid);
         AddField(&row, "parent_object_id", parent_id);
         AddField(&row, "object_path", object_path);
@@ -3640,28 +3667,27 @@ SysInformationProjectionResult BuildSysInformationProjection(
       SysInformationProjectionRow row;
       AddField(&row,
                "binding_uuid",
-               StableRef(policy.version_uuid,
-                         "agent_policy_binding_" + std::to_string(ordinal++)));
-      AddField(&row, "profile_uuid", StableRef(policy.agent_uuid, policy.agent_ref));
-      AddField(&row, "policy_uuid", StableRef(policy.policy_uuid, policy.policy_ref));
+               policy.version_uuid);
+      AddField(&row, "profile_uuid", policy.agent_uuid);
+      AddField(&row, "policy_uuid", policy.policy_uuid);
       AddField(&row, "binding_state", policy.active_state);
       result.rows.push_back(std::move(row));
     }
     for (const auto& state : filespace_capacity_agent_state) {
       if (!ProjectionSourceVisible(state.hidden, state.catalog_generation_id, context)) { continue; }
       SysInformationProjectionRow row;
-      AddField(&row, "binding_uuid", "filespace_capacity_policy_binding_" + std::to_string(ordinal++));
-      AddField(&row, "profile_uuid", StableRef(state.agent_uuid, state.agent_ref));
-      AddField(&row, "policy_uuid", StableRef(state.policy_uuid, state.policy_ref));
+      AddField(&row, "binding_uuid", state.binding_uuid);
+      AddField(&row, "profile_uuid", state.agent_uuid);
+      AddField(&row, "policy_uuid", state.policy_uuid);
       AddField(&row, "binding_state", state.mode);
       result.rows.push_back(std::move(row));
     }
     for (const auto& state : page_allocation_agent_state) {
       if (!ProjectionSourceVisible(state.hidden, state.catalog_generation_id, context)) { continue; }
       SysInformationProjectionRow row;
-      AddField(&row, "binding_uuid", "page_allocation_policy_binding_" + std::to_string(ordinal++));
-      AddField(&row, "profile_uuid", StableRef(state.agent_uuid, state.agent_ref));
-      AddField(&row, "policy_uuid", StableRef(state.policy_uuid, state.policy_ref));
+      AddField(&row, "binding_uuid", state.binding_uuid);
+      AddField(&row, "profile_uuid", state.agent_uuid);
+      AddField(&row, "policy_uuid", state.policy_uuid);
       AddField(&row, "binding_state", state.mode);
       result.rows.push_back(std::move(row));
     }
@@ -3701,20 +3727,20 @@ SysInformationProjectionResult BuildSysInformationProjection(
     for (const auto& agent : agents) {
       if (!ProjectionSourceVisible(agent.hidden, agent.catalog_generation_id, context)) { continue; }
       SysInformationProjectionRow row;
-      AddField(&row, "agent_uuid", VisibleUuid(agent.agent_uuid, "<redacted:agent_uuid>"));
+      AddField(&row, "agent_uuid", VisibleUuid(agent.agent_uuid));
       AddField(&row, "agent_type_id", agent.agent_type_id);
       AddField(&row, "scope_kind", agent.scope_kind);
       AddField(&row, "scope_uuid",
-               VisibleUuid(agent.scope_uuid, "<redacted:scope_uuid>", agent.scope_visible));
+               VisibleUuid(agent.scope_uuid, agent.scope_visible));
       AddField(&row, "component", agent.component);
       AddField(&row, "state", agent.state);
       AddField(&row, "health_state", agent.health_state);
       AddField(&row, "enabled", agent.enabled);
-      AddField(&row, "policy_uuid", VisibleUuid(agent.policy_uuid, "<redacted:policy_uuid>"));
+      AddField(&row, "policy_uuid", VisibleUuid(agent.policy_uuid));
       AddField(&row, "last_transition_at", agent.last_transition_at);
       AddField(&row, "last_diagnostic_code", agent.last_diagnostic_code);
       AddField(&row, "last_evidence_uuid",
-               VisibleUuid(agent.last_evidence_uuid, "<redacted:last_evidence_uuid>"));
+               VisibleUuid(agent.last_evidence_uuid));
       AddField(&row, "policy_generation", std::to_string(agent.policy_generation));
       AddField(&row, "queue_depth", std::to_string(agent.queue_depth));
       AddField(&row, "action_backlog", std::to_string(agent.action_backlog));
@@ -3736,7 +3762,7 @@ SysInformationProjectionResult BuildSysInformationProjection(
       }
       SysInformationProjectionRow row;
       AddField(&row, "agent_uuid",
-               VisibleUuid(dependency.agent_uuid, "<redacted:agent_uuid>"));
+               VisibleUuid(dependency.agent_uuid));
       AddField(&row, "metric_family", dependency.metric_family);
       AddField(&row, "namespace", dependency.metric_namespace);
       AddField(&row, "required_or_optional", dependency.required_or_optional);
@@ -3754,10 +3780,10 @@ SysInformationProjectionResult BuildSysInformationProjection(
     for (const auto& policy : agent_policies) {
       if (!ProjectionSourceVisible(policy.hidden, policy.catalog_generation_id, context)) { continue; }
       SysInformationProjectionRow row;
-      AddField(&row, "agent_uuid", VisibleUuid(policy.agent_uuid, "<redacted:agent_uuid>"));
-      AddField(&row, "policy_uuid", VisibleUuid(policy.policy_uuid, "<redacted:policy_uuid>"));
+      AddField(&row, "agent_uuid", VisibleUuid(policy.agent_uuid));
+      AddField(&row, "policy_uuid", VisibleUuid(policy.policy_uuid));
       AddField(&row, "policy_family", policy.policy_family);
-      AddField(&row, "version_uuid", VisibleUuid(policy.version_uuid, "<redacted:version_uuid>"));
+      AddField(&row, "version_uuid", VisibleUuid(policy.version_uuid));
       AddField(&row, "active_state", policy.active_state);
       AddField(&row, "validation_state", policy.validation_state);
       AddField(&row, "attached_at", policy.attached_at);
@@ -3771,8 +3797,8 @@ SysInformationProjectionResult BuildSysInformationProjection(
     for (const auto& action : agent_actions) {
       if (!ProjectionSourceVisible(action.hidden, action.catalog_generation_id, context)) { continue; }
       SysInformationProjectionRow row;
-      AddField(&row, "action_uuid", VisibleUuid(action.action_uuid, "<redacted:action_uuid>"));
-      AddField(&row, "agent_uuid", VisibleUuid(action.agent_uuid, "<redacted:agent_uuid>"));
+      AddField(&row, "action_uuid", VisibleUuid(action.action_uuid));
+      AddField(&row, "agent_uuid", VisibleUuid(action.agent_uuid));
       AddField(&row, "action_id", action.action_id);
       AddField(&row, "state", action.state);
       AddField(&row, "risk_class", action.risk_class);
@@ -3780,7 +3806,7 @@ SysInformationProjectionResult BuildSysInformationProjection(
       AddField(&row, "expires_at", action.expires_at);
       AddField(&row, "approval_required", action.approval_required);
       AddField(&row, "actor_uuid",
-               VisibleUuid(action.actor_uuid, "<redacted:actor_uuid>", action.actor_visible));
+               VisibleUuid(action.actor_uuid, action.actor_visible));
       AddField(&row, "diagnostic_code", action.diagnostic_code);
       result.rows.push_back(std::move(row));
     }
@@ -3794,12 +3820,11 @@ SysInformationProjectionResult BuildSysInformationProjection(
       }
       SysInformationProjectionRow row;
       AddField(&row, "override_uuid",
-               VisibleUuid(override_row.override_uuid, "<redacted:override_uuid>"));
+               VisibleUuid(override_row.override_uuid));
       AddField(&row, "target_uuid",
-               VisibleUuid(override_row.target_uuid, "<redacted:target_uuid>"));
+               VisibleUuid(override_row.target_uuid));
       AddField(&row, "scope_uuid",
                VisibleUuid(override_row.scope_uuid,
-                           "<redacted:scope_uuid>",
                            override_row.scope_visible));
       AddField(&row, "suppression_class", override_row.suppression_class);
       AddField(&row, "starts_at", override_row.starts_at);
@@ -3821,17 +3846,16 @@ SysInformationProjectionResult BuildSysInformationProjection(
       if (!ProjectionSourceVisible(evidence.hidden, evidence.catalog_generation_id, context)) { continue; }
       SysInformationProjectionRow row;
       AddField(&row, "evidence_uuid",
-               VisibleUuid(evidence.evidence_uuid, "<redacted:evidence_uuid>"));
+               VisibleUuid(evidence.evidence_uuid));
       AddField(&row, "agent_uuid",
-               VisibleUuid(evidence.agent_uuid, "<redacted:agent_uuid>"));
+               VisibleUuid(evidence.agent_uuid));
       AddField(&row, "evidence_type", evidence.evidence_type);
       AddField(&row, "action_uuid",
-               VisibleUuid(evidence.action_uuid, "<redacted:action_uuid>"));
+               VisibleUuid(evidence.action_uuid));
       AddField(&row, "redaction_class", evidence.redaction_class);
       AddField(&row, "created_at", evidence.created_at);
       AddField(&row, "actor_uuid",
                VisibleUuid(evidence.actor_uuid,
-                           "<redacted:actor_uuid>",
                            evidence.actor_visible));
       AddField(&row, "payload_digest", evidence.payload_digest);
       AddField(&row, "payload_redacted", evidence.payload_redacted);
@@ -3844,11 +3868,11 @@ SysInformationProjectionResult BuildSysInformationProjection(
     for (const auto& audit : agent_audit) {
       if (!ProjectionSourceVisible(audit.hidden, audit.catalog_generation_id, context)) { continue; }
       SysInformationProjectionRow row;
-      AddField(&row, "audit_uuid", VisibleUuid(audit.audit_uuid, "<redacted:audit_uuid>"));
+      AddField(&row, "audit_uuid", VisibleUuid(audit.audit_uuid));
       AddField(&row, "evidence_uuid",
-               VisibleUuid(audit.evidence_uuid, "<redacted:evidence_uuid>"));
+               VisibleUuid(audit.evidence_uuid));
       AddField(&row, "actor_uuid",
-               VisibleUuid(audit.actor_uuid, "<redacted:actor_uuid>", audit.actor_visible));
+               VisibleUuid(audit.actor_uuid, audit.actor_visible));
       AddField(&row, "command_name", audit.command_name);
       AddField(&row, "sblr_operation", audit.sblr_operation);
       AddField(&row, "api_call", audit.api_call);
@@ -3864,10 +3888,10 @@ SysInformationProjectionResult BuildSysInformationProjection(
     for (const auto& state : filespace_capacity_agent_state) {
       if (!ProjectionSourceVisible(state.hidden, state.catalog_generation_id, context)) { continue; }
       SysInformationProjectionRow row;
-      AddField(&row, "agent_uuid", VisibleUuid(state.agent_uuid, "<redacted:agent_uuid>"));
+      AddField(&row, "agent_uuid", VisibleUuid(state.agent_uuid));
       AddField(&row, "filespace_uuid",
-               VisibleUuid(state.filespace_uuid, "<redacted:filespace_uuid>"));
-      AddField(&row, "policy_uuid", VisibleUuid(state.policy_uuid, "<redacted:policy_uuid>"));
+               VisibleUuid(state.filespace_uuid));
+      AddField(&row, "policy_uuid", VisibleUuid(state.policy_uuid));
       AddField(&row, "mode", state.mode);
       AddField(&row, "health_state", state.health_state);
       AddField(&row, "last_capacity_metric_at", state.last_capacity_metric_at);
@@ -3883,12 +3907,12 @@ SysInformationProjectionResult BuildSysInformationProjection(
     for (const auto& state : page_allocation_agent_state) {
       if (!ProjectionSourceVisible(state.hidden, state.catalog_generation_id, context)) { continue; }
       SysInformationProjectionRow row;
-      AddField(&row, "agent_uuid", VisibleUuid(state.agent_uuid, "<redacted:agent_uuid>"));
+      AddField(&row, "agent_uuid", VisibleUuid(state.agent_uuid));
       AddField(&row, "filespace_uuid",
-               VisibleUuid(state.filespace_uuid, "<redacted:filespace_uuid>"));
+               VisibleUuid(state.filespace_uuid));
       AddField(&row, "page_family", state.page_family);
       AddField(&row, "page_type", state.page_type);
-      AddField(&row, "policy_uuid", VisibleUuid(state.policy_uuid, "<redacted:policy_uuid>"));
+      AddField(&row, "policy_uuid", VisibleUuid(state.policy_uuid));
       AddField(&row, "mode", state.mode);
       AddField(&row, "last_scan_generation", state.last_scan_generation);
       AddField(&row, "last_shrink_ready_state", state.last_shrink_ready_state);
@@ -3905,7 +3929,7 @@ SysInformationProjectionResult BuildSysInformationProjection(
       }
       SysInformationProjectionRow row;
       AddField(&row, "filespace_uuid",
-               VisibleUuid(readiness.filespace_uuid, "<redacted:filespace_uuid>"));
+               VisibleUuid(readiness.filespace_uuid));
       AddField(&row, "safe_start_byte", readiness.safe_start_byte);
       AddField(&row, "safe_end_byte", readiness.safe_end_byte);
       AddField(&row, "truncate_ready_bytes", readiness.truncate_ready_bytes);
@@ -3913,7 +3937,7 @@ SysInformationProjectionResult BuildSysInformationProjection(
       AddField(&row, "readiness_state", readiness.readiness_state);
       AddField(&row, "scan_generation", readiness.scan_generation);
       AddField(&row, "evidence_uuid",
-               VisibleUuid(readiness.evidence_uuid, "<redacted:evidence_uuid>"));
+               VisibleUuid(readiness.evidence_uuid));
       result.rows.push_back(std::move(row));
     }
     return result;
@@ -4301,7 +4325,7 @@ SysInformationProjectionResult BuildSysInformationProjection(
       const std::string object_name = SelectResolverDisplayName(
           resolver_names, context, object.object_uuid, object.object_class, &found_object);
       std::string schema_name;
-      if (!object.schema_uuid.empty()) {
+      if (!object.schema_uuid.is_nil()) {
         schema_name = SelectResolverDisplayName(
             resolver_names, context, object.schema_uuid, "schema", &found_schema);
       }

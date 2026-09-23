@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -44,8 +45,8 @@ bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
 }
 
-std::string Id(platform::UuidKind kind, platform::u64 seed) {
-  static std::map<std::pair<int, platform::u64>, std::string> generated_ids;
+platform::Uuid Id(platform::UuidKind kind, platform::u64 seed) {
+  static std::map<std::pair<int, platform::u64>, platform::Uuid> generated_ids;
   const auto key = std::make_pair(static_cast<int>(kind), seed);
   const auto found = generated_ids.find(key);
   if (found != generated_ids.end()) {
@@ -68,7 +69,7 @@ std::string Id(platform::UuidKind kind, platform::u64 seed) {
   }
 
   const auto [inserted, _] =
-      generated_ids.emplace(key, uuid::UuidToString(generated_uuid.value));
+      generated_ids.emplace(key, generated_uuid.value);
   return inserted->second;
 }
 
@@ -77,12 +78,12 @@ api::EngineRequestContext Context() {
   context.security_context_present = true;
   context.request_id = "odf108-management-explain-support";
   context.database_path = "/tmp/odf108-runtime.sbdb";
-  context.database_uuid.canonical = Id(platform::UuidKind::database, 1);
-  context.node_uuid.canonical = Id(platform::UuidKind::object, 2);
-  context.session_uuid.canonical = Id(platform::UuidKind::session, 3);
-  context.principal_uuid.canonical = Id(platform::UuidKind::principal, 4);
-  context.transaction_uuid.canonical = Id(platform::UuidKind::transaction, 5);
-  context.statement_uuid.canonical = Id(platform::UuidKind::object, 6);
+  context.database_uuid = Id(platform::UuidKind::database, 1);
+  context.node_uuid = Id(platform::UuidKind::object, 2);
+  context.session_uuid = Id(platform::UuidKind::session, 3);
+  context.principal_uuid = Id(platform::UuidKind::principal, 4);
+  context.transaction_uuid = Id(platform::UuidKind::transaction, 5);
+  context.statement_uuid = Id(platform::UuidKind::object, 6);
   context.local_transaction_id = 108;
   context.catalog_generation_id = 2108;
   context.name_resolution_epoch = 3108;
@@ -94,7 +95,7 @@ api::EngineRequestContext Context() {
       "right:MGA_CLEANUP_INSPECT",
       "optimizer_deficiency_odf_108_gate"};
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
+  context.authorization_context.authority_uuid =
       Id(platform::UuidKind::object, 7);
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
@@ -109,7 +110,7 @@ api::EngineRequestContext Context() {
       "MGA_CLEANUP_INSPECT"};
   for (std::size_t index = 0; index < rights.size(); ++index) {
     api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid.canonical =
+    grant.grant_uuid =
         Id(platform::UuidKind::object, 8 + index);
     grant.subject_uuid = context.principal_uuid;
     grant.subject_kind = "principal";
@@ -297,7 +298,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) {
       return true;
     }
   }
@@ -353,7 +354,12 @@ void RequireCleanResultRows(const api::EngineApiResult& result) {
   }
   for (const auto& evidence : result.evidence) {
     RequireCleanPayload(evidence.evidence_kind, "ODF-108 evidence hygiene");
-    RequireCleanPayload(evidence.evidence_id, "ODF-108 evidence hygiene");
+    if (const auto* text = std::get_if<std::string>(&evidence.evidence_id)) {
+      RequireCleanPayload(*text, "ODF-108 evidence hygiene");
+    } else {
+      Require(uuid::IsEngineIdentityUuid(std::get<api::EngineUuid>(evidence.evidence_id)),
+              "ODF-108 binary evidence identity is invalid");
+    }
   }
 }
 
@@ -518,7 +524,7 @@ void TestExplainSurface() {
   api::EngineExplainOperationRequest explain;
   explain.context = Context();
   explain.operation_id = "query.scan";
-  explain.target_object.uuid.canonical = Id(platform::UuidKind::object, 100);
+  explain.target_object.uuid = Id(platform::UuidKind::object, 100);
   explain.target_object.object_kind = "table";
   explain.performance_optimization_snapshot = RichSnapshot();
   explain.performance_optimization_snapshot_present = true;

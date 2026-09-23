@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "wire/projection_fields.hpp"
+#include "catalog/binary_view_options.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/relation_projection_view.hpp"
@@ -41,6 +43,7 @@ namespace db = scratchbird::storage::database;
 namespace platform = scratchbird::core::platform;
 namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
+namespace pf = scratchbird::wire::projection_fields;
 
 [[noreturn]] void Fail(std::string_view message) {
   throw std::runtime_error(std::string(message));
@@ -71,9 +74,26 @@ bool HasDiagnostic(const api::EngineApiResult& result,
 std::string EvidenceValue(const api::EngineApiResult& result,
                           std::string_view kind) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind) return evidence.evidence_id;
+    if (evidence.evidence_kind == kind) {
+      if (const auto* text = std::get_if<std::string>(&evidence.evidence_id)) return *text;
+      Fail("text evidence expected");
+    }
   }
   return {};
+}
+
+api::EngineUuid EvidenceIdentity(const api::EngineApiResult& result, std::string_view kind) {
+  for (const auto& evidence : result.evidence) if (evidence.evidence_kind == kind) {
+    if (const auto* id = std::get_if<api::EngineUuid>(&evidence.evidence_id)) return *id;
+    Fail("native identity evidence expected");
+  }
+  return {};
+}
+sblr::SblrOperand IdentityOperand(std::string name, const api::EngineUuid& id) {
+  sblr::SblrOperand out;
+  out.type = "uuid"; out.value_kind = sblr::SblrValueKind::uuid_ref; out.name = std::move(name);
+  out.value_body.assign(id.bytes.begin(), id.bytes.end());
+  return out;
 }
 
 std::uint64_t NowMillis() {
@@ -92,25 +112,23 @@ platform::TypedUuid NewTypedUuid(platform::UuidKind kind,
   return generated.value;
 }
 
-std::string NewUuid(platform::UuidKind kind, std::uint64_t salt) {
-  return uuid::UuidToString(NewTypedUuid(kind, salt).value);
+api::EngineUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
+  return NewTypedUuid(kind, salt).value;
 }
 
-bool CanonicalObjectUuid(std::string_view value) {
-  const auto parsed = uuid::ParseTypedUuid(
-      platform::UuidKind::object, std::string(value));
-  return parsed.ok() && uuid::UuidToString(parsed.value.value) == value;
+bool CanonicalObjectUuid(const api::EngineUuid& value) {
+  return uuid::IsEngineIdentityUuid(value);
 }
 
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string principal_uuid;
-  std::string schema_uuid;
-  std::string singleton_table_uuid;
-  std::string multi_table_uuid;
-  std::string updatable_table_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid principal_uuid;
+  api::EngineUuid schema_uuid;
+  api::EngineUuid singleton_table_uuid;
+  api::EngineUuid multi_table_uuid;
+  api::EngineUuid updatable_table_uuid;
   api::MgaRelationStorageDescriptor singleton_descriptor;
   api::MgaRelationStorageDescriptor multi_descriptor;
   api::MgaRelationStorageDescriptor updatable_descriptor;
@@ -149,7 +167,7 @@ Fixture CreateFixture() {
   }
   Require(created.ok(), "relation projection database creation failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   fixture.principal_uuid =
       NewUuid(platform::UuidKind::principal, fixture.salt + 4);
   fixture.schema_uuid =
@@ -171,9 +189,9 @@ api::EngineRequestContext Begin(const Fixture& fixture,
   begin.context.request_id =
       "relation-projection-begin-" + std::to_string(ordinal);
   begin.context.database_path = fixture.database_path.string();
-  begin.context.database_uuid.canonical = fixture.database_uuid;
-  begin.context.principal_uuid.canonical = fixture.principal_uuid;
-  begin.context.session_uuid.canonical =
+  begin.context.database_uuid = fixture.database_uuid;
+  begin.context.principal_uuid = fixture.principal_uuid;
+  begin.context.session_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 100 + ordinal);
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
@@ -190,7 +208,7 @@ api::EngineRequestContext Begin(const Fixture& fixture,
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
+  context.current_schema_uuid = fixture.schema_uuid;
   return context;
 }
 
@@ -220,7 +238,7 @@ api::EngineLocalizedName Name(std::string value) {
 }
 
 api::CrudTableRecord Int32Table(const api::EngineRequestContext& context,
-                                std::string table_uuid,
+                                api::EngineUuid table_uuid,
                                 std::string name,
                                 bool persisted_int_alias = false) {
   api::CrudTableRecord table;
@@ -247,7 +265,7 @@ void PersistTable(const api::EngineRequestContext& context,
   Require(descriptor != nullptr && descriptor->columns.size() == 1 &&
               descriptor->columns[0].canonical_name_key == "ID" &&
               !descriptor->columns[0]
-                   .value_descriptor.descriptor_uuid.canonical.empty(),
+                   .value_descriptor.descriptor_uuid.is_nil(),
           "relation projection source descriptor drifted");
 }
 
@@ -297,7 +315,7 @@ void TestExactDescriptorCacheFalseNegativeRecovery() {
   const std::filesystem::path descriptor_path(
       fixture.database_path.string() + ".sb.mga_relation_descriptors");
   const std::string valid_bytes = ReadDescriptorStoreBytes(descriptor_path);
-  Require(valid_bytes.rfind("SBMGADESC1\tRELATION\t", 0) == 0,
+  Require(valid_bytes.rfind("SBMGADESC2", 0) == 0,
           "descriptor cache fixture durable magic missing");
 
   std::error_code time_error;
@@ -318,8 +336,8 @@ void TestExactDescriptorCacheFalseNegativeRecovery() {
   const auto shifted_valid = api::LoadMgaRelationStorageDescriptor(
       reader, fixture.singleton_table_uuid);
   Require(shifted_valid.ok &&
-              shifted_valid.descriptor.descriptor_uuid.canonical ==
-                  expected.descriptor_uuid.canonical,
+              shifted_valid.descriptor.descriptor_uuid ==
+                  expected.descriptor_uuid,
           "descriptor cache fixture valid warm load failed");
 
   std::string invalid_bytes = valid_bytes;
@@ -350,15 +368,15 @@ void TestExactDescriptorCacheFalseNegativeRecovery() {
   const auto recovered = api::LoadMgaRelationStorageDescriptor(
       reader, fixture.singleton_table_uuid);
   Require(recovered.ok &&
-              recovered.descriptor.relation_uuid.canonical ==
-                  expected.relation_uuid.canonical &&
-              recovered.descriptor.descriptor_uuid.canonical ==
-                  expected.descriptor_uuid.canonical &&
+              recovered.descriptor.relation_uuid ==
+                  expected.relation_uuid &&
+              recovered.descriptor.descriptor_uuid ==
+                  expected.descriptor_uuid &&
               recovered.descriptor.columns.size() == expected.columns.size() &&
               recovered.descriptor.columns[0]
-                      .value_descriptor.descriptor_uuid.canonical ==
+                      .value_descriptor.descriptor_uuid ==
                   expected.columns[0]
-                      .value_descriptor.descriptor_uuid.canonical,
+                      .value_descriptor.descriptor_uuid,
           "exact descriptor load did not recover from an identity-matching "
           "negative cache");
   Rollback(reader);
@@ -378,7 +396,7 @@ api::EngineRowValue Row(const api::EngineDescriptor& descriptor,
                         std::int32_t value,
                         std::uint64_t ordinal) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical =
+  row.requested_row_uuid =
       NewUuid(platform::UuidKind::row, NowMillis() + ordinal);
   row.fields.push_back({"ID", Int32Value(descriptor, value)});
   return row;
@@ -387,7 +405,7 @@ api::EngineRowValue Row(const api::EngineDescriptor& descriptor,
 api::EngineRowValue NullRow(const api::EngineDescriptor& descriptor,
                             std::uint64_t ordinal) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical =
+  row.requested_row_uuid =
       NewUuid(platform::UuidKind::row, NowMillis() + ordinal);
   api::EngineTypedValue value;
   value.descriptor = descriptor;
@@ -397,13 +415,13 @@ api::EngineRowValue NullRow(const api::EngineDescriptor& descriptor,
 }
 
 void Insert(const api::EngineRequestContext& context,
-            const std::string& table_uuid,
+            const api::EngineUuid& table_uuid,
             const api::EngineDescriptor& descriptor,
             std::vector<std::int32_t> values) {
   api::EngineInsertRowsRequest request;
   request.context = context;
   request.context.request_id = "relation-projection-insert";
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   std::uint64_t ordinal = 0;
   for (const auto value : values) {
@@ -417,12 +435,12 @@ void Insert(const api::EngineRequestContext& context,
 }
 
 void InsertDelete03Rows(const api::EngineRequestContext& context,
-                        const std::string& table_uuid,
+                        const api::EngineUuid& table_uuid,
                         const api::EngineDescriptor& descriptor) {
   api::EngineInsertRowsRequest request;
   request.context = context;
   request.context.request_id = "relation-projection-v2-insert";
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows = {
       Row(descriptor, 10, 101),
@@ -444,7 +462,7 @@ struct Delete03VisibleRows {
 
 Delete03VisibleRows ReadDelete03VisibleRows(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const api::EngineUuid& table_uuid) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "updatable relation projection MGA state load failed");
   const auto state = api::BuildMgaRelationReadView(loaded.state);
@@ -472,7 +490,7 @@ Delete03VisibleRows ReadDelete03VisibleRows(
 
 void RequireDelete03VisibleRows(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid,
+    const api::EngineUuid& table_uuid,
     std::size_t expected_tens,
     std::size_t expected_nulls,
     std::string_view message) {
@@ -485,7 +503,7 @@ void RequireDelete03VisibleRows(
 }
 
 std::size_t VisibleRowCount(const api::EngineRequestContext& context,
-                            const std::string& table_uuid) {
+                            const api::EngineUuid& table_uuid) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "relation projection MGA row-count load failed");
   const auto state = api::BuildMgaRelationReadView(loaded.state);
@@ -504,7 +522,7 @@ api::EngineCreateViewRequest ViewRequest(
   request.context = context;
   request.context.request_id = "relation-projection-create";
   request.operation_id = "ddl.create_view";
-  request.target_schema.uuid.canonical = fixture.schema_uuid;
+  request.target_schema.uuid = fixture.schema_uuid;
   request.target_schema.object_kind = "schema";
   request.target_object.object_kind = "view";
   request.localized_names.push_back(Name(std::move(view_name)));
@@ -536,8 +554,7 @@ api::EngineCreateViewRequest ViewRequest(
   request.option_envelopes = {
       std::string("view_query_shape:") +
           api::kEngineRelationProjectionViewMarkerV1,
-      "source_relation_descriptor_uuid:" +
-          source.descriptor_uuid.canonical,
+      api::BinaryViewUuidOption("source_relation_descriptor_uuid:", source.descriptor_uuid),
       "source_relation_descriptor_generation:" +
           std::to_string(source.descriptor_generation),
       "source_resource_epoch:" +
@@ -556,7 +573,7 @@ api::EngineCreateViewRequest UpdatableViewRequest(
   request.context = context;
   request.context.request_id = "relation-projection-v2-create";
   request.operation_id = "ddl.create_view";
-  request.target_schema.uuid.canonical = fixture.schema_uuid;
+  request.target_schema.uuid = fixture.schema_uuid;
   request.target_schema.object_kind = "schema";
   request.target_object.object_kind = "view";
   request.localized_names.push_back(Name(std::move(view_name)));
@@ -575,8 +592,7 @@ api::EngineCreateViewRequest UpdatableViewRequest(
   request.option_envelopes = {
       std::string("view_query_shape:") +
           api::kEngineRelationProjectionViewMarkerV2,
-      "source_relation_descriptor_uuid:" +
-          source.descriptor_uuid.canonical,
+      api::BinaryViewUuidOption("source_relation_descriptor_uuid:", source.descriptor_uuid),
       "source_relation_descriptor_generation:" +
           std::to_string(source.descriptor_generation),
       "source_resource_epoch:" +
@@ -591,7 +607,7 @@ api::EngineResolveNameRequest ResolveRequest(
   api::EngineResolveNameRequest request;
   request.context = context;
   request.context.request_id = "relation-projection-resolve";
-  request.target_schema.uuid.canonical = fixture.schema_uuid;
+  request.target_schema.uuid = fixture.schema_uuid;
   request.target_schema.object_kind = "schema";
   request.target_object.object_kind = "view";
   request.localized_names.push_back(Name(name));
@@ -655,25 +671,15 @@ api::EngineSelectRowsRequest SelectRequest(
 void ReplaceOnce(std::string* text,
                  const std::string& expected,
                  const std::string& replacement) {
-  Require(text != nullptr, "relation projection replacement text required");
-  const auto offset = text->find(expected);
-  Require(offset != std::string::npos &&
-              text->find(expected, offset + expected.size()) ==
-                  std::string::npos,
-          "relation projection persisted field was not unique");
-  text->replace(offset, expected.size(), replacement);
+  Require(text != nullptr, "view payload required");
+  std::vector<std::string> fields;
+  Require(api::DecodeBinaryViewOptions(*text, &fields), "view options must decode");
+  unsigned matches = 0;
+  for (auto& field : fields) if (field == expected) { field = replacement; ++matches; }
+  Require(matches == 1, "view option replacement must match exactly once");
+  *text = api::EncodeBinaryViewOptions(fields);
 }
 
-std::string Hex(std::string_view value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string encoded;
-  encoded.reserve(value.size() * 2u);
-  for (const unsigned char byte : value) {
-    encoded.push_back(kHex[(byte >> 4u) & 0x0fu]);
-    encoded.push_back(kHex[byte & 0x0fu]);
-  }
-  return encoded;
-}
 
 std::string PackedRelationProjectionViewCreate(
     const api::MgaRelationStorageDescriptor& relation,
@@ -686,24 +692,14 @@ std::string PackedRelationProjectionViewCreate(
   const api::EngineDescriptor type =
       source ? source_column.value_descriptor
              : api::EngineRelationProjectionInt32LiteralInputDescriptor();
-  return "rpvc1|0|" + std::to_string(ordinal) + "|" +
-         Hex(relation.relation_uuid.canonical) + "|" +
-         Hex(relation.descriptor_uuid.canonical) + "|" +
-         std::to_string(relation.descriptor_generation) + "|1|" +
-         Hex(output_name) + "|" +
-         Hex(source ? api::kEngineRelationProjectionSourceColumnV1
-                    : api::kEngineRelationProjectionTypedInt32LiteralV1) +
-         "|" +
-         Hex(source ? source_column.column_uuid.canonical : std::string{}) +
-         "|" +
-         Hex(source
-                 ? source_column.value_descriptor.descriptor_uuid.canonical
-                 : std::string{}) +
-         "|" + Hex(type.descriptor_kind) + "|" +
-         Hex(type.canonical_type_name) + "|" +
-         Hex(type.encoded_descriptor) + "|" +
-         (source && source_column.nullable ? "1" : "0") + "|" +
-         Hex(source ? std::string_view{} : std::string_view{"5"});
+  return pf::Encode({"rpvc1", "0", std::to_string(ordinal),
+      pf::Identity(relation.relation_uuid), pf::Identity(relation.descriptor_uuid),
+      std::to_string(relation.descriptor_generation), "1", std::string(output_name),
+      source ? api::kEngineRelationProjectionSourceColumnV1 : api::kEngineRelationProjectionTypedInt32LiteralV1,
+      pf::Identity(source ? source_column.column_uuid : api::EngineUuid{}),
+      pf::Identity(source ? source_column.value_descriptor.descriptor_uuid : api::EngineUuid{}),
+      type.descriptor_kind, type.canonical_type_name, type.encoded_descriptor,
+      source && source_column.nullable ? "1" : "0", source ? "" : "5"});
 }
 
 std::string PackedUpdatableRelationProjectionViewCreate(
@@ -719,17 +715,12 @@ std::string PackedUpdatableRelationProjectionViewCreate(
                               : generation_override;
   const auto resource_epoch =
       resource_epoch_override == 0 ? 1 : resource_epoch_override;
-  return "rpvc2|0|0|" + Hex(relation.relation_uuid.canonical) + "|" +
-         Hex(relation.descriptor_uuid.canonical) + "|" +
-         std::to_string(generation) + "|" +
-         std::to_string(resource_epoch) + "|" +
-         Hex(output_name) + "|" + Hex(source.canonical_name_key) + "|" +
-         Hex(source.column_uuid.canonical) + "|" +
-         Hex(source.value_descriptor.descriptor_uuid.canonical) + "|" +
-         Hex(source.value_descriptor.descriptor_kind) + "|" +
-         Hex(source.value_descriptor.canonical_type_name) + "|" +
-         Hex(source.value_descriptor.encoded_descriptor) + "|" +
-         (source.nullable ? "1" : "0") + "|" + Hex("");
+  return pf::Encode({"rpvc2", "0", "0", pf::Identity(relation.relation_uuid),
+      pf::Identity(relation.descriptor_uuid), std::to_string(generation),
+      std::to_string(resource_epoch), std::string(output_name), source.canonical_name_key,
+      pf::Identity(source.column_uuid), pf::Identity(source.value_descriptor.descriptor_uuid),
+      source.value_descriptor.descriptor_kind, source.value_descriptor.canonical_type_name,
+      source.value_descriptor.encoded_descriptor, source.nullable ? "1" : "0", ""});
 }
 
 sblr::SblrDispatchResult DispatchRelationProjectionViewCreate(
@@ -754,10 +745,10 @@ sblr::SblrDispatchResult DispatchRelationProjectionViewCreate(
       {"text", "target_object_kind", "view"},
       {"text", "view_name", view_name},
       {"text", "name", std::move(view_name)},
-      {"text", "target_schema_uuid", fixture.schema_uuid},
+      IdentityOperand("target_schema_uuid", fixture.schema_uuid),
       {"text", "view_projection_count", std::move(projection_count)},
       {"text", "view_query_shape", std::move(marker)},
-      {"text", "view_source_uuid", relation.relation_uuid.canonical},
+      IdentityOperand("view_source_uuid", relation.relation_uuid),
       {"text", "view_projection_0", std::move(projection_0)},
       {"text", "view_projection_1", std::move(projection_1)}};
   for (auto& operand : extra_operands) {
@@ -790,10 +781,10 @@ sblr::SblrDispatchResult DispatchUpdatableRelationProjectionViewCreate(
       {"text", "target_object_kind", "view"},
       {"text", "view_name", view_name},
       {"text", "name", std::move(view_name)},
-      {"text", "target_schema_uuid", fixture.schema_uuid},
+      IdentityOperand("target_schema_uuid", fixture.schema_uuid),
       {"text", "view_projection_count", std::move(projection_count)},
       {"text", "view_query_shape", std::move(marker)},
-      {"text", "view_source_uuid", relation.relation_uuid.canonical},
+      IdentityOperand("view_source_uuid", relation.relation_uuid),
       {"text", "view_projection_0", std::move(packed)}};
   for (auto& operand : extra_operands) {
     envelope.operands.push_back(std::move(operand));
@@ -816,21 +807,16 @@ std::string PackedRelationProjectionViewSelect(
   const auto generation = generation_override == 0
                               ? semantic.descriptor_generation
                               : generation_override;
-  std::string packed =
-      "rpvs1|" + Hex(semantic.marker) + "|" +
-      Hex(semantic.projection_descriptor.descriptor_uuid.canonical) + "|" +
-      std::to_string(generation) + "|2";
+  std::vector<std::string> fields = {"rpvs1", semantic.marker,
+      pf::Identity(semantic.projection_descriptor.descriptor_uuid), std::to_string(generation), "2"};
   for (const auto& output : semantic.ordered_outputs) {
-    packed += "|" + std::to_string(output.ordinal) + "|" +
-              Hex(output.output_name) + "|" +
-              Hex(output.output_column_uuid.canonical) + "|" +
-              Hex(output.output_type.type_descriptor_uuid.canonical) + "|" +
-              Hex(output.output_type.descriptor_kind) + "|" +
-              Hex(output.output_type.canonical_type_name) + "|" +
-              Hex(output.output_type.encoded_descriptor) + "|" +
-              Hex(output.nullable ? "1" : "0");
+    const std::vector<std::string> row = {std::to_string(output.ordinal), output.output_name,
+        pf::Identity(output.output_column_uuid), pf::Identity(output.output_type.type_descriptor_uuid),
+        output.output_type.descriptor_kind, output.output_type.canonical_type_name,
+        output.output_type.encoded_descriptor, output.nullable ? "1" : "0"};
+    fields.insert(fields.end(), row.begin(), row.end());
   }
-  return packed;
+  return pf::Encode(fields);
 }
 
 std::string PackedUpdatableRelationProjectionViewDelete(
@@ -849,16 +835,12 @@ std::string PackedUpdatableRelationProjectionViewDelete(
   const std::string_view output_name = output_name_override.empty()
                                            ? output.output_name
                                            : output_name_override;
-  return "rpvd2|" +
-         Hex(api::kEngineRelationProjectionViewMarkerV2) + "|" +
-         Hex(descriptor.view_descriptor_uuid.canonical) + "|" +
-         std::to_string(generation) + "|1|0|" + Hex(output_name) + "|" +
-         Hex(output.output_column_uuid.canonical) + "|" +
-         Hex(output.output_type.type_descriptor_uuid.canonical) + "|" +
-         Hex(output.output_type.descriptor_kind) + "|" +
-         Hex(output.output_type.canonical_type_name) + "|" +
-         Hex(output.output_type.encoded_descriptor) + "|" +
-         Hex(output.nullable ? "1" : "0");
+  return pf::Encode({"rpvd2", api::kEngineRelationProjectionViewMarkerV2,
+      pf::Identity(descriptor.view_descriptor_uuid), std::to_string(generation), "1", "0",
+      std::string(output_name), pf::Identity(output.output_column_uuid),
+      pf::Identity(output.output_type.type_descriptor_uuid), output.output_type.descriptor_kind,
+      output.output_type.canonical_type_name, output.output_type.encoded_descriptor,
+      output.nullable ? "1" : "0"});
 }
 
 api::EngineDeleteRowsRequest UpdatableDeleteRequest(
@@ -901,7 +883,7 @@ api::EngineDeleteRowsRequest UpdatableDeleteRequest(
 
 sblr::SblrDispatchResult DispatchRelationProjectionViewSelect(
     const api::EngineRequestContext& context,
-    std::string view_uuid,
+    api::EngineUuid view_uuid,
     std::string packed,
     std::string marker = api::kEngineRelationProjectionViewMarkerV1,
     std::string projection_count = "1",
@@ -915,9 +897,9 @@ sblr::SblrDispatchResult DispatchRelationProjectionViewSelect(
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.operands = {
-      {"text", "target_object_uuid", view_uuid},
+      IdentityOperand("target_object_uuid", view_uuid),
       {"text", "target_object_kind", "view"},
-      {"text", "source_uuid", std::move(view_uuid)},
+      IdentityOperand("source_uuid", std::move(view_uuid)),
       {"text", "source_kind", "view"},
       {"text", "result_projection", std::move(marker)},
       {"text", "projection_count", std::move(projection_count)},
@@ -933,7 +915,7 @@ sblr::SblrDispatchResult DispatchRelationProjectionViewSelect(
 
 sblr::SblrDispatchResult DispatchUpdatableRelationProjectionViewDelete(
     const api::EngineRequestContext& context,
-    std::string view_uuid,
+    api::EngineUuid view_uuid,
     std::string predicate_column,
     std::string predicate_value,
     std::string packed,
@@ -951,7 +933,7 @@ sblr::SblrDispatchResult DispatchUpdatableRelationProjectionViewDelete(
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.operands = {
-      {"text", "target_object_uuid", view_uuid},
+      IdentityOperand("target_object_uuid", view_uuid),
       {"text", "target_object_kind", "view"},
       {"text", "dml_surface_variant", std::move(marker)},
       {"text", "projection_count", std::move(projection_count)},
@@ -990,7 +972,7 @@ void RequireUpdatableCreateDispatchRejectedBeforeMutation(
       !result.envelope_validated || !result.accepted ||
       (result.dispatched_to_api && !result.api_result.ok);
   Require(failed_closed && !result.api_result.ok &&
-              result.api_result.primary_object.uuid.canonical.empty() &&
+              result.api_result.primary_object.uuid.is_nil() &&
               EvidenceValue(result.api_result,
                             "relation_projection_view_marker")
                   .empty(),
@@ -1027,11 +1009,11 @@ void RequireRows(const api::EngineSelectRowsResult& result,
               result.visible_count == ids.size(),
           message);
   Require(CanonicalObjectUuid(
-              result.result_shape.columns[0].descriptor_uuid.canonical) &&
+              result.result_shape.columns[0].descriptor_uuid) &&
               CanonicalObjectUuid(
-                  result.result_shape.columns[1].descriptor_uuid.canonical) &&
-              result.result_shape.columns[0].descriptor_uuid.canonical !=
-                  result.result_shape.columns[1].descriptor_uuid.canonical,
+                  result.result_shape.columns[1].descriptor_uuid) &&
+              result.result_shape.columns[0].descriptor_uuid !=
+                  result.result_shape.columns[1].descriptor_uuid,
           "relation projection result type identities drifted");
   for (std::size_t i = 0; i < ids.size(); ++i) {
     const auto& fields = result.result_shape.rows[i].fields;
@@ -1061,23 +1043,23 @@ void RequireIdentityAuthority(
               descriptor.view_descriptor_generation == 1 &&
               descriptor.source_resource_epoch == 1,
           "relation projection durable descriptor missing");
-  const std::set<std::string> identities = {
-      descriptor.view_uuid.canonical,
-      descriptor.view_descriptor_uuid.canonical,
-      descriptor.source_relation_uuid.canonical,
-      descriptor.source_relation_descriptor_uuid.canonical,
-      descriptor.outputs[0].output_column_uuid.canonical,
-      descriptor.outputs[0].expression_uuid.canonical,
-      descriptor.outputs[0].output_type.type_descriptor_uuid.canonical,
-      descriptor.outputs[0].source_column_uuid.canonical,
-      descriptor.outputs[1].output_column_uuid.canonical,
-      descriptor.outputs[1].expression_uuid.canonical,
-      descriptor.outputs[1].output_type.type_descriptor_uuid.canonical};
+  const std::set<api::EngineUuid> identities = {
+      descriptor.view_uuid,
+      descriptor.view_descriptor_uuid,
+      descriptor.source_relation_uuid,
+      descriptor.source_relation_descriptor_uuid,
+      descriptor.outputs[0].output_column_uuid,
+      descriptor.outputs[0].expression_uuid,
+      descriptor.outputs[0].output_type.type_descriptor_uuid,
+      descriptor.outputs[0].source_column_uuid,
+      descriptor.outputs[1].output_column_uuid,
+      descriptor.outputs[1].expression_uuid,
+      descriptor.outputs[1].output_type.type_descriptor_uuid};
   const auto& source_type_descriptor_uuid =
-      descriptor.outputs[0].source_column_type_descriptor_uuid.canonical;
+      descriptor.outputs[0].source_column_type_descriptor_uuid;
   Require(CanonicalObjectUuid(source_type_descriptor_uuid) &&
               (source_type_descriptor_uuid ==
-                   descriptor.outputs[0].source_column_uuid.canonical ||
+                   descriptor.outputs[0].source_column_uuid ||
                !identities.contains(source_type_descriptor_uuid)) &&
               identities.size() == 11,
           "relation projection catalog identities collided");
@@ -1097,8 +1079,8 @@ void RequireIdentityAuthority(
 bool SameTypeDescriptor(
     const api::EngineRelationProjectionTypeDescriptor& left,
     const api::EngineRelationProjectionTypeDescriptor& right) {
-  return left.type_descriptor_uuid.canonical ==
-             right.type_descriptor_uuid.canonical &&
+  return left.type_descriptor_uuid ==
+             right.type_descriptor_uuid &&
          left.descriptor_kind == right.descriptor_kind &&
          left.canonical_type_name == right.canonical_type_name &&
          left.encoded_descriptor == right.encoded_descriptor;
@@ -1108,17 +1090,17 @@ bool SameOutput(
     const api::EngineRelationProjectionViewOutput& left,
     const api::EngineRelationProjectionViewOutput& right) {
   return left.ordinal == right.ordinal &&
-         left.output_column_uuid.canonical ==
-             right.output_column_uuid.canonical &&
-         left.expression_uuid.canonical == right.expression_uuid.canonical &&
+         left.output_column_uuid ==
+             right.output_column_uuid &&
+         left.expression_uuid == right.expression_uuid &&
          left.output_name == right.output_name &&
          SameTypeDescriptor(left.output_type, right.output_type) &&
          left.nullable == right.nullable &&
          left.expression_kind == right.expression_kind &&
-         left.source_column_uuid.canonical ==
-             right.source_column_uuid.canonical &&
-         left.source_column_type_descriptor_uuid.canonical ==
-             right.source_column_type_descriptor_uuid.canonical &&
+         left.source_column_uuid ==
+             right.source_column_uuid &&
+         left.source_column_type_descriptor_uuid ==
+             right.source_column_type_descriptor_uuid &&
          left.literal_int32 == right.literal_int32;
 }
 
@@ -1126,14 +1108,14 @@ bool SameAuthoritativeDescriptor(
     const api::EngineRelationProjectionViewDescriptor& left,
     const api::EngineRelationProjectionViewDescriptor& right) {
   if (left.present != right.present || left.marker != right.marker ||
-      left.view_uuid.canonical != right.view_uuid.canonical ||
-      left.view_descriptor_uuid.canonical !=
-          right.view_descriptor_uuid.canonical ||
+      left.view_uuid != right.view_uuid ||
+      left.view_descriptor_uuid !=
+          right.view_descriptor_uuid ||
       left.view_descriptor_generation != right.view_descriptor_generation ||
-      left.source_relation_uuid.canonical !=
-          right.source_relation_uuid.canonical ||
-      left.source_relation_descriptor_uuid.canonical !=
-          right.source_relation_descriptor_uuid.canonical ||
+      left.source_relation_uuid !=
+          right.source_relation_uuid ||
+      left.source_relation_descriptor_uuid !=
+          right.source_relation_descriptor_uuid ||
       left.source_relation_descriptor_generation !=
           right.source_relation_descriptor_generation ||
       left.source_resource_epoch != right.source_resource_epoch ||
@@ -1156,21 +1138,21 @@ void RequireUpdatableIdentityAuthority(
               descriptor.source_resource_epoch == 1,
           "updatable relation projection durable descriptor missing");
   const auto& output = descriptor.outputs.front();
-  const std::set<std::string> identities = {
-      descriptor.view_uuid.canonical,
-      descriptor.view_descriptor_uuid.canonical,
-      descriptor.source_relation_uuid.canonical,
-      descriptor.source_relation_descriptor_uuid.canonical,
-      output.output_column_uuid.canonical,
-      output.expression_uuid.canonical,
-      output.output_type.type_descriptor_uuid.canonical,
-      output.source_column_uuid.canonical};
+  const std::set<api::EngineUuid> identities = {
+      descriptor.view_uuid,
+      descriptor.view_descriptor_uuid,
+      descriptor.source_relation_uuid,
+      descriptor.source_relation_descriptor_uuid,
+      output.output_column_uuid,
+      output.expression_uuid,
+      output.output_type.type_descriptor_uuid,
+      output.source_column_uuid};
   Require(CanonicalObjectUuid(
-              output.source_column_type_descriptor_uuid.canonical) &&
-              (output.source_column_type_descriptor_uuid.canonical ==
-                   output.source_column_uuid.canonical ||
+              output.source_column_type_descriptor_uuid) &&
+              (output.source_column_type_descriptor_uuid ==
+                   output.source_column_uuid ||
                !identities.contains(
-                   output.source_column_type_descriptor_uuid.canonical)) &&
+                   output.source_column_type_descriptor_uuid)) &&
               identities.size() == 8,
           "updatable relation projection catalog identities collided");
   for (const auto& identity : identities) {
@@ -1201,7 +1183,7 @@ void TestRelationProjectionView(Fixture& fixture) {
   auto metadata = Begin(fixture, 1);
   api::EngineCreateSchemaRequest schema;
   schema.context = metadata;
-  schema.target_object.uuid.canonical = fixture.schema_uuid;
+  schema.target_object.uuid = fixture.schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("view_schema"));
   RequireOk(api::EngineCreateSchema(schema),
@@ -1260,10 +1242,10 @@ void TestRelationProjectionView(Fixture& fixture) {
 
   const auto singleton_own_descriptor =
       api::DescribeEngineRelationProjectionView(
-          create, singleton_created.primary_object.uuid.canonical);
+          create, singleton_created.primary_object.uuid);
   const auto multi_own_descriptor =
       api::DescribeEngineRelationProjectionView(
-          create, multi_created.primary_object.uuid.canonical);
+          create, multi_created.primary_object.uuid);
   Require(!singleton_own_descriptor.diagnostic.error &&
               !multi_own_descriptor.diagnostic.error,
           "creating transaction could not describe its views");
@@ -1306,7 +1288,7 @@ void TestRelationProjectionView(Fixture& fixture) {
   RequireOk(rollback_created,
             "relation projection rollback probe create failed");
   const auto rollback_own = api::DescribeEngineRelationProjectionView(
-      rollback_create, rollback_created.primary_object.uuid.canonical);
+      rollback_create, rollback_created.primary_object.uuid);
   Require(!rollback_own.diagnostic.error && rollback_own.present,
           "rollback probe lacked own-transaction visibility");
   Rollback(rollback_create);
@@ -1320,7 +1302,7 @@ void TestRelationProjectionView(Fixture& fixture) {
           "rolled-back relation projection view remained name-visible");
   const auto rollback_descriptor =
       api::DescribeEngineRelationProjectionView(
-          rollback_reader, rollback_created.primary_object.uuid.canonical);
+          rollback_reader, rollback_created.primary_object.uuid);
   Require(!rollback_descriptor.diagnostic.error &&
               !rollback_descriptor.present,
           "rolled-back relation projection descriptor remained visible");
@@ -1351,7 +1333,7 @@ void TestRelationProjectionView(Fixture& fixture) {
               {3, 10},
               "exact test_05 committed SELECT failed");
   const auto reloaded = api::DescribeEngineRelationProjectionView(
-      fresh, multi_created.primary_object.uuid.canonical);
+      fresh, multi_created.primary_object.uuid);
   Require(!reloaded.diagnostic.error &&
               SameAuthoritativeDescriptor(reloaded, multi_own_descriptor),
           "relation projection persisted descriptor did not round-trip exactly");
@@ -1434,7 +1416,7 @@ void TestRelationProjectionView(Fixture& fixture) {
                   "V_SBLR_RELATION",
                   "NUM"));
   Require(sblr_created.ok &&
-              !sblr_created.primary_object.uuid.canonical.empty() &&
+              !sblr_created.primary_object.uuid.is_nil() &&
               EvidenceValue(sblr_created,
                             "relation_projection_view_marker") ==
                   api::kEngineRelationProjectionViewMarkerV1 &&
@@ -1444,12 +1426,12 @@ void TestRelationProjectionView(Fixture& fixture) {
           "engine-owned relation projection create failed");
   const auto sblr_descriptor = api::DescribeEngineRelationProjectionView(
       sblr_context,
-      sblr_created.primary_object.uuid.canonical);
+      sblr_created.primary_object.uuid);
   Require(!sblr_descriptor.diagnostic.error &&
-              sblr_descriptor.source_relation_uuid.canonical ==
-                  fixture.multi_descriptor.relation_uuid.canonical &&
-              sblr_descriptor.source_relation_descriptor_uuid.canonical ==
-                  fixture.multi_descriptor.descriptor_uuid.canonical &&
+              sblr_descriptor.source_relation_uuid ==
+                  fixture.multi_descriptor.relation_uuid &&
+              sblr_descriptor.source_relation_descriptor_uuid ==
+                  fixture.multi_descriptor.descriptor_uuid &&
               sblr_descriptor.source_relation_descriptor_generation ==
                   fixture.multi_descriptor.descriptor_generation &&
               sblr_descriptor.source_resource_epoch ==
@@ -1479,12 +1461,10 @@ void TestRelationProjectionView(Fixture& fixture) {
               EvidenceValue(sblr_selected,
                             "relation_projection_view_marker") ==
                   api::kEngineRelationProjectionViewMarkerV1 &&
-              EvidenceValue(sblr_selected,
-                            "relation_projection_view_uuid") ==
-                  sblr_descriptor.view_uuid.canonical &&
-              EvidenceValue(sblr_selected,
-                            "relation_projection_view_descriptor_uuid") ==
-                  sblr_descriptor.view_descriptor_uuid.canonical &&
+              EvidenceIdentity(sblr_selected, "relation_projection_view_uuid") ==
+                  sblr_descriptor.view_uuid &&
+              EvidenceIdentity(sblr_selected, "relation_projection_view_descriptor_uuid") ==
+                  sblr_descriptor.view_descriptor_uuid &&
               EvidenceValue(sblr_selected,
                             "relation_projection_view_parser_sql") ==
                   "false",
@@ -1503,7 +1483,7 @@ void TestRelationProjectionView(Fixture& fixture) {
   const auto visible_before_rejections = api::VisibleApiBehaviorRecords(
       sblr_context, "view", sblr_context.local_transaction_id, behavior_read_diagnostic_1);
   Require(!behavior_read_diagnostic_1.error, "behavior catalog read failed");
-  Require(!rpvc_source.empty() && rpvc_source.back() == '|',
+  Require(pf::Decode(rpvc_source).size() == 16 && pf::Decode(rpvc_source).back().empty(),
           "rpvc1 malformed-count fixture drifted");
   RequireRelationProjectionDispatchRejectedBeforeScan(
       DispatchRelationProjectionViewCreate(
@@ -1569,13 +1549,13 @@ void TestRelationProjectionView(Fixture& fixture) {
   RequireRelationProjectionDispatchRejectedBeforeScan(
       DispatchRelationProjectionViewSelect(
           sblr_context,
-          sblr_descriptor.view_uuid.canonical,
+          sblr_descriptor.view_uuid,
           rpvs + "|00"),
       "rpvs1 with an extra field was accepted");
   RequireRelationProjectionDispatchRejectedBeforeScan(
       DispatchRelationProjectionViewSelect(
           sblr_context,
-          sblr_descriptor.view_uuid.canonical,
+          sblr_descriptor.view_uuid,
           PackedRelationProjectionViewSelect(
               sblr_resolved,
               sblr_resolved.semantic_projection.descriptor_generation + 1)),
@@ -1583,14 +1563,14 @@ void TestRelationProjectionView(Fixture& fixture) {
   RequireRelationProjectionDispatchRejectedBeforeScan(
       DispatchRelationProjectionViewSelect(
           sblr_context,
-          sblr_descriptor.view_uuid.canonical,
+          sblr_descriptor.view_uuid,
           rpvs,
           "engine.relation_projection_view.v2"),
       "unknown relation projection SELECT marker was accepted");
   RequireRelationProjectionDispatchRejectedBeforeScan(
       DispatchRelationProjectionViewSelect(
           sblr_context,
-          sblr_descriptor.view_uuid.canonical,
+          sblr_descriptor.view_uuid,
           rpvs,
           api::kEngineRelationProjectionViewMarkerV1,
           "1",
@@ -1600,7 +1580,7 @@ void TestRelationProjectionView(Fixture& fixture) {
   RequireRelationProjectionDispatchRejectedBeforeScan(
       DispatchRelationProjectionViewSelect(
           sblr_context,
-          sblr_descriptor.view_uuid.canonical,
+          sblr_descriptor.view_uuid,
           rpvs,
           api::kEngineRelationProjectionViewMarkerV1,
           "1",
@@ -1611,7 +1591,7 @@ void TestRelationProjectionView(Fixture& fixture) {
   auto metadata_owner = Begin(fixture, 90);
   auto pinned_metadata = metadata_owner;
   pinned_metadata.statement_metadata_snapshot_engine_owned = true;
-  pinned_metadata.statement_metadata_snapshot_uuid.canonical =
+  pinned_metadata.statement_metadata_snapshot_uuid =
       NewUuid(platform::UuidKind::object, NowMillis());
   pinned_metadata
       .statement_metadata_snapshot_visible_through_local_transaction_id =
@@ -1635,7 +1615,7 @@ void TestRelationProjectionView(Fixture& fixture) {
   Commit(metadata_writer);
   const auto pinned_late_descriptor =
       api::DescribeEngineRelationProjectionView(
-          pinned_metadata, late_created.primary_object.uuid.canonical);
+          pinned_metadata, late_created.primary_object.uuid);
   Require(!pinned_late_descriptor.diagnostic.error &&
               !pinned_late_descriptor.present,
           "engine-owned metadata snapshot observed a later committed descriptor");
@@ -1646,7 +1626,7 @@ void TestRelationProjectionView(Fixture& fixture) {
             "fresh transaction did not observe committed view metadata");
   const auto fresh_late_descriptor =
       api::DescribeEngineRelationProjectionView(
-          metadata_fresh, late_created.primary_object.uuid.canonical);
+          metadata_fresh, late_created.primary_object.uuid);
   Require(!fresh_late_descriptor.diagnostic.error &&
               fresh_late_descriptor.present,
           "fresh transaction did not reload committed view descriptor");
@@ -1708,14 +1688,14 @@ void TestRelationProjectionView(Fixture& fixture) {
               "fresh reader visibility/rollback filtering failed");
 
   const auto durable = api::DescribeEngineRelationProjectionView(
-      final_reader, final_view.bound_object_identity.object_uuid.canonical);
+      final_reader, final_view.bound_object_identity.object_uuid);
   Require(!durable.diagnostic.error && durable.present,
           "durable descriptor required for stale runtime probe");
 
   api::EngineApiDiagnostic behavior_read_diagnostic_3;
   const auto persisted_record = api::FindVisibleApiBehaviorRecord(
       final_reader,
-      durable.view_uuid.canonical,
+      durable.view_uuid,
       final_reader.local_transaction_id, behavior_read_diagnostic_3);
   Require(!behavior_read_diagnostic_3.error, "behavior catalog read failed");
   Require(persisted_record.has_value(),
@@ -1725,13 +1705,10 @@ void TestRelationProjectionView(Fixture& fixture) {
           const std::string& expected_field,
           const std::string& replacement_field) {
         auto record = *persisted_record;
-        const std::string original_uuid = record.object_uuid;
+        const api::EngineUuid original_uuid = record.object_uuid;
         record.creator_tx = final_reader.local_transaction_id;
         record.object_uuid = NewUuid(platform::UuidKind::object, NowMillis());
         record.default_name = "V_STALE_" + std::string(suffix);
-        ReplaceOnce(&record.payload,
-                    "target=" + original_uuid,
-                    "target=" + record.object_uuid);
         ReplaceOnce(&record.payload, expected_field, replacement_field);
         Require(!api::AppendApiBehaviorEvent(
                      final_reader,
@@ -1825,7 +1802,7 @@ void TestRelationProjectionView(Fixture& fixture) {
                   .empty(),
           "colliding relation projection identities reached the MGA scan");
 
-  const std::string malformed_view_uuid =
+  const api::EngineUuid malformed_view_uuid =
       NewUuid(platform::UuidKind::object, NowMillis());
   api::ApiBehaviorRecord malformed_record;
   malformed_record.creator_tx = final_reader.local_transaction_id;
@@ -1834,11 +1811,9 @@ void TestRelationProjectionView(Fixture& fixture) {
   malformed_record.object_kind = "view";
   malformed_record.default_name = "V_MALFORMED";
   malformed_record.state = "created";
-  malformed_record.payload =
-      "schema=" + fixture.schema_uuid + ";target=" + malformed_view_uuid +
-      ";options=view_query_shape:" +
-      api::kEngineRelationProjectionViewMarkerV1 +
-      ";view_descriptor_uuid:not-a-canonical-uuid";
+  malformed_record.payload = api::EncodeBinaryViewOptions({
+      std::string("view_query_shape:") + api::kEngineRelationProjectionViewMarkerV1,
+      "view_descriptor_uuid:not-a-binary-uuid"});
   Require(!api::AppendApiBehaviorEvent(
                final_reader,
                api::MakeApiBehaviorRecordEvent(malformed_record))
@@ -1874,14 +1849,14 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
   auto create = Begin(fixture, 202);
   const std::string rpvc2 = PackedUpdatableRelationProjectionViewCreate(
       fixture.updatable_descriptor);
-  Require(!rpvc2.empty() && rpvc2.back() == '|',
+  Require(pf::Decode(rpvc2).size() == 16 && pf::Decode(rpvc2).back().empty(),
           "rpvc2 malformed-count fixture drifted");
   api::EngineApiDiagnostic behavior_read_diagnostic_4;
   const auto visible_before_create_refusals =
       api::VisibleApiBehaviorRecords(
           create, "view", create.local_transaction_id, behavior_read_diagnostic_4);
   Require(!behavior_read_diagnostic_4.error, "behavior catalog read failed");
-  std::set<std::string> visible_view_ids_before;
+  std::set<api::EngineUuid> visible_view_ids_before;
   for (const auto& record : visible_before_create_refusals) {
     visible_view_ids_before.insert(record.object_uuid);
   }
@@ -1979,7 +1954,7 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
       api::VisibleApiBehaviorRecords(
           create, "view", create.local_transaction_id, behavior_read_diagnostic_5);
   Require(!behavior_read_diagnostic_5.error, "behavior catalog read failed");
-  std::set<std::string> visible_view_ids_after;
+  std::set<api::EngineUuid> visible_view_ids_after;
   for (const auto& record : visible_after_create_refusals) {
     visible_view_ids_after.insert(record.object_uuid);
   }
@@ -1994,7 +1969,7 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
                            fixture.updatable_descriptor,
                            "TEST_DELETE_03"));
   Require(created.ok &&
-              !created.primary_object.uuid.canonical.empty() &&
+              !created.primary_object.uuid.is_nil() &&
               EvidenceValue(created,
                             "relation_projection_view_marker") ==
                   api::kEngineRelationProjectionViewMarkerV2 &&
@@ -2002,14 +1977,14 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
                             "relation_projection_view_parser_sql") ==
                   "false",
           "engine-owned one-column updatable view create failed");
-  const std::string view_uuid = created.primary_object.uuid.canonical;
+  const api::EngineUuid view_uuid = created.primary_object.uuid;
   const auto own_descriptor =
       api::DescribeEngineRelationProjectionView(create, view_uuid);
   Require(!own_descriptor.diagnostic.error && own_descriptor.present &&
-              own_descriptor.source_relation_uuid.canonical ==
+              own_descriptor.source_relation_uuid ==
                   fixture.updatable_table_uuid &&
-              own_descriptor.source_relation_descriptor_uuid.canonical ==
-                  fixture.updatable_descriptor.descriptor_uuid.canonical &&
+              own_descriptor.source_relation_descriptor_uuid ==
+                  fixture.updatable_descriptor.descriptor_uuid &&
               own_descriptor.source_relation_descriptor_generation ==
                   fixture.updatable_descriptor.descriptor_generation,
           "rpvc2 own-transaction descriptor was not exact");
@@ -2035,7 +2010,7 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
             "updatable relation projection rollback CREATE failed");
   const auto rollback_own = api::DescribeEngineRelationProjectionView(
       rollback_create,
-      rolled_back_create.primary_object.uuid.canonical);
+      rolled_back_create.primary_object.uuid);
   Require(!rollback_own.diagnostic.error && rollback_own.present,
           "updatable rollback CREATE lacked own visibility");
   Rollback(rollback_create);
@@ -2049,7 +2024,7 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
   const auto rollback_descriptor =
       api::DescribeEngineRelationProjectionView(
           rollback_create_reader,
-          rolled_back_create.primary_object.uuid.canonical);
+          rolled_back_create.primary_object.uuid);
   Require(!rollback_descriptor.diagnostic.error &&
               !rollback_descriptor.present,
           "rolled-back updatable view descriptor remained visible");
@@ -2059,7 +2034,7 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
   const auto resolved = api::EngineResolveName(
       ResolveRequest(fixture, durable_reader, "TEST_DELETE_03"));
   RequireOk(resolved, "committed rpvc2 view did not resolve");
-  Require(resolved.bound_object_identity.object_uuid.canonical == view_uuid &&
+  Require(resolved.bound_object_identity.object_uuid == view_uuid &&
               resolved.semantic_projection.present &&
               resolved.semantic_projection.marker ==
                   api::kEngineRelationProjectionViewMarkerV2 &&
@@ -2077,15 +2052,15 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
   RequireUpdatableIdentityAuthority(reloaded);
   const std::string resolved_rpvd2 =
       PackedUpdatableRelationProjectionViewDelete(reloaded);
-  Require(resolved_rpvd2.rfind("rpvd2|", 0) == 0 &&
+  Require((!pf::Decode(resolved_rpvd2).empty() && pf::Decode(resolved_rpvd2).front() == "rpvd2") &&
               resolved_rpvd2.find(
-                  Hex(reloaded.source_relation_uuid.canonical)) ==
+                  pf::Identity(reloaded.source_relation_uuid)) ==
                   std::string::npos &&
               resolved_rpvd2.find(
-                  Hex(reloaded.source_relation_descriptor_uuid.canonical)) ==
+                  pf::Identity(reloaded.source_relation_descriptor_uuid)) ==
                   std::string::npos &&
               resolved_rpvd2.find(
-                  Hex(reloaded.outputs[0].source_column_uuid.canonical)) ==
+                  pf::Identity(reloaded.outputs[0].source_column_uuid)) ==
                   std::string::npos,
           "rpvd2 public semantics leaked hidden source identities");
   RequireDelete03VisibleRows(durable_reader,
@@ -2122,8 +2097,7 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
               EvidenceValue(rolled_back_delete,
                             "relation_projection_view_delete_mga_authority") ==
                   "ordinary_optimized_delete" &&
-              EvidenceValue(rolled_back_delete,
-                            "relation_projection_view_source_relation_uuid") ==
+              EvidenceIdentity(rolled_back_delete, "relation_projection_view_source_relation_uuid") ==
                   fixture.updatable_table_uuid &&
               EvidenceValue(rolled_back_delete,
                             "relation_projection_view_parser_sql") ==
@@ -2244,7 +2218,7 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
   RequireOk(v1_resolved, "non-updatable V1 refusal view did not resolve");
   const auto v1_descriptor = api::DescribeEngineRelationProjectionView(
       refusal_writer,
-      v1_resolved.bound_object_identity.object_uuid.canonical);
+      v1_resolved.bound_object_identity.object_uuid);
   Require(!v1_descriptor.diagnostic.error && v1_descriptor.present &&
               v1_descriptor.marker ==
                   api::kEngineRelationProjectionViewMarkerV1,
@@ -2300,9 +2274,6 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
   stale_source_record.object_uuid =
       NewUuid(platform::UuidKind::object, NowMillis());
   stale_source_record.default_name = "V2_STALE_SOURCE";
-  ReplaceOnce(&stale_source_record.payload,
-              "target=" + view_uuid,
-              "target=" + stale_source_record.object_uuid);
   ReplaceOnce(
       &stale_source_record.payload,
       "source_relation_descriptor_generation:" +
@@ -2333,9 +2304,6 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
       NewUuid(platform::UuidKind::object, NowMillis());
   malformed_record.default_name = "V2_MALFORMED";
   ReplaceOnce(&malformed_record.payload,
-              "target=" + view_uuid,
-              "target=" + malformed_record.object_uuid);
-  ReplaceOnce(&malformed_record.payload,
               "output_count:1",
               "output_count:2");
   Require(!api::AppendApiBehaviorEvent(
@@ -2354,7 +2322,7 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
           "malformed V2 persisted descriptor decoded");
   auto malformed_delete =
       UpdatableDeleteRequest(refusal_writer, refusal_descriptor);
-  malformed_delete.target_table.uuid.canonical =
+  malformed_delete.target_table.uuid =
       malformed_record.object_uuid;
   require_direct_refusal(
       std::move(malformed_delete),
@@ -2363,16 +2331,17 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
 
   const auto before_packet_refusals = ReadDelete03VisibleRows(
       refusal_writer, fixture.updatable_table_uuid);
-  const auto final_separator = resolved_rpvd2.rfind('|');
-  Require(final_separator != std::string::npos,
-          "rpvd2 short-packet fixture drifted");
+  const auto decoded_fields = pf::Decode(resolved_rpvd2);
+  Require(decoded_fields.size() == 13, "rpvd2 short-packet fixture drifted");
+  std::vector<std::string> short_fields;
+  for (std::size_t i = 0; i + 1 < decoded_fields.size(); ++i) short_fields.emplace_back(decoded_fields[i]);
   RequireUpdatableDeleteDispatchRejectedBeforeMutation(
       DispatchUpdatableRelationProjectionViewDelete(
           refusal_writer,
           view_uuid,
           "ID",
           "10",
-          resolved_rpvd2.substr(0, final_separator)),
+          pf::Encode(short_fields)),
       "12-field rpvd2 reached mutation");
   RequireUpdatableDeleteDispatchRejectedBeforeMutation(
       DispatchUpdatableRelationProjectionViewDelete(
@@ -2462,20 +2431,16 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
               EvidenceValue(committed_delete,
                             "relation_projection_view_marker") ==
                   api::kEngineRelationProjectionViewMarkerV2 &&
-              EvidenceValue(committed_delete,
-                            "relation_projection_view_uuid") == view_uuid &&
-              EvidenceValue(
-                  committed_delete,
-                  "relation_projection_view_descriptor_uuid") ==
-                  committed_descriptor.view_descriptor_uuid.canonical &&
+              EvidenceIdentity(committed_delete, "relation_projection_view_uuid") == view_uuid &&
+              EvidenceIdentity(
+                  committed_delete, "relation_projection_view_descriptor_uuid") ==
+                  committed_descriptor.view_descriptor_uuid &&
               EvidenceValue(
                   committed_delete,
                   "relation_projection_view_descriptor_generation") ==
                   std::to_string(
                       committed_descriptor.view_descriptor_generation) &&
-              EvidenceValue(
-                  committed_delete,
-                  "relation_projection_view_source_relation_uuid") ==
+              EvidenceIdentity(committed_delete, "relation_projection_view_source_relation_uuid") ==
                   fixture.updatable_table_uuid &&
               EvidenceValue(
                   committed_delete,

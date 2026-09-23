@@ -16,6 +16,8 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
 #include "uuid.hpp"
+#include "wire/public_result_packet.hpp"
+#include <stdexcept>
 
 #include <algorithm>
 #include <chrono>
@@ -32,15 +34,45 @@
 namespace scratchbird::engine::internal_api {
 namespace {
 
-constexpr const char* kLogicalBackupMagic = "SBLOGICALBACKUP1";
-constexpr const char* kPhysicalBackupMagic = "SBPHYSICALBACKUP1";
-constexpr const char* kDeltaPackageMagic = "SBDELTAPACKAGE1";
-constexpr const char* kArchiveBeforeReclaimMagic = "SBARCHIVERECLAIM1";
+constexpr const char* kLogicalBackupMagic = "SBLOGICALBACKUP2";
+constexpr const char* kPhysicalBackupMagic = "SBPHYSICALBACKUP2";
+constexpr const char* kDeltaPackageMagic = "SBDELTAPACKAGE2";
+constexpr const char* kArchiveBeforeReclaimMagic = "SBARCHIVERECLAIM2";
 constexpr std::uint64_t kDefaultArchiveMaxAgeMicroseconds = 604800000000ull;
 
 namespace filespace = scratchbird::storage::filespace;
 namespace catalog = scratchbird::core::catalog;
 namespace mga = scratchbird::transaction::mga;
+
+namespace packet = scratchbird::wire::public_result;
+std::string IdentityBytes(const EngineUuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+EngineUuid BinaryIdentity(std::string_view bytes) {
+  EngineUuid id;
+  if (bytes.size() != id.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), id.bytes.size(), id.bytes.begin());
+  return scratchbird::core::uuid::IsEngineIdentityUuid(id) ? id : EngineUuid{};
+}
+struct BinaryPair {
+  std::string first, second;
+  BinaryPair(std::string key, std::string value): first(std::move(key)), second(std::move(value)) {}
+  BinaryPair(std::string key, const EngineUuid& value): first(std::move(key)), second(IdentityBytes(value)) {}
+};
+std::string EncodeBinaryPairs(const std::vector<std::pair<std::string, std::string>>& pairs) {
+  std::vector<packet::Field> fields;
+  for (const auto& [key, value] : pairs) fields.push_back({key, packet::Kind::bytes, value});
+  std::string encoded;
+  if (!packet::Encode(fields, &encoded)) throw std::invalid_argument("backup_record_invalid");
+  return encoded;
+}
+std::vector<std::pair<std::string, std::string>> DecodeBinaryPairs(std::string_view encoded) {
+  std::vector<packet::Field> fields;
+  if (!packet::Decode(encoded, &fields)) return {};
+  std::vector<std::pair<std::string, std::string>> pairs;
+  for (const auto& field : fields) pairs.emplace_back(field.name, field.value);
+  return pairs;
+}
 
 bool StartsWith(const std::string& value, const std::string& prefix) {
   return value.rfind(prefix, 0) == 0;
@@ -75,6 +107,30 @@ std::uint64_t Fnv1a64(const std::string& value) {
 }
 
 std::vector<std::string> Split(const std::string& value, char delimiter) {
+  if (delimiter == '\n') {
+    const auto header_end = value.find('\n');
+    if (header_end == std::string::npos) return {};
+    std::vector<std::string> records{value.substr(0, header_end)};
+    std::size_t offset = header_end + 1;
+    while (offset < value.size()) {
+      if (value.size() - offset < 8) return {};
+      std::uint64_t length = 0;
+      for (unsigned i = 0; i < 8; ++i)
+        length |= std::uint64_t(static_cast<unsigned char>(value[offset+i])) << (8*i);
+      offset += 8;
+      if (length > value.size() - offset) return {};
+      const auto record = value.substr(offset, static_cast<std::size_t>(length));
+      std::vector<packet::Field> fields;
+      if (!packet::Decode(record, &fields)) return {};
+      std::map<std::string, bool> names;
+      for (const auto& field : fields) if (!names.emplace(field.name, true).second) return {};
+      if (!names.contains("record_kind")) return {};
+      records.push_back(record);
+      offset += length;
+    }
+    return records;
+  }
+
   std::vector<std::string> out;
   std::string current;
   std::istringstream input(value);
@@ -89,32 +145,34 @@ std::string EncodeList(const std::vector<std::string>& values) {
   for (std::size_t i = 0; i < values.size(); ++i) {
     pairs.push_back({std::to_string(i), values[i]});
   }
-  return EncodeCrudPairs(pairs);
+  return EncodeBinaryPairs(pairs);
 }
 
 std::vector<std::string> DecodeList(const std::string& encoded) {
   std::vector<std::string> out;
-  for (const auto& pair : DecodeCrudPairs(encoded)) {
+  for (const auto& pair : DecodeBinaryPairs(encoded)) {
     out.push_back(pair.second);
   }
   return out;
 }
 
-std::string RecordLine(const std::string& kind, const std::vector<std::pair<std::string, std::string>>& fields) {
-  return kind + "\t" + EncodeCrudPairs(fields) + "\n";
+std::string RecordLine(const std::string& kind, const std::vector<BinaryPair>& fields) {
+  std::vector<std::pair<std::string,std::string>> pairs{{"record_kind",kind}};
+  for (const auto& field : fields) pairs.emplace_back(field.first,field.second);
+  const auto payload = EncodeBinaryPairs(pairs);
+  return packet::Unsigned(payload.size()) + payload;
 }
 
 std::map<std::string, std::string> DecodeRecordFields(const std::string& line, std::string* kind) {
-  const auto pos = line.find('\t');
-  if (pos == std::string::npos) {
-    if (kind != nullptr) { *kind = line; }
-    return {};
-  }
-  if (kind != nullptr) { *kind = line.substr(0, pos); }
   std::map<std::string, std::string> fields;
-  for (const auto& pair : DecodeCrudPairs(line.substr(pos + 1))) {
-    fields[pair.first] = pair.second;
+  const auto pairs = DecodeBinaryPairs(line);
+  for (const auto& [key,value] : pairs) {
+    if (!fields.emplace(key,value).second) return {};
   }
+  const auto found=fields.find("record_kind");
+  if (found==fields.end()) return {};
+  if (kind) *kind=found->second;
+  fields.erase(found);
   return fields;
 }
 
@@ -175,19 +233,19 @@ std::string RequiredManifestOption(const EngineApiRequest& request, const std::s
 std::string TimelineUuidFor(const EngineApiRequest& request) {
   const auto timeline = OptionValue(request, "timeline_uuid:");
   if (!timeline.empty()) { return timeline; }
-  return request.context.database_uuid + ":timeline:local";
+  return {};
 }
 
 std::string ForkUuidFor(const EngineApiRequest& request) {
   const auto fork = OptionValue(request, "fork_uuid:");
   if (!fork.empty()) { return fork; }
-  return request.context.database_uuid + ":fork:primary";
+  return {};
 }
 
 std::string KeyLineageFor(const EngineApiRequest& request) {
   const auto lineage = OptionValue(request, "key_lineage_id:");
   if (!lineage.empty()) { return lineage; }
-  return request.context.database_uuid + ":key-lineage:local";
+  return {};
 }
 
 std::uint64_t CoverageStartFor(const EngineApiRequest& request, std::uint64_t fallback) {
@@ -228,6 +286,10 @@ EngineApiDiagnostic ValidateManifestProofFields(const std::string& operation_id,
       return BackupInvalid(operation_id, "RESTORE_MANIFEST_COVERAGE_FIELD_MISSING:" + key);
     }
   }
+  for (const auto* key : {"database_uuid", "filespace_uuid", "timeline_uuid", "fork_uuid", "key_lineage_id"}) {
+    if (BinaryIdentity(ManifestField(fields, key)).is_nil())
+      return BackupInvalid(operation_id, std::string("RESTORE_MANIFEST_BINARY_UUID_INVALID:") + key);
+  }
   if (require_source_backup_uuid && ManifestField(fields, "source_backup_uuid").empty()) {
     return BackupInvalid(operation_id, "BACKUP_DELTA_COVERAGE_FIELD_MISSING:source_backup_uuid");
   }
@@ -245,8 +307,8 @@ EngineApiDiagnostic ValidateManifestProofFields(const std::string& operation_id,
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-std::string TypedUuidText(const scratchbird::core::platform::TypedUuid& uuid) {
-  return scratchbird::core::uuid::UuidToString(uuid.value);
+std::string TypedUuidBytes(const scratchbird::core::platform::TypedUuid& uuid) {
+  return IdentityBytes(uuid.value);
 }
 
 bool IsLocalArchiveHistoryFilespace(
@@ -257,7 +319,7 @@ bool IsLocalArchiveHistoryFilespace(
       !descriptor.database_uuid.valid() || !descriptor.filespace_uuid.valid()) {
     return false;
   }
-  if (TypedUuidText(descriptor.database_uuid) != context.database_uuid) {
+  if (descriptor.database_uuid.value != context.database_uuid) {
     return false;
   }
   if (descriptor.path.empty() || !descriptor.archive_owner || !descriptor.read_only ||
@@ -277,8 +339,8 @@ std::string ArchiveMovementMaterial(
     std::uint64_t cleanup_horizon) {
   const auto& metadata = record.metadata;
   return record.table_uuid + "|" +
-         TypedUuidText(metadata.identity.row.row_uuid) + "|" +
-         TypedUuidText(metadata.identity.creator_transaction.transaction_uuid) +
+         TypedUuidBytes(metadata.identity.row.row_uuid) + "|" +
+         TypedUuidBytes(metadata.identity.creator_transaction.transaction_uuid) +
          "|" +
          std::to_string(metadata.identity.creator_transaction.local_id.value) +
          "|" + std::to_string(metadata.identity.version_sequence) + "|" +
@@ -335,7 +397,7 @@ std::string BuildArchiveBeforeReclaimManifestBody(
     std::uint64_t* movement_record_count) {
   std::ostringstream body;
   const auto archive_filespace_uuid =
-      TypedUuidText(request.archive_filespace.filespace_uuid);
+      request.archive_filespace.filespace_uuid.value;
   const auto cleanup_horizon =
       request.authoritative_cleanup_horizon_local_transaction_id;
   const auto& first = request.retained_history.front();
@@ -378,9 +440,9 @@ std::string BuildArchiveBeforeReclaimManifestBody(
     body << RecordLine(
         "MOVE",
         {{"table_uuid", record.table_uuid},
-         {"row_uuid", TypedUuidText(metadata.identity.row.row_uuid)},
+         {"row_uuid", TypedUuidBytes(metadata.identity.row.row_uuid)},
          {"creator_transaction_uuid",
-          TypedUuidText(metadata.identity.creator_transaction.transaction_uuid)},
+          TypedUuidBytes(metadata.identity.creator_transaction.transaction_uuid)},
          {"creator_local_transaction_id",
           std::to_string(metadata.identity.creator_transaction.local_id.value)},
          {"version_sequence",
@@ -395,8 +457,8 @@ std::string BuildArchiveBeforeReclaimManifestBody(
          {"next_version_sequence",
           std::to_string(metadata.chain.next_version_sequence)},
          {"previous_version_uuid",
-          TypedUuidText(metadata.chain.previous_version_uuid)},
-         {"next_version_uuid", TypedUuidText(metadata.chain.next_version_uuid)},
+          TypedUuidBytes(metadata.chain.previous_version_uuid)},
+         {"next_version_uuid", TypedUuidBytes(metadata.chain.next_version_uuid)},
          {"payload_digest", record.payload_digest},
          {"key_lineage_id", record.key_lineage_id},
          {"retention_class", record.retention_class},
@@ -455,7 +517,7 @@ EngineApiDiagnostic ReadAndVerifyArchiveBeforeReclaimManifest(
     const auto fields = DecodeRecordFields(line, &kind);
     if (kind == "META") {
       meta_found = true;
-      if (ManifestField(fields, "archive_uuid") != archive_uuid ||
+      if (BinaryIdentity(ManifestField(fields, "archive_uuid")) != archive_uuid ||
           ManifestField(fields, "archive_before_reclaim") != "true" ||
           ManifestField(fields, "finality_source") !=
               "local_mga_transaction_inventory" ||
@@ -505,7 +567,7 @@ mga::LocalCleanupReclaimEvidenceRecord ArchiveReclaimEvidenceRecord(
   evidence.successor_transaction = record.metadata.successor_transaction_local_id;
   evidence.authoritative_cleanup_horizon_local_transaction_id = cleanup_horizon;
   evidence.stable_evidence_id =
-      "mga-archive-before-reclaim:" + archive_uuid + ":" +
+      "mga-archive-before-reclaim:" + IdentityBytes(archive_uuid) + ":" +
       std::to_string(
           record.metadata.identity.creator_transaction.local_id.value) +
       ":" + std::to_string(record.metadata.identity.version_sequence) + ":" +
@@ -535,7 +597,7 @@ bool AppendBackupLifecycleLedger(const EngineApiRequest& request,
   const std::string body =
       "SBBARE1\t" + std::to_string(CurrentUnixMicros()) + "\t" +
       BackupArchiveLifecycleOperationName(operation) + "\t" +
-      request.context.database_uuid + "\t" +
+      IdentityBytes(request.context.database_uuid) + "\t" +
       std::to_string(request.context.local_transaction_id) + "\t" +
       evidence_kind + "\t" + evidence_detail + "\tengine_owned";
   const auto checksum = Fnv1a64(body);
@@ -557,7 +619,7 @@ std::string BackupForwardSessionLedgerPath(const EngineRequestContext& context) 
 bool AppendBackupForwardSessionLedger(
     const EngineApiRequest& request,
     const std::string& event_kind,
-    const std::vector<std::pair<std::string, std::string>>& fields,
+    const std::vector<BinaryPair>& fields,
     std::string* evidence_id) {
   if (request.context.database_path.empty()) {
     return false;
@@ -567,7 +629,7 @@ bool AppendBackupForwardSessionLedger(
   if (!parent.empty()) {
     std::filesystem::create_directories(parent);
   }
-  std::vector<std::pair<std::string, std::string>> ledger_fields = fields;
+  std::vector<BinaryPair> ledger_fields = fields;
   ledger_fields.push_back({"event_kind", event_kind});
   ledger_fields.push_back({"database_uuid", request.context.database_uuid});
   ledger_fields.push_back({"local_transaction_id",
@@ -578,13 +640,13 @@ bool AppendBackupForwardSessionLedger(
   ledger_fields.push_back({"transaction_finality_authority", "false"});
   ledger_fields.push_back({"finality_source", "local_mga_transaction_inventory"});
   const std::string body =
-      "SBBFWD1\t" + EncodeCrudPairs(ledger_fields);
+      "SBBFWD2" + RecordLine("LEDGER", ledger_fields);
   const auto checksum = Fnv1a64(body);
   std::ofstream out(ledger_path, std::ios::binary | std::ios::app);
   if (!out) {
     return false;
   }
-  out << body << "\t" << checksum << "\n";
+  out << packet::Unsigned(body.size()) << body << packet::Unsigned(checksum);
   out.close();
   if (!out) {
     return false;
@@ -712,10 +774,10 @@ struct TemporaryBackupExclusionStats {
   std::uint64_t index_count = 0;
 };
 
-std::vector<std::string> TemporaryTableUuidsVisibleThrough(
+std::vector<EngineUuid> TemporaryTableUuidsVisibleThrough(
     const RelationReadSnapshot& state,
     std::uint64_t visible_through_tx) {
-  std::vector<std::string> table_uuids;
+  std::vector<EngineUuid> table_uuids;
   for (const auto& table : state.tables) {
     if (table.temporary &&
         CrudCreatorVisible(state,
@@ -728,8 +790,8 @@ std::vector<std::string> TemporaryTableUuidsVisibleThrough(
   return table_uuids;
 }
 
-bool ContainsUuid(const std::vector<std::string>& uuids,
-                  const std::string& uuid) {
+bool ContainsUuid(const std::vector<EngineUuid>& uuids,
+                  const EngineUuid& uuid) {
   return std::find(uuids.begin(), uuids.end(), uuid) != uuids.end();
 }
 
@@ -846,7 +908,7 @@ std::string BuildManifestBody(const EngineStartLogicalBackupRequest& request, co
                                {"coverage_start_transaction_id", std::to_string(coverage_start)},
                                {"coverage_end_transaction_id", std::to_string(coverage_end)},
                                {"coverage_contiguous", "true"},
-                               {"coverage_proof", std::to_string(Fnv1a64(request.context.database_uuid + filespace_uuid + std::to_string(coverage_start) + ":" + std::to_string(coverage_end)))},
+                               {"coverage_proof", std::to_string(Fnv1a64(IdentityBytes(request.context.database_uuid) + filespace_uuid + std::to_string(coverage_start) + ":" + std::to_string(coverage_end)))},
                                {"checksum_profile", "fnv1a64-manifest-body"},
                                {"signature_profile", "unsigned-local-manifest-proof-v1"},
                                {"snapshot_tx", std::to_string(records.snapshot_tx)},
@@ -862,7 +924,7 @@ std::string BuildManifestBody(const EngineStartLogicalBackupRequest& request, co
                                   {"event_sequence", std::to_string(table.event_sequence)},
                                   {"table_uuid", table.table_uuid},
                                   {"default_name", table.default_name},
-                                  {"columns", EncodeCrudPairs(table.columns)}});
+                                  {"columns", EncodeBinaryPairs(table.columns)}});
   }
   for (const auto& index : records.indexes) {
     body << RecordLine("INDEX", {{"creator_tx", std::to_string(index.creator_tx)},
@@ -882,8 +944,8 @@ std::string BuildManifestBody(const EngineStartLogicalBackupRequest& request, co
                                   {"unique", index.unique ? "1" : "0"}});
   }
   for (const auto& row : records.rows) {
-    const std::string lineage_material = row.table_uuid + "|" + row.row_uuid + "|" + row.version_uuid + "|" +
-                                         row.previous_version_uuid + "|" + std::to_string(row.creator_tx) + "|" +
+    const std::string lineage_material = IdentityBytes(row.table_uuid) + "|" + IdentityBytes(row.row_uuid) + "|" + IdentityBytes(row.version_uuid) + "|" +
+                                         IdentityBytes(row.previous_version_uuid) + "|" + std::to_string(row.creator_tx) + "|" +
                                          std::to_string(row.sequence) + "|" + std::to_string(row.deleted ? 1 : 0);
     body << RecordLine("ROW", {{"creator_tx", std::to_string(row.creator_tx)},
                                 {"creator_transaction_state", TransactionStateFor(records, row.creator_tx)},
@@ -896,7 +958,7 @@ std::string BuildManifestBody(const EngineStartLogicalBackupRequest& request, co
                                 {"previous_sequence", std::to_string(row.previous_sequence)},
                                 {"lineage_checksum", std::to_string(Fnv1a64(lineage_material))},
                                 {"deleted", row.deleted ? "1" : "0"},
-                                {"values", EncodeCrudPairs(row.values)}});
+                                {"values", EncodeBinaryPairs(row.values)}});
   }
   return body.str();
 }
@@ -990,7 +1052,7 @@ std::string BuildPhysicalManifest(const EngineStartPhysicalBackupRequest& reques
                                {"coverage_start_transaction_id", std::to_string(coverage_start)},
                                {"coverage_end_transaction_id", std::to_string(coverage_end)},
                                {"coverage_contiguous", "true"},
-                               {"coverage_proof", std::to_string(Fnv1a64(request.context.database_uuid + filespace_uuid + std::to_string(image_checksum)))},
+                               {"coverage_proof", std::to_string(Fnv1a64(IdentityBytes(request.context.database_uuid) + filespace_uuid + std::to_string(image_checksum)))},
                                {"checksum_profile", "fnv1a64-manifest-body"},
                                {"signature_profile", "unsigned-local-manifest-proof-v1"},
                                {"finality_source", "local_mga_transaction_inventory"},
@@ -1043,7 +1105,7 @@ EngineApiDiagnostic ReadAndVerifyPhysicalManifest(const std::string& manifest_pa
     if (image_uri != nullptr) { *image_uri = ManifestField(fields, "image_uri"); }
     if (image_bytes != nullptr) { *image_bytes = ParseU64(ManifestField(fields, "image_bytes")); }
     if (image_checksum != nullptr) { *image_checksum = ParseU64(ManifestField(fields, "image_checksum")); }
-    if (backup_uuid != nullptr) { backup_uuid->canonical = ManifestField(fields, "backup_uuid"); }
+    if (backup_uuid != nullptr) { *backup_uuid = BinaryIdentity(ManifestField(fields, "backup_uuid")); }
     return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
   return BackupInvalid("backup_archive.restore_physical_backup", "RESTORE_MANIFEST_META_MISSING");
@@ -1200,7 +1262,7 @@ EngineArchiveRetainedHistoryBeforeReclaim(
         MakeApiBehaviorDiagnostic<EngineArchiveRetainedHistoryBeforeReclaimResult>(
             request.context, kOperation, std::move(diagnostic));
     result.archive_filespace_uuid =
-        TypedUuidText(request.archive_filespace.filespace_uuid);
+        request.archive_filespace.filespace_uuid.value;
     return result;
   };
 
@@ -1313,7 +1375,7 @@ EngineArchiveRetainedHistoryBeforeReclaim(
           request.context, kOperation);
   result.archive_uuid = archive_uuid;
   result.archive_filespace_uuid =
-      TypedUuidText(request.archive_filespace.filespace_uuid);
+      request.archive_filespace.filespace_uuid.value;
   result.archived_row_version_count =
       static_cast<EngineApiU64>(request.retained_history.size());
   result.movement_record_count = movement_record_count;
@@ -1549,7 +1611,7 @@ EngineFinishBackupForwardSessionResult EngineFinishBackupForwardSession(
   delta.context = request.context;
   delta.option_envelopes = {
       "target_uri:" + request.delta_manifest_uri,
-      "source_backup_uuid:" + request.base_backup_uuid,
+      "source_backup_uuid:" + IdentityBytes(request.base_backup_uuid),
       "filespace_uuid:" + request.filespace_uuid,
       "start_transaction_id:" +
           std::to_string(request.selected_start_transaction_id),
@@ -1814,7 +1876,7 @@ EngineEvaluateHistoryDisposalMultiHorizon(
                 "range",
                 request.disposable_end_transaction_id);
   }
-  if (request.filespace_uuid.empty()) {
+  if (request.filespace_uuid.is_nil()) {
     return fail(BackupInvalid(kOperation,
                               "MULTI_HORIZON_FILESPACE_UUID_REQUIRED"),
                 "filespace_uuid",
@@ -2539,6 +2601,13 @@ EngineStartLogicalBackupResult EngineStartLogicalBackup(const EngineStartLogical
   }
   const auto temporary_exclusions =
       CountTemporarySnapshotExclusions(loaded_state, records.snapshot_tx);
+  if (BinaryIdentity(TimelineUuidFor(request)).is_nil() ||
+      BinaryIdentity(ForkUuidFor(request)).is_nil() ||
+      BinaryIdentity(KeyLineageFor(request)).is_nil() ||
+      BinaryIdentity(RequiredManifestOption(request, "filespace_uuid:")).is_nil()) {
+    return MakeApiBehaviorDiagnostic<EngineStartLogicalBackupResult>(request.context, kOperation,
+        BackupInvalid(kOperation, "BACKUP_BINARY_LINEAGE_AUTHORITY_REQUIRED"));
+  }
   const auto body = BuildManifestBody(request, records);
   const auto checksum = Fnv1a64(body);
   const std::string manifest_payload = body + "CHECKSUM\t" + std::to_string(checksum) + "\n";
@@ -2631,19 +2700,19 @@ EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreL
     const auto fields = DecodeRecordFields(line, &kind);
     if (kind == "META") {
       auto it = fields.find("backup_uuid");
-      if (it != fields.end()) { backup_uuid = it->second; }
+      if (it != fields.end()) { backup_uuid = BinaryIdentity(it->second); }
     } else if (kind == "TABLE") {
       CrudTableRecord table;
       table.creator_tx = request.context.local_transaction_id;
-      table.table_uuid = fields.at("table_uuid");
+      table.table_uuid = BinaryIdentity(fields.at("table_uuid"));
       table.default_name = fields.at("default_name");
-      table.columns = DecodeCrudPairs(fields.at("columns"));
+      table.columns = DecodeBinaryPairs(fields.at("columns"));
       tables.push_back(std::move(table));
     } else if (kind == "INDEX") {
       CrudIndexRecord index;
       index.creator_tx = request.context.local_transaction_id;
-      index.index_uuid = fields.at("index_uuid");
-      index.table_uuid = fields.at("table_uuid");
+      index.index_uuid = BinaryIdentity(fields.at("index_uuid"));
+      index.table_uuid = BinaryIdentity(fields.at("table_uuid"));
       index.column_name = fields.at("column_name");
       index.family = fields.at("family");
       index.profile = NormalizeCrudIndexProfile(fields.at("profile"));
@@ -2658,11 +2727,11 @@ EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreL
     } else if (kind == "ROW") {
       CrudRowVersionRecord row;
       row.creator_tx = request.context.local_transaction_id;
-      row.table_uuid = fields.at("table_uuid");
-      row.row_uuid = fields.at("row_uuid");
-      row.version_uuid = fields.at("version_uuid");
+      row.table_uuid = BinaryIdentity(fields.at("table_uuid"));
+      row.row_uuid = BinaryIdentity(fields.at("row_uuid"));
+      row.version_uuid = BinaryIdentity(fields.at("version_uuid"));
       row.deleted = fields.at("deleted") == "1";
-      row.values = DecodeCrudPairs(fields.at("values"));
+      row.values = DecodeBinaryPairs(fields.at("values"));
       rows.push_back(std::move(row));
     }
   }
@@ -2776,7 +2845,7 @@ std::string BuildDeltaManifestBody(const EnginePackageDeltaStreamRequest& reques
                                {"coverage_end_transaction_id", std::to_string(end_tx)},
                                {"coverage_contiguous", "true"},
                                {"coverage_gap_classification", "none"},
-                               {"coverage_proof", std::to_string(Fnv1a64(delta_uuid + filespace_uuid + std::to_string(start_tx) + ":" + std::to_string(end_tx)))},
+                               {"coverage_proof", std::to_string(Fnv1a64(IdentityBytes(delta_uuid) + filespace_uuid + std::to_string(start_tx) + ":" + std::to_string(end_tx)))},
                                {"idempotency_key", OptionValue(request, "idempotency_key:")},
                                {"restore_point_name", OptionValue(request, "restore_point_name:")},
                                {"coverage_start_unix_micros", OptionValue(request, "coverage_start_unix_micros:")},
@@ -2794,7 +2863,7 @@ std::string BuildDeltaManifestBody(const EnginePackageDeltaStreamRequest& reques
                                   {"creator_transaction_state", state.transactions.count(table.creator_tx) == 0 ? "unknown" : state.transactions.at(table.creator_tx)},
                                   {"table_uuid", table.table_uuid},
                                   {"default_name", table.default_name},
-                                  {"columns", EncodeCrudPairs(table.columns)}});
+                                  {"columns", EncodeBinaryPairs(table.columns)}});
   }
   for (const auto& index : indexes) {
     body << RecordLine("INDEX", {{"creator_tx", std::to_string(index.creator_tx)},
@@ -2813,8 +2882,8 @@ std::string BuildDeltaManifestBody(const EnginePackageDeltaStreamRequest& reques
                                   {"unique", index.unique ? "1" : "0"}});
   }
   for (const auto& row : rows) {
-    const std::string lineage_material = row.table_uuid + "|" + row.row_uuid + "|" + row.version_uuid + "|" +
-                                         row.previous_version_uuid + "|" + std::to_string(row.creator_tx) + "|" +
+    const std::string lineage_material = IdentityBytes(row.table_uuid) + "|" + IdentityBytes(row.row_uuid) + "|" + IdentityBytes(row.version_uuid) + "|" +
+                                         IdentityBytes(row.previous_version_uuid) + "|" + std::to_string(row.creator_tx) + "|" +
                                          std::to_string(row.sequence) + "|" + std::to_string(row.deleted ? 1 : 0);
     body << RecordLine("ROW", {{"creator_tx", std::to_string(row.creator_tx)},
                                 {"creator_transaction_state", state.transactions.count(row.creator_tx) == 0 ? "unknown" : state.transactions.at(row.creator_tx)},
@@ -2827,7 +2896,7 @@ std::string BuildDeltaManifestBody(const EnginePackageDeltaStreamRequest& reques
                                 {"previous_sequence", std::to_string(row.previous_sequence)},
                                 {"lineage_checksum", std::to_string(Fnv1a64(lineage_material))},
                                 {"deleted", row.deleted ? "1" : "0"},
-                                {"values", EncodeCrudPairs(row.values)}});
+                                {"values", EncodeBinaryPairs(row.values)}});
   }
   return body.str();
 }
@@ -2956,7 +3025,7 @@ EngineUpdateBackupFromVerifiedCoverage(
   const auto base_meta =
       ExtractManifestMetaFields(base_body, kLogicalBackupMagic);
   const auto base_backup_uuid = ManifestField(base_meta, "backup_uuid");
-  if (base_backup_uuid != request.backup_uuid) {
+  if (BinaryIdentity(base_backup_uuid) != request.backup_uuid) {
     return fail(BackupInvalid(kOperation,
                               "BACKUP_UPDATE_BASE_BACKUP_UUID_MISMATCH"));
   }
@@ -2985,7 +3054,7 @@ EngineUpdateBackupFromVerifiedCoverage(
     segment.source_backup_uuid = ManifestField(meta, "source_backup_uuid");
     segment.filespace_uuid = ManifestField(meta, "filespace_uuid");
     segment.idempotency_key = ManifestField(meta, "idempotency_key");
-    if (segment.source_backup_uuid != request.backup_uuid) {
+    if (BinaryIdentity(segment.source_backup_uuid) != request.backup_uuid) {
       return fail(BackupInvalid(kOperation,
                                 "BACKUP_UPDATE_SEGMENT_BACKUP_UUID_MISMATCH"));
     }
@@ -3060,7 +3129,7 @@ EngineUpdateBackupFromVerifiedCoverage(
     package.context = request.context;
     package.option_envelopes = {
         "target_uri:" + request.update_manifest_uri,
-        "source_backup_uuid:" + request.backup_uuid,
+        "source_backup_uuid:" + IdentityBytes(request.backup_uuid),
         "filespace_uuid:" + request.filespace_uuid,
         "start_transaction_id:" + std::to_string(current_coverage_end + 1),
         "end_transaction_id:" +
@@ -3213,6 +3282,13 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
   }
   EngineUuid delta_uuid;
   delta_uuid = GenerateCrudEngineUuid("delta");
+  if (BinaryIdentity(TimelineUuidFor(request)).is_nil() ||
+      BinaryIdentity(ForkUuidFor(request)).is_nil() ||
+      BinaryIdentity(KeyLineageFor(request)).is_nil() ||
+      BinaryIdentity(RequiredManifestOption(request, "filespace_uuid:")).is_nil()) {
+    return MakeApiBehaviorDiagnostic<EnginePackageDeltaStreamResult>(request.context, kOperation,
+        BackupInvalid(kOperation, "BACKUP_BINARY_LINEAGE_AUTHORITY_REQUIRED"));
+  }
   const auto body = BuildDeltaManifestBody(request, delta_uuid, start_tx, end_tx, tables, indexes, rows, loaded_state);
   const auto checksum = Fnv1a64(body);
   if (!WriteBinaryFile(path, body + "CHECKSUM\t" + std::to_string(checksum) + "\n")) {
@@ -3350,21 +3426,21 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
     std::string kind;
     const auto fields = DecodeRecordFields(line, &kind);
     if (kind == "META") {
-      delta_uuid = fields.at("delta_uuid");
+      delta_uuid = BinaryIdentity(fields.at("delta_uuid"));
       start_tx = ParseU64(fields.at("start_transaction_id"));
       end_tx = ParseU64(fields.at("end_transaction_id"));
     } else if (kind == "TABLE") {
       CrudTableRecord table;
       table.creator_tx = request.context.local_transaction_id;
-      table.table_uuid = fields.at("table_uuid");
+      table.table_uuid = BinaryIdentity(fields.at("table_uuid"));
       table.default_name = fields.at("default_name");
-      table.columns = DecodeCrudPairs(fields.at("columns"));
+      table.columns = DecodeBinaryPairs(fields.at("columns"));
       tables.push_back(std::move(table));
     } else if (kind == "INDEX") {
       CrudIndexRecord index;
       index.creator_tx = request.context.local_transaction_id;
-      index.index_uuid = fields.at("index_uuid");
-      index.table_uuid = fields.at("table_uuid");
+      index.index_uuid = BinaryIdentity(fields.at("index_uuid"));
+      index.table_uuid = BinaryIdentity(fields.at("table_uuid"));
       index.column_name = fields.at("column_name");
       index.family = fields.at("family");
       index.profile = NormalizeCrudIndexProfile(fields.at("profile"));
@@ -3379,11 +3455,11 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
     } else if (kind == "ROW") {
       CrudRowVersionRecord row;
       row.creator_tx = request.context.local_transaction_id;
-      row.table_uuid = fields.at("table_uuid");
-      row.row_uuid = fields.at("row_uuid");
-      row.version_uuid = fields.at("version_uuid");
+      row.table_uuid = BinaryIdentity(fields.at("table_uuid"));
+      row.row_uuid = BinaryIdentity(fields.at("row_uuid"));
+      row.version_uuid = BinaryIdentity(fields.at("version_uuid"));
       row.deleted = fields.at("deleted") == "1";
-      row.values = DecodeCrudPairs(fields.at("values"));
+      row.values = DecodeBinaryPairs(fields.at("values"));
       rows.push_back(std::move(row));
     }
   }
@@ -3417,17 +3493,17 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
     return MakeApiBehaviorDiagnostic<EngineApplyDeltaStreamResult>(request.context, kOperation, loaded_target_mga.diagnostic);
   }
   const RelationReadSnapshot target_state = BuildCrudCompatibilityStateFromMga(loaded_target_mga.state);
-  auto table_exists = [&](const std::string& table_uuid) {
+  auto table_exists = [&](const EngineUuid& table_uuid) {
     return std::any_of(target_state.tables.begin(), target_state.tables.end(), [&](const auto& existing) {
       return existing.table_uuid == table_uuid;
     });
   };
-  auto index_exists = [&](const std::string& index_uuid) {
+  auto index_exists = [&](const EngineUuid& index_uuid) {
     return std::any_of(target_state.indexes.begin(), target_state.indexes.end(), [&](const auto& existing) {
       return existing.index_uuid == index_uuid;
     });
   };
-  auto row_version_exists = [&](const std::string& row_uuid, const std::string& version_uuid) {
+  auto row_version_exists = [&](const EngineUuid& row_uuid, const EngineUuid& version_uuid) {
     return std::any_of(target_state.row_versions.begin(), target_state.row_versions.end(), [&](const auto& existing) {
       return existing.row_uuid == row_uuid && existing.version_uuid == version_uuid;
     });
@@ -3482,7 +3558,7 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
   result.delta_manifest_uri = path;
   AddApiBehaviorEvidence(&result, "delta_manifest_validated", path);
   AddApiBehaviorEvidence(&result, "evidence_before_success", "delta_applied");
-  AddApiBehaviorEvidence(&result, "idempotency_key", delta_uuid + ":" + std::to_string(start_tx) + ".." + std::to_string(end_tx));
+  AddApiBehaviorEvidence(&result, "idempotency_key", IdentityBytes(delta_uuid) + ":" + std::to_string(start_tx) + ".." + std::to_string(end_tx));
   AddApiBehaviorEvidence(&result, "already_applied_rows", std::to_string(rows.size() - rows_to_apply.size()));
   AddApiBehaviorEvidence(&result, "coverage_proof", ManifestField(delta_meta, "coverage_proof"));
   AddApiBehaviorEvidence(&result, "pitr_rollforward_profile", ManifestField(delta_meta, "replay_profile"));
@@ -3531,6 +3607,13 @@ EngineStartPhysicalBackupResult EngineStartPhysicalBackup(const EngineStartPhysi
     return MakeApiBehaviorDiagnostic<EngineStartPhysicalBackupResult>(request.context,
                                                                       kOperation,
                                                                       BackupInvalid(kOperation, "BACKUP_FILESPACE_UUID_REQUIRED"));
+  }
+  if (BinaryIdentity(TimelineUuidFor(request)).is_nil() ||
+      BinaryIdentity(ForkUuidFor(request)).is_nil() ||
+      BinaryIdentity(KeyLineageFor(request)).is_nil() ||
+      BinaryIdentity(RequiredManifestOption(request, "filespace_uuid:")).is_nil()) {
+    return MakeApiBehaviorDiagnostic<EngineStartPhysicalBackupResult>(request.context, kOperation,
+        BackupInvalid(kOperation, "BACKUP_BINARY_LINEAGE_AUTHORITY_REQUIRED"));
   }
   bool source_ok = false;
   const auto image_bytes = ReadBinaryFile(request.context.database_path, &source_ok);

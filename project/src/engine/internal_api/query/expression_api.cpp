@@ -2368,9 +2368,9 @@ EngineBindExpressionResult EngineBindExpression(const EngineBindExpressionReques
       {"query_binding", "canonical_expression_reference"});
   result.evidence.push_back(
       {"statement_metadata_snapshot",
-       scratchbird::core::uuid::UuidToString(context.statement_metadata_snapshot_uuid)});
+       context.statement_metadata_snapshot_uuid});
   result.evidence.push_back(
-      {"bound_object_uuid", scratchbird::core::uuid::UuidToString(result.primary_object.uuid)});
+      {"bound_object_uuid", result.primary_object.uuid});
   return result;
 }
 
@@ -2384,8 +2384,8 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
         MakeInvalidRequestDiagnostic("query.cast_value", "target_descriptor_required"));
   }
   const bool domain_descriptor_route =
-      !DomainUuidFromDescriptor(input.descriptor).empty() ||
-      !DomainUuidFromDescriptor(target).empty();
+      !DomainUuidFromDescriptor(input.descriptor).is_nil() ||
+      !DomainUuidFromDescriptor(target).is_nil();
   const bool canonical_descriptor_route =
       !domain_descriptor_route &&
       (!input.descriptor.descriptor_uuid.is_nil() ||
@@ -2414,7 +2414,7 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
     result.evidence.push_back({"datatype_cast", result.cast_category});
     result.evidence.push_back(
         {"canonical_descriptor_identity",
-         scratchbird::core::uuid::UuidToString(result.value.descriptor.descriptor_uuid)});
+         result.value.descriptor.descriptor_uuid});
     return result;
   }
   const auto source_type = TypeFromDescriptor(input.descriptor);
@@ -2443,7 +2443,7 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
         "query.cast_value",
         DatatypeDiagnosticToApi("query.cast_value", cast.diagnostic));
   }
-  if (!DomainUuidFromDescriptor(target).empty()) {
+  if (!DomainUuidFromDescriptor(target).is_nil()) {
     EngineTypedValue candidate;
     candidate.descriptor.descriptor_kind = "scalar";
     candidate.descriptor.canonical_type_name = dt::CanonicalTypeName(cast.value.type_id);
@@ -2567,7 +2567,7 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
     result.collation_uuid = std::move(collation_uuid);
     result.collation_epoch = resolved.resource_descriptor.family_epoch;
     result.evidence.push_back(
-        {"canonical_collation_identity", scratchbird::core::uuid::UuidToString(collation_uuid)});
+        {"canonical_collation_identity", collation_uuid});
     result.evidence.push_back(
         {"collation_epoch", std::to_string(result.collation_epoch)});
     result.evidence.push_back(
@@ -2589,7 +2589,7 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
   result.collation_uuid = std::move(collation_uuid);
   result.collation_epoch = resolved.resource_descriptor.family_epoch;
   result.evidence.push_back(
-      {"canonical_collation_identity", scratchbird::core::uuid::UuidToString(collation_uuid)});
+      {"canonical_collation_identity", collation_uuid});
   result.evidence.push_back(
       {"collation_epoch", std::to_string(result.collation_epoch)});
   return result;
@@ -3168,7 +3168,7 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
          dt::DatatypeNumericOperationKindName(numeric_request.operation)});
     result.evidence.push_back(
         {"canonical_numeric_descriptor",
-         scratchbird::core::uuid::UuidToString(result.value.descriptor.descriptor_uuid)});
+         result.value.descriptor.descriptor_uuid});
     return result;
   }
 
@@ -3368,8 +3368,8 @@ EngineValidateDomainValueResult EngineValidateDomainValue(const EngineValidateDo
 EngineInvokeDomainMethodResult EngineInvokeDomainMethod(const EngineInvokeDomainMethodRequest& request) {
   const EngineDescriptor descriptor = RequestTargetDescriptor(request, request.domain_descriptor);
   const EngineTypedValue input = RequestInputValue(request, request.input_value);
-  const std::string domain_uuid = DomainUuidFromDescriptor(descriptor);
-  if (domain_uuid.empty()) {
+  const EngineUuid domain_uuid = DomainUuidFromDescriptor(descriptor);
+  if (domain_uuid.is_nil()) {
     return ApiFailure<EngineInvokeDomainMethodResult>(
         request.context,
         "query.invoke_domain_method",

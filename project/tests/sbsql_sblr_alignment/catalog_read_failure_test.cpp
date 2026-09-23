@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/catalog_object_lifecycle_codec.hpp"
 #include "database_lifecycle.hpp"
 #include "uuid.hpp"
 
@@ -39,7 +40,8 @@ int main() {
     const auto object = uuid::GenerateEngineIdentityV7(UuidKind::object, millis);
     Setup(database.ok() && filespace.ok() && object.ok(), "UUID generation failed");
     root = fs::temp_directory_path() /
-        ("scratchbird_catalog_read_" + uuid::UuidToString(database.value.value));
+        ("scratchbird_catalog_read_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
     Setup(fs::create_directory(root), "unique fixture directory not created");
     std::cout << "fixture=" << root << '\n';
     db::DatabaseCreateConfig create;
@@ -53,14 +55,20 @@ int main() {
     Setup(db::CreateDatabaseFile(create).ok(), "real database initialization failed");
     api::EngineRequestContext context;
     context.database_path = create.path;
-    context.database_uuid.canonical = uuid::UuidToString(database.value.value);
+    context.database_uuid = database.value.value;
     const fs::path journal = create.path + ".sb.catalog_object_events";
     Setup(!fs::exists(journal), "unexpected preexisting catalog fixture journal");
-    const std::string identity = uuid::UuidToString(object.value.value);
-    // Actual current-format bootstrap catalog event. This is a storage/API
-    // component fixture, not a parser, public command or visibility oracle.
-    const std::string event = "SBCATOBJ1\tOBJECT\t0\t" + identity +
-        "\tschema\t\t\tactive\t1\t41\t\t0\n";
+    const auto identity = object.value.value;
+    // Encode the actual binary catalog event; this fixture does not own
+    // transaction visibility or finality.
+    api::EngineCatalogObjectRecord record;
+    record.object_uuid = identity;
+    record.object_kind = "schema";
+    record.lifecycle_state = "active";
+    record.definition_epoch = 1;
+    record.metadata_epoch = 41;
+    std::string event;
+    Setup(api::EncodeCatalogLifecycleRecord(record, &event), "catalog event encoding failed");
     const auto write = [&](const std::string& bytes) {
       std::ofstream out(journal, std::ios::binary | std::ios::trunc);
       out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));

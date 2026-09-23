@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -47,7 +48,7 @@ constexpr std::string_view kPackageName = "sbup_demo";
 constexpr std::string_view kDatabasePath =
     "/tmp/sbsql_udr_package_management_exact_route_conformance.sbdb";
 
-std::string g_database_uuid = "019f0000-0000-7000-8000-000000003801";
+api::EngineUuid g_database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003801");
 std::uint64_t g_local_transaction_id = 0;
 scratchbird::engine::internal_api::EngineUuid g_transaction_uuid;
 std::uint64_t g_snapshot_visible_through_local_transaction_id = 0;
@@ -214,11 +215,21 @@ bool ApiResultHasField(const api::EngineApiResult& result,
   return false;
 }
 
+bool ApiResultHasField(const api::EngineApiResult& result, std::string_view name,
+                       const api::EngineUuid& expected, bool contains) {
+  Require(!contains,"UUID result comparison requires exact binary value");
+  for(const auto& row:result.result_shape.rows) for(const auto& [key,value]:row.fields) {
+    if(key==name && !value.isSqlNull() && value.binary_value.size()==16 &&
+       std::equal(value.binary_value.begin(),value.binary_value.end(),expected.bytes.begin()))return true;
+  }
+  return false;
+}
+
 bool ApiResultHasEvidence(const api::EngineApiResult& result,
                           std::string_view kind,
                           std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -226,9 +237,9 @@ bool ApiResultHasEvidence(const api::EngineApiResult& result,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000003701";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000003702";
-  session.database_uuid = "019f0000-0000-7000-8000-000000003703";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003701");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003702");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003703");
   session.catalog_epoch = 43;
   session.security_policy_epoch = 47;
   session.descriptor_epoch = 53;
@@ -238,7 +249,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-000000003704";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003704");
   config.bundle_contract_id = "sbp_sbsql@udr-package-management-route-test";
   config.build_id = "sbsql-udr-package-management-route-test";
   return config;
@@ -322,9 +333,9 @@ void RequireExactLowering(const UdrRowEvidence& row) {
                    "authority.parser.no_sql_text_execution"),
           EvidenceMessage(row, "no_sql_text_authority",
                           "parser no-SQL-execution authority step missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.udr_package_registry"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.udr_package_registry"),
           EvidenceMessage(row, "parser_bind_lower", "UDR package registry descriptor missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.udr_runtime_descriptor"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.udr_runtime_descriptor"),
           EvidenceMessage(row, "parser_bind_lower", "UDR runtime descriptor missing"));
   Require(HasValue(artifacts.envelope.required_rights, "right.udr_inspect"),
           EvidenceMessage(row, "parser_bind_lower", "required right mismatch"));
@@ -415,9 +426,9 @@ void RequireLifecycleLowering(const UdrLifecycleRouteCase& route) {
   Require(HasValue(artifacts.envelope.required_rights,
                    route.mutation ? "right.udr_manage" : "right.udr_inspect"),
           RouteMessage(route, "parser_bind_lower", "required right mismatch"));
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.udr_package_registry"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.udr_package_registry"),
           RouteMessage(route, "parser_bind_lower", "UDR package registry descriptor missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.udr_runtime_descriptor"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.udr_runtime_descriptor"),
           RouteMessage(route, "parser_bind_lower", "UDR runtime descriptor missing"));
   Require(!artifacts.envelope.parser_executes_sql,
           RouteMessage(route, "no_sql_engine_execution",
@@ -451,9 +462,9 @@ api::EngineRequestContext EngineContext() {
   context.trace_tags.push_back("right:UDR_MANAGE");
   context.trace_tags.push_back("right:UDR_INSPECT");
   context.database_path = std::string(kDatabasePath);
-  context.database_uuid.canonical = g_database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000003802";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000003803";
+  context.database_uuid = g_database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003802");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003803");
   if (g_local_transaction_id != 0) {
     context.transaction_uuid = g_transaction_uuid;
     context.local_transaction_id = g_local_transaction_id;
@@ -469,8 +480,7 @@ api::EngineRequestContext EngineContext() {
   context.resource_epoch = 53;
   context.name_resolution_epoch = 59;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f0000-0000-7000-8000-000000003805";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003805");
   context.authorization_context.security_context_generation = 1;
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
@@ -480,16 +490,14 @@ api::EngineRequestContext EngineContext() {
   context.authorization_context.effective_subjects.push_back(
       {context.principal_uuid, "principal"});
   api::EngineMaterializedAuthorizationGrant manage;
-  manage.grant_uuid.canonical =
-      "019f0000-0000-7000-8000-000000003806";
+  manage.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003806");
   manage.subject_uuid = context.principal_uuid;
   manage.subject_kind = "principal";
   manage.right = "UDR_MANAGE";
   manage.security_epoch = context.security_epoch;
   context.authorization_context.grants.push_back(std::move(manage));
   api::EngineMaterializedAuthorizationGrant inspect;
-  inspect.grant_uuid.canonical =
-      "019f0000-0000-7000-8000-000000003807";
+  inspect.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003807");
   inspect.subject_uuid = context.principal_uuid;
   inspect.subject_kind = "principal";
   inspect.right = "UDR_INSPECT";
@@ -527,7 +535,7 @@ void CreateRouteDatabase() {
           "failed to generate database/filespace UUIDs for UDR route test");
   Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
           "failed to create database for UDR route test");
-  g_database_uuid = uuid::UuidToString(create.database_uuid.value);
+  g_database_uuid = create.database_uuid.value;
 }
 
 void BeginRouteTransaction() {
@@ -563,7 +571,7 @@ udr_runtime::UdrCallResult DemoEntrypoint(const udr_runtime::UdrCallInput&) {
 
 udr_runtime::UdrPackageDescriptor DemoDescriptor() {
   udr_runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kPackageUuid);
+  descriptor.package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003901");
   descriptor.package_name = std::string(kPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "src-rev-sbup-demo";
@@ -604,9 +612,9 @@ void RegisterDemoPackage() {
 
   api::EngineRegisterUdrPackageRequest request;
   request.context = EngineContext();
-  request.target_database.uuid.canonical = g_database_uuid;
+  request.target_database.uuid = g_database_uuid;
   request.target_database.object_kind = "database";
-  request.target_object.uuid.canonical = descriptor.package_uuid;
+  request.target_object.uuid = descriptor.package_uuid;
   request.target_object.object_kind = "udr_package";
   request.localized_names.push_back(LocalizedName(descriptor.package_name));
   AddManageUdrOptions(&request, descriptor);
@@ -627,9 +635,9 @@ template <typename TRequest>
 TRequest UdrRequest(const udr_runtime::UdrPackageDescriptor& descriptor) {
   TRequest request;
   request.context = EngineContext();
-  request.target_database.uuid.canonical = g_database_uuid;
+  request.target_database.uuid = g_database_uuid;
   request.target_database.object_kind = "database";
-  request.target_object.uuid.canonical = descriptor.package_uuid;
+  request.target_object.uuid = descriptor.package_uuid;
   request.target_object.object_kind = "udr_package";
   request.localized_names.push_back(LocalizedName(descriptor.package_name));
   AddManageUdrOptions(&request, descriptor);

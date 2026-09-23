@@ -17,7 +17,7 @@ namespace {
 
 sblr::SblrOperationEnvelope OptimizerStatsReadMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const std::vector<std::uint8_t>& descriptor_bytes) {
   auto member = sblr::MakeSblrEnvelope(
       "engine.op.optimizer_stats_read", "SBLR_OPTIMIZER_STATS_READ",
@@ -48,8 +48,8 @@ int main() {
   std::atomic<unsigned> probes{0};
   std::atomic<unsigned> cancel_on_probe{0};
   auto context = BeginTransaction(fixture, &probes);
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 36200));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 36200));
+  context.current_package_uuid = parser_uuid;
   context.query_cancellation_requested = [&] {
     const auto ordinal = probes.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto target = cancel_on_probe.load(std::memory_order_relaxed);
@@ -58,7 +58,7 @@ int main() {
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;
@@ -75,7 +75,7 @@ int main() {
   Require(bridge::BindStatementOptimizerStatsReadAuthorityV1(
               receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
               authority.occurrence == 1 &&
-              !authority.statistics_snapshot_uuid.empty() &&
+              !authority.statistics_snapshot_uuid.is_nil() &&
               !authority.canonical_descriptor_bytes.empty(),
           "003620 engine optimizer-stats descriptor binding failed");
   if (result != nullptr) (void)sb_engine_result_release(result);

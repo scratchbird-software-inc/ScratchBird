@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -37,8 +38,8 @@ using scratchbird::engine::sblr::SblrOr;
 
 SblrExecutionContext Context() {
   SblrExecutionContext context;
-  context.database_uuid = "SBSFC-operator-binding-runtime-db";
-  context.transaction_uuid = "SBSFC-operator-binding-runtime-tx";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1156, 45);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 46);
   context.transaction_context_present = true;
   return context;
 }

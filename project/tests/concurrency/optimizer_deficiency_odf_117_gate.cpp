@@ -8,6 +8,7 @@
 
 // ODF-117 concurrency/stale-epoch closure gate.
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "catalog/pinned_descriptor_cache.hpp"
 #include "hot_point_lookup_cache.hpp"
 #include "nosql/nosql_family_maintenance_api.hpp"
@@ -77,12 +78,6 @@ void RequireNoForbiddenRuntimeEvidence(const std::vector<std::string>& values,
   }
 }
 
-api::EngineUuid EngineUuid(std::string value) {
-  api::EngineUuid result;
-  result.canonical = std::move(value);
-  return result;
-}
-
 platform::TypedUuid TestUuid(platform::UuidKind kind, unsigned char salt) {
   platform::TypedUuid value;
   value.kind = kind;
@@ -139,8 +134,8 @@ mga::AuthoritativeCleanupHorizonRequest HorizonRequest() {
 api::EngineRequestContext Context(platform::u64 local_tx = 117) {
   api::EngineRequestContext context;
   context.database_path = "/tmp/sb_odf_117_concurrency_gate.sbdb";
-  context.database_uuid.canonical = "019df117-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical = "019df117-0000-7000-8000-000000000117";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019df117-0000-7000-8000-000000000001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019df117-0000-7000-8000-000000000117");
   context.local_transaction_id = local_tx;
   context.security_context_present = true;
   context.request_id = "odf117-concurrency-stale-epoch";
@@ -175,10 +170,10 @@ opt::OptimizerPlanCacheKeyInput BasePlanInput(platform::u64 epoch) {
   input.compatibility_epoch = epoch + 7;
   input.format_compatibility_epoch = epoch + 8;
   input.route_epoch = epoch + 9;
-  input.object_uuids = {"rel.odf117", "nosql.collection.odf117"};
-  input.function_uuids = {"fn.odf117.redact"};
-  input.index_uuids = {"idx.odf117.nosql.generation"};
-  input.filespace_uuids = {"filespace.odf117.hot"};
+  input.object_uuids = {scratchbird::tests::FixtureUuid(1559, 1), scratchbird::tests::FixtureUuid(1559, 2)};
+  input.function_uuids = {scratchbird::tests::FixtureUuid(1559, 3)};
+  input.index_uuids = {scratchbird::tests::FixtureUuid(1559, 4)};
+  input.filespace_uuids = {scratchbird::tests::FixtureUuid(1559, 5)};
   return input;
 }
 
@@ -207,8 +202,8 @@ api::CatalogPinnedDescriptorCacheKey DescriptorKey(platform::u64 epoch) {
   key.stats_epoch = epoch + 1;
   key.stats_epoch_relevant = true;
   key.descriptor_set_digest = "descriptor:odf117:rel:v" + std::to_string(epoch);
-  key.object_uuids = {"rel.odf117", "nosql.collection.odf117"};
-  key.index_uuids = {"idx.odf117.nosql.generation"};
+  key.object_uuids = {scratchbird::tests::FixtureUuid(1559, 1), scratchbird::tests::FixtureUuid(1559, 2)};
+  key.index_uuids = {scratchbird::tests::FixtureUuid(1559, 4)};
   key.security_policy_identity = "security:tenant-reader:epoch=" + std::to_string(epoch);
   key.redaction_policy_identity = "redaction:mask-secret:epoch=" + std::to_string(epoch);
   key.resource_policy_identity = "resource:oltp:epoch=" + std::to_string(epoch);
@@ -218,13 +213,13 @@ api::CatalogPinnedDescriptorCacheKey DescriptorKey(platform::u64 epoch) {
 api::CatalogPinnedDescriptorSnapshot DescriptorSnapshot(platform::u64 epoch) {
   api::CatalogPinnedDescriptorSnapshot snapshot;
   snapshot.key = DescriptorKey(epoch);
-  snapshot.descriptor.descriptor_uuid = EngineUuid("rel.odf117");
+  snapshot.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1559, 1);
   snapshot.descriptor.descriptor_kind = "table";
   snapshot.descriptor.canonical_type_name = "odf117_relation";
   snapshot.descriptor.encoded_descriptor =
       "columns=id,secret_payload;epoch=" + std::to_string(epoch);
   snapshot.descriptors = {snapshot.descriptor};
-  snapshot.descriptor_owner = {EngineUuid("rel.odf117"), "table"};
+  snapshot.descriptor_owner = {scratchbird::tests::FixtureUuid(1559, 1), "table"};
   snapshot.primary_object = snapshot.descriptor_owner;
   snapshot.result_shape.result_kind = "descriptor";
   snapshot.result_shape.columns = snapshot.descriptors;
@@ -300,14 +295,14 @@ api::EngineNoSqlPhysicalProviderContract ProviderContract(platform::u64 generati
   contract.index_generation.covers_predicate = true;
   contract.index_generation.required_generation = generation;
   contract.index_generation.available_generation = generation;
-  contract.index_generation.index_uuid = "idx.odf117.nosql.generation";
+  contract.index_generation.index_uuid = scratchbird::tests::FixtureUuid(1274, 101);
   contract.delta_overlay.required = true;
   contract.delta_overlay.proof_present = true;
   contract.delta_overlay.covers_snapshot = true;
   contract.delta_overlay.overlay_generation = generation;
   contract.policy.proof_present = true;
   contract.policy.allowed = true;
-  contract.policy.policy_snapshot_uuid = "policy.odf117";
+  contract.policy.policy_snapshot_uuid = scratchbird::tests::FixtureUuid(1274, 102);
   contract.mga_recheck.proof_present = true;
   contract.mga_recheck.row_mga_recheck_required = true;
   contract.mga_recheck.row_security_recheck_required = true;
@@ -473,7 +468,8 @@ void NoSqlGenerationAndCompactionFailures() {
   }
   for (const auto& evidence : maintenance.evidence) {
     maintenance_values.push_back(evidence.evidence_kind);
-    maintenance_values.push_back(evidence.evidence_id);
+    if (const auto* text = std::get_if<std::string>(&evidence.evidence_id))
+      maintenance_values.push_back(*text);
   }
   Require(saw_compaction, "ODF-117 NoSQL compaction action evidence missing");
   RequireNoForbiddenRuntimeEvidence(maintenance_values, "nosql_maintenance");
@@ -494,7 +490,7 @@ void NoSqlOptimizerInvalidationVocabulary() {
     plan_cache.Put(CachedPlan(input));
     opt::OptimizerInvalidationEvent event;
     event.event_kind = event_kind;
-    event.dependency_uuid = "idx.odf117.nosql.generation";
+    event.dependency_uuid = scratchbird::tests::FixtureUuid(1559, 4);
     event.event_epoch = 2118;
     const auto invalidated = plan_cache.InvalidateWithEvidence(event);
     Require(invalidated.invalidated_count == 1,
@@ -562,7 +558,7 @@ void ConcurrentDdlDmlNoSqlInvalidationStress() {
     mutators.emplace_back([&] {
       const auto invalidated = plan_cache.InvalidateWithEvidence(
           opt::OptimizerInvalidationEventForMutation(
-              "catalog_object_alter", "rel.odf117", epoch + 1));
+              "catalog_object_alter", scratchbird::tests::FixtureUuid(1559, 1), epoch + 1));
       if (invalidated.diagnostic_code !=
           "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED") {
         record_error("concurrent DDL invalidation diagnostic changed");
@@ -571,7 +567,7 @@ void ConcurrentDdlDmlNoSqlInvalidationStress() {
     mutators.emplace_back([&] {
       const auto invalidated = plan_cache.InvalidateWithEvidence(
           opt::OptimizerInvalidationEventForMutation(
-              "statistics_refresh", "rel.odf117", epoch + 2));
+              "statistics_refresh", scratchbird::tests::FixtureUuid(1559, 1), epoch + 2));
       if (invalidated.diagnostic_code != "SB_OPTIMIZER_PLAN_CACHE_STALE_EPOCH") {
         record_error("concurrent statistics refresh diagnostic changed");
       }
@@ -579,7 +575,7 @@ void ConcurrentDdlDmlNoSqlInvalidationStress() {
     mutators.emplace_back([&] {
       const auto invalidated = plan_cache.InvalidateWithEvidence(
           opt::OptimizerInvalidationEventForMutation(
-              "redaction_policy_mutation", "fn.odf117.redact", epoch + 3));
+              "redaction_policy_mutation", scratchbird::tests::FixtureUuid(1559, 3), epoch + 3));
       if (invalidated.diagnostic_code !=
           "SB_OPTIMIZER_PLAN_CACHE_REDACTION_SECURITY_POLICY_MISMATCH") {
         record_error("concurrent redaction invalidation diagnostic changed");
@@ -589,7 +585,7 @@ void ConcurrentDdlDmlNoSqlInvalidationStress() {
       const auto invalidated = plan_cache.InvalidateWithEvidence(
           opt::OptimizerInvalidationEventForMutation(
               "nosql_generation_publication",
-              "idx.odf117.nosql.generation",
+              scratchbird::tests::FixtureUuid(1559, 4),
               epoch + 4));
       if (invalidated.diagnostic_code != "SB_OPTIMIZER_PLAN_CACHE_STALE_EPOCH") {
         record_error("concurrent NoSQL generation diagnostic changed");
@@ -598,7 +594,7 @@ void ConcurrentDdlDmlNoSqlInvalidationStress() {
     mutators.emplace_back([&] {
       api::CatalogPinnedDescriptorInvalidationEvent event;
       event.event_kind = "nosql_compaction";
-      event.index_uuid = "idx.odf117.nosql.generation";
+      event.index_uuid = scratchbird::tests::FixtureUuid(1274, 101);
       event.reason = "nosql_compaction_epoch_change";
       descriptor_cache.Invalidate(event);
     });

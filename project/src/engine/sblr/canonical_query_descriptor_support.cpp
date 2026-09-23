@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_query_descriptor_support.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
@@ -16,23 +17,14 @@ namespace exec = scratchbird::engine::executor;
 std::optional<std::string> ExactEncodedDescriptorField(
     const std::string_view descriptor,
     const std::string_view key) {
-  const std::string prefix = std::string(key) + "=";
-  std::optional<std::string> value;
-  std::size_t start = 0;
-  while (start <= descriptor.size()) {
-    const auto end = descriptor.find(';', start);
-    const auto field = descriptor.substr(
-        start, end == std::string_view::npos ? std::string_view::npos
-                                             : end - start);
-    if (field.starts_with(prefix)) {
-      if (value.has_value()) return std::nullopt;
-      value = std::string(field.substr(prefix.size()));
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
-  if (value.has_value() && value->empty()) return std::nullopt;
-  return value;
+  // This accessor returns textual attributes only. Native identity fields
+  // remain in the typed metadata or EngineDescriptor identity slots.
+  if (key.ends_with("uuid")) return std::nullopt;
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(descriptor, &fields)) return std::nullopt;
+  const auto found = fields.text.find(std::string(key));
+  if (found == fields.text.end() || found->second.empty()) return std::nullopt;
+  return found->second;
 }
 
 exec::CanonicalResultNullability ResultNullability(

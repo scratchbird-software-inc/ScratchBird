@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "nosql_statistics_advisor.hpp"
+#include "uuid.hpp"
+#include <chrono>
 
 #include <algorithm>
 #include <array>
@@ -171,9 +173,13 @@ NoSqlAdaptiveIndexCandidate BuildCandidate(
     const NoSqlStatisticsAdvisorRequest& request) {
   NoSqlAdaptiveIndexCandidate candidate;
   candidate.family = family;
-  candidate.candidate_index_uuid =
-      request.object_uuid + ":" + api::EngineNoSqlProviderFamilyName(family) +
-      ":adaptive";
+  const auto millis=std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  if(millis<0)return candidate;
+  const auto issued=core::uuid::GenerateDurableEngineIdentityV7(
+      core::platform::UuidKind::object,static_cast<std::uint64_t>(millis));
+  if(!issued.ok())return candidate;
+  candidate.candidate_index_uuid=issued.value.value;
   candidate.index_kind = NoSqlAdaptiveIndexKindForFamily(family);
   candidate.benefit_score = request.candidate_benefit_score;
   candidate.benefit_threshold = request.promotion_benefit_threshold;
@@ -209,7 +215,7 @@ const char* NoSqlAdaptiveIndexKindForFamily(Family family) {
 
 NoSqlStatisticsAdvisorResult EvaluateNoSqlStatisticsAdvisor(
     const NoSqlStatisticsAdvisorRequest& request) {
-  if (request.object_uuid.empty()) {
+  if (!core::uuid::IsEngineIdentityUuid(request.object_uuid)) {
     return Refuse("SB_NOSQL_STATS_ADVISOR.OBJECT_REQUIRED",
                   "object_required");
   }
@@ -304,6 +310,8 @@ NoSqlStatisticsAdvisorResult EvaluateNoSqlStatisticsAdvisor(
 
   for (const auto family : CoveredFamilies()) {
     auto candidate = BuildCandidate(family, request);
+    if(candidate.candidate_index_uuid.is_nil())return Refuse(
+        "SB_NOSQL_STATS_ADVISOR.IDENTITY_ISSUANCE_FAILED","candidate_identity_issuance_failed");
     result.candidates.push_back(std::move(candidate));
   }
   result.candidate_built = !result.candidates.empty();

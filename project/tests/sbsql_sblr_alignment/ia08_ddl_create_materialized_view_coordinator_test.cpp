@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_ddl_create_materialized_view_coordinator.hpp"
 #include <cassert>
 
@@ -5,15 +6,15 @@ int main() {
   namespace a = scratchbird::engine::internal_api;
   a::EngineRequestContext c;
   c.database_path = "/tmp/sb_create_materialized_view_coord_2955";
-  c.database_uuid.canonical = "019d0000-0000-7000-8000-000000002955";
-  c.statement_uuid.canonical = "019d0000-0000-7000-8000-000000002956";
+  c.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002955");
+  c.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002956");
   c.security_context_present = true;
   c.statement_metadata_snapshot_engine_owned = true;
   c.trace_tags = {"private_ddl_create_materialized_view_binder"};
-  auto bad = a::CompileSblrDdlCreateMaterializedViewDescriptor(c, "wrong", 1, 1, 1);
+  auto bad = a::CompileSblrDdlCreateMaterializedViewDescriptor(c, a::EngineUuid{}, 1, 1, 1);
   assert(!bad.ok && bad.diagnostic.code == "SBLR.OPERAND_INVALID");
   auto compiled = a::CompileSblrDdlCreateMaterializedViewDescriptor(
-      c, c.statement_uuid.canonical, 11, 3, 17);
+      c, c.statement_uuid, 11, 3, 17);
   assert(compiled.ok && compiled.descriptor.availability == 17);
 
   auto hidden_context = c;
@@ -29,9 +30,9 @@ int main() {
   assert(!replay.ok && replay.diagnostic.code == "MGA.TRANSACTION.STALE");
 
   auto c2 = c;
-  c2.statement_uuid.canonical = "019d0000-0000-7000-8000-000000002957";
+  c2.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002957");
   auto pending = a::CompileSblrDdlCreateMaterializedViewDescriptor(
-      c2, c2.statement_uuid.canonical, 12, 4, 18);
+      c2, c2.statement_uuid, 12, 4, 18);
   assert(pending.ok);
   auto cancel = c2;
   cancel.trace_tags = {"private_ddl_create_materialized_view"};

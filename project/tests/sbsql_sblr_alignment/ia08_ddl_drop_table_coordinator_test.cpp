@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_ddl_drop_table_coordinator.hpp"
 #include <cassert>
 
@@ -7,10 +8,10 @@ int main() {
   EngineRequestContext c;
   c.security_context_present = true;
   c.statement_metadata_snapshot_engine_owned = true;
-  c.statement_uuid.canonical = "drop-table-test";
+  c.statement_uuid = scratchbird::tests::FixtureUuid(1161, 6);
   c.trace_tags = {"private_ddl_drop_table_binder"};
   auto compiled = CompileSblrDdlDropTableDescriptor(
-      c, c.statement_uuid.canonical, 1, 2, 7);
+      c, c.statement_uuid, 1, 2, 7);
   assert(compiled.ok);
 
   c.trace_tags = {"private_ddl_drop_table"};
@@ -21,7 +22,7 @@ int main() {
 
   c.trace_tags = {"private_ddl_drop_table_binder"};
   auto cancellable = CompileSblrDdlDropTableDescriptor(
-      c, c.statement_uuid.canonical, 2, 3, 8);
+      c, c.statement_uuid, 2, 3, 8);
   assert(cancellable.ok);
   c.trace_tags = {"private_ddl_drop_table"};
   c.query_cancellation_requested = [] { return true; };

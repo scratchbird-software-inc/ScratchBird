@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "nosql/search_api.hpp"
 #include "nosql/time_series_api.hpp"
@@ -67,14 +68,14 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
+  platform::Uuid database_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -87,8 +88,15 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) { return true; }
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextFields(item.evidence_id) == id) { return true; }
   }
+  return false;
+}
+
+bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
+                      std::string_view kind, const platform::Uuid& identity) {
+  for (const auto& entry : evidence)
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceIdentityEquals(entry.evidence_id, identity)) return true;
   return false;
 }
 
@@ -97,7 +105,7 @@ bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
                       std::string_view token) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind &&
-        item.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFields(item.evidence_id).find(token) != std::string::npos) {
       return true;
     }
   }
@@ -108,7 +116,7 @@ bool AnyEvidenceContains(const std::vector<api::EngineEvidenceReference>& eviden
                          std::string_view token) {
   for (const auto& item : evidence) {
     if (item.evidence_kind.find(token) != std::string::npos ||
-        item.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFields(item.evidence_id).find(token) != std::string::npos) {
       return true;
     }
   }
@@ -120,7 +128,7 @@ std::size_t EvidenceIndex(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view id) {
   for (std::size_t index = 0; index < evidence.size(); ++index) {
     if (evidence[index].evidence_kind == kind &&
-        evidence[index].evidence_id == id) {
+        scratchbird::tests::EvidenceTextFields(evidence[index].evidence_id) == id) {
       return index;
     }
   }
@@ -133,7 +141,7 @@ void AssertNoRuntimeDocLeaks(const api::EngineApiResult& result) {
   for (const auto& evidence : result.evidence) {
     for (const auto token : forbidden) {
       Require(evidence.evidence_kind.find(token) == std::string::npos &&
-                  evidence.evidence_id.find(token) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFields(evidence.evidence_id).find(token) == std::string::npos,
               "ODF-045 runtime evidence leaked documentation token");
     }
   }
@@ -158,7 +166,7 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-045 database create failed");
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   return fixture;
 }
 
@@ -168,11 +176,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -207,17 +215,17 @@ void Rollback(const api::EngineRequestContext& context) {
 
 template <typename TRequest>
 TRequest HeavyGenerationRequest(const api::EngineRequestContext& context,
-                                const std::string& target_uuid,
+                                const platform::Uuid&target_uuid,
                                 const std::string& target_kind,
-                                const std::string& generation_uuid,
+                                const platform::Uuid&generation_uuid,
                                 const std::string& proof_suffix,
                                 bool include_validation_proof = true) {
   TRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = target_uuid;
+  request.target_object.uuid = target_uuid;
   request.target_object.object_kind = target_kind;
   request.option_envelopes.push_back("heavy_generation.generation_uuid=" +
-                                     generation_uuid);
+      std::string(reinterpret_cast<const char*>(generation_uuid.bytes.data()), generation_uuid.bytes.size()));
   request.option_envelopes.push_back("heavy_generation.source_row_count=3");
   request.option_envelopes.push_back("heavy_generation.source_payload_count=3");
   if (include_validation_proof) {
@@ -237,7 +245,7 @@ TRequest HeavyGenerationRequest(const api::EngineRequestContext& context,
       std::to_string(context.local_transaction_id));
   request.option_envelopes.push_back(
       "heavy_generation.publication_fence=publication_fence_" +
-      generation_uuid);
+      proof_suffix);
   request.option_envelopes.push_back(
       "heavy_generation.engine_owned_mga_publication_fence=true");
   return request;
@@ -313,18 +321,18 @@ void TextVectorAndColumnarPublishValidatedGenerations() {
   auto fixture = MakeFixture("publish", 45000);
   auto context = Begin(fixture, "odf045-publish");
   const auto text_collection =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 10);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 10);
   const auto vector_collection =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 11);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 11);
   const auto time_series_collection =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 12);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 12);
 
   const auto text = api::EngineSearchQuery(
       HeavyGenerationRequest<api::EngineSearchQueryRequest>(
           context,
           text_collection,
           "search_collection",
-          NewUuidText(platform::UuidKind::object, fixture.salt + 20),
+          NewNativeUuid(platform::UuidKind::object, fixture.salt + 20),
           "text"));
   AssertPublishedGeneration(text,
                             "search_query",
@@ -337,7 +345,7 @@ void TextVectorAndColumnarPublishValidatedGenerations() {
           context,
           vector_collection,
           "vector_collection",
-          NewUuidText(platform::UuidKind::object, fixture.salt + 21),
+          NewNativeUuid(platform::UuidKind::object, fixture.salt + 21),
           "vector"));
   AssertPublishedGeneration(vector,
                             "vector_search",
@@ -350,7 +358,7 @@ void TextVectorAndColumnarPublishValidatedGenerations() {
           context,
           time_series_collection,
           "time_series",
-          NewUuidText(platform::UuidKind::object, fixture.salt + 22),
+          NewNativeUuid(platform::UuidKind::object, fixture.salt + 22),
           "columnar"));
   AssertPublishedGeneration(columnar,
                             "time_series_append",
@@ -364,9 +372,9 @@ void MissingValidationProofFailsBeforePublication() {
   auto fixture = MakeFixture("missing-proof", 45500);
   auto context = Begin(fixture, "odf045-missing-proof");
   const auto collection =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 30);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 30);
   const auto generation =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 31);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 31);
   const auto refused = api::EngineSearchQuery(
       HeavyGenerationRequest<api::EngineSearchQueryRequest>(
           context,
@@ -411,8 +419,8 @@ void ExistingNoSqlRoutesRemainBackwardCompatible() {
 
   api::EngineSearchQueryRequest search;
   search.context = context;
-  search.target_object.uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 40);
+  search.target_object.uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 40);
   search.target_object.object_kind = "search_collection";
   const auto search_result = api::EngineSearchQuery(search);
   RequireOk(search_result, "ODF-045 search fallback failed");
@@ -430,8 +438,8 @@ void ExistingNoSqlRoutesRemainBackwardCompatible() {
 
   api::EngineVectorSearchRequest vector;
   vector.context = context;
-  vector.target_object.uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 41);
+  vector.target_object.uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 41);
   vector.target_object.object_kind = "vector_collection";
   const auto vector_result = api::EngineVectorSearch(vector);
   RequireOk(vector_result, "ODF-045 vector fallback failed");
@@ -449,8 +457,8 @@ void ExistingNoSqlRoutesRemainBackwardCompatible() {
 
   api::EngineTimeSeriesAppendRequest time_series;
   time_series.context = context;
-  time_series.target_object.uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 42);
+  time_series.target_object.uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 42);
   time_series.target_object.object_kind = "time_series";
   const auto time_series_result = api::EngineTimeSeriesAppend(time_series);
   RequireOk(time_series_result, "ODF-045 time-series fallback failed");

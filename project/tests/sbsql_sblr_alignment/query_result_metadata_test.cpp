@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/canonical_query_result_metadata.hpp"
 
 #include <array>
@@ -17,8 +18,8 @@ void Check(bool value, const char* label) {
   if (!value) throw std::runtime_error(label);
 }
 struct Identity {
-  const char* descriptor;
-  const char* type;
+  api::EngineUuid descriptor;
+  api::EngineUuid type;
   const char* codec;
   dt::CanonicalTypeId code;
   std::uint32_t width;
@@ -26,21 +27,16 @@ struct Identity {
 // Independently fixed admitted descriptor/type/codec expectations. Never call
 // the production lookup to manufacture the expected values.
 constexpr std::array<Identity, 6> identities{{
-  {"01000000-626f-7f6c-a561-6e0000000000", "01000000-626f-7f6c-a561-6e0000000000", "datatype.boolean.u8.v1", dt::CanonicalTypeId::boolean, 1},
-  {"019d0000-0000-7000-8000-00000000d716", "019d0000-0000-7000-8000-00000000d717", "datatype.int32.le.v1", dt::CanonicalTypeId::int32, 4},
-  {"019d0000-0000-7000-8000-00000000d711", "019d0000-0000-7000-8000-00000000d712", "datatype.int64.le.v1", dt::CanonicalTypeId::int64, 8},
-  {"a0000000-6465-7369-ad61-6c0000000000", "019d0000-0000-7000-8000-00000000d713", "datatype.decimal.base1e9.le.v1", dt::CanonicalTypeId::decimal, 24},
-  {"019d0000-0000-7000-8000-00000000d714", "019d0000-0000-7000-8000-00000000d715", "datatype.int128.le.v1", dt::CanonicalTypeId::int128, 16},
-  {"019d0000-0000-7000-8000-00000000d718", "019d0000-0000-7000-8000-00000000d719", "datatype.text.utf8.v1", dt::CanonicalTypeId::character, 0}
+  {scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"), scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"), "datatype.boolean.u8.v1", dt::CanonicalTypeId::boolean, 1},
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717"), "datatype.int32.le.v1", dt::CanonicalTypeId::int32, 4},
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712"), "datatype.int64.le.v1", dt::CanonicalTypeId::int64, 8},
+  {scratchbird::tests::FixtureUuidLiteral("a0000000-6465-7369-ad61-6c0000000000"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d713"), "datatype.decimal.base1e9.le.v1", dt::CanonicalTypeId::decimal, 24},
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d715"), "datatype.int128.le.v1", dt::CanonicalTypeId::int128, 16},
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719"), "datatype.text.utf8.v1", dt::CanonicalTypeId::character, 0}
 }};
 
-wire::TypedResultUuid Bytes(const std::string& text) {
-  wire::TypedResultUuid result{};
-  std::string hex;
-  for (const char c : text) if (c != '-') hex += c;
-  for (std::size_t i = 0; i < result.size(); ++i)
-    result[i] = static_cast<unsigned char>(std::stoul(hex.substr(i * 2, 2), nullptr, 16));
-  return result;
+wire::TypedResultUuid Bytes(const api::EngineUuid& identity) {
+  return identity.bytes;
 }
 
 struct Fixture {
@@ -50,9 +46,9 @@ struct Fixture {
   std::string code, detail;
   Fixture(const Identity& id = identities[2], std::size_t columns = 1,
           std::size_t rows = 0, api::RelationalNullability nullable = api::RelationalNullability::kNonNull) {
-    context.statement_receipt_uuid.canonical = "019d0000-0000-7000-8000-000000001001";
-    context.statement_snapshot_uuid.canonical = "019d0000-0000-7000-8000-000000001002";
-    context.datatype_catalog_snapshot_uuid.canonical = "019d0000-0000-7000-8000-00000000d701";
+    context.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000001001");
+    context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000001002");
+    context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
     context.datatype_catalog_generation = 1;
     context.datatype_registry_generation = 1;
     context.maximum_typed_result_transport_bytes_per_packet = 65536;
@@ -69,8 +65,8 @@ struct Fixture {
     descriptor.descriptor_generation = descriptor.type_generation = descriptor.codec_generation = 1;
     descriptor.codec_id = id.codec;
     descriptor.codec_version = 1;
-    descriptor.statement_receipt_uuid = context.statement_receipt_uuid.canonical;
-    descriptor.datatype_catalog_snapshot_uuid = context.datatype_catalog_snapshot_uuid.canonical;
+    descriptor.statement_receipt_uuid = context.statement_receipt_uuid;
+    descriptor.datatype_catalog_snapshot_uuid = context.datatype_catalog_snapshot_uuid;
     descriptor.datatype_catalog_generation = descriptor.datatype_registry_generation = 1;
     dag.descriptors.push_back(descriptor);
     shape.result_kind = "rows";
@@ -85,10 +81,11 @@ struct Fixture {
       output.output_name_utf8 = "same;=résumé";
       dag.outputs.push_back(output);
       api::EngineDescriptor executed;
-      executed.descriptor_uuid.canonical = id.descriptor;
+      executed.descriptor_uuid = id.descriptor;
       // Neither this display spelling nor the rendered row value defines type.
       executed.canonical_type_name = "not_a_type_authority";
-      executed.encoded_descriptor = "type_uuid=" + std::string(id.type);
+      executed.type_uuid = id.type;
+      executed.encoded_descriptor = "display text is not identity authority";
       shape.columns.push_back(executed);
     }
     dag.nodes.push_back(root);
@@ -132,9 +129,9 @@ int main() try {
     Check(f.code.empty() && f.detail.empty(), "success has no failure diagnostic");
     const auto frozen = f.shape.query_metadata;
     Check(frozen && frozen->columns.size() == columns, "complete schema including zero rows");
-    Check(frozen->statement_receipt_uuid == Bytes(f.context.statement_receipt_uuid.canonical), "binary receipt");
-    Check(frozen->statement_snapshot_uuid == Bytes(f.context.statement_snapshot_uuid.canonical), "binary snapshot");
-    Check(frozen->datatype_catalog_snapshot_uuid == Bytes(f.context.datatype_catalog_snapshot_uuid.canonical), "binary catalog snapshot");
+    Check(frozen->statement_receipt_uuid == Bytes(f.context.statement_receipt_uuid), "binary receipt");
+    Check(frozen->statement_snapshot_uuid == Bytes(f.context.statement_snapshot_uuid), "binary snapshot");
+    Check(frozen->datatype_catalog_snapshot_uuid == Bytes(f.context.datatype_catalog_snapshot_uuid), "binary catalog snapshot");
     Check(frozen->datatype_catalog_generation == 1 && frozen->datatype_registry_generation == 1, "exact cohort generations");
     for (std::size_t i = 0; i < columns; ++i) {
       const auto& c = frozen->columns[i];
@@ -154,9 +151,9 @@ int main() try {
     ++cases;
   }
   Check(cases == expected_cases, "fixed expected case population");
-  Reject([](auto& f) { f.context.statement_receipt_uuid.canonical.clear(); });
-  Reject([](auto& f) { f.context.statement_receipt_uuid.canonical[14] = '4'; });
-  Reject([](auto& f) { f.context.statement_snapshot_uuid.canonical.clear(); });
+  Reject([](auto& f) { f.context.statement_receipt_uuid = {}; });
+  Reject([](auto& f) { f.context.statement_receipt_uuid.bytes[6] = 0x40; });
+  Reject([](auto& f) { f.context.statement_snapshot_uuid = {}; });
   Reject([](auto& f) { f.context.datatype_catalog_generation = 2; });
   Reject([](auto& f) { f.context.datatype_registry_generation = 2; });
   Reject([](auto& f) { f.dag.root_node_id = 0; });
@@ -167,8 +164,8 @@ int main() try {
   Reject([](auto& f) { f.dag.outputs[0].visible = false; });
   Reject([](auto& f) { f.dag.descriptors.push_back(f.dag.descriptors[0]); });
   Reject([](auto& f) { f.dag.descriptors[0].datatype_identity_authoritative = false; });
-  Reject([](auto& f) { f.dag.descriptors[0].statement_receipt_uuid.back() = '5'; });
-  Reject([](auto& f) { f.dag.descriptors[0].datatype_catalog_snapshot_uuid.back() = '5'; });
+  Reject([](auto& f) { f.dag.descriptors[0].statement_receipt_uuid.bytes.back() ^= 1; });
+  Reject([](auto& f) { f.dag.descriptors[0].datatype_catalog_snapshot_uuid.bytes.back() ^= 1; });
   Reject([](auto& f) { f.dag.descriptors[0].datatype_catalog_generation = 0; });
   Reject([](auto& f) { f.dag.descriptors[0].datatype_registry_generation = 0; });
   Reject([](auto& f) { f.dag.descriptors[0].descriptor_generation = 2; });
@@ -178,12 +175,12 @@ int main() try {
   Reject([](auto& f) { f.dag.descriptors[0].codec_id += ".invented"; });
   Reject([](auto& f) { f.dag.descriptors[0].type_uuid = identities[0].type; });
   Reject([](auto& f) { f.dag.descriptors[0].nullability = static_cast<api::RelationalNullability>(255); });
-  Reject([](auto& f) { f.dag.descriptors[0].collation_uuid = "not-a-uuid"; });
+  Reject([](auto& f) { f.dag.descriptors[0].collation_uuid = api::EngineUuid{}; });
   Reject([](auto& f) { f.dag.outputs[0].output_name_utf8 = std::string("a\0b", 3); });
   Reject([](auto& f) { f.dag.outputs[0].output_name_utf8.assign(4097, 'a'); });
-  Reject([](auto& f) { f.shape.columns[0].descriptor_uuid.canonical.back() = '5'; });
-  Reject([](auto& f) { f.shape.columns[0].encoded_descriptor = "type_uuid=" + std::string(identities[0].type); });
-  Reject([](auto& f) { f.shape.columns[0].encoded_descriptor += ";" + f.shape.columns[0].encoded_descriptor; });
+  Reject([](auto& f) { f.shape.columns[0].descriptor_uuid.bytes.back() ^= 1; });
+  Reject([](auto& f) { f.shape.columns[0].type_uuid = identities[0].type; });
+  Reject([](auto& f) { f.shape.columns[0].type_uuid = {}; });
   Reject([](auto& f) { f.shape.result_kind = "command"; });
   Reject([](auto& f) { f.shape.columns.clear(); });
   Reject([](auto& f) { f.context.maximum_typed_result_transport_bytes_per_packet = 1; }, "RESOURCE.BUDGET_EXCEEDED");
@@ -248,9 +245,9 @@ int main() try {
           "empty and maximum-length display names remain exact");
   }
   Fixture bound;
-  const std::string logical_descriptor = "019d0000-0000-7000-8000-000000009001";
+  const auto logical_descriptor = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000009001");
   bound.dag.descriptors[0].descriptor_uuid = logical_descriptor;
-  bound.shape.columns[0].descriptor_uuid.canonical = logical_descriptor;
+  bound.shape.columns[0].descriptor_uuid = logical_descriptor;
   Check(bound.Run() &&
         bound.shape.query_metadata->columns[0].bound_descriptor_uuid == Bytes(logical_descriptor) &&
         bound.shape.query_metadata->columns[0].transport.descriptor_uuid == Bytes(identities[2].descriptor),

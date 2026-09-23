@@ -523,7 +523,7 @@ void CreateDatabase(const std::filesystem::path& path) {
   const auto bootstrap =
       scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
           path, "sbsql_mga_transaction_full_route_conformance");
-  const auto bootstrap_transaction_uuid = bootstrap.transaction_uuid.canonical;
+  const auto bootstrap_transaction_uuid = bootstrap.transaction_uuid;
   const auto bootstrap_local_transaction_id = bootstrap.local_transaction_id;
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       path,

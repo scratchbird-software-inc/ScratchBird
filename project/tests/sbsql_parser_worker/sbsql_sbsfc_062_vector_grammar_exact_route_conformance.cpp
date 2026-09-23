@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -51,7 +52,7 @@ namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kCollectionUuid = "019f0000-0000-7000-8000-000000062001";
+constexpr auto kCollectionUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062001");
 constexpr std::string_view kCreatedCollectionUuid = "019f0000-0000-7000-8000-000000062002";
 constexpr std::string_view kVectorColumnUuid = "019f0000-0000-7000-8000-000000062003";
 constexpr std::string_view kIdColumnUuid = "019f0000-0000-7000-8000-000000062004";
@@ -87,7 +88,7 @@ struct VectorCase {
   std::string_view opcode;
   std::string_view operation_family;
   std::vector<std::string_view> surface_ids;
-  std::vector<std::string> resolved_uuids;
+  std::vector<api::EngineUuid> resolved_uuids;
 };
 
 void Require(bool condition, std::string_view message) {
@@ -109,7 +110,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -117,10 +118,10 @@ bool HasEvidence(const api::EngineApiResult& result,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000062101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000062102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000062103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 262;
   session.security_policy_epoch = 263;
   session.descriptor_epoch = 264;
@@ -131,7 +132,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_062_vector_grammar_route";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000062104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062104");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-062-vector-grammar-route-test";
   config.build_id = "sbsql-sbsfc-062-vector-grammar-route-test";
   return config;
@@ -271,14 +272,14 @@ void RequireServerAdmission(const VectorCase& test_case,
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsql-sbsfc-062-vector-grammar-exact-route";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000062201";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000062202";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000062203";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000062204";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000062205";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000062206";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000062207";
-  context.current_role_uuid.canonical = "019f0000-0000-7000-8000-000000062208";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062201");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062202");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062203");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062204");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062205");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062206");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062207");
+  context.current_role_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062208");
   context.local_transaction_id = 262;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
@@ -304,7 +305,12 @@ sblr::SblrOperationEnvelope EngineEnvelope(std::string_view operation_id,
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back({"text", "target_object_uuid", std::string(kCollectionUuid)});
+  sblr::SblrOperand target;
+  target.type = "uuid_ref";
+  target.name = "target_object_uuid";
+  target.value_kind = sblr::SblrValueKind::uuid_ref;
+  target.value_body.assign(kCollectionUuid.bytes.begin(), kCollectionUuid.bytes.end());
+  envelope.operands.push_back(std::move(target));
   envelope.operands.push_back({"text", "target_object_kind", "vector_collection"});
   return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
       std::move(envelope));
@@ -377,7 +383,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -391,21 +397,21 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "SBSFC-062 test database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContextForDatabase(const std::filesystem::path& path,
-                                                   const std::string& database_uuid) {
+                                                   const api::EngineUuid& database_uuid) {
   auto context = EngineContext();
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.current_schema_uuid.canonical.clear();
+  context.database_uuid = database_uuid;
+  context.current_schema_uuid = {};
   context.local_transaction_id = 0;
-  context.transaction_uuid.canonical.clear();
+  context.transaction_uuid = {};
   return context;
 }
 
-std::string SchemaUuidForPath(const api::EngineRequestContext& context,
+api::EngineUuid SchemaUuidForPath(const api::EngineRequestContext& context,
                               const std::string& path) {
   for (const auto& schema : api::CheckedSchemaTreeRecords(context,
                                                           context.local_transaction_id)) {
@@ -417,7 +423,7 @@ std::string SchemaUuidForPath(const api::EngineRequestContext& context,
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid) {
+                                                 const api::EngineUuid& database_uuid) {
   auto context = EngineContextForDatabase(path, database_uuid);
   auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
                                          "SBLR_TRANSACTION_BEGIN",
@@ -442,18 +448,18 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   return context;
 }
 
-api::EngineApiRequest EngineCreateVectorCollectionApiRequest(std::string_view schema_uuid) {
+api::EngineApiRequest EngineCreateVectorCollectionApiRequest(const api::EngineUuid& schema_uuid) {
   api::EngineApiRequest request;
-  request.target_schema.uuid.canonical = std::string(schema_uuid);
+  request.target_schema.uuid = schema_uuid;
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = std::string(kCreatedCollectionUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062002");
   request.target_object.object_kind = "table";
   request.localized_names.push_back({"en", "primary", "", "vec_docs", true});
   request.physical_profile.encoded_profiles.push_back(
       "vector_collection:dimension=3;metric=cosine;index=hnsw");
 
   api::EngineColumnDefinition id_column;
-  id_column.requested_column_uuid.canonical = std::string(kIdColumnUuid);
+  id_column.requested_column_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062004");
   id_column.names.push_back({"en", "primary", "", "id", true});
   id_column.descriptor.descriptor_kind = "scalar";
   id_column.descriptor.canonical_type_name = "int";
@@ -463,7 +469,7 @@ api::EngineApiRequest EngineCreateVectorCollectionApiRequest(std::string_view sc
   request.columns.push_back(std::move(id_column));
 
   api::EngineColumnDefinition vector_column;
-  vector_column.requested_column_uuid.canonical = std::string(kVectorColumnUuid);
+  vector_column.requested_column_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000062003");
   vector_column.names.push_back({"en", "primary", "", "embedding", true});
   vector_column.descriptor.descriptor_kind = "scalar";
   vector_column.descriptor.canonical_type_name = "dense_vector";
@@ -479,15 +485,15 @@ void RequireCreateVectorCollectionDispatch() {
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   auto context = BeginEngineTransaction(path, database_uuid);
-  context.current_schema_uuid.canonical = SchemaUuidForPath(context, "users.public");
-  Require(!context.current_schema_uuid.canonical.empty(),
+  context.current_schema_uuid = SchemaUuidForPath(context, "users.public");
+  Require(!context.current_schema_uuid.is_nil(),
           "SBSFC-062 bootstrapped users.public schema missing");
   const sblr::SblrDispatchRequest request{
       context,
       EngineEnvelope("ddl.create_table",
                      "SBLR_DDL_CREATE_TABLE",
                      "trace.sbsfc062.vector.create_collection"),
-      EngineCreateVectorCollectionApiRequest(context.current_schema_uuid.canonical)};
+      EngineCreateVectorCollectionApiRequest(context.current_schema_uuid)};
   const auto result = sblr::DispatchSblrOperation(request);
   for (const auto& diagnostic : result.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
@@ -522,7 +528,7 @@ int main() {
         "SBSQL-3DA278E4B3B5",
         "SBSQL-8AA6DA462354",
         "SBSQL-3C937B646A90"},
-       {std::string(kCollectionUuid)}},
+       {kCollectionUuid}},
       {"SEARCH vec_docs embedding <-> VECTOR '[1,0,0]' TOP 3;",
        "nosql.vector_search",
        "SBLR_NOSQL_VECTOR_SEARCH",
@@ -534,7 +540,7 @@ int main() {
         "SBSQL-0EEEB7598628",
         "SBSQL-78EAD21925B4",
         "SBSQL-B251723259F5"},
-       {std::string(kCollectionUuid)}},
+       {kCollectionUuid}},
       {"CREATE VECTOR COLLECTION IF NOT EXISTS vec_docs DIMENSION 3 METRIC COSINE INDEX METHOD HNSW PAYLOAD (doc_id BIGINT, embedding VECTOR INDEX METHOD HNSW METRIC COSINE) WITH (profile = 'local');",
        "ddl.create_table",
        "SBLR_DDL_CREATE_TABLE",
@@ -549,7 +555,7 @@ int main() {
        "SBLR_NOSQL_VECTOR_COLLECTION_OP",
        "sblr.query.multimodel_or_ddl.v3",
        {"SBSQL-43D593BC6E94"},
-       {std::string(kCollectionUuid)}},
+       {kCollectionUuid}},
   };
   for (const auto& test_case : cases) {
     const auto artifacts = RunPipeline(test_case);

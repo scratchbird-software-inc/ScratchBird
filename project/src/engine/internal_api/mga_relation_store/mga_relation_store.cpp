@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "mga_relation_store/mga_relation_locator.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "dml/delete_binding_authority.hpp"
 #include "dml/datatype_operator_registry_projection.hpp"
@@ -121,47 +122,29 @@ std::string ScopedRelationStoreRoot(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_relation_scope";
 }
 
-std::string ScopedRelationSegmentName(const std::string& table_uuid) {
-  std::string name;
-  name.reserve(table_uuid.size());
-  for (const char ch : table_uuid) {
-    const bool safe = (ch >= 'a' && ch <= 'z') ||
-                      (ch >= 'A' && ch <= 'Z') ||
-                      (ch >= '0' && ch <= '9') ||
-                      ch == '-' || ch == '_';
-    name.push_back(safe ? ch : '_');
-  }
-  return name.empty() ? std::string("unknown") : name;
-}
-
 std::string ScopedRowStorePath(const EngineRequestContext& context,
-                               const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".rows";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".rows", false);
 }
 
 std::string ScopedRowBinaryStorePath(const EngineRequestContext& context,
-                                     const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".rows.sbnr";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".rows.sbnr", false);
 }
 
 std::string ScopedIndexStorePath(const EngineRequestContext& context,
-                                 const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".indexes";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".indexes", false);
 }
 
 std::string ScopedIndexBinaryStorePath(const EngineRequestContext& context,
-                                       const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".indexes.sbnx";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".indexes.sbnx", false);
 }
 
 std::string ScopedSummaryStorePath(const EngineRequestContext& context,
-                                   const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".summary";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".summary", false);
 }
 
 std::string DescriptorStorePath(const EngineRequestContext& context) {
@@ -248,61 +231,25 @@ bool FileExistsAndNotEmpty(const std::string& path) {
          std::filesystem::file_size(path, ignored) != 0;
 }
 
-bool ReadScopedRelationLinesForTables(
-    const EngineRequestContext& context,
-    const std::set<std::string>& table_uuids,
-    bool row_store,
-    std::vector<std::string>* output,
-    bool* used_segments) {
-  if (output == nullptr) return false;
-  output->clear();
-  if (used_segments != nullptr) *used_segments = false;
-  std::vector<std::string> lines;
-  bool used = false;
-  for (const auto& table_uuid : table_uuids) {
-    const std::string path = row_store
-                                 ? ScopedRowStorePath(context, table_uuid)
-                                 : ScopedIndexStorePath(context, table_uuid);
-    std::vector<std::string> segment_lines;
-    if (!ReadCompleteMgaTextRecords(path, &segment_lines)) return false;
-    if (segment_lines.empty()) continue;
-    used = true;
-    lines.reserve(lines.size() + segment_lines.size());
-    lines.insert(lines.end(),
-                 std::make_move_iterator(segment_lines.begin()),
-                 std::make_move_iterator(segment_lines.end()));
+bool ReadScopedIndexEntriesForTables(const EngineRequestContext& context,
+    const std::set<EngineUuid>& table_uuids,
+    std::vector<CrudIndexEntryRecord>* output, bool* used_segments) {
+  if (!output || !used_segments) return false;
+  std::vector<CrudIndexEntryRecord> entries;
+  bool used=false;
+  for(const auto& table_uuid:table_uuids) {
+    std::vector<idx::byte> bytes;
+    if(!ReadCompleteMgaBinaryFile(ScopedIndexStorePath(context,table_uuid),&bytes) ||
+       !DecodeScopedIndexBinaryBytes(bytes,&entries)) return false;
+    used=used||!bytes.empty();
   }
-  if (used_segments != nullptr) {
-    *used_segments = used;
-  }
-  *output = std::move(lines);
-  return true;
+  output->swap(entries);*used_segments=used;return true;
 }
 
-std::set<std::string> DiscoverScopedRelationTableUuids(
-    const EngineRequestContext& context) {
-  std::set<std::string> table_uuids;
-  const std::filesystem::path root = ScopedRelationStoreRoot(context);
-  std::error_code ignored;
-  if (!std::filesystem::exists(root, ignored)) {
-    return table_uuids;
-  }
-  for (const auto& entry : std::filesystem::directory_iterator(root, ignored)) {
-    if (ignored) { break; }
-    if (!entry.is_regular_file(ignored)) {
-      ignored.clear();
-      continue;
-    }
-    std::string name = entry.path().filename().string();
-    for (const std::string_view suffix :
-         {".rows.sbnr", ".indexes.sbnx", ".rows", ".indexes", ".summary"}) {
-      if (name.size() > suffix.size() &&
-          name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
-        table_uuids.insert(name.substr(0, name.size() - suffix.size()));
-        break;
-      }
-    }
-    ignored.clear();
+std::set<EngineUuid> DiscoverScopedRelationTableUuids(const EngineRequestContext& context) {
+  std::set<EngineUuid> table_uuids;
+  for(const auto& [id,ordinal]:LoadMgaRelationLocators(ScopedRelationStoreRoot(context))) {
+    (void)ordinal;table_uuids.insert(id);
   }
   return table_uuids;
 }
@@ -317,76 +264,7 @@ bool DecodeScopedIndexBinaryStore(
   }
   std::vector<idx::byte> bytes;
   if (!ReadCompleteMgaBinaryFile(path, &bytes)) return false;
-  std::vector<CrudIndexEntryRecord> staged;
-  std::size_t offset = 0;
-  while (offset < bytes.size()) {
-    if (offset + kScopedIndexBinaryBatchMagic.size() > bytes.size() ||
-        std::string_view(reinterpret_cast<const char*>(bytes.data() + offset),
-                         kScopedIndexBinaryBatchMagic.size()) !=
-            kScopedIndexBinaryBatchMagic) {
-      return false;
-    }
-    offset += kScopedIndexBinaryBatchMagic.size();
-    std::uint16_t version = 0;
-    std::uint16_t flags = 0;
-    std::uint64_t entry_count = 0;
-    std::uint64_t creator_tx = 0;
-    std::uint64_t first_event_sequence = 0;
-    if (!ReadBinaryU16(bytes, &offset, &version) ||
-        !ReadBinaryU16(bytes, &offset, &flags) ||
-        !ReadBinaryU64(bytes, &offset, &entry_count) ||
-        !ReadBinaryU64(bytes, &offset, &creator_tx) ||
-        !ReadBinaryU64(bytes, &offset, &first_event_sequence) ||
-        version != kScopedIndexBinaryVersion ||
-        flags != 0 ||
-        entry_count >
-            static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
-      return false;
-    }
-    std::string table_uuid;
-    std::string index_uuid;
-    std::string column_name;
-    std::string family;
-    std::string entry_kind;
-    if (!ReadBinaryString(bytes, &offset, &table_uuid) ||
-        !ReadBinaryString(bytes, &offset, &index_uuid) ||
-        !ReadBinaryString(bytes, &offset, &column_name) ||
-        !ReadBinaryString(bytes, &offset, &family) ||
-        !ReadBinaryString(bytes, &offset, &entry_kind) ||
-        table_uuid.empty() || index_uuid.empty() || entry_kind.empty()) {
-      return false;
-    }
-    // Four length-prefixed nonempty/optional fields consume at least sixteen
-    // framing bytes per entry. Refuse corrupt counts before allocation.
-    if (entry_count > (bytes.size() - offset) / 16 ||
-        entry_count > staged.max_size() - staged.size() ||
-        (entry_count != 0 && entry_count - 1 >
-             std::numeric_limits<std::uint64_t>::max() - first_event_sequence)) return false;
-    staged.reserve(staged.size() + static_cast<std::size_t>(entry_count));
-    for (std::uint64_t index = 0; index < entry_count; ++index) {
-      CrudIndexEntryRecord entry;
-      entry.creator_tx = creator_tx;
-      entry.event_sequence = first_event_sequence + index;
-      entry.sequence = entry.event_sequence;
-      entry.table_uuid = table_uuid;
-      entry.index_uuid = index_uuid;
-      entry.column_name = column_name;
-      entry.family = family;
-      entry.entry_kind = entry_kind;
-      if (!ReadBinaryString(bytes, &offset, &entry.key_value) ||
-          !ReadBinaryString(bytes, &offset, &entry.payload_value) ||
-          !ReadBinaryString(bytes, &offset, &entry.row_uuid) ||
-          !ReadBinaryString(bytes, &offset, &entry.version_uuid) ||
-          entry.key_value.empty() || entry.row_uuid.empty() ||
-          entry.version_uuid.empty()) {
-        return false;
-      }
-      staged.push_back(std::move(entry));
-    }
-  }
-  if (staged.size() > entries->max_size() - entries->size()) return false;
-  entries->insert(entries->end(), std::make_move_iterator(staged.begin()),
-                  std::make_move_iterator(staged.end()));
+  if (!DecodeScopedIndexBinaryBytes(bytes, entries)) return false;
   if (used_segment != nullptr) *used_segment = !bytes.empty();
   return true;
 }
@@ -397,43 +275,6 @@ std::string JoinLine(const std::vector<std::string>& fields) {
     if (i != 0) { line += '\t'; }
     line += fields[i];
   }
-  return line;
-}
-
-std::string BuildIndexEntryStoreLine(std::uint64_t creator_tx,
-                                     std::uint64_t event_sequence,
-                                     std::string_view index_uuid,
-                                     std::string_view table_uuid,
-                                     std::string_view column_name,
-                                     std::string_view family,
-                                     std::string_view entry_kind,
-                                     std::string_view key,
-                                     std::string_view payload,
-                                     std::string_view row_uuid,
-                                     std::string_view version_uuid) {
-  const std::string creator_text = std::to_string(creator_tx);
-  const std::string event_text = std::to_string(event_sequence);
-  std::string line;
-  line.reserve(96 + creator_text.size() + event_text.size() +
-               index_uuid.size() + table_uuid.size() + column_name.size() +
-               family.size() + entry_kind.size() +
-               kLineHexFieldPrefix.size() + key.size() * 2 +
-               kLineHexFieldPrefix.size() + payload.size() * 2 +
-               row_uuid.size() + version_uuid.size());
-  bool first = true;
-  AppendLineField(&line, &first, kRowStoreMagic);
-  AppendLineField(&line, &first, "INDEX_ENTRY");
-  AppendLineField(&line, &first, creator_text);
-  AppendLineField(&line, &first, event_text);
-  AppendLineField(&line, &first, index_uuid);
-  AppendLineField(&line, &first, table_uuid);
-  AppendLineField(&line, &first, column_name);
-  AppendLineField(&line, &first, family);
-  AppendLineField(&line, &first, entry_kind);
-  AppendLineSafeOrHexField(&line, &first, key);
-  AppendLineSafeOrHexField(&line, &first, payload);
-  AppendLineField(&line, &first, row_uuid);
-  AppendLineField(&line, &first, version_uuid);
   return line;
 }
 
@@ -449,28 +290,11 @@ std::uint64_t ParseU64(const std::string& text, std::uint64_t fallback = 0) {
 ScopedRelationSummary RebuildScopedRelationSummaryFromRows(
     const std::string& scoped_row_path) {
   ScopedRelationSummary summary;
-  std::vector<std::string> lines;
-  if (!ReadCompleteMgaTextRecords(scoped_row_path, &lines)) {
+  std::vector<CrudRowVersionRecord> rows;
+  if (!DecodeScopedRowBinaryStore(scoped_row_path, &rows, &summary)) {
     summary.malformed = true;
-    return summary;
+    summary.trusted = false;
   }
-  for (const auto& line : lines) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
-        fields[1] != "ROW_VERSION") {
-      summary.malformed = true;
-      summary.trusted = false;
-      return summary;
-    }
-    ++summary.row_version_count;
-    if (fields[7] == "1") {
-      ++summary.tombstone_count;
-    }
-    if (!fields[8].empty()) {
-      ++summary.update_count;
-    }
-  }
-  summary.trusted = true;
   return summary;
 }
 
@@ -490,7 +314,7 @@ void MergeScopedRelationSummary(ScopedRelationSummary* target,
 
 ScopedRelationSummary RebuildScopedRelationSummaryFromStores(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   ScopedRelationSummary summary;
   summary.trusted = true;
   MergeScopedRelationSummary(
@@ -511,14 +335,14 @@ ScopedRelationSummary RebuildScopedRelationSummaryFromStores(
 }
 
 bool ScopedRelationAnyRowStoreExists(const EngineRequestContext& context,
-                                     const std::string& table_uuid) {
+                                     const EngineUuid& table_uuid) {
   return FileExistsAndNotEmpty(ScopedRowStorePath(context, table_uuid)) ||
          FileExistsAndNotEmpty(ScopedRowBinaryStorePath(context, table_uuid));
 }
 
 ScopedRelationSummary LoadScopedRelationSummary(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   const std::string summary_path = ScopedSummaryStorePath(context, table_uuid);
   const std::string row_path = ScopedRowStorePath(context, table_uuid);
   const std::string binary_row_path = ScopedRowBinaryStorePath(context,
@@ -561,7 +385,7 @@ ScopedRelationSummary LoadScopedRelationSummary(
 }
 
 bool WriteScopedRelationSummary(const EngineRequestContext& context,
-                                const std::string& table_uuid,
+                                const EngineUuid& table_uuid,
                                 const ScopedRelationSummary& summary) {
   std::error_code ignored;
   std::filesystem::create_directories(ScopedRelationStoreRoot(context),
@@ -597,13 +421,13 @@ bool WriteScopedRelationSummary(const EngineRequestContext& context,
 
 bool UpdateScopedRelationSummaries(
     const EngineRequestContext& context,
-    const std::map<std::string, ScopedRelationSummaryDelta>& deltas) {
+    const std::map<EngineUuid, ScopedRelationSummaryDelta>& deltas) {
   if (deltas.empty()) {
     return true;
   }
   const std::lock_guard<std::mutex> guard(ScopedRelationSummaryMutex());
   for (const auto& [table_uuid, delta] : deltas) {
-    if (table_uuid.empty() || delta.row_version_count == 0) {
+    if (table_uuid.is_nil() || delta.row_version_count == 0) {
       continue;
     }
     const std::string summary_path = ScopedSummaryStorePath(context,
@@ -675,7 +499,7 @@ std::string DecodeLineHexFieldOrRaw(const std::string& field) {
 
 bool LoadScopedBinaryIndexEntriesForTables(
     const EngineRequestContext& context,
-    const std::set<std::string>& table_uuids,
+    const std::set<EngineUuid>& table_uuids,
     std::vector<CrudIndexEntryRecord>* entries,
     bool* used_segment) {
   if (entries == nullptr) {
@@ -862,17 +686,14 @@ bool ExactTextMigrationCreatorTransaction(
     const EngineRequestContext& context,
     const std::uint64_t creator_tx,
     const std::string_view transaction_uuid) {
-  if (creator_tx == 0 || transaction_uuid.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
-      scratchbird::core::platform::UuidKind::transaction,
-      std::string(transaction_uuid));
-  if (!parsed.ok()) return false;
+  EngineUuid identity;
+  if (creator_tx == 0 || !ReadMetadataUuid(transaction_uuid, &identity)) return false;
   const auto inventory = ResolveStatementTransactionInventory(context);
   if (!inventory.ok()) return false;
   const auto exact = LookupLocalTransaction(
       inventory.snapshot->inventory, MakeLocalTransactionId(creator_tx));
   return exact.ok() &&
-         exact.entry.identity.transaction_uuid.value == parsed.value.value;
+         exact.entry.identity.transaction_uuid.value == identity;
 }
 
 bool TextMigrationLineageCreatorVisible(
@@ -894,22 +715,27 @@ bool TextMigrationLineageCreatorVisible(
           exact.entry.state == TransactionState::prepared);
 }
 
-std::set<std::string> VisibleRetiredTemporaryTableMetadata(
+std::set<EngineUuid> VisibleRetiredTemporaryTableMetadata(
     const EngineRequestContext& context,
     const RelationReadSnapshot& state) {
-  std::set<std::string> retired_tables;
-  for (const auto& line : ReadLines(MetadataStorePath(context))) {
-    const auto fields = SplitTabs(line);
+  std::set<EngineUuid> retired_tables;
+  std::vector<std::string> records;
+  if (!ReadCompleteMgaMetadataRecords(MetadataStorePath(context), &records))
+    throw std::runtime_error("mga_retired_metadata_read_failed");
+  for (const auto& line : records) {
+    std::vector<std::string> fields;
+    if (!DecodeMgaMetadataFields(line, &fields)) throw std::runtime_error("mga_retired_metadata_frame_invalid");
     if (fields.size() < 7 || fields[0] != kRowStoreMagic ||
         fields[1] != "TABLE_METADATA_RETIRED") {
       continue;
     }
     const std::uint64_t creator_tx = ParseU64(fields[2]);
     const std::uint64_t event_sequence = ParseU64(fields[3]);
-    const std::string& table_uuid = fields[4];
-    const std::string& session_uuid = fields[6];
-    if (!session_uuid.empty() &&
-        session_uuid != context.session_uuid) {
+    EngineUuid table_uuid, session_uuid;
+    if (!ReadMetadataUuid(fields[4], &table_uuid) ||
+        !ReadMetadataUuid(fields[6], &session_uuid, true))
+      throw std::runtime_error("mga_retired_metadata_identity_invalid");
+    if (!session_uuid.is_nil() && session_uuid != context.session_uuid) {
       continue;
     }
     if (CrudCreatorVisible(state,
@@ -1267,7 +1093,7 @@ MgaStatementMetadataViewLoadResult LoadMgaStatementMetadataView(
   return result;
 }
 
-void RetainRelationMetadataScope(const std::set<std::string>& table_scope,
+void RetainRelationMetadataScope(const std::set<EngineUuid>& table_scope,
                                  RelationReadSnapshot* metadata) {
   if (metadata == nullptr) { return; }
   metadata->tables.erase(
@@ -1327,6 +1153,8 @@ void CaptureRelationLoadMaterialization(MgaRelationStoreResult* result) {
   const auto& state = result->state;
   auto& bytes = result->bytes_materialized;
   auto& allocations = result->allocation_units_materialized;
+  // Inline binary UUIDs are counted by each record sizeof below; they have
+  // no separately materialized string bytes or allocation units.
   bytes = sizeof(MgaRelationStoreState);
   allocations = 0;
 
@@ -1353,30 +1181,21 @@ void CaptureRelationLoadMaterialization(MgaRelationStoreResult* result) {
   bytes += static_cast<std::uint64_t>(
       state.relation_metadata.tables.size() * sizeof(CrudTableRecord));
   for (const auto& table : state.relation_metadata.tables) {
-    AddMaterializedString(table.table_uuid, &bytes, &allocations);
     AddMaterializedString(table.default_name, &bytes, &allocations);
     AddMaterializedPairs(table.columns, &bytes, &allocations);
     AddMaterializedString(table.temporary_scope, &bytes, &allocations);
-    AddMaterializedString(table.temporary_session_uuid, &bytes, &allocations);
     AddMaterializedString(table.on_commit_action, &bytes, &allocations);
   }
   if (!state.row_versions.empty()) { ++allocations; }
   bytes += static_cast<std::uint64_t>(
       state.row_versions.size() * sizeof(CrudRowVersionRecord));
   for (const auto& row : state.row_versions) {
-    AddMaterializedString(row.table_uuid, &bytes, &allocations);
-    AddMaterializedString(row.row_uuid, &bytes, &allocations);
-    AddMaterializedString(row.version_uuid, &bytes, &allocations);
-    AddMaterializedString(row.temporary_session_uuid, &bytes, &allocations);
-    AddMaterializedString(row.previous_version_uuid, &bytes, &allocations);
     AddMaterializedPairs(row.values, &bytes, &allocations);
   }
   if (!state.relation_metadata.indexes.empty()) { ++allocations; }
   bytes += static_cast<std::uint64_t>(
       state.relation_metadata.indexes.size() * sizeof(CrudIndexRecord));
   for (const auto& index : state.relation_metadata.indexes) {
-    AddMaterializedString(index.index_uuid, &bytes, &allocations);
-    AddMaterializedString(index.table_uuid, &bytes, &allocations);
     AddMaterializedString(index.column_name, &bytes, &allocations);
     AddMaterializedString(index.family, &bytes, &allocations);
     AddMaterializedString(index.profile, &bytes, &allocations);
@@ -1397,25 +1216,17 @@ void CaptureRelationLoadMaterialization(MgaRelationStoreResult* result) {
   bytes += static_cast<std::uint64_t>(
       state.index_entries.size() * sizeof(CrudIndexEntryRecord));
   for (const auto& entry : state.index_entries) {
-    AddMaterializedString(entry.index_uuid, &bytes, &allocations);
-    AddMaterializedString(entry.table_uuid, &bytes, &allocations);
     AddMaterializedString(entry.column_name, &bytes, &allocations);
     AddMaterializedString(entry.family, &bytes, &allocations);
     AddMaterializedString(entry.entry_kind, &bytes, &allocations);
     AddMaterializedString(entry.key_value, &bytes, &allocations);
     AddMaterializedString(entry.payload_value, &bytes, &allocations);
-    AddMaterializedString(entry.row_uuid, &bytes, &allocations);
-    AddMaterializedString(entry.version_uuid, &bytes, &allocations);
   }
   if (!state.relation_metadata.large_values.empty()) { ++allocations; }
   bytes += static_cast<std::uint64_t>(
       state.relation_metadata.large_values.size() *
       sizeof(CrudLargeValueRecord));
   for (const auto& value : state.relation_metadata.large_values) {
-    AddMaterializedString(value.overflow_uuid, &bytes, &allocations);
-    AddMaterializedString(value.table_uuid, &bytes, &allocations);
-    AddMaterializedString(value.row_uuid, &bytes, &allocations);
-    AddMaterializedString(value.version_uuid, &bytes, &allocations);
     AddMaterializedString(value.field_name, &bytes, &allocations);
     AddMaterializedString(value.content_hash, &bytes, &allocations);
     AddMaterializedString(value.state, &bytes, &allocations);
@@ -1423,7 +1234,6 @@ void CaptureRelationLoadMaterialization(MgaRelationStoreResult* result) {
     bytes += static_cast<std::uint64_t>(
         value.chunks.size() * sizeof(CrudLargeValueChunkRecord));
     for (const auto& chunk : value.chunks) {
-      AddMaterializedString(chunk.overflow_uuid, &bytes, &allocations);
       AddMaterializedString(chunk.payload_fragment, &bytes, &allocations);
     }
   }
@@ -1435,9 +1245,6 @@ void CaptureRelationLoadMaterialization(MgaRelationStoreResult* result) {
       sizeof(CrudSealedRelationDescriptorSnapshot));
   for (const auto& snapshot :
        state.relation_metadata.sealed_relation_descriptor_snapshots) {
-    AddMaterializedString(snapshot.relation_uuid, &bytes, &allocations);
-    AddMaterializedString(snapshot.relation_descriptor_uuid, &bytes,
-                          &allocations);
     AddMaterializedPairs(snapshot.descriptor_fields, &bytes, &allocations);
   }
   if (!state.relation_metadata.savepoints.empty()) { ++allocations; }
@@ -1520,7 +1327,7 @@ bool TextMigrationLineageCreatorVisibleForStoreModule(
 
 bool UpdateScopedRelationSummariesForStoreModule(
     const EngineRequestContext& context,
-    const std::map<std::string, ScopedRelationSummaryDelta>& deltas) {
+    const std::map<EngineUuid, ScopedRelationSummaryDelta>& deltas) {
   return UpdateScopedRelationSummaries(context, deltas);
 }
 
@@ -1699,16 +1506,16 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     return result;
   }
   std::unordered_map<std::string, std::string> row_value_key_cache;
-  std::set<std::string> all_table_uuids;
+  std::set<EngineUuid> all_table_uuids;
   for (const auto& table : result.state.relation_metadata.tables) {
-    if (!table.table_uuid.empty()) {
+    if (!table.table_uuid.is_nil()) {
       all_table_uuids.insert(table.table_uuid);
     }
   }
   const auto discovered_scoped_tables = DiscoverScopedRelationTableUuids(context);
   all_table_uuids.insert(discovered_scoped_tables.begin(),
                          discovered_scoped_tables.end());
-  std::set<std::string> scoped_row_tables_used;
+  std::set<EngineUuid> scoped_row_tables_used;
   for (const auto& table_uuid : all_table_uuids) {
     std::vector<CrudRowVersionRecord> decoded_rows;
     bool used_segment = false;
@@ -1737,36 +1544,16 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
       ++result.row_versions_retained;
     }
   }
-  std::vector<std::string> row_lines;
-  if (!ReadCompleteMgaTextRecords(RowStorePath(context), &row_lines)) {
-    result.diagnostic = MakeInvalidRequestDiagnostic(
-        "mga.row_store", "row_store_read_failed");
+  std::vector<CrudRowVersionRecord> general_rows;
+  ScopedRelationSummary general_summary;
+  if (!DecodeScopedRowBinaryStore(RowStorePath(context), &general_rows, &general_summary) || general_summary.malformed) {
+    result.state = {};
+    result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store", "binary_row_store_read_failed");
     return result;
   }
-  for (const auto& line : row_lines) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
-        fields[1] != "ROW_VERSION") {
-      continue;
-    }
-    if (scoped_row_tables_used.count(fields[4]) != 0) {
-      continue;
-    }
+  for (auto& row : general_rows) {
+    if (scoped_row_tables_used.contains(row.table_uuid)) continue;
     ++result.row_versions_scanned;
-    CrudRowVersionRecord row;
-    row.creator_tx = ParseU64(fields[2]);
-    row.event_sequence = ParseU64(fields[3]);
-    row.sequence = row.event_sequence;
-    row.table_uuid = fields[4];
-    row.row_uuid = fields[5];
-    row.version_uuid = fields[6];
-    row.deleted = fields[7] == "1";
-    row.previous_version_uuid = fields[8];
-    row.previous_sequence = ParseU64(fields[9]);
-    row.values = DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
-    if (fields.size() >= 12) {
-      row.temporary_session_uuid = fields[11];
-    }
     if (RowEventRolledBackBySavepoint(savepoints,
                                       row.creator_tx,
                                       row.event_sequence)) {
@@ -1789,18 +1576,19 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
         "scoped_index_binary_segment_decode_failed");
     return result;
   }
-  std::vector<std::string> index_lines;
-  if (!ReadScopedRelationLinesForTables(context,
+  std::vector<CrudIndexEntryRecord> index_entries;
+  if (!ReadScopedIndexEntriesForTables(context,
                                         all_table_uuids,
-                                        false,
-                                        &index_lines,
+                                        &index_entries,
                                         &scoped_index_segments_used)) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.index_store", "scoped_index_segment_read_failed");
     return result;
   }
   if (!scoped_index_segments_used && !scoped_binary_index_segments_used) {
-    if (!ReadCompleteMgaTextRecords(IndexStorePath(context), &index_lines)) {
+    std::vector<idx::byte> bytes;
+    if (!ReadCompleteMgaBinaryFile(IndexStorePath(context), &bytes) ||
+        !DecodeScopedIndexBinaryBytes(bytes, &index_entries)) {
       result.diagnostic = MakeInvalidRequestDiagnostic(
           "mga.index_store", "index_store_read_failed");
       return result;
@@ -1813,23 +1601,8 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
       scoped_row_tables_used.empty() && !scoped_index_segments_used &&
       !scoped_binary_index_segments_used;
 
-  for (const auto& line : index_lines) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() < 13 || fields[0] != kRowStoreMagic || fields[1] != "INDEX_ENTRY") { continue; }
+  for (auto& entry : index_entries) {
     ++result.index_entries_scanned;
-    CrudIndexEntryRecord entry;
-    entry.creator_tx = ParseU64(fields[2]);
-    entry.event_sequence = ParseU64(fields[3]);
-    entry.sequence = entry.event_sequence;
-    entry.index_uuid = fields[4];
-    entry.table_uuid = fields[5];
-    entry.column_name = fields[6];
-    entry.family = fields[7];
-    entry.entry_kind = fields[8];
-    entry.key_value = DecodeLineHexFieldOrRaw(fields[9]);
-    entry.payload_value = DecodeLineHexFieldOrRaw(fields[10]);
-    entry.row_uuid = fields[11];
-    entry.version_uuid = fields[12];
     if (IndexEventRolledBackBySavepoint(savepoints,
                                         entry.creator_tx,
                                         entry.event_sequence)) {
@@ -1890,12 +1663,12 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
 
 MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     const EngineRequestContext& context,
-    const std::vector<std::string>& table_uuids,
+    const std::vector<EngineUuid>& table_uuids,
     const std::string& evidence_route,
     bool include_index_entries = true,
     bool include_row_versions = true,
     bool expand_constraint_scope = true,
-    const std::string& row_uuid_filter = {}) {
+    const EngineUuid& row_uuid_filter = {}) {
   MgaRelationStoreResult result;
   result.scoped_state_load = true;
   if (context.database_path.empty()) {
@@ -1907,7 +1680,7 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     return result;
   }
   for (const auto& table_uuid : table_uuids) {
-    if (table_uuid.empty()) {
+    if (table_uuid.is_nil()) {
       result.diagnostic =
           MakeInvalidRequestDiagnostic("mga.row_store",
                                        "target_table_uuid_required");
@@ -1928,12 +1701,17 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
   const auto retired_tables =
       VisibleRetiredTemporaryTableMetadata(context, result.state.relation_metadata);
   FilterVisibleRetiredTemporaryMetadata(context, &result.state.relation_metadata);
-  std::set<std::string> table_scope;
+  std::set<EngineUuid> table_scope;
   for (const auto& table_uuid : table_uuids) {
     if (expand_constraint_scope) {
       const auto scoped = InsertTargetRelationScope(
           context, result.state.relation_metadata, table_uuid);
-      table_scope.insert(scoped.begin(), scoped.end());
+      if (!scoped) {
+        result.state = {};
+        result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store", "constraint_scope_identity_invalid");
+        return result;
+      }
+      table_scope.insert(scoped->begin(), scoped->end());
     } else {
       table_scope.insert(table_uuid);
     }
@@ -1955,7 +1733,7 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
   bool index_segments_used = false;
   bool binary_index_segments_used = false;
   std::vector<CrudIndexEntryRecord> binary_index_entries;
-  std::vector<std::string> index_lines;
+  std::vector<CrudIndexEntryRecord> index_entries;
   if (include_index_entries) {
     if (!LoadScopedBinaryIndexEntriesForTables(context,
                                                table_scope,
@@ -1966,10 +1744,9 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
           "scoped_index_binary_segment_decode_failed");
       return result;
     }
-    if (!ReadScopedRelationLinesForTables(context,
-                                          table_scope,
-                                          false,
-                                          &index_lines,
+    if (!ReadScopedIndexEntriesForTables(context,
+                                        table_scope,
+                                        &index_entries,
                                           &index_segments_used)) {
       result.diagnostic = MakeInvalidRequestDiagnostic(
           "mga.index_store", "scoped_index_segment_read_failed");
@@ -1998,7 +1775,7 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
             retired_tables.count(row.table_uuid) != 0) {
           continue;
         }
-        if (!row_uuid_filter.empty() && row.row_uuid != row_uuid_filter) {
+        if (!row_uuid_filter.is_nil() && row.row_uuid != row_uuid_filter) {
           continue;
         }
         if (RowEventRolledBackBySavepoint(savepoints,
@@ -2017,26 +1794,9 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
       row_segments_used || index_segments_used || binary_index_segments_used;
   result.scoped_physical_segments_fallback = false;
 
-  for (const auto& line : index_lines) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() < 13 || fields[0] != kRowStoreMagic || fields[1] != "INDEX_ENTRY") { continue; }
+  for (auto& entry : index_entries) {
     ++result.index_entries_scanned;
-    if (table_scope.count(fields[5]) == 0 || retired_tables.count(fields[5]) != 0) {
-      continue;
-    }
-    CrudIndexEntryRecord entry;
-    entry.creator_tx = ParseU64(fields[2]);
-    entry.event_sequence = ParseU64(fields[3]);
-    entry.sequence = entry.event_sequence;
-    entry.index_uuid = fields[4];
-    entry.table_uuid = fields[5];
-    entry.column_name = fields[6];
-    entry.family = fields[7];
-    entry.entry_kind = fields[8];
-    entry.key_value = DecodeLineHexFieldOrRaw(fields[9]);
-    entry.payload_value = DecodeLineHexFieldOrRaw(fields[10]);
-    entry.row_uuid = fields[11];
-    entry.version_uuid = fields[12];
+    if (table_scope.count(entry.table_uuid) == 0 || retired_tables.count(entry.table_uuid) != 0) continue;
     if (IndexEventRolledBackBySavepoint(savepoints,
                                         entry.creator_tx,
                                         entry.event_sequence)) {
@@ -2094,19 +1854,19 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
 
 MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   return LoadMgaRelationStoreStateForTargetScope(
       context,
-      std::vector<std::string>{table_uuid},
+      std::vector<EngineUuid>{table_uuid},
       "insert_target_scoped");
 }
 
 MgaRelationStoreResult LoadMgaRelationStoreIndexesOnlyForInsertTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   return LoadMgaRelationStoreStateForTargetScope(
       context,
-      std::vector<std::string>{table_uuid},
+      std::vector<EngineUuid>{table_uuid},
       "insert_target_index_only_scoped",
       true,
       false);
@@ -2114,10 +1874,10 @@ MgaRelationStoreResult LoadMgaRelationStoreIndexesOnlyForInsertTarget(
 
 MgaRelationStoreResult LoadMgaRelationStoreMetadataOnlyForInsertTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   return LoadMgaRelationStoreStateForTargetScope(
       context,
-      std::vector<std::string>{table_uuid},
+      std::vector<EngineUuid>{table_uuid},
       "insert_target_metadata_only_scoped",
       false,
       false);
@@ -2125,16 +1885,16 @@ MgaRelationStoreResult LoadMgaRelationStoreMetadataOnlyForInsertTarget(
 
 MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   return LoadMgaRelationStoreStateForTargetScope(
       context,
-      std::vector<std::string>{table_uuid},
+      std::vector<EngineUuid>{table_uuid},
       "mutation_target_scoped");
 }
 
 MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTargets(
     const EngineRequestContext& context,
-    const std::vector<std::string>& table_uuids) {
+    const std::vector<EngineUuid>& table_uuids) {
   return LoadMgaRelationStoreStateForTargetScope(context,
                                                 table_uuids,
                                                 "mutation_targets_scoped");
@@ -2142,17 +1902,17 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTargets(
 
 MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   return LoadMgaRelationStoreStateForTargetScope(
       context,
-      std::vector<std::string>{table_uuid},
+      std::vector<EngineUuid>{table_uuid},
       "mutation_target_rows_only_scoped",
       false);
 }
 
 MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTargets(
     const EngineRequestContext& context,
-    const std::vector<std::string>& table_uuids) {
+    const std::vector<EngineUuid>& table_uuids) {
   return LoadMgaRelationStoreStateForTargetScope(context,
                                                 table_uuids,
                                                 "mutation_targets_rows_only_scoped",
@@ -2161,9 +1921,9 @@ MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTargets(
 
 MgaRelationStoreResult LoadMgaRelationStoreRowsForPointLookup(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
-    const std::string& row_uuid) {
-  if (row_uuid.empty()) {
+    const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid) {
+  if (row_uuid.is_nil()) {
     MgaRelationStoreResult result;
     result.scoped_state_load = true;
     result.diagnostic = MakeInvalidRequestDiagnostic(
@@ -2172,7 +1932,7 @@ MgaRelationStoreResult LoadMgaRelationStoreRowsForPointLookup(
   }
   return LoadMgaRelationStoreStateForTargetScope(
       context,
-      std::vector<std::string>{table_uuid},
+      std::vector<EngineUuid>{table_uuid},
       "relation_point_cursor_scoped",
       false,
       true,
@@ -2182,24 +1942,24 @@ MgaRelationStoreResult LoadMgaRelationStoreRowsForPointLookup(
 
 MgaRelationStoreResult LoadMgaRelationStoreStateForRelationScans(
     const EngineRequestContext& context,
-    const std::vector<std::string>& table_uuids) {
+    const std::vector<EngineUuid>& table_uuids) {
   return LoadMgaRelationStoreStateForTargetScope(
       context, table_uuids, "relation_scan_scoped", true, true, false);
 }
 
 MgaRelationStoreResult LoadMgaRelationStoreIndexesForRelation(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   return LoadMgaRelationStoreStateForTargetScope(
-      context, std::vector<std::string>{table_uuid},
+      context, std::vector<EngineUuid>{table_uuid},
       "relation_index_cursor_scoped", true, false, false);
 }
 
 MgaRelationStoreResult LoadMgaRelationStoreMetadataForRelation(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   return LoadMgaRelationStoreStateForTargetScope(
-      context, std::vector<std::string>{table_uuid},
+      context, std::vector<EngineUuid>{table_uuid},
       "relation_metadata_scoped", false, false, false);
 }
 
@@ -2215,7 +1975,7 @@ std::uint64_t CurrentMgaRelationMetadataEventSequence(
 MgaRelationIndexOnlyProofEligibilityResult
 CanUseMgaRelationIndexOnlyProofForInsertTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   MgaRelationIndexOnlyProofEligibilityResult result;
   if (context.database_path.empty()) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store",
@@ -2223,7 +1983,7 @@ CanUseMgaRelationIndexOnlyProofForInsertTarget(
     result.refusal_reason = "database_path_required";
     return result;
   }
-  if (table_uuid.empty()) {
+  if (table_uuid.is_nil()) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store",
                                                      "target_table_uuid_required");
     result.refusal_reason = "target_table_uuid_required";
@@ -2695,8 +2455,8 @@ static MgaContextualTextTargetSelectionResultV2 SelectVisibleMgaTextColumnImplV2
                candidate.column_uuid == key.column_uuid;
       });
   if (target == projection.projected_columns.end() ||
-      ContextualUuidTextV2(target->projected_datatype_descriptor_uuid) !=
-          "019d0000-0000-7000-8000-00000000d718" ||
+      ContextualUuidNativeV2(target->projected_datatype_descriptor_uuid) !=
+          EngineUuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x18}} ||
       target->projected_datatype_descriptor_generation != 1 ||
       (require_comparable && !target->comparable_persisted_text)) {
     return refuse(

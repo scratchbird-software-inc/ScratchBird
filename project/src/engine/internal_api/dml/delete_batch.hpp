@@ -66,12 +66,12 @@ struct DeleteBatchMemoryPolicy {
 struct DeleteBatchTraceEvent {
   std::string event_name;
   std::string phase;
-  std::string detail;
+  EngineEvidenceValue detail;
 };
 
 struct BoundDeletePredicateTemplate {
   std::string template_id;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   std::string predicate_kind;
   std::string predicate_envelope;
   std::vector<std::string> touched_columns;
@@ -87,7 +87,7 @@ struct DeleteIndexMaintenancePlanEntry {
 
 struct DeleteIndexMaintenancePlan {
   std::string plan_id;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   std::vector<DeleteIndexMaintenancePlanEntry> entries;
   bool has_delta_eligible = false;
   bool rejected = false;
@@ -113,17 +113,17 @@ struct DeleteSecondaryIndexDeltaLedgerPolicy {
 };
 
 struct DeleteBatchContext {
-  std::string statement_uuid;
+  EngineUuid statement_uuid;
   std::uint64_t local_transaction_id = 0;
-  std::string transaction_uuid;
-  std::string database_uuid;
-  std::string target_object_uuid;
+  EngineUuid transaction_uuid;
+  EngineUuid database_uuid;
+  EngineUuid target_object_uuid;
   std::uint64_t estimated_match_count = 0;
   std::uint64_t actual_match_count = 0;
   std::uint64_t actual_delete_count = 0;
   DeleteBatchMode delete_mode = DeleteBatchMode::predicate_scan;
-  std::string security_context_uuid;
-  std::string policy_snapshot_uuid;
+  EngineUuid security_context_uuid;
+  EngineUuid policy_snapshot_uuid;
   DeleteFeatureGates feature_gates;
   DeleteBatchMemoryPolicy memory_policy;
   BoundDeletePredicateTemplate predicate_template;
@@ -168,7 +168,7 @@ DeleteBatchContext BuildDeleteBatchContext(const EngineDeleteRowsRequest& reques
 
 EngineApiDiagnostic ValidateDeleteBatchMemoryBudget(const DeleteBatchContext& context,
                                                     std::uint64_t projected_bytes);
-void AddDeleteTrace(DeleteBatchContext* context, std::string event_name, std::string phase, std::string detail = {});
+void AddDeleteTrace(DeleteBatchContext* context, std::string event_name, std::string phase, EngineEvidenceValue detail = {});
 void AddDeleteBatchEvidenceToResult(const DeleteBatchContext& context, EngineApiResult* result);
 void RecordDeleteBatchMetric(const DeleteBatchContext& context, std::string metric, double value, std::string result, std::string reason = {});
 

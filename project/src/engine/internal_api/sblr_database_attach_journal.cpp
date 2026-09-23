@@ -101,19 +101,6 @@ SblrDatabaseAttachJournalHashV1 RecordHash(
   return Hash(material.data(), material.size());
 }
 
-std::string UuidText(const SblrDatabaseAttachJournalUuidV1& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string text;
-  text.reserve(36);
-  for (std::size_t index = 0; index != value.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      text.push_back('-');
-    }
-    text.push_back(kHex[value[index] >> 4U]);
-    text.push_back(kHex[value[index] & 0x0fU]);
-  }
-  return text;
-}
 
 std::string HashText(const SblrDatabaseAttachJournalHashV1& value) {
   static constexpr char kHex[] = "0123456789abcdef";
@@ -173,22 +160,18 @@ bool HasAuthority(const EngineRequestContext& context,
   return context.security_context_present &&
          context.statement_metadata_snapshot_engine_owned &&
          !context.database_path.empty() &&
-         context.database_uuid == UuidText(key.database_uuid) &&
-         context.session_uuid == UuidText(key.session_uuid) &&
-         context.statement_metadata_snapshot_uuid ==
-             UuidText(key.catalog_snapshot_uuid) &&
+         context.database_uuid.bytes == key.database_uuid &&
+         context.session_uuid.bytes == key.session_uuid &&
+         context.statement_metadata_snapshot_uuid.bytes == key.catalog_snapshot_uuid &&
          context.catalog_generation_id == key.catalog_generation &&
-         context.authorization_context.authority_uuid ==
-             UuidText(key.security_context_uuid) &&
+         context.authorization_context.authority_uuid.bytes == key.security_context_uuid &&
          context.security_epoch == key.security_epoch &&
-         context.transaction_policy_snapshot_uuid ==
-             UuidText(key.policy_snapshot_uuid) &&
+         context.transaction_policy_snapshot_uuid.bytes == key.policy_snapshot_uuid &&
          context.transaction_policy_snapshot_generation ==
              key.policy_generation &&
-         context.transaction_uuid == UuidText(key.transaction_uuid) &&
+         context.transaction_uuid.bytes == key.transaction_uuid &&
          context.local_transaction_id == key.transaction_generation &&
-         context.resource_admission_uuid ==
-             UuidText(key.resource_admission_uuid) &&
+         context.resource_admission_uuid.bytes == key.resource_admission_uuid &&
          context.resource_epoch == key.resource_epoch &&
          std::find(context.trace_tags.begin(), context.trace_tags.end(),
                    "private_database_attach_journal") !=
@@ -197,8 +180,14 @@ bool HasAuthority(const EngineRequestContext& context,
 
 std::string Path(const EngineRequestContext& context,
                  const SblrDatabaseAttachJournalKeyV1& key) {
-  return context.database_path + ".sb.sblr_database_attach_journal.v1." +
-         UuidText(key.session_uuid) + "." + HashText(key.alias_name_sha256);
+  // A content-derived locator, never a UUID representation or authority.
+  // The record retains and revalidates the complete native key on every read.
+  constexpr std::string_view domain = "ScratchBird.DatabaseAttachJournalLocator.V2";
+  std::vector<std::uint8_t> material(domain.begin(), domain.end());
+  Put(&material, key.session_uuid);
+  Put(&material, key.alias_name_sha256);
+  return context.database_path + ".sb.sblr_database_attach_journal.v2." +
+         HashText(Hash(material.data(), material.size()));
 }
 
 std::vector<std::uint8_t> Encode(
@@ -475,6 +464,20 @@ SblrDatabaseAttachJournalResultV1 Loaded(
 SblrDatabaseAttachJournalResultV1 LoadExact(
     const EngineRequestContext& context,
     const SblrDatabaseAttachJournalKeyV1& key) {
+  // Never treat an existing legacy UUID-named journal as an absent alias.
+  // A format migration must account for those durable records explicitly.
+  const std::filesystem::path database(context.database_path);
+  const auto parent = database.has_parent_path() ? database.parent_path() : std::filesystem::path(".");
+  const auto legacy_prefix = database.filename().string() + ".sb.sblr_database_attach_journal.v1.";
+  std::error_code directory_error;
+  std::filesystem::directory_iterator entry(parent, directory_error), end;
+  for (; !directory_error && entry != end; entry.increment(directory_error)) {
+    if (entry->path().filename().string().starts_with(legacy_prefix))
+      return Refused("MGA.AUTHORITY_MISMATCH", "sblr.database_attach.legacy_journal_present",
+                     "legacy database-attach journal requires explicit migration");
+  }
+  if (directory_error)
+    return Refused("MGA.AUTHORITY_MISMATCH", "sblr.database_attach.journal_directory_unreadable");
   std::vector<std::uint8_t> bytes;
   const auto status = ReadFile(Path(context, key), &bytes);
   if (status == ReadStatus::absent) {

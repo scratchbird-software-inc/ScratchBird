@@ -57,44 +57,33 @@ bool HasDiagnostic(const EngineApiResult& result, const std::string& code) {
   return false;
 }
 
-EngineRequestContext BaseContext(const Args& args) {
+EngineRequestContext BaseContext(const Args& args, const EngineUuid& database_identity) {
   EngineRequestContext context;
   context.trust_mode = EngineTrustMode::embedded_in_process;
   context.security_context_present = true;
   context.request_id = "engine-api-transaction-semantics-probe";
   context.database_path = args.path;
-  const auto database_uuid =
-      scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::database,
-                                                        args.creation_millis + 10);
   const auto principal_uuid =
       scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::principal,
                                                         args.creation_millis + 12);
-  if (database_uuid.ok()) {
-    context.database_uuid.canonical = scratchbird::core::uuid::UuidToString(database_uuid.value.value);
-  }
+  context.database_uuid = database_identity;
   if (principal_uuid.ok()) {
-    context.principal_uuid.canonical = scratchbird::core::uuid::UuidToString(principal_uuid.value.value);
+    context.principal_uuid = principal_uuid.value.value;
   }
-  context.session_uuid.canonical = "018f0000-0000-7000-8000-00000000feed";
+  context.session_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::object, args.creation_millis + 13).value.value;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid.bytes =
+      {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x01};
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   return context;
 }
 
-std::string DeterministicUuidText(scratchbird::core::platform::UuidKind kind,
-                                  std::uint64_t seed) {
-  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, seed);
-  return generated.ok() ? scratchbird::core::uuid::UuidToString(generated.value.value)
-                        : std::string{};
-}
-
-bool CreateProbeDatabase(const Args& args) {
+bool CreateProbeDatabase(const Args& args, EngineUuid* database_identity) {
   if (args.overwrite) {
     std::filesystem::remove(args.path);
     std::filesystem::remove(args.path + ".sb.mga_row_versions");
@@ -138,6 +127,7 @@ bool CreateProbeDatabase(const Args& args) {
     std::cerr << created.diagnostic.diagnostic_code << ":" << created.diagnostic.message_key << "\n";
     return false;
   }
+  *database_identity = create.database_uuid.value;
   return true;
 }
 
@@ -156,11 +146,9 @@ EngineBeginTransactionResult Begin(const EngineRequestContext& base, std::string
   return EngineBeginTransaction(request);
 }
 
-EngineCreateSchemaResult CreateProbeSchema(const EngineRequestContext& tx_context,
-                                           std::string schema_uuid) {
+EngineCreateSchemaResult CreateProbeSchema(const EngineRequestContext& tx_context) {
   EngineCreateSchemaRequest request;
   request.context = tx_context;
-  request.target_object.uuid.canonical = std::move(schema_uuid);
   request.localized_names.push_back({"en", "default", "public", "public", true});
   return EngineCreateSchema(request);
 }
@@ -238,12 +226,12 @@ EngineSelectRowsResult SelectAll(const EngineRequestContext& tx_context, const E
 
 EngineSelectRowsResult SelectRow(const EngineRequestContext& tx_context,
                                  const EngineObjectReference& table,
-                                 const std::string& row_uuid) {
+                                 const EngineUuid& row_uuid) {
   EngineSelectRowsRequest request;
   request.context = tx_context;
   request.source_object = table;
   request.predicate.predicate_kind = "row_uuid_match";
-  request.predicate.canonical_predicate_envelope = row_uuid;
+  request.predicate.row_uuid = row_uuid;
   return EngineSelectRows(request);
 }
 
@@ -261,25 +249,25 @@ EngineInsertRowsResult InsertPerson(const EngineRequestContext& tx_context,
 
 EngineUpdateRowsResult UpdateName(const EngineRequestContext& tx_context,
                                   const EngineObjectReference& table,
-                                  const std::string& row_uuid,
+                                  const EngineUuid& row_uuid,
                                   std::string name) {
   EngineUpdateRowsRequest request;
   request.context = tx_context;
   request.target_table = table;
   request.update_predicate.predicate_kind = "row_uuid_match";
-  request.update_predicate.canonical_predicate_envelope = row_uuid;
+  request.update_predicate.row_uuid = row_uuid;
   request.assignments.push_back({"name", Value(std::move(name))});
   return EngineUpdateRows(request);
 }
 
 EngineDeleteRowsResult DeleteRow(const EngineRequestContext& tx_context,
                                  const EngineObjectReference& table,
-                                 const std::string& row_uuid) {
+                                 const EngineUuid& row_uuid) {
   EngineDeleteRowsRequest request;
   request.context = tx_context;
   request.target_table = table;
   request.delete_predicate.predicate_kind = "row_uuid_match";
-  request.delete_predicate.canonical_predicate_envelope = row_uuid;
+  request.delete_predicate.row_uuid = row_uuid;
   return EngineDeleteRows(request);
 }
 
@@ -365,23 +353,22 @@ int main(int argc, char** argv) {
     std::cerr << "usage: sb_engine_api_transaction_semantics_probe --path PATH --creation-ms MILLIS [--overwrite]\n";
     return 2;
   }
-  if (!CreateProbeDatabase(args)) {
+  EngineUuid database_identity;
+  if (!CreateProbeDatabase(args, &database_identity)) {
     return 1;
   }
 
-  auto base = BaseContext(args);
-  const std::string probe_schema_uuid =
-      DeterministicUuidText(scratchbird::core::platform::UuidKind::schema,
-                            args.creation_millis + 20);
-  base.current_schema_uuid.canonical = probe_schema_uuid;
-
+  auto base = BaseContext(args, database_identity);
   const auto setup_tx = Begin(base);
-  const auto setup_context = TxContext(base, setup_tx);
-  const auto schema_result = CreateProbeSchema(setup_context, probe_schema_uuid);
+  auto setup_context = TxContext(base, setup_tx);
+  const auto schema_result = CreateProbeSchema(setup_context);
+  if (!setup_tx.ok || !schema_result.ok) return 1;
+  base.current_schema_uuid = schema_result.primary_object.uuid;
+  setup_context.current_schema_uuid = base.current_schema_uuid;
   const auto table_result = CreatePersonTable(setup_context);
   const auto table = table_result.table_object;
   const auto insert_ada = InsertPerson(setup_context, table, "1", "Ada", "37");
-  const std::string ada_row_uuid = insert_ada.row_uuids.empty() ? std::string{} : insert_ada.row_uuids.front().canonical;
+  const EngineUuid ada_row_uuid = insert_ada.row_uuids.empty() ? EngineUuid{} : insert_ada.row_uuids.front();
   const bool read_your_writes_insert = table_result.ok && insert_ada.ok && HasOnlyRowName(SelectRow(setup_context, table, ada_row_uuid), "Ada");
   const auto setup_commit_result = CommitResult(setup_context);
 
@@ -393,8 +380,8 @@ int main(int argc, char** argv) {
   const auto snapshot_seed_tx = Begin(base);
   const auto snapshot_seed_context = TxContext(base, snapshot_seed_tx);
   const auto snapshot_seed_insert = InsertPerson(snapshot_seed_context, table, "snap", "SnapshotBase", "10");
-  const std::string snapshot_row_uuid =
-      snapshot_seed_insert.row_uuids.empty() ? std::string{} : snapshot_seed_insert.row_uuids.front().canonical;
+  const EngineUuid snapshot_row_uuid =
+      snapshot_seed_insert.row_uuids.empty() ? EngineUuid{} : snapshot_seed_insert.row_uuids.front();
   const bool snapshot_seed_commit = snapshot_seed_insert.ok && Commit(snapshot_seed_context);
 
   const auto snapshot_reader_tx = Begin(base, "snapshot");
@@ -416,7 +403,7 @@ int main(int argc, char** argv) {
   const auto rollback_insert_tx = Begin(base);
   const auto rollback_insert_context = TxContext(base, rollback_insert_tx);
   const auto insert_rollback = InsertPerson(rollback_insert_context, table, "2", "RollbackInsert", "1");
-  const std::string rollback_insert_uuid = insert_rollback.row_uuids.empty() ? std::string{} : insert_rollback.row_uuids.front().canonical;
+  const EngineUuid rollback_insert_uuid = insert_rollback.row_uuids.empty() ? EngineUuid{} : insert_rollback.row_uuids.front();
   const bool rollback_insert_seen_in_tx = HasOnlyRowName(SelectRow(rollback_insert_context, table, rollback_insert_uuid), "RollbackInsert");
   const bool rollback_insert_done = Rollback(rollback_insert_context);
   const auto rollback_insert_read_tx = Begin(base);
@@ -458,7 +445,7 @@ int main(int argc, char** argv) {
   const auto isolation_insert_a_tx = Begin(base);
   const auto isolation_insert_a_context = TxContext(base, isolation_insert_a_tx);
   const auto isolation_insert = InsertPerson(isolation_insert_a_context, table, "3", "UncommittedInsert", "3");
-  const std::string isolation_insert_uuid = isolation_insert.row_uuids.empty() ? std::string{} : isolation_insert.row_uuids.front().canonical;
+  const EngineUuid isolation_insert_uuid = isolation_insert.row_uuids.empty() ? EngineUuid{} : isolation_insert.row_uuids.front();
   const auto isolation_insert_b_tx = Begin(base);
   const auto isolation_insert_b_context = TxContext(base, isolation_insert_b_tx);
   const bool uncommitted_insert_isolation = SelectRow(isolation_insert_b_context, table, isolation_insert_uuid).visible_count == 0;
@@ -537,8 +524,8 @@ int main(int argc, char** argv) {
                                               "td",
                                               "TempDelete",
                                               "1");
-  const std::string temp_delete_row_uuid =
-      temp_delete_insert.row_uuids.empty() ? std::string{} : temp_delete_insert.row_uuids.front().canonical;
+  const EngineUuid temp_delete_row_uuid =
+      temp_delete_insert.row_uuids.empty() ? EngineUuid{} : temp_delete_insert.row_uuids.front();
   const bool temp_delete_visible_before_commit =
       temp_delete_table_result.ok && temp_delete_insert.ok &&
       HasOnlyRowName(SelectRow(temp_delete_context, temp_delete_table_result.table_object, temp_delete_row_uuid),
@@ -561,8 +548,8 @@ int main(int argc, char** argv) {
                                                 "tp",
                                                 "TempPreserve",
                                                 "2");
-  const std::string temp_preserve_row_uuid =
-      temp_preserve_insert.row_uuids.empty() ? std::string{} : temp_preserve_insert.row_uuids.front().canonical;
+  const EngineUuid temp_preserve_row_uuid =
+      temp_preserve_insert.row_uuids.empty() ? EngineUuid{} : temp_preserve_insert.row_uuids.front();
   const bool temp_preserve_commit = temp_preserve_table_result.ok && temp_preserve_insert.ok &&
                                     Commit(temp_preserve_context);
   const auto temp_preserve_read_tx = Begin(base);
@@ -576,7 +563,8 @@ int main(int argc, char** argv) {
   const bool temp_preserve_read_commit = Commit(temp_preserve_read_context);
 
   auto other_session_base = base;
-  other_session_base.session_uuid.canonical = "018f0000-0000-7000-8000-00000000beef";
+  other_session_base.session_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::object, args.creation_millis + 14).value.value;
   const auto other_session_tx = Begin(other_session_base);
   const auto other_session_context = TxContext(other_session_base, other_session_tx);
   const auto other_session_select = SelectRow(other_session_context,
@@ -617,7 +605,7 @@ int main(int argc, char** argv) {
   std::cout << "  \"create_person_table_ok\": " << (table_result.ok ? "true" : "false") << ",\n";
   std::cout << "  \"insert_ada_ok\": " << (insert_ada.ok ? "true" : "false") << ",\n";
   std::cout << "  \"insert_ada_inserted_count\": " << insert_ada.inserted_count << ",\n";
-  std::cout << "  \"insert_ada_row_uuid_present\": " << (!ada_row_uuid.empty() ? "true" : "false") << ",\n";
+  std::cout << "  \"insert_ada_row_uuid_present\": " << (!ada_row_uuid.is_nil() ? "true" : "false") << ",\n";
   std::cout << "  \"setup_commit_ok\": " << (setup_commit_result.ok ? "true" : "false") << ",\n";
   std::cout << "  \"read_your_writes_insert\": " << (read_your_writes_insert ? "true" : "false") << ",\n";
   std::cout << "  \"commit_visibility_after_reopen\": " << (commit_visibility_after_reopen ? "true" : "false") << ",\n";

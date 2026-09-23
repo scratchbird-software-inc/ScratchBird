@@ -11,6 +11,7 @@
 #include "api_diagnostics.hpp"
 #include "bulk_placement_order.hpp"
 #include "ordered_ingest.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -272,21 +273,38 @@ DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
       request.target_table.uuid;
   clustering.current_descriptor.placement_key_column =
       DirectOptionValue(request, "physical_clustering.current_key");
-  clustering.current_descriptor.policy_uuid =
-      DirectOptionValue(request, "physical_clustering.current_policy_uuid");
+  // Option envelopes are a text input boundary. Decode once; the storage
+  // policy owner receives only binary identities and never a display spelling.
+  const auto bind_policy = [&](const char* key, EngineUuid& destination) {
+    const auto text = DirectOptionValue(request, key);
+    if (text.empty()) return true;
+    const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
+        scratchbird::core::platform::UuidKind::object, text);
+    if (!parsed.ok()) {
+      selection.ok = false;
+      selection.failure_reason = "physical_clustering_policy_uuid_invalid";
+      selection.diagnostic = MakeInvalidRequestDiagnostic(
+          "dml.direct_physical_bulk_append", selection.failure_reason);
+      return false;
+    }
+    destination = parsed.value.value;
+    return true;
+  };
+  if (!bind_policy("physical_clustering.current_policy_uuid",
+                   clustering.current_descriptor.policy_uuid)) return selection;
   clustering.current_descriptor.descriptor_generation =
       DirectOptionU64(request, "physical_clustering.current_generation", 0);
   clustering.current_descriptor.physical_clustering_enabled =
       !clustering.current_descriptor.placement_key_column.empty();
   clustering.requested_placement_key_column =
       DirectPhysicalClusteringKeyColumn(request, placement_key_column);
-  clustering.requested_policy_uuid =
-      DirectOptionValue(request, "physical_clustering.policy_uuid");
+  if (!bind_policy("physical_clustering.policy_uuid",
+                   clustering.requested_policy_uuid)) return selection;
   clustering.ordered_ingest_selected = plan.ordered_ingest_selected;
   clustering.physical_clustering_requested = physical_clustering_requested;
   clustering.explicit_policy_present =
       DirectOptionEnabled(request, "physical_clustering.policy=explicit") ||
-      !clustering.requested_policy_uuid.empty();
+      !clustering.requested_policy_uuid.is_nil();
   clustering.allow_clustering_key_change =
       IsDirectTruthyValue(DirectOptionValue(request,
                                             "physical_clustering.allow_key_change"));

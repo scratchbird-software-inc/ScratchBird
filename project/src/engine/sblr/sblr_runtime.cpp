@@ -29,13 +29,35 @@ bool CopySblrUuidPayload(const SblrValue& value,
       value.descriptor_id != "uuid" || !value.charset_name.empty() ||
       !value.collation_name.empty() ||
       !value.text_value.empty() || !value.encoded_value.empty() ||
-      !value.binary_value.empty() || value.has_int64_value ||
+      !value.binary_value.empty() || !value.uuid_array_value.empty() ||
+      value.has_int64_value ||
       value.has_uint64_value || value.has_real64_value) return false;
   std::vector<std::uint8_t> bytes(value.uuid_value.bytes.begin(), value.uuid_value.bytes.end());
   destination->swap(bytes);
   return true;
 }
 
+
+bool SblrUuidArrayPayloadValid(const SblrValue& value) noexcept {
+  return !value.is_null && value.descriptor_id == "uuid_array" &&
+      value.payload_kind == SblrValuePayloadKind::uuid_array_binary &&
+      value.uuid_value.is_nil() && value.text_value.empty() &&
+      value.encoded_value.empty() && value.binary_value.empty() &&
+      value.charset_name.empty() && value.collation_name.empty() &&
+      !value.has_int64_value && !value.has_uint64_value && !value.has_real64_value;
+}
+
+bool CopySblrUuidArrayPayload(const SblrValue& value,
+                              std::vector<std::uint8_t>* destination) {
+  if (destination == nullptr || !SblrUuidArrayPayloadValid(value)) return false;
+  std::vector<std::uint8_t> bytes;
+  if (value.uuid_array_value.size() > bytes.max_size() / 16) return false;
+  bytes.reserve(value.uuid_array_value.size() * 16);
+  for (const auto& identity : value.uuid_array_value)
+    bytes.insert(bytes.end(), identity.bytes.begin(), identity.bytes.end());
+  destination->swap(bytes);
+  return true;
+}
 
 SblrRuntimeDiagnostic MakeSblrDiagnostic(std::string diagnostic_id,
                                          std::string message_key,

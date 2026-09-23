@@ -55,7 +55,7 @@ target_compile_features(optimizer_deficiency_odfr_002_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odfr_002_gate
   PRIVATE
-    sb_core_metrics
+    sb_client_metric_export
 )
 add_test(
   NAME optimizer_deficiency_odfr_002_gate

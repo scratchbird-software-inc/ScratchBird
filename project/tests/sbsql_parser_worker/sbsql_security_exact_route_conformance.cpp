@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -377,39 +378,39 @@ std::string ExpectedRouteKey(const SecurityRowEvidence& row,
          std::string(FamilyKeySuffix(ExpectedRegistrySblrOperationFamily(row)));
 }
 
-std::vector<std::string> ResolvedUuidsFor(const SecurityRowEvidence& row) {
+std::vector<scratchbird::core::platform::Uuid> ResolvedUuidsFor(const SecurityRowEvidence& row) {
   if (row.operation_id == "security.privilege.grant" ||
       row.operation_id == "security.privilege.revoke") {
-    return {std::string(kTargetUuid), std::string(kGranteeUuid)};
+    return {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002301"), scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002302")};
   }
   if (row.operation_id == "security.session.set_role") {
-    return {std::string(kRoleUuid)};
+    return {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002305")};
   }
   if (row.operation_id == "security.principal.create" ||
       row.operation_id == "security.principal.alter") {
-    return {std::string(kUserUuid)};
+    return {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002306")};
   }
   if (row.operation_id == "security.policy.create") {
-    return {std::string(kPolicyUuid), std::string(kTargetUuid)};
+    return {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002303"), scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002301")};
   }
   if (row.operation_id == "security.policy.attach") {
     if (Contains(row.sql, "TO USER")) {
-      return {std::string(kPolicyUuid), std::string(kUserUuid)};
+      return {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002303"), scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002306")};
     }
     if (Contains(row.sql, "EVENT TRIGGER")) {
-      return {std::string(kPolicyUuid), std::string(kEventTriggerUuid)};
+      return {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002303"), scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002307")};
     }
-    return {std::string(kPolicyUuid), std::string(kPolicyTargetUuid), std::string(kRoleUuid)};
+    return {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002303"), scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002304"), scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002305")};
   }
-  return {std::string(kPolicyUuid)};
+  return {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002303")};
 }
 
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000002311";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000002312";
-  session.database_uuid = "019f0000-0000-7000-8000-000000002313";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002311");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002312");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002313");
   session.catalog_epoch = 7;
   session.security_policy_epoch = 11;
   session.descriptor_epoch = 13;
@@ -419,7 +420,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-000000002314";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002314");
   config.bundle_contract_id = "sbp_sbsql@security-route-test";
   config.build_id = "sbsql-security-route-test";
   return config;
@@ -433,7 +434,7 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
-PipelineArtifacts RunPipeline(std::string_view sql, std::vector<std::string> resolved = {}) {
+PipelineArtifacts RunPipeline(std::string_view sql, std::vector<scratchbird::core::platform::Uuid> resolved = {}) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
@@ -523,7 +524,7 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
                      "authority.engine.security_privilege_api_required"),
             EvidenceMessage(row, "parser_bind_lower",
                             "engine security privilege authority step missing"));
-    Require(HasValue(artifacts.envelope.descriptor_refs, "sys.security.privilege_grant"),
+    Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.security.privilege_grant"),
             EvidenceMessage(row, "parser_bind_lower", "security privilege descriptor ref missing"));
     Require(Contains(artifacts.envelope.payload, std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
             EvidenceMessage(row, "parser_bind_lower", "target UUID missing from security payload"));
@@ -534,7 +535,7 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
                      "authority.engine.security_session_role_api_required"),
             EvidenceMessage(row, "parser_bind_lower",
                             "engine security session role authority step missing"));
-    Require(HasValue(artifacts.envelope.descriptor_refs, "sys.security.role"),
+    Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.security.role"),
             EvidenceMessage(row, "parser_bind_lower", "security role descriptor ref missing"));
     Require(Contains(artifacts.envelope.payload, std::string("\"role_uuid\":\"") + std::string(kRoleUuid) + "\""),
             EvidenceMessage(row, "parser_bind_lower", "role UUID missing from security payload"));
@@ -543,7 +544,7 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
                      "authority.engine.security_principal_api_required"),
             EvidenceMessage(row, "parser_bind_lower",
                             "engine security principal authority step missing"));
-    Require(HasValue(artifacts.envelope.descriptor_refs, "sys.security.principal"),
+    Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.security.principal"),
             EvidenceMessage(row, "parser_bind_lower", "security principal descriptor ref missing"));
     Require(Contains(artifacts.envelope.payload, std::string("\"principal_uuid\":\"") + std::string(kUserUuid) + "\""),
             EvidenceMessage(row, "parser_bind_lower", "principal UUID missing from security payload"));
@@ -565,7 +566,7 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
                      "authority.engine.security_policy_api_required"),
             EvidenceMessage(row, "parser_bind_lower",
                             "engine security policy authority step missing"));
-    Require(HasValue(artifacts.envelope.descriptor_refs, "sys.security.policy"),
+    Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.security.policy"),
             EvidenceMessage(row, "parser_bind_lower", "security policy descriptor ref missing"));
     Require(Contains(artifacts.envelope.payload, std::string("\"policy_uuid\":\"") + std::string(kPolicyUuid) + "\""),
             EvidenceMessage(row, "parser_bind_lower", "policy UUID missing from security payload"));

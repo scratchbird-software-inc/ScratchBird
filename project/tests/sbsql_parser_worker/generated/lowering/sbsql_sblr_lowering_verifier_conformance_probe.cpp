@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -58,9 +59,9 @@ void PrintMessages(const MessageVectorSet& messages) {
 SessionContext Session() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "00000000-0000-7000-8000-000000000007";
-  session.connection_uuid = "00000000-0000-7000-8000-000000000107";
-  session.database_uuid = "00000000-0000-7000-8000-000000000207";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000007");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000107");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000207");
   session.catalog_epoch = 7;
   session.security_policy_epoch = 11;
   session.descriptor_epoch = 13;
@@ -70,7 +71,7 @@ SessionContext Session() {
 ParserConfig ConfigWithResolver() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "00000000-0000-7000-8000-00000000b007";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000b007");
   config.bundle_contract_id = "sbp_sbsql@lowering-test";
   config.build_id = "sblr-lowering-test";
   config.server_endpoint = "unix:/tmp/sb_server.sbps.sock";
@@ -87,7 +88,7 @@ struct PipelineArtifacts {
 
 PipelineArtifacts RunParserOnlyPipeline(
     std::string_view sql,
-    const std::vector<std::string>& resolved_object_uuids = {}) {
+    const std::vector<scratchbird::core::platform::Uuid>& resolved_object_uuids = {}) {
   PipelineArtifacts artifacts;
   const auto session = Session();
   artifacts.cst = BuildCst(sql);
@@ -257,7 +258,7 @@ bool ValidateAdmittedSelectEnvelope() {
 
 bool ValidateResolvedNameEnvelope() {
   const auto artifacts = RunParserOnlyPipeline(
-      "SELECT * FROM customer", {"00000000-0000-7000-8000-00000000c007"});
+      "SELECT * FROM customer", {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000c007")});
   bool ok = true;
   ok &= Require(!artifacts.bound.bound,
                 "parser-owned resolved UUID bypassed native binding authority");
@@ -271,8 +272,9 @@ bool ValidateResolvedNameEnvelope() {
   ok &= Require(HasValue(artifacts.bound.required_authority_steps,
                          "authority.server.resolve_name_registry_public"),
                 "resolver authority step missing");
-  ok &= Require(artifacts.envelope.descriptor_refs.size() == 1 &&
-                    artifacts.envelope.descriptor_refs[0] ==
+  ok &= Require(artifacts.envelope.descriptor_refs.empty() &&
+                    artifacts.envelope.descriptor_requirements.size() == 1 &&
+                    artifacts.envelope.descriptor_requirements[0] ==
                         "descriptor.pending_server_or_engine_authority",
                 "native refusal lost its non-authoritative descriptor marker");
   return ok;
@@ -298,8 +300,8 @@ bool ValidateMissingNativeContextRefusal() {
 bool ValidateSecurityEnvelope() {
   const auto artifacts = RunParserOnlyPipeline(
       "GRANT SELECT ON customer TO app_role",
-      {"00000000-0000-7000-8000-00000000c107",
-       "00000000-0000-7000-8000-00000000c207"});
+      {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000c107"),
+       scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000c207")});
   bool ok = true;
   ok &= Require(artifacts.bound.bound, "GRANT did not bind");
   ok &= Require(artifacts.verifier.admitted, "GRANT envelope not verifier-admitted");

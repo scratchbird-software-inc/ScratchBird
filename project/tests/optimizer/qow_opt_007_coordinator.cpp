@@ -13,11 +13,11 @@ namespace executor = scratchbird::engine::executor;
 
 namespace {
 
-std::string Uuid(const std::uint64_t value) {
-  char buffer[37];
-  std::snprintf(buffer, sizeof(buffer), "019f0000-0000-7000-8000-%012llx",
-                static_cast<unsigned long long>(value));
-  return buffer;
+executor::PhysicalUuid Uuid(const std::uint64_t value) {
+  executor::PhysicalUuid id{{0x01,0x9f,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0,0}};
+  for (unsigned n=0;n<6;++n)
+    id.bytes[15-n]=static_cast<std::uint8_t>(value >> (8*n));
+  return id;
 }
 
 executor::PhysicalMgaStatementContext Mga() {
@@ -148,11 +148,11 @@ optimizer::ModelFamilyDependencyEdgeV1 Edge(
 }
 
 optimizer::ModelFamilyRelationalConsumerV1 Consumer(
-    const std::string& uuid,
+    const executor::PhysicalUuid& uuid,
     const std::uint64_t node_id,
-    std::vector<std::string> inputs,
+    std::vector<executor::PhysicalUuid> inputs,
     std::vector<std::uint32_t> descriptor_ids,
-    std::vector<std::string> descriptor_uuids,
+    std::vector<executor::PhysicalUuid> descriptor_uuids,
     const bool root) {
   optimizer::ModelFamilyRelationalConsumerV1 consumer;
   consumer.physical_node_uuid = uuid;
@@ -323,13 +323,13 @@ int main() {
   bad.legs[1].mga_statement_context.statement_uuid = Uuid(9999);
   passed &= Refuses(bad, "SB_MODEL_MGA_CONTEXT_MISMATCH_V1");
   bad = valid;
-  bad.legs[0].operation_scope_receipt_uuid.clear();
+  bad.legs[0].operation_scope_receipt_uuid = {};
   passed &= Refuses(bad, "SB_MODEL_CAPABILITY_UNAVAILABLE_V1");
   bad = valid;
   bad.legs[0].candidate_alternatives.clear();
   passed &= Refuses(bad, "SB_MODEL_CANDIDATE_SEMANTICS_MISSING_V1");
   bad = valid;
-  bad.legs[0].family_local_cost.provenance_uuid.clear();
+  bad.legs[0].family_local_cost.provenance_uuid = {};
   passed &= Refuses(bad, "SB_MODEL_COST_VECTOR_INVALID_V1");
   bad = valid;
   bad.edges.pop_back();

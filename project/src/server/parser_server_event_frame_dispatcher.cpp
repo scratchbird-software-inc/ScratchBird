@@ -17,7 +17,17 @@ namespace {
 
 std::string Field(const ParserServerEventFrame& frame, const std::string& key) {
   for (const auto& field : frame.fields) {
-    if (field.first == key) { return field.second; }
+    if (field.first == key) {
+      const auto* text = std::get_if<std::string>(&field.second);
+      return text ? *text : std::string{};
+    }
+  }
+  return {};
+}
+
+ParserServerEventUuidRef IdentityField(const ParserServerEventFrame& frame, const std::string& key) {
+  for (const auto& field : frame.fields) if (field.first == key) {
+    if (const auto* id = std::get_if<ParserServerEventUuidRef>(&field.second)) return *id;
   }
   return {};
 }
@@ -36,10 +46,10 @@ std::uint64_t FieldU64(const ParserServerEventFrame& frame, const std::string& k
   }
 }
 
-void AddField(std::vector<std::pair<std::string, std::string>>* fields,
+void AddField(ParserServerEventFields* fields,
               const std::string& key,
-              const std::string& value) {
-  if (!value.empty()) { fields->push_back({key, value}); }
+              const ParserServerEventUuidRef& value) {
+  if (!value.is_nil()) fields->push_back({key, value});
 }
 
 ParserServerMessageVector ErrorVector(std::string code, std::string key, std::string detail) {
@@ -53,7 +63,7 @@ ParserServerMessageVector ErrorVector(std::string code, std::string key, std::st
 }
 
 ParserServerEventOutboundFrame MakeOutcomeFrame(ParserServerEventMessageType type,
-                                                const std::string& request_uuid,
+                                                const ParserServerEventUuidRef& request_uuid,
                                                 const std::string& outcome,
                                                 std::vector<ParserServerMessageVector> vectors) {
   ParserServerEventOutboundFrame frame;
@@ -96,7 +106,7 @@ ParserServerEventOutboundFrame MakeBackpressureFrame(const PsEventBackpressureFr
 ParserServerEventFrameDispatcher::ParserServerEventFrameDispatcher(ParserServerEventIpcRuntime* runtime)
     : runtime_(runtime) {}
 
-ParserServerEventDispatchResult ParserServerEventFrameDispatcher::RuntimeUnavailable(const std::string& request_uuid) const {
+ParserServerEventDispatchResult ParserServerEventFrameDispatcher::RuntimeUnavailable(const ParserServerEventUuidRef& request_uuid) const {
   ParserServerEventDispatchResult result;
   result.ok = false;
   result.outcome = "rejected";
@@ -117,13 +127,23 @@ ParserServerEventDispatchResult ParserServerEventFrameDispatcher::DispatchParser
   result.ok = false;
   result.outcome = "rejected";
 
+  for (const auto& [key, value] : frame.fields) {
+    if (key.ends_with("_uuid") && !std::holds_alternative<ParserServerEventUuidRef>(value)) {
+      result.message_vector_set.push_back(ErrorVector("PARSER_SERVER_IPC.INVALID_EVENT_IDENTITY",
+          "parser_server_ipc.invalid_event_identity", "Event identities require binary UUID fields."));
+      result.outbound_frames.push_back(MakeOutcomeFrame(ParserServerEventMessageType::kEventSubscribeResult,
+          frame.request_uuid, result.outcome, result.message_vector_set));
+      return result;
+    }
+  }
+
   switch (frame.message_type) {
     case ParserServerEventMessageType::kEventSubscribeRequest: {
       PsEventSubscribeRequest request;
       request.request_uuid = frame.request_uuid;
       request.session = frame.session;
-      request.channel_uuid = Field(frame, "channel_uuid");
-      request.rendering_profile_uuid = Field(frame, "rendering_profile_uuid");
+      request.channel_uuid = IdentityField(frame, "channel_uuid");
+      request.rendering_profile_uuid = IdentityField(frame, "rendering_profile_uuid");
       request.delivery_profile = Field(frame, "delivery_profile").empty() ? "ephemeral_session" : Field(frame, "delivery_profile");
       request.policy_generation = FieldU64(frame, "policy_generation");
       const auto handled = runtime_->HandleSubscribe(request);
@@ -142,8 +162,8 @@ ParserServerEventDispatchResult ParserServerEventFrameDispatcher::DispatchParser
       PsEventUnsubscribeRequest request;
       request.request_uuid = frame.request_uuid;
       request.session = frame.session;
-      request.subscription_uuid = Field(frame, "subscription_uuid");
-      request.channel_uuid = Field(frame, "channel_uuid");
+      request.subscription_uuid = IdentityField(frame, "subscription_uuid");
+      request.channel_uuid = IdentityField(frame, "channel_uuid");
       request.all_channels = FieldBool(frame, "all_channels");
       const auto handled = runtime_->HandleUnsubscribe(request);
       auto response = MakeOutcomeFrame(ParserServerEventMessageType::kEventUnsubscribeResult,
@@ -161,8 +181,8 @@ ParserServerEventDispatchResult ParserServerEventFrameDispatcher::DispatchParser
       PsEventAckRequest request;
       request.request_uuid = frame.request_uuid;
       request.session = frame.session;
-      request.subscription_uuid = Field(frame, "subscription_uuid");
-      request.event_uuid = Field(frame, "event_uuid");
+      request.subscription_uuid = IdentityField(frame, "subscription_uuid");
+      request.event_uuid = IdentityField(frame, "event_uuid");
       request.delivery_sequence = FieldU64(frame, "delivery_sequence");
       request.ack_state = Field(frame, "ack_state").empty() ? "acknowledged" : Field(frame, "ack_state");
       const auto handled = runtime_->HandleAck(request);

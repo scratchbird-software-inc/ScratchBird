@@ -85,9 +85,9 @@ enum class EngineDmlUpdateTriggerSecurityModeV1 : std::uint8_t {
 };
 
 struct EngineDmlUpdateRelationOccurrenceAuthorityV1 {
-  std::string relation_uuid;
+  EngineUuid relation_uuid;
   std::uint64_t relation_generation = 0;
-  std::string relation_occurrence_uuid;
+  EngineUuid relation_occurrence_uuid;
   std::uint64_t relation_occurrence_generation = 0;
 
   bool operator==(
@@ -101,25 +101,25 @@ struct EngineDmlUpdateRelationOccurrenceAuthorityV1 {
 struct EngineDmlUpdateRowPolicyAuthoritySourceV1 {
   bool visible = true;
   bool deleted = false;
-  std::string target_relation_uuid;
+  EngineUuid target_relation_uuid;
   std::uint64_t target_relation_generation = 0;
-  std::string source_policy_uuid;
+  EngineUuid source_policy_uuid;
   std::uint64_t source_policy_generation = 0;
-  std::string source_policy_version_uuid;
+  EngineUuid source_policy_version_uuid;
   std::uint64_t effective_transaction_number = 0;
   EngineDmlUpdateRowPolicyPhaseV1 phase =
       EngineDmlUpdateRowPolicyPhaseV1::using_filter;
-  std::string effective_policy_uuid;
+  EngineUuid effective_policy_uuid;
   std::uint64_t effective_policy_generation = 0;
-  std::string source_expression_uuid;
+  EngineUuid source_expression_uuid;
   std::uint64_t source_expression_generation = 0;
   EngineDmlUpdateSha256V1 source_expression_evidence_sha256{};
-  std::string expression_uuid;
+  EngineUuid expression_uuid;
   std::uint64_t expression_generation = 0;
   EngineDmlUpdateSha256V1 expression_evidence_sha256{};
-  std::string catalog_snapshot_uuid;
+  EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string security_snapshot_uuid;
+  EngineUuid security_snapshot_uuid;
   std::uint64_t security_snapshot_generation = 0;
   std::uint64_t security_generation = 0;
   std::uint64_t policy_catalog_generation = 0;
@@ -129,9 +129,9 @@ struct EngineDmlUpdateRowPolicyAuthoritySourceV1 {
 struct EngineDmlUpdateConstraintAuthoritySourceV1 {
   bool visible = true;
   bool deleted = false;
-  std::string catalog_snapshot_uuid;
+  EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string target_relation_uuid;
+  EngineUuid target_relation_uuid;
   std::uint64_t target_relation_generation = 0;
   bool manager_execution_order_present = false;
   std::uint64_t manager_execution_order = 0;
@@ -141,11 +141,11 @@ struct EngineDmlUpdateConstraintAuthoritySourceV1 {
       EngineDmlUpdateConstraintTimingV1::immediate_row;
   EngineDmlUpdateReservationModeV1 reservation_mode =
       EngineDmlUpdateReservationModeV1::no_key_reservation;
-  std::string constraint_uuid;
+  EngineUuid constraint_uuid;
   std::uint64_t constraint_generation = 0;
-  std::string expression_uuid;
+  EngineUuid expression_uuid;
   std::uint64_t expression_generation = 0;
-  std::string reservation_profile_uuid;
+  EngineUuid reservation_profile_uuid;
   std::uint64_t reservation_profile_generation = 0;
   EngineDmlUpdateSha256V1 dependency_set_sha256{};
 };
@@ -153,9 +153,9 @@ struct EngineDmlUpdateConstraintAuthoritySourceV1 {
 struct EngineDmlUpdateTriggerAuthoritySourceV1 {
   bool visible = true;
   bool deleted = false;
-  std::string catalog_snapshot_uuid;
+  EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string target_relation_uuid;
+  EngineUuid target_relation_uuid;
   std::uint64_t target_relation_generation = 0;
   std::uint64_t security_generation = 0;
   bool firing_order_present = false;
@@ -168,13 +168,13 @@ struct EngineDmlUpdateTriggerAuthoritySourceV1 {
       EngineDmlUpdateTriggerSecurityModeV1::invoker;
   bool autonomous = false;
   bool external_transaction = false;
-  std::string trigger_uuid;
+  EngineUuid trigger_uuid;
   std::uint64_t trigger_generation = 0;
-  std::string body_sblr_uuid;
+  EngineUuid body_sblr_uuid;
   std::uint64_t body_sblr_generation = 0;
-  std::string execution_security_context_uuid;
+  EngineUuid execution_security_context_uuid;
   std::uint64_t execution_security_generation = 0;
-  std::string recursion_profile_uuid;
+  EngineUuid recursion_profile_uuid;
   std::uint64_t recursion_profile_generation = 0;
   std::uint32_t maximum_depth = 0;
   EngineDmlUpdateSha256V1 dependency_set_sha256{};
@@ -184,12 +184,12 @@ struct EngineDmlUpdateFrozenRowPolicyRecordV1 {
   std::uint32_t policy_ordinal = 0;
   EngineDmlUpdateRowPolicyPhaseV1 phase =
       EngineDmlUpdateRowPolicyPhaseV1::using_filter;
-  std::string effective_policy_uuid;
+  EngineUuid effective_policy_uuid;
   std::uint64_t effective_policy_generation = 0;
-  std::string expression_uuid;
+  EngineUuid expression_uuid;
   std::uint64_t expression_generation = 0;
   EngineDmlUpdateSha256V1 expression_evidence_sha256{};
-  std::string security_snapshot_uuid;
+  EngineUuid security_snapshot_uuid;
   std::uint64_t security_generation = 0;
   EngineDmlUpdateSha256V1 source_policy_catalog_vector_sha256{};
   EngineDmlUpdateSha256V1 record_evidence_sha256{};
@@ -206,11 +206,11 @@ struct EngineDmlUpdateFrozenConstraintRecordV1 {
       EngineDmlUpdateConstraintTimingV1::immediate_row;
   EngineDmlUpdateReservationModeV1 reservation_mode =
       EngineDmlUpdateReservationModeV1::no_key_reservation;
-  std::string constraint_uuid;
+  EngineUuid constraint_uuid;
   std::uint64_t constraint_generation = 0;
-  std::string expression_uuid;
+  EngineUuid expression_uuid;
   std::uint64_t expression_generation = 0;
-  std::string reservation_profile_uuid;
+  EngineUuid reservation_profile_uuid;
   std::uint64_t reservation_profile_generation = 0;
   EngineDmlUpdateSha256V1 dependency_set_sha256{};
   EngineDmlUpdateSha256V1 record_evidence_sha256{};
@@ -227,13 +227,13 @@ struct EngineDmlUpdateFrozenTriggerRecordV1 {
       EngineDmlUpdateTriggerTimingV1::before_statement;
   EngineDmlUpdateTriggerSecurityModeV1 security_mode =
       EngineDmlUpdateTriggerSecurityModeV1::invoker;
-  std::string trigger_uuid;
+  EngineUuid trigger_uuid;
   std::uint64_t trigger_generation = 0;
-  std::string body_sblr_uuid;
+  EngineUuid body_sblr_uuid;
   std::uint64_t body_sblr_generation = 0;
-  std::string execution_security_context_uuid;
+  EngineUuid execution_security_context_uuid;
   std::uint64_t execution_security_generation = 0;
-  std::string recursion_profile_uuid;
+  EngineUuid recursion_profile_uuid;
   std::uint64_t recursion_profile_generation = 0;
   std::uint32_t maximum_depth = 0;
   EngineDmlUpdateSha256V1 dependency_set_sha256{};
@@ -244,7 +244,7 @@ struct EngineDmlUpdateFrozenTriggerRecordV1 {
 };
 
 struct EngineDmlUpdateFrozenRowPolicySetV1 {
-  std::string set_uuid;
+  EngineUuid set_uuid;
   std::uint64_t set_generation = 0;
   EngineDmlUpdateSha256V1 vector_sha256{};
   std::vector<EngineDmlUpdateFrozenRowPolicyRecordV1> records;
@@ -253,7 +253,7 @@ struct EngineDmlUpdateFrozenRowPolicySetV1 {
 };
 
 struct EngineDmlUpdateFrozenConstraintSetV1 {
-  std::string set_uuid;
+  EngineUuid set_uuid;
   std::uint64_t set_generation = 0;
   EngineDmlUpdateSha256V1 vector_sha256{};
   std::vector<EngineDmlUpdateFrozenConstraintRecordV1> records;
@@ -262,7 +262,7 @@ struct EngineDmlUpdateFrozenConstraintSetV1 {
 };
 
 struct EngineDmlUpdateFrozenTriggerSetV1 {
-  std::string set_uuid;
+  EngineUuid set_uuid;
   std::uint64_t set_generation = 0;
   EngineDmlUpdateSha256V1 vector_sha256{};
   std::vector<EngineDmlUpdateFrozenTriggerRecordV1> records;
@@ -271,10 +271,10 @@ struct EngineDmlUpdateFrozenTriggerSetV1 {
 };
 
 struct EngineDmlUpdateImmutableAuthoritySnapshotV1 {
-  std::string authenticated_statement_receipt_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
   std::uint64_t structural_occurrence_id = 0;
   EngineDmlUpdateRelationOccurrenceAuthorityV1 relation_occurrence;
-  std::string catalog_snapshot_uuid;
+  EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation = 0;
   EngineSecurityPolicySnapshotAuthorityV1 security_policy_snapshot;
   EngineDmlUpdateFrozenRowPolicySetV1 row_policy_set;
@@ -287,10 +287,10 @@ struct EngineDmlUpdateImmutableAuthoritySnapshotV1 {
 
 struct EngineDmlUpdateImmutableAuthorityFreezeRequestV1 {
   EngineRequestContext context;
-  std::string authenticated_statement_receipt_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
   std::uint64_t structural_occurrence_id = 0;
   EngineDmlUpdateRelationOccurrenceAuthorityV1 relation_occurrence;
-  std::string catalog_snapshot_uuid;
+  EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation = 0;
   // Optional engine-issued lifecycle token.  When present it is revalidated
   // against the durable security catalog and reused exactly; raw callers

@@ -1,3 +1,4 @@
+#include "server_engine_bridge/admission_token_binding.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
@@ -17,7 +18,7 @@ namespace {
 Submission BuildCreateIndexSubmission(
     const Fixture& fixture,
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid) {
+    const platform::Uuid& parser_uuid) {
   auto submission = BuildSubmission(fixture, view, parser_uuid);
   const auto package = RawUuid(view.bound_ast_uuid);
 
@@ -102,7 +103,7 @@ struct TypeDdlProfile {
 Submission BuildTypeDdlSubmission(
     const Fixture& fixture,
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const TypeDdlProfile& profile) {
   auto submission = BuildSubmission(fixture, view, parser_uuid);
   auto operation = sblr::MakeSblrEnvelope(
@@ -191,66 +192,11 @@ std::array<std::uint8_t, 32> Digest(const void* bytes, std::size_t size) {
 
 std::array<std::uint8_t, 32> Binding(
     const bridge::StatementContextDispatchRequest& request) {
-  Bytes bytes;
-  constexpr std::string_view domain = "ScratchBird.SBLR.AdmissionToken.V1";
-  bytes.insert(bytes.end(), domain.begin(), domain.end());
-  bytes.insert(bytes.end(), request.container_sha256.begin(),
-               request.container_sha256.end());
-  bytes.insert(bytes.end(), request.execution_envelope_sha256.begin(),
-               request.execution_envelope_sha256.end());
-  bytes.insert(bytes.end(), request.operation_sha256.begin(),
-               request.operation_sha256.end());
-  for (const auto* value : {&request.authenticated_principal_uuid,
-                            &request.catalog_snapshot_uuid,
-                            &request.engine_mga_statement_uuid,
-                            &request.engine_mga_snapshot_uuid}) {
-    bytes.insert(bytes.end(), value->begin(), value->end());
-    bytes.push_back(0);
-  }
-  wire::SblrAppendU64(bytes, request.catalog_epoch);
-  wire::SblrAppendU64(bytes, request.security_epoch);
-  wire::SblrAppendU64(bytes, request.resource_epoch);
-  wire::SblrAppendU64(bytes,
-                      request.package_admission_reservation.opaque_id);
-  bytes.push_back(static_cast<std::uint8_t>(request.admitted_payload_kind));
-  wire::SblrAppendU64(bytes, request.canonical_operation_bytes.size());
-  wire::SblrAppendU32(bytes, 3);
-  wire::SblrAppendU64(bytes, request.resource_epoch);
-  bytes.push_back(static_cast<std::uint8_t>(request.gateway_evidence.source));
-  bytes.push_back(
-      static_cast<std::uint8_t>(request.gateway_evidence.disposition));
-  wire::SblrAppendU64(
-      bytes, request.gateway_evidence.provider_observation_generation);
-  bytes.insert(bytes.end(),
-               request.gateway_evidence.canonical_payload_sha256.begin(),
-               request.gateway_evidence.canonical_payload_sha256.end());
-  for (const auto* value : {&request.gateway_evidence.route_snapshot_uuid,
-                            &request.gateway_evidence.security_snapshot_uuid}) {
-    bytes.insert(bytes.end(), value->begin(), value->end());
-    bytes.push_back(0);
-  }
-  wire::SblrAppendU64(bytes, request.gateway_evidence.route_epoch);
-  wire::SblrAppendU64(bytes, request.gateway_evidence.route_generation);
-  wire::SblrAppendU64(bytes, request.gateway_evidence.security_epoch);
-  wire::SblrAppendU64(
-      bytes, request.gateway_evidence.security_observation_generation);
-  bytes.push_back(request.gateway_evidence.cluster_context_active ? 1 : 0);
-  bytes.push_back(request.gateway_evidence.cluster_transaction_active ? 1 : 0);
-  bytes.push_back(request.gateway_evidence.route_fence_present ? 1 : 0);
-  for (const auto* value : {
-           &request.package_executor_evidence.begin_executor_id,
-           &request.package_executor_evidence.end_executor_id,
-           &request.package_executor_evidence.registry_snapshot_uuid}) {
-    bytes.insert(bytes.end(), value->begin(), value->end());
-    bytes.push_back(0);
-  }
-  wire::SblrAppendU64(
-      bytes,
-      request.package_executor_evidence.executor_evidence_generation);
-  bytes.insert(
-      bytes.end(),
-      request.package_executor_evidence.canonical_payload_sha256.begin(),
-      request.package_executor_evidence.canonical_payload_sha256.end());
+  const bridge::AdmissionReservationBinding reservation{
+      request.package_admission_reservation.opaque_id,
+      static_cast<std::uint8_t>(request.admitted_payload_kind),
+      request.canonical_operation_bytes.size(), 3, request.resource_epoch};
+  const auto bytes = bridge::EncodeAdmissionTokenBindingV2(request, reservation);
   const auto digest = scratchbird::core::hash::ComputeSha256Digest(bytes);
   Require(digest.ok(), "admission binding SHA-256 failed");
   return digest.digest;
@@ -350,7 +296,7 @@ int main() {
   availability_admin_context.trace_tags.push_back(
       "right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
   api::SblrExecutorAvailabilitySetRequest advance_create_index;
-  advance_create_index.database_uuid = context.database_uuid.canonical;
+  advance_create_index.database_uuid = context.database_uuid;
   advance_create_index.expected_snapshot_uuid =
       create_index_bootstrap.snapshot.snapshot_uuid;
   advance_create_index.expected_generation =
@@ -368,7 +314,7 @@ int main() {
           "CREATE INDEX availability generation advance failed");
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t acquire_result = nullptr;
@@ -399,7 +345,7 @@ int main() {
   }};
   for (std::size_t index = 0; index != type_profiles.size(); ++index) {
     const auto type_parser_uuid =
-        Text(NewUuid(platform::UuidKind::object, 610 + index));
+        Identity(NewUuid(platform::UuidKind::object, 610 + index));
     const auto type_submission = BuildTypeDdlSubmission(
         fixture, view, type_parser_uuid, type_profiles[index]);
     server::ServerSblrAdmissionRequest type_admission;
@@ -408,7 +354,7 @@ int main() {
     type_admission.admitted_parser_package_uuid = type_parser_uuid;
     type_admission.admitted_parser_package_version_major = 1;
     type_admission.admitted_registry_snapshot_uuid = view.catalog_epoch_uuid;
-    type_admission.authenticated_principal_uuid = Text(fixture.principal_uuid);
+    type_admission.authenticated_principal_uuid = Identity(fixture.principal_uuid);
     type_admission.catalog_snapshot_uuid =
         view.statement_metadata_snapshot_uuid;
     type_admission.engine_mga_statement_uuid = view.statement_uuid;
@@ -463,7 +409,7 @@ int main() {
     (void)sb_engine_result_release(type_result);
   }
 
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 602));
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 602));
   const auto submission = BuildSubmission(fixture, view, parser_uuid);
   bridge::StatementPackageAdmissionReservationRequest reservation_request;
   reservation_request.receipt = receipt;
@@ -485,7 +431,7 @@ int main() {
   admission.admitted_parser_package_uuid = parser_uuid;
   admission.admitted_parser_package_version_major = 1;
   admission.admitted_registry_snapshot_uuid = view.catalog_epoch_uuid;
-  admission.authenticated_principal_uuid = Text(fixture.principal_uuid);
+  admission.authenticated_principal_uuid = Identity(fixture.principal_uuid);
   admission.catalog_snapshot_uuid = view.statement_metadata_snapshot_uuid;
   admission.engine_mga_statement_uuid = view.statement_uuid;
   admission.engine_mga_snapshot_uuid = view.statement_snapshot_uuid;
@@ -557,7 +503,7 @@ int main() {
       create_index_submission.stream.data(),
       create_index_submission.stream.size());
   create_index_dispatch.authenticated_principal_uuid =
-      Text(fixture.principal_uuid);
+      Identity(fixture.principal_uuid);
   create_index_dispatch.catalog_snapshot_uuid =
       view.statement_metadata_snapshot_uuid;
   create_index_dispatch.engine_mga_statement_uuid = view.statement_uuid;

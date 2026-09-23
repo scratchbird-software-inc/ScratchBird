@@ -11,6 +11,8 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <stdexcept>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -28,9 +30,9 @@ using scratchbird::core::platform::Status;
 using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::UuidKind;
-using scratchbird::core::uuid::UuidToString;
 
-constexpr char kPackageFileMagic[] = "SBFS_PACKAGE_MANIFEST_V1";
+
+constexpr char kPackageFileMagic[] = "SBFSPK02";
 
 Status PackageOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::storage_disk};
@@ -45,7 +47,7 @@ bool SameUuid(const TypedUuid& left, const TypedUuid& right) {
 }
 
 bool IsTypedUuid(const TypedUuid& uuid, UuidKind kind) {
-  return uuid.kind == kind && uuid.valid();
+  return uuid.kind == kind && uuid.valid() && scratchbird::core::uuid::IsEngineIdentityUuid(uuid.value);
 }
 
 std::string DigestString(const std::string& payload) {
@@ -59,32 +61,61 @@ std::string DigestString(const std::string& payload) {
   return out.str();
 }
 
-std::string MemberPayload(const FilespacePackageMember& member) {
-  std::ostringstream out;
-  out << UuidToString(member.database_uuid.value) << '|'
-      << UuidToString(member.filespace_uuid.value) << '|'
-      << member.path << '|'
-      << FilespaceRoleName(member.role) << '|'
-      << FilespaceStateName(member.state) << '|'
-      << member.page_size << '|'
-      << member.physical_filespace_id << '|'
-      << member.header_generation << '|'
-      << UuidToString(member.writer_identity_uuid.value);
-  return out.str();
+// Versioned binary frames. Identity fields are exactly the original 16 bytes.
+constexpr std::size_t kPackageMaximumBytes = 64u * 1024u * 1024u;
+std::string UuidBytes(const TypedUuid& id) {
+  return std::string(reinterpret_cast<const char*>(id.value.bytes.data()),id.value.bytes.size());
 }
-
-std::string ManifestPayload(const FilespacePackageManifest& manifest) {
-  std::ostringstream out;
-  out << UuidToString(manifest.package_uuid.value) << '|'
-      << UuidToString(manifest.source_database_uuid.value) << '|'
-      << manifest.package_name << '|'
-      << manifest.format_version << '|'
-      << (manifest.root_authority_present ? "root" : "no_root") << '|'
-      << (manifest.encrypted_material_included ? "encrypted" : "no_encrypted_material");
-  for (const FilespacePackageMember& member : manifest.members) {
-    out << '|' << member.member_checksum;
+std::string EncodePackageFields(const std::vector<std::string>& fields) {
+  if(fields.size()>10000000) throw std::length_error("filespace_package_field_count");
+  std::string out(kPackageFileMagic);
+  const auto put=[&](u32 value) {for(unsigned n=0;n<4;++n) out.push_back(static_cast<char>(value>>(n*8)));};
+  put(static_cast<u32>(fields.size()));
+  for(const auto& field:fields) {
+    if(field.size()>kPackageMaximumBytes-4 || out.size()>kPackageMaximumBytes-field.size()-4)
+      throw std::length_error("filespace_package_size");
+    put(static_cast<u32>(field.size()));out.append(field);
   }
-  return out.str();
+  return out;
+}
+std::vector<std::string> DecodePackageFields(const std::string& input) {
+  if(input.size()<12 || input.size()>kPackageMaximumBytes || !input.starts_with(kPackageFileMagic)) return {};
+  std::size_t cursor=8;
+  const auto read=[&](u32* value) {
+    if(input.size()-cursor<4) return false;
+    *value=0;for(unsigned n=0;n<4;++n) *value|=static_cast<u32>(static_cast<unsigned char>(input[cursor++]))<<(n*8);
+    return true;
+  };
+  u32 count=0;if(!read(&count) || count>(input.size()-cursor)/4) return {};
+  std::vector<std::string> fields;fields.reserve(count);
+  for(u32 n=0;n<count;++n) {
+    u32 size=0;if(!read(&size) || size>input.size()-cursor) return {};
+    fields.emplace_back(input.data()+cursor,size);cursor+=size;
+  }
+  if(cursor!=input.size()) return {};
+  return fields;
+}
+scratchbird::core::uuid::TypedUuidResult ReadPackageUuid(UuidKind kind,const std::string& bytes) {
+  scratchbird::core::platform::Uuid identity;
+  if(bytes.size()==identity.bytes.size()) std::copy(bytes.begin(),bytes.end(),identity.bytes.begin());
+  return scratchbird::core::uuid::MakeDurableEngineIdentityUuid(kind,identity);
+}
+std::string MemberPayload(const FilespacePackageMember& member) {
+  return EncodePackageFields({"filespace.member.v2",UuidBytes(member.database_uuid),UuidBytes(member.filespace_uuid),
+      member.path,FilespaceRoleName(member.role),FilespaceStateName(member.state),std::to_string(member.page_size),
+      std::to_string(member.physical_filespace_id),std::to_string(member.header_generation),UuidBytes(member.writer_identity_uuid)});
+}
+std::string ManifestPayload(const FilespacePackageManifest& manifest) {
+  std::vector<std::string> fields={"filespace.manifest.v2",UuidBytes(manifest.package_uuid),UuidBytes(manifest.source_database_uuid),
+      manifest.package_name,std::to_string(manifest.format_version),manifest.root_authority_present ? "1":"0",
+      manifest.encrypted_material_included ? "1":"0",std::to_string(manifest.members.size())};
+  for(const auto& member:manifest.members) fields.push_back(member.member_checksum);
+  return EncodePackageFields(fields);
+}
+std::string MemberFilename(const FilespacePackageMember& member) {
+  const auto component=scratchbird::core::uuid::EngineIdentityPathComponent(member.filespace_uuid.value);
+  if(!component) throw std::invalid_argument("filespace_package_member_identity_invalid");
+  return component->string()+".fsp";
 }
 
 FilespacePackageResult Error(std::string code,
@@ -140,13 +171,13 @@ std::filesystem::path PhysicalMemberDirectory(const std::filesystem::path& packa
 std::filesystem::path PhysicalMemberPath(const std::filesystem::path& package_path,
                                          const FilespacePackageMember& member) {
   return PhysicalMemberDirectory(package_path) /
-         (UuidToString(member.filespace_uuid.value) + ".fsp");
+         MemberFilename(member);
 }
 
 std::filesystem::path RestoredPhysicalMemberPath(
     const std::filesystem::path& output_directory,
     const FilespacePackageMember& member) {
-  return output_directory / (UuidToString(member.filespace_uuid.value) + ".fsp");
+  return output_directory / MemberFilename(member);
 }
 
 bool FileDigest(const std::filesystem::path& path, std::string* digest, std::string* detail) {
@@ -313,34 +344,27 @@ bool HexDecode(const std::string& input, std::string* output) {
 }
 
 std::string SerializePackageManifestFile(const FilespacePackageManifest& manifest) {
-  std::ostringstream out;
-  out << kPackageFileMagic << '\n';
-  out << "package_uuid=" << UuidToString(manifest.package_uuid.value) << '\n';
-  out << "source_database_uuid=" << UuidToString(manifest.source_database_uuid.value) << '\n';
-  out << "package_name_hex=" << HexEncode(manifest.package_name) << '\n';
-  out << "format_version=" << manifest.format_version << '\n';
-  out << "root_authority_present=" << (manifest.root_authority_present ? "1" : "0") << '\n';
-  out << "encrypted_material_included="
-      << (manifest.encrypted_material_included ? "1" : "0") << '\n';
-  out << "member_count=" << manifest.members.size() << '\n';
-  for (std::size_t i = 0; i < manifest.members.size(); ++i) {
-    const auto prefix = std::string("member.") + std::to_string(i) + ".";
-    const FilespacePackageMember& member = manifest.members[i];
-    out << prefix << "database_uuid=" << UuidToString(member.database_uuid.value) << '\n';
-    out << prefix << "filespace_uuid=" << UuidToString(member.filespace_uuid.value) << '\n';
-    out << prefix << "path_hex=" << HexEncode(member.path) << '\n';
-    out << prefix << "role=" << FilespaceRoleName(member.role) << '\n';
-    out << prefix << "state=" << FilespaceStateName(member.state) << '\n';
-    out << prefix << "page_size=" << member.page_size << '\n';
-    out << prefix << "physical_filespace_id=" << member.physical_filespace_id << '\n';
-    out << prefix << "header_generation=" << member.header_generation << '\n';
-    out << prefix << "writer_identity_uuid="
-        << UuidToString(member.writer_identity_uuid.value) << '\n';
-    out << prefix << "member_checksum=" << member.member_checksum << '\n';
+  std::vector<std::string> fields={kPackageFileMagic,
+      "package_uuid="+UuidBytes(manifest.package_uuid),"source_database_uuid="+UuidBytes(manifest.source_database_uuid),
+      "package_name="+manifest.package_name,"format_version="+std::to_string(manifest.format_version),
+      std::string("root_authority_present=")+(manifest.root_authority_present ? "1":"0"),
+      std::string("encrypted_material_included=")+(manifest.encrypted_material_included ? "1":"0"),
+      "member_count="+std::to_string(manifest.members.size())};
+  for(std::size_t i=0;i<manifest.members.size();++i) {
+    const auto prefix="member."+std::to_string(i)+".";const auto& member=manifest.members[i];
+    fields.push_back(prefix+"database_uuid="+UuidBytes(member.database_uuid));
+    fields.push_back(prefix+"filespace_uuid="+UuidBytes(member.filespace_uuid));
+    fields.push_back(prefix+"path="+member.path);
+    fields.push_back(prefix+"role="+FilespaceRoleName(member.role));
+    fields.push_back(prefix+"state="+FilespaceStateName(member.state));
+    fields.push_back(prefix+"page_size="+std::to_string(member.page_size));
+    fields.push_back(prefix+"physical_filespace_id="+std::to_string(member.physical_filespace_id));
+    fields.push_back(prefix+"header_generation="+std::to_string(member.header_generation));
+    fields.push_back(prefix+"writer_identity_uuid="+UuidBytes(member.writer_identity_uuid));
+    fields.push_back(prefix+"member_checksum="+member.member_checksum);
   }
-  out << "manifest_checksum=" << manifest.manifest_checksum << '\n';
-  out << "END\n";
-  return out.str();
+  fields.push_back("manifest_checksum="+manifest.manifest_checksum);fields.push_back("END");
+  return EncodePackageFields(fields);
 }
 
 bool ReadValue(const std::vector<std::string>& lines,
@@ -361,20 +385,10 @@ bool ReadValue(const std::vector<std::string>& lines,
 }
 
 bool ParseU64Strict(const std::string& text, u64* value) {
-  if (value == nullptr || text.empty()) {
-    return false;
-  }
-  try {
-    std::size_t consumed = 0;
-    const auto parsed = std::stoull(text, &consumed, 10);
-    if (consumed != text.size()) {
-      return false;
-    }
-    *value = static_cast<u64>(parsed);
-    return true;
-  } catch (...) {
-    return false;
-  }
+  if(!value || text.empty()) return false;
+  u64 parsed=0;const auto result=std::from_chars(text.data(),text.data()+text.size(),parsed);
+  if(result.ec!=std::errc{} || result.ptr!=text.data()+text.size() || std::to_string(parsed)!=text) return false;
+  *value=parsed;return true;
 }
 
 bool ParseU32Strict(const std::string& text, u32* value) {
@@ -466,22 +480,9 @@ bool ParseState(const std::string& text, FilespaceState* state) {
   return false;
 }
 
-std::vector<std::string> SplitLines(const std::string& content) {
-  std::vector<std::string> lines;
-  std::istringstream input(content);
-  std::string line;
-  while (std::getline(input, line)) {
-    if (!line.empty() && line.back() == '\r') {
-      line.pop_back();
-    }
-    lines.push_back(std::move(line));
-  }
-  return lines;
-}
-
 FilespacePackageFileResult ParsePackageManifestFileContent(const std::string& content,
                                                            u64 byte_count) {
-  const auto lines = SplitLines(content);
+  const auto lines = DecodePackageFields(content);
   if (lines.empty() || lines.front() != kPackageFileMagic) {
     return FileError("SB-FILESPACE-PACKAGE-FILE-MAGIC-MISMATCH",
                      "storage.filespace.package.file_magic_mismatch",
@@ -500,7 +501,7 @@ FilespacePackageFileResult ParsePackageManifestFileContent(const std::string& co
                      true,
                      byte_count);
   }
-  const auto package_uuid = scratchbird::core::uuid::ParseTypedUuid(UuidKind::object, value);
+  const auto package_uuid = ReadPackageUuid(UuidKind::object, value);
   if (!package_uuid.ok()) {
     return FileError("SB-FILESPACE-PACKAGE-FILE-UUID-INVALID",
                      "storage.filespace.package.file_uuid_invalid",
@@ -517,7 +518,7 @@ FilespacePackageFileResult ParsePackageManifestFileContent(const std::string& co
                      true,
                      byte_count);
   }
-  const auto database_uuid = scratchbird::core::uuid::ParseTypedUuid(UuidKind::database, value);
+  const auto database_uuid = ReadPackageUuid(UuidKind::database, value);
   if (!database_uuid.ok()) {
     return FileError("SB-FILESPACE-PACKAGE-FILE-UUID-INVALID",
                      "storage.filespace.package.file_uuid_invalid",
@@ -527,11 +528,10 @@ FilespacePackageFileResult ParsePackageManifestFileContent(const std::string& co
   }
   manifest.source_database_uuid = database_uuid.value;
 
-  if (!ReadValue(lines, &cursor, "package_name_hex", &value) ||
-      !HexDecode(value, &manifest.package_name)) {
+  if (!ReadValue(lines, &cursor, "package_name", &manifest.package_name)) {
     return FileError("SB-FILESPACE-PACKAGE-FILE-MALFORMED",
                      "storage.filespace.package.file_malformed",
-                     "package_name_hex",
+                     "package_name",
                      true,
                      byte_count);
   }
@@ -581,7 +581,7 @@ FilespacePackageFileResult ParsePackageManifestFileContent(const std::string& co
                        byte_count);
     }
     const auto member_database_uuid =
-        scratchbird::core::uuid::ParseTypedUuid(UuidKind::database, value);
+        ReadPackageUuid(UuidKind::database, value);
     if (!member_database_uuid.ok()) {
       return FileError("SB-FILESPACE-PACKAGE-FILE-UUID-INVALID",
                        "storage.filespace.package.file_uuid_invalid",
@@ -599,7 +599,7 @@ FilespacePackageFileResult ParsePackageManifestFileContent(const std::string& co
                        byte_count);
     }
     const auto filespace_uuid =
-        scratchbird::core::uuid::ParseTypedUuid(UuidKind::filespace, value);
+        ReadPackageUuid(UuidKind::filespace, value);
     if (!filespace_uuid.ok()) {
       return FileError("SB-FILESPACE-PACKAGE-FILE-UUID-INVALID",
                        "storage.filespace.package.file_uuid_invalid",
@@ -609,11 +609,10 @@ FilespacePackageFileResult ParsePackageManifestFileContent(const std::string& co
     }
     member.filespace_uuid = filespace_uuid.value;
 
-    if (!ReadValue(lines, &cursor, prefix + "path_hex", &value) ||
-        !HexDecode(value, &member.path)) {
+    if (!ReadValue(lines, &cursor, prefix + "path", &member.path)) {
       return FileError("SB-FILESPACE-PACKAGE-FILE-MALFORMED",
                        "storage.filespace.package.file_malformed",
-                       prefix + "path_hex",
+                       prefix + "path",
                        true,
                        byte_count);
     }
@@ -664,7 +663,7 @@ FilespacePackageFileResult ParsePackageManifestFileContent(const std::string& co
                        true,
                        byte_count);
     }
-    const auto writer_uuid = scratchbird::core::uuid::ParseTypedUuid(UuidKind::object, value);
+    const auto writer_uuid = ReadPackageUuid(UuidKind::object, value);
     if (!writer_uuid.ok()) {
       return FileError("SB-FILESPACE-PACKAGE-FILE-UUID-INVALID",
                        "storage.filespace.package.file_uuid_invalid",
@@ -802,7 +801,7 @@ FilespacePackageResult ValidateManifest(const FilespacePackageManifest& manifest
     return Error("SB-FILESPACE-PACKAGE-SOURCE-DATABASE-UUID-INVALID",
                  "storage.filespace.package.source_database_uuid_invalid");
   }
-  if (manifest.format_version != 1) {
+  if (manifest.format_version != 2) {
     return Error("SB-FILESPACE-PACKAGE-FORMAT-UNSUPPORTED",
                  "storage.filespace.package.format_unsupported",
                  std::to_string(manifest.format_version));
@@ -832,7 +831,7 @@ FilespacePackageResult ValidateManifest(const FilespacePackageManifest& manifest
       return Error("SB-FILESPACE-PACKAGE-MEMBER-FILESPACE-UUID-INVALID",
                    "storage.filespace.package.member_filespace_uuid_invalid");
     }
-    if (member.path.empty() || member.header_generation == 0) {
+    if (!IsTypedUuid(member.writer_identity_uuid, UuidKind::object) || member.path.empty() || member.header_generation == 0) {
       return Error("SB-FILESPACE-PACKAGE-MEMBER-METADATA-INCOMPLETE",
                    "storage.filespace.package.member_metadata_incomplete");
     }
@@ -1163,7 +1162,7 @@ FilespacePackageResult AdmitFilespacePackage(FilespaceRegistry* registry,
                  "storage.filespace.package.registry_null");
   }
   if (!request.inspection_passed || !request.admission_authorized ||
-      request.operator_identity.empty()) {
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.operator_identity)) {
     return Error("SB-FILESPACE-PACKAGE-ADMIT-AUTHORITY-REQUIRED",
                  "storage.filespace.package.admit_authority_required");
   }
@@ -1176,7 +1175,8 @@ FilespacePackageResult AdmitFilespacePackage(FilespaceRegistry* registry,
       Ok(FilespacePackageAction::admit,
          request.manifest,
          "SB-FILESPACE-PACKAGE-ADMITTED",
-         request.operator_identity);
+         "operator_authorized");
+  result.operator_identity = request.operator_identity;
   for (const FilespacePackageMember& member : request.manifest.members) {
     FilespaceDescriptor* descriptor = FindMutableDescriptor(registry, member.filespace_uuid);
     if (descriptor == nullptr ||
@@ -1216,7 +1216,7 @@ FilespacePackageResult RejectFilespacePackage(FilespaceRegistry* registry,
                  "storage.filespace.package.registry_null");
   }
   if (!request.inspection_passed || !request.reject_authorized ||
-      request.operator_identity.empty()) {
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.operator_identity)) {
     return Error("SB-FILESPACE-PACKAGE-REJECT-AUTHORITY-REQUIRED",
                  "storage.filespace.package.reject_authority_required");
   }
@@ -1229,7 +1229,8 @@ FilespacePackageResult RejectFilespacePackage(FilespaceRegistry* registry,
       Ok(FilespacePackageAction::reject,
          request.manifest,
          "SB-FILESPACE-PACKAGE-REJECTED",
-         request.operator_identity);
+         "operator_authorized");
+  result.operator_identity = request.operator_identity;
   for (const FilespacePackageMember& member : request.manifest.members) {
     FilespaceDescriptor* descriptor = FindMutableDescriptor(registry, member.filespace_uuid);
     if (descriptor == nullptr ||

@@ -84,7 +84,7 @@ bool ValidateCoercionRefusal() {
       input, unknown_target, true, &output, &category, &refusal);
 
   auto malformed_source = input;
-  malformed_source.descriptor.descriptor_uuid.canonical.clear();
+  malformed_source.descriptor.descriptor_uuid = {};
   refusal.clear();
   const bool malformed_accepted = api::QowApplyCanonicalDescriptorCoercionV1(
       malformed_source, Descriptor("33", "decimal"), true, &output,

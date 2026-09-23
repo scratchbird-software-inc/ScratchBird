@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -48,7 +49,7 @@ server::HostedEngineState MakeEngineState() {
   database.database_open = true;
   database.database_path =
       "/tmp/ipar_prepared_handle_authority_gate.sbdb";
-  database.database_uuid = "database-ipar-prepared-authority";
+  database.database_uuid = scratchbird::tests::FixtureUuid(1208, 2201);
   state.databases.push_back(std::move(database));
   return state;
 }
@@ -63,7 +64,7 @@ server::ServerSessionRecord MakeSession() {
   session.principal_claim = "ipar-prepared-user";
   session.database_path =
       "/tmp/ipar_prepared_handle_authority_gate.sbdb";
-  session.database_uuid = "database-ipar-prepared-authority";
+  session.database_uuid = scratchbird::tests::FixtureUuid(1208, 2201);
   session.catalog_generation = 3;
   session.security_epoch = 5;
   session.descriptor_epoch = 7;
@@ -74,7 +75,7 @@ server::ServerSessionRecord MakeSession() {
   session.search_path_hash = "search/ipar-prepared";
   session.local_transaction_id = 17;
   session.snapshot_visible_through_local_transaction_id = 17;
-  session.transaction_uuid = server::UuidBytesToText(Uuid(0x90));
+  session.transaction_uuid = scratchbird::core::platform::Uuid{Uuid(0x90)};
   session.default_local_transaction_id = session.local_transaction_id;
   server::ServerTransactionState transaction;
   transaction.local_transaction_id = session.local_transaction_id;

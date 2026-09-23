@@ -44,7 +44,7 @@ int main() {
   passed &= Require(!failed.accepted && !failed.root_published &&
                         failed.no_partial_root &&
                         failed.root_output_batch.rows.empty() &&
-                        failed.root_publication_receipt_uuid.empty() &&
+                        failed.root_publication_receipt_uuid.is_nil() &&
                         failed.diagnostic_id ==
                             "SB_MODEL_CLEANUP_INCOMPLETE_V1" &&
                         cleanup_receipt != failed.rule_receipts.end() &&

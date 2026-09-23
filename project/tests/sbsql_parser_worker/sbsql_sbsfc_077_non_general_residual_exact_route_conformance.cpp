@@ -1,3 +1,6 @@
+#include "../agents/agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +9,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -49,7 +53,7 @@ namespace udr_runtime = scratchbird::udr::runtime;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000077001";
+const std::string kTargetUuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000077001"));
 
 memory::AllocationPolicy MemoryPolicy() {
   memory::AllocationPolicy policy;
@@ -188,9 +192,18 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
+}
+
+sblr::SblrOperand IdentityOperand(std::string name, std::string_view bytes) {
+  const auto id = NativeFixtureIdentity(bytes);
+  sblr::SblrOperand operand;
+  operand.name = std::move(name); operand.type = "uuid";
+  operand.value_kind = sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(id.bytes.begin(), id.bytes.end());
+  return operand;
 }
 
 std::string LifecycleFilespaceUuid() {
@@ -198,7 +211,7 @@ std::string LifecycleFilespaceUuid() {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810770003);
     Require(generated.ok(), "SBSFC-077 lifecycle filespace UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return BinaryFixtureIdentity(generated.value.value);
   }();
   return uuid_text;
 }
@@ -208,7 +221,7 @@ std::string ArchiveFilespaceUuid() {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810770004);
     Require(generated.ok(), "SBSFC-077 archive filespace UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return BinaryFixtureIdentity(generated.value.value);
   }();
   return uuid_text;
 }
@@ -218,7 +231,7 @@ std::string QuarantineFilespaceUuid() {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810770005);
     Require(generated.ok(), "SBSFC-077 quarantine filespace UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return BinaryFixtureIdentity(generated.value.value);
   }();
   return uuid_text;
 }
@@ -228,7 +241,7 @@ std::string MoveFilespaceUuid() {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810770006);
     Require(generated.ok(), "SBSFC-077 move filespace UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return BinaryFixtureIdentity(generated.value.value);
   }();
   return uuid_text;
 }
@@ -238,7 +251,7 @@ std::string MergeFilespaceUuid() {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810770008);
     Require(generated.ok(), "SBSFC-077 merge filespace UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return BinaryFixtureIdentity(generated.value.value);
   }();
   return uuid_text;
 }
@@ -248,7 +261,7 @@ std::string MergeTargetFilespaceUuid() {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810770009);
     Require(generated.ok(), "SBSFC-077 merge target filespace UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return BinaryFixtureIdentity(generated.value.value);
   }();
   return uuid_text;
 }
@@ -258,7 +271,7 @@ std::string DeletePhysicalFilespaceUuid() {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810770007);
     Require(generated.ok(), "SBSFC-077 physical delete filespace UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return BinaryFixtureIdentity(generated.value.value);
   }();
   return uuid_text;
 }
@@ -268,7 +281,7 @@ std::string RepairFilespaceUuid() {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810770011);
     Require(generated.ok(), "SBSFC-077 repair filespace UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return BinaryFixtureIdentity(generated.value.value);
   }();
   return uuid_text;
 }
@@ -278,7 +291,7 @@ std::string RebuildFilespaceUuid() {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810770012);
     Require(generated.ok(), "SBSFC-077 rebuild filespace UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return BinaryFixtureIdentity(generated.value.value);
   }();
   return uuid_text;
 }
@@ -288,7 +301,7 @@ std::string SalvageFilespaceUuid() {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810770013);
     Require(generated.ok(), "SBSFC-077 salvage filespace UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return BinaryFixtureIdentity(generated.value.value);
   }();
   return uuid_text;
 }
@@ -378,10 +391,10 @@ const char* LifecycleRoleFor(const CaseRow& row) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000077101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000077102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000077103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000077101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000077102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000077103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 77;
   session.security_policy_epoch = 78;
   session.descriptor_epoch = 79;
@@ -392,7 +405,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_077_non_general_residual";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000077104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000077104");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-077-non-general-residual";
   config.build_id = "sbsql-sbsfc-077-non-general-residual";
   return config;
@@ -415,7 +428,7 @@ PipelineArtifacts RunPipeline(const CaseRow& row) {
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            {std::string(kTargetUuid)});
+                            {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000077001")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -488,8 +501,9 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
                 !artifacts.envelope.parser_executes_sql &&
                 !artifacts.envelope.real_file_effects,
             "SBSFC-077 refusal retained executable authority");
-    Require(artifacts.envelope.descriptor_refs.size() == 1 &&
-                artifacts.envelope.descriptor_refs.front() ==
+    Require(artifacts.envelope.descriptor_refs.empty() &&
+                artifacts.envelope.descriptor_requirements.size() == 1 &&
+                artifacts.envelope.descriptor_requirements.front() ==
                     "sys.sbsql.surface_registry",
             "SBSFC-077 refusal descriptor evidence drifted");
     Require(HasValue(artifacts.envelope.required_authority_steps,
@@ -678,7 +692,7 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
     }
   }
   Require(created.ok(), "SBSFC-077 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return BinaryFixtureIdentity(create.database_uuid.value);
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
@@ -686,10 +700,10 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   api::EngineRequestContext context;
   context.request_id = "sbsql-sbsfc-077-non-general-residual";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000077201";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000077202";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000077203";
+  context.database_uuid = NativeFixtureIdentity(database_uuid);
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000077201");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000077202");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000077203");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -738,14 +752,14 @@ sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
   const bool dynamic_sbsql_udr =
       row.operation_id == "extensibility.invoke_udr_package";
   const std::string target_uuid =
-      dynamic_sbsql_udr ? std::string(sbsql_udr::kSbuSbsqlPackageUuid)
+      dynamic_sbsql_udr ? BinaryFixtureIdentity(sbsql_udr::kSbuSbsqlPackageIdentity)
                         : TargetUuidFor(row);
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = row.requires_transaction_context;
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back({"text", "target_object_uuid", target_uuid});
+  envelope.operands.push_back(IdentityOperand("target_object_uuid", target_uuid));
   envelope.operands.push_back({"text",
                                "target_object_kind",
                                dynamic_sbsql_udr
@@ -777,7 +791,7 @@ sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
       envelope.operands.push_back({"text", "filespace.startup_open_safe_for_move", "true"});
     }
     if (row.operation_id == "filespace.merge") {
-      envelope.operands.push_back({"text", "filespace.merge_target_uuid", MergeTargetFilespaceUuid()});
+      envelope.operands.push_back(IdentityOperand("filespace.merge_target_uuid", MergeTargetFilespaceUuid()));
       envelope.operands.push_back({"text", "filespace.allow_filespace_merge", "true"});
       envelope.operands.push_back({"text", "filespace.page_agent_merge_complete_for_merge", "true"});
       envelope.operands.push_back({"text", "filespace.startup_open_safe_for_merge", "true"});
@@ -878,7 +892,7 @@ void EnsureParserSupportUdrLoaded(const api::EngineRequestContext& context) {
 
   api::EngineRegisterUdrPackageRequest register_request;
   register_request.context = context;
-  register_request.target_object.uuid.canonical = descriptor.package_uuid;
+  register_request.target_object.uuid = descriptor.package_uuid;
   register_request.target_object.object_kind = "udr_package";
   register_request.localized_names.push_back(
       LocalizedName(descriptor.package_name, "sys.udr"));
@@ -888,7 +902,7 @@ void EnsureParserSupportUdrLoaded(const api::EngineRequestContext& context) {
 
   api::EngineLoadUdrPackageRequest load_request;
   load_request.context = context;
-  load_request.target_object.uuid.canonical = descriptor.package_uuid;
+  load_request.target_object.uuid = descriptor.package_uuid;
   load_request.target_object.object_kind = "udr_package";
   load_request.localized_names.push_back(
       LocalizedName(descriptor.package_name, "sys.udr"));
@@ -903,9 +917,8 @@ api::EngineApiRequest ApiRequestFor(const CaseRow& row) {
   const bool filespace_lifecycle = StartsWith(row.operation_id, "filespace.");
   const bool dynamic_sbsql_udr =
       row.operation_id == "extensibility.invoke_udr_package";
-  request.target_object.uuid.canonical =
-      dynamic_sbsql_udr ? std::string(sbsql_udr::kSbuSbsqlPackageUuid)
-                        : TargetUuidFor(row);
+  request.target_object.uuid = NativeFixtureIdentity(dynamic_sbsql_udr ? BinaryFixtureIdentity(sbsql_udr::kSbuSbsqlPackageIdentity)
+                        : TargetUuidFor(row));
   request.target_object.object_kind =
       dynamic_sbsql_udr ? "udr_package"
                         : (filespace_lifecycle ? "filespace" : "sbsfc077_surface");
@@ -1018,13 +1031,13 @@ void AttachArchiveFilespaceForMaintenance(const api::EngineRequestContext& conte
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back({"text", "target_object_uuid", ArchiveFilespaceUuid()});
+  envelope.operands.push_back(IdentityOperand("target_object_uuid", ArchiveFilespaceUuid()));
   envelope.operands.push_back({"text", "target_object_kind", "filespace"});
   envelope.operands.push_back({"text", "filespace.role", "secondary_history"});
   envelope.operands.push_back({"text", "filespace.allow_primary_replacement", "true"});
 
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = ArchiveFilespaceUuid();
+  request.target_object.uuid = NativeFixtureIdentity(ArchiveFilespaceUuid());
   request.target_object.object_kind = "filespace";
   request.option_envelopes.push_back("filespace.role:secondary_history");
   request.option_envelopes.push_back("filespace.allow_primary_replacement:true");
@@ -1046,12 +1059,12 @@ void AttachQuarantineFilespaceForMaintenance(const api::EngineRequestContext& co
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back({"text", "target_object_uuid", QuarantineFilespaceUuid()});
+  envelope.operands.push_back(IdentityOperand("target_object_uuid", QuarantineFilespaceUuid()));
   envelope.operands.push_back({"text", "target_object_kind", "filespace"});
   envelope.operands.push_back({"text", "filespace.role", "secondary_data"});
 
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = QuarantineFilespaceUuid();
+  request.target_object.uuid = NativeFixtureIdentity(QuarantineFilespaceUuid());
   request.target_object.object_kind = "filespace";
   request.option_envelopes.push_back("filespace.role:secondary_data");
 
@@ -1072,12 +1085,12 @@ void AttachMoveFilespaceForMaintenance(const api::EngineRequestContext& context)
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back({"text", "target_object_uuid", MoveFilespaceUuid()});
+  envelope.operands.push_back(IdentityOperand("target_object_uuid", MoveFilespaceUuid()));
   envelope.operands.push_back({"text", "target_object_kind", "filespace"});
   envelope.operands.push_back({"text", "filespace.role", "secondary_data"});
 
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = MoveFilespaceUuid();
+  request.target_object.uuid = NativeFixtureIdentity(MoveFilespaceUuid());
   request.target_object.object_kind = "filespace";
   request.option_envelopes.push_back("filespace.role:secondary_data");
 
@@ -1112,12 +1125,12 @@ void AttachMergeFilespacesForMaintenance(const api::EngineRequestContext& contex
     envelope.requires_cluster_authority = false;
     envelope.contains_sql_text = false;
     envelope.parser_resolved_names_to_uuids = true;
-    envelope.operands.push_back({"text", "target_object_uuid", fixture.uuid});
+    envelope.operands.push_back(IdentityOperand("target_object_uuid", fixture.uuid));
     envelope.operands.push_back({"text", "target_object_kind", "filespace"});
     envelope.operands.push_back({"text", "filespace.role", "secondary_data"});
 
     api::EngineApiRequest request;
-    request.target_object.uuid.canonical = fixture.uuid;
+    request.target_object.uuid = NativeFixtureIdentity(fixture.uuid);
     request.target_object.object_kind = "filespace";
     request.option_envelopes.push_back("filespace.role:secondary_data");
 
@@ -1141,7 +1154,9 @@ std::filesystem::path DeletePhysicalFilespacePath(const std::filesystem::path& d
 
 std::filesystem::path LifecycleFilespacePath(const std::filesystem::path& database_path,
                                              const std::string& filespace_uuid) {
-  return std::filesystem::path(database_path.string() + "." + filespace_uuid + ".filespace");
+  const auto component = uuid::EngineIdentityPathComponent(NativeFixtureIdentity(filespace_uuid));
+  Require(component.has_value(), "filespace fixture locator identity invalid");
+  return std::filesystem::path(database_path.string() + "." + component->string() + ".filespace");
 }
 
 void AttachSecondaryFilespaceForRepair(const api::EngineRequestContext& context,
@@ -1156,12 +1171,12 @@ void AttachSecondaryFilespaceForRepair(const api::EngineRequestContext& context,
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back({"text", "target_object_uuid", filespace_uuid});
+  envelope.operands.push_back(IdentityOperand("target_object_uuid", filespace_uuid));
   envelope.operands.push_back({"text", "target_object_kind", "filespace"});
   envelope.operands.push_back({"text", "filespace.role", "secondary_data"});
 
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = filespace_uuid;
+  request.target_object.uuid = NativeFixtureIdentity(filespace_uuid);
   request.target_object.object_kind = "filespace";
   request.option_envelopes.push_back("filespace.role:secondary_data");
 
@@ -1180,8 +1195,8 @@ void AttachSecondaryFilespaceForRepair(const api::EngineRequestContext& context,
 void WriteRepairFixtureHeader(const std::filesystem::path& database_path,
                               const std::string& database_uuid,
                               const std::string& filespace_uuid) {
-  const auto parsed_database = uuid::ParseTypedUuid(UuidKind::database, database_uuid);
-  const auto parsed_filespace = uuid::ParseTypedUuid(UuidKind::filespace, filespace_uuid);
+  const auto parsed_database = uuid::MakeTypedUuid(UuidKind::database, NativeFixtureIdentity(database_uuid));
+  const auto parsed_filespace = uuid::MakeTypedUuid(UuidKind::filespace, NativeFixtureIdentity(filespace_uuid));
   Require(parsed_database.ok(), "SBSFC-077 repair fixture database UUID parse failed");
   Require(parsed_filespace.ok(), "SBSFC-077 repair fixture filespace UUID parse failed");
 
@@ -1201,7 +1216,7 @@ void WriteRepairFixtureHeader(const std::filesystem::path& database_path,
       uuid::GenerateEngineIdentityV7(UuidKind::object, CurrentUnixMillis() + 177);
   Require(writer_uuid.ok(), "SBSFC-077 repair fixture writer UUID generation failed");
   header.writer_identity_uuid = writer_uuid.value;
-  header.creation_operation_uuid = "sbsfc077.filespace.repair.fixture";
+  header.creation_operation_uuid = scratchbird::tests::FixtureIdentityForLabel("sbsfc077.filespace.repair.fixture");
 
   const auto path = LifecycleFilespacePath(database_path, filespace_uuid);
   const auto written = filespace::CreatePhysicalFilespaceFile(path.string(), header, true);
@@ -1288,12 +1303,12 @@ void AttachDropDeletePhysicalFilespaceForMaintenance(
   attach_envelope.requires_cluster_authority = false;
   attach_envelope.contains_sql_text = false;
   attach_envelope.parser_resolved_names_to_uuids = true;
-  attach_envelope.operands.push_back({"text", "target_object_uuid", DeletePhysicalFilespaceUuid()});
+  attach_envelope.operands.push_back(IdentityOperand("target_object_uuid", DeletePhysicalFilespaceUuid()));
   attach_envelope.operands.push_back({"text", "target_object_kind", "filespace"});
   attach_envelope.operands.push_back({"text", "filespace.role", "secondary_data"});
 
   api::EngineApiRequest attach_request;
-  attach_request.target_object.uuid.canonical = DeletePhysicalFilespaceUuid();
+  attach_request.target_object.uuid = NativeFixtureIdentity(DeletePhysicalFilespaceUuid());
   attach_request.target_object.object_kind = "filespace";
   attach_request.option_envelopes.push_back("filespace.role:secondary_data");
 
@@ -1321,11 +1336,11 @@ void AttachDropDeletePhysicalFilespaceForMaintenance(
   drop_envelope.requires_cluster_authority = false;
   drop_envelope.contains_sql_text = false;
   drop_envelope.parser_resolved_names_to_uuids = true;
-  drop_envelope.operands.push_back({"text", "target_object_uuid", DeletePhysicalFilespaceUuid()});
+  drop_envelope.operands.push_back(IdentityOperand("target_object_uuid", DeletePhysicalFilespaceUuid()));
   drop_envelope.operands.push_back({"text", "target_object_kind", "filespace"});
 
   api::EngineApiRequest drop_request;
-  drop_request.target_object.uuid.canonical = DeletePhysicalFilespaceUuid();
+  drop_request.target_object.uuid = NativeFixtureIdentity(DeletePhysicalFilespaceUuid());
   drop_request.target_object.object_kind = "filespace";
 
   const auto dropped = sblr::DispatchSblrOperation({context, drop_envelope, drop_request});
@@ -1385,7 +1400,7 @@ void RequireEngineDispatch(const api::EngineRequestContext& base_context,
               << row.runtime_evidence_kind << "=" << row.runtime_evidence_id << '\n';
     for (const auto& evidence : result.api_result.evidence) {
       std::cerr << "  evidence " << evidence.evidence_kind << "="
-                << evidence.evidence_id << '\n';
+                << (std::holds_alternative<api::EngineUuid>(evidence.evidence_id) ? "[binary16 identity]" : std::get<std::string>(evidence.evidence_id)) << '\n';
     }
   }
   Require(HasEvidence(result.api_result, row.runtime_evidence_kind, row.runtime_evidence_id),

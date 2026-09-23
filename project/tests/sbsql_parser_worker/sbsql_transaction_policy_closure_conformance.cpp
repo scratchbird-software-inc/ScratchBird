@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
@@ -92,7 +93,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+scratchbird::core::platform::Uuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -110,18 +111,18 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "transaction policy closure database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const scratchbird::core::platform::Uuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-transaction-policy-closure";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000070711";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000070712";
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000070711");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000070712");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000070701");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -136,7 +137,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) { return true; }
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) { return true; }
   }
   return false;
 }
@@ -356,9 +357,9 @@ void RequireBeginReadOnlyModes(const api::EngineRequestContext& context,
   read_only_context.transaction_uuid = read_only.transaction_uuid;
   api::EngineCreateDomainRequest create;
   create.context = read_only_context;
-  create.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  create.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000070701");
   create.target_schema.object_kind = "schema";
-  create.target_object.uuid.canonical = std::string(kDomainUuid);
+  create.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000070702");
   create.target_object.object_kind = "domain";
   create.localized_names.push_back({"en", "primary", "", "readonly_refused_domain", true});
   api::EngineDescriptor descriptor;

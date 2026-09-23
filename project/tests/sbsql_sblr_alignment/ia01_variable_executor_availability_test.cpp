@@ -13,8 +13,7 @@ int main() {
       scratchbird::core::platform::UuidKind::database, 1786839000000ull);
   if (!generated.ok()) return EXIT_FAILURE;
   api::EngineRequestContext context;
-  context.database_uuid.canonical =
-      scratchbird::core::uuid::UuidToString(generated.value.value);
+  context.database_uuid = generated.value.value;
   context.database_path =
       (std::filesystem::temp_directory_path() /
        ("sb_variable_executor_" + std::to_string(
@@ -31,7 +30,7 @@ int main() {
   const auto admitted = api::LoadSblrExecutorAvailabilitySnapshot(context, identity);
   if (!admitted.ok || !admitted.snapshot.installed) return EXIT_FAILURE;
   api::SblrExecutorAvailabilitySetRequest request;
-  request.database_uuid = context.database_uuid.canonical;
+  request.database_uuid = context.database_uuid;
   request.exact_row_identity = identity;
   request.expected_snapshot_uuid = admitted.snapshot.snapshot_uuid;
   request.expected_generation = admitted.snapshot.generation;

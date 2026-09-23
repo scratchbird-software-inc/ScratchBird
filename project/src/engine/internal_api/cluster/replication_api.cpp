@@ -9,6 +9,7 @@
 #include "cluster/replication_api.hpp"
 
 #include "api_diagnostics.hpp"
+#include "uuid.hpp"
 #include "cluster/cluster_provider_boundary.hpp"
 
 #include <string>
@@ -17,11 +18,11 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 bool Empty(const EngineUuid& uuid) {
-  return uuid.is_nil();
+  return !scratchbird::core::uuid::IsEngineIdentityUuid(uuid);
 }
 
 bool Empty(const EngineObjectReference& object) {
-  return object.uuid.is_nil();
+  return Empty(object.uuid);
 }
 
 bool IsKnownBoundaryKind(const std::string& kind) {
@@ -199,7 +200,7 @@ EngineReplicationBoundaryResult EngineEvaluateReplicationBoundary(
     return BoundaryFailure(request, "live_ingest_capability_required");
   }
   if (request.route_epoch == 0 || request.route_generation == 0 ||
-      request.policy_snapshot_uuid.empty() || request.idempotency_key.empty()) {
+      Empty(request.policy_snapshot_uuid) || request.idempotency_key.empty()) {
     return BoundaryFailure(request, "route_epoch_policy_and_idempotency_required");
   }
   const auto provider_result = ExecuteInternalClusterProviderBoundary(

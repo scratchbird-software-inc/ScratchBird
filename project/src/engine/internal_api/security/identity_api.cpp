@@ -13,6 +13,7 @@
 #include "catalog/name_registry.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "security/security_model.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 
 #include <cctype>
 #include <string>
@@ -30,7 +31,7 @@ std::string PathParent(const std::string& path) {
   return pos == std::string::npos ? std::string{} : path.substr(0, pos);
 }
 
-std::string SchemaUuidForPath(const EngineRequestContext& context, const std::string& path,
+EngineUuid SchemaUuidForPath(const EngineRequestContext& context, const std::string& path,
                               EngineApiDiagnostic& diagnostic) {
   if (path.empty()) { return {}; }
   const auto schemas = VisibleSchemaTreeRecords(context, context.local_transaction_id, diagnostic);
@@ -79,8 +80,8 @@ struct HomeSchemaPolicy {
   bool cluster_user = false;
   std::string policy_name = scratchbird::core::catalog::kLocalUserHomePolicyName;
   std::string path;
-  std::string parent_schema_uuid;
-  std::string schema_uuid;
+  EngineUuid parent_schema_uuid;
+  EngineUuid schema_uuid;
 };
 
 EngineApiDiagnostic ResolveHomeSchemaPolicy(const EngineCreateIdentityRequest& request,
@@ -101,8 +102,18 @@ EngineApiDiagnostic ResolveHomeSchemaPolicy(const EngineCreateIdentityRequest& r
   policy->policy_name = SecurityOptionValue(request, "home_schema_policy:");
   if (policy->policy_name.empty()) { policy->policy_name = scratchbird::core::catalog::kLocalUserHomePolicyName; }
 
-  policy->schema_uuid = SecurityOptionValue(request, "home_schema_uuid:");
-  if (policy->schema_uuid.empty()) { policy->schema_uuid = GenerateCrudEngineUuid("schema"); }
+  const auto schema_bytes = SecurityOptionValue(request, "home_schema_uuid:");
+  if (schema_bytes.empty()) {
+    policy->schema_uuid = GenerateCrudEngineUuid("schema");
+  } else if (!ReadMetadataUuid(schema_bytes, &policy->schema_uuid) ||
+             !core::uuid::IsEngineIdentityUuid(policy->schema_uuid)) {
+    return MakeSecurityDiagnostic("SECURITY.IDENTITY.HOME_SCHEMA_INVALID",
+                                  "home_schema_binary_identity_required");
+  }
+  if (!core::uuid::IsEngineIdentityUuid(policy->schema_uuid)) {
+    return MakeSecurityDiagnostic("SECURITY.IDENTITY.HOME_SCHEMA_INVALID",
+                                  "home_schema_identity_issuance_failed");
+  }
 
   policy->path = SecurityOptionValue(request, "home_schema_path:");
   if (policy->path.empty()) {
@@ -115,13 +126,19 @@ EngineApiDiagnostic ResolveHomeSchemaPolicy(const EngineCreateIdentityRequest& r
   }
 
   EngineApiDiagnostic schema_diagnostic;
-  policy->parent_schema_uuid = SecurityOptionValue(request, "home_schema_parent_uuid:");
-  if (policy->parent_schema_uuid.empty()) {
+  const auto parent_bytes = SecurityOptionValue(request, "home_schema_parent_uuid:");
+  if (!parent_bytes.empty() &&
+      (!ReadMetadataUuid(parent_bytes, &policy->parent_schema_uuid) ||
+       !core::uuid::IsEngineIdentityUuid(policy->parent_schema_uuid))) {
+    return MakeSecurityDiagnostic("SECURITY.IDENTITY.HOME_SCHEMA_INVALID",
+                                  "home_schema_parent_binary_identity_required");
+  }
+  if (policy->parent_schema_uuid.is_nil()) {
     const std::string parent_path = PathParent(policy->path);
     if (!parent_path.empty()) {
       policy->parent_schema_uuid = SchemaUuidForPath(request.context, parent_path, schema_diagnostic);
       if (schema_diagnostic.error) return schema_diagnostic;
-      if (policy->parent_schema_uuid.empty()) {
+      if (policy->parent_schema_uuid.is_nil()) {
         return MakeSecurityDiagnostic("SECURITY.IDENTITY.HOME_SCHEMA_PARENT_MISSING",
                                       "home_schema_parent_path_not_visible:" + parent_path);
       }
@@ -129,7 +146,7 @@ EngineApiDiagnostic ResolveHomeSchemaPolicy(const EngineCreateIdentityRequest& r
                StartsWith(policy->path, std::string(scratchbird::core::catalog::kLocalUserHomePolicyRoot) + ".")) {
       policy->parent_schema_uuid = SchemaUuidForPath(request.context, scratchbird::core::catalog::kLocalUserHomePolicyRoot, schema_diagnostic);
       if (schema_diagnostic.error) return schema_diagnostic;
-      if (policy->parent_schema_uuid.empty()) {
+      if (policy->parent_schema_uuid.is_nil()) {
         return MakeSecurityDiagnostic("SECURITY.IDENTITY.HOME_SCHEMA_PARENT_MISSING",
                                       "local_user_home_root_not_visible");
       }
@@ -139,7 +156,7 @@ EngineApiDiagnostic ResolveHomeSchemaPolicy(const EngineCreateIdentityRequest& r
 }
 
 EngineApiDiagnostic CreateIdentityHomeSchema(const EngineCreateIdentityRequest& request,
-                                             const std::string& identity_uuid,
+                                             const EngineUuid& identity_uuid,
                                              const std::string& principal_name,
                                              const HomeSchemaPolicy& policy) {
   std::vector<EngineLocalizedName> names{HomeSchemaName(policy.path, principal_name)};
@@ -158,10 +175,17 @@ EngineApiDiagnostic CreateIdentityHomeSchema(const EngineCreateIdentityRequest& 
   record.localized_names = names;
   record.default_name = principal_name;
   record.localized_comments.push_back({"en", "Default home schema for local ScratchBird user " + principal_name});
-  record.payload = SchemaTreePayload(record.parent_schema_uuid, record.localized_names, record.localized_comments);
-  record.payload += ";home_schema=1;home_schema_owner_identity_uuid=" + identity_uuid;
-  record.payload += ";home_schema_policy=" + policy.policy_name;
-  record.payload += policy.cluster_user ? ";identity_scope=cluster" : ";identity_scope=local";
+  BinaryCatalogMetadata extensions;
+  extensions.identities.emplace("home_schema_owner_identity_uuid", identity_uuid);
+  extensions.text.emplace("home_schema", "1");
+  extensions.text.emplace("home_schema_policy", policy.policy_name);
+  extensions.text.emplace("identity_scope", policy.cluster_user ? "cluster" : "local");
+  record.payload = SchemaTreePayload(record.parent_schema_uuid, record.localized_names,
+                                    record.localized_comments, std::move(extensions));
+  if (record.payload.empty()) {
+    return MakeSecurityDiagnostic("SECURITY.IDENTITY.HOME_SCHEMA_INVALID",
+                                  "home_schema_binary_metadata_encoding_failed");
+  }
 
   const auto appended = PersistSchemaTreeRecord(request.context, record, "security.create_identity.home_schema");
   if (appended.error) { return appended; }

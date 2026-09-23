@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "batch_point_lookup.hpp"
 #include "batch_point_lookup_executor.hpp"
 #include "nosql/document_api.hpp"
@@ -154,7 +156,7 @@ bool ApiEvidenceHas(const api::EngineApiResult& result,
                     std::string_view id) {
   for (const auto& item : result.evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -198,7 +200,7 @@ void RequireApiEvidenceHygiene(const api::EngineApiResult& result) {
           "parser_transaction_finality_authority=true",
           "client_autocommit_authority=true"}) {
       Require(item.evidence_kind.find(forbidden) == std::string::npos &&
-                  item.evidence_id.find(forbidden) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFind(item.evidence_id, forbidden) == std::string::npos,
               "ODF-092 API evidence leaked forbidden document or authority token");
     }
   }
@@ -394,9 +396,8 @@ api::EngineRequestContext Context(const std::string& database_path,
   api::EngineRequestContext context;
   context.database_path = database_path;
   context.local_transaction_id = tx;
-  context.database_uuid.canonical = "019df092-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical =
-      "019df092-0000-7000-8000-000000000077";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019df092-0000-7000-8000-000000000001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019df092-0000-7000-8000-000000000077");
   return context;
 }
 
@@ -623,10 +624,7 @@ void NoSqlKeyValueRoutesThroughPrimitive() {
 void NoSqlPhysicalFamiliesRouteThroughPrimitive() {
   const std::string database_path = "/tmp/sb_odf_092_gate_families.sbdb";
   const auto row_uuid =
-      uuid::UuidToString(V7(platform::UuidKind::row,
-                            1710000092000ull,
-                            0x60)
-                             .value);
+      V7(platform::UuidKind::row, 1710000092000ull, 0x60).value;
 
   api::EngineDocumentFindRequest document;
   document.context = Context(database_path, 90);

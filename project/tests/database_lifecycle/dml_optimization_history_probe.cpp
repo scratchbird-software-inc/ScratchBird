@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 // Real engine API probe. This is NOT proof of SQL ON CONFLICT transport.
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "memory.hpp"
 #include "dml/insert_api.hpp"
@@ -53,10 +54,10 @@ api::EngineRequestContext Begin(const std::string& path, const char* role,
   request.context.database_uuid.canonical = database_id;
   request.context.request_id = role;
   request.context.trust_mode = api::EngineTrustMode::server_isolated;
-  request.context.principal_uuid.canonical = "019f3900-0000-7000-8000-000000000301";
-  request.context.session_uuid.canonical = "019f3900-0000-7000-8000-000000000302";
-  request.context.current_schema_uuid.canonical = "019f3900-0000-7000-8000-000000000303";
-  request.context.default_root_uuid.canonical = "019f3900-0000-7000-8000-000000000304";
+  request.context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f3900-0000-7000-8000-000000000301");
+  request.context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f3900-0000-7000-8000-000000000302");
+  request.context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f3900-0000-7000-8000-000000000303");
+  request.context.default_root_uuid = scratchbird::tests::FixtureUuidLiteral("019f3900-0000-7000-8000-000000000304");
   request.context.security_context_present = true;
   request.context.catalog_generation_id = 1;
   request.context.security_epoch = 1;

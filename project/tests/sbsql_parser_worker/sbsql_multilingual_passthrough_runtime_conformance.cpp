@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "cache/sblr_template_cache.hpp"
 #include "lowering/lowering.hpp"
 #include "metrics/parser_metrics.hpp"
@@ -50,7 +51,7 @@ std::string DiagnosticCodes(const sbsql::MessageVectorSet& messages) {
 
 sbsql::ParserConfig Config() {
   sbsql::ParserConfig config;
-  config.parser_uuid = "sml018-sml020-sml090-parser";
+  config.parser_uuid = scratchbird::tests::FixtureUuid(1365, 4);
   config.dialect = "sbsql";
   config.profile_id = "default";
   config.registry_version = sbsql::kSbsqlWorkerRegistryCurrentVersion;
@@ -64,14 +65,14 @@ void SeedAuthenticatedContext(sbsql::SbsqlTestWireSession* session,
                               std::string_view requested_language_tag) {
   auto& context = const_cast<sbsql::SessionContext&>(session->session());
   context.authenticated = true;
-  context.session_uuid = "00000000-0000-7000-8000-000000000901";
-  context.connection_uuid = "00000000-0000-7000-8000-000000000902";
-  context.database_uuid = "00000000-0000-7000-8000-000000000903";
-  context.authenticated_user_uuid = "00000000-0000-7000-8000-000000000904";
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000901");
+  context.connection_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000902");
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000903");
+  context.authenticated_user_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000904");
   context.principal_claim = "sml-runtime-user";
   context.auth_provider_family = "test";
-  context.effective_role_uuids = {"00000000-0000-7000-8000-000000000905"};
-  context.effective_group_uuids = {"00000000-0000-7000-8000-000000000906"};
+  context.effective_role_uuids = {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000905")};
+  context.effective_group_uuids = {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000906")};
   context.search_path = {"public"};
   context.default_language = "en";
   context.language_tag = requested_language_tag.empty()
@@ -84,8 +85,8 @@ void SeedAuthenticatedContext(sbsql::SbsqlTestWireSession* session,
   context.input_language_fallback_tag =
       context.language_tag == "en" ? "" : "en";
   context.common_resource_hash = "builtin.common.sbsql.v1";
-  context.dialect_profile_uuid = "sbsql/default";
-  context.policy_profile_uuid = "policy/default";
+  context.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1270, 1);
+  context.policy_profile_uuid = scratchbird::tests::FixtureUuid(1270, 2);
   context.resource_compatibility_identity = "sbsql.resource.compat.v1";
   context.resource_version_identity = "sbsql.resource-pack.v1";
   context.language_resource_epoch = 901;

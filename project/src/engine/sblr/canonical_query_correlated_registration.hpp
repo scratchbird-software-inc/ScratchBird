@@ -51,14 +51,14 @@ struct LiveLateralSubqueryProfile {
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveCorrelatedSubqueryRegistration(
     LiveCorrelatedSubqueryRegistrationProfile prepared,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     CanonicalRelationalExpressionRuntimeServices expression_services,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
     LiveCorrelatedSubqueryRegistrationProfile prepared,
     LiveLateralSubqueryProfile profile,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     CanonicalRelationalExpressionRuntimeServices expression_services,
     scratchbird::engine::internal_api::EngineRequestContext mga_context,
     bool runtime_bounded_inputs = false,

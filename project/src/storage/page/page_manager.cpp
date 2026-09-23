@@ -79,10 +79,6 @@ bool MulWouldOverflow(u64 lhs, u64 rhs) {
   return rhs != 0 && lhs > std::numeric_limits<u64>::max() / rhs;
 }
 
-std::string UuidLabel(const TypedUuid& uuid) {
-  return scratchbird::core::uuid::UuidToString(uuid.value);
-}
-
 std::string PageFamilyLabel(PageType page_type) {
   const auto lookup = LookupPageFamily(page_type);
   return PageFamilyName(lookup.descriptor.family);
@@ -92,8 +88,8 @@ void RecordAllocationFailureMetric(const PageManagerContext& context,
                                    PageType page_type,
                                    const std::string& error_class) {
   (void)scratchbird::core::metrics::RecordPageAllocationFailure(error_class,
-                                                                UuidLabel(context.database_uuid),
-                                                                UuidLabel(context.filespace_uuid),
+                                                                context.database_uuid.value,
+                                                                context.filespace_uuid.value,
                                                                 {},
                                                                 PageFamilyLabel(page_type),
                                                                 PageTypeName(page_type));
@@ -103,8 +99,8 @@ void RecordAllocationLatencyMetric(const PageManagerContext& context,
                                    PageType page_type,
                                    double latency_microseconds) {
   (void)scratchbird::core::metrics::ObservePageAllocationLatency(latency_microseconds,
-                                                                 UuidLabel(context.database_uuid),
-                                                                 UuidLabel(context.filespace_uuid),
+                                                                 context.database_uuid.value,
+                                                                 context.filespace_uuid.value,
                                                                  {},
                                                                  PageFamilyLabel(page_type),
                                                                  PageTypeName(page_type));

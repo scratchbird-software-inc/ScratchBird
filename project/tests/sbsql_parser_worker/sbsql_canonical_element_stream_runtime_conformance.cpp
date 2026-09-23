@@ -89,7 +89,7 @@ sbsql::ParserConfig ParserConfigForTest() {
   sbsql::ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sml_canonical_runtime";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000005104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000005104");
   config.bundle_contract_id = "sbp_sbsql@sml-canonical-runtime";
   config.build_id = "sbsql-sml-canonical-runtime";
   config.profile_id = "sbsql.lang.fr-ca.grammar-alias-test";

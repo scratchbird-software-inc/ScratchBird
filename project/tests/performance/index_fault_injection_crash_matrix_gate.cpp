@@ -124,10 +124,10 @@ void RequireCapabilityBlocker(
 api::EngineRequestContext Context(const std::filesystem::path& path) {
   api::EngineRequestContext context;
   context.database_path = path.string();
-  context.database_uuid.canonical = api::GenerateCrudEngineUuid("database");
-  context.current_schema_uuid.canonical = api::GenerateCrudEngineUuid("schema");
+  context.database_uuid = api::GenerateCrudEngineUuid("database");
+  context.current_schema_uuid = api::GenerateCrudEngineUuid("schema");
   context.local_transaction_id = 181;
-  context.transaction_uuid.canonical = api::GenerateCrudEngineUuid("transaction");
+  context.transaction_uuid = api::GenerateCrudEngineUuid("transaction");
   context.catalog_generation_id = 701;
   context.security_epoch = 702;
   context.resource_epoch = 703;
@@ -168,7 +168,7 @@ void DocumentProviderGenerationUsesCurrentHelpers() {
   std::filesystem::remove(temp.string() + ".document_path_provider");
 
   const auto context = Context(temp);
-  const std::string collection_uuid =
+  const api::EngineUuid collection_uuid =
       api::GenerateCrudEngineUuid("collection");
   const auto metadata = api::MakeDocumentProviderGenerationMetadata(
       context, api::kDocumentPathPhysicalProviderId, collection_uuid, 1);

@@ -13,6 +13,8 @@
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
 #include "query/expression_api.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include <map>
 
 #include <algorithm>
 #include <array>
@@ -84,17 +86,8 @@ std::string UpperAscii(std::string value) {
   return value;
 }
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto byte = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(byte) || std::isupper(byte)) return false;
-  }
-  return true;
+bool IsCanonicalUuid(const api::EngineUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool IsNumericType(const dt::CanonicalTypeId type_id) {
@@ -549,16 +542,8 @@ bool PromoteBoundedSignedComparisonValues(
   return true;
 }
 
-std::string TypedUuidText(const scratchbird::core::platform::TypedUuid& uuid) {
-  if (!uuid.valid()) return {};
-  std::ostringstream out;
-  out << std::hex << std::setfill('0');
-  for (std::size_t index = 0; index < uuid.value.bytes.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
-    out << std::setw(2)
-        << static_cast<unsigned>(uuid.value.bytes[index]);
-  }
-  return out.str();
+api::EngineUuid TypedUuidIdentity(const core::platform::TypedUuid& uuid) {
+  return uuid.valid() ? uuid.value : api::EngineUuid{};
 }
 
 bool SameDescriptor(const api::EngineDescriptor& left,
@@ -576,8 +561,7 @@ bool ExactCanonicalBooleanRelationalDescriptorV1(
        descriptor.nullability != api::RelationalNullability::kNullable) ||
       descriptor.descriptor_uuid != descriptor.type_uuid ||
       !IsCanonicalUuid(descriptor.statement_receipt_uuid) ||
-      descriptor.statement_receipt_uuid ==
-          "00000000-0000-0000-0000-000000000000") {
+      descriptor.statement_receipt_uuid.is_nil()) {
     return false;
   }
   const auto identity = dt::LookupCanonicalBooleanTypeCodecIdentityV1(
@@ -610,8 +594,7 @@ bool ExactCanonicalTextRelationalDescriptorV1(
        descriptor.nullability != api::RelationalNullability::kNullable) ||
       descriptor.descriptor_uuid == descriptor.type_uuid ||
       !IsCanonicalUuid(descriptor.statement_receipt_uuid) ||
-      descriptor.statement_receipt_uuid ==
-          "00000000-0000-0000-0000-000000000000") {
+      descriptor.statement_receipt_uuid.is_nil()) {
     return false;
   }
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
@@ -632,6 +615,7 @@ bool ExactCanonicalTextRelationalDescriptorV1(
 
 bool CarriesPersistedTextAuthorityFieldsV1(
     const api::EngineDescriptor& descriptor) {
+  if (descriptor.encoded_descriptor.starts_with("SBMETA")) return true;
   constexpr std::array<std::string_view, 9> kAuthorityFields{
       "charset_generation=", "collation_generation=", "resource_epoch=",
       "datatype_descriptor_generation=", "type_generation=", "codec_uuid=",
@@ -651,13 +635,15 @@ bool BuildExactCanonicalBooleanRuntimeDescriptorV1(
     return false;
   }
   descriptor->descriptor_uuid = source.descriptor_uuid;
+  descriptor->type_uuid = source.type_uuid;
+  descriptor->datatype_descriptor_uuid = source.descriptor_uuid;
+  descriptor->datatype_descriptor_generation = source.descriptor_generation;
   descriptor->descriptor_kind = "scalar";
   descriptor->canonical_type_name = "boolean";
   descriptor->encoded_descriptor =
-      "datatype_descriptor_uuid=" + source.descriptor_uuid +
-      ";datatype_descriptor_generation=" +
+      "datatype_descriptor_generation=" +
       std::to_string(source.descriptor_generation) +
-      ";type_uuid=" + source.type_uuid + ";type_generation=" +
+      ";type_generation=" +
       std::to_string(source.type_generation) + ";codec_id=" +
       source.codec_id + ";codec_version=" +
       std::to_string(source.codec_version) + ";codec_generation=" +
@@ -733,28 +719,28 @@ bool SamePersistedRowDescriptor(
   if (actual.descriptor_uuid != bound.descriptor_uuid) return false;
 
   static const auto canonical_type_name_by_type_uuid = [] {
-    std::unordered_map<std::string, std::string> names;
+    std::map<api::EngineUuid, std::string> names;
     const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
     if (!manifest.ok()) return names;
-    const auto record_name = [&](const std::string& type_uuid,
+    const auto record_name = [&](const api::EngineUuid& type_uuid,
                                  const std::string& stable_name) {
-      if (type_uuid.empty()) return;
+      if (type_uuid.is_nil()) return;
       const auto [found, inserted] = names.emplace(type_uuid, stable_name);
       if (!inserted && !SameCanonicalType(found->second, stable_name)) {
         found->second.clear();
       }
     };
     for (const auto& row : manifest.manifest.descriptor_rows) {
-      const auto descriptor_uuid = TypedUuidText(row.descriptor_uuid);
+      const auto descriptor_uuid = TypedUuidIdentity(row.descriptor_uuid);
       // Record both exact descriptor and separately registered value-type
       // identities. The sole descriptor/type alias is handled above through
       // the full canonical boolean authority tuple.
       record_name(descriptor_uuid, row.stable_name);
       const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-          "019d0000-0000-7000-8000-00000000d701",
+          api::EngineUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x01}},
           manifest.manifest.catalog_epoch, 1, descriptor_uuid,
           row.descriptor_epoch);
-      if (!identity.ok || identity.row.type_uuid.empty()) continue;
+      if (!identity.ok || identity.row.type_uuid.is_nil()) continue;
       record_name(identity.row.type_uuid, row.stable_name);
     }
     return names;
@@ -771,13 +757,66 @@ bool SamePersistedRowDescriptor(
     return false;
   }
 
+  if (actual.type_uuid != bound.type_uuid ||
+      actual.collation_uuid != bound.collation_uuid.value_or(api::EngineUuid{})) return false;
+  api::CatalogColumnMetadata metadata;
+  std::vector<std::pair<std::string_view, std::string_view>> fields;
+  if (actual.encoded_descriptor.starts_with("SBMETA")) {
+    if (!api::DecodeCatalogColumnMetadata(actual.encoded_descriptor, &metadata)) return false;
+    for (const auto& [key, value] : metadata.text) fields.emplace_back(key, value);
+  } else {
+    std::string_view remaining = actual.encoded_descriptor;
+    while (!remaining.empty()) {
+      const auto end = remaining.find(';');
+      const auto field = remaining.substr(0, end);
+      const auto separator = field.find('=');
+      if (separator == std::string_view::npos || separator == 0 ||
+          field.find('=', separator + 1) != std::string_view::npos) return false;
+      const auto key = field.substr(0, separator);
+      // UUID text is never an alternative identity carrier.
+      if (key.ends_with("uuid")) return false;
+      fields.emplace_back(key, field.substr(separator + 1));
+      if (end == std::string_view::npos) break;
+      remaining.remove_prefix(end + 1);
+      if (remaining.empty()) return false;
+    }
+  }
+  const auto datatype_uuid = api::BinaryCatalogUuid(
+      metadata, "datatype_descriptor_uuid", actual.datatype_descriptor_uuid);
+  if (!actual.datatype_descriptor_uuid.is_nil() &&
+      datatype_uuid != actual.datatype_descriptor_uuid) return false;
+  std::optional<dt::DatatypeTypeCodecIdentityRowV1> datatype_identity;
+  if (!datatype_uuid.is_nil() && datatype_uuid != bound.descriptor_uuid) {
+    const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+        bound.datatype_catalog_snapshot_uuid, bound.datatype_catalog_generation,
+        bound.datatype_registry_generation, datatype_uuid, bound.descriptor_generation);
+    if (!bound.datatype_identity_authoritative || !identity.ok ||
+        identity.row.type_uuid != bound.type_uuid ||
+        identity.row.type_generation != bound.type_generation ||
+        identity.row.codec_id != bound.codec_id ||
+        identity.row.codec_version != bound.codec_version ||
+        identity.row.codec_generation != bound.codec_generation) return false;
+    datatype_identity = identity.row;
+  }
+  if (actual.datatype_descriptor_generation != 0 &&
+      actual.datatype_descriptor_generation != bound.descriptor_generation) return false;
+  for (const auto& [key, value] : metadata.identities) {
+    if (!IsCanonicalUuid(value)) return false;
+    if (key == "datatype_descriptor_uuid") { if (value != datatype_uuid) return false; }
+    else if (key == "type_uuid") { if (value != bound.type_uuid) return false; }
+    else if (key == "collation_uuid") { if (value != actual.collation_uuid) return false; }
+    else if (key == "charset_uuid") { if (value != actual.charset_uuid) return false; }
+    else if (key == "codec_uuid") {
+      if (!datatype_identity || value != datatype_identity->codec_uuid) return false;
+    } else if (key == "column_uuid") {
+      if (value != bound.descriptor_uuid || value != actual.descriptor_uuid) return false;
+    } else return false;
+  }
   bool canonical_seen = false;
   bool source_type_seen = false;
-  bool datatype_descriptor_uuid_seen = false;
-  bool type_uuid_seen = false;
+  const bool type_uuid_seen = IsCanonicalUuid(actual.type_uuid);
   bool nullability_seen = false;
-  bool charset_seen = false;
-  bool collation_seen = false;
+  const bool collation_seen = !actual.collation_uuid.is_nil();
   bool timezone_seen = false;
   bool width_seen = false;
   bool precision_seen = false;
@@ -789,9 +828,7 @@ bool SamePersistedRowDescriptor(
   bool codec_version_seen = false;
   bool codec_generation_seen = false;
   bool null_encoding_seen = false;
-  bool codec_uuid_seen = false;
-  bool column_uuid_seen = false;
-  std::optional<dt::DatatypeTypeCodecIdentityRowV1> datatype_identity;
+
 
   const auto exact_string_optional = [](const std::string_view value,
                                         const std::optional<std::string>& bound_value,
@@ -814,18 +851,7 @@ bool SamePersistedRowDescriptor(
     return true;
   };
 
-  std::size_t start = 0;
-  while (start < actual.encoded_descriptor.size()) {
-    const auto end = actual.encoded_descriptor.find(';', start);
-    const auto field = std::string_view(actual.encoded_descriptor).substr(
-        start, end == std::string::npos ? std::string::npos : end - start);
-    const auto separator = field.find('=');
-    if (field.empty() || separator == std::string_view::npos || separator == 0 ||
-        field.find('=', separator + 1) != std::string_view::npos) {
-      return false;
-    }
-    const auto key = field.substr(0, separator);
-    const auto value = field.substr(separator + 1);
+  for (const auto& [key, value] : fields) {
     // Report only the schema field, never persisted values or row contents.
     // Keep unknown field names out of diagnostics as well.
     if (authority_refusal_detail != nullptr) {
@@ -856,32 +882,6 @@ bool SamePersistedRowDescriptor(
       if (source_type_seen || value.empty() ||
           !SameCanonicalType(value, actual.canonical_type_name)) return false;
       source_type_seen = true;
-    } else if (key == "datatype_descriptor_uuid") {
-      if (datatype_descriptor_uuid_seen || value.empty()) {
-        return false;
-      }
-      if (value != bound.descriptor_uuid) {
-        const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-            bound.datatype_catalog_snapshot_uuid,
-            bound.datatype_catalog_generation,
-            bound.datatype_registry_generation, std::string(value),
-            bound.descriptor_generation);
-        if (!bound.datatype_identity_authoritative || !identity.ok ||
-            identity.row.type_uuid != bound.type_uuid ||
-            identity.row.type_generation != bound.type_generation ||
-            identity.row.codec_id != bound.codec_id ||
-            identity.row.codec_version != bound.codec_version ||
-            identity.row.codec_generation != bound.codec_generation) {
-          return false;
-        }
-        datatype_identity = identity.row;
-      }
-      datatype_descriptor_uuid_seen = true;
-    } else if (key == "type_uuid") {
-      if (type_uuid_seen || value.empty() || value != bound.type_uuid) {
-        return false;
-      }
-      type_uuid_seen = true;
     } else if (key == "nullability" || key == "nullable") {
       if (nullability_seen) return false;
       if (key == "nullability") {
@@ -900,14 +900,6 @@ bool SamePersistedRowDescriptor(
         return false;
       }
       nullability_seen = true;
-    } else if (key == "collation_uuid") {
-      if (!exact_string_optional(value, bound.collation_uuid,
-                                 &collation_seen)) {
-        return false;
-      }
-    } else if (key == "charset_uuid") {
-      if (charset_seen || !IsCanonicalUuid(value)) return false;
-      charset_seen = true;
     } else if (key == "timezone_profile_id") {
       if (!exact_string_optional(value, bound.timezone_profile_id,
                                  &timezone_seen)) {
@@ -940,18 +932,6 @@ bool SamePersistedRowDescriptor(
           parsed == 0 || parsed != bound.type_generation) return false;
       type_generation_seen = true;
       persisted_authority = true;
-    } else if (key == "codec_uuid") {
-      if (codec_uuid_seen || !datatype_identity.has_value() || value.empty() ||
-          value != datatype_identity->codec_uuid) {
-        return false;
-      }
-      codec_uuid_seen = true;
-    } else if (key == "column_uuid") {
-      if (column_uuid_seen || value != bound.descriptor_uuid ||
-          value != actual.descriptor_uuid) {
-        return false;
-      }
-      column_uuid_seen = true;
     } else if (key == "codec_id") {
       if (codec_id_seen || value.empty() ||
           value.find('|') != std::string_view::npos ||
@@ -983,9 +963,6 @@ bool SamePersistedRowDescriptor(
       return false;
     }
 
-    if (end == std::string::npos) break;
-    start = end + 1;
-    if (start == actual.encoded_descriptor.size()) return false;
   }
 
   if (authority_refusal_detail != nullptr) {
@@ -995,7 +972,7 @@ bool SamePersistedRowDescriptor(
       (!descriptor_generation_seen || !type_generation_seen ||
        !codec_id_seen || !codec_version_seen || !codec_generation_seen ||
        !null_encoding_seen)) return false;
-  const bool matches = (canonical_seen || type_uuid_seen) &&
+  const bool matches = nullability_seen && (canonical_seen || type_uuid_seen) &&
          collation_seen == bound.collation_uuid.has_value() &&
          timezone_seen == bound.timezone_profile_id.has_value() &&
          width_seen == bound.width.has_value() &&
@@ -1063,8 +1040,7 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
   const auto descriptor_dynamic_bytes = [&](const api::EngineDescriptor& d,
                                             std::uint64_t* bytes) {
     *bytes = 0;
-    return account_string(bytes, d.descriptor_uuid) &&
-           account_string(bytes, d.descriptor_kind) &&
+    return account_string(bytes, d.descriptor_kind) &&
            account_string(bytes, d.canonical_type_name) &&
            account_string(bytes, d.encoded_descriptor);
   };
@@ -1322,7 +1298,7 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
     }
     const auto row = std::ranges::find_if(
         core_manifest.manifest.descriptor_rows, [&](const auto& candidate) {
-          return TypedUuidText(candidate.descriptor_uuid) ==
+          return TypedUuidIdentity(candidate.descriptor_uuid) ==
                  descriptor->second->type_uuid;
         });
     if (row == core_manifest.manifest.descriptor_rows.end()) return false;
@@ -1560,7 +1536,7 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
         }
         if (bounded &&
             *record.literal_kind == api::RelationalLiteralKind::kUuid &&
-            !IsCanonicalUuid(*record.literal_or_parameter_ref)) {
+            record.literal_or_parameter_ref->size() != 16) {
           bounded = false;
         }
         if (bounded &&
@@ -2174,10 +2150,10 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
           (exact_canonical_text_bound ? "1" : "0") +
           ":bound_authoritative=" +
           (descriptor->second->datatype_identity_authoritative ? "1" : "0") +
-          ":bound_descriptor_uuid=" + descriptor->second->descriptor_uuid +
+          ":bound_descriptor_present=" + (descriptor->second->descriptor_uuid.is_nil() ? "0" : "1") +
           ":bound_descriptor_generation=" +
           std::to_string(descriptor->second->descriptor_generation) +
-          ":bound_type_uuid=" + descriptor->second->type_uuid +
+          ":bound_type_present=" + (descriptor->second->type_uuid.is_nil() ? "0" : "1") +
           ":bound_type_generation=" +
           std::to_string(descriptor->second->type_generation) +
           ":bound_codec_id=" + descriptor->second->codec_id +
@@ -2185,10 +2161,10 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
           std::to_string(descriptor->second->codec_version) +
           ":bound_codec_generation=" +
           std::to_string(descriptor->second->codec_generation) +
-          ":bound_statement_receipt=" +
-          descriptor->second->statement_receipt_uuid +
-          ":bound_datatype_snapshot=" +
-          descriptor->second->datatype_catalog_snapshot_uuid +
+          ":bound_statement_receipt_present=" +
+          (descriptor->second->statement_receipt_uuid.is_nil() ? "0" : "1") +
+          ":bound_datatype_snapshot_present=" +
+          (descriptor->second->datatype_catalog_snapshot_uuid.is_nil() ? "0" : "1") +
           ":bound_datatype_catalog_generation=" +
           std::to_string(descriptor->second->datatype_catalog_generation) +
           ":bound_datatype_registry_generation=" +
@@ -2487,7 +2463,7 @@ bool CanonicalRelationalExpressionRuntime::ResolveDescriptorType(
   if (core_manifest.ok()) {
     const auto row = std::ranges::find_if(
         core_manifest.manifest.descriptor_rows, [&](const auto& candidate) {
-          return TypedUuidText(candidate.descriptor_uuid) ==
+          return TypedUuidIdentity(candidate.descriptor_uuid) ==
                  descriptor.type_uuid;
         });
     if (row != core_manifest.manifest.descriptor_rows.end()) {
@@ -2505,9 +2481,9 @@ bool CanonicalRelationalExpressionRuntime::ResolveDescriptorType(
           });
       if (row == core_manifest.manifest.descriptor_rows.end()) continue;
       const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-          "019d0000-0000-7000-8000-00000000d701",
+          api::EngineUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x01}},
           core_manifest.manifest.catalog_epoch, 1,
-          TypedUuidText(row->descriptor_uuid), row->descriptor_epoch);
+          TypedUuidIdentity(row->descriptor_uuid), row->descriptor_epoch);
       if (identity.ok && identity.row.type_uuid == descriptor.type_uuid) {
         *canonical_type_name = row->stable_name;
         return true;
@@ -2649,8 +2625,8 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
         return finish_type(type_name);
       }
       if (*expression.literal_kind == api::RelationalLiteralKind::kUuid &&
-          !IsCanonicalUuid(*expression.literal_or_parameter_ref)) {
-        *refusal_detail = "UUID literal is not canonical lowercase text";
+          expression.literal_or_parameter_ref->size() != 16) {
+        *refusal_detail = "UUID literal requires exactly 16 binary bytes";
         return leave(false);
       }
       if (*expression.literal_kind == api::RelationalLiteralKind::kBoolean) {
@@ -3372,6 +3348,16 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
         *refusal_detail="typed_value_v1 canonical literal codec is unsupported";
         return false;
       }
+      return finish(std::move(literal));
+    }
+    if (*expression.literal_kind == api::RelationalLiteralKind::kUuid) {
+      const auto& bytes = *expression.literal_or_parameter_ref;
+      if (bytes.size() != 16) {
+        *refusal_detail = "UUID literal requires exactly 16 binary bytes";
+        return false;
+      }
+      literal.binary_value.assign(bytes.begin(), bytes.end());
+      literal.encoded_value.clear();
       return finish(std::move(literal));
     }
     std::string payload = *expression.literal_or_parameter_ref;

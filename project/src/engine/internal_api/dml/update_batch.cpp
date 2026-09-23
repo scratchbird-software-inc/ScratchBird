@@ -9,6 +9,8 @@
 #include "dml/update_batch.hpp"
 
 #include "api_diagnostics.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <stdexcept>
 #include "deferred_secondary_index_runtime_policy.hpp"
 #include "dml/transactional_index_provider.hpp"
 #include "metric_producer.hpp"
@@ -25,8 +27,20 @@ namespace idx = scratchbird::core::index;
 
 constexpr const char* kUpdateMetricsProducer = "engine_update";
 
-std::string MakeId(const std::string& prefix, const std::string& stable) {
-  return prefix + ":" + stable;
+std::string MakeId(const std::string& prefix, const EngineUuid& identity,
+                   std::vector<std::string> fields) {
+  fields.insert(fields.begin(), MetadataUuidBytes(identity));
+  const auto material = EncodeMgaMetadataFields(fields);
+  const auto digest = core::hash::ComputeSha256Digest(
+      reinterpret_cast<const core::platform::byte*>(material.data()), material.size());
+  if (!digest.ok()) throw std::runtime_error("batch_evidence_digest_failed");
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string result = prefix + ":sha256:";
+  for (auto byte : digest.digest) {
+    result.push_back(hex[byte >> 4]);
+    result.push_back(hex[byte & 15]);
+  }
+  return result;
 }
 
 std::string LowerAscii(std::string value) {
@@ -307,7 +321,7 @@ BoundUpdateAssignmentTemplate BuildBoundUpdateAssignmentTemplate(const EngineUpd
   assignment_template.table_uuid = table.table_uuid;
   assignment_template.columns = table.columns;
   assignment_template.assignment_count = request.assignments.size();
-  assignment_template.template_id = MakeId("update_template", table.table_uuid + ":" + std::to_string(request.assignments.size()));
+  assignment_template.template_id = MakeId("update_template", table.table_uuid, {std::to_string(request.assignments.size())});
   for (const auto& assignment : request.assignments) {
     assignment_template.assigned_columns.push_back(assignment.first);
     if (CrudColumnDescriptorIsOpaqueRenderOnly(CrudColumnDescriptorForName(table.columns, assignment.first)) ||
@@ -331,8 +345,8 @@ UpdateIndexMaintenancePlan BuildUpdateIndexMaintenancePlan(const EngineUpdateRow
   const auto assignment_template = BuildBoundUpdateAssignmentTemplate(request, table);
   UpdateIndexMaintenancePlan plan;
   plan.table_uuid = table.table_uuid;
-  plan.plan_id = MakeId("update_index_plan", table.table_uuid + ":" + std::to_string(indexes.size()) + ":" +
-                                             std::to_string(assignment_template.assignment_count));
+  plan.plan_id = MakeId("update_index_plan", table.table_uuid, {std::to_string(indexes.size()),
+                                             std::to_string(assignment_template.assignment_count)});
   for (const auto& index : indexes) {
     const bool affected = IndexAffectedByAssignments(index, assignment_template.assigned_columns);
     UpdateIndexMaintenancePlanEntry entry;
@@ -361,7 +375,7 @@ UpdatePageReservationPlan ReserveUpdatePages(const EngineUpdateRowsRequest& requ
   UpdatePageReservationPlan plan;
   plan.estimated_rows = estimated_matches;
   plan.requested_pages = std::max<std::uint64_t>(1, (estimated_matches + 127) / 128);
-  plan.reservation_id = MakeId("update_page_reservation", request.target_table.uuid + ":" + std::to_string(plan.requested_pages));
+  plan.reservation_id = MakeId("update_page_reservation", request.target_table.uuid, {std::to_string(plan.requested_pages)});
   if (ResolveUpdateFeatureGates(request).page_reservation != UpdateFeatureState::enabled) {
     plan.reservation_available = false;
     plan.refusal_reason = "page_reservation_disabled";
@@ -392,7 +406,7 @@ UpdateBatchContext BuildUpdateBatchContext(const EngineUpdateRowsRequest& reques
                                            const CrudTableRecord& table,
                                            const std::vector<CrudIndexRecord>& indexes) {
   UpdateBatchContext context;
-  context.statement_uuid = request.context.request_id.empty() ? GenerateCrudEngineUuid("transaction") : request.context.request_id;
+  context.statement_uuid = request.context.statement_uuid;
   context.local_transaction_id = request.context.local_transaction_id;
   context.transaction_uuid = request.context.transaction_uuid;
   context.database_uuid = request.context.database_uuid;
@@ -401,7 +415,10 @@ UpdateBatchContext BuildUpdateBatchContext(const EngineUpdateRowsRequest& reques
   context.update_mode = ResolveUpdateBatchMode(request, state, table, indexes);
   context.predicate_kind = request.update_predicate.predicate_kind.empty() ? "all_visible_rows" : request.update_predicate.predicate_kind;
   context.security_context_uuid = request.context.principal_uuid;
-  context.policy_snapshot_uuid = UpdateBatchOptionValue(request, "policy_snapshot_uuid=");
+  const auto policy_snapshot = UpdateBatchOptionValue(request, "policy_snapshot_uuid=");
+  if (!policy_snapshot.empty() && !ReadMetadataUuid(policy_snapshot, &context.policy_snapshot_uuid)) {
+    throw std::invalid_argument("update_policy_snapshot_binary_identity_required");
+  }
   context.feature_gates = ResolveUpdateFeatureGates(request);
   context.memory_policy = ResolveUpdateMemoryPolicy(request);
   context.assignment_template = BuildBoundUpdateAssignmentTemplate(request, table);
@@ -458,7 +475,7 @@ EngineApiDiagnostic ValidateUpdateBatchMemoryBudget(const UpdateBatchContext& co
 
 EngineApiDiagnostic ValidateUpdateBatchUniquePreflight(UpdateBatchContext* context,
                                                        const std::vector<std::pair<std::string, std::string>>& values,
-                                                       const std::string& row_uuid) {
+                                                       const EngineUuid& row_uuid) {
   (void)row_uuid;
   if (context == nullptr) {
     return MakeInvalidRequestDiagnostic("dml.update_rows", "update_batch_context_required");
@@ -468,7 +485,7 @@ EngineApiDiagnostic ValidateUpdateBatchUniquePreflight(UpdateBatchContext* conte
       continue;
     }
     for (const auto& key : CrudIndexKeysForValues(entry.index, values)) {
-      const std::string request_key = entry.index.index_uuid + "|" + key;
+      const std::string request_key = EncodeMgaMetadataFields({MetadataUuidBytes(entry.index.index_uuid), key});
       if (!context->unique_request_keys.insert(request_key).second) {
         return MakeInvalidRequestDiagnostic("dml.update_rows", "unique_index_duplicate");
       }
@@ -477,7 +494,7 @@ EngineApiDiagnostic ValidateUpdateBatchUniquePreflight(UpdateBatchContext* conte
   return OkDiagnostic();
 }
 
-void AddUpdateTrace(UpdateBatchContext* context, std::string event_name, std::string phase, std::string detail) {
+void AddUpdateTrace(UpdateBatchContext* context, std::string event_name, std::string phase, EngineEvidenceValue detail) {
   if (context == nullptr) {
     return;
   }
@@ -492,7 +509,12 @@ void AddUpdateBatchEvidenceToResult(const UpdateBatchContext& context, EngineApi
     result->evidence.push_back(evidence);
   }
   for (const auto& trace : context.trace_events) {
-    result->evidence.push_back({"update_trace", trace.event_name + ":" + trace.phase + ":" + trace.detail});
+    if (const auto* text = std::get_if<std::string>(&trace.detail)) {
+      result->evidence.push_back({"update_trace", trace.event_name + ":" + trace.phase + ":" + *text});
+    } else {
+      result->evidence.push_back({"update_trace", trace.event_name + ":" + trace.phase});
+      result->evidence.push_back({"update_trace_identity", trace.detail});
+    }
   }
   result->evidence.push_back({"update_feature_gate.secondary_index_delta_ledger", UpdateFeatureStateName(context.feature_gates.secondary_index_delta_ledger)});
   result->evidence.push_back({"update_runtime.deferred_secondary_index", context.delta_ledger_policy.runtime_enabled ? "enabled" : "disabled"});

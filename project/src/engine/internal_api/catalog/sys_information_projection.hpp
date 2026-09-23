@@ -9,6 +9,9 @@
 #pragma once
 
 // SB-SYS-INFORMATION-PROJECTION-ANCHOR
+#include "api_types.hpp"
+#include <variant>
+#include <map>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -89,14 +92,14 @@ struct SysInformationProjectionDefinition {
 };
 
 struct SysInformationCatalogObjectSource {
-  std::string object_uuid;
+  EngineUuid object_uuid;
   std::string object_class;
-  std::string schema_uuid;
-  std::string parent_object_uuid;
+  EngineUuid schema_uuid;
+  EngineUuid parent_object_uuid;
   std::string table_type;
   bool temporary = false;
   std::string temporary_scope;
-  std::string temporary_session_uuid;
+  EngineUuid temporary_session_uuid;
   std::string on_commit_action;
   std::uint64_t catalog_generation_id = 0;
   std::uint64_t created_local_transaction_id = 0;
@@ -106,9 +109,9 @@ struct SysInformationCatalogObjectSource {
 };
 
 struct SysInformationResolverNameSource {
-  std::string object_uuid;
+  EngineUuid object_uuid;
   std::string object_class;
-  std::string scope_uuid;
+  EngineUuid scope_uuid;
   std::string language_tag = "en";
   std::string name_class = "primary";
   std::string display_name;
@@ -121,7 +124,7 @@ struct SysInformationResolverNameSource {
 };
 
 struct SysInformationCommentSource {
-  std::string object_uuid;
+  EngineUuid object_uuid;
   std::string object_class;
   std::string language_tag = "en";
   std::string comment_text;
@@ -163,8 +166,9 @@ struct SysInformationDatatypeDescriptorSource {
 };
 
 struct SysInformationColumnSource {
-  std::string relation_object_uuid;
-  std::string schema_uuid;
+  EngineUuid column_uuid;
+  EngineUuid relation_object_uuid;
+  EngineUuid schema_uuid;
   std::string column_name;
   std::uint32_t ordinal_position = 0;
   std::string datatype_name;
@@ -177,9 +181,9 @@ struct SysInformationColumnSource {
 };
 
 struct SysInformationDomainSource {
-  std::string domain_uuid;
-  std::string row_uuid;
-  std::string schema_uuid;
+  EngineUuid domain_uuid;
+  EngineUuid row_uuid;
+  EngineUuid schema_uuid;
   std::string source_type_name;
   std::string base_type_name;
   std::string domain_kind = "scalar";
@@ -215,23 +219,23 @@ struct SysInformationFrontendAgentSource {
 };
 
 struct SysInformationAgentSource {
-  std::string agent_uuid;
+  EngineUuid agent_uuid;
   std::string agent_ref;
   std::string agent_name;
   std::string agent_type_id;
   std::string scope_kind = "local";
-  std::string scope_uuid;
+  EngineUuid scope_uuid;
   std::string scope_ref;
   std::string component;
   std::string state = "available";
   std::string health_state = "healthy";
   std::string enabled = "YES";
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
   std::string policy_ref;
   std::string policy_name;
   std::string last_transition_at;
   std::string last_diagnostic_code;
-  std::string last_evidence_uuid;
+  EngineUuid last_evidence_uuid;
   std::string last_decision;
   std::string retry_not_before;
   std::string diagnostic_redaction_state = "not_redacted";
@@ -247,7 +251,7 @@ struct SysInformationAgentSource {
 };
 
 struct SysInformationAgentMetricDependencySource {
-  std::string agent_uuid;
+  EngineUuid agent_uuid;
   std::string agent_ref;
   std::string metric_family;
   std::string metric_namespace;
@@ -262,13 +266,13 @@ struct SysInformationAgentMetricDependencySource {
 };
 
 struct SysInformationAgentPolicySource {
-  std::string agent_uuid;
+  EngineUuid agent_uuid;
   std::string agent_ref;
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
   std::string policy_ref;
   std::string policy_name;
   std::string policy_family;
-  std::string version_uuid;
+  EngineUuid version_uuid;
   std::string version_ref;
   std::string active_state = "active";
   std::string validation_state = "valid";
@@ -279,9 +283,9 @@ struct SysInformationAgentPolicySource {
 };
 
 struct SysInformationAgentActionSource {
-  std::string action_uuid;
+  EngineUuid action_uuid;
   std::string action_ref;
-  std::string agent_uuid;
+  EngineUuid agent_uuid;
   std::string agent_ref;
   std::string action_id;
   std::string state = "recommended";
@@ -289,7 +293,7 @@ struct SysInformationAgentActionSource {
   std::string created_at;
   std::string expires_at;
   std::string approval_required = "NO";
-  std::string actor_uuid;
+  EngineUuid actor_uuid;
   std::string actor_ref;
   std::string diagnostic_code;
   std::uint64_t catalog_generation_id = 0;
@@ -298,18 +302,18 @@ struct SysInformationAgentActionSource {
 };
 
 struct SysInformationAgentOverrideSource {
-  std::string override_uuid;
+  EngineUuid override_uuid;
   std::string override_ref;
-  std::string target_uuid;
+  EngineUuid target_uuid;
   std::string target_ref;
-  std::string scope_uuid;
+  EngineUuid scope_uuid;
   std::string scope_ref;
   std::string suppression_class;
   std::string starts_at;
   std::string expires_at;
   std::string state = "active";
   std::string reason_code;
-  std::string created_by;
+  EngineUuid created_by;
   std::string created_by_ref;
   std::uint64_t catalog_generation_id = 0;
   bool hidden = false;
@@ -318,16 +322,16 @@ struct SysInformationAgentOverrideSource {
 };
 
 struct SysInformationAgentEvidenceSource {
-  std::string evidence_uuid;
+  EngineUuid evidence_uuid;
   std::string evidence_ref;
-  std::string agent_uuid;
+  EngineUuid agent_uuid;
   std::string agent_ref;
   std::string evidence_type;
-  std::string action_uuid;
+  EngineUuid action_uuid;
   std::string action_ref;
   std::string redaction_class = "summary";
   std::string created_at;
-  std::string actor_uuid;
+  EngineUuid actor_uuid;
   std::string actor_ref;
   std::string payload_digest;
   std::string payload_redacted = "YES";
@@ -337,11 +341,11 @@ struct SysInformationAgentEvidenceSource {
 };
 
 struct SysInformationAgentAuditSource {
-  std::string audit_uuid;
+  EngineUuid audit_uuid;
   std::string audit_ref;
-  std::string evidence_uuid;
+  EngineUuid evidence_uuid;
   std::string evidence_ref;
-  std::string actor_uuid;
+  EngineUuid actor_uuid;
   std::string actor_ref;
   std::string command_name;
   std::string sblr_operation;
@@ -355,11 +359,12 @@ struct SysInformationAgentAuditSource {
 };
 
 struct SysInformationFilespaceCapacityAgentStateSource {
-  std::string agent_uuid;
+  EngineUuid binding_uuid;
+  EngineUuid agent_uuid;
   std::string agent_ref;
-  std::string filespace_uuid;
+  EngineUuid filespace_uuid;
   std::string filespace_ref;
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
   std::string policy_ref;
   std::string mode = "observe";
   std::string health_state = "healthy";
@@ -372,13 +377,14 @@ struct SysInformationFilespaceCapacityAgentStateSource {
 };
 
 struct SysInformationPageAllocationAgentStateSource {
-  std::string agent_uuid;
+  EngineUuid binding_uuid;
+  EngineUuid agent_uuid;
   std::string agent_ref;
-  std::string filespace_uuid;
+  EngineUuid filespace_uuid;
   std::string filespace_ref;
   std::string page_family;
   std::string page_type;
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
   std::string policy_ref;
   std::string mode = "observe";
   std::string last_scan_generation;
@@ -389,7 +395,7 @@ struct SysInformationPageAllocationAgentStateSource {
 };
 
 struct SysInformationFilespaceShrinkReadinessSource {
-  std::string filespace_uuid;
+  EngineUuid filespace_uuid;
   std::string filespace_ref;
   std::string safe_start_byte;
   std::string safe_end_byte;
@@ -397,7 +403,7 @@ struct SysInformationFilespaceShrinkReadinessSource {
   std::string blocker_count;
   std::string readiness_state;
   std::string scan_generation;
-  std::string evidence_uuid;
+  EngineUuid evidence_uuid;
   std::string evidence_ref;
   std::uint64_t catalog_generation_id = 0;
   bool hidden = false;
@@ -541,31 +547,100 @@ struct SysInformationProtectedMaterialVersionSource {
 };
 
 struct SysInformationProjectionContext {
+  std::string source_diagnostic_code;
+  std::string source_diagnostic_detail;
   std::string catalog_display_name = "ScratchBird";
   std::string session_language = "en";
   std::string default_language = "en";
-  std::string session_uuid;
+  EngineUuid session_uuid;
   std::string principal_name;
-  std::string principal_uuid;
+  EngineUuid principal_uuid;
   std::string requested_role_name;
   std::string active_role_name;
-  std::string active_role_uuid;
+  EngineUuid active_role_uuid;
   std::vector<std::string> effective_role_names;
-  std::vector<std::string> effective_role_uuids;
-  std::vector<std::string> effective_group_uuids;
+  std::vector<EngineUuid> effective_role_uuids;
+  std::vector<EngineUuid> effective_group_uuids;
   std::uint64_t visible_catalog_generation_id = 0;
   bool strict_mode = false;
   bool cluster_authority_available = false;
 };
 
-struct SysInformationProjectionRow {
-  std::vector<std::pair<std::string, std::string>> fields;
+struct SysInformationBinaryValue {
+  std::string bytes;
+  bool operator==(const SysInformationBinaryValue&) const = default;
 };
+
+using SysInformationProjectionValue =
+    std::variant<std::string, EngineUuid, SysInformationBinaryValue>;
+
+struct SysInformationProjectionRow {
+  std::vector<std::pair<std::string, SysInformationProjectionValue>> fields;
+};
+
+inline EngineTypedValue SysInformationTypedValue(const SysInformationProjectionValue& value) {
+  EngineTypedValue result;
+  result.descriptor.descriptor_kind = "scalar";
+  if (const auto* text = std::get_if<std::string>(&value)) {
+    result.descriptor.canonical_type_name = "text";
+    result.encoded_value = *text;
+  } else if (const auto* uuid = std::get_if<EngineUuid>(&value)) {
+    result.descriptor.canonical_type_name = "uuid";
+    result.is_null = uuid->is_nil();
+    if (result.is_null) {
+      result.state = EngineValueState::sql_null;
+    } else {
+      result.binary_value.assign(uuid->bytes.begin(), uuid->bytes.end());
+    }
+  } else {
+    result.descriptor.canonical_type_name = "binary";
+    const auto& bytes = std::get<SysInformationBinaryValue>(value).bytes;
+    result.binary_value.assign(bytes.begin(), bytes.end());
+  }
+  return result;
+}
+
+inline const SysInformationProjectionValue* SysInformationField(
+    const SysInformationProjectionRow& row, std::string_view name) {
+  for (const auto& field : row.fields) {
+    if (field.first == name) { return &field.second; }
+  }
+  return nullptr;
+}
+
+inline bool SysInformationFieldIsNull(const SysInformationProjectionValue* value) {
+  if (value == nullptr) { return true; }
+  if (const auto* uuid = std::get_if<EngineUuid>(value)) { return uuid->is_nil(); }
+  // Existing text projections represent absent text with an empty value.
+  if (const auto* text = std::get_if<std::string>(value)) { return text->empty(); }
+  return false;
+}
+
+// Definitions describe available surfaces; only catalog-resolved names own
+// identities. Do not turn a definition path into a fabricated object UUID.
+inline EngineUuid SysInformationObjectIdentity(
+    const std::vector<SysInformationResolverNameSource>& names,
+    const std::map<std::string, EngineUuid>& schemas,
+    std::string_view path, std::string_view object_class) {
+  const auto dot = path.rfind('.');
+  if (dot == std::string_view::npos) { return {}; }
+  const auto schema = schemas.find(std::string(path.substr(0, dot)));
+  if (schema == schemas.end()) { return {}; }
+  EngineUuid found;
+  for (const auto& name : names) {
+    if (name.object_class != object_class || name.scope_uuid != schema->second ||
+        (name.display_name != path.substr(dot + 1) && name.raw_name_text != path.substr(dot + 1))) { continue; }
+    if (!found.is_nil() && found != name.object_uuid) { return {}; }
+    found = name.object_uuid;
+  }
+  return found;
+}
 
 struct SysInformationProjectionResult {
   bool ok = true;
   std::string diagnostic_code;
   std::string diagnostic_detail;
+  EngineUuid diagnostic_identity;
   std::vector<SysInformationProjectionRow> rows;
 };
 

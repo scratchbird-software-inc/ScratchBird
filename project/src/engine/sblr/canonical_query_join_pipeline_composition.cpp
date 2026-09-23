@@ -20,6 +20,7 @@
 #include "canonical_query_scalar_support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -515,34 +516,32 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
                  : static_cast<std::size_t>(row_limit))
           : filtered_row_count;
 
-  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid;
+  std::array<api::EngineUuid, 10> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live join_pipeline identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto join_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "join.inner.capability");
+      owned_identities[1];
   const auto filter_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "filter.capability");
+      owned_identities[2];
   const auto project_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "project.capability");
+      owned_identities[3];
   const auto distinct_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "distinct.capability");
+      owned_identities[4];
   const auto sort_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "sort.capability");
-  const auto limit_capability_uuid = DerivedCanonicalUuid(
-      identity_scope,
-      fetch_first_rows_only
-          ? "fetch.capability"
-          : (has_offset ? "limit-offset.capability" : "limit.capability"));
+      owned_identities[5];
+  const auto limit_capability_uuid = owned_identities[6];
   const auto deterministic_tie_evidence_uuid =
       has_sort
-          ? DerivedCanonicalUuid(
-                identity_scope + ":" + prepared_sort.ordering_property_uuid,
-                has_distinct
-                    ? "inner-join-filter-project-distinct-sort."
-                      "deterministic-tie"
-                    : "inner-join-filter-project-sort.deterministic-tie")
-          : std::string{};
+          ? owned_identities[7]
+          : api::EngineUuid{};
   const std::string operation_name =
       fetch_first_rows_only
           ? "INNER JOIN/FILTER/PROJECT/DISTINCT/SORT/FETCH"
@@ -741,48 +740,9 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          fetch_first_rows_only
-              ? "inner-join-filter-project-distinct-sort-fetch."
-                "execution-attempt"
-              : (has_offset
-                     ? "inner-join-filter-project-distinct-sort-limit-offset."
-                       "execution-attempt"
-                     : (has_distinct
-                            ? "inner-join-filter-project-distinct-sort-limit."
-                              "execution-attempt"
-                            : (has_limit
-                                   ? "inner-join-filter-project-sort-limit."
-                                     "execution-attempt"
-                                   : (has_sort
-                                          ? "inner-join-filter-project-sort."
-                                            "execution-attempt"
-                                          : "inner-join-filter-project."
-                                            "execution-attempt")))));
+      owned_identities[8];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      fetch_first_rows_only
-          ? "inner-join-filter-project-distinct-sort-fetch."
-            "transaction-effect-unchanged"
-          : (has_offset
-                 ? "inner-join-filter-project-distinct-sort-limit-offset."
-                   "transaction-effect-unchanged"
-                 : (has_distinct
-                        ? "inner-join-filter-project-distinct-sort-limit."
-                          "transaction-effect-unchanged"
-                        : (has_limit
-                               ? "inner-join-filter-project-sort-limit."
-                                 "transaction-effect-unchanged"
-                               : (has_sort
-                                      ? "inner-join-filter-project-sort."
-                                        "transaction-effect-unchanged"
-                                      : "inner-join-filter-project."
-                                        "transaction-effect-unchanged")))));
+      .transaction_effect_evidence_uuid = owned_identities[9];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =

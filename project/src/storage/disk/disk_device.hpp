@@ -191,9 +191,9 @@ class FileDevice {
   // the metric registry. They deliberately survive Close/Open on this object.
   u64 rejected_io_latency_observations() const noexcept {return rejected_io_latency_.load(std::memory_order_relaxed);}
   u64 failed_io_latency_observations() const noexcept {return failed_io_latency_.load(std::memory_order_relaxed);}
-  void SetMetricContext(std::string database_uuid,
-                        std::string filespace_uuid,
-                        std::string node_uuid,
+  void SetMetricContext(scratchbird::core::platform::Uuid database_uuid,
+                        scratchbird::core::platform::Uuid filespace_uuid,
+                        scratchbird::core::platform::Uuid node_uuid,
                         std::string filespace_role,
                         std::string device_class);
   SizeResult Size() const;
@@ -221,9 +221,9 @@ class FileDevice {
 
   std::string path_;
   std::string owner_lock_path_;
-  std::string metric_database_uuid_;
-  std::string metric_filespace_uuid_;
-  std::string metric_node_uuid_;
+  scratchbird::core::platform::Uuid metric_database_uuid_;
+  scratchbird::core::platform::Uuid metric_filespace_uuid_;
+  scratchbird::core::platform::Uuid metric_node_uuid_;
   std::string metric_filespace_role_;
   std::string metric_device_class_;
   DeviceCapabilities capabilities_;

@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "security_lifecycle_event_codec.hpp"
+#include "behavior_support/api_behavior_store.hpp"
 #include "security/security_principal_lifecycle.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
 
@@ -36,12 +38,19 @@
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
+namespace sec_event = scratchbird::storage::database::security_event_codec;
 namespace {
 
 using scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase;
 using scratchbird::transaction::mga::LookupLocalTransaction;
 using scratchbird::transaction::mga::MakeLocalTransactionId;
 using scratchbird::transaction::mga::TransactionState;
+
+inline constexpr EngineUuid kSysarchRoleUuid{{0x01,0x8f,0x7a,0x10,0x12,0x80,0x70,0,0x80,0,0,0,0,0,0x01,0x05}};
+EngineUuid IssueSecurityIdentity() { return core::uuid::IssueRuntimeIdentityV7().value_or(EngineUuid{}); }
+std::string IdentityHashInput(const EngineUuid& identity) {
+  return std::string(reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size());
+}
 
 struct LoadOptions {
   bool enforce_visibility = true;
@@ -201,6 +210,12 @@ EngineApiDiagnostic PrincipalDiagnostic(const char* code, std::string detail = {
   return MakeEngineApiDiagnostic(code_text, std::move(key), std::move(detail), true);
 }
 
+EngineApiDiagnostic PrincipalDiagnostic(const char* code, const EngineUuid& identity, std::string detail = {}) {
+  auto diagnostic = PrincipalDiagnostic(code, std::move(detail));
+  diagnostic.identity_fields.emplace_back("object_uuid", identity);
+  return diagnostic;
+}
+
 template <typename TResult>
 TResult SuccessResult(const EngineRequestContext& context, std::string operation_id) {
   TResult result;
@@ -226,26 +241,11 @@ TResult DiagnosticResult(const EngineRequestContext& context,
   return result;
 }
 
-EngineTypedValue Value(std::string value) {
-  EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
-  typed.encoded_value = std::move(value);
-  return typed;
-}
-
-void AddRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
-  EngineRowValue row;
-  row.requested_row_uuid =
-      "security-row-" + std::to_string(result->result_shape.rows.size() + 1);
-  for (auto& field : fields) {
-    row.fields.push_back({std::move(field.first), Value(std::move(field.second))});
-  }
+void AddRow(EngineApiResult* result, ApiBehaviorFields fields) {
   result->result_shape.result_kind = "security_principal_lifecycle_rows";
-  result->result_shape.rows.push_back(std::move(row));
+  result->result_shape.rows.push_back(ApiBehaviorRow(std::move(fields)));
 }
-
-void AddEvidence(EngineApiResult* result, std::string kind, std::string id) {
+void AddEvidence(EngineApiResult* result, std::string kind, EngineEvidenceValue id) {
   result->evidence.push_back({std::move(kind), std::move(id)});
 }
 
@@ -429,36 +429,36 @@ bool PlaintextCredentialRefused(const EngineSecurityAlterPrincipalRequest& reque
   return false;
 }
 
-std::string PrincipalUuid(const EngineSecurityCreatePrincipalRequest& request) {
-  if (!request.principal_uuid.empty()) { return request.principal_uuid; }
+EngineUuid PrincipalUuid(const EngineSecurityCreatePrincipalRequest& request) {
+  if (!request.principal_uuid.is_nil()) { return request.principal_uuid; }
   return request.target_object.uuid;
 }
 
-std::string PrincipalUuid(const EngineSecurityAlterPrincipalRequest& request) {
-  if (!request.principal_uuid.empty()) { return request.principal_uuid; }
+EngineUuid PrincipalUuid(const EngineSecurityAlterPrincipalRequest& request) {
+  if (!request.principal_uuid.is_nil()) { return request.principal_uuid; }
   return request.target_object.uuid;
 }
 
-std::string RoleUuid(const EngineSecurityCreateRoleRequest& request) {
-  if (!request.role_uuid.empty()) { return request.role_uuid; }
+EngineUuid RoleUuid(const EngineSecurityCreateRoleRequest& request) {
+  if (!request.role_uuid.is_nil()) { return request.role_uuid; }
   return request.target_object.uuid;
 }
 
-bool IsEngineOwnedSysarchRoleUuid(const std::string& uuid) {
+bool IsEngineOwnedSysarchRoleUuid(const EngineUuid& uuid) {
   return uuid ==
-         scratchbird::storage::database::kCanonicalSysarchRoleObjectUuid;
+         kSysarchRoleUuid;
 }
 
 bool IsEngineOwnedBootstrapPrincipal(const EngineRequestContext& context,
-                                     const std::string& principal_uuid) {
-  if (principal_uuid.empty()) return false;
+                                     const EngineUuid& principal_uuid) {
+  if (principal_uuid.is_nil()) return false;
   const auto identity = ResolveEngineOwnedSysarchRoleIdentity(context);
   return identity.ok && identity.present &&
          identity.principal_uuid == principal_uuid;
 }
 
-std::string GroupUuid(const EngineSecurityCreateGroupRequest& request) {
-  if (!request.group_uuid.empty()) { return request.group_uuid; }
+EngineUuid GroupUuid(const EngineSecurityCreateGroupRequest& request) {
+  if (!request.group_uuid.is_nil()) { return request.group_uuid; }
   return request.target_object.uuid;
 }
 
@@ -478,11 +478,11 @@ std::string PrimaryName(const EngineApiRequest& request, const std::string& expl
 EngineApiDiagnostic PersistSecurityNameAliases(
     const EngineRequestContext& context,
     const std::string& operation_id,
-    const std::string& object_uuid,
+    const EngineUuid& object_uuid,
     const std::vector<std::string>& object_classes,
     const std::vector<EngineLocalizedName>& names,
     const std::string& fallback_name,
-    const std::string& scope_uuid = {}) {
+    const EngineUuid& scope_uuid = {}) {
   for (const auto& object_class : object_classes) {
     const auto persisted = PersistNameRegistryEntriesForObject(
         context,
@@ -555,58 +555,75 @@ bool PolicyLifecycleValid(const std::string& state) {
 }
 
 std::string PrincipalEvent(const EngineSecurityPrincipalRecord& record) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tPRINCIPAL\t" +
-         std::to_string(record.creator_tx) + "\t" + record.principal_uuid + "\t" +
-         HexEncode(record.principal_name) + "\t" + record.principal_kind + "\t" +
-         record.lifecycle_state + "\t" + HexEncode(record.credential_fingerprint) + "\t" +
-         std::to_string(record.security_generation) + "\t" +
-         (record.deleted ? "1" : "0");
+  return sec_event::Encode("PRINCIPAL", record.creator_tx,
+      {record.principal_uuid,
+       HexEncode(record.principal_name),
+       record.principal_kind,
+       record.lifecycle_state,
+       HexEncode(record.credential_fingerprint),
+       std::to_string(record.security_generation),
+       record.deleted ? "1" : "0"});
 }
 
 std::string RoleEvent(const EngineSecurityRoleRecord& record) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tROLE\t" +
-         std::to_string(record.creator_tx) + "\t" + record.role_uuid + "\t" +
-         HexEncode(record.role_name) + "\t" + record.owner_principal_uuid + "\t" +
-         record.lifecycle_state + "\t" + std::to_string(record.security_generation) + "\t" +
-         (record.deleted ? "1" : "0");
+  return sec_event::Encode("ROLE", record.creator_tx,
+      {record.role_uuid,
+       HexEncode(record.role_name),
+       record.owner_principal_uuid,
+       record.lifecycle_state,
+       std::to_string(record.security_generation),
+       record.deleted ? "1" : "0"});
 }
 
 std::string GroupEvent(const EngineSecurityGroupRecord& record) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tGROUP\t" +
-         std::to_string(record.creator_tx) + "\t" + record.group_uuid + "\t" +
-         HexEncode(record.group_name) + "\t" + HexEncode(record.external_authority_ref) + "\t" +
-         record.lifecycle_state + "\t" + std::to_string(record.security_generation) + "\t" +
-         (record.deleted ? "1" : "0");
+  return sec_event::Encode("GROUP", record.creator_tx,
+      {record.group_uuid,
+       HexEncode(record.group_name),
+       HexEncode(record.external_authority_ref),
+       record.lifecycle_state,
+       std::to_string(record.security_generation),
+       record.deleted ? "1" : "0"});
 }
 
 std::string MembershipEvent(const EngineSecurityMembershipRecord& record) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tMEMBERSHIP\t" +
-         std::to_string(record.creator_tx) + "\t" + record.membership_uuid + "\t" +
-         record.member_principal_uuid + "\t" + record.container_uuid + "\t" +
-         record.container_kind + "\t" + record.grantor_principal_uuid + "\t" +
-         std::to_string(record.security_generation) + "\t" +
-         (record.revoked ? "1" : "0");
+  if (record.membership_uuid.is_nil()) return {};
+  return sec_event::Encode("MEMBERSHIP", record.creator_tx,
+      {record.membership_uuid,
+       record.member_principal_uuid,
+       record.container_uuid,
+       record.container_kind,
+       record.grantor_principal_uuid,
+       std::to_string(record.security_generation),
+       record.revoked ? "1" : "0"});
 }
 
 std::string GrantEvent(const EngineSecurityPrivilegeGrantRecord& record) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tGRANT\t" +
-         std::to_string(record.creator_tx) + "\t" + record.grant_uuid + "\t" +
-         record.grantee_uuid + "\t" + record.grantee_kind + "\t" +
-         record.target_object_uuid + "\t" + record.target_object_kind + "\t" +
-         record.privilege + "\t" + record.grantor_principal_uuid + "\t" +
-         record.grant_effect + "\t" + std::to_string(record.security_generation) + "\t" +
-         (record.revoked ? "1" : "0");
+  if (record.grant_uuid.is_nil()) return {};
+  return sec_event::Encode("GRANT", record.creator_tx,
+      {record.grant_uuid,
+       record.grantee_uuid,
+       record.grantee_kind,
+       record.target_object_uuid,
+       record.target_object_kind,
+       record.privilege,
+       record.grantor_principal_uuid,
+       record.grant_effect,
+       std::to_string(record.security_generation),
+       record.revoked ? "1" : "0"});
 }
 
 std::string RevokeEvent(std::uint64_t creator_tx,
-                        const std::string& grantee_uuid,
-                        const std::string& target_uuid,
+                        const EngineUuid& grantee_uuid,
+                        const EngineUuid& target_uuid,
                         const std::string& privilege,
-                        const std::string& revoker,
+                        const EngineUuid& revoker,
                         std::uint64_t generation) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tREVOKE\t" +
-         std::to_string(creator_tx) + "\t" + grantee_uuid + "\t" + target_uuid + "\t" +
-         privilege + "\t" + revoker + "\t" + std::to_string(generation);
+  return sec_event::Encode("REVOKE", creator_tx,
+      {grantee_uuid,
+       target_uuid,
+       privilege,
+       revoker,
+       std::to_string(generation)});
 }
 
 std::string JoinCanonicalList(const std::vector<std::string>& values) {
@@ -645,60 +662,56 @@ bool DecodeCanonicalList(const std::string& encoded,
 
 std::string PrivilegeTemplateEvent(
     const EngineSecurityPrivilegeTemplateRecord& record) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) +
-         "\tPRIVILEGE_TEMPLATE\t" + std::to_string(record.creator_tx) +
-         "\t" + record.template_uuid + "\t" +
-         HexEncode(record.template_name) + "\t" +
-         record.owner_principal_uuid + "\t" + record.schema_uuid + "\t" +
-         JoinCanonicalList(record.object_kinds) + "\t" +
-         JoinCanonicalList(record.grantee_uuids) + "\t" +
-         JoinCanonicalList(record.privileges) + "\t" +
-         JoinCanonicalList(record.grant_option_privileges) + "\t" +
-         (record.enabled ? "1" : "0") + "\t" +
-         std::to_string(record.template_generation) + "\t" +
-         record.creation_transaction_uuid + "\t" +
-         record.alter_transaction_uuid + "\t" +
-         HexEncode(record.idempotency_key) + "\t" +
-         std::to_string(record.source_policy_generation) + "\t" +
-         std::to_string(record.source_catalog_generation) + "\t" +
-         std::to_string(record.source_security_generation) + "\t" +
-         (record.deleted ? "1" : "0");
+  return sec_event::Encode("PRIVILEGE_TEMPLATE", record.creator_tx,
+      {record.template_uuid,
+       HexEncode(record.template_name),
+       record.owner_principal_uuid,
+       record.schema_uuid,
+       JoinCanonicalList(record.object_kinds),
+       record.grantee_uuids,
+       JoinCanonicalList(record.privileges),
+       JoinCanonicalList(record.grant_option_privileges),
+       record.enabled ? "1" : "0",
+       std::to_string(record.template_generation),
+       record.creation_transaction_uuid,
+       record.alter_transaction_uuid,
+       HexEncode(record.idempotency_key),
+       std::to_string(record.source_policy_generation),
+       std::to_string(record.source_catalog_generation),
+       std::to_string(record.source_security_generation),
+       record.deleted ? "1" : "0"});
 }
 
 std::string RowPolicyEvent(const EngineSecurityRowPolicyRecord& record) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tROW_POLICY\t" +
-         std::to_string(record.creator_tx) + "\t" + record.policy_uuid + "\t" +
-         record.target_object_uuid + "\t" + record.target_object_kind + "\t" +
-         record.policy_effect + "\t" + HexEncode(record.predicate_envelope) + "\t" +
-         record.definer_principal_uuid + "\t" + record.lifecycle_state + "\t" +
-         std::to_string(record.policy_generation) + "\t" +
-         (record.deleted ? "1" : "0") + "\t" +
-         record.policy_version_uuid + "\t" +
-         std::to_string(record.effective_transaction_number) + "\t" +
-         std::to_string(record.target_object_generation) + "\t" +
-         std::to_string(record.update_policy_phase) + "\t" +
-         record.effective_policy_uuid + "\t" +
-         std::to_string(record.effective_policy_generation) + "\t" +
-         record.effective_expression_uuid + "\t" +
-         std::to_string(record.effective_expression_generation) + "\t" +
-         HexEncode(record.effective_expression_evidence_sha256) + "\t" +
-         record.source_expression_uuid + "\t" +
-         std::to_string(record.source_expression_generation) + "\t" +
-         HexEncode(record.source_expression_evidence_sha256) + "\t" +
-         record.source_catalog_snapshot_uuid + "\t" +
-         std::to_string(record.source_catalog_generation) + "\t" +
-         std::to_string(record.source_security_generation);
+  return sec_event::Encode("ROW_POLICY", record.creator_tx,
+      {record.policy_uuid,
+       record.target_object_uuid,
+       record.target_object_kind,
+       record.policy_effect,
+       HexEncode(record.predicate_envelope),
+       record.definer_principal_uuid,
+       record.lifecycle_state,
+       std::to_string(record.policy_generation),
+       record.deleted ? "1" : "0",
+       record.policy_version_uuid,
+       std::to_string(record.effective_transaction_number),
+       std::to_string(record.target_object_generation),
+       std::to_string(record.update_policy_phase),
+       record.effective_policy_uuid,
+       std::to_string(record.effective_policy_generation),
+       record.effective_expression_uuid,
+       std::to_string(record.effective_expression_generation),
+       HexEncode(record.effective_expression_evidence_sha256),
+       record.source_expression_uuid,
+       std::to_string(record.source_expression_generation),
+       HexEncode(record.source_expression_evidence_sha256),
+       record.source_catalog_snapshot_uuid,
+       std::to_string(record.source_catalog_generation),
+       std::to_string(record.source_security_generation)});
 }
 
-bool CanonicalNonzeroUuid(std::string_view text) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == text;
-}
-
-bool CanonicalOptionalUuid(std::string_view text) {
-  return text.empty() || CanonicalNonzeroUuid(text);
-}
+bool CanonicalNonzeroUuid(const EngineUuid& identity) { return core::uuid::IsEngineIdentityUuid(identity); }
+bool CanonicalOptionalUuid(const EngineUuid& identity) { return identity.is_nil() || CanonicalNonzeroUuid(identity); }
 
 std::string NormalizePrivilegeTemplateObjectKind(std::string kind) {
   kind = LowerAscii(std::move(kind));
@@ -732,6 +745,14 @@ bool CanonicalizeTemplateVector(std::vector<std::string>* values,
   std::sort(values->begin(), values->end());
   values->erase(std::unique(values->begin(), values->end()), values->end());
   return !values->empty();
+}
+
+bool CanonicalizeIdentityVector(std::vector<EngineUuid>* values, std::size_t maximum) {
+  if (!values || values->empty() || values->size() > maximum ||
+      std::any_of(values->begin(), values->end(), [](const auto& uuid) { return !CanonicalNonzeroUuid(uuid); })) return false;
+  std::sort(values->begin(), values->end());
+  values->erase(std::unique(values->begin(), values->end()), values->end());
+  return true;
 }
 
 bool PrivilegeTemplateRecordShapeValid(
@@ -805,7 +826,7 @@ bool NativeRowPolicyAuthorityValid(
          // Current DUSR catalog/security snapshot bindings are issued when a
          // typed UPDATE snapshot is frozen.  A policy mutation caller may not
          // predeclare those future identities or generations.
-         authority.catalog_snapshot_uuid.empty() &&
+         authority.catalog_snapshot_uuid.is_nil() &&
          authority.catalog_generation == 0 &&
          authority.security_generation == 0;
 }
@@ -841,119 +862,90 @@ void ApplyNativeRowPolicyAuthority(
 }
 
 void ClearNativeRowPolicyAuthority(EngineSecurityRowPolicyRecord* record) {
-  record->policy_version_uuid.clear();
+  record->policy_version_uuid = {};
   record->effective_transaction_number = 0;
   record->target_object_generation = 0;
   record->update_policy_phase = 0;
-  record->effective_policy_uuid.clear();
+  record->effective_policy_uuid = {};
   record->effective_policy_generation = 0;
-  record->effective_expression_uuid.clear();
+  record->effective_expression_uuid = {};
   record->effective_expression_generation = 0;
   record->effective_expression_evidence_sha256.fill(0);
-  record->source_expression_uuid.clear();
+  record->source_expression_uuid = {};
   record->source_expression_generation = 0;
   record->source_expression_evidence_sha256.fill(0);
-  record->source_catalog_snapshot_uuid.clear();
+  record->source_catalog_snapshot_uuid = {};
   record->source_catalog_generation = 0;
   record->source_security_generation = 0;
 }
 
 std::string DefinerCacheEvent(const EngineSecurityDefinerRightsCacheRecord& record) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tDEFINER_CACHE\t" +
-         std::to_string(record.creator_tx) + "\t" + record.cache_key + "\t" +
-         record.definer_principal_uuid + "\t" + record.target_object_uuid + "\t" +
-         record.privilege + "\t" + record.decision + "\t" +
-         std::to_string(record.policy_generation);
+  return sec_event::Encode("DEFINER_CACHE", record.creator_tx,
+      {record.cache_key,
+       record.definer_principal_uuid,
+       record.target_object_uuid,
+       record.privilege,
+       record.decision,
+       std::to_string(record.policy_generation)});
 }
 
 std::string CacheInvalidationEvent(const EngineRequestContext& context,
                                    const std::string& reason,
-                                   const std::string& target_uuid,
+                                   const EngineUuid& target_uuid,
                                    std::uint64_t generation) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tCACHE_INVALIDATE\t" +
-         std::to_string(context.local_transaction_id) + "\t" + HexEncode(reason) + "\t" +
-         target_uuid + "\t" + std::to_string(generation);
+  return sec_event::Encode("CACHE_INVALIDATE", context.local_transaction_id,
+      {HexEncode(reason),
+       target_uuid,
+       std::to_string(generation)});
 }
 
 std::string AuditEvent(const EngineSecurityAuditRecord& record) {
-  return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tAUDIT\t" +
-         std::to_string(record.creator_tx) + "\t" + record.audit_uuid + "\t" +
-         HexEncode(record.operation_id) + "\t" + record.actor_principal_uuid + "\t" +
-         record.target_uuid + "\t" + record.outcome + "\t" +
-         HexEncode(record.redacted_detail) + "\t" +
-         std::to_string(record.security_generation);
+  if (record.audit_uuid.is_nil()) return {};
+  return sec_event::Encode("AUDIT", record.creator_tx,
+      {record.audit_uuid,
+       HexEncode(record.operation_id),
+       record.actor_principal_uuid,
+       record.target_uuid,
+       record.outcome,
+       HexEncode(record.redacted_detail),
+       std::to_string(record.security_generation),
+       record.related_identity_uuid, record.related_identity_role});
 }
 
 std::mutex g_security_lifecycle_event_append_mutex;
 
 bool AdvancesAuthorizationContext(const std::string& event) {
-  static constexpr std::array<std::string_view, 8> kAuthorityEvents = {
-      "PRINCIPAL", "ROLE", "GROUP", "MEMBERSHIP", "GRANT", "REVOKE",
-      "ROW_POLICY", "PRIVILEGE_TEMPLATE"};
-  for (const auto kind : kAuthorityEvents) {
-    const std::string prefix =
-        std::string(kSecurityPrincipalLifecycleEventMagic) + "\t" +
-        std::string(kind) + "\t";
-    if (StartsWith(event, prefix)) return true;
-  }
-  return false;
+  const auto parts = sec_event::Decode(event);
+  static constexpr std::array<std::string_view, 8> kinds = {
+      "PRINCIPAL", "ROLE", "GROUP", "MEMBERSHIP", "GRANT", "REVOKE", "ROW_POLICY", "PRIVILEGE_TEMPLATE"};
+  return parts.size() >= 3 && std::find(kinds.begin(), kinds.end(), parts[1]) != kinds.end();
 }
 
-std::string AuthorizationContextSuccessorEvent(
-    const EngineRequestContext& context,
-    std::uint64_t generation,
-    const std::vector<std::string>& authority_events) {
-  std::string evidence_source;
-  for (const auto& event : authority_events) {
-    evidence_source.append(event);
-    evidence_source.push_back('\n');
-  }
-  return std::string(kSecurityPrincipalLifecycleEventMagic) +
-         "\tAUTH_CONTEXT_SUCCESSOR\t" +
-         std::to_string(context.local_transaction_id) + "\t" +
-         std::to_string(generation) + "\t" +
-         StableToken("security-context-successor", evidence_source);
-}
-
-bool LoadLastAuthorizationContextGeneration(
-    const EngineRequestContext& context,
-    std::uint64_t* generation) {
-  if (generation == nullptr) return false;
-  *generation = 0;
-  std::ifstream in(EventPath(context), std::ios::binary);
-  if (!in) return true;
-  std::string line;
-  while (std::getline(in, line)) {
-    const auto parts = Split(line, '\t');
-    if (parts.size() < 2 ||
-        parts[0] != kSecurityPrincipalLifecycleEventMagic ||
-        parts[1] != "AUTH_CONTEXT_SUCCESSOR") {
-      continue;
-    }
-    if (parts.size() != 5) return false;
-    const auto next = ParseU64(parts[3]);
-    if (next == 0 || next <= *generation || parts[4].empty()) return false;
-    *generation = next;
-  }
-  return true;
-}
+struct SecurityAuditDetail {
+  std::string text;
+  EngineUuid identity;
+  std::string role;
+  SecurityAuditDetail(std::string value) : text(std::move(value)) {}
+  SecurityAuditDetail(const char* value) : text(value) {}
+  SecurityAuditDetail(std::string value, EngineUuid uuid, std::string role_name)
+      : text(std::move(value)), identity(uuid), role(std::move(role_name)) {}
+};
 
 EngineSecurityAuditRecord MakeAudit(const EngineRequestContext& context,
                                     const std::string& operation_id,
-                                    const std::string& target_uuid,
+                                    const EngineUuid& target_uuid,
                                     std::uint64_t generation,
-                                    std::string detail) {
+                                    SecurityAuditDetail detail) {
   EngineSecurityAuditRecord audit;
   audit.creator_tx = context.local_transaction_id;
-  audit.audit_uuid = StableToken("security-audit",
-                                 operation_id + "|" + target_uuid + "|" +
-                                     std::to_string(context.local_transaction_id) + "|" +
-                                     std::to_string(generation));
+  audit.audit_uuid = IssueSecurityIdentity();
   audit.operation_id = operation_id;
   audit.actor_principal_uuid = context.principal_uuid;
   audit.target_uuid = target_uuid;
   audit.outcome = "success";
-  audit.redacted_detail = RedactSecurityPrincipalProtectedMaterialForDiagnostics(std::move(detail));
+  audit.redacted_detail = RedactSecurityPrincipalProtectedMaterialForDiagnostics(std::move(detail.text));
+  audit.related_identity_uuid = detail.identity;
+  audit.related_identity_role = std::move(detail.role);
   audit.security_generation = generation;
   return audit;
 }
@@ -985,39 +977,20 @@ EngineApiDiagnostic AppendEvents(const EngineRequestContext& context,
         provider_context, std::span<const std::string>(events));
     return appended.diagnostic;
   }
-  std::lock_guard<std::mutex> append_guard(
-      g_security_lifecycle_event_append_mutex);
-  std::vector<std::string> committed_events = events;
-  if (std::any_of(events.begin(), events.end(), AdvancesAuthorizationContext)) {
-    std::uint64_t current_generation = 0;
-    if (!LoadLastAuthorizationContextGeneration(context,
-                                                &current_generation) ||
-        current_generation == std::numeric_limits<std::uint64_t>::max()) {
-      return PrincipalDiagnostic(
-          kSecurityPrincipalDiagnosticDatabaseWriteFailed,
-          "security_context_generation_authority_invalid");
-    }
-    committed_events.push_back(AuthorizationContextSuccessorEvent(
-        context, current_generation + 1, events));
-  }
-  std::ofstream out(EventPath(context), std::ios::binary | std::ios::app);
-  if (!out) { return PrincipalDiagnostic(kSecurityPrincipalDiagnosticDatabaseWriteFailed, "open"); }
-  for (const auto& event : committed_events) { out << event << '\n'; }
-  out.flush();
-  if (!out) { return PrincipalDiagnostic(kSecurityPrincipalDiagnosticDatabaseWriteFailed, "flush"); }
-  return OkDiagnostic();
+  return PrincipalDiagnostic(kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+                             "durable_database_catalog_required");
 }
 
-std::string GrantKey(const std::string& grantee_uuid,
-                     const std::string& target_uuid,
+std::string GrantKey(const EngineUuid& grantee_uuid,
+                     const EngineUuid& target_uuid,
                      const std::string& privilege) {
-  return grantee_uuid + "\t" + target_uuid + "\t" + NormalizePrivilege(privilege);
+  return IdentityHashInput(grantee_uuid) + IdentityHashInput(target_uuid) + NormalizePrivilege(privilege);
 }
 
-std::string MembershipKey(const std::string& member_uuid,
-                          const std::string& container_uuid,
+std::string MembershipKey(const EngineUuid& member_uuid,
+                          const EngineUuid& container_uuid,
                           const std::string& container_kind) {
-  return member_uuid + "\t" + container_uuid + "\t" + container_kind;
+  return IdentityHashInput(member_uuid) + IdentityHashInput(container_uuid) + container_kind;
 }
 
 EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestContext& context,
@@ -1039,14 +1012,14 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
     return result;
   }
 
-  std::map<std::string, EngineSecurityPrincipalRecord> principals;
-  std::map<std::string, EngineSecurityRoleRecord> roles;
-  std::map<std::string, EngineSecurityGroupRecord> groups;
+  std::map<EngineUuid, EngineSecurityPrincipalRecord> principals;
+  std::map<EngineUuid, EngineSecurityRoleRecord> roles;
+  std::map<EngineUuid, EngineSecurityGroupRecord> groups;
   std::map<std::string, EngineSecurityMembershipRecord> memberships;
   std::map<std::string, EngineSecurityPrivilegeGrantRecord> grants;
-  std::map<std::string, EngineSecurityPrivilegeTemplateRecord>
+  std::map<EngineUuid, EngineSecurityPrivilegeTemplateRecord>
       privilege_templates;
-  std::map<std::string, EngineSecurityRowPolicyRecord> row_policies;
+  std::map<EngineUuid, EngineSecurityRowPolicyRecord> row_policies;
   std::map<std::string, EngineSecurityDefinerRightsCacheRecord> cache;
   std::vector<std::string> event_lines;
   std::uint64_t initial_security_context_generation = 0;
@@ -1078,7 +1051,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
           "bootstrap_security_authority_missing");
       return result;
     }
-    if (!state.sysarch_role_uuid.empty()) {
+    if (!state.sysarch_role_uuid.is_nil()) {
       EngineSecurityRoleRecord role;
       role.creator_tx = state.creator_tx;
       role.event_sequence = 1;
@@ -1106,7 +1079,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       membership.membership_uuid = state.membership_uuid;
       membership.member_principal_uuid = state.principal_uuid;
       membership.container_uuid =
-          scratchbird::storage::database::kCanonicalSysarchRoleObjectUuid;
+          kSysarchRoleUuid;
       membership.container_kind = "role";
       membership.grantor_principal_uuid = membership.member_principal_uuid;
       membership.security_generation = state.policy_generation;
@@ -1142,11 +1115,9 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
         loaded.state.security_context_generation;
     event_lines = std::move(loaded.state.events);
   } else {
-    std::ifstream in(EventPath(context), std::ios::binary);
-    std::string line;
-    while (in && std::getline(in, line)) {
-      event_lines.push_back(std::move(line));
-    }
+    result.diagnostic = PrincipalDiagnostic(kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+                                           "durable_database_catalog_required");
+    return result;
   }
 
   std::uint64_t event_sequence = 0;
@@ -1156,17 +1127,15 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
   std::vector<std::string> authority_successor_batch;
   for (const auto& line : event_lines) {
     ++event_sequence;
-    if (!StartsWith(line, kSecurityPrincipalLifecycleEventMagic)) { continue; }
-    const auto parts = Split(line, '\t');
-    if (parts.size() < 3) { continue; }
+    const auto parts = sec_event::Decode(line);
+    if (parts.size() < 3) {
+      result.diagnostic = PrincipalDiagnostic(kSecurityPrincipalDiagnosticDatabaseWriteFailed, "invalid_native_security_event");
+      return result;
+    }
     const std::string& event = parts[1];
     const std::uint64_t creator_tx = ParseU64(parts[2]);
     if (event == "AUTH_CONTEXT_SUCCESSOR") {
-      std::string evidence_source;
-      for (const auto& authority_event : authority_successor_batch) {
-        evidence_source.append(authority_event);
-        evidence_source.push_back('\n');
-      }
+      const auto evidence_source = sec_event::Frame(authority_successor_batch);
       const auto generation = parts.size() == 5 ? ParseU64(parts[3]) : 0;
       const auto expected = StableToken("security-context-successor",
                                         evidence_source);
@@ -1201,7 +1170,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       EngineSecurityPrincipalRecord record;
       record.creator_tx = creator_tx;
       record.event_sequence = event_sequence;
-      record.principal_uuid = parts[3];
+      record.principal_uuid = parts.identity(3);
       record.principal_name = HexDecode(parts[4]);
       record.principal_kind = parts[5].empty() ? "user" : parts[5];
       record.lifecycle_state = parts[6].empty() ? "active" : parts[6];
@@ -1221,9 +1190,9 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       EngineSecurityRoleRecord record;
       record.creator_tx = creator_tx;
       record.event_sequence = event_sequence;
-      record.role_uuid = parts[3];
+      record.role_uuid = parts.identity(3);
       record.role_name = HexDecode(parts[4]);
-      record.owner_principal_uuid = parts[5];
+      record.owner_principal_uuid = parts.identity(5);
       record.lifecycle_state = parts[6].empty() ? "active" : parts[6];
       record.security_generation = ParseU64(parts[7]);
       record.deleted = ParseBool(parts[8]);
@@ -1240,7 +1209,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       EngineSecurityGroupRecord record;
       record.creator_tx = creator_tx;
       record.event_sequence = event_sequence;
-      record.group_uuid = parts[3];
+      record.group_uuid = parts.identity(3);
       record.group_name = HexDecode(parts[4]);
       record.external_authority_ref = HexDecode(parts[5]);
       record.lifecycle_state = parts[6].empty() ? "active" : parts[6];
@@ -1259,11 +1228,11 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       EngineSecurityMembershipRecord record;
       record.creator_tx = creator_tx;
       record.event_sequence = event_sequence;
-      record.membership_uuid = parts[3];
-      record.member_principal_uuid = parts[4];
-      record.container_uuid = parts[5];
+      record.membership_uuid = parts.identity(3);
+      record.member_principal_uuid = parts.identity(4);
+      record.container_uuid = parts.identity(5);
       record.container_kind = parts[6];
-      record.grantor_principal_uuid = parts[7];
+      record.grantor_principal_uuid = parts.identity(7);
       record.security_generation = ParseU64(parts[8]);
       record.revoked = ParseBool(parts[9]);
       result.state.security_generation =
@@ -1282,13 +1251,13 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       EngineSecurityPrivilegeGrantRecord record;
       record.creator_tx = creator_tx;
       record.event_sequence = event_sequence;
-      record.grant_uuid = parts[3];
-      record.grantee_uuid = parts[4];
+      record.grant_uuid = parts.identity(3);
+      record.grantee_uuid = parts.identity(4);
       record.grantee_kind = parts[5].empty() ? "principal" : parts[5];
-      record.target_object_uuid = parts[6];
+      record.target_object_uuid = parts.identity(6);
       record.target_object_kind = parts[7];
       record.privilege = NormalizePrivilege(parts[8]);
-      record.grantor_principal_uuid = parts[9];
+      record.grantor_principal_uuid = parts.identity(9);
       record.grant_effect = parts[10].empty() ? "allow" : parts[10];
       record.security_generation = ParseU64(parts[11]);
       record.revoked = ParseBool(parts[12]);
@@ -1305,8 +1274,8 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
         grants[key] = std::move(record);
       }
     } else if (event == "REVOKE" && parts.size() >= 8) {
-      const std::string grantee_uuid = parts[3];
-      const std::string target_uuid = parts[4];
+      const EngineUuid grantee_uuid = parts.identity(3);
+      const EngineUuid target_uuid = parts.identity(4);
       const std::string privilege = NormalizePrivilege(parts[5]);
       const std::uint64_t generation = ParseU64(parts[7]);
       result.state.security_generation = std::max(result.state.security_generation, generation);
@@ -1316,19 +1285,19 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       EngineSecurityPrivilegeTemplateRecord record;
       record.creator_tx = creator_tx;
       record.event_sequence = event_sequence;
-      record.template_uuid = parts[3];
+      record.template_uuid = parts.identity(3);
       record.template_name = HexDecode(parts[4]);
-      record.owner_principal_uuid = parts[5];
-      record.schema_uuid = parts[6];
+      record.owner_principal_uuid = parts.identity(5);
+      record.schema_uuid = parts.identity(6);
+      record.grantee_uuids = parts.identities(8);
       const bool decoded_lists =
           DecodeCanonicalList(parts[7], &record.object_kinds) &&
-          DecodeCanonicalList(parts[8], &record.grantee_uuids) &&
           DecodeCanonicalList(parts[9], &record.privileges) &&
           DecodeCanonicalList(parts[10], &record.grant_option_privileges);
       record.enabled = ParseBool(parts[11]);
       record.template_generation = ParseU64(parts[12]);
-      record.creation_transaction_uuid = parts[13];
-      record.alter_transaction_uuid = parts[14];
+      record.creation_transaction_uuid = parts.identity(13);
+      record.alter_transaction_uuid = parts.identity(14);
       record.idempotency_key = HexDecode(parts[15]);
       record.source_policy_generation = ParseU64(parts[16]);
       record.source_catalog_generation = ParseU64(parts[17]);
@@ -1358,17 +1327,17 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       EngineSecurityRowPolicyRecord record;
       record.creator_tx = creator_tx;
       record.event_sequence = event_sequence;
-      record.policy_uuid = parts[3];
-      record.target_object_uuid = parts[4];
+      record.policy_uuid = parts.identity(3);
+      record.target_object_uuid = parts.identity(4);
       record.target_object_kind = parts[5];
       record.policy_effect = parts[6].empty() ? "deny_all" : parts[6];
       record.predicate_envelope = HexDecode(parts[7]);
-      record.definer_principal_uuid = parts[8];
+      record.definer_principal_uuid = parts.identity(8);
       record.lifecycle_state = parts[9].empty() ? "active" : parts[9];
       record.policy_generation = ParseU64(parts[10]);
       record.deleted = ParseBool(parts[11]);
       if (parts.size() >= 27) {
-        record.policy_version_uuid = parts[12];
+        record.policy_version_uuid = parts.identity(12);
         record.effective_transaction_number = ParseU64(parts[13]);
         record.target_object_generation = ParseU64(parts[14]);
         const auto phase = ParseU64(parts[15]);
@@ -1376,9 +1345,9 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
             phase <= std::numeric_limits<std::uint8_t>::max()
                 ? static_cast<std::uint8_t>(phase)
                 : 0;
-        record.effective_policy_uuid = parts[16];
+        record.effective_policy_uuid = parts.identity(16);
         record.effective_policy_generation = ParseU64(parts[17]);
-        record.effective_expression_uuid = parts[18];
+        record.effective_expression_uuid = parts.identity(18);
         record.effective_expression_generation = ParseU64(parts[19]);
         if (!HexDecodeSha256(parts[20],
                             &record.effective_expression_evidence_sha256)) {
@@ -1387,7 +1356,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
               "row_policy_effective_evidence_invalid");
           return result;
         }
-        record.source_expression_uuid = parts[21];
+        record.source_expression_uuid = parts.identity(21);
         record.source_expression_generation = ParseU64(parts[22]);
         if (!HexDecodeSha256(parts[23],
                             &record.source_expression_evidence_sha256)) {
@@ -1396,14 +1365,14 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
               "row_policy_native_evidence_invalid");
           return result;
         }
-        record.source_catalog_snapshot_uuid = parts[24];
+        record.source_catalog_snapshot_uuid = parts.identity(24);
         record.source_catalog_generation = ParseU64(parts[25]);
         record.source_security_generation = ParseU64(parts[26]);
       } else if (parts.size() >= 22) {
         // Pre-native-effective-projection rows remain readable for their
         // historical security surfaces.  Their missing typed authority keeps
         // them fail-closed for typed UPDATE.
-        record.policy_version_uuid = parts[12];
+        record.policy_version_uuid = parts.identity(12);
         record.effective_transaction_number = ParseU64(parts[13]);
         record.target_object_generation = ParseU64(parts[14]);
         const auto phase = ParseU64(parts[15]);
@@ -1411,7 +1380,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
             phase <= std::numeric_limits<std::uint8_t>::max()
                 ? static_cast<std::uint8_t>(phase)
                 : 0;
-        record.source_expression_uuid = parts[16];
+        record.source_expression_uuid = parts.identity(16);
         record.source_expression_generation = ParseU64(parts[17]);
         if (!HexDecodeSha256(parts[18],
                             &record.source_expression_evidence_sha256)) {
@@ -1420,7 +1389,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
               "row_policy_native_evidence_invalid");
           return result;
         }
-        record.source_catalog_snapshot_uuid = parts[19];
+        record.source_catalog_snapshot_uuid = parts.identity(19);
         record.source_catalog_generation = ParseU64(parts[20]);
         record.source_security_generation = ParseU64(parts[21]);
       }
@@ -1442,8 +1411,8 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       record.creator_tx = creator_tx;
       record.event_sequence = event_sequence;
       record.cache_key = parts[3];
-      record.definer_principal_uuid = parts[4];
-      record.target_object_uuid = parts[5];
+      record.definer_principal_uuid = parts.identity(4);
+      record.target_object_uuid = parts.identity(5);
       record.privilege = NormalizePrivilege(parts[6]);
       record.decision = parts[7].empty() ? "deny" : parts[7];
       record.policy_generation = ParseU64(parts[8]);
@@ -1464,10 +1433,12 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       EngineSecurityAuditRecord audit;
       audit.creator_tx = creator_tx;
       audit.event_sequence = event_sequence;
-      audit.audit_uuid = parts[3];
+      audit.audit_uuid = parts.identity(3);
       audit.operation_id = HexDecode(parts[4]);
-      audit.actor_principal_uuid = parts[5];
-      audit.target_uuid = parts[6];
+      audit.actor_principal_uuid = parts.identity(5);
+      audit.target_uuid = parts.identity(6);
+      audit.related_identity_uuid = parts.identity(10);
+      audit.related_identity_role = parts[11];
       audit.outcome = parts[7];
       audit.redacted_detail = HexDecode(parts[8]);
       audit.security_generation = ParseU64(parts[9]);
@@ -1511,7 +1482,7 @@ std::uint64_t NextGeneration(const EngineSecurityPrincipalLifecycleState& state)
 }
 
 const EngineSecurityPrincipalRecord* FindPrincipal(const EngineSecurityPrincipalLifecycleState& state,
-                                                   const std::string& principal_uuid) {
+                                                   const EngineUuid& principal_uuid) {
   for (const auto& principal : state.principals) {
     if (principal.principal_uuid == principal_uuid) { return &principal; }
   }
@@ -1519,7 +1490,7 @@ const EngineSecurityPrincipalRecord* FindPrincipal(const EngineSecurityPrincipal
 }
 
 const EngineSecurityRoleRecord* FindRole(const EngineSecurityPrincipalLifecycleState& state,
-                                         const std::string& role_uuid) {
+                                         const EngineUuid& role_uuid) {
   for (const auto& role : state.roles) {
     if (role.role_uuid == role_uuid) { return &role; }
   }
@@ -1527,7 +1498,7 @@ const EngineSecurityRoleRecord* FindRole(const EngineSecurityPrincipalLifecycleS
 }
 
 const EngineSecurityGroupRecord* FindGroup(const EngineSecurityPrincipalLifecycleState& state,
-                                           const std::string& group_uuid) {
+                                           const EngineUuid& group_uuid) {
   for (const auto& group : state.groups) {
     if (group.group_uuid == group_uuid) { return &group; }
   }
@@ -1535,7 +1506,7 @@ const EngineSecurityGroupRecord* FindGroup(const EngineSecurityPrincipalLifecycl
 }
 
 bool FindAnySecuritySubject(const EngineSecurityPrincipalLifecycleState& state,
-                            const std::string& subject_uuid) {
+                            const EngineUuid& subject_uuid) {
   return FindPrincipal(state, subject_uuid) != nullptr ||
          FindRole(state, subject_uuid) != nullptr ||
          FindGroup(state, subject_uuid) != nullptr;
@@ -1543,7 +1514,7 @@ bool FindAnySecuritySubject(const EngineSecurityPrincipalLifecycleState& state,
 
 const EngineSecurityPrivilegeTemplateRecord* FindPrivilegeTemplateByUuid(
     const EngineSecurityPrincipalLifecycleState& state,
-    const std::string& template_uuid) {
+    const EngineUuid& template_uuid) {
   for (const auto& record : state.privilege_templates) {
     if (record.template_uuid == template_uuid) return &record;
   }
@@ -1563,7 +1534,7 @@ bool ExactPrivilegeTemplateReplay(
     const EngineSecurityPrivilegeTemplateRecord& existing,
     const EngineSecurityCreatePrivilegeTemplateRequest& request,
     const std::vector<std::string>& object_kinds,
-    const std::vector<std::string>& grantee_uuids,
+    const std::vector<EngineUuid>& grantee_uuids,
     const std::vector<std::string>& privileges,
     const std::vector<std::string>& grant_option_privileges) {
   return !existing.deleted && existing.template_uuid == request.template_uuid &&
@@ -1578,18 +1549,18 @@ bool ExactPrivilegeTemplateReplay(
          existing.idempotency_key == request.idempotency_key;
 }
 
-std::set<std::string> EffectiveGranteeSet(const EngineSecurityPrincipalLifecycleState& state,
-                                          const std::string& principal_uuid) {
-  std::set<std::string> grantees;
-  std::vector<std::string> pending;
+std::set<EngineUuid> EffectiveGranteeSet(const EngineSecurityPrincipalLifecycleState& state,
+                                          const EngineUuid& principal_uuid) {
+  std::set<EngineUuid> grantees;
+  std::vector<EngineUuid> pending;
   pending.push_back(principal_uuid);
   while (!pending.empty()) {
-    const std::string current = pending.back();
+    const EngineUuid current = pending.back();
     pending.pop_back();
     if (!grantees.insert(current).second) { continue; }
     for (const auto& membership : state.memberships) {
       if (membership.revoked || membership.member_principal_uuid != current ||
-          membership.container_uuid.empty()) {
+          membership.container_uuid.is_nil()) {
         continue;
       }
       pending.push_back(membership.container_uuid);
@@ -1599,8 +1570,8 @@ std::set<std::string> EffectiveGranteeSet(const EngineSecurityPrincipalLifecycle
 }
 
 bool GrantApplies(const EngineSecurityPrivilegeGrantRecord& grant,
-                  const std::set<std::string>& grantees,
-                  const std::string& target_uuid,
+                  const std::set<EngineUuid>& grantees,
+                  const EngineUuid& target_uuid,
                   const std::string& privilege) {
   return grantees.count(grant.grantee_uuid) != 0 &&
          grant.target_object_uuid == target_uuid &&
@@ -1611,12 +1582,12 @@ bool GrantApplies(const EngineSecurityPrivilegeGrantRecord& grant,
 struct GrantDecision {
   bool allowed = false;
   bool explicit_deny = false;
-  std::vector<std::string> matched_grants;
+  std::vector<EngineUuid> matched_grants;
 };
 
 GrantDecision EvaluateGrantState(const EngineSecurityPrincipalLifecycleState& state,
-                                 const std::string& principal_uuid,
-                                 const std::string& target_uuid,
+                                 const EngineUuid& principal_uuid,
+                                 const EngineUuid& target_uuid,
                                  const std::string& privilege) {
   GrantDecision decision;
   const auto grantees = EffectiveGranteeSet(state, principal_uuid);
@@ -1636,7 +1607,7 @@ GrantDecision EvaluateGrantState(const EngineSecurityPrincipalLifecycleState& st
 
 const EngineSecurityRowPolicyRecord* FindRowPolicy(
     const EngineSecurityPrincipalLifecycleState& state,
-    const std::string& policy_uuid) {
+    const EngineUuid& policy_uuid) {
   for (const auto& policy : state.row_policies) {
     if (policy.policy_uuid == policy_uuid) { return &policy; }
   }
@@ -1645,28 +1616,29 @@ const EngineSecurityRowPolicyRecord* FindRowPolicy(
 
 void FillMutationEvidence(EngineApiResult* result,
                           const std::string& operation_id,
-                          const std::string& target_uuid,
+                          const EngineUuid& target_uuid,
                           std::uint64_t generation) {
   AddEvidence(result, "security_generation", std::to_string(generation));
-  AddEvidence(result, "security_audit", operation_id + ":" + target_uuid);
+  AddEvidence(result, "security_audit_target", target_uuid);
+  AddEvidence(result, "security_audit_operation", operation_id);
   AddEvidence(result, "security_cache_invalidation", std::to_string(generation));
 }
 
 std::string CredentialFingerprint(const EngineSecurityCreatePrincipalRequest& request,
-                                  const std::string& principal_uuid) {
+                                  const EngineUuid& principal_uuid) {
   if (!request.credential_fingerprint.empty()) { return request.credential_fingerprint; }
   if (request.credential_protected_material_ref.empty()) { return {}; }
   return StableToken("credential-fingerprint",
-                     principal_uuid + "|" + request.credential_protected_material_ref);
+                     IdentityHashInput(principal_uuid) + request.credential_protected_material_ref);
 }
 
 std::string CredentialFingerprint(const EngineSecurityAlterPrincipalRequest& request,
-                                  const std::string& principal_uuid,
+                                  const EngineUuid& principal_uuid,
                                   const std::string& existing_fingerprint) {
   if (!request.credential_fingerprint.empty()) { return request.credential_fingerprint; }
   if (request.credential_protected_material_ref.empty()) { return existing_fingerprint; }
   return StableToken("credential-fingerprint",
-                     principal_uuid + "|" + request.credential_protected_material_ref);
+                     IdentityHashInput(principal_uuid) + request.credential_protected_material_ref);
 }
 
 template <typename TResult>
@@ -2133,10 +2105,9 @@ EngineOwnedSysarchRoleIdentityResult ResolveEngineOwnedSysarchRoleIdentity(
             : catalog.diagnostic.diagnostic_code);
     return result;
   }
-  const std::string role_uuid = scratchbird::core::uuid::UuidToString(
-      catalog.state.sysarch_role_uuid.value);
+  const EngineUuid role_uuid = catalog.state.sysarch_role_uuid.value;
   if (role_uuid !=
-      scratchbird::storage::database::kCanonicalSysarchRoleObjectUuid) {
+      kSysarchRoleUuid) {
     result.diagnostic = PrincipalDiagnostic(
         kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
         "engine_owned_sysarch_uuid_mismatch");
@@ -2146,8 +2117,7 @@ EngineOwnedSysarchRoleIdentityResult ResolveEngineOwnedSysarchRoleIdentity(
   result.present = catalog.state.present;
   result.role_uuid = role_uuid;
   if (catalog.state.present) {
-    result.principal_uuid = scratchbird::core::uuid::UuidToString(
-        catalog.state.principal_uuid.value);
+    result.principal_uuid = catalog.state.principal_uuid.value;
   }
   result.policy_generation = catalog.state.policy_generation;
   result.diagnostic = OkDiagnostic();
@@ -2169,8 +2139,8 @@ EngineSecurityCreatePrincipalResult EngineSecurityCreatePrincipal(
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticProtectedMaterialPlaintextRefused,
                             "plaintext_credential_material_is_forbidden"));
   }
-  const std::string principal_uuid = PrincipalUuid(request);
-  if (principal_uuid.empty()) {
+  const EngineUuid principal_uuid = PrincipalUuid(request);
+  if (principal_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityCreatePrincipalResult>(
         request.context,
         kOperation,
@@ -2274,8 +2244,8 @@ EngineSecurityAlterPrincipalResult EngineSecurityAlterPrincipal(
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticProtectedMaterialPlaintextRefused,
                             "plaintext_credential_material_is_forbidden"));
   }
-  const std::string principal_uuid = PrincipalUuid(request);
-  if (principal_uuid.empty()) {
+  const EngineUuid principal_uuid = PrincipalUuid(request);
+  if (principal_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityAlterPrincipalResult>(
         request.context,
         kOperation,
@@ -2382,9 +2352,9 @@ EngineSecurityCreateRoleResult EngineSecurityCreateRole(
                                                            kOperation,
                                                            "SEC_IDENTITY_ADMIN");
   if (!preflight.ok) { return preflight; }
-  const std::string role_uuid = RoleUuid(request);
+  const EngineUuid role_uuid = RoleUuid(request);
   const std::string role_name = PrimaryName(request, request.role_name);
-  if (role_uuid.empty() || role_name.empty()) {
+  if (role_uuid.is_nil() || role_name.empty()) {
     return DiagnosticResult<EngineSecurityCreateRoleResult>(
         request.context,
         kOperation,
@@ -2406,7 +2376,7 @@ EngineSecurityCreateRoleResult EngineSecurityCreateRole(
     return DiagnosticResult<EngineSecurityCreateRoleResult>(
         request.context,
         kOperation,
-        PrincipalDiagnostic(kSecurityPrincipalDiagnosticRoleInvalid, "duplicate_role:" + role_uuid));
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticRoleInvalid, role_uuid, "duplicate_role:"));
   }
   const std::uint64_t generation = NextGeneration(loaded.state);
   EngineSecurityRoleRecord record;
@@ -2457,9 +2427,9 @@ EngineSecurityCreateGroupResult EngineSecurityCreateGroup(
                                                             kOperation,
                                                             "SEC_MEMBERSHIP_ADMIN");
   if (!preflight.ok) { return preflight; }
-  const std::string group_uuid = GroupUuid(request);
+  const EngineUuid group_uuid = GroupUuid(request);
   const std::string group_name = PrimaryName(request, request.group_name);
-  if (group_uuid.empty() || group_name.empty()) {
+  if (group_uuid.is_nil() || group_name.empty()) {
     return DiagnosticResult<EngineSecurityCreateGroupResult>(
         request.context,
         kOperation,
@@ -2475,7 +2445,7 @@ EngineSecurityCreateGroupResult EngineSecurityCreateGroup(
         request.context,
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticGroupInvalid,
-                            "duplicate_group:" + group_uuid));
+                            group_uuid, "duplicate_group:"));
   }
   const std::uint64_t generation = NextGeneration(loaded.state);
   EngineSecurityGroupRecord record;
@@ -2533,10 +2503,10 @@ EngineSecurityDropRoleResult EngineSecurityDropRole(
                                                          kOperation,
                                                          "SEC_IDENTITY_ADMIN");
   if (!preflight.ok) { return preflight; }
-  const std::string role_uuid = !request.role_uuid.empty()
+  const EngineUuid role_uuid = !request.role_uuid.is_nil()
       ? request.role_uuid
       : request.target_object.uuid;
-  if (role_uuid.empty()) {
+  if (role_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityDropRoleResult>(
         request.context,
         kOperation,
@@ -2617,10 +2587,10 @@ EngineSecurityDropGroupResult EngineSecurityDropGroup(
                                                           kOperation,
                                                           "SEC_MEMBERSHIP_ADMIN");
   if (!preflight.ok) { return preflight; }
-  const std::string group_uuid = !request.group_uuid.empty()
+  const EngineUuid group_uuid = !request.group_uuid.is_nil()
       ? request.group_uuid
       : request.target_object.uuid;
-  if (group_uuid.empty()) {
+  if (group_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityDropGroupResult>(
         request.context,
         kOperation,
@@ -2696,7 +2666,7 @@ EngineSecurityGrantMembershipResult EngineSecurityGrantMembership(
   if (!preflight.ok) { return preflight; }
   const std::string container_kind =
       request.container_kind.empty() ? "role" : LowerAscii(request.container_kind);
-  if (request.member_principal_uuid.empty() || request.container_uuid.empty() ||
+  if (request.member_principal_uuid.is_nil() || request.container_uuid.is_nil() ||
       (container_kind != "role" && container_kind != "group")) {
     return DiagnosticResult<EngineSecurityGrantMembershipResult>(
         request.context,
@@ -2740,9 +2710,8 @@ EngineSecurityGrantMembershipResult EngineSecurityGrantMembership(
   const std::uint64_t generation = NextGeneration(loaded.state);
   EngineSecurityMembershipRecord record;
   record.creator_tx = request.context.local_transaction_id;
-  record.membership_uuid = request.membership_uuid.empty()
-      ? StableToken("security-membership",
-                    request.member_principal_uuid + "|" + request.container_uuid + "|" + container_kind)
+  record.membership_uuid = request.membership_uuid.is_nil()
+      ? IssueSecurityIdentity()
       : request.membership_uuid;
   record.member_principal_uuid = request.member_principal_uuid;
   record.container_uuid = request.container_uuid;
@@ -2753,8 +2722,7 @@ EngineSecurityGrantMembershipResult EngineSecurityGrantMembership(
                               kOperation,
                               record.container_uuid,
                               generation,
-                              "member=" + record.member_principal_uuid +
-                                  ";container_kind=" + record.container_kind);
+                              SecurityAuditDetail{";container_kind=" + record.container_kind, record.member_principal_uuid, "member_uuid"});
   const auto appended = AppendEvents(
       request.context,
       {MembershipEvent(record),
@@ -2792,7 +2760,7 @@ EngineSecurityRevokeMembershipResult EngineSecurityRevokeMembership(
   if (!preflight.ok) { return preflight; }
   const std::string container_kind =
       request.container_kind.empty() ? "role" : LowerAscii(request.container_kind);
-  if (request.member_principal_uuid.empty() || request.container_uuid.empty() ||
+  if (request.member_principal_uuid.is_nil() || request.container_uuid.is_nil() ||
       (container_kind != "role" && container_kind != "group")) {
     return DiagnosticResult<EngineSecurityRevokeMembershipResult>(
         request.context,
@@ -2836,9 +2804,7 @@ EngineSecurityRevokeMembershipResult EngineSecurityRevokeMembership(
   const std::uint64_t generation = NextGeneration(loaded.state);
   EngineSecurityMembershipRecord record;
   record.creator_tx = request.context.local_transaction_id;
-  record.membership_uuid = StableToken("security-membership",
-                                       request.member_principal_uuid + "|" +
-                                           request.container_uuid + "|" + container_kind);
+  record.membership_uuid = IssueSecurityIdentity();
   record.member_principal_uuid = request.member_principal_uuid;
   record.container_uuid = request.container_uuid;
   record.container_kind = container_kind;
@@ -2849,8 +2815,7 @@ EngineSecurityRevokeMembershipResult EngineSecurityRevokeMembership(
                               kOperation,
                               record.container_uuid,
                               generation,
-                              "member=" + record.member_principal_uuid +
-                                  ";container_kind=" + record.container_kind);
+                              SecurityAuditDetail{";container_kind=" + record.container_kind, record.member_principal_uuid, "member_uuid"});
   const auto appended = AppendEvents(
       request.context,
       {MembershipEvent(record),
@@ -2888,8 +2853,8 @@ EngineSecurityGrantPrivilegeResult EngineSecurityGrantPrivilege(
   if (!preflight.ok) { return preflight; }
   const std::string privilege = NormalizePrivilege(request.privilege);
   const std::string effect = request.grant_effect.empty() ? "allow" : request.grant_effect;
-  const bool global_grant = request.target_object_uuid.empty();
-  if (request.grantee_uuid.empty() ||
+  const bool global_grant = request.target_object_uuid.is_nil();
+  if (request.grantee_uuid.is_nil() ||
       (global_grant && !PrivilegeAllowsGlobalGrant(privilege)) ||
       privilege.empty() || (effect != "allow" && effect != "deny")) {
     return DiagnosticResult<EngineSecurityGrantPrivilegeResult>(
@@ -2915,9 +2880,8 @@ EngineSecurityGrantPrivilegeResult EngineSecurityGrantPrivilege(
   const std::uint64_t generation = NextGeneration(loaded.state);
   EngineSecurityPrivilegeGrantRecord record;
   record.creator_tx = request.context.local_transaction_id;
-  record.grant_uuid = request.grant_uuid.empty()
-      ? StableToken("security-grant",
-                    request.grantee_uuid + "|" + request.target_object_uuid + "|" + privilege)
+  record.grant_uuid = request.grant_uuid.is_nil()
+      ? IssueSecurityIdentity()
       : request.grant_uuid;
   record.grantee_uuid = request.grantee_uuid;
   record.grantee_kind = request.grantee_kind.empty() ? "principal" : request.grantee_kind;
@@ -2931,9 +2895,8 @@ EngineSecurityGrantPrivilegeResult EngineSecurityGrantPrivilege(
                               kOperation,
                               record.target_object_uuid,
                               generation,
-                              "grantee=" + record.grantee_uuid +
-                                  ";privilege=" + record.privilege +
-                                  ";effect=" + record.grant_effect);
+                              SecurityAuditDetail{";privilege=" + record.privilege +
+                                  ";effect=" + record.grant_effect, record.grantee_uuid, "grantee_uuid"});
   const auto appended = AppendEvents(
       request.context,
       {GrantEvent(record),
@@ -2972,7 +2935,7 @@ EngineSecurityRevokePrivilegeResult EngineSecurityRevokePrivilege(
                                                                 "SEC_GRANT_ADMIN");
   if (!preflight.ok) { return preflight; }
   const std::string privilege = NormalizePrivilege(request.privilege);
-  if (request.grantee_uuid.empty() || request.target_object_uuid.empty() || privilege.empty()) {
+  if (request.grantee_uuid.is_nil() || request.target_object_uuid.is_nil() || privilege.empty()) {
     return DiagnosticResult<EngineSecurityRevokePrivilegeResult>(
         request.context,
         kOperation,
@@ -2997,7 +2960,7 @@ EngineSecurityRevokePrivilegeResult EngineSecurityRevokePrivilege(
                               kOperation,
                               request.target_object_uuid,
                               generation,
-                              "grantee=" + request.grantee_uuid + ";privilege=" + privilege);
+                              SecurityAuditDetail{";privilege=" + privilege, request.grantee_uuid, "grantee_uuid"});
   const auto appended = AppendEvents(
       request.context,
       {RevokeEvent(request.context.local_transaction_id,
@@ -3018,8 +2981,7 @@ EngineSecurityRevokePrivilegeResult EngineSecurityRevokePrivilege(
   result.privilege_revoked = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid =
-      StableToken("security-revoke", request.grantee_uuid + "|" + request.target_object_uuid + "|" + privilege);
+  result.primary_object.uuid = request.target_object_uuid;
   result.primary_object.object_kind = "security_privilege_revoke";
   FillMutationEvidence(&result, kOperation, result.primary_object.uuid, generation);
   AddRow(&result,
@@ -3085,7 +3047,7 @@ EngineSecurityCreatePrivilegeTemplate(
   const auto identity = [](std::string value) { return value; };
   if (!CanonicalizeTemplateVector(
           &object_kinds, 16, NormalizePrivilegeTemplateObjectKind) ||
-      !CanonicalizeTemplateVector(&grantee_uuids, 1024, identity) ||
+      !CanonicalizeIdentityVector(&grantee_uuids, 1024) ||
       !CanonicalizeTemplateVector(&privileges, 128, NormalizePrivilege) ||
       (!grant_option_privileges.empty() &&
        !CanonicalizeTemplateVector(&grant_option_privileges, 128,
@@ -3133,7 +3095,7 @@ EngineSecurityCreatePrivilegeTemplate(
     return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
         request.context, kOperation, loaded.diagnostic);
   }
-  if (!request.owner_principal_uuid.empty() &&
+  if (!request.owner_principal_uuid.is_nil() &&
       FindPrincipal(loaded.state, request.owner_principal_uuid) == nullptr) {
     return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
         request.context, kOperation,
@@ -3145,7 +3107,7 @@ EngineSecurityCreatePrivilegeTemplate(
       return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
           request.context, kOperation,
           PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticGrantForbidden,
-                              "grantee_not_visible:" + grantee));
+                              grantee, "grantee_not_visible:"));
     }
   }
 
@@ -3246,12 +3208,14 @@ EngineSecurityCreatePrivilegeTemplate(
           {"owner_principal_uuid", record.owner_principal_uuid},
           {"schema_uuid", record.schema_uuid},
           {"object_kinds", JoinCanonicalList(record.object_kinds)},
-          {"grantee_uuids", JoinCanonicalList(record.grantee_uuids)},
+          {"grantee_count", std::to_string(record.grantee_uuids.size())},
           {"privileges", JoinCanonicalList(record.privileges)},
           {"grant_option_privileges",
            JoinCanonicalList(record.grant_option_privileges)},
           {"enabled", record.enabled ? "true" : "false"},
           {"template_generation", std::to_string(generation)}});
+  for (const auto& grantee : record.grantee_uuids)
+    AddRow(&result, {{"template_uuid", record.template_uuid}, {"grantee_uuid", grantee}});
   return result;
 }
 
@@ -3280,7 +3244,7 @@ EngineSecuritySetRoleResult EngineSecuritySetRole(
     AddRow(&result, {{"role_mode", "none"}, {"active_role_uuid", ""}});
     return result;
   }
-  if (request.role_uuid.empty()) {
+  if (request.role_uuid.is_nil()) {
     return DiagnosticResult<EngineSecuritySetRoleResult>(
         request.context,
         kOperation,
@@ -3308,7 +3272,7 @@ EngineSecuritySetRoleResult EngineSecuritySetRole(
         request.context,
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticAccessDenied,
-                            "role_not_granted:" + request.role_uuid));
+                            request.role_uuid, "role_not_granted:"));
   }
 
   auto result = SuccessResult<EngineSecuritySetRoleResult>(request.context, kOperation);
@@ -3334,13 +3298,13 @@ EngineSecurityAttachPolicyResult EngineSecurityAttachPolicy(
                                                              kOperation,
                                                              "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
-  const std::string policy_uuid = request.policy_uuid.empty()
+  const EngineUuid policy_uuid = request.policy_uuid.is_nil()
       ? request.target_object.uuid
       : request.policy_uuid;
-  const std::string target_uuid = request.target_object_uuid.empty()
+  const EngineUuid target_uuid = request.target_object_uuid.is_nil()
       ? request.target_schema.uuid
       : request.target_object_uuid;
-  if (policy_uuid.empty() || target_uuid.empty()) {
+  if (policy_uuid.is_nil() || target_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityAttachPolicyResult>(
         request.context,
         kOperation,
@@ -3363,7 +3327,7 @@ EngineSecurityAttachPolicyResult EngineSecurityAttachPolicy(
   record.policy_effect = request.policy_effect.empty() ? "attach" : request.policy_effect;
   record.predicate_envelope =
       RedactSecurityPrincipalProtectedMaterialForDiagnostics(request.predicate_envelope);
-  record.definer_principal_uuid = request.definer_principal_uuid.empty()
+  record.definer_principal_uuid = request.definer_principal_uuid.is_nil()
       ? request.context.principal_uuid
       : request.definer_principal_uuid;
   record.lifecycle_state = "active";
@@ -3384,9 +3348,8 @@ EngineSecurityAttachPolicyResult EngineSecurityAttachPolicy(
                               kOperation,
                               target_uuid,
                               generation,
-                              "policy=" + policy_uuid +
-                                  ";target_kind=" + record.target_object_kind +
-                                  ";scope=" + request.policy_scope);
+                              SecurityAuditDetail{";target_kind=" + record.target_object_kind +
+                                  ";scope=" + request.policy_scope, policy_uuid, "policy_uuid"});
   const auto appended = AppendEvents(
       request.context,
       {RowPolicyEvent(record),
@@ -3423,14 +3386,14 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
                                                              kOperation,
                                                              "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
-  const std::string policy_uuid = request.policy_uuid.empty()
+  const EngineUuid policy_uuid = request.policy_uuid.is_nil()
       ? request.target_object.uuid
       : request.policy_uuid;
-  const std::string target_uuid = request.target_object_uuid.empty()
+  const EngineUuid target_uuid = request.target_object_uuid.is_nil()
       ? request.target_schema.uuid
       : request.target_object_uuid;
   const std::string policy_name = PrimaryName(request, request.policy_name);
-  if (policy_uuid.empty() || target_uuid.empty()) {
+  if (policy_uuid.is_nil() || target_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityCreatePolicyResult>(
         request.context,
         kOperation,
@@ -3461,7 +3424,7 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
   record.predicate_envelope = request.predicate_envelope.empty()
       ? "predicate:true"
       : RedactSecurityPrincipalProtectedMaterialForDiagnostics(request.predicate_envelope);
-  record.definer_principal_uuid = request.definer_principal_uuid.empty()
+  record.definer_principal_uuid = request.definer_principal_uuid.is_nil()
       ? request.context.principal_uuid
       : request.definer_principal_uuid;
   record.lifecycle_state = "active";
@@ -3482,9 +3445,8 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
                               kOperation,
                               policy_uuid,
                               generation,
-                              "target=" + target_uuid +
-                                  ";target_kind=" + record.target_object_kind +
-                                  ";effect=" + record.policy_effect);
+                              SecurityAuditDetail{";target_kind=" + record.target_object_kind +
+                                  ";effect=" + record.policy_effect, target_uuid, "target_uuid"});
   const auto appended = AppendEvents(
       request.context,
       {RowPolicyEvent(record),
@@ -3503,8 +3465,8 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
   if (effect.find("rls") != std::string::npos) {
     policy_classes.push_back("rls");
   }
-  std::string policy_name_scope_uuid = request.target_schema_uuid;
-  if (policy_name_scope_uuid.empty()) {
+  EngineUuid policy_name_scope_uuid = request.target_schema_uuid;
+  if (policy_name_scope_uuid.is_nil()) {
     policy_name_scope_uuid = request.context.current_schema_uuid;
   }
   const auto resolver = PersistSecurityNameAliases(
@@ -3513,7 +3475,7 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
       policy_uuid,
       policy_classes,
       request.localized_names,
-      policy_name.empty() ? policy_uuid : policy_name,
+      policy_name,
       policy_name_scope_uuid);
   if (resolver.error) {
     return DiagnosticResult<EngineSecurityCreatePolicyResult>(request.context,
@@ -3549,10 +3511,10 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
                                                             kOperation,
                                                             "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
-  const std::string policy_uuid = request.policy_uuid.empty()
+  const EngineUuid policy_uuid = request.policy_uuid.is_nil()
       ? request.target_object.uuid
       : request.policy_uuid;
-  if (policy_uuid.empty()) {
+  if (policy_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityAlterPolicyResult>(
         request.context,
         kOperation,
@@ -3597,7 +3559,7 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
   const std::uint64_t generation = NextGeneration(loaded.state);
   EngineSecurityRowPolicyRecord record = *existing;
   record.creator_tx = request.context.local_transaction_id;
-  if (!request.target_object_uuid.empty()) { record.target_object_uuid = request.target_object_uuid; }
+  if (!request.target_object_uuid.is_nil()) { record.target_object_uuid = request.target_object_uuid; }
   if (!request.target_object_kind.empty()) { record.target_object_kind = request.target_object_kind; }
   if (!request.policy_effect.empty()) { record.policy_effect = request.policy_effect; }
   if (!request.predicate_envelope.empty()) {
@@ -3607,7 +3569,7 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
       ClearNativeRowPolicyAuthority(&record);
     }
   }
-  if (!request.definer_principal_uuid.empty()) {
+  if (!request.definer_principal_uuid.is_nil()) {
     record.definer_principal_uuid = request.definer_principal_uuid;
   }
   record.lifecycle_state = lifecycle;
@@ -3629,10 +3591,9 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
                               kOperation,
                               policy_uuid,
                               generation,
-                              "target=" + record.target_object_uuid +
-                                  ";target_kind=" + record.target_object_kind +
+                              SecurityAuditDetail{";target_kind=" + record.target_object_kind +
                                   ";effect=" + record.policy_effect +
-                                  ";lifecycle_state=" + lifecycle);
+                                  ";lifecycle_state=" + lifecycle, record.target_object_uuid, "target_uuid"});
   const auto appended = AppendEvents(
       request.context,
       {RowPolicyEvent(record),
@@ -3668,7 +3629,7 @@ namespace {
 
 template <typename TResult, typename MarkDropped>
 TResult DropPolicyLike(const EngineApiRequest& request,
-                       std::string policy_uuid,
+                       EngineUuid policy_uuid,
                        const char* operation_id,
                        std::string object_kind,
                        std::string uuid_field_name,
@@ -3676,10 +3637,10 @@ TResult DropPolicyLike(const EngineApiRequest& request,
   auto preflight =
       MutatingSetupFailure<TResult>(request, operation_id, "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
-  if (policy_uuid.empty()) {
+  if (policy_uuid.is_nil()) {
     policy_uuid = request.target_object.uuid;
   }
-  if (policy_uuid.empty()) {
+  if (policy_uuid.is_nil()) {
     return DiagnosticResult<TResult>(
         request.context,
         operation_id,
@@ -3705,17 +3666,16 @@ TResult DropPolicyLike(const EngineApiRequest& request,
   record.lifecycle_state = "dropped";
   record.policy_generation = generation;
   record.deleted = true;
-  const std::string cache_target = record.target_object_uuid.empty()
+  const EngineUuid cache_target = record.target_object_uuid.is_nil()
       ? policy_uuid
       : record.target_object_uuid;
   const auto audit = MakeAudit(request.context,
                               operation_id,
                               policy_uuid,
                               generation,
-                              "target=" + record.target_object_uuid +
-                                  ";target_kind=" + record.target_object_kind +
+                              SecurityAuditDetail{";target_kind=" + record.target_object_kind +
                                   ";effect=" + record.policy_effect +
-                                  ";lifecycle_state=dropped");
+                                  ";lifecycle_state=dropped", record.target_object_uuid, "target_uuid"});
   const auto appended = AppendEvents(
       request.context,
       {RowPolicyEvent(record),
@@ -3792,10 +3752,10 @@ EngineSecurityActivatePolicyResult EngineSecurityActivatePolicy(
                                                                kOperation,
                                                                "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
-  const std::string policy_uuid = request.policy_uuid.empty()
+  const EngineUuid policy_uuid = request.policy_uuid.is_nil()
       ? request.target_object.uuid
       : request.policy_uuid;
-  if (policy_uuid.empty()) {
+  if (policy_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityActivatePolicyResult>(
         request.context,
         kOperation,
@@ -3856,10 +3816,10 @@ EngineSecurityDeactivatePolicyResult EngineSecurityDeactivatePolicy(
                                                                  kOperation,
                                                                  "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
-  const std::string policy_uuid = request.policy_uuid.empty()
+  const EngineUuid policy_uuid = request.policy_uuid.is_nil()
       ? request.target_object.uuid
       : request.policy_uuid;
-  if (policy_uuid.empty()) {
+  if (policy_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityDeactivatePolicyResult>(
         request.context,
         kOperation,
@@ -3921,10 +3881,10 @@ EngineSecurityValidatePolicyResult EngineSecurityValidatePolicy(
                                                                kOperation,
                                                                authority);
   }
-  const std::string policy_uuid = request.policy_uuid.empty()
+  const EngineUuid policy_uuid = request.policy_uuid.is_nil()
       ? request.target_object.uuid
       : request.policy_uuid;
-  if (policy_uuid.empty()) {
+  if (policy_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityValidatePolicyResult>(
         request.context,
         kOperation,
@@ -3985,10 +3945,10 @@ EngineSecurityShowPolicyResult EngineSecurityShowPolicy(
                                                            kOperation,
                                                            authority);
   }
-  const std::string policy_uuid = request.policy_uuid.empty()
+  const EngineUuid policy_uuid = request.policy_uuid.is_nil()
       ? request.target_object.uuid
       : request.policy_uuid;
-  if (policy_uuid.empty()) {
+  if (policy_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityShowPolicyResult>(
         request.context,
         kOperation,
@@ -4064,14 +4024,14 @@ EngineSecurityEvaluatePrivilegeResult EngineSecurityEvaluatePrivilege(
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticAuthorityRequired,
                             "security_context_required"));
   }
-  const std::string principal_uuid = !request.principal_uuid.empty()
+  const EngineUuid principal_uuid = !request.principal_uuid.is_nil()
       ? request.principal_uuid
       : request.context.principal_uuid;
-  const std::string target_uuid = !request.target_object_uuid.empty()
+  const EngineUuid target_uuid = !request.target_object_uuid.is_nil()
       ? request.target_object_uuid
       : request.target_object.uuid;
   const std::string privilege = NormalizePrivilege(request.privilege);
-  if (principal_uuid.empty() || target_uuid.empty() || privilege.empty()) {
+  if (principal_uuid.is_nil() || target_uuid.is_nil() || privilege.empty()) {
     return DiagnosticResult<EngineSecurityEvaluatePrivilegeResult>(
         request.context,
         kOperation,
@@ -4127,7 +4087,7 @@ EngineSecurityEvaluatePrivilegeResult EngineSecurityEvaluatePrivilege(
           request.context,
           kOperation,
           PrincipalDiagnostic(kSecurityPrincipalDiagnosticGrantNotVisible,
-                              target_uuid + ":" + privilege));
+                              target_uuid, privilege));
       result.decision = "deny";
       result.security_generation = loaded.state.security_generation;
       return result;
@@ -4137,7 +4097,7 @@ EngineSecurityEvaluatePrivilegeResult EngineSecurityEvaluatePrivilege(
   auto result = DiagnosticResult<EngineSecurityEvaluatePrivilegeResult>(
       request.context,
       kOperation,
-      PrincipalDiagnostic(kSecurityPrincipalDiagnosticDefaultDeny, target_uuid + ":" + privilege));
+      PrincipalDiagnostic(kSecurityPrincipalDiagnosticDefaultDeny, target_uuid, privilege));
   result.decision = "deny";
   result.security_generation = loaded.state.security_generation;
   AddRow(&result,
@@ -4157,13 +4117,13 @@ EngineSecurityPutRowPolicyResult EngineSecurityPutRowPolicy(
                                                              kOperation,
                                                              "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
-  const std::string policy_uuid = request.policy_uuid.empty()
+  const EngineUuid policy_uuid = request.policy_uuid.is_nil()
       ? request.target_object.uuid
       : request.policy_uuid;
-  const std::string target_uuid = request.target_object_uuid.empty()
+  const EngineUuid target_uuid = request.target_object_uuid.is_nil()
       ? request.target_schema.uuid
       : request.target_object_uuid;
-  if (policy_uuid.empty() || target_uuid.empty()) {
+  if (policy_uuid.is_nil() || target_uuid.is_nil()) {
     return DiagnosticResult<EngineSecurityPutRowPolicyResult>(
         request.context,
         kOperation,
@@ -4203,8 +4163,8 @@ EngineSecurityPutRowPolicyResult EngineSecurityPutRowPolicy(
                               kOperation,
                               target_uuid,
                               generation,
-                              "policy=" + policy_uuid + ";effect=" + record.policy_effect +
-                                  ";predicate=" + request.predicate_envelope);
+                              SecurityAuditDetail{";effect=" + record.policy_effect +
+                                  ";predicate=" + request.predicate_envelope, policy_uuid, "policy_uuid"});
   const auto appended = AppendEvents(
       request.context,
       {RowPolicyEvent(record),
@@ -4266,10 +4226,10 @@ EngineSecurityEvaluateRowPolicyResult EngineSecurityEvaluateRowPolicy(
     result.policy_generation = loaded.state.policy_generation;
     return result;
   }
-  const std::string principal_uuid = !request.principal_uuid.empty()
+  const EngineUuid principal_uuid = !request.principal_uuid.is_nil()
       ? request.principal_uuid
       : request.context.principal_uuid;
-  const std::string target_uuid = !request.target_object_uuid.empty()
+  const EngineUuid target_uuid = !request.target_object_uuid.is_nil()
       ? request.target_object_uuid
       : request.target_object.uuid;
   for (const auto& policy : loaded.state.row_policies) {
@@ -4304,7 +4264,7 @@ EngineSecurityEvaluateRowPolicyResult EngineSecurityEvaluateRowPolicy(
       request.context,
       kOperation,
       PrincipalDiagnostic(kSecurityPrincipalDiagnosticAccessDenied,
-                          "row_policy_denied:" + target_uuid));
+                          target_uuid, "row_policy_denied:"));
   result.decision = "deny";
   result.policy_generation = loaded.state.policy_generation;
   AddRow(&result,
@@ -4323,7 +4283,7 @@ EngineSecurityPrimeDefinerRightsCacheResult EngineSecurityPrimeDefinerRightsCach
                                                                         "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
   const std::string privilege = NormalizePrivilege(request.privilege);
-  if (request.definer_principal_uuid.empty() || request.target_object_uuid.empty() ||
+  if (request.definer_principal_uuid.is_nil() || request.target_object_uuid.is_nil() ||
       privilege.empty()) {
     return DiagnosticResult<EngineSecurityPrimeDefinerRightsCacheResult>(
         request.context,
@@ -4346,7 +4306,7 @@ EngineSecurityPrimeDefinerRightsCacheResult EngineSecurityPrimeDefinerRightsCach
         request.context,
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticDefaultDeny,
-                            request.target_object_uuid + ":" + privilege));
+                            request.target_object_uuid, privilege));
   }
   EngineSecurityDefinerRightsCacheRecord record;
   record.creator_tx = request.context.local_transaction_id;
@@ -4356,15 +4316,14 @@ EngineSecurityPrimeDefinerRightsCacheResult EngineSecurityPrimeDefinerRightsCach
   record.decision = "allow";
   record.policy_generation = loaded.state.policy_generation;
   record.cache_key = StableToken("definer-cache",
-                                 record.definer_principal_uuid + "|" +
-                                     record.target_object_uuid + "|" + record.privilege +
+                                 IdentityHashInput(record.definer_principal_uuid) +
+                                     IdentityHashInput(record.target_object_uuid) + record.privilege +
                                      "|" + std::to_string(record.policy_generation));
   const auto audit = MakeAudit(request.context,
                               kOperation,
                               record.target_object_uuid,
                               loaded.state.policy_generation,
-                              "definer=" + record.definer_principal_uuid +
-                                  ";privilege=" + record.privilege);
+                              SecurityAuditDetail{";privilege=" + record.privilege, record.definer_principal_uuid, "definer_uuid"});
   const auto appended = AppendEvents(request.context,
                                      {DefinerCacheEvent(record), AuditEvent(audit)});
   if (appended.error) {
@@ -4444,10 +4403,10 @@ EngineSecurityValidateDefinerRightsCacheResult EngineSecurityValidateDefinerRigh
     result.current_cache_invalidation_epoch = loaded.state.cache_invalidation_epoch;
     return result;
   }
-  const std::string definer = request.definer_principal_uuid.empty()
+  const EngineUuid definer = request.definer_principal_uuid.is_nil()
       ? found->definer_principal_uuid
       : request.definer_principal_uuid;
-  const std::string target = request.target_object_uuid.empty()
+  const EngineUuid target = request.target_object_uuid.is_nil()
       ? found->target_object_uuid
       : request.target_object_uuid;
   const std::string privilege = request.privilege.empty()

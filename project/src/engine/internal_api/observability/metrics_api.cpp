@@ -11,6 +11,10 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "crud_support/crud_store.hpp"
 #include "metric_history.hpp"
+#include "metric_history_store_codec.hpp"
+#include <iomanip>
+#include <limits>
+#include <type_traits>
 #include "metric_registry.hpp"
 #include "metric_retention_policy.hpp"
 #include "security/security_model.hpp"
@@ -84,17 +88,67 @@ bool DescriptorMatches(const EngineApiRequest& request, const MetricDescriptor& 
   return true;
 }
 
-std::string LabelsToText(const MetricLabelSet& labels) {
-  std::ostringstream out;
-  bool first = true;
-  for (const auto& label : labels) {
-    if (!first) {
-      out << ",";
-    }
-    out << label.key << "=" << label.value;
-    first = false;
+EngineTypedValue MetricBinaryValue(std::vector<std::uint8_t> bytes,
+                                 std::string kind) {
+  EngineTypedValue value;
+  value.descriptor.descriptor_kind = "scalar";
+  value.descriptor.canonical_type_name = "binary";
+  value.descriptor.encoded_descriptor = "metric_binary_format=" + std::move(kind);
+  value.binary_value = std::move(bytes);
+  value.state = EngineValueState::value;
+  value.is_null = false;
+  return value;
+}
+
+EngineTypedValue LabelsNativeValue(const MetricLabelSet& labels) {
+  scratchbird::core::metrics::history_codec::Writer writer;
+  writer.Raw("SBMLB001", 8);
+  writer.One(labels);
+  return MetricBinaryValue(std::move(writer.bytes), "SBMLB001");
+}
+EngineTypedValue SeriesKeyNativeValue(
+    const scratchbird::core::metrics::MetricSeriesIdentity& series, bool redacted) {
+  if (redacted) {
+    EngineTypedValue value;
+    value.is_null = true; value.state = EngineValueState::sql_null;
+    return value;
   }
-  return out.str();
+  scratchbird::core::metrics::history_codec::Writer writer;
+  writer.Raw("SBMSK001", 8);
+  writer(series.database_uuid, series.node_uuid, series.cluster_uuid,
+         series.metric_uuid, series.label_schema_uuid, series.labels);
+  return MetricBinaryValue(std::move(writer.bytes), "SBMSK001");
+}
+std::string LabelsDigest(const MetricLabelSet& labels) {
+  const auto encoded = LabelsNativeValue(labels);
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(encoded.binary_value);
+  if (!digest.ok()) throw std::runtime_error("metric label digest failed");
+  return scratchbird::core::hash::HexLower(digest.digest);
+}
+EngineTypedValue MetricScalarValue(const scratchbird::core::metrics::MetricScalar& scalar) {
+  namespace metrics = scratchbird::core::metrics;
+  return std::visit([](const auto& item) -> EngineTypedValue {
+    using T = std::decay_t<decltype(item)>;
+    if constexpr (std::is_same_v<T, EngineUuid>) return ApiBehaviorValue(item);
+    else if constexpr (std::is_same_v<T, std::string>) return ApiBehaviorValue(item);
+    else if constexpr (std::is_same_v<T, bool>) return ApiBehaviorBooleanValue(item);
+    else if constexpr (std::is_same_v<T, std::uint64_t>) return ApiBehaviorUnsignedValue(item);
+    else if constexpr (std::is_same_v<T, metrics::MetricEnumValue>) return ApiBehaviorUnsignedValue(item.code);
+    else if constexpr (std::is_same_v<T, std::int64_t>) {
+      auto value = ApiBehaviorValue(std::to_string(item));
+      value.descriptor.canonical_type_name = "int64"; return value;
+    } else if constexpr (std::is_same_v<T, double>) {
+      std::ostringstream text; text << std::setprecision(std::numeric_limits<double>::max_digits10) << item;
+      auto value = ApiBehaviorValue(text.str()); value.descriptor.canonical_type_name = "real64"; return value;
+    } else if constexpr (std::is_same_v<T, std::monostate>) {
+      EngineTypedValue value; value.is_null = true; value.state = EngineValueState::sql_null; return value;
+    } else {
+      // Wide numeric formats remain lossless; presentation is client-owned.
+      std::vector<std::uint8_t> bytes(item.bytes.begin(), item.bytes.end());
+      return MetricBinaryValue(std::move(bytes),
+          std::is_same_v<T, metrics::MetricFloat128> ? "metric.float128" : "metric.decimal128");
+    }
+  }, static_cast<const metrics::MetricScalar::Base&>(scalar));
 }
 
 EngineApiU64 ParseApiU64(const std::string& value, EngineApiU64 fallback = 0) {
@@ -163,11 +217,11 @@ void AddValueRow(EngineApiResult* result,
                     {{"metric", value.family},
                      {"namespace", descriptor.namespace_path},
                      {"type", MetricTypeName(value.type)},
-                     {"value", std::to_string(value.value)},
+                     {"value", MetricScalarValue(value.value)},
                      {"count", std::to_string(value.count)},
-                     {"sum", std::to_string(value.sum)},
+                     {"sum", MetricScalarValue(value.sum)},
                      {"state_text", value.state_text},
-                     {"labels", LabelsToText(value.labels)}});
+                     {"labels", LabelsNativeValue(value.labels)}});
 }
 
 void AddSeriesRow(EngineApiResult* result,
@@ -178,7 +232,7 @@ void AddSeriesRow(EngineApiResult* result,
   const bool redact_series_identity = !allow_sensitive_labels && series.redaction_class != "none";
   AddApiBehaviorRow(result,
                     {{"series_uuid", series.series_uuid},
-                     {"series_key", redact_series_identity ? "<redacted>" : series.series_key},
+                     {"series_key", SeriesKeyNativeValue(series, redact_series_identity)},
                      {"metric", series.metric_family},
                      {"namespace", series.namespace_path},
                      {"producer_owner", series.producer_owner},
@@ -186,8 +240,8 @@ void AddSeriesRow(EngineApiResult* result,
                      {"database_uuid", series.database_uuid},
                      {"node_uuid", series.node_uuid},
                      {"cluster_uuid", series.cluster_uuid},
-                     {"label_hash", series.label_hash},
-                     {"labels", LabelsToText(labels)},
+                     {"label_hash", redact_series_identity ? "<redacted>" : LabelsDigest(labels)},
+                     {"labels", LabelsNativeValue(labels)},
                      {"redaction_class", series.redaction_class},
                      {"retention_policy_uuid", series.retention_policy_uuid}});
 }
@@ -207,17 +261,17 @@ void AddRawHistoryRow(EngineApiResult* result,
                      {"metric", sample.metric_family},
                      {"namespace", descriptor.namespace_path},
                      {"type", MetricTypeName(sample.value.type)},
-                     {"observation_time_microseconds", std::to_string(sample.observation_time_microseconds)},
-                     {"collection_time_microseconds", std::to_string(sample.collection_time_microseconds)},
-                     {"publish_time_microseconds", std::to_string(sample.publish_time_microseconds)},
+                     {"sample_time_utc_ns", std::to_string(sample.sample_time_utc_ns)},
+                     {"collection_time_utc_ns", std::to_string(sample.collection_time_utc_ns)},
+                     {"publication_time_utc_ns", std::to_string(sample.publication_time_utc_ns)},
                      {"source_sequence", std::to_string(sample.source_sequence)},
                      {"clock_quality", sample.clock_quality},
                      {"freshness_class", sample.freshness_class},
-                     {"value", std::to_string(sample.value.value)},
+                     {"value", MetricScalarValue(sample.value.value)},
                      {"count", std::to_string(sample.value.count)},
-                     {"sum", std::to_string(sample.value.sum)},
+                     {"sum", MetricScalarValue(sample.value.sum)},
                      {"state_text", sample.value.state_text},
-                     {"labels", LabelsToText(sample.value.labels)},
+                     {"labels", LabelsNativeValue(sample.value.labels)},
                      {"evidence_uuid", sample.evidence_uuid}});
 }
 
@@ -401,11 +455,11 @@ EngineShowMetricsResult EngineShowMetrics(const EngineShowMetricsRequest& reques
                            {"unit", scratchbird::core::metrics::MetricUnitName(descriptor.unit)},
                            {"producer_owner", descriptor.producer_owner},
                            {"readiness", scratchbird::core::metrics::MetricReadinessName(descriptor.readiness)},
-                           {"value", std::to_string(value.value)},
+                           {"value", MetricScalarValue(value.value)},
                            {"count", std::to_string(value.count)},
-                           {"sum", std::to_string(value.sum)},
+                           {"sum", MetricScalarValue(value.sum)},
                            {"state_text", value.state_text},
-                           {"labels", LabelsToText(value.labels)}});
+                           {"labels", LabelsNativeValue(value.labels)}});
         emitted_sample = true;
       }
     }
@@ -453,6 +507,12 @@ EngineSysMetricsHistoryResult EngineSysMetricsHistory(const EngineSysMetricsHist
   const auto path = MetricHistoryPath(request);
   if (!path.empty()) {
     const auto store = scratchbird::core::metrics::LoadMetricHistoryStore(path);
+    if (!store.load_status.ok) {
+      result.ok = false;
+      result.diagnostics.push_back(MakeInvalidRequestDiagnostic(result.operation_id,
+          store.load_status.diagnostic_code + ":" + store.load_status.detail));
+      return result;
+    }
     for (auto sample : store.raw_samples) {
       const auto descriptor = by_family.find(sample.metric_family);
       if (descriptor != by_family.end() && DescriptorMatches(request, descriptor->second, false)) {
@@ -505,6 +565,12 @@ EngineSysMetricsRollupsResult EngineSysMetricsRollups(const EngineSysMetricsRoll
     return result;
   }
   const auto store = scratchbird::core::metrics::LoadMetricHistoryStore(path);
+    if (!store.load_status.ok) {
+      result.ok = false;
+      result.diagnostics.push_back(MakeInvalidRequestDiagnostic(result.operation_id,
+          store.load_status.diagnostic_code + ":" + store.load_status.detail));
+      return result;
+    }
   const auto descriptors = scratchbird::core::metrics::DefaultMetricRegistry().Descriptors(false);
   std::map<std::string, MetricDescriptor> by_family;
   for (const auto& descriptor : descriptors) {
@@ -532,6 +598,12 @@ EngineSysMetricsSeriesResult EngineSysMetricsSeries(const EngineSysMetricsSeries
   }
   const bool allow_sensitive = HasSensitiveMetricRight(request.context);
   const auto store = scratchbird::core::metrics::LoadMetricHistoryStore(path);
+    if (!store.load_status.ok) {
+      result.ok = false;
+      result.diagnostics.push_back(MakeInvalidRequestDiagnostic(result.operation_id,
+          store.load_status.diagnostic_code + ":" + store.load_status.detail));
+      return result;
+    }
   const auto descriptors = scratchbird::core::metrics::DefaultMetricRegistry().Descriptors(false);
   std::map<std::string, MetricDescriptor> by_family;
   for (const auto& descriptor : descriptors) {
@@ -558,10 +630,16 @@ EngineSysMetricsRetentionPoliciesResult EngineSysMetricsRetentionPolicies(
   auto result = MakeApiBehaviorSuccess<EngineSysMetricsRetentionPoliciesResult>(
       request.context,
       "observability.sys_metrics.retention_policies");
-  auto policies = scratchbird::core::metrics::BaselineMetricRetentionPolicies();
+  std::vector<MetricRetentionPolicy> policies;
   const auto path = MetricHistoryPath(request);
   if (!path.empty()) {
     const auto store = scratchbird::core::metrics::LoadMetricHistoryStore(path);
+    if (!store.load_status.ok) {
+      result.ok = false;
+      result.diagnostics.push_back(MakeInvalidRequestDiagnostic(result.operation_id,
+          store.load_status.diagnostic_code + ":" + store.load_status.detail));
+      return result;
+    }
     if (!store.policies.empty()) {
       policies = store.policies;
     }
@@ -569,7 +647,7 @@ EngineSysMetricsRetentionPoliciesResult EngineSysMetricsRetentionPolicies(
   const bool editable = HasMetricsRetentionControlRight(request.context);
   for (const auto& policy : policies) {
     const auto name = SecurityOptionValue(request, "policy_name:");
-    if (!name.empty() && name != policy.policy_name && name != policy.policy_uuid) {
+    if (!name.empty() && name != policy.policy_name) {
       continue;
     }
     AddRetentionPolicyRow(&result, policy, editable);
@@ -601,9 +679,13 @@ EngineAlterMetricRetentionPolicyResult EngineAlterMetricRetentionPolicy(
         "observability.alter_metric_retention_policy",
         MakeInvalidRequestDiagnostic("observability.alter_metric_retention_policy", "policy_name_required"));
   }
-  policy.policy_uuid = SecurityOptionValue(request, "policy_uuid:");
-  if (policy.policy_uuid.empty()) {
-    policy.policy_uuid = scratchbird::core::metrics::StableV7LikeMetricUuid("retention-policy:" + policy.policy_name);
+  policy.policy_uuid = request.target_object.uuid;
+  policy.generation = request.bound_object_identity.object_descriptor_generation;
+  if (policy.policy_uuid.is_nil() || !policy.generation ||
+      request.bound_object_identity.object_uuid != policy.policy_uuid) {
+    return MakeApiBehaviorDiagnostic<EngineAlterMetricRetentionPolicyResult>(request.context,
+        "observability.alter_metric_retention_policy",
+        MakeInvalidRequestDiagnostic("observability.alter_metric_retention_policy", "catalog_policy_binding_required"));
   }
   const auto mode = SecurityOptionValue(request, "mode:");
   policy.mode = scratchbird::core::metrics::MetricRetentionModeFromName(mode.empty() ? "current_only" : mode);
@@ -629,7 +711,7 @@ EngineAlterMetricRetentionPolicyResult EngineAlterMetricRetentionPolicy(
   const auto persisted = scratchbird::core::metrics::UpsertMetricRetentionPolicy(
       path,
       policy,
-      request.context.principal_uuid.is_nil() ? "system.metrics_admin" : request.context.principal_uuid,
+      request.context.principal_uuid,
       request.context.transaction_uuid);
   if (!persisted.ok) {
     return MakeApiBehaviorDiagnostic<EngineAlterMetricRetentionPolicyResult>(
@@ -722,6 +804,12 @@ EngineClusterSysMetricsHistoryResult EngineClusterSysMetricsHistory(
   }
   const bool allow_sensitive = HasSensitiveMetricRight(request.context);
   const auto store = scratchbird::core::metrics::LoadMetricHistoryStore(path);
+    if (!store.load_status.ok) {
+      result.ok = false;
+      result.diagnostics.push_back(MakeInvalidRequestDiagnostic(result.operation_id,
+          store.load_status.diagnostic_code + ":" + store.load_status.detail));
+      return result;
+    }
   const auto descriptors = scratchbird::core::metrics::DefaultMetricRegistry().Descriptors(true);
   std::map<std::string, MetricDescriptor> by_family;
   for (const auto& descriptor : descriptors) {

@@ -1,9 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "mga_relation_store/mga_savepoint_marker_codec.hpp"
-#include "mga_relation_store/mga_row_codec.hpp"
+#include "mga_relation_store/mga_binary_fields.hpp"
 #include "hash_digest.hpp"
-#include "uuid.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -17,8 +16,22 @@ constexpr std::size_t kDigest = 32;
 constexpr std::size_t kMinimum = kHeader + 4 + 7 * 8 + 4 + 1 + kDigest;
 }
 
-std::string MgaSavepointUuidKey(std::string_view uuid) {
-  return std::string(1, '\0') + std::string(uuid);
+std::string MgaSavepointUuidKey(const scratchbird::core::platform::Uuid& uuid) {
+  if (uuid.is_nil()) return {};
+  std::string key(1, '\0');
+  key.append(reinterpret_cast<const char*>(uuid.bytes.data()), uuid.bytes.size());
+  return key;
+}
+
+bool DecodeMgaSavepointUuidKey(std::string_view key,
+                              scratchbird::core::platform::Uuid* uuid) {
+  if (!uuid || key.size() != 17 || key.front() != '\0') return false;
+  scratchbird::core::platform::Uuid decoded;
+  std::copy_n(reinterpret_cast<const unsigned char*>(key.data() + 1), 16,
+              decoded.bytes.begin());
+  if (decoded.is_nil()) return false;
+  *uuid = decoded;
+  return true;
 }
 
 std::uint32_t MgaSavepointMarkerFrameSize(std::string_view bytes) {
@@ -31,7 +44,10 @@ std::uint32_t MgaSavepointMarkerFrameSize(std::string_view bytes) {
 }
 
 std::string EncodeMgaSavepointMarker(const MgaSavepointMarkerRecord& r) {
-  if (r.kind < 1 || r.kind > 3 || !r.transaction || r.identity.empty()) return {};
+  if (r.kind < 1 || r.kind > 3 || !r.transaction ||
+      (r.uuid_identity ? r.uuid.is_nil() || !r.identity.empty() ||
+                            (r.uuid.bytes[8] & 0xc0u) != 0x80u
+                       : r.identity.empty() || !r.uuid.is_nil())) return {};
   std::string body;
   AppendBinaryU8(&body, r.kind);
   AppendBinaryU8(&body, r.uuid_identity ? 1 : 0);
@@ -40,10 +56,8 @@ std::string EncodeMgaSavepointMarker(const MgaSavepointMarkerRecord& r) {
   for (auto value : r.cutoffs) AppendBinaryU64(&body, value);
   for (auto value : r.upper) AppendBinaryU64(&body, value);
   if (r.uuid_identity) {
-    const auto uuid = scratchbird::core::uuid::ParseUuid(r.identity);
-    if (!uuid.ok() || scratchbird::core::uuid::IsNilUuid(uuid.value)) return {};
     AppendBinaryU32(&body, 16);
-    body.append(reinterpret_cast<const char*>(uuid.value.bytes.data()), 16);
+    body.append(reinterpret_cast<const char*>(r.uuid.bytes.data()), 16);
   } else {
     if (r.identity.find('\0') != std::string::npos ||
         r.identity.size() > kMgaSavepointFrameMaximum) return {};
@@ -67,7 +81,7 @@ bool DecodeMgaSavepointMarker(std::string_view bytes, MgaSavepointMarkerRecord* 
       reinterpret_cast<const scratchbird::core::platform::byte*>(bytes.data()), bytes.size() - kDigest);
   if (!digest.ok() || !std::equal(digest.digest.begin(), digest.digest.end(),
       reinterpret_cast<const scratchbird::core::platform::byte*>(bytes.data() + bytes.size() - kDigest))) return false;
-  std::vector<scratchbird::core::index::byte> body(bytes.begin() + kHeader, bytes.end() - kDigest);
+  std::vector<std::uint8_t> body(bytes.begin() + kHeader, bytes.end() - kDigest);
   std::size_t offset = 0;
   std::uint8_t identity_kind = 0;
   std::uint16_t reserved = 0;
@@ -83,10 +97,8 @@ bool DecodeMgaSavepointMarker(std::string_view bytes, MgaSavepointMarkerRecord* 
   if (!ReadBinaryU32(body, &offset, &size) || size == 0 || size != body.size() - offset) return false;
   if (out.uuid_identity) {
     if (size != 16) return false;
-    scratchbird::core::platform::Uuid uuid{};
-    std::copy_n(body.begin() + offset, 16, uuid.bytes.begin());
-    if (scratchbird::core::uuid::IsNilUuid(uuid)) return false;
-    out.identity = scratchbird::core::uuid::UuidToString(uuid);
+    std::copy_n(body.begin() + offset, 16, out.uuid.bytes.begin());
+    if (out.uuid.is_nil()) return false;
   } else {
     out.identity.assign(reinterpret_cast<const char*>(body.data() + offset), size);
     if (out.identity.find('\0') != std::string::npos) return false;

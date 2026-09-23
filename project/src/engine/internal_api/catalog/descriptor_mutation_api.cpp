@@ -34,7 +34,7 @@ bool DescriptorUsesRootNameScope(const std::string& object_kind) {
   return object_kind == "filespace" || object_kind == "filespace_agent";
 }
 
-std::string DescriptorNameScopeUuid(const EngineCatalogDescriptorMutationRequest& request,
+EngineUuid DescriptorNameScopeUuid(const EngineCatalogDescriptorMutationRequest& request,
                                     const std::string& object_kind) {
   if (!request.target_schema.uuid.is_nil()) {
     return request.target_schema.uuid;
@@ -117,7 +117,7 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
   if (!result.ok) return result;
 
   const std::string fallback_name = ApiBehaviorPrimaryName(request, object_kind);
-  const std::string scope_uuid = DescriptorNameScopeUuid(request, object_kind);
+  const EngineUuid scope_uuid = DescriptorNameScopeUuid(request, object_kind);
   const auto name_appended = PersistNameRegistryEntriesForObject(request.context,
                                                                 operation_id,
                                                                 result.primary_object.uuid,

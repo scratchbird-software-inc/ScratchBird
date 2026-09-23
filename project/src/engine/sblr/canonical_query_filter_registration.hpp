@@ -36,7 +36,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
     CanonicalRelationalExpressionRowBinding predicate_row_binding,
     scratchbird::engine::internal_api::TypedRelationalDag relational_dag,
     CanonicalRelationalExpressionRuntimeServices expression_services,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t expected_input_row_count,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);
 
@@ -48,7 +48,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
     CanonicalRelationalExpressionRowBinding predicate_row_binding,
     scratchbird::engine::internal_api::TypedRelationalDag relational_dag,
     CanonicalRelationalExpressionRuntimeServices expression_services,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t maximum_input_row_count,
     scratchbird::engine::internal_api::EngineRequestContext mga_context,
     scratchbird::engine::internal_api::EngineCanonicalExpressionConsumer

@@ -9,24 +9,24 @@
 
 using namespace scratchbird::engine::internal_api;
 namespace {
-std::string Id(scratchbird::core::platform::UuidKind kind) {
+EngineUuid Id(scratchbird::core::platform::UuidKind kind) {
   static auto next=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
   const auto v=scratchbird::core::uuid::GenerateEngineIdentityV7(kind,++next);
-  assert(v.ok());return scratchbird::core::uuid::UuidToString(v.value.value);
+  assert(v.ok());return v.value.value;
 }
 EngineRequestContext Context(const std::filesystem::path& base) {
   EngineRequestContext c;c.database_path=base.string();
-  c.database_uuid.canonical=Id(scratchbird::core::platform::UuidKind::database);
-  c.session_uuid.canonical=Id(scratchbird::core::platform::UuidKind::object);
-  c.transaction_uuid.canonical=Id(scratchbird::core::platform::UuidKind::object);
+  c.database_uuid=Id(scratchbird::core::platform::UuidKind::database);
+  c.session_uuid=Id(scratchbird::core::platform::UuidKind::object);
+  c.transaction_uuid=Id(scratchbird::core::platform::UuidKind::object);
   c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;
   c.trace_tags={"private_variable_registry","canonical_datatype_value_validated"};return c;
 }
 }
 int main(){
   const auto base=std::filesystem::temp_directory_path()/"sb_variable_descriptor_registry_test";
-  const auto store=base.string()+".sb.sblr_variable_registry.v1";std::error_code ec;std::filesystem::remove(store,ec);
+  const auto store=base.string()+".sb.sblr_variable_registry.v2";std::error_code ec;std::filesystem::remove(store,ec);
   auto c=Context(base);const auto receipt=Id(scratchbird::core::platform::UuidKind::object);
   const auto scope=Id(scratchbird::core::platform::UuidKind::object);
   const auto frame=Id(scratchbird::core::platform::UuidKind::object);
@@ -40,7 +40,7 @@ int main(){
   auto assigned=AssignSblrVariable(c,receipt,scope,3,frame,4,issued.rows[0].variable_descriptor_uuid,1,1,SblrVariableValueState::value,"two");assert(assigned.ok&&assigned.row.value_generation==2&&assigned.row.row_identity_sha256==issued.rows[0].row_identity_sha256);
   auto stale=LookupSblrVariable(c,receipt,scope,3,frame,4,issued.rows[0].variable_descriptor_uuid,1,1);assert(!stale.ok&&stale.diagnostic.code=="SBLR.VARIABLE.STALE");
   auto immutable=AssignSblrVariable(c,receipt,scope,3,frame,4,issued.rows[1].variable_descriptor_uuid,1,1,SblrVariableValueState::null_value,{});assert(!immutable.ok&&immutable.diagnostic.code=="SECURITY.ACCESS_DENIED");
-  auto wrong=c;wrong.session_uuid.canonical=Id(scratchbird::core::platform::UuidKind::object);auto hidden=LookupSblrVariable(wrong,receipt,scope,3,frame,4,issued.rows[0].variable_descriptor_uuid,1,2);assert(!hidden.ok&&hidden.diagnostic.code=="SECURITY.ACCESS_DENIED");
+  auto wrong=c;wrong.session_uuid=Id(scratchbird::core::platform::UuidKind::object);auto hidden=LookupSblrVariable(wrong,receipt,scope,3,frame,4,issued.rows[0].variable_descriptor_uuid,1,2);assert(!hidden.ok&&hidden.diagnostic.code=="SECURITY.ACCESS_DENIED");
   auto admin=c;admin.trace_tags={"right:SBLR_VARIABLE_REGISTRY_ADMIN"};assert(RecoverSblrVariableDescriptorRegistry(admin).code=="OK");
   hidden=LookupSblrVariable(c,receipt,scope,3,frame,4,issued.rows[0].variable_descriptor_uuid,1,2);assert(!hidden.ok&&hidden.diagnostic.code=="SECURITY.ACCESS_DENIED");
   auto next=PublishSblrVariableFrame(c,Id(scratchbird::core::platform::UuidKind::object),Id(scratchbird::core::platform::UuidKind::object),5,Id(scratchbird::core::platform::UuidKind::object),6,{demands[0]});assert(next.ok&&next.rows[0].registry_generation>assigned.row.registry_generation);

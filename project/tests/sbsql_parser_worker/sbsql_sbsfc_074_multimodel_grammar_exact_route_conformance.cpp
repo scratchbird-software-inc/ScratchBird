@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -131,7 +132,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -139,10 +140,10 @@ bool HasEvidence(const api::EngineApiResult& result,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000074101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000074102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000074103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 274;
   session.security_policy_epoch = 275;
   session.descriptor_epoch = 276;
@@ -153,7 +154,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_074_multimodel_route";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000074104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074104");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-074-multimodel-route-test";
   config.build_id = "sbsql-sbsfc-074-multimodel-route-test";
   return config;
@@ -176,7 +177,7 @@ PipelineArtifacts RunPipeline(const MultiModelCase& test_case) {
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            {std::string(kTargetUuid)});
+                            {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074001")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -299,7 +300,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+scratchbird::core::platform::Uuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -313,21 +314,21 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "SBSFC-074 test database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContextForDatabase(const std::filesystem::path& path,
-                                                   const std::string& database_uuid) {
+                                                   const scratchbird::core::platform::Uuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-sbsfc-074-multimodel-exact-route";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000074202";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000074203";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000074204";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000074206";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000074207";
-  context.current_role_uuid.canonical = "019f0000-0000-7000-8000-000000074208";
+  context.database_uuid = database_uuid;
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074202");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074203");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074204");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074206");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074207");
+  context.current_role_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074208");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -342,7 +343,7 @@ api::EngineRequestContext EngineContextForDatabase(const std::filesystem::path& 
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid) {
+                                                 const scratchbird::core::platform::Uuid& database_uuid) {
   auto context = EngineContextForDatabase(path, database_uuid);
   auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
                                          "SBLR_TRANSACTION_BEGIN",
@@ -379,7 +380,7 @@ sblr::SblrOperationEnvelope EngineEnvelope(std::string_view operation_id,
 
 api::EngineApiRequest ApiRequestFor(std::string_view name, std::string_view option) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::string(kTargetUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000074001");
   request.target_object.object_kind = "multimodel_target";
   request.localized_names.push_back({"en", "primary", "", std::string(name), true});
   request.option_envelopes.push_back(std::string(option));

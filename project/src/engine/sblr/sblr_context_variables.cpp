@@ -24,8 +24,7 @@ SblrValue TextContextValue(std::string descriptor_id, std::string value_text) {
   value.descriptor_id = std::move(descriptor_id);
   value.text_value = std::move(value_text);
   value.encoded_value = value.text_value;
-  value.payload_kind = value.descriptor_id == "uuid" ? SblrValuePayloadKind::uuid_text :
-                       value.descriptor_id == "timestamp_tz" ? SblrValuePayloadKind::temporal_text :
+  value.payload_kind = value.descriptor_id == "timestamp_tz" ? SblrValuePayloadKind::temporal_text :
                        value.descriptor_id == "uint128" ? SblrValuePayloadKind::high_precision_numeric_text :
                        SblrValuePayloadKind::text;
   value.is_null = false;
@@ -93,6 +92,23 @@ SblrResult RequiredTextContext(std::string_view variable_id,
   return ContextResult(variable_id, TextContextValue(std::move(descriptor_id), value_text));
 }
 
+SblrResult RequiredUuidContext(std::string_view variable_id,
+                               const SblrExecutionContext& context,
+                               const SblrUuid& identity,
+                               std::string detail) {
+  if (identity.is_nil()) return ContextFailure(variable_id, context, std::move(detail));
+  return ContextResult(variable_id, MakeSblrUuidValue(identity));
+}
+
+SblrValue UuidArrayContextValue(const std::vector<SblrUuid>& identities) {
+  SblrValue value;
+  value.descriptor_id = "uuid_array";
+  value.payload_kind = SblrValuePayloadKind::uuid_array_binary;
+  value.uuid_array_value = identities;
+  value.is_null = false;
+  return value;
+}
+
 bool MatchesAny(std::string_view value, std::initializer_list<std::string_view> candidates) {
   for (const auto candidate : candidates) {
     if (value == candidate) return true;
@@ -138,50 +154,50 @@ SblrResult ResolveSblrContextVariable(std::string_view variable_id, const SblrEx
   if (MatchesAny(variable_id,
                  {"ctx_current_user_uuid", "context.current_user", "CURRENT_USER", "USER", "SESSION_USER", "SYSTEM_USER",
                   "firebird.current_user", "postgres.current_user", "postgres.session_user", "mysql.current_user", "mysql.user"})) {
-    return RequiredTextContext(variable_id, context, "uuid", context.user_uuid, "current user UUID is not present in the execution context");
+    return RequiredUuidContext(variable_id, context, context.user_uuid, "current user UUID is not present in the execution context");
   }
   if (MatchesAny(variable_id, {"ctx_current_role_uuid", "context.current_role", "CURRENT_ROLE", "firebird.current_role"})) {
-    return context.current_role_uuid.empty() ? ContextResult(variable_id, NullContextValue("uuid"))
-                                             : ContextResult(variable_id, TextContextValue("uuid", context.current_role_uuid));
+    return context.current_role_uuid.is_nil() ? ContextResult(variable_id, NullContextValue("uuid"))
+                                             : ContextResult(variable_id, MakeSblrUuidValue(context.current_role_uuid));
   }
   if (variable_id == "ctx_current_group_uuid_set") {
     if (!context.security_context_present) {
       return ContextFailure(variable_id, context, "effective group UUID set requires an active security context");
     }
     return context.current_group_uuid_set.empty() ? ContextResult(variable_id, NullContextValue("uuid_array"))
-                                                  : ContextResult(variable_id, TextContextValue("uuid_array", context.current_group_uuid_set));
+                                                  : ContextResult(variable_id, UuidArrayContextValue(context.current_group_uuid_set));
   }
   if (MatchesAny(variable_id, {"ctx_current_schema_uuid", "CURRENT_SCHEMA", "postgres.current_schema"})) {
-    return RequiredTextContext(variable_id, context, "uuid", context.current_schema_uuid, "current schema UUID is not present in the execution context");
+    return RequiredUuidContext(variable_id, context, context.current_schema_uuid, "current schema UUID is not present in the execution context");
   }
   if (MatchesAny(variable_id,
                  {"ctx_current_database_uuid", "context.database_uuid", "CURRENT_DATABASE", "DATABASE", "DATABASE()",
                   "postgres.current_database", "mysql.database"})) {
-    return RequiredTextContext(variable_id, context, "uuid", context.database_uuid, "database UUID is not present in the execution context");
+    return RequiredUuidContext(variable_id, context, context.database_uuid, "database UUID is not present in the execution context");
   }
   if (variable_id == "ctx_current_cluster_uuid") {
-    return context.cluster_uuid.empty() ? ContextResult(variable_id, NullContextValue("uuid"))
-                                        : ContextResult(variable_id, TextContextValue("uuid", context.cluster_uuid));
+    return context.cluster_uuid.is_nil() ? ContextResult(variable_id, NullContextValue("uuid"))
+                                        : ContextResult(variable_id, MakeSblrUuidValue(context.cluster_uuid));
   }
   if (variable_id == "ctx_current_node_uuid" || variable_id == "context.node_uuid") {
-    return RequiredTextContext(variable_id, context, "uuid", context.node_uuid, "node UUID is not present in the execution context");
+    return RequiredUuidContext(variable_id, context, context.node_uuid, "node UUID is not present in the execution context");
   }
   if (MatchesAny(variable_id, {"ctx_current_session_uuid", "SESSION_ID", "CURRENT_SESSION_ID", "CURRENT_SESSION_UUID", "oracle.sessionid"})) {
-    return RequiredTextContext(variable_id, context, "uuid", context.session_uuid, "session UUID is not present in the execution context");
+    return RequiredUuidContext(variable_id, context, context.session_uuid, "session UUID is not present in the execution context");
   }
   if (variable_id == "ctx_current_attachment_uuid") {
-    return RequiredTextContext(variable_id, context, "uuid", context.attachment_uuid, "attachment UUID is not present in the execution context");
+    return RequiredUuidContext(variable_id, context, context.attachment_uuid, "attachment UUID is not present in the execution context");
   }
   if (MatchesAny(variable_id, {"ctx_current_transaction_uuid", "context.current_transaction", "CURRENT_TRANSACTION", "firebird.current_transaction"})) {
-    return context.transaction_uuid.empty() ? ContextResult(variable_id, NullContextValue("uuid"))
-                                            : ContextResult(variable_id, TextContextValue("uuid", context.transaction_uuid));
+    return context.transaction_uuid.is_nil() ? ContextResult(variable_id, NullContextValue("uuid"))
+                                            : ContextResult(variable_id, MakeSblrUuidValue(context.transaction_uuid));
   }
   if (MatchesAny(variable_id, {"ctx_current_local_transaction_id", "TRANSACTION_ID", "CURRENT_TRANSACTION_ID", "firebird.transaction_id"})) {
     return context.local_transaction_id == 0 ? ContextResult(variable_id, NullContextValue("uint64"))
                                              : ContextResult(variable_id, UInt64ContextValue(context.local_transaction_id));
   }
   if (variable_id == "ctx_current_statement_uuid") {
-    return RequiredTextContext(variable_id, context, "uuid", context.statement_uuid, "statement UUID is not present in the execution context");
+    return RequiredUuidContext(variable_id, context, context.statement_uuid, "statement UUID is not present in the execution context");
   }
   if (MatchesAny(variable_id, {"ctx_statement_timestamp", "STATEMENT_TIMESTAMP"})) {
     return RequiredTextContext(variable_id, context, "timestamp_tz", context.statement_timestamp, "statement timestamp is not present in the execution context");
@@ -199,11 +215,11 @@ SblrResult ResolveSblrContextVariable(std::string_view variable_id, const SblrEx
     return RequiredTextContext(variable_id, context, "uint128", context.current_monotonic_ns, "monotonic timestamp provider value is not present in the execution context");
   }
   if (variable_id == "ctx_parser_profile_uuid" || variable_id == "context.session_dialect") {
-    return RequiredTextContext(variable_id, context, "uuid", context.parser_profile_uuid, "parser profile UUID is not present in the execution context");
+    return RequiredUuidContext(variable_id, context, context.parser_profile_uuid, "parser profile UUID is not present in the execution context");
   }
   if (variable_id == "ctx_client_protocol_uuid") {
-    return context.client_protocol_uuid.empty() ? ContextResult(variable_id, NullContextValue("uuid"))
-                                                : ContextResult(variable_id, TextContextValue("uuid", context.client_protocol_uuid));
+    return context.client_protocol_uuid.is_nil() ? ContextResult(variable_id, NullContextValue("uuid"))
+                                                : ContextResult(variable_id, MakeSblrUuidValue(context.client_protocol_uuid));
   }
   if (variable_id == "ctx_restricted_open_mode") {
     return ContextResult(variable_id, BoolContextValue(context.restricted_open_mode));

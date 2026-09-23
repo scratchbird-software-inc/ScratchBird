@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -75,10 +76,10 @@ void PrintMessages(const MessageVectorSet& messages) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000d07e11";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000d07e12";
-  session.database_uuid = "019f0000-0000-7000-8000-000000d07e13";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d07e11");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d07e12");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d07e13");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 67;
   session.security_policy_epoch = 68;
   session.descriptor_epoch = 69;
@@ -89,7 +90,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000d07e14";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d07e14");
   config.bundle_contract_id = "sbp_sbsql@index-template-refusal-test";
   config.build_id = "sbsql-index-template-refusal-test";
   return config;

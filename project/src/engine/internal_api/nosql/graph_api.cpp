@@ -18,6 +18,7 @@
 #include "query/expression_api.hpp"
 #include "security/security_model.hpp"
 #include "uuid.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -38,19 +39,19 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 struct GraphFrontierState {
-  std::string vertex_id;
-  std::string path;
-  std::string path_identity;
-  std::set<std::string> visited;
+  EngineUuid vertex_id;
+  std::vector<EngineUuid> path;
+  std::vector<EngineUuid> path_identity;
+  std::set<EngineUuid> visited;
 };
 
 struct GraphTraversalRow {
-  std::string vertex_id;
-  std::string edge_id;
+  EngineUuid vertex_id;
+  EngineUuid edge_id;
   std::string_view edge_type;
   double edge_weight = 0.0;
-  std::string path;
-  std::string path_identity;
+  std::vector<EngineUuid> path;
+  std::vector<EngineUuid> path_identity;
   EngineApiU64 depth = 0;
 };
 
@@ -94,75 +95,52 @@ const char* GraphCancellationDiagnostic(
   return "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
 }
 
-bool CanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
-}
+bool CanonicalUuid(const EngineUuid& value) { return core::uuid::IsEngineIdentityUuid(value); }
 
 bool ExactGraphValueDescriptor(const EngineDescriptor& descriptor,
-                               const std::string_view expected_type,
-                               const std::string_view expected_type_uuid,
-                               const scratchbird::core::datatypes::
-                                   DatatypeTypeCodecIdentityRowV1*
-                                       expected_registry_identity,
-                               const std::string_view expected_column_uuid,
-                               const bool expected_nullable) {
+                                  const std::string_view expected_type,
+                                  const EngineUuid& expected_type_uuid,
+                                  const scratchbird::core::datatypes::
+                                      DatatypeTypeCodecIdentityRowV1*
+                                          expected_registry_identity,
+                                  const EngineUuid& expected_column_uuid,
+                                  const bool expected_nullable) {
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
       descriptor.descriptor_kind != "canonical_type_descriptor" ||
       descriptor.canonical_type_name != expected_type) {
     return false;
   }
-  std::map<std::string_view, std::string_view> fields;
-  const auto encoded = std::string_view(descriptor.encoded_descriptor);
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto end = encoded.find(';', offset);
-    const auto field = encoded.substr(
-        offset, end == std::string_view::npos ? std::string_view::npos
-                                              : end - offset);
-    const auto equal = field.find('=');
-    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
-        equal + 1 == field.size() ||
-        !fields.emplace(field.substr(0, equal), field.substr(equal + 1)).second)
-      return false;
-    if (end == std::string_view::npos) break;
-    offset = end + 1;
-  }
+  CatalogColumnMetadata metadata;
+  if (!DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &metadata)) return false;
+  const auto& fields = metadata.text;
+  const auto& identities = metadata.identities;
   const bool contextual_text = expected_type == "text";
-  if (fields.size() != (contextual_text ? 12U : 3U) ||
-      !fields.contains("canonical") ||
-      !fields.contains("type_uuid") || !fields.contains("nullable") ||
+  if (fields.size() != (contextual_text ? 8U : 2U) ||
+      identities.size() != (contextual_text ? 4U : 1U) ||
+      !fields.contains("canonical") || !identities.contains("type_uuid") ||
+      !fields.contains("nullable") ||
       fields.at("canonical") != expected_type ||
-      !CanonicalUuid(fields.at("type_uuid")) ||
-      fields.at("type_uuid") != expected_type_uuid ||
+      !CanonicalUuid(identities.at("type_uuid")) ||
+      identities.at("type_uuid") != expected_type_uuid ||
+      descriptor.type_uuid != expected_type_uuid ||
       fields.at("nullable") != (expected_nullable ? "true" : "false") ||
       (contextual_text &&
        (expected_registry_identity == nullptr ||
-        !fields.contains("column_uuid") ||
-        fields.at("column_uuid") != expected_column_uuid ||
-        !fields.contains("datatype_descriptor_uuid") ||
-        fields.at("datatype_descriptor_uuid") !=
+        !identities.contains("column_uuid") ||
+        identities.at("column_uuid") != expected_column_uuid ||
+        !identities.contains("datatype_descriptor_uuid") ||
+        identities.at("datatype_descriptor_uuid") !=
             expected_registry_identity->descriptor_uuid ||
         descriptor.descriptor_uuid !=
             expected_column_uuid ||
         !fields.contains("datatype_descriptor_generation") ||
         fields.at("datatype_descriptor_generation") !=
-            std::to_string(
-                expected_registry_identity->descriptor_generation) ||
+            std::to_string(expected_registry_identity->descriptor_generation) ||
         !fields.contains("type_generation") ||
         fields.at("type_generation") !=
             std::to_string(expected_registry_identity->type_generation) ||
-        !fields.contains("codec_uuid") ||
-        fields.at("codec_uuid") != expected_registry_identity->codec_uuid ||
+        !identities.contains("codec_uuid") ||
+        identities.at("codec_uuid") != expected_registry_identity->codec_uuid ||
         !fields.contains("codec_id") ||
         fields.at("codec_id") != expected_registry_identity->codec_id ||
         !fields.contains("codec_version") ||
@@ -174,7 +152,7 @@ bool ExactGraphValueDescriptor(const EngineDescriptor& descriptor,
         !fields.contains("null_encoding") ||
         fields.at("null_encoding") !=
             std::to_string(expected_registry_identity->null_encoding_code))) ||
-      (!contextual_text && fields.contains("column_uuid"))) {
+      (!contextual_text && identities.contains("column_uuid"))) {
     return false;
   }
   return true;
@@ -215,11 +193,10 @@ bool ExactGraphDescriptorCohort(
     }
     const auto& descriptor_row =
         type_row.manifest.descriptor_rows.front();
-    const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
-        descriptor_row.descriptor_uuid.value);
+    const auto descriptor_uuid = descriptor_row.descriptor_uuid.value;
     const auto codec_identity =
         scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-            "019d0000-0000-7000-8000-00000000d701",
+            scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
             manifest.manifest.catalog_epoch, 1, descriptor_uuid,
             descriptor_row.descriptor_epoch);
     const auto expected_type_uuid =
@@ -232,8 +209,8 @@ bool ExactGraphDescriptorCohort(
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] ||
         column.nullable != kNullable[ordinal] || column.generated ||
-        column.identity_column || !column.charset_uuid.empty() ||
-        !column.collation_uuid.empty() || column.character_length != 0 ||
+        column.identity_column || !column.charset_uuid.is_nil() ||
+        !column.collation_uuid.is_nil() || column.character_length != 0 ||
         column.storage_class != "inline_row_value" ||
         column.max_inline_bytes != 4096 ||
         column.overflow_policy != "mga_large_value_locator" ||
@@ -249,28 +226,23 @@ bool ExactGraphDescriptorCohort(
   return true;
 }
 
-std::string DerivedUuid(const std::string_view seed) {
-  std::uint64_t high = 1469598103934665603ULL;
-  std::uint64_t low = 1099511628211ULL;
-  for (const auto ch : seed) {
-    high = (high ^ static_cast<unsigned char>(ch)) * 1099511628211ULL;
-    low = (low + static_cast<unsigned char>(ch)) * 1469598103934665603ULL;
-  }
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string raw(32, '0');
-  for (std::size_t index = 0; index < 16; ++index) {
-    raw[index] = kHex[(high >> ((15 - index) * 4)) & 0xf];
-    raw[16 + index] = kHex[(low >> ((15 - index) * 4)) & 0xf];
-  }
-  raw[12] = '7';
-  raw[16] = kHex[(static_cast<unsigned>(raw[16] <= '9'
-                                            ? raw[16] - '0'
-                                            : raw[16] - 'a' + 10) &
-                  0x3) |
-                 0x8];
-  return raw.substr(0, 8) + "-" + raw.substr(8, 4) + "-" +
-         raw.substr(12, 4) + "-" + raw.substr(16, 4) + "-" +
-         raw.substr(20, 12);
+std::string GraphUuidBytes(const EngineUuid& uuid) {
+  return std::string(reinterpret_cast<const char*>(uuid.bytes.data()), uuid.bytes.size());
+}
+std::vector<EngineUuid> AppendGraphPath(std::vector<EngineUuid> path,
+                                     std::initializer_list<EngineUuid> tail) {
+  path.insert(path.end(), tail.begin(), tail.end()); return path;
+}
+std::string EncodeGraphPath(const std::vector<EngineUuid>& path) {
+  std::string bytes = "SBGRPATH2";
+  AppendBinaryU64(&bytes, path.size());
+  for (const auto& uuid : path) bytes += GraphUuidBytes(uuid);
+  return bytes;
+}
+std::optional<EngineUuid> DecodeGraphUuid(const std::string* bytes) {
+  if (!bytes || bytes->size() != 16) return std::nullopt;
+  EngineUuid uuid; std::copy(bytes->begin(), bytes->end(), uuid.bytes.begin());
+  return CanonicalUuid(uuid) ? std::optional<EngineUuid>(uuid) : std::nullopt;
 }
 
 template <typename TResult>
@@ -285,6 +257,9 @@ TResult DiagnosticResult(const EngineRequestContext& context,
 
 void AddSelectionEvidence(const EngineNoSqlPhysicalProviderSelection& selection,
                           EngineApiResult* result) {
+  if (!selection.generation_uuid.is_nil()) {
+    result->evidence.push_back({"provider_generation_uuid", selection.generation_uuid});
+  }
   for (const auto& item : selection.evidence) {
     AddApiBehaviorEvidence(result, "graph_physical_provider", item);
   }
@@ -299,8 +274,8 @@ bool IsPhysicalGraphRequest(const EngineGraphQueryRequest& request) {
          !request.fused_candidate_seed_vertex_ids.empty() ||
          request.fusion_source_kind != EngineGraphFusionSourceKind::kNone ||
          !request.edge_type_filter.empty() ||
-         !request.bidirectional_start_vertex_id.empty() ||
-         !request.bidirectional_end_vertex_id.empty() ||
+         !request.bidirectional_start_vertex_id.is_nil() ||
+         !request.bidirectional_end_vertex_id.is_nil() ||
          request.min_depth != 0 || request.max_depth != 1 ||
          request.direction != EngineGraphTraversalDirection::kOutgoing ||
          request.cycle_policy != EngineGraphCyclePolicy::kVisitedSet;
@@ -393,21 +368,21 @@ std::vector<const EngineGraphEdgeInput*> SortedEdges(
   return sorted;
 }
 
-void AddUnique(std::vector<std::string>* values,
-               std::set<std::string>* seen,
-               const std::string& value) {
-  if (!value.empty() && seen->insert(value).second) {
+void AddUnique(std::vector<EngineUuid>* values,
+               std::set<EngineUuid>* seen,
+               const EngineUuid& value) {
+  if (!value.is_nil() && seen->insert(value).second) {
     values->push_back(value);
   }
 }
 
-std::vector<std::string> ResolveSeedVertices(
+std::vector<EngineUuid> ResolveSeedVertices(
     const EngineGraphQueryRequest& request,
     const std::size_t maximum_seed_count =
         std::numeric_limits<std::size_t>::max()) {
-  std::vector<std::string> seeds;
-  std::set<std::string> seen;
-  const auto add_seed = [&](const std::string& value) {
+  std::vector<EngineUuid> seeds;
+  std::set<EngineUuid> seen;
+  const auto add_seed = [&](const EngineUuid& value) {
     if (seeds.size() <= maximum_seed_count) {
       AddUnique(&seeds, &seen, value);
     }
@@ -457,7 +432,7 @@ GraphCorpusValidation ValidateDirectGraphCorpus(
   if (request.cycle_policy != EngineGraphCyclePolicy::kVisitedSet) {
     return {false, kGraphUnboundedExpansionRefused};
   }
-  if ((!request.graph_object_uuid.empty() &&
+  if ((!request.graph_object_uuid.is_nil() &&
        !CanonicalUuid(request.graph_object_uuid)) ||
       (request.direction != EngineGraphTraversalDirection::kOutgoing &&
        request.direction != EngineGraphTraversalDirection::kIncoming &&
@@ -471,8 +446,8 @@ GraphCorpusValidation ValidateDirectGraphCorpus(
        !request.seed_property_value.empty()) ||
       (request.fused_candidate_seed_vertex_ids.empty() !=
        (request.fusion_source_kind == EngineGraphFusionSourceKind::kNone)) ||
-      (request.bidirectional_start_vertex_id.empty() !=
-       request.bidirectional_end_vertex_id.empty())) {
+      (request.bidirectional_start_vertex_id.is_nil() !=
+       request.bidirectional_end_vertex_id.is_nil())) {
     return invalid();
   }
 
@@ -525,7 +500,7 @@ GraphCorpusValidation ValidateDirectGraphCorpus(
       return {false, diagnostic};
     }
     const auto& edge = request.edges[edge_ordinal];
-    const auto vertex_exists = [&](const std::string& vertex_id) {
+    const auto vertex_exists = [&](const EngineUuid& vertex_id) {
       return std::ranges::any_of(request.vertices, [&](const auto& vertex) {
         return vertex.vertex_id == vertex_id;
       });
@@ -556,7 +531,7 @@ GraphCorpusValidation ValidateDirectGraphCorpus(
       }
     }
   }
-  const auto exact_vertex_reference = [&](const std::string& vertex_id) {
+  const auto exact_vertex_reference = [&](const EngineUuid& vertex_id) {
     return CanonicalUuid(vertex_id) &&
            std::ranges::any_of(request.vertices, [&](const auto& vertex) {
              return vertex.vertex_id == vertex_id;
@@ -574,7 +549,7 @@ GraphCorpusValidation ValidateDirectGraphCorpus(
     }
     if (!exact_vertex_reference(seed)) return invalid();
   }
-  if (!request.bidirectional_start_vertex_id.empty() &&
+  if (!request.bidirectional_start_vertex_id.is_nil() &&
       (!exact_vertex_reference(request.bidirectional_start_vertex_id) ||
        !exact_vertex_reference(request.bidirectional_end_vertex_id))) {
     return invalid();
@@ -588,12 +563,12 @@ bool EdgeTypeMatches(const EngineGraphQueryRequest& request,
          edge.edge_type == request.edge_type_filter;
 }
 
-std::vector<std::pair<const EngineGraphEdgeInput*, std::string_view>>
+std::vector<std::pair<const EngineGraphEdgeInput*, EngineUuid>>
 AdjacentEdges(
     const EngineGraphQueryRequest& request,
     const std::vector<const EngineGraphEdgeInput*>& sorted_edges,
-    const std::string_view vertex_id) {
-  std::vector<std::pair<const EngineGraphEdgeInput*, std::string_view>>
+    const EngineUuid& vertex_id) {
+  std::vector<std::pair<const EngineGraphEdgeInput*, EngineUuid>>
       adjacent;
   for (const auto* edge : sorted_edges) {
     if (!EdgeTypeMatches(request, *edge)) {
@@ -706,11 +681,11 @@ GraphTraversalResult TraverseFrontiers(
     }
     GraphFrontierState state;
     state.vertex_id = seed;
-    state.path = seed;
-    state.path_identity = seed;
+    state.path = {seed};
+    state.path_identity = {seed};
     state.visited.insert(seed);
     frontier.push_back(state);
-    rows.push_back({seed, {}, {}, 0.0, seed, seed, 0});
+    rows.push_back({seed, {}, {}, 0.0, {seed}, {seed}, 0});
   }
 
   for (EngineApiU64 depth = 1; depth <= request.max_depth && !frontier.empty();
@@ -744,7 +719,7 @@ GraphTraversalResult TraverseFrontiers(
             result.rows.clear();
             return result;
           }
-          const std::string next_vertex_id(next_vertex);
+          const EngineUuid next_vertex_id(next_vertex);
           if (request.cycle_policy == EngineGraphCyclePolicy::kVisitedSet &&
               frontier[i].visited.find(next_vertex_id) !=
                   frontier[i].visited.end()) {
@@ -752,10 +727,9 @@ GraphTraversalResult TraverseFrontiers(
           }
           GraphFrontierState next_state;
           next_state.vertex_id = next_vertex_id;
-          next_state.path = frontier[i].path + "->" + next_state.vertex_id;
+          next_state.path = AppendGraphPath(frontier[i].path, {next_state.vertex_id});
           next_state.path_identity =
-              frontier[i].path_identity + "-[" + edge->edge_id + "]->" +
-              next_state.vertex_id;
+              AppendGraphPath(frontier[i].path_identity, {edge->edge_id, next_state.vertex_id});
           next_state.visited = frontier[i].visited;
           next_state.visited.insert(next_state.vertex_id);
           if (rows.size() >= row_limit) {
@@ -778,12 +752,12 @@ GraphTraversalResult TraverseFrontiers(
   return result;
 }
 
-std::vector<std::pair<const EngineGraphEdgeInput*, std::string_view>>
+std::vector<std::pair<const EngineGraphEdgeInput*, EngineUuid>>
 ReverseAdjacentEdges(
     const EngineGraphQueryRequest& request,
     const std::vector<const EngineGraphEdgeInput*>& sorted_edges,
-    const std::string_view vertex_id) {
-  std::vector<std::pair<const EngineGraphEdgeInput*, std::string_view>>
+    const EngineUuid& vertex_id) {
+  std::vector<std::pair<const EngineGraphEdgeInput*, EngineUuid>>
       adjacent;
   for (const auto* edge : sorted_edges) {
     if (!EdgeTypeMatches(request, *edge)) {
@@ -809,26 +783,19 @@ ReverseAdjacentEdges(
   return adjacent;
 }
 
-std::string JoinPath(const std::vector<std::string>& vertices,
-                     std::size_t end_index) {
-  std::string path;
-  for (std::size_t i = 0; i <= end_index && i < vertices.size(); ++i) {
-    if (!path.empty()) {
-      path += "->";
-    }
-    path += vertices[i];
-  }
-  return path;
+std::vector<EngineUuid> JoinPath(const std::vector<EngineUuid>& vertices,
+                                std::size_t end_index) {
+  return {vertices.begin(), vertices.begin() + std::min(end_index + 1, vertices.size())};
 }
 
 struct GraphPathState {
-  std::vector<std::string> vertices;
-  std::vector<std::string> edge_ids;
+  std::vector<EngineUuid> vertices;
+  std::vector<EngineUuid> edge_ids;
 };
 
 std::vector<GraphTraversalRow> BuildPathRows(
-    const std::vector<std::string>& vertices,
-    const std::vector<std::string>& edge_ids,
+    const std::vector<EngineUuid>& vertices,
+    const std::vector<EngineUuid>& edge_ids,
     const std::vector<const EngineGraphEdgeInput*>& sorted_edges) {
   std::vector<GraphTraversalRow> rows;
   for (std::size_t i = 0; i < vertices.size(); ++i) {
@@ -844,14 +811,13 @@ std::vector<GraphTraversalRow> BuildPathRows(
       }
     }
     rows.push_back({vertices[i],
-                    i == 0 ? std::string{} : edge_ids[i - 1],
+                    i == 0 ? EngineUuid{} : edge_ids[i - 1],
                     edge_type,
                     edge_weight,
                     JoinPath(vertices, i),
                     i == 0
-                        ? vertices.front()
-                        : rows.back().path_identity + "-[" +
-                              edge_ids[i - 1] + "]->" + vertices[i],
+                        ? std::vector<EngineUuid>{vertices.front()}
+                        : AppendGraphPath(rows.back().path_identity, {edge_ids[i - 1], vertices[i]}),
                     static_cast<EngineApiU64>(i)});
   }
   return rows;
@@ -868,33 +834,33 @@ GraphTraversalResult BidirectionalPath(
       TraversalStateByteLimit(request, memory_budget_bytes);
   if (state_byte_limit == 0) return {true, {}};
   const auto sorted_edges = SortedEdges(request.edges);
-  if (start.empty() || goal.empty()) {
+  if (start.is_nil() || goal.is_nil()) {
     return {};
   }
   if (start == goal) {
     if (request.maximum_output_rows < 1 || state_byte_limit < 1) {
       return {true, {}};
     }
-    return {false, {{start, {}, {}, 0.0, start, start, 0}}};
+    return {false, {{start, {}, {}, 0.0, {start}, {start}, 0}}};
   }
   if (request.maximum_output_rows < 2 || state_byte_limit < 2) {
     return {true, {}};
   }
 
   const EngineApiU64 batch_size = OptionBatchSize(request).value_or(2);
-  std::vector<std::string> forward_frontier = {start};
-  std::vector<std::string> backward_frontier = {goal};
-  std::map<std::string, GraphPathState> forward_paths;
-  std::map<std::string, GraphPathState> backward_paths;
+  std::vector<EngineUuid> forward_frontier = {start};
+  std::vector<EngineUuid> backward_frontier = {goal};
+  std::map<EngineUuid, GraphPathState> forward_paths;
+  std::map<EngineUuid, GraphPathState> backward_paths;
   forward_paths[start] = {{start}, {}};
   backward_paths[goal] = {{goal}, {}};
   bool resource_exhausted = false;
   bool cancelled = false;
   bool coordinator_failed = false;
 
-  const auto build_result = [&](const std::string& meet_vertex) {
-    std::vector<std::string> vertices = forward_paths[meet_vertex].vertices;
-    std::vector<std::string> edge_ids = forward_paths[meet_vertex].edge_ids;
+  const auto build_result = [&](const EngineUuid& meet_vertex) {
+    std::vector<EngineUuid> vertices = forward_paths[meet_vertex].vertices;
+    std::vector<EngineUuid> edge_ids = forward_paths[meet_vertex].edge_ids;
     const auto& backward = backward_paths[meet_vertex];
     vertices.insert(vertices.end(), backward.vertices.begin() + 1,
                     backward.vertices.end());
@@ -909,12 +875,12 @@ GraphTraversalResult BidirectionalPath(
   };
 
   const auto expand_frontier =
-      [&](std::vector<std::string>* frontier,
-          std::map<std::string, GraphPathState>* own_paths,
-          const std::map<std::string, GraphPathState>& other_paths,
+      [&](std::vector<EngineUuid>* frontier,
+          std::map<EngineUuid, GraphPathState>* own_paths,
+          const std::map<EngineUuid, GraphPathState>& other_paths,
           bool reverse,
           std::vector<GraphTraversalRow>* result) {
-        std::vector<std::string> next_frontier;
+        std::vector<EngineUuid> next_frontier;
         for (std::size_t batch_start = 0; batch_start < frontier->size();
              batch_start += static_cast<std::size_t>(batch_size)) {
           const auto cancellation = PollGraphCancellation(request);
@@ -956,7 +922,7 @@ GraphTraversalResult BidirectionalPath(
                     cancellation == GraphCancellationProbe::kCoordinatorFailed;
                 return true;
               }
-              const std::string next_vertex_id(next_vertex);
+              const EngineUuid next_vertex_id(next_vertex);
               if (own_paths->find(next_vertex_id) != own_paths->end()) {
                 continue;
               }
@@ -1202,9 +1168,20 @@ bool ReserveScaledGraphString(const std::string_view value,
   return ReserveGraphResultBytes(size * multiplier, limit, used);
 }
 
+bool ReserveScaledGraphString(const EngineUuid&, std::uint64_t, std::uint64_t, std::uint64_t*) {
+  return true; // Inline UUIDs are covered by fixed record reservations.
+}
+bool ReserveScaledGraphString(const std::vector<EngineUuid>& path,
+                              std::uint64_t multiplier, std::uint64_t limit,
+                              std::uint64_t* used) {
+  if (path.size() > std::numeric_limits<std::uint64_t>::max() / 16 ||
+      (multiplier != 0 && path.size() * 16 > std::numeric_limits<std::uint64_t>::max() / multiplier)) return false;
+  return ReserveGraphResultBytes(path.size() * 16 * multiplier, limit, used);
+}
+
 GraphResultMaterializationPreflight PreflightGraphResultMaterialization(
     const EngineGraphQueryRequest& request,
-    const std::vector<std::string>& seeds,
+    const std::vector<EngineUuid>& seeds,
     const std::vector<GraphTraversalRow>& rows,
     const std::uint64_t memory_budget_bytes) {
   GraphResultMaterializationPreflight preflight;
@@ -1255,9 +1232,9 @@ GraphResultMaterializationPreflight PreflightGraphResultMaterialization(
         request.edges, [&](const auto& candidate) {
           return candidate.edge_id == row.edge_id;
         });
-    if (vertex == request.vertices.end() || row.vertex_id.empty() ||
+    if (vertex == request.vertices.end() || row.vertex_id.is_nil() ||
         row.path.empty() || row.path_identity.empty() ||
-        (row.depth == 0 && !row.edge_id.empty()) ||
+        (row.depth == 0 && !row.edge_id.is_nil()) ||
         (row.depth > 0 && edge == request.edges.end()) ||
         !std::isfinite(row.edge_weight)) {
       preflight.detail =
@@ -1490,8 +1467,8 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
                      "persistent graph row has no record kind");
     }
     if (*kind == "vertex") {
-      const auto* id = value_for("vertex_uuid");
-      if (id == nullptr || !CanonicalUuid(*id) ||
+      const auto id = DecodeGraphUuid(value_for("vertex_uuid"));
+      if (!id.has_value() || !CanonicalUuid(*id) ||
           std::ranges::any_of(corpus.vertices, [&](const auto& vertex) {
             return vertex.vertex_id == *id;
           }) ||
@@ -1500,7 +1477,7 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
                        "persistent graph vertex identity is invalid");
       }
       if (!reserve_retained(512) ||
-          !reserve_retained(string_reservation(*id))) {
+          !reserve_retained(0)) {
         return invalid("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                        "persistent graph normalized corpus exceeded budget");
       }
@@ -1572,12 +1549,12 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
       std::ranges::sort(vertex.properties, {}, &EngineGraphProperty::key);
       corpus.vertices.push_back(std::move(vertex));
     } else if (*kind == "edge") {
-      const auto* id = value_for("edge_uuid");
-      const auto* source = value_for("source_vertex_uuid");
-      const auto* target = value_for("target_vertex_uuid");
+      const auto id = DecodeGraphUuid(value_for("edge_uuid"));
+      const auto source = DecodeGraphUuid(value_for("source_vertex_uuid"));
+      const auto target = DecodeGraphUuid(value_for("target_vertex_uuid"));
       const auto* type = value_for("edge_type");
       const auto* weight = value_for("edge_weight");
-      if (id == nullptr || source == nullptr || target == nullptr ||
+      if (!id.has_value() || !source.has_value() || !target.has_value() ||
           type == nullptr || weight == nullptr || !CanonicalUuid(*id) ||
           !CanonicalUuid(*source) || !CanonicalUuid(*target) ||
           type->empty() ||
@@ -1589,9 +1566,9 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
                        "persistent graph edge identity is invalid");
       }
       if (!reserve_retained(768) ||
-          !reserve_retained(string_reservation(*id)) ||
-          !reserve_retained(string_reservation(*source)) ||
-          !reserve_retained(string_reservation(*target)) ||
+          !reserve_retained(0) ||
+          !reserve_retained(0) ||
+          !reserve_retained(0) ||
           !reserve_retained(string_reservation(*type))) {
         return invalid("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                        "persistent graph normalized corpus exceeded budget");
@@ -1653,7 +1630,7 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
       return invalid(diagnostic,
                      "persistent graph normalization was cancelled");
     }
-    const auto vertex_exists = [&](const std::string& vertex_id) {
+    const auto vertex_exists = [&](const EngineUuid& vertex_id) {
       return std::ranges::any_of(corpus.vertices, [&](const auto& vertex) {
         return vertex.vertex_id == vertex_id;
       });
@@ -1722,8 +1699,8 @@ EngineGraphQueryResult PhysicalGraphQuery(const EngineGraphQueryRequest& request
         request.context, operation_id, kGraphVertexCorpusRequired);
   }
   const bool bidirectional_query =
-      !executable.bidirectional_start_vertex_id.empty() ||
-      !executable.bidirectional_end_vertex_id.empty();
+      !executable.bidirectional_start_vertex_id.is_nil() ||
+      !executable.bidirectional_end_vertex_id.is_nil();
   if (executable.maximum_decoded_bytes < 2) {
     return DiagnosticResult<EngineGraphQueryResult>(
         request.context, operation_id,
@@ -1846,13 +1823,14 @@ EngineGraphQueryResult PhysicalGraphQuery(const EngineGraphQueryRequest& request
       return DiagnosticResult<EngineGraphQueryResult>(
           request.context, operation_id, diagnostic);
     }
-    const auto key = row.vertex_id + "|" + row.edge_id + "|" +
-                     std::to_string(row.depth);
+    std::string key = "SBGRKEY2";
+    key += GraphUuidBytes(row.vertex_id); key += GraphUuidBytes(row.edge_id);
+    AppendBinaryU64(&key, row.depth);
     lookup_items.push_back(
         {key,
          row.vertex_id,
          static_cast<double>(row.depth),
-         row.path,
+         EncodeGraphPath(row.path),
          {{"frontier_role", "traversal"},
          {"edge_type", std::string(row.edge_type)},
           {"direction", DirectionName(executable.direction)}}});
@@ -1869,6 +1847,7 @@ EngineGraphQueryResult PhysicalGraphQuery(const EngineGraphQueryRequest& request
     return *failure;
   }
 
+  std::map<std::vector<EngineUuid>, EngineUuid> path_identities;
   for (const auto& row : traversal_rows) {
     if (const auto* diagnostic = GraphCancellationDiagnostic(executable)) {
       return DiagnosticResult<EngineGraphQueryResult>(
@@ -1898,6 +1877,13 @@ EngineGraphQueryResult PhysicalGraphQuery(const EngineGraphQueryRequest& request
       }
       return encoded;
     };
+    const auto [path_identity, inserted] = path_identities.try_emplace(row.path_identity);
+    if (inserted) {
+      const auto issued = core::uuid::IssueRuntimeIdentityV7();
+      if (!issued) return DiagnosticResult<EngineGraphQueryResult>(request.context, operation_id,
+          "SB_MODEL_GRAPH_IDENTITY_ISSUANCE_FAILED_V1");
+      path_identity->second = *issued;
+    }
     AddApiBehaviorRow(
         &result,
         {{"surface", "graph"},
@@ -1919,10 +1905,9 @@ EngineGraphQueryResult PhysicalGraphQuery(const EngineGraphQueryRequest& request
           edge == executable.edges.end()
               ? std::string{}
               : encode_properties(edge->properties)},
-         {"path", row.path},
+         {"path", EncodeGraphPath(row.path)},
          {"path_uuid",
-          DerivedUuid(executable.graph_object_uuid + "|" +
-                      row.path_identity)},
+          path_identity->second},
          {"depth", std::to_string(row.depth)},
          {"direction", DirectionName(executable.direction)},
          {"cycle_policy", CyclePolicyName(executable.cycle_policy)},
@@ -1991,8 +1976,8 @@ EngineGraphWriteResult StructuredGraphWrite(
     return DiagnosticResult<EngineGraphWriteResult>(
         request.context, operation_id, kNoSqlProviderGenerationStale);
   }
-  std::set<std::string> entity_ids;
-  std::set<std::string> vertex_ids;
+  std::set<EngineUuid> entity_ids;
+  std::set<EngineUuid> vertex_ids;
   std::vector<CrudRowVersionRecord> rows;
   const auto append_properties = [](
       const std::vector<EngineGraphProperty>& properties,
@@ -2022,12 +2007,12 @@ EngineGraphWriteResult StructuredGraphWrite(
     row.creator_tx = request.context.local_transaction_id;
     row.table_uuid = request.graph_object_uuid;
     row.row_uuid = vertex.vertex_id;
-    row.version_uuid = DerivedUuid(
-        request.graph_object_uuid + "|vertex|" + vertex.vertex_id + "|" +
-        std::to_string(request.context.local_transaction_id) + "|" +
-        std::to_string(request.provider_generation));
+    const auto issued_version = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued_version) return DiagnosticResult<EngineGraphWriteResult>(request.context, operation_id,
+        "SB_MODEL_GRAPH_IDENTITY_ISSUANCE_FAILED_V1");
+    row.version_uuid = *issued_version;
     row.values = {{"record_kind", "vertex"},
-                  {"vertex_uuid", vertex.vertex_id}};
+                  {"vertex_uuid", GraphUuidBytes(vertex.vertex_id)}};
     std::size_t ordinal = 0;
     for (const auto& label : vertex.labels) {
       row.values.push_back(
@@ -2055,14 +2040,14 @@ EngineGraphWriteResult StructuredGraphWrite(
     row.creator_tx = request.context.local_transaction_id;
     row.table_uuid = request.graph_object_uuid;
     row.row_uuid = edge.edge_id;
-    row.version_uuid = DerivedUuid(
-        request.graph_object_uuid + "|edge|" + edge.edge_id + "|" +
-        std::to_string(request.context.local_transaction_id) + "|" +
-        std::to_string(request.provider_generation));
+    const auto issued_version = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued_version) return DiagnosticResult<EngineGraphWriteResult>(request.context, operation_id,
+        "SB_MODEL_GRAPH_IDENTITY_ISSUANCE_FAILED_V1");
+    row.version_uuid = *issued_version;
     row.values = {{"record_kind", "edge"},
-                  {"edge_uuid", edge.edge_id},
-                  {"source_vertex_uuid", edge.source_vertex_id},
-                  {"target_vertex_uuid", edge.target_vertex_id},
+                  {"edge_uuid", GraphUuidBytes(edge.edge_id)},
+                  {"source_vertex_uuid", GraphUuidBytes(edge.source_vertex_id)},
+                  {"target_vertex_uuid", GraphUuidBytes(edge.target_vertex_id)},
                   {"edge_type", edge.edge_type},
                   {"edge_weight", FormatWeight(edge.weight)}};
     if (!append_properties(edge.properties, &row.values)) {

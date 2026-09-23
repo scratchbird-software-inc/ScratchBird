@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -33,18 +34,15 @@ using namespace scratchbird::parser::sbsql;
 namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
 
-constexpr std::string_view kFilespaceUuid =
-    "019f5000-0000-7000-8000-000000000002";
-constexpr std::string_view kProtectedMaterialUuid =
-    "019f5000-0000-7000-8000-000000000005";
-constexpr std::string_view kProtectedMaterialVersionUuid =
-    "019f5000-0000-7000-8000-000000000006";
+constexpr auto kFilespaceUuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000002");
+constexpr auto kProtectedMaterialUuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000005");
+constexpr auto kProtectedMaterialVersionUuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000006");
 constexpr std::string_view kDatabasePathPrefix =
     "/tmp/sbsql_protected_material_exact_route_";
 
 struct ProtectedMaterialRouteRow {
   std::string_view sql;
-  std::string_view database_uuid;
+  api::EngineUuid database_uuid;
   std::string_view operation_id;
   std::string_view opcode;
   std::string_view engine_api_function;
@@ -57,16 +55,16 @@ struct ProtectedMaterialRouteRow {
 };
 
 constexpr std::array<ProtectedMaterialRouteRow, 10> kRows{{
-    {"CREATE PROTECTED MATERIAL", "019f5200-0000-7000-8000-000000000011", "security.protected_material.create", "SBLR_SECURITY_PROTECTED_MATERIAL_CREATE", "EngineCreateProtectedMaterial", "right.key_release_approve", "protected_material_create", "create", true, false, true},
-    {"ADD PROTECTED MATERIAL VERSION", "019f5200-0000-7000-8000-000000000012", "security.protected_material.version.add", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_ADD", "EngineAddProtectedMaterialVersion", "right.key_release_approve", "protected_material_version_add", "add_version", true, true, true},
-    {"ROTATE PROTECTED MATERIAL", "019f5200-0000-7000-8000-000000000013", "security.protected_material.version.add", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_ADD", "EngineAddProtectedMaterialVersion", "right.key_release_approve", "protected_material_version_add", "add_version", true, true, true},
-    {"RESOLVE PROTECTED MATERIAL", "019f5200-0000-7000-8000-000000000014", "security.protected_material.resolve", "SBLR_SECURITY_PROTECTED_MATERIAL_RESOLVE", "EngineResolveProtectedMaterial", "right.protected_material_release", "protected_material_resolve", "resolve", false, true, true},
-    {"RELEASE PROTECTED MATERIAL", "019f5200-0000-7000-8000-000000000015", "security.protected_material.release", "SBLR_SECURITY_PROTECTED_MATERIAL_RELEASE", "EngineReleaseProtectedMaterial", "right.protected_material_release", "protected_material_release", "release", false, true, true},
-    {"PURGE PROTECTED MATERIAL VERSION", "019f5200-0000-7000-8000-000000000016", "security.protected_material.version.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_PURGE", "EnginePurgeProtectedMaterialVersion", "right.key_release_approve", "protected_material_purge", "purge", true, true, true},
-    {"SHOW PROTECTED MATERIAL CATALOG", "019f5200-0000-7000-8000-000000000017", "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "EngineInspectProtectedMaterialCatalog", "right.protected_material_release", "protected_material_catalog_inspect", "inspect", false, true, true},
-    {"SHOW PROTECTED MATERIAL AUDIT", "019f5200-0000-7000-8000-000000000018", "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "EngineInspectProtectedMaterialCatalog", "right.protected_material_release", "protected_material_catalog_inspect", "inspect", false, true, true},
-    {"EXPORT PROTECTED MATERIAL PACKAGE", "019f5200-0000-7000-8000-000000000019", "security.protected_material.package.export", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_EXPORT", "EngineExportProtectedMaterialPackage", "right.protected_material_release", "protected_material_package_export", "export", false, true, false},
-    {"IMPORT PROTECTED MATERIAL PACKAGE", "019f5200-0000-7000-8000-000000000020", "security.protected_material.package.import", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_IMPORT", "EngineImportProtectedMaterialPackage", "right.key_release_approve", "protected_material_package_import", "import", true, false, false},
+    {"CREATE PROTECTED MATERIAL", scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000011"), "security.protected_material.create", "SBLR_SECURITY_PROTECTED_MATERIAL_CREATE", "EngineCreateProtectedMaterial", "right.key_release_approve", "protected_material_create", "create", true, false, true},
+    {"ADD PROTECTED MATERIAL VERSION", scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000012"), "security.protected_material.version.add", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_ADD", "EngineAddProtectedMaterialVersion", "right.key_release_approve", "protected_material_version_add", "add_version", true, true, true},
+    {"ROTATE PROTECTED MATERIAL", scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000013"), "security.protected_material.version.add", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_ADD", "EngineAddProtectedMaterialVersion", "right.key_release_approve", "protected_material_version_add", "add_version", true, true, true},
+    {"RESOLVE PROTECTED MATERIAL", scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000014"), "security.protected_material.resolve", "SBLR_SECURITY_PROTECTED_MATERIAL_RESOLVE", "EngineResolveProtectedMaterial", "right.protected_material_release", "protected_material_resolve", "resolve", false, true, true},
+    {"RELEASE PROTECTED MATERIAL", scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000015"), "security.protected_material.release", "SBLR_SECURITY_PROTECTED_MATERIAL_RELEASE", "EngineReleaseProtectedMaterial", "right.protected_material_release", "protected_material_release", "release", false, true, true},
+    {"PURGE PROTECTED MATERIAL VERSION", scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000016"), "security.protected_material.version.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_PURGE", "EnginePurgeProtectedMaterialVersion", "right.key_release_approve", "protected_material_purge", "purge", true, true, true},
+    {"SHOW PROTECTED MATERIAL CATALOG", scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000017"), "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "EngineInspectProtectedMaterialCatalog", "right.protected_material_release", "protected_material_catalog_inspect", "inspect", false, true, true},
+    {"SHOW PROTECTED MATERIAL AUDIT", scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000018"), "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "EngineInspectProtectedMaterialCatalog", "right.protected_material_release", "protected_material_catalog_inspect", "inspect", false, true, true},
+    {"EXPORT PROTECTED MATERIAL PACKAGE", scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000019"), "security.protected_material.package.export", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_EXPORT", "EngineExportProtectedMaterialPackage", "right.protected_material_release", "protected_material_package_export", "export", false, true, false},
+    {"IMPORT PROTECTED MATERIAL PACKAGE", scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000020"), "security.protected_material.package.import", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_IMPORT", "EngineImportProtectedMaterialPackage", "right.key_release_approve", "protected_material_package_import", "import", true, false, false},
 }};
 
 void Require(bool condition, std::string_view message) {
@@ -106,7 +104,8 @@ bool HasRowField(const api::EngineApiResult& result,
 bool ResultContains(const api::EngineApiResult& result, std::string_view text) {
   for (const auto& evidence : result.evidence) {
     if (Contains(evidence.evidence_kind, text) ||
-        Contains(evidence.evidence_id, text)) {
+        (std::holds_alternative<std::string>(evidence.evidence_id) &&
+         Contains(std::get<std::string>(evidence.evidence_id), text))) {
       return true;
     }
   }
@@ -128,7 +127,9 @@ std::string Message(const ProtectedMaterialRouteRow& row,
 }
 
 std::string DatabasePath(const ProtectedMaterialRouteRow& row) {
-  return std::string(kDatabasePathPrefix) + std::string(row.database_uuid) + ".sbdb";
+  std::string fixture_name(row.sql);
+  std::replace(fixture_name.begin(), fixture_name.end(), ' ', '_');
+  return std::string(kDatabasePathPrefix) + fixture_name + ".sbdb";
 }
 
 std::string PackageSourcePath(const ProtectedMaterialRouteRow& row) {
@@ -138,9 +139,9 @@ std::string PackageSourcePath(const ProtectedMaterialRouteRow& row) {
 SessionContext ParserSession(const ProtectedMaterialRouteRow& row) {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f5200-0000-7000-8000-000000001001";
-  session.connection_uuid = "019f5200-0000-7000-8000-000000001002";
-  session.database_uuid = std::string(row.database_uuid);
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000001001");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000001002");
+  session.database_uuid = row.database_uuid;
   session.catalog_epoch = 521;
   session.security_policy_epoch = 522;
   session.descriptor_epoch = 523;
@@ -150,7 +151,7 @@ SessionContext ParserSession(const ProtectedMaterialRouteRow& row) {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f5200-0000-7000-8000-000000001004";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000001004");
   config.bundle_contract_id = "sbp_sbsql@protected-material-exact-route";
   config.build_id = "sbsql-protected-material-exact-route";
   return config;
@@ -223,9 +224,9 @@ void RequireExactLowering(const ProtectedMaterialRouteRow& row) {
           Message(row, "lowering", "cluster provider exclusion missing"));
   Require(HasValue(artifacts.envelope.required_rights, row.required_right),
           Message(row, "lowering", "required right missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.security.protected_material_catalog") ||
-              HasValue(artifacts.envelope.descriptor_refs,
+              HasValue(artifacts.envelope.descriptor_requirements,
                        "sys.security.protected_material_audit"),
           Message(row, "lowering", "protected material descriptor ref missing"));
   Require(HasValue(artifacts.envelope.policy_refs,
@@ -258,13 +259,13 @@ api::EngineRequestContext EngineContext(const ProtectedMaterialRouteRow& row,
   context.request_id = "sbsql-protected-material-exact-route";
   context.security_context_present = true;
   context.database_path = DatabasePath(row);
-  context.database_uuid.canonical = std::string(row.database_uuid);
-  context.session_uuid.canonical = "019f5200-0000-7000-8000-000000002002";
-  context.principal_uuid.canonical = "019f5200-0000-7000-8000-000000002003";
-  context.node_uuid.canonical = "019f5200-0000-7000-8000-000000002004";
-  context.statement_uuid.canonical = "019f5200-0000-7000-8000-000000002005";
-  context.current_diagnostic_uuid.canonical = "019f5200-0000-7000-8000-000000002006";
-  context.transaction_uuid.canonical = "019f5200-0000-7000-8000-000000002007";
+  context.database_uuid = row.database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000002002");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000002003");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000002004");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000002005");
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000002006");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000002007");
   context.catalog_generation_id = 521;
   context.security_epoch = 522;
   context.resource_epoch = 523;
@@ -292,11 +293,11 @@ sblr::SblrOperationEnvelope EngineEnvelope(const ProtectedMaterialRouteRow& row)
 
 api::EngineProtectedMaterialPolicySet MaterialPolicy() {
   api::EngineProtectedMaterialPolicySet policy;
-  policy.retention_policy_uuid = "019f5200-0000-7000-8000-000000000101";
-  policy.access_policy_uuid = "019f5200-0000-7000-8000-000000000102";
-  policy.release_policy_uuid = "019f5200-0000-7000-8000-000000000103";
-  policy.purge_policy_uuid = "019f5200-0000-7000-8000-000000000104";
-  policy.audit_policy_uuid = "019f5200-0000-7000-8000-000000000105";
+  policy.retention_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000101");
+  policy.access_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000102");
+  policy.release_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000103");
+  policy.purge_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000104");
+  policy.audit_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f5200-0000-7000-8000-000000000105");
   policy.release_purposes = {"filespace.open"};
   return policy;
 }
@@ -304,15 +305,15 @@ api::EngineProtectedMaterialPolicySet MaterialPolicy() {
 void SeedProtectedMaterialVersion(const ProtectedMaterialRouteRow& row) {
   api::EngineCreateProtectedMaterialRequest request;
   request.context = EngineContext(row, true);
-  request.target_database.uuid.canonical = std::string(row.database_uuid);
+  request.target_database.uuid = row.database_uuid;
   request.target_database.object_kind = "database";
-  request.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  request.protected_material_uuid = kProtectedMaterialUuid;
   request.object_class = "filespace_encryption_key";
-  request.owner_scope_uuid = std::string(kFilespaceUuid);
+  request.owner_scope_uuid = kFilespaceUuid;
   request.purpose_class = "encryption_use";
   request.storage_class = "wrapped";
   request.policy = MaterialPolicy();
-  request.initial_version_uuid = std::string(kProtectedMaterialVersionUuid);
+  request.initial_version_uuid = kProtectedMaterialVersionUuid;
   request.protected_reference = "kms-ref:v1:protected-material-seed";
   request.envelope_reference = "kms-envelope:v1:protected-material-seed";
   request.payload_hash =
@@ -327,7 +328,7 @@ void SeedProtectedMaterialVersion(const ProtectedMaterialRouteRow& row) {
 }
 
 struct PackageFixture {
-  std::string encoded_package;
+  std::vector<std::uint8_t> encoded_package;
   std::string package_digest;
 };
 
@@ -341,15 +342,15 @@ PackageFixture BuildProtectedMaterialPackageFixture(const ProtectedMaterialRoute
   create_context.local_transaction_id = 903;
   api::EngineCreateProtectedMaterialRequest create;
   create.context = create_context;
-  create.target_database.uuid.canonical = std::string(row.database_uuid);
+  create.target_database.uuid = row.database_uuid;
   create.target_database.object_kind = "database";
-  create.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  create.protected_material_uuid = kProtectedMaterialUuid;
   create.object_class = "filespace_encryption_key";
-  create.owner_scope_uuid = std::string(kFilespaceUuid);
+  create.owner_scope_uuid = kFilespaceUuid;
   create.purpose_class = "encryption_use";
   create.storage_class = "wrapped";
   create.policy = MaterialPolicy();
-  create.initial_version_uuid = std::string(kProtectedMaterialVersionUuid);
+  create.initial_version_uuid = kProtectedMaterialVersionUuid;
   create.protected_reference = "kms-ref:v1:protected-material-package-seed";
   create.envelope_reference = "kms-envelope:v1:protected-material-package-seed";
   create.payload_hash =
@@ -362,9 +363,9 @@ PackageFixture BuildProtectedMaterialPackageFixture(const ProtectedMaterialRoute
   export_context.database_path = source_path;
   api::EngineExportProtectedMaterialPackageRequest export_package;
   export_package.context = export_context;
-  export_package.target_database.uuid.canonical = std::string(row.database_uuid);
+  export_package.target_database.uuid = row.database_uuid;
   export_package.target_database.object_kind = "database";
-  export_package.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  export_package.protected_material_uuid = kProtectedMaterialUuid;
   export_package.include_versions = true;
   export_package.include_audit = true;
   const auto exported = api::EngineExportProtectedMaterialPackage(export_package);

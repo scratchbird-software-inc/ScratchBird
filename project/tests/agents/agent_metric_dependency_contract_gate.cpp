@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -34,8 +35,8 @@ agents::AgentRuntimeContext Context() {
   context.private_features_available = true;
   context.standalone_edition = true;
   context.cluster_authority_available = false;
-  context.database_uuid = "019f006g-0000-7000-8000-000000000001";
-  context.principal_uuid = "019f006g-0000-7000-8000-000000000002";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 601);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 602);
   context.groups = {"ROOT", "OPS", "DBA"};
   context.rights = {
       "OBS_AGENT_STATE_READ",

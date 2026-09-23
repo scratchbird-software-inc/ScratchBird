@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "descriptor_value_runtime.hpp"
 
 #include <cstdlib>
@@ -110,8 +111,7 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
 
 api::EngineDescriptor Descriptor() {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical =
-      "019f0000-0000-7200-8000-000000003301";
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000003301");
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
   descriptor.encoded_descriptor =

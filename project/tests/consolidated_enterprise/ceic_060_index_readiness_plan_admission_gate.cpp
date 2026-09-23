@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -337,16 +338,16 @@ void AuthorityAndClusterRefusals() {
 
 opt::IndexStats CostIndex() {
   opt::IndexStats index;
-  index.identity.object_uuid = "rel.ceic060";
-  index.identity.statistic_uuid = "idx.ceic060.btree:stats";
+  index.identity.object_uuid = scratchbird::tests::FixtureUuid(1435, 1);
+  index.identity.statistic_uuid = scratchbird::tests::FixtureUuid(1435, 2);
   index.identity.stats_epoch = 6004;
   index.identity.catalog_epoch = 6005;
   index.identity.transaction_visibility_epoch = 6006;
   index.identity.source = opt::StatisticSource::kCatalogSample;
   index.identity.freshness = opt::OptimizerStatsFreshnessState::kFresh;
   index.identity.confidence = opt::CostConfidence::kHigh;
-  index.index_uuid = "idx.ceic060.btree";
-  index.relation_uuid = "rel.ceic060";
+  index.index_uuid = scratchbird::tests::FixtureUuid(1274, 201);
+  index.relation_uuid = scratchbird::tests::FixtureUuid(1435, 1);
   index.index_family = "btree";
   index.descriptor_digest = "descriptor:ceic060";
   index.height = 3;
@@ -364,8 +365,8 @@ opt::IndexStats CostIndex() {
 
 opt::TableCardinalityStats CostTable() {
   opt::TableCardinalityStats table;
-  table.identity.object_uuid = "rel.ceic060";
-  table.identity.statistic_uuid = "rel.ceic060:table_stats";
+  table.identity.object_uuid = scratchbird::tests::FixtureUuid(1435, 1);
+  table.identity.statistic_uuid = scratchbird::tests::FixtureUuid(1435, 3);
   table.identity.stats_epoch = 6007;
   table.identity.catalog_epoch = 6008;
   table.identity.transaction_visibility_epoch = 6009;

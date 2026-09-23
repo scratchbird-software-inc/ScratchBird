@@ -100,14 +100,13 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string MakeUuidText(UuidKind kind, u64 offset) {
-  const auto generated = MakeUuid(kind, offset);
-  return generated.valid() ? uuid::UuidToString(generated.value) : "";
+api::EngineUuid MakeIdentity(UuidKind kind, u64 offset) {
+  return MakeUuid(kind, offset).value;
 }
 
 struct Fixture {
   std::filesystem::path database_path;
-  std::string database_uuid;
+  api::EngineUuid database_uuid;
 };
 
 Fixture MakeFixture(const std::filesystem::path& work_dir) {
@@ -131,7 +130,7 @@ Fixture MakeFixture(const std::filesystem::path& work_dir) {
               << created.diagnostic.message_key << '\n';
   }
   Expect(created.ok(), "PCR-078 fixture database should create");
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   return fixture;
 }
 
@@ -141,9 +140,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = MakeUuidText(UuidKind::principal, 1200);
-  context.session_uuid.canonical = MakeUuidText(UuidKind::session, 1201);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = MakeIdentity(UuidKind::principal, 1200);
+  context.session_uuid = MakeIdentity(UuidKind::session, 1201);
   context.security_context_present = true;
   context.trace_tags.push_back("right:MGA_TRANSACTION_INSPECT");
   context.identifier_profile_uuid = "sbsql_v3";
@@ -160,9 +159,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
 
 struct SeededTransactions {
   u64 hot_local_id = 0;
-  std::string hot_uuid;
+  api::EngineUuid hot_uuid;
   u64 archive_local_id = 0;
-  std::string archive_uuid;
+  api::EngineUuid archive_uuid;
 };
 
 bool PersistInventory(const std::filesystem::path& database_path,
@@ -197,8 +196,7 @@ SeededTransactions SeedInventory(const Fixture& fixture, bool* ok) {
   *ok = Expect(hot_commit.ok(), "PCR-078 local-hot transaction should commit") && *ok;
   inventory = hot_commit.inventory;
   seeded.hot_local_id = hot_commit.entry.identity.local_id.value;
-  seeded.hot_uuid = uuid::UuidToString(
-      hot_commit.entry.identity.transaction_uuid.value);
+  seeded.hot_uuid = hot_commit.entry.identity.transaction_uuid.value;
 
   const auto archive_begin =
       txn::BeginLocalTransaction(inventory,
@@ -219,8 +217,7 @@ SeededTransactions SeedInventory(const Fixture& fixture, bool* ok) {
                "PCR-078 archive transition should require finality evidence") && *ok;
   inventory = archived.inventory;
   seeded.archive_local_id = archived.entry.identity.local_id.value;
-  seeded.archive_uuid = uuid::UuidToString(
-      archived.entry.identity.transaction_uuid.value);
+  seeded.archive_uuid = archived.entry.identity.transaction_uuid.value;
 
   *ok = PersistInventory(fixture.database_path,
                          inventory,
@@ -265,9 +262,9 @@ api::EngineLocateTransactionResult Locate(const Fixture& fixture,
   request.context = BaseContext(fixture, std::move(request_id));
   request.target_local_transaction_id = local_transaction_id;
   if (local_transaction_id == seeded.hot_local_id) {
-    request.target_transaction_uuid.canonical = seeded.hot_uuid;
+    request.target_transaction_uuid = seeded.hot_uuid;
   } else if (local_transaction_id == seeded.archive_local_id) {
-    request.target_transaction_uuid.canonical = seeded.archive_uuid;
+    request.target_transaction_uuid = seeded.archive_uuid;
   }
   return api::EngineLocateTransaction(request);
 }
@@ -275,12 +272,12 @@ api::EngineLocateTransactionResult Locate(const Fixture& fixture,
 api::EngineBeginAuditReadTransactionResult BeginAudit(
     const Fixture& fixture,
     u64 local_transaction_id,
-    std::string transaction_uuid,
+    api::EngineUuid transaction_uuid,
     std::string request_id) {
   api::EngineBeginAuditReadTransactionRequest request;
   request.context = BaseContext(fixture, std::move(request_id));
   request.target_local_transaction_id = local_transaction_id;
-  request.target_transaction_uuid.canonical = std::move(transaction_uuid);
+  request.target_transaction_uuid = std::move(transaction_uuid);
   return api::EngineBeginAuditReadTransaction(request);
 }
 
@@ -425,7 +422,7 @@ bool IdentityMismatchProof(const Fixture& fixture,
   api::EngineLocateTransactionRequest request;
   request.context = BaseContext(fixture, "pcr078-mismatch-locate");
   request.target_local_transaction_id = seeded.hot_local_id;
-  request.target_transaction_uuid.canonical = seeded.archive_uuid;
+  request.target_transaction_uuid = seeded.archive_uuid;
   const auto mismatch = api::EngineLocateTransaction(request);
   return ExpectApiOk(mismatch,
                      "PCR-078 identity mismatch locate should return classification") &&

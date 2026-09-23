@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 
 #include <cassert>
@@ -8,8 +9,7 @@ int main() {
   namespace api = scratchbird::engine::internal_api;
   api::EngineRequestContext context;
   context.database_path = "/tmp/sb_bis_2451";
-  context.database_uuid.canonical =
-      "019d0000-0000-7000-8000-000000002451";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002451");
   context.security_context_present = true;
   context.trace_tags = {"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};
   const api::SblrExecutorAvailabilityRowIdentity identity{
@@ -35,7 +35,7 @@ int main() {
          replay.snapshot.generation == installed.snapshot.generation);
 
   api::SblrExecutorAvailabilitySetRequest revoke;
-  revoke.database_uuid = context.database_uuid.canonical;
+  revoke.database_uuid = context.database_uuid;
   revoke.expected_snapshot_uuid = installed.snapshot.snapshot_uuid;
   revoke.expected_generation = installed.snapshot.generation;
   revoke.exact_row_identity = identity;

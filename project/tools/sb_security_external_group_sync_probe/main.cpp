@@ -1,3 +1,4 @@
+#include "../auth_provider_probe_common/probe_common.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -20,7 +21,7 @@ int main() {
   sync.context = context;
   sync.provider_family = "ldap_ad";
   sync.option_envelopes.push_back("external_group:CN=DBA,DC=example,DC=org");
-  sync.option_envelopes.push_back("internal_group_uuid:018f0000-0000-7000-8000-00000000d001");
+  sync.option_envelopes.push_back("internal_group_uuid:" + MetadataUuidBytes(sb_auth_probe::Uuid("018f0000-0000-7000-8000-00000000d001")));
   const auto sync_result = EngineSyncExternalGroups(sync);
 
   EngineExplainMembershipRequest explain;

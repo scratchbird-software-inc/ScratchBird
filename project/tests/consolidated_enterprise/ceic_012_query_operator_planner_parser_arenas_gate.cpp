@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // CEIC-012 focused validation for reservation-backed query/planner/parser arenas.
+#include "../support/binary_uuid_fixture.hpp"
 #include "background_memory_reclamation.hpp"
 #include "hierarchical_memory_budget_ledger.hpp"
 #include "reservation_backed_executor_memory_bridge.hpp"
@@ -258,7 +259,7 @@ int main() {
 
   udr::ResetRuntimeForTest();
   udr::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = "ceic-012-udr";
+  descriptor.package_uuid = scratchbird::tests::FixtureUuid(1376, 1);
   descriptor.package_name = "CEIC 012 UDR";
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "ceic-012";

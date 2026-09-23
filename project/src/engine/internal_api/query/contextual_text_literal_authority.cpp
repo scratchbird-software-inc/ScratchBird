@@ -10,6 +10,7 @@
 #include "query/contextual_text_descriptor_match.hpp"
 
 #include "api_diagnostics.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "hash_digest.hpp"
 #include "query/contextual_text_target_authority_resolver_v2.hpp"
@@ -55,72 +56,23 @@ bool Nonzero(const sblr::ContextualTextSha256V2& value) {
                      [](std::uint8_t byte) { return byte != 0; });
 }
 
-bool ExactUuid(std::string_view text) {
-  if (text.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == text;
+bool ExactUuid(const EngineUuid& value) {
+  return !value.is_nil();
 }
-
-bool ToWireUuid(std::string_view text, sblr::ContextualTextUuidV2* output) {
-  if (output == nullptr || !ExactUuid(text)) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            output->begin());
+bool ToWireUuid(const EngineUuid& value, sblr::ContextualTextUuidV2* output) {
+  if (!output || !ExactUuid(value)) return false;
+  *output = value.bytes;
   return true;
 }
 
-std::string Hex(const sblr::ContextualTextUuidV2& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string result;
-  result.reserve(32);
-  for (const auto byte : value) {
-    result.push_back(kHex[byte >> 4]);
-    result.push_back(kHex[byte & 0x0f]);
-  }
-  return result;
+std::optional<EngineUuid> ExactEncodedDescriptorIdentity(
+    std::string_view descriptor, std::string_view key) {
+  CatalogColumnMetadata fields;
+  if (!DecodeCatalogColumnMetadata(descriptor, &fields)) return std::nullopt;
+  const auto it = fields.identities.find(std::string(key));
+  if (it == fields.identities.end() || it->second.is_nil()) return std::nullopt;
+  return it->second;
 }
-
-std::string UuidText(const sblr::ContextualTextUuidV2& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string result;
-  result.reserve(36);
-  for (std::size_t index = 0; index != value.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      result.push_back('-');
-    }
-    result.push_back(kHex[value[index] >> 4]);
-    result.push_back(kHex[value[index] & 0x0f]);
-  }
-  return result;
-}
-
-std::optional<std::string> ExactEncodedDescriptorField(
-    const std::string_view descriptor,
-    const std::string_view requested_key) {
-  std::optional<std::string> result;
-  std::size_t start = 0;
-  while (start <= descriptor.size()) {
-    const auto end = descriptor.find(';', start);
-    const auto field = descriptor.substr(
-        start, end == std::string_view::npos ? std::string_view::npos
-                                             : end - start);
-    const auto equals = field.find('=');
-    if (field.empty() || equals == std::string_view::npos || equals == 0 ||
-        equals + 1 == field.size()) {
-      return std::nullopt;
-    }
-    if (field.substr(0, equals) == requested_key) {
-      if (result.has_value()) return std::nullopt;
-      result = std::string(field.substr(equals + 1));
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
-  return result;
-}
-
-
 
 bool SameTextSeed(
     const scratchbird::core::datatypes::DatatypeTextSeedAuthority& left,
@@ -481,8 +433,8 @@ bool ResolveProjectedTargetDescriptor(
                 selected->character_length == profile.target_character_limit;
   const auto embedded_datatype_descriptor_uuid =
       selected == nullptr
-          ? std::optional<std::string>{}
-          : ExactEncodedDescriptorField(
+          ? std::optional<EngineUuid>{}
+          : ExactEncodedDescriptorIdentity(
                 selected->encoded_type_descriptor,
                 "datatype_descriptor_uuid");
   if (selected == nullptr || !selected->identity_present ||
@@ -491,7 +443,7 @@ bool ResolveProjectedTargetDescriptor(
       (((selected->attributes & 0x01u) != 0) !=
        (exact_target_descriptor.nullability == RelationalNullability::kNullable)) ||
       !embedded_datatype_descriptor_uuid.has_value() ||
-      *embedded_datatype_descriptor_uuid != UuidText(profile.descriptor_uuid) ||
+      *embedded_datatype_descriptor_uuid != EngineUuid{profile.descriptor_uuid} ||
       selected->descriptor_generation != profile.descriptor_generation ||
       selected->type_uuid != profile.type_uuid ||
       selected->type_generation != profile.type_generation ||
@@ -530,7 +482,7 @@ bool ResolveProjectedTargetDescriptor(
 
 std::atomic<std::uint64_t> g_identity_ordinal{1};
 std::mutex g_authority_registry_mutex;
-std::map<std::string,
+std::map<sblr::ContextualTextUuidV2,
          std::weak_ptr<EngineContextualTextLiteralAuthorityHandleV2::Authority>>
     g_authorities_by_receipt;
 
@@ -890,8 +842,7 @@ void AddDynamicPayloadV2(
     const SblrExecutorAvailabilitySnapshot& value,
     const LogicalPayloadAccountingV2 accounting,
     LogicalByteCounterV2* counter) noexcept {
-  AddStringPayloadV2(value.snapshot_uuid, accounting, counter);
-  AddStringPayloadV2(value.database_uuid, accounting, counter);
+  // Native UUID fields are included in the owning object size.
   AddStringPayloadV2(value.row_identity_sha256, accounting, counter);
   AddStringPayloadV2(value.decision_evidence_sha256, accounting, counter);
 }
@@ -1314,8 +1265,7 @@ IssueContextualTextLiteralAuthorityV2(
         "engine.contextual_text_literal.identity_generation_failed");
     return result;
   }
-  std::set<std::string> issued_identities{Hex(profile_set_uuid),
-                                          Hex(budget_uuid)};
+  std::set<sblr::ContextualTextUuidV2> issued_identities{profile_set_uuid, budget_uuid};
   std::map<std::tuple<std::uint64_t, std::uint32_t, std::uint32_t>,
            sblr::ContextualTextUuidV2>
       source_occurrences;
@@ -1410,7 +1360,7 @@ IssueContextualTextLiteralAuthorityV2(
               "engine.contextual_text_literal.identity_generation_failed");
           return result;
         }
-      } while (!issued_identities.insert(Hex(issued)).second);
+      } while (!issued_identities.insert(issued).second);
       source = source_occurrences.emplace(source_key, issued).first;
     }
 
@@ -1418,7 +1368,7 @@ IssueContextualTextLiteralAuthorityV2(
     auto generate_distinct = [&](sblr::ContextualTextUuidV2* output) {
       do {
         if (!GenerateUuidV7(output)) return false;
-      } while (!issued_identities.insert(Hex(*output)).second);
+      } while (!issued_identities.insert(*output).second);
       return true;
     };
     if (!generate_distinct(&profile.profile_uuid) ||
@@ -1571,7 +1521,7 @@ IssueContextualTextLiteralAuthorityV2(
     return result;
   }
 
-  const std::string receipt_key = Hex(decoded_request.statement_receipt_uuid);
+  const sblr::ContextualTextUuidV2 receipt_key = decoded_request.statement_receipt_uuid;
   {
     std::lock_guard<std::mutex> guard(g_authority_registry_mutex);
     const auto existing = g_authorities_by_receipt.find(receipt_key);
@@ -1660,7 +1610,7 @@ bool ValidateContextualTextComposedSbxnPartitionV2(
     }
   }
   sblr::ContextualTextUuidV2 text_descriptor{};
-  if (!ToWireUuid("019d0000-0000-7000-8000-00000000d718",
+  if (!ToWireUuid(EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x18}},
                   &text_descriptor)) {
     if (diagnostic != nullptr) {
       *diagnostic = Diagnostic(
@@ -1887,9 +1837,9 @@ TransferContextualTextLiteralAuthorityV2(
   sblr::ContextualTextUuidV2 availability_database_uuid{};
   sblr::ContextualTextSha256V2 row_identity_sha256{};
   sblr::ContextualTextSha256V2 decision_evidence_sha256{};
-  if (!ToWireUuid("098229e6-00f4-53ee-89da-452f2f0767c2",
+  if (!ToWireUuid(EngineUuid{{0x09,0x82,0x29,0xe6,0x00,0xf4,0x53,0xee,0x89,0xda,0x45,0x2f,0x2f,0x07,0x67,0xc2}},
                   &capability_uuid) ||
-      !ToWireUuid("24bc744a-95d3-5668-b32e-aaf4616bdb4c",
+      !ToWireUuid(EngineUuid{{0x24,0xbc,0x74,0x4a,0x95,0xd3,0x56,0x68,0xb3,0x2e,0xaa,0xf4,0x61,0x6b,0xdb,0x4c}},
                   &evidence_format_uuid) ||
       !ToWireUuid(availability.snapshot_uuid, &availability_snapshot_uuid) ||
       !ToWireUuid(availability.database_uuid, &availability_database_uuid) ||
@@ -2882,10 +2832,10 @@ EngineApiDiagnostic RevokeContextualTextLiteralAuthorityV2(
     return Diagnostic("SBLR.CONTEXTUAL_TEXT_LITERAL.BINDING_STALE",
                       "engine.contextual_text_literal.revoke_invalid");
   const auto authority = handle->authority_;
-  std::string receipt_key;
+  sblr::ContextualTextUuidV2 receipt_key{};
   {
     std::lock_guard<std::mutex> guard(authority->mutex);
-    receipt_key = Hex(authority->request.statement_receipt_uuid);
+    receipt_key = authority->request.statement_receipt_uuid;
     if (authority->state ==
         EngineContextualTextLiteralAuthorityStateV2::issued) {
       authority->state = EngineContextualTextLiteralAuthorityStateV2::revoked;

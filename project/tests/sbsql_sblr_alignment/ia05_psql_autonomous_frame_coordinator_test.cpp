@@ -7,18 +7,18 @@
 
 namespace api = scratchbird::engine::internal_api;
 namespace {
-std::string Id(scratchbird::core::platform::UuidKind kind) {
+api::EngineUuid Id(scratchbird::core::platform::UuidKind kind) {
   static std::uint64_t stamp = 1787010000000ull;
   if (!scratchbird::core::uuid::UuidKindAllowsDurableIdentity(kind)) {
     auto raw = scratchbird::core::uuid::GenerateCompatibilityUnixTimeV7(++stamp);
     assert(raw.ok());
     auto typed = scratchbird::core::uuid::MakeTypedUuid(kind, raw.value);
     assert(typed.ok());
-    return scratchbird::core::uuid::UuidToString(typed.value.value);
+    return typed.value.value;
   }
   auto value = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, ++stamp);
   assert(value.ok());
-  return scratchbird::core::uuid::UuidToString(value.value.value);
+  return value.value.value;
 }
 }
 
@@ -28,24 +28,24 @@ int main() {
           std::chrono::steady_clock::now().time_since_epoch().count()));
   api::EngineRequestContext context;
   context.database_path = base.string();
-  context.database_uuid.canonical = Id(scratchbird::core::platform::UuidKind::database);
-  context.session_uuid.canonical = Id(scratchbird::core::platform::UuidKind::session);
-  context.principal_uuid.canonical = Id(scratchbird::core::platform::UuidKind::principal);
-  context.transaction_uuid.canonical = Id(scratchbird::core::platform::UuidKind::object);
-  context.statement_uuid.canonical = Id(scratchbird::core::platform::UuidKind::object);
+  context.database_uuid = Id(scratchbird::core::platform::UuidKind::database);
+  context.session_uuid = Id(scratchbird::core::platform::UuidKind::session);
+  context.principal_uuid = Id(scratchbird::core::platform::UuidKind::principal);
+  context.transaction_uuid = Id(scratchbird::core::platform::UuidKind::object);
+  context.statement_uuid = Id(scratchbird::core::platform::UuidKind::object);
   context.security_context_present = true;
   context.statement_metadata_snapshot_engine_owned = true;
   context.trace_tags = {"private_psql_autonomous_body_compiler"};
 
   api::SblrAutonomousBodyFrameProjectionV1 projection;
-  projection.preliminary_receipt_uuid = context.statement_uuid.canonical;
+  projection.preliminary_receipt_uuid = context.statement_uuid;
   projection.structural_occurrence_id = 7;
-  projection.parent_transaction_uuid = context.transaction_uuid.canonical;
+  projection.parent_transaction_uuid = context.transaction_uuid;
   projection.parent_frame_uuid = Id(scratchbird::core::platform::UuidKind::object);
-  projection.database_uuid = context.database_uuid.canonical;
+  projection.database_uuid = context.database_uuid;
   projection.attachment_uuid = Id(scratchbird::core::platform::UuidKind::object);
-  projection.session_uuid = context.session_uuid.canonical;
-  projection.principal_uuid = context.principal_uuid.canonical;
+  projection.session_uuid = context.session_uuid;
+  projection.principal_uuid = context.principal_uuid;
   projection.security_snapshot_uuid = Id(scratchbird::core::platform::UuidKind::object);
   projection.policy_snapshot_uuid = Id(scratchbird::core::platform::UuidKind::object);
   projection.catalog_generation = 3;
@@ -79,10 +79,10 @@ int main() {
 
   context.trace_tags = {"private_psql_autonomous_body_compiler"};
   assert(api::CompileAndPublishSblrAutonomousBodyFrameProjection(
-             context, context.statement_uuid.canonical, 8).code == "OK");
+             context, context.statement_uuid, 8).code == "OK");
   context.trace_tags = {"private_psql_autonomous_frame_coordination"};
   auto compiled = api::ReserveSblrAutonomousFrame(
-      context, context.statement_uuid.canonical, 8);
+      context, context.statement_uuid, 8);
   assert(compiled.ok && compiled.snapshot.authority.structural_occurrence_id == 8);
 
   std::error_code ec;

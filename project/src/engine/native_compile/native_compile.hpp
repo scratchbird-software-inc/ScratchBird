@@ -44,7 +44,7 @@ enum class NativeCompilePolicyProfile {
 };
 
 struct NativeCompileDescriptorDependency {
-  std::string descriptor_uuid;
+  scratchbird::core::platform::Uuid descriptor_uuid;
   std::string descriptor_kind;
   std::string canonical_type_name;
   std::string encoded_descriptor;
@@ -53,9 +53,12 @@ struct NativeCompileDescriptorDependency {
 struct NativeCompileRequest {
   NativeCompileMode requested_mode = NativeCompileMode::jit;
   std::string module_payload;
-  std::string target_object_uuid;
-  std::string principal_uuid;
+  scratchbird::core::platform::Uuid target_object_uuid;
+  scratchbird::core::platform::Uuid principal_uuid;
   std::string database_path;
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid session_uuid;
+  scratchbird::core::platform::Uuid statement_uuid;
   std::string engine_abi_id = "sb_engine_abi_v3";
   std::string sblr_version = "sblr_v3";
   std::string opcode_registry_epoch = "static_v3";
@@ -122,6 +125,9 @@ NativeCompileResult CompileNativeUnit(const NativeCompileRequest& request);
 bool NativeArtifactInvalidatedByDependency(const std::string& cache_key_material,
                                            const std::string& dependency_family,
                                            const std::string& dependency_value);
+bool NativeArtifactInvalidatedByDependency(const std::string& cache_key_material,
+                                           const std::string& dependency_family,
+                                           const scratchbird::core::platform::Uuid& dependency_uuid);
 std::string NativeCompileEffectiveModeName(NativeCompileEffectiveMode mode);
 std::string NativeCompilePolicyProfileName(NativeCompilePolicyProfile profile);
 

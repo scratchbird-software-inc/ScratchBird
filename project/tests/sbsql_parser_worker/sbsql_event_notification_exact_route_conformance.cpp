@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -62,7 +63,7 @@ struct EventRowEvidence {
 struct EngineFixture {
   std::filesystem::path temp_dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
+  api::EngineUuid database_uuid;
 };
 
 constexpr std::array<EventRowEvidence, 10> kEventRows{{
@@ -207,7 +208,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -246,16 +247,16 @@ EngineFixture MakeEngineFixture() {
   Require(opened.ok(), "event notification test database open failed");
   const auto clean = db::MarkDatabaseCleanShutdown(fixture.database_path.string());
   Require(clean.ok(), "event notification clean shutdown marker failed");
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   return fixture;
 }
 
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = std::string(kSessionUuid);
-  session.connection_uuid = "019f0000-0000-7000-8000-000000024904";
-  session.database_uuid = "019f0000-0000-7000-8000-000000024905";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024902");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024904");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024905");
   session.catalog_epoch = 31;
   session.security_policy_epoch = 32;
   session.descriptor_epoch = 33;
@@ -266,7 +267,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000024906";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024906");
   config.bundle_contract_id = "sbp_sbsql@event-notification-route-test";
   config.build_id = "sbsql-event-notification-route-test";
   return config;
@@ -280,12 +281,12 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
-std::vector<std::string> ResolvedUuidsFor(const EventRowEvidence& row) {
+std::vector<scratchbird::core::platform::Uuid> ResolvedUuidsFor(const EventRowEvidence& row) {
   if (row.operation_id == "engine.op.event_channel_create" ||
       row.operation_id == "engine.op.event_subscription_list") {
     return {};
   }
-  return {std::string(kChannelUuid)};
+  return {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024901")};
 }
 
 std::vector<std::uint8_t> EventUuid(std::uint8_t suffix) {
@@ -397,7 +398,7 @@ sblr::SblrOperationEnvelope CanonicalEventEnvelope(
 }
 
 PipelineArtifacts RunPipeline(std::string_view sql,
-                              const std::vector<std::string>& resolved_object_uuids) {
+                              const std::vector<scratchbird::core::platform::Uuid>& resolved_object_uuids) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
@@ -500,7 +501,7 @@ void RequireExactLowering(const EventRowEvidence& row) {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "event notification parser SQL execution authority missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.event.channel"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.event.channel"),
           "event notification channel descriptor ref missing");
   Require(Contains(artifacts.envelope.payload,
                    "\"event_envelope_kind\":\"event_notification_route\""),
@@ -576,9 +577,9 @@ api::EngineRequestContext EngineContext(const EngineFixture& fixture) {
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "sbsql-event-notification-exact-route";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.session_uuid.canonical = std::string(kSessionUuid);
-  context.principal_uuid.canonical = std::string(kPrincipalUuid);
+  context.database_uuid = fixture.database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024902");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024903");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -668,8 +669,7 @@ void RequireEngineDispatch() {
     api::EngineRequestContext context;
     context.security_context_present = true;
     context.local_transaction_id = 1;
-    context.transaction_uuid.canonical =
-        "019f0000-0000-7000-8000-000000024907";
+    context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024907");
     unsigned cancellation_probes = 0;
     context.query_cancellation_requested = [&] {
       ++cancellation_probes;

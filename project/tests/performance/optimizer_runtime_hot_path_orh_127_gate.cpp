@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "compression_policy.hpp"
+#include "database_lifecycle.hpp"
+#include "transaction/transaction_api.hpp"
 #include "nosql/nosql_physical_provider_contract.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
 #include "nosql/document_path_physical_provider.hpp"
@@ -186,11 +188,8 @@ struct TempDir {
 api::EngineRequestContext Context(const TempDir& temp) {
   api::EngineRequestContext context;
   context.database_path = (temp.dir / "orh127.sbdb").string();
-  context.database_uuid.canonical = NewUuidText(platform::UuidKind::database);
-  context.current_schema_uuid.canonical = NewUuidText(platform::UuidKind::object);
-  context.local_transaction_id = 127;
-  context.transaction_uuid.canonical = NewUuidText(platform::UuidKind::transaction);
-  context.snapshot_visible_through_local_transaction_id = 126;
+  context.database_uuid = NewUuid(platform::UuidKind::database).value;
+  context.current_schema_uuid = NewUuid(platform::UuidKind::object).value;
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.resource_epoch = 12701;
@@ -200,8 +199,30 @@ api::EngineRequestContext Context(const TempDir& temp) {
                         "persisted_metadata",
                         "upgrade_backfill_repair",
                         "mga_transaction_regression"};
-  std::ofstream seed(context.database_path, std::ios::binary | std::ios::trunc);
-  seed << "ORH127\n";
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = context.database_path;
+  const auto database_id = uuid::MakeTypedUuid(platform::UuidKind::database, context.database_uuid);
+  Require(database_id.ok(), "ORH-127 database identity invalid");
+  create.database_uuid = database_id.value;
+  create.filespace_uuid = NewUuid(platform::UuidKind::filespace);
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = NextMillis();
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
+          "ORH-127 database creation failed");
+  context.principal_uuid = NewUuid(platform::UuidKind::object).value;
+  context.session_uuid = NewUuid(platform::UuidKind::object).value;
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "read_committed";
+  begin.transaction_policy_profile.encoded_profiles = {
+      "fail_closed:true", "transaction_read_only:false", "transaction_read_mode:read_write"};
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok && begun.local_transaction_id != 0, "ORH-127 engine begin failed");
+  context.transaction_uuid = begun.transaction_uuid;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
   return context;
 }
 
@@ -805,9 +826,9 @@ GateRecord ProveVectorProfileFamily() {
 api::DocumentPathRowEvidence DocumentPathRow(std::string customer,
                                              std::string sku) {
   api::DocumentPathRowEvidence row;
-  row.document_uuid = NewUuidText(platform::UuidKind::row);
-  row.row_uuid = NewUuidText(platform::UuidKind::row);
-  row.version_uuid = NewUuidText(platform::UuidKind::row);
+  row.document_uuid = NewUuid(platform::UuidKind::row).value;
+  row.row_uuid = NewUuid(platform::UuidKind::row).value;
+  row.version_uuid = NewUuid(platform::UuidKind::row).value;
   row.row_ordinal = 1;
   row.values.push_back({"customer.id", {"string", std::move(customer), false}});
   row.values.push_back({"line_items.0.sku", {"string", std::move(sku), false}});
@@ -906,7 +927,7 @@ GateRecord ProveDocumentPathIndexFamily() {
   auto metadata = api::MakeDocumentProviderGenerationMetadata(
       context,
       api::kDocumentPathPhysicalProviderId,
-      context.current_schema_uuid.canonical,
+      context.current_schema_uuid,
       repaired.artifact.identity.provider_generation);
   const auto published = api::PublishNoSqlProviderGeneration(context, metadata);
   Require(published.ok &&
@@ -965,7 +986,7 @@ api::EngineNoSqlPhysicalProviderContract ProviderContract(
   contract.provider_generation.catalog_epoch = metadata.catalog_epoch;
   contract.provider_generation.generation_uuid = metadata.generation_uuid;
   contract.provider_generation.provider_id = metadata.provider_id;
-  contract.provider_generation.database_uuid = context.database_uuid.canonical;
+  contract.provider_generation.database_uuid = context.database_uuid;
   contract.provider_generation.collection_uuid = metadata.collection_uuid;
   contract.provider_generation.publish_state = metadata.publish_state;
   contract.provider_generation.validation_state = metadata.validation_state;
@@ -985,7 +1006,7 @@ GateRecord ProveProviderGenerationFamily() {
   TempDir temp;
   const auto context = Context(temp);
   const std::string provider_id = "document_path";
-  const std::string collection_uuid = context.current_schema_uuid.canonical;
+  const auto collection_uuid = context.current_schema_uuid;
 
   auto metadata = api::MakeDocumentProviderGenerationMetadata(
       context, provider_id, collection_uuid, 127);

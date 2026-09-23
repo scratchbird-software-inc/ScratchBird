@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "common/common.hpp"
 #include "metrics/parser_metrics.hpp"
+#include "../../src/wire/parser_server_ipc/parser_metric_snapshot.hpp"
 
 #include <iostream>
 #include <type_traits>
@@ -81,26 +82,46 @@ int main() {
   session.connection_uuid.bytes[15] = 0xce;
   const auto snapshot_before = session.session_uuid;
   const auto connection_before = session.connection_uuid;
-  const auto preauth = metrics.SnapshotJson(config, session, cache);
-  check(preauth.find("\"session_uuid\":\"\"") != std::string::npos,
+  namespace wire = scratchbird::wire;
+  config.parser_uuid = admitted;
+  config.parser_uuid.bytes[15] = 0xcf;
+  const auto preauth = wire::DecodeParserMetricSnapshotV1(metrics.SnapshotPacket(config, session, cache));
+  check(preauth && preauth->session_uuid.is_nil(),
         "preauth metrics disclosed the retained session identity");
   session.authenticated = true;
-  const auto snapshot = metrics.SnapshotJson(config, session, cache);
-  const auto heartbeat = metrics.HeartbeatJson(config, session, cache, "identity-check");
-  const std::string expected_session = "\"session_uuid\":\"01a09112-7fe3-7a81-9f00-31d8456b02cc\"";
-  const std::string expected_connection = "\"connection_uuid\":\"01a09112-7fe3-7a81-9f00-31d8456b02ce\"";
-  check(snapshot.find(expected_session) != std::string::npos,
-        "metrics did not render the exact binary session UUID");
-  check(heartbeat.find(expected_session) != std::string::npos &&
-        heartbeat.find(expected_connection) != std::string::npos,
-        "heartbeat did not render exact distinct session and connection UUIDs");
+  for (const auto& packet : {metrics.SnapshotPacket(config, session, cache),
+                             metrics.HeartbeatPacket(config, session, cache, "identity-check")}) {
+    const auto decoded = wire::DecodeParserMetricSnapshotV1(packet);
+    check(decoded && decoded->parser_uuid == config.parser_uuid &&
+          decoded->session_uuid == snapshot_before && decoded->connection_uuid == connection_before,
+          "metric packet lost or aliased a binary identity");
+    check(decoded && decoded->attributes_json.find("\"parser_uuid\":") == std::string::npos &&
+          decoded->attributes_json.find("\"session_uuid\":") == std::string::npos &&
+          decoded->attributes_json.find("\"connection_uuid\":") == std::string::npos,
+          "metric JSON attributes contain UUID identities");
+    for (std::size_t length = 0; length < packet.size(); ++length)
+      check(!wire::DecodeParserMetricSnapshotV1(std::string_view(packet).substr(0, length)),
+            "metric decoder accepted a truncated packet");
+    check(!wire::DecodeParserMetricSnapshotV1(packet + "x"), "metric decoder accepted trailing bytes");
+    auto bad_magic = packet; bad_magic[0] ^= 1;
+    check(!wire::DecodeParserMetricSnapshotV1(bad_magic), "metric decoder accepted bad magic");
+  }
+  wire::ParserMetricSnapshotV1 arbitrary{config.parser_uuid, connection_before, snapshot_before, "{}"};
+  for (unsigned value = 0; value < 256; ++value) {
+    arbitrary.parser_uuid.bytes[0] = static_cast<unsigned char>(value);
+    arbitrary.connection_uuid.bytes[1] = static_cast<unsigned char>(value);
+    arbitrary.session_uuid.bytes[2] = static_cast<unsigned char>(value);
+    const auto decoded = wire::DecodeParserMetricSnapshotV1(wire::EncodeParserMetricSnapshotV1(arbitrary));
+    check(decoded && decoded->parser_uuid == arbitrary.parser_uuid &&
+          decoded->connection_uuid == arbitrary.connection_uuid && decoded->session_uuid == arbitrary.session_uuid,
+          "metric framing did not preserve every byte value");
+  }
   check(session.session_uuid == snapshot_before && session.connection_uuid == connection_before,
-        "JSON rendering changed binary execution identities");
+        "metric encoding changed binary execution identities");
   session.connection_uuid = {};
   session.authenticated = false;
-  const auto empty = metrics.HeartbeatJson(config, session, cache, "preauth");
-  check(empty.find("\"connection_uuid\":\"\"") != std::string::npos &&
-        empty.find("\"session_uuid\":\"\"") != std::string::npos,
+  const auto empty = wire::DecodeParserMetricSnapshotV1(metrics.HeartbeatPacket(config, session, cache, "preauth"));
+  check(empty && empty->connection_uuid.is_nil() && empty->session_uuid.is_nil(),
         "absent/preauth identity was fabricated in heartbeat output");
   session.authenticated = true;
   session.connection_uuid = connection_before;
@@ -108,8 +129,8 @@ int main() {
   for (const bool heartbeat_output : {false, true}) {
     const auto render = [&] {
       return heartbeat_output
-          ? metrics.HeartbeatJson(config, session, cache, "identity-check")
-          : metrics.SnapshotJson(config, session, cache);
+          ? metrics.HeartbeatPacket(config, session, cache, "identity-check")
+          : metrics.SnapshotPacket(config, session, cache);
     };
     allocation_count = 0;
     (void)render();
@@ -123,9 +144,9 @@ int main() {
       catch (const std::ios_base::failure&) { rejected = true; }
       fail_after = -1;
       check(injected, "allocation sweep did not reach the selected site");
-      check(rejected && !returned, "JSON rendering swallowed failure and returned partial output");
+      check(rejected && !returned, "metric encoding swallowed failure and returned partial output");
       check(session.session_uuid == snapshot_before && session.connection_uuid == connection_before,
-            "failed JSON rendering changed binary execution identity");
+            "failed metric encoding changed binary execution identity");
       allocation_faults += injected;
     }
   }

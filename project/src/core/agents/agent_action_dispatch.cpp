@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_action_dispatch.hpp"
+#include "uuid.hpp"
 
 #include "agent_commercial_evidence.hpp"
 #include "agent_production_classification.hpp"
@@ -557,21 +558,17 @@ AgentActionDispatchResult DispatchAgentAction(
                            request.action.agent_type_id, request.action);
     }
     auto metric_context = request.metric_context;
-    if (metric_context.database_uuid.empty()) {
-      metric_context.database_uuid = request.authority.scope_uuid;
-    }
-    if (metric_context.principal_uuid.empty()) {
-      metric_context.principal_uuid = request.authority.principal_uuid;
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(metric_context.database_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(metric_context.principal_uuid) ||
+        !metric_context.security_context_present) {
+      return FinishFailure("SB_AGENT_ACTION_DISPATCH.NATIVE_CONTEXT_REQUIRED",
+          "native database, principal and security context are required", request.action);
     }
     if (metric_context.wall_now_microseconds == 0) {
       metric_context.wall_now_microseconds = 1;
     }
-    metric_context.security_context_present = true;
     auto metric_options = request.metric_snapshot_options;
     metric_options.mode = AgentMetricRuntimeMode::production_strict;
-    if (metric_options.expected_scope_uuid.empty()) {
-      metric_options.expected_scope_uuid = request.authority.scope_uuid;
-    }
     const auto metric_evaluation = EvaluateAgentObservedMetricSnapshots(
         *descriptor,
         metric_context,

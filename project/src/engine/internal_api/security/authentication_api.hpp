@@ -21,6 +21,8 @@ struct EngineSecurityPrincipalLifecycleState;
 struct EngineAuthenticateRequest : EngineApiRequest {
   std::string provider_family;
   std::string principal_claim;
+  // Candidate identity; authentication must match it to the durable principal record.
+  EngineUuid durable_principal_uuid;
   std::string credential_evidence;
   bool credential_evidence_present = false;
   bool credential_invalid_claim = false;

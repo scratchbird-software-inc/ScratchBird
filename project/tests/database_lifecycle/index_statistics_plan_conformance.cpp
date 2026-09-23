@@ -1,3 +1,5 @@
+#include "catalog/binary_catalog_metadata.hpp"
+#include "uuid.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +8,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "catalog_index_profile.hpp"
 #include "index_statistics_lifecycle.hpp"
 #include "query/optimizer_plan_lifecycle.hpp"
@@ -38,26 +41,16 @@ static_assert(
 static_assert(!std::is_default_constructible_v<
               plan_api::EngineOptimizerPlanStatementUseReceipt>);
 
-inline constexpr std::string_view kIndexUuid =
-    "019e0000-0000-0000-0000-000000000031";
-inline constexpr std::string_view kRelationUuid =
-    "019e0000-0000-0000-0000-000000000032";
-inline constexpr std::string_view kPlanUuid =
-    "019e0000-0000-7000-8000-000000000101";
-inline constexpr std::string_view kBoundSblrTreeUuid =
-    "019e0000-0000-7000-8000-000000000102";
-inline constexpr std::string_view kCatalogEpochUuid =
-    "019e0000-0000-7000-8000-000000000103";
-inline constexpr std::string_view kSecurityContextUuid =
-    "019e0000-0000-7000-8000-000000000104";
-inline constexpr std::string_view kCapabilitySnapshotUuid =
-    "019e0000-0000-7000-8000-000000000105";
-inline constexpr std::string_view kResourceSnapshotUuid =
-    "019e0000-0000-7000-8000-000000000106";
-inline constexpr std::string_view kStatisticsSnapshotUuid =
-    "019e0000-0000-7000-8000-000000000107";
-inline constexpr std::string_view kRouteSnapshotUuid =
-    "019e0000-0000-7000-8000-000000000108";
+inline constexpr auto kIndexUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000031");
+inline constexpr auto kRelationUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000032");
+inline constexpr auto kPlanUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000101");
+inline constexpr auto kBoundSblrTreeUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000102");
+inline constexpr auto kCatalogEpochUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000103");
+inline constexpr auto kSecurityContextUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000104");
+inline constexpr auto kCapabilitySnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000105");
+inline constexpr auto kResourceSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000106");
+inline constexpr auto kStatisticsSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000107");
+inline constexpr auto kRouteSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000108");
 inline constexpr std::string_view kQueryFingerprint =
     "query:catalog-index-lookup:v2";
 
@@ -100,7 +93,7 @@ bool HasEvidence(const plan_api::EngineApiResult& result,
                  const std::string_view kind,
                  const std::string_view id) {
   return std::ranges::any_of(result.evidence, [&](const auto& evidence) {
-    return evidence.evidence_kind == kind && evidence.evidence_id == id;
+    return evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id);
   });
 }
 
@@ -115,31 +108,36 @@ bool HasRowField(const plan_api::EngineApiResult& result,
   });
 }
 
-std::string DecodeJournalField(const std::string_view line,
-                               const std::string_view field_name) {
-  const std::string marker = "\t" + std::string(field_name) + "=";
-  const auto field = line.find(marker);
-  if (field == std::string_view::npos) return {};
-  const auto begin = field + marker.size();
-  const auto end = line.find('\t', begin);
-  const auto encoded = line.substr(
-      begin, end == std::string_view::npos ? line.size() - begin : end - begin);
-  if (encoded.empty() || (encoded.size() % 2) != 0) return {};
-  std::string decoded;
-  decoded.reserve(encoded.size() / 2);
-  const auto HexNibble = [](const char ch) -> int {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-    return -1;
-  };
-  for (std::size_t index = 0; index < encoded.size(); index += 2) {
-    const int high = HexNibble(encoded[index]);
-    const int low = HexNibble(encoded[index + 1]);
-    if (high < 0 || low < 0) return {};
-    decoded.push_back(static_cast<char>((high << 4) | low));
+std::vector<plan_api::BinaryCatalogMetadata> ReadJournalRecords(std::string_view bytes) {
+  const std::string_view magic(plan_api::kOptimizerPlanLifecycleEventMagic);
+  Require(bytes.starts_with(magic), "DBLC-013V binary journal magic missing");
+  std::span<const std::uint8_t> input(
+      reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
+  std::size_t cursor = magic.size();
+  std::vector<plan_api::BinaryCatalogMetadata> records;
+  while (cursor < input.size()) {
+    std::uint32_t length = 0;
+    Require(plan_api::ReadBinaryU32(input, &cursor, &length) &&
+                length <= input.size() - cursor, "DBLC-013V truncated journal frame");
+    plan_api::BinaryCatalogMetadata record;
+    Require(plan_api::DecodeBinaryCatalogMetadata(bytes.substr(cursor, length),
+                "optimizer.plan.event.v3", &record), "DBLC-013V invalid binary journal record");
+    records.push_back(std::move(record));
+    cursor += length;
   }
-  return decoded;
+  return records;
+}
+
+std::string EncodeJournalRecords(const std::vector<plan_api::BinaryCatalogMetadata>& records) {
+  std::string bytes = plan_api::kOptimizerPlanLifecycleEventMagic;
+  for (const auto& record : records) {
+    std::string encoded;
+    Require(plan_api::EncodeBinaryCatalogMetadata(record, "optimizer.plan.event.v3", &encoded),
+            "DBLC-013V journal fixture encode failed");
+    plan_api::AppendBinaryU32(&bytes, static_cast<std::uint32_t>(encoded.size()));
+    bytes += encoded;
+  }
+  return bytes;
 }
 
 std::string LowercaseHex(const std::string_view value) {
@@ -171,16 +169,11 @@ void RewriteJournalField(const std::filesystem::path& database_path,
   std::string bytes((std::istreambuf_iterator<char>(in)),
                     std::istreambuf_iterator<char>());
   Require(in.is_open(), "DBLC-013V correction journal read failed");
-  const std::string marker = "\t" + std::string(field_name) + "=";
-  const auto field = bytes.find(marker);
-  Require(field != std::string::npos,
+  auto records = ReadJournalRecords(bytes);
+  Require(records.size() == 1 && records.front().text.contains(std::string(field_name)),
           "DBLC-013V corrected journal field missing");
-  const auto begin = field + marker.size();
-  const auto end = bytes.find_first_of("\t\n", begin);
-  Require(end != std::string::npos,
-          "DBLC-013V corrected journal field was unterminated");
-  bytes.replace(begin, end - begin, LowercaseHex(replacement_value));
-  WriteJournal(database_path, bytes);
+  records.front().text[std::string(field_name)] = replacement_value;
+  WriteJournal(database_path, EncodeJournalRecords(records));
 }
 
 void RequireCoreOk(const index_api::IndexStatisticsLifecycleResult& result,
@@ -216,10 +209,10 @@ std::filesystem::path TestPath(std::string_view label) {
 }
 
 exec::PhysicalMgaStatementContext StatementContext(
-    std::string statement_uuid,
-    std::string transaction_uuid,
-    std::string snapshot_uuid,
-    std::string metadata_snapshot_uuid,
+    platform::Uuid statement_uuid,
+    platform::Uuid transaction_uuid,
+    platform::Uuid snapshot_uuid,
+    platform::Uuid metadata_snapshot_uuid,
     const std::uint64_t owning_local_transaction_id,
     const std::uint64_t visible_committed_high_watermark) {
   exec::PhysicalMgaStatementContext context;
@@ -253,18 +246,18 @@ exec::TypedPhysicalNodeDag SelectedDag(
     const std::uint64_t statistics_generation) {
   exec::TypedPhysicalNodeDag dag;
   dag.abi_version = 2;
-  dag.selected_plan_uuid = std::string(kPlanUuid);
+  dag.selected_plan_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000101");
   dag.root_physical_node_id = 1;
   dag.local_transaction_id = statement.owning_local_transaction_id;
   dag.statement_snapshot_id = statement.visible_committed_high_watermark;
   dag.mga_statement_context = statement;
-  dag.bound_sblr_tree_uuid = std::string(kBoundSblrTreeUuid);
-  dag.catalog_epoch_uuid = std::string(kCatalogEpochUuid);
-  dag.security_context_uuid = std::string(kSecurityContextUuid);
-  dag.capability_snapshot_uuid = std::string(kCapabilitySnapshotUuid);
-  dag.resource_snapshot_uuid = std::string(kResourceSnapshotUuid);
-  dag.statistics_snapshot_uuid = std::string(kStatisticsSnapshotUuid);
-  dag.route_snapshot_uuid = std::string(kRouteSnapshotUuid);
+  dag.bound_sblr_tree_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000102");
+  dag.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000103");
+  dag.security_context_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000104");
+  dag.capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000105");
+  dag.resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000106");
+  dag.statistics_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000107");
+  dag.route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000108");
   dag.catalog_generation = 7;
   dag.security_epoch = 8;
   dag.policy_epoch = 9;
@@ -299,12 +292,12 @@ exec::TypedPhysicalNodeDag SelectedDag(
   node.output_descriptor_ids = {1};
   node.causal_counter_id = 1;
   node.selected_alternative_uuid =
-      "019e0000-0000-7000-8000-000000000109";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000109");
   node.executor_capability_uuid =
-      "019e0000-0000-7000-8000-00000000010a";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-00000000010a");
   node.executor_capability_abi_version = 1;
   node.cost_vector_uuid =
-      "019e0000-0000-7000-8000-00000000010b";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-00000000010b");
   node.memory_bytes_required = 64;
   node.engine_capability_validated = true;
   node.mga_statement_context = statement;
@@ -318,21 +311,18 @@ plan_api::EngineRequestContext EngineContext(
     const exec::TypedPhysicalNodeDag& dag) {
   plan_api::EngineRequestContext context;
   context.database_path = path.string();
-  context.database_uuid.canonical =
-      "019e0000-0000-7000-8000-000000000201";
-  context.principal_uuid.canonical =
-      "019e0000-0000-7000-8000-000000000202";
-  context.session_uuid.canonical =
-      "019e0000-0000-7000-8000-000000000203";
-  context.transaction_uuid.canonical = statement.owning_transaction_uuid;
-  context.statement_uuid.canonical = statement.statement_uuid;
-  context.statement_snapshot_uuid.canonical =
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000201");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000202");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000203");
+  context.transaction_uuid = statement.owning_transaction_uuid;
+  context.statement_uuid = statement.statement_uuid;
+  context.statement_snapshot_uuid =
       statement.statement_snapshot_uuid;
-  context.statement_metadata_snapshot_uuid.canonical =
+  context.statement_metadata_snapshot_uuid =
       statement.statement_metadata_snapshot_uuid;
-  context.catalog_epoch_uuid.canonical = dag.catalog_epoch_uuid;
+  context.catalog_epoch_uuid = dag.catalog_epoch_uuid;
   context.local_transaction_id = statement.owning_local_transaction_id;
-  context.request_id = "request-" + statement.statement_uuid;
+  context.request_id = "index-statistics-plan-request";
   context.snapshot_visible_through_local_transaction_id =
       statement.visible_committed_high_watermark;
   context.statement_metadata_snapshot_visible_through_local_transaction_id =
@@ -346,11 +336,11 @@ plan_api::EngineRequestContext EngineContext(
   context.catalog_generation_id = dag.catalog_generation;
   context.security_epoch = dag.security_epoch;
   context.resource_epoch = dag.resource_epoch;
-  context.optimizer_capability_snapshot_uuid.canonical =
+  context.optimizer_capability_snapshot_uuid =
       dag.capability_snapshot_uuid;
-  context.optimizer_resource_snapshot_uuid.canonical =
+  context.optimizer_resource_snapshot_uuid =
       dag.resource_snapshot_uuid;
-  context.optimizer_route_snapshot_uuid.canonical = dag.route_snapshot_uuid;
+  context.optimizer_route_snapshot_uuid = dag.route_snapshot_uuid;
   context.optimizer_route_epoch = dag.route_epoch;
   context.optimizer_route_generation = dag.route_generation;
   context.optimizer_memory_budget_bytes = dag.memory_budget_bytes;
@@ -371,7 +361,7 @@ exec::CanonicalExecutionMgaAuthority Authority(
   state->current = dag.mga_statement_context;
   state->stale_current = dag.mga_statement_context;
   state->stale_current.statement_snapshot_uuid =
-      "019e0000-0000-7000-8000-000000000fff";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000fff");
   state->calls = 0;
   state->stale_on_call = stale_on_call;
 
@@ -399,16 +389,16 @@ plan_api::EngineOptimizerCachePlanRequest CacheRequest(
     const exec::CanonicalExecutionMgaAuthority& authority) {
   plan_api::EngineOptimizerCachePlanRequest request;
   request.context = EngineContext(path, dag.mga_statement_context, dag);
-  request.plan_uuid = std::string(kPlanUuid);
+  request.plan_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000101");
   request.query_fingerprint = std::string(kQueryFingerprint);
-  request.relation_uuid = std::string(kRelationUuid);
-  request.index_uuid = std::string(kIndexUuid);
+  request.relation_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000032");
+  request.index_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000031");
   request.plan_shape_digest = "shape:index-point-lookup:v2";
   request.mga_authority = authority;
   request.selected_physical_dag = dag;
-  request.selected_catalog_epoch_uuid = std::string(kCatalogEpochUuid);
-  request.object_dependency_uuids = {std::string(kIndexUuid),
-                                    std::string(kRelationUuid)};
+  request.selected_catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000103");
+  request.object_dependency_uuids = {kIndexUuid,
+                                    kRelationUuid};
   request.index_descriptor = descriptor;
   request.statistics = statistics;
   return request;
@@ -421,14 +411,14 @@ plan_api::EngineOptimizerValidateCachedPlanRequest ValidateRequest(
     const exec::CanonicalExecutionMgaAuthority& authority) {
   plan_api::EngineOptimizerValidateCachedPlanRequest request;
   request.context = EngineContext(path, dag.mga_statement_context, dag);
-  request.plan_uuid = std::string(kPlanUuid);
+  request.plan_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000101");
   request.query_fingerprint = std::string(kQueryFingerprint);
-  request.index_uuid = std::string(kIndexUuid);
+  request.index_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000031");
   request.mga_authority = authority;
   request.selected_physical_dag = dag;
-  request.selected_catalog_epoch_uuid = std::string(kCatalogEpochUuid);
-  request.object_dependency_uuids = {std::string(kIndexUuid),
-                                    std::string(kRelationUuid)};
+  request.selected_catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000103");
+  request.object_dependency_uuids = {kIndexUuid,
+                                    kRelationUuid};
   request.current_index_generation = statistics.index_generation;
   request.current_statistics_generation = statistics.statistics_generation;
   request.current_catalog_generation_id = statistics.catalog_generation_id;
@@ -444,13 +434,13 @@ void RequireNoValidateExposure(
               !result.statement_use_receipt && result.plan_cache_epoch == 0 &&
               result.result_shape.result_kind.empty() &&
               result.result_shape.rows.empty() && result.evidence.empty() &&
-              result.primary_object.uuid.canonical.empty() &&
+              result.primary_object.uuid.is_nil() &&
               result.primary_object.object_kind.empty() &&
-              result.entry.event_uuid.empty() && result.entry.plan_uuid.empty() &&
+              result.entry.event_uuid.is_nil() && result.entry.plan_uuid.is_nil() &&
               result.entry.query_fingerprint.empty() &&
-              result.entry.relation_uuid.empty() &&
-              result.entry.index_uuid.empty() &&
-              result.entry.dependencies.bound_sblr_tree_uuid.empty() &&
+              result.entry.relation_uuid.is_nil() &&
+              result.entry.index_uuid.is_nil() &&
+              result.entry.dependencies.bound_sblr_tree_uuid.is_nil() &&
               result.entry.dependencies.object_dependency_uuids.empty(),
           message);
 }
@@ -462,13 +452,13 @@ void RequireNoCacheExposure(
               result.plan_cache_epoch == 0 &&
               result.result_shape.result_kind.empty() &&
               result.result_shape.rows.empty() && result.evidence.empty() &&
-              result.primary_object.uuid.canonical.empty() &&
+              result.primary_object.uuid.is_nil() &&
               result.primary_object.object_kind.empty() &&
-              result.entry.event_uuid.empty() && result.entry.plan_uuid.empty() &&
+              result.entry.event_uuid.is_nil() && result.entry.plan_uuid.is_nil() &&
               result.entry.query_fingerprint.empty() &&
-              result.entry.relation_uuid.empty() &&
-              result.entry.index_uuid.empty() &&
-              result.entry.dependencies.bound_sblr_tree_uuid.empty() &&
+              result.entry.relation_uuid.is_nil() &&
+              result.entry.index_uuid.is_nil() &&
+              result.entry.dependencies.bound_sblr_tree_uuid.is_nil() &&
               result.entry.dependencies.object_dependency_uuids.empty(),
           message);
 }
@@ -722,10 +712,10 @@ void TestOptimizerPlanPublicationAndStatementUse() {
   const auto statistics = RefreshStatistics(descriptor, 60);
 
   const auto statement_a = StatementContext(
-      "019e0000-0000-7000-8000-000000000301",
-      "019e0000-0000-7000-8000-000000000302",
-      "019e0000-0000-7000-8000-000000000303",
-      "019e0000-0000-7000-8000-000000000304", 61, 60);
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000301"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000302"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000303"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000304"), 61, 60);
   const auto dag_a = SelectedDag(statement_a, statistics.statistics_generation);
   auto cache_resolver = std::make_shared<ResolverState>();
   const auto cache_authority = Authority(dag_a, cache_resolver);
@@ -735,19 +725,19 @@ void TestOptimizerPlanPublicationAndStatementUse() {
   RequireOk(cached, "DBLC-013V corrected plan cache publication failed");
   Require(cache_resolver->calls == 2,
           "DBLC-013V cache publication did not revalidate exactly twice");
-  Require(std::string(kCatalogEpochUuid) != statement_a.statement_uuid &&
-              std::string(kCatalogEpochUuid) !=
+  Require(kCatalogEpochUuid != statement_a.statement_uuid &&
+              kCatalogEpochUuid !=
                   statement_a.owning_transaction_uuid &&
-              std::string(kCatalogEpochUuid) !=
+              kCatalogEpochUuid !=
                   statement_a.statement_snapshot_uuid &&
-              std::string(kCatalogEpochUuid) !=
+              kCatalogEpochUuid !=
                   statement_a.statement_metadata_snapshot_uuid,
           "DBLC-013V catalog identity depended on statement A identity");
   Require(cached.entry.metadata_only && !cached.entry.invalidated,
           "DBLC-013V cached entry was not strict metadata only");
   Require(cached.entry.event_schema_version ==
               plan_api::kOptimizerPlanLifecycleEventSchemaVersion &&
-              !cached.entry.event_uuid.empty() &&
+              !cached.entry.event_uuid.is_nil() &&
               cached.entry.plan_uuid == kPlanUuid,
           "DBLC-013V corrected cache event identity missing");
   Require(cached.entry.statistics_generation == statistics.statistics_generation,
@@ -815,10 +805,10 @@ void TestOptimizerPlanPublicationAndStatementUse() {
           "DBLC-013V statement A final use did not resolve current authority");
 
   const auto statement_b = StatementContext(
-      "019e0000-0000-7000-8000-000000000311",
-      "019e0000-0000-7000-8000-000000000312",
-      "019e0000-0000-7000-8000-000000000313",
-      "019e0000-0000-7000-8000-000000000314", 62, 0);
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000311"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000312"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000313"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000314"), 62, 0);
   const auto dag_b = SelectedDag(statement_b, statistics.statistics_generation);
   auto validate_b_resolver = std::make_shared<ResolverState>();
   const auto validate_b_authority = Authority(dag_b, validate_b_resolver);
@@ -841,12 +831,12 @@ void TestOptimizerPlanPublicationAndStatementUse() {
               hit_b.statement_use_receipt->statement_context()
                       .visible_committed_high_watermark == 0,
           "DBLC-013V statement B receipt replaced its zero high-watermark");
-  Require(std::string(kCatalogEpochUuid) != statement_b.statement_uuid &&
-              std::string(kCatalogEpochUuid) !=
+  Require(kCatalogEpochUuid != statement_b.statement_uuid &&
+              kCatalogEpochUuid !=
                   statement_b.owning_transaction_uuid &&
-              std::string(kCatalogEpochUuid) !=
+              kCatalogEpochUuid !=
                   statement_b.statement_snapshot_uuid &&
-              std::string(kCatalogEpochUuid) !=
+              kCatalogEpochUuid !=
                   statement_b.statement_metadata_snapshot_uuid,
           "DBLC-013V catalog identity depended on statement B identity");
   Require(validate_b_resolver->calls == 2,
@@ -867,10 +857,10 @@ void TestOptimizerPlanMgaRefusalMatrix() {
   const auto descriptor = ReadyBuiltDescriptor();
   const auto statistics = RefreshStatistics(descriptor, 60);
   const auto statement = StatementContext(
-      "019e0000-0000-7000-8000-000000000401",
-      "019e0000-0000-7000-8000-000000000402",
-      "019e0000-0000-7000-8000-000000000403",
-      "019e0000-0000-7000-8000-000000000404", 61, 60);
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000401"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000402"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000403"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000404"), 61, 60);
   const auto dag = SelectedDag(statement, statistics.statistics_generation);
   auto cache_state = std::make_shared<ResolverState>();
   const auto cached = plan_api::EngineOptimizerCachePlan(CacheRequest(
@@ -888,8 +878,7 @@ void TestOptimizerPlanMgaRefusalMatrix() {
   };
 
   auto mutation = baseline;
-  mutation.context.transaction_uuid.canonical =
-      "019e0000-0000-7000-8000-000000000411";
+  mutation.context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000411");
   ExpectValidateRefusal(mutation,
                         "DBLC-013V request transaction UUID mismatch exposed metadata");
   mutation = baseline;
@@ -897,18 +886,15 @@ void TestOptimizerPlanMgaRefusalMatrix() {
   ExpectValidateRefusal(mutation,
                         "DBLC-013V request local owner mismatch exposed metadata");
   mutation = baseline;
-  mutation.context.statement_uuid.canonical =
-      "019e0000-0000-7000-8000-000000000412";
+  mutation.context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000412");
   ExpectValidateRefusal(mutation,
                         "DBLC-013V request statement UUID mismatch exposed metadata");
   mutation = baseline;
-  mutation.context.statement_snapshot_uuid.canonical =
-      "019e0000-0000-7000-8000-000000000413";
+  mutation.context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000413");
   ExpectValidateRefusal(mutation,
                         "DBLC-013V request snapshot UUID mismatch exposed metadata");
   mutation = baseline;
-  mutation.context.statement_metadata_snapshot_uuid.canonical =
-      "019e0000-0000-7000-8000-000000000414";
+  mutation.context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000414");
   ExpectValidateRefusal(
       mutation,
       "DBLC-013V request metadata snapshot UUID mismatch exposed metadata");
@@ -957,25 +943,25 @@ void TestOptimizerPlanMgaRefusalMatrix() {
   ExpectResolvedContextMutation(
       [](auto* current) {
         current->statement_uuid =
-            "019e0000-0000-7000-8000-000000000421";
+            scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000421");
       },
       "DBLC-013V resolved statement UUID mismatch exposed metadata");
   ExpectResolvedContextMutation(
       [](auto* current) {
         current->owning_transaction_uuid =
-            "019e0000-0000-7000-8000-000000000422";
+            scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000422");
       },
       "DBLC-013V resolved owner UUID mismatch exposed metadata");
   ExpectResolvedContextMutation(
       [](auto* current) {
         current->statement_snapshot_uuid =
-            "019e0000-0000-7000-8000-000000000423";
+            scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000423");
       },
       "DBLC-013V resolved snapshot UUID mismatch exposed metadata");
   ExpectResolvedContextMutation(
       [](auto* current) {
         current->statement_metadata_snapshot_uuid =
-            "019e0000-0000-7000-8000-000000000424";
+            scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000424");
       },
       "DBLC-013V resolved metadata snapshot UUID mismatch exposed metadata");
   ExpectResolvedContextMutation(
@@ -1039,10 +1025,10 @@ void TestOptimizerPlanMgaRefusalMatrix() {
                         "DBLC-013V ABI1 carrier exposed metadata");
   mutation = baseline;
   mutation.selected_physical_dag.mga_statement_context = StatementContext(
-      "019e0000-0000-7000-8000-000000000431",
-      "019e0000-0000-7000-8000-000000000432",
-      "019e0000-0000-7000-8000-000000000433",
-      "019e0000-0000-7000-8000-000000000434", 62, 0);
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000431"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000432"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000433"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000434"), 62, 0);
   ExpectValidateRefusal(mutation,
                         "DBLC-013V swapped DAG context exposed metadata");
   mutation = baseline;
@@ -1052,7 +1038,7 @@ void TestOptimizerPlanMgaRefusalMatrix() {
       statement.statement_metadata_snapshot_uuid;
   mutation.selected_physical_dag.admission_evidence[1].evidence_uuid =
       statement.statement_metadata_snapshot_uuid;
-  mutation.context.catalog_epoch_uuid.canonical =
+  mutation.context.catalog_epoch_uuid =
       statement.statement_metadata_snapshot_uuid;
   ExpectValidateRefusal(mutation,
                         "DBLC-013V statement-dependent catalog exposed metadata");
@@ -1077,7 +1063,7 @@ void TestOptimizerPlanMgaRefusalMatrix() {
   Require(issued.statement_use_receipt && issued_state->calls == 2,
           "DBLC-013V revocation receipt was not issued at the exact gate");
   issued_state->current.statement_snapshot_uuid =
-      "019e0000-0000-7000-8000-000000000441";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000441");
   const auto revoked = plan_api::RevalidateOptimizerPlanStatementUse(
       issued.entry, issued.statement_use_receipt);
   RequireNoUseExposure(
@@ -1095,10 +1081,10 @@ void TestOptimizerPlanDependencyRefusalMatrix() {
   const auto descriptor = ReadyBuiltDescriptor();
   const auto statistics = RefreshStatistics(descriptor, 60);
   const auto statement = StatementContext(
-      "019e0000-0000-7000-8000-000000000501",
-      "019e0000-0000-7000-8000-000000000502",
-      "019e0000-0000-7000-8000-000000000503",
-      "019e0000-0000-7000-8000-000000000504", 61, 60);
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000501"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000502"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000503"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000504"), 61, 60);
   const auto dag = SelectedDag(statement, statistics.statistics_generation);
   auto cache_state = std::make_shared<ResolverState>();
   const auto cached = plan_api::EngineOptimizerCachePlan(CacheRequest(
@@ -1117,7 +1103,7 @@ void TestOptimizerPlanDependencyRefusalMatrix() {
 
   auto mutation = baseline;
   mutation.selected_physical_dag.bound_sblr_tree_uuid =
-      "019e0000-0000-7000-8000-000000000511";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000511");
   mutation.selected_physical_dag.admission_evidence[0].evidence_uuid =
       mutation.selected_physical_dag.bound_sblr_tree_uuid;
   ExpectValidateRefusal(mutation,
@@ -1125,19 +1111,19 @@ void TestOptimizerPlanDependencyRefusalMatrix() {
 
   mutation = baseline;
   mutation.selected_physical_dag.catalog_epoch_uuid =
-      "019e0000-0000-7000-8000-000000000512";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000512");
   mutation.selected_physical_dag.admission_evidence[1].evidence_uuid =
       mutation.selected_physical_dag.catalog_epoch_uuid;
   mutation.selected_catalog_epoch_uuid =
       mutation.selected_physical_dag.catalog_epoch_uuid;
-  mutation.context.catalog_epoch_uuid.canonical =
+  mutation.context.catalog_epoch_uuid =
       mutation.selected_physical_dag.catalog_epoch_uuid;
   ExpectValidateRefusal(mutation,
                         "DBLC-013V catalog UUID dependency mismatch exposed entry");
 
   mutation = baseline;
   mutation.selected_physical_dag.security_context_uuid =
-      "019e0000-0000-7000-8000-000000000513";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000513");
   mutation.selected_physical_dag.admission_evidence[2].evidence_uuid =
       mutation.selected_physical_dag.security_context_uuid;
   ExpectValidateRefusal(mutation,
@@ -1145,10 +1131,10 @@ void TestOptimizerPlanDependencyRefusalMatrix() {
 
   mutation = baseline;
   mutation.selected_physical_dag.capability_snapshot_uuid =
-      "019e0000-0000-7000-8000-000000000514";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000514");
   mutation.selected_physical_dag.admission_evidence[4].evidence_uuid =
       mutation.selected_physical_dag.capability_snapshot_uuid;
-  mutation.context.optimizer_capability_snapshot_uuid.canonical =
+  mutation.context.optimizer_capability_snapshot_uuid =
       mutation.selected_physical_dag.capability_snapshot_uuid;
   ExpectValidateRefusal(
       mutation,
@@ -1156,10 +1142,10 @@ void TestOptimizerPlanDependencyRefusalMatrix() {
 
   mutation = baseline;
   mutation.selected_physical_dag.resource_snapshot_uuid =
-      "019e0000-0000-7000-8000-000000000515";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000515");
   mutation.selected_physical_dag.admission_evidence[5].evidence_uuid =
       mutation.selected_physical_dag.resource_snapshot_uuid;
-  mutation.context.optimizer_resource_snapshot_uuid.canonical =
+  mutation.context.optimizer_resource_snapshot_uuid =
       mutation.selected_physical_dag.resource_snapshot_uuid;
   ExpectValidateRefusal(
       mutation,
@@ -1167,7 +1153,7 @@ void TestOptimizerPlanDependencyRefusalMatrix() {
 
   mutation = baseline;
   mutation.selected_physical_dag.statistics_snapshot_uuid =
-      "019e0000-0000-7000-8000-000000000516";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000516");
   mutation.selected_physical_dag.admission_evidence[6].evidence_uuid =
       mutation.selected_physical_dag.statistics_snapshot_uuid;
   ExpectValidateRefusal(
@@ -1176,10 +1162,10 @@ void TestOptimizerPlanDependencyRefusalMatrix() {
 
   mutation = baseline;
   mutation.selected_physical_dag.route_snapshot_uuid =
-      "019e0000-0000-7000-8000-000000000517";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000517");
   mutation.selected_physical_dag.admission_evidence[7].evidence_uuid =
       mutation.selected_physical_dag.route_snapshot_uuid;
-  mutation.context.optimizer_route_snapshot_uuid.canonical =
+  mutation.context.optimizer_route_snapshot_uuid =
       mutation.selected_physical_dag.route_snapshot_uuid;
   ExpectValidateRefusal(mutation,
                         "DBLC-013V route UUID dependency mismatch exposed entry");
@@ -1241,19 +1227,19 @@ void TestOptimizerPlanDependencyRefusalMatrix() {
   ExpectValidateRefusal(mutation,
                         "DBLC-013V missing object dependencies exposed entry");
   mutation = baseline;
-  mutation.object_dependency_uuids = {std::string(kIndexUuid),
-                                     std::string(kIndexUuid),
-                                     std::string(kRelationUuid)};
+  mutation.object_dependency_uuids = {kIndexUuid,
+                                     kIndexUuid,
+                                     kRelationUuid};
   ExpectValidateRefusal(mutation,
                         "DBLC-013V duplicate object dependencies exposed entry");
   mutation = baseline;
-  mutation.object_dependency_uuids = {std::string(kRelationUuid),
-                                     std::string(kIndexUuid)};
+  mutation.object_dependency_uuids = {kRelationUuid,
+                                     kIndexUuid};
   ExpectValidateRefusal(mutation,
                         "DBLC-013V unsorted object dependencies exposed entry");
 
   mutation = baseline;
-  mutation.plan_uuid = "019e0000-0000-7000-8000-000000000521";
+  mutation.plan_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000521");
   ExpectValidateRefusal(mutation,
                         "DBLC-013V wrong plan lookup exposed entry");
   mutation = baseline;
@@ -1261,12 +1247,12 @@ void TestOptimizerPlanDependencyRefusalMatrix() {
   ExpectValidateRefusal(mutation,
                         "DBLC-013V wrong fingerprint lookup exposed entry");
   mutation = baseline;
-  mutation.index_uuid = "019e0000-0000-7000-8000-000000000522";
+  mutation.index_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000522");
   ExpectValidateRefusal(mutation,
                         "DBLC-013V wrong index lookup exposed entry");
   mutation = baseline;
   mutation.selected_physical_dag.selected_plan_uuid =
-      "019e0000-0000-7000-8000-000000000523";
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000523");
   ExpectValidateRefusal(mutation,
                         "DBLC-013V selected plan mismatch exposed entry");
 
@@ -1324,10 +1310,10 @@ void TestOptimizerPlanPublicationTransitionRefusal() {
   const auto descriptor = ReadyBuiltDescriptor();
   const auto statistics = RefreshStatistics(descriptor, 60);
   const auto statement = StatementContext(
-      "019e0000-0000-7000-8000-000000000601",
-      "019e0000-0000-7000-8000-000000000602",
-      "019e0000-0000-7000-8000-000000000603",
-      "019e0000-0000-7000-8000-000000000604", 61, 60);
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000601"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000602"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000603"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000604"), 61, 60);
   const auto dag = SelectedDag(statement, statistics.statistics_generation);
   auto resolver = std::make_shared<ResolverState>();
   const auto refused = plan_api::EngineOptimizerCachePlan(CacheRequest(
@@ -1370,10 +1356,10 @@ void TestOptimizerPlanInvalidationAndRecovery() {
   const auto descriptor = ReadyBuiltDescriptor();
   const auto statistics = RefreshStatistics(descriptor, 60);
   const auto statement = StatementContext(
-      "019e0000-0000-7000-8000-000000000611",
-      "019e0000-0000-7000-8000-000000000612",
-      "019e0000-0000-7000-8000-000000000613",
-      "019e0000-0000-7000-8000-000000000614", 61, 60);
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000611"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000612"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000613"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000614"), 61, 60);
   const auto dag = SelectedDag(statement, statistics.statistics_generation);
   const auto context = EngineContext(path, statement, dag);
   auto cache_state = std::make_shared<ResolverState>();
@@ -1388,7 +1374,7 @@ void TestOptimizerPlanInvalidationAndRecovery() {
 
   plan_api::EngineOptimizerInvalidatePlanCacheRequest incomplete;
   incomplete.context = context;
-  incomplete.index_uuid = std::string(kIndexUuid);
+  incomplete.index_uuid = scratchbird::tests::FixtureUuidLiteral("019e0000-0000-0000-0000-000000000031");
   incomplete.reason = "incomplete_generation_vector";
   incomplete.new_index_generation = statistics.index_generation + 1;
   incomplete.new_statistics_generation = statistics.statistics_generation;
@@ -1401,7 +1387,7 @@ void TestOptimizerPlanInvalidationAndRecovery() {
               incomplete_result.plan_cache_epoch == 0 &&
               incomplete_result.result_shape.rows.empty() &&
               incomplete_result.evidence.empty() &&
-              incomplete_result.primary_object.uuid.canonical.empty() &&
+              incomplete_result.primary_object.uuid.is_nil() &&
               std::filesystem::file_size(journal_path) ==
                   bytes_before_incomplete,
           "DBLC-013V incomplete invalidation appended or exposed metadata");
@@ -1434,23 +1420,8 @@ void TestOptimizerPlanInvalidationAndRecovery() {
   recover.context = context;
   const auto recovered = plan_api::EngineOptimizerRecoverPlanCache(recover);
   RequireOk(recovered, "DBLC-013V corrected plan recovery failed");
-  const auto CanonicalUuidText = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-' ||
-        value == "00000000-0000-0000-0000-000000000000") {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const char ch = value[index];
-      if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-        return false;
-      }
-    }
-    return true;
-  };
-  Require(CanonicalUuidText(cached.entry.event_uuid) &&
-              CanonicalUuidText(recovered.recovery_snapshot_uuid) &&
+  Require(scratchbird::core::uuid::IsEngineIdentityUuid(cached.entry.event_uuid) &&
+              scratchbird::core::uuid::IsEngineIdentityUuid(recovered.recovery_snapshot_uuid) &&
               recovered.state.recovery_snapshot_uuid ==
                   recovered.recovery_snapshot_uuid &&
               recovered.state.recovered_from_persisted_evidence &&
@@ -1479,35 +1450,32 @@ void TestOptimizerPlanInvalidationAndRecovery() {
   std::ifstream journal(journal_path, std::ios::binary);
   const std::string journal_bytes((std::istreambuf_iterator<char>(journal)),
                                   std::istreambuf_iterator<char>());
-  const auto invalidation_begin =
-      journal_bytes.find("SBPLANL2\t2\tINVALIDATE");
-  const auto recovery_begin =
-      journal_bytes.find("SBPLANL2\t2\tRECOVERY_SNAPSHOT");
-  const auto EventLine = [&](const std::size_t begin) {
-    const auto end = journal_bytes.find('\n', begin);
-    return std::string_view(journal_bytes).substr(
-        begin, end == std::string::npos ? journal_bytes.size() - begin
-                                        : end - begin);
-  };
-  const std::string invalidation_event_uuid =
-      invalidation_begin == std::string::npos
-          ? std::string{}
-          : DecodeJournalField(EventLine(invalidation_begin), "event_uuid");
-  const std::string recovery_event_uuid =
-      recovery_begin == std::string::npos
-          ? std::string{}
-          : DecodeJournalField(EventLine(recovery_begin), "event_uuid");
-  Require(journal.is_open() && journal_bytes.find("SBPLANL2\t2\t") !=
-                         std::string::npos &&
-              CanonicalUuidText(invalidation_event_uuid) &&
-              CanonicalUuidText(recovery_event_uuid) &&
-              journal_bytes.find("SBPLANL1") == std::string::npos &&
-              journal_bytes.find("creator_tx") == std::string::npos &&
-              journal_bytes.find("statement_uuid") == std::string::npos &&
-              journal_bytes.find("statement_snapshot") == std::string::npos &&
-              journal_bytes.find("visibility") == std::string::npos &&
-              journal_bytes.find("finality") == std::string::npos,
-          "DBLC-013V corrected journal persisted MGA or finality authority");
+  const auto records = ReadJournalRecords(journal_bytes);
+  Require(journal.is_open() && records.size() == 3,
+          "DBLC-013V corrected journal record count mismatch");
+  Require(records[1].text.at("event_kind") == "INVALIDATE" &&
+              records[2].text.at("event_kind") == "RECOVERY_SNAPSHOT" &&
+              scratchbird::core::uuid::IsEngineIdentityUuid(
+                  plan_api::BinaryCatalogUuid(records[1], "event_uuid")) &&
+              scratchbird::core::uuid::IsEngineIdentityUuid(
+                  plan_api::BinaryCatalogUuid(records[2], "event_uuid")) &&
+              plan_api::BinaryCatalogUuid(records[2], "recovery_snapshot_uuid") ==
+                  recovered.recovery_snapshot_uuid,
+          "DBLC-013V corrected journal lost native event identities");
+  for (const auto& record : records) {
+    const auto permitted = [](const auto& fields) {
+      return std::none_of(fields.begin(), fields.end(), [](const auto& field) {
+        const auto& key = field.first;
+        return key.find("creator_tx") != std::string::npos ||
+               key.find("statement_uuid") != std::string::npos ||
+               key.find("statement_snapshot") != std::string::npos ||
+               key.find("visibility") != std::string::npos ||
+               key.find("finality") != std::string::npos;
+      });
+    };
+    Require(permitted(record.text) && permitted(record.identities),
+            "DBLC-013V corrected journal persisted MGA or finality authority");
+  }
 
   Cleanup(path);
 }
@@ -1516,10 +1484,10 @@ void TestOptimizerPlanStrictCorruptionRefusal() {
   const auto descriptor = ReadyBuiltDescriptor();
   const auto statistics = RefreshStatistics(descriptor, 60);
   const auto statement = StatementContext(
-      "019e0000-0000-7000-8000-000000000701",
-      "019e0000-0000-7000-8000-000000000702",
-      "019e0000-0000-7000-8000-000000000703",
-      "019e0000-0000-7000-8000-000000000704", 61, 60);
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000701"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000702"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000703"),
+      scratchbird::tests::FixtureUuidLiteral("019e0000-0000-7000-8000-000000000704"), 61, 60);
   const auto dag = SelectedDag(statement, statistics.statistics_generation);
 
   const auto AssertCorruptPath =
@@ -1536,7 +1504,7 @@ void TestOptimizerPlanStrictCorruptionRefusal() {
                     loaded.state.plan_cache_epoch == 0 &&
                     loaded.state.invalidation_events == 0 &&
                     !loaded.state.recovered_from_persisted_evidence &&
-                    loaded.state.recovery_snapshot_uuid.empty() &&
+                    loaded.state.recovery_snapshot_uuid.is_nil() &&
                     loaded.state.rejected_event_count == 1 &&
                     loaded.state.legacy_event_count == expected_legacy_count &&
                     loaded.state.malformed_event_count ==
@@ -1620,9 +1588,9 @@ void TestOptimizerPlanStrictCorruptionRefusal() {
       };
   RewriteValidCacheAndRefuse("signed_numeric", "plan_cache_epoch", "-1");
   RewriteValidCacheAndRefuse(
-      "trailing_dependency_comma",
+      "trailing_dependency_count",
       "object_dependency_uuids",
-      std::string(kIndexUuid) + "," + std::string(kRelationUuid) + ",");
+      "2,");
 }
 
 }  // namespace

@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -33,17 +34,20 @@ bool Has(const std::vector<std::string>& values, const std::string& value) {
 }
 
 const opt::PlanCandidate* FindCandidate(const std::vector<opt::PlanCandidate>& candidates,
-                                        const std::string& id) {
+                                        const std::string& id,
+                                        const plan::CanonicalPlannerUuid& index_identity = {}) {
   const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const opt::PlanCandidate& candidate) {
-    return candidate.candidate_id == id;
+    return candidate.candidate_id == id && candidate.index_uuid == index_identity;
   });
   return found == candidates.end() ? nullptr : &*found;
 }
 
 const opt::OptimizerCandidate* FindOptimizedCandidate(const opt::OptimizedPlan& optimized,
-                                                     const std::string& id) {
+                                                     const std::string& id,
+                                        const plan::CanonicalPlannerUuid& index_identity = {}) {
   const auto found = std::find_if(optimized.candidates.begin(), optimized.candidates.end(), [&](const opt::OptimizerCandidate& candidate) {
-    return candidate.plan_candidate.candidate_id == id;
+    return candidate.plan_candidate.candidate_id == id &&
+           candidate.plan_candidate.index_uuid == index_identity;
   });
   return found == optimized.candidates.end() ? nullptr : &*found;
 }
@@ -55,8 +59,8 @@ bool TreeHasEvidence(const opt::PhysicalPlanNode& node, const std::string& evide
   });
 }
 
-opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
-                                          const std::string& statistic_uuid) {
+opt::OptimizerStatsIdentity FreshIdentity(const plan::CanonicalPlannerUuid& object_uuid,
+                                          const plan::CanonicalPlannerUuid& statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = object_uuid;
   identity.statistic_uuid = statistic_uuid;
@@ -69,16 +73,16 @@ opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
   return identity;
 }
 
-opt::OptimizerStatsIdentity StaleIdentity(const std::string& object_uuid,
-                                          const std::string& statistic_uuid) {
+opt::OptimizerStatsIdentity StaleIdentity(const plan::CanonicalPlannerUuid& object_uuid,
+                                          const plan::CanonicalPlannerUuid& statistic_uuid) {
   auto identity = FreshIdentity(object_uuid, statistic_uuid);
   identity.freshness = opt::OptimizerStatsFreshnessState::kStale;
   return identity;
 }
 
-opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
+opt::TableCardinalityStats TableStats(const plan::CanonicalPlannerUuid& relation_uuid) {
   opt::TableCardinalityStats stats;
-  stats.identity = FreshIdentity(relation_uuid, relation_uuid + ":table");
+  stats.identity = FreshIdentity(relation_uuid, scratchbird::tests::FixtureUuid(1542, 100 + relation_uuid.bytes[15]));
   stats.row_count = 50000;
   stats.visible_row_count = 48000;
   stats.page_count = 1200;
@@ -86,15 +90,15 @@ opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
   return stats;
 }
 
-opt::IndexStats IndexStats(const std::string& relation_uuid,
-                           const std::string& index_uuid,
+opt::IndexStats IndexStats(const plan::CanonicalPlannerUuid& relation_uuid,
+                           const plan::CanonicalPlannerUuid& index_uuid,
                            const std::string& family,
-                           std::vector<std::string> keys,
-                           std::vector<std::string> covered,
+                           std::vector<plan::CanonicalPlannerUuid> keys,
+                           std::vector<plan::CanonicalPlannerUuid> covered,
                            bool unique = false,
                            bool covering = true) {
   opt::IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, index_uuid + ":index");
+  stats.identity = FreshIdentity(index_uuid, scratchbird::tests::FixtureUuid(1542, 200 + index_uuid.bytes[15]));
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = family;
@@ -112,12 +116,12 @@ opt::IndexStats IndexStats(const std::string& relation_uuid,
   return stats;
 }
 
-opt::AccessPathPlanningRequest BaseRequest(const std::string& relation_uuid) {
+opt::AccessPathPlanningRequest BaseRequest(const plan::CanonicalPlannerUuid& relation_uuid) {
   opt::AccessPathPlanningRequest request;
   request.relation_uuid = relation_uuid;
   request.predicate_kind = "scalar_eq";
   request.descriptor_digest = "desc:odf019";
-  request.projected_column_uuids = {"col.customer_id"};
+  request.projected_column_uuids = {scratchbird::tests::FixtureUuid(1542, 2)};
   request.visibility_proven = true;
   request.grants_proven = true;
   request.index_visibility_native = true;
@@ -132,31 +136,31 @@ opt::AccessPathPlanningRequest BaseRequest(const std::string& relation_uuid) {
 }
 
 bool OrderedLimitSelectsOrderedIndexPath() {
-  const std::string relation_uuid = "rel.odf019.ordered";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1542, 15);
   auto request = BaseRequest(relation_uuid);
   request.predicate_kind = "ordered_limit";
   request.ordered_limit.present = true;
-  request.ordered_limit.order_by_column_uuids = {"col.created_at"};
+  request.ordered_limit.order_by_column_uuids = {scratchbird::tests::FixtureUuid(1542, 1)};
   request.ordered_limit.limit_count = 25;
   request.candidate_indexes = {
       IndexStats(relation_uuid,
-                 "idx.odf019.created_at",
+                 scratchbird::tests::FixtureUuid(1542, 10),
                  "btree",
-                 {"col.created_at", "col.customer_id"},
-                 {"col.created_at", "col.customer_id"},
+                 {scratchbird::tests::FixtureUuid(1542, 1), scratchbird::tests::FixtureUuid(1542, 2)},
+                 {scratchbird::tests::FixtureUuid(1542, 1), scratchbird::tests::FixtureUuid(1542, 2)},
                  false,
                  true),
       IndexStats(relation_uuid,
-                 "idx.odf019.hash_customer",
+                 scratchbird::tests::FixtureUuid(1542, 11),
                  "hash",
-                 {"col.customer_id"},
-                 {"col.customer_id"},
+                 {scratchbird::tests::FixtureUuid(1542, 2)},
+                 {scratchbird::tests::FixtureUuid(1542, 2)},
                  false,
                  false),
   };
 
   const auto candidates = opt::GenerateFullAccessPathCandidates(request);
-  const auto* ordered = FindCandidate(candidates, "CAND-OPT-ORDERED-LIMIT:idx.odf019.created_at");
+  const auto* ordered = FindCandidate(candidates, "CAND-OPT-ORDERED-LIMIT", scratchbird::tests::FixtureUuid(1542, 10));
   const auto* scan = FindCandidate(candidates, "CAND-OPT-FULL-SCAN");
   if (!Require(ordered != nullptr, "ordered LIMIT index candidate missing") ||
       !Require(scan != nullptr, "table scan candidate missing for ordered LIMIT comparison") ||
@@ -190,7 +194,7 @@ bool OrderedLimitSelectsOrderedIndexPath() {
   logical.nodes = {base, topn};
 
   const auto optimized = opt::OptimizeLogicalPlanWithAccessPathRequest(logical, request);
-  const auto* selected = FindOptimizedCandidate(optimized, "CAND-OPT-ORDERED-LIMIT:idx.odf019.created_at");
+  const auto* selected = FindOptimizedCandidate(optimized, "CAND-OPT-ORDERED-LIMIT", scratchbird::tests::FixtureUuid(1542, 10));
   return Require(optimized.ok, "ordered LIMIT optimized plan not ok") &&
          Require(optimized.has_physical_plan, "ordered LIMIT physical plan missing") &&
          Require(optimized.physical_root.access_kind == plan::PhysicalAccessKind::kTopN,
@@ -206,19 +210,19 @@ bool OrderedLimitSelectsOrderedIndexPath() {
 }
 
 bool CoveringCandidateReasonsAreExact() {
-  const std::string relation_uuid = "rel.odf019.covering";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1542, 14);
   auto accepted_request = BaseRequest(relation_uuid);
   accepted_request.candidate_indexes = {
       IndexStats(relation_uuid,
-                 "idx.odf019.covering.accept",
+                 scratchbird::tests::FixtureUuid(1542, 7),
                  "btree",
-                 {"col.customer_id"},
-                 {"col.customer_id"},
+                 {scratchbird::tests::FixtureUuid(1542, 2)},
+                 {scratchbird::tests::FixtureUuid(1542, 2)},
                  true,
                  true),
   };
   const auto accepted_candidates = opt::GenerateFullAccessPathCandidates(accepted_request);
-  const auto* accepted = FindCandidate(accepted_candidates, "CAND-OPT-COVERING:idx.odf019.covering.accept");
+  const auto* accepted = FindCandidate(accepted_candidates, "CAND-OPT-COVERING", scratchbird::tests::FixtureUuid(1542, 7));
   if (!Require(accepted != nullptr, "accepted covering candidate missing") ||
       !Require(accepted->cost.selectable, "covering candidate with covered projection was refused") ||
       !Require(Has(accepted->acceptance_reasons, "covering_projection_covered"),
@@ -231,9 +235,9 @@ bool CoveringCandidateReasonsAreExact() {
   }
 
   auto projection_request = accepted_request;
-  projection_request.projected_column_uuids = {"col.payload"};
+  projection_request.projected_column_uuids = {scratchbird::tests::FixtureUuid(1542, 3)};
   const auto projection_candidates = opt::GenerateFullAccessPathCandidates(projection_request);
-  const auto* projection = FindCandidate(projection_candidates, "CAND-OPT-COVERING:idx.odf019.covering.accept");
+  const auto* projection = FindCandidate(projection_candidates, "CAND-OPT-COVERING", scratchbird::tests::FixtureUuid(1542, 7));
   if (!Require(projection != nullptr, "projection-refused covering candidate missing") ||
       !Require(!projection->cost.selectable, "covering candidate with uncovered projection was selectable") ||
       !Require(projection->cost.rejection_reason == "covering_projection_not_covered",
@@ -244,15 +248,15 @@ bool CoveringCandidateReasonsAreExact() {
   auto not_covering_request = BaseRequest(relation_uuid);
   not_covering_request.candidate_indexes = {
       IndexStats(relation_uuid,
-                 "idx.odf019.covering.not_covering",
+                 scratchbird::tests::FixtureUuid(1542, 9),
                  "btree",
-                 {"col.customer_id"},
+                 {scratchbird::tests::FixtureUuid(1542, 2)},
                  {},
                  true,
                  false),
   };
   const auto not_covering_candidates = opt::GenerateFullAccessPathCandidates(not_covering_request);
-  const auto* not_covering = FindCandidate(not_covering_candidates, "CAND-OPT-COVERING:idx.odf019.covering.not_covering");
+  const auto* not_covering = FindCandidate(not_covering_candidates, "CAND-OPT-COVERING", scratchbird::tests::FixtureUuid(1542, 9));
   if (!Require(not_covering != nullptr, "not-covering refusal candidate missing") ||
       !Require(!not_covering->cost.selectable, "non-covering index candidate was selectable") ||
       !Require(not_covering->cost.rejection_reason == "covering_index_not_covering",
@@ -263,7 +267,7 @@ bool CoveringCandidateReasonsAreExact() {
   auto visibility_request = accepted_request;
   visibility_request.index_visibility_native = false;
   const auto visibility_candidates = opt::GenerateFullAccessPathCandidates(visibility_request);
-  const auto* visibility = FindCandidate(visibility_candidates, "CAND-OPT-COVERING:idx.odf019.covering.accept");
+  const auto* visibility = FindCandidate(visibility_candidates, "CAND-OPT-COVERING", scratchbird::tests::FixtureUuid(1542, 7));
   if (!Require(visibility != nullptr, "visibility-refused covering candidate missing") ||
       !Require(!visibility->cost.selectable, "covering candidate without native visibility proof was selectable") ||
       !Require(visibility->cost.rejection_reason == "covering_visibility_index_native_proof_missing",
@@ -272,10 +276,10 @@ bool CoveringCandidateReasonsAreExact() {
   }
 
   auto stale_request = accepted_request;
-  stale_request.candidate_indexes.front().identity = StaleIdentity("idx.odf019.covering.accept",
-                                                                   "idx.odf019.covering.accept:index");
+  stale_request.candidate_indexes.front().identity = StaleIdentity(scratchbird::tests::FixtureUuid(1542, 7),
+                                                                   scratchbird::tests::FixtureUuid(1542, 8));
   const auto stale_candidates = opt::GenerateFullAccessPathCandidates(stale_request);
-  const auto* stale = FindCandidate(stale_candidates, "CAND-OPT-COVERING:idx.odf019.covering.accept");
+  const auto* stale = FindCandidate(stale_candidates, "CAND-OPT-COVERING", scratchbird::tests::FixtureUuid(1542, 7));
   return Require(stale != nullptr, "stale covering candidate missing") &&
          Require(!stale->cost.selectable, "stale covering candidate was selectable") &&
          Require(stale->cost.rejection_reason == "covering_index_rebuild_or_stale",
@@ -283,13 +287,13 @@ bool CoveringCandidateReasonsAreExact() {
 }
 
 bool BitmapCandidateReasonsAreExact() {
-  const std::string relation_uuid = "rel.odf019.bitmap";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1542, 13);
   auto accepted_request = BaseRequest(relation_uuid);
   accepted_request.bitmap.requested = true;
   accepted_request.bitmap.executor_supported = true;
   accepted_request.candidate_indexes = {
-      IndexStats(relation_uuid, "idx.odf019.bitmap.a", "btree", {"col.customer_id"}, {"col.customer_id"}, false, true),
-      IndexStats(relation_uuid, "idx.odf019.bitmap.b", "hash", {"col.status"}, {"col.status"}, false, true),
+      IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1542, 5), "btree", {scratchbird::tests::FixtureUuid(1542, 2)}, {scratchbird::tests::FixtureUuid(1542, 2)}, false, true),
+      IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1542, 6), "hash", {scratchbird::tests::FixtureUuid(1542, 4)}, {scratchbird::tests::FixtureUuid(1542, 4)}, false, true),
   };
   const auto accepted_candidates = opt::GenerateFullAccessPathCandidates(accepted_request);
   const auto* accepted = FindCandidate(accepted_candidates, "CAND-OPT-BITMAP");
@@ -337,7 +341,7 @@ bool BitmapCandidateReasonsAreExact() {
 }
 
 bool SummaryCandidateReasonsAreExact() {
-  const std::string relation_uuid = "rel.odf019.summary";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1542, 16);
   auto accepted_request = BaseRequest(relation_uuid);
   accepted_request.summary_prune.requested = true;
   accepted_request.summary_prune.summary_present = true;
@@ -351,7 +355,7 @@ bool SummaryCandidateReasonsAreExact() {
   accepted_request.summary_prune.pages_considered = 4096;
   accepted_request.summary_prune.pages_pruned = 3000;
   accepted_request.candidate_indexes = {
-      IndexStats(relation_uuid, "idx.odf019.summary", "btree", {"col.customer_id"}, {"col.customer_id"}, false, true),
+      IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1542, 12), "btree", {scratchbird::tests::FixtureUuid(1542, 2)}, {scratchbird::tests::FixtureUuid(1542, 2)}, false, true),
   };
   const auto accepted_candidates = opt::GenerateFullAccessPathCandidates(accepted_request);
   const auto* accepted = FindCandidate(accepted_candidates, "CAND-OPT-SUMMARY-PRUNE");

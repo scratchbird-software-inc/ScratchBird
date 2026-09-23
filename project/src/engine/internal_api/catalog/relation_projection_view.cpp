@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/relation_projection_view.hpp"
+#include "catalog/binary_view_options.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -146,12 +147,8 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
-bool CanonicalTypedUuid(scratchbird::core::platform::UuidKind kind,
-                        std::string_view value) {
-  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
-      kind, std::string(value));
-  return parsed.ok() &&
-         scratchbird::core::uuid::UuidToString(parsed.value.value) == value;
+bool CanonicalTypedUuid(scratchbird::core::platform::UuidKind kind, const EngineUuid& value) {
+  return core::uuid::MakeTypedUuid(kind,value).ok();
 }
 
 bool LocalizedNameIsUnquoted(const EngineLocalizedName& name) {
@@ -221,7 +218,7 @@ EngineApiDiagnostic ValidateExactActiveTransaction(
       context.transaction_uuid.is_nil()) {
     return ViewDiagnostic("exact_active_transaction_identity_required");
   }
-  const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
+  const auto parsed_transaction = scratchbird::core::uuid::MakeTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
       context.transaction_uuid);
   if (!parsed_transaction.ok()) {
@@ -261,76 +258,9 @@ EngineApiDiagnostic ValidateExactActiveTransaction(
   return OkDiagnostic();
 }
 
-std::string HexEncode(std::string_view value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string encoded;
-  encoded.reserve(value.size() * 2);
-  for (const unsigned char ch : value) {
-    encoded.push_back(kHex[(ch >> 4U) & 0x0fU]);
-    encoded.push_back(kHex[ch & 0x0fU]);
-  }
-  return encoded;
-}
-
-std::optional<std::string> HexDecode(std::string_view value) {
-  if ((value.size() % 2) != 0) return std::nullopt;
-  const auto nibble = [](char ch) -> int {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-    return -1;
-  };
-  std::string decoded;
-  decoded.reserve(value.size() / 2);
-  for (std::size_t i = 0; i < value.size(); i += 2) {
-    const int high = nibble(value[i]);
-    const int low = nibble(value[i + 1]);
-    if (high < 0 || low < 0) return std::nullopt;
-    decoded.push_back(static_cast<char>((high << 4) | low));
-  }
-  return decoded;
-}
-
-std::string PayloadFieldValue(std::string_view payload,
-                              std::string_view prefix) {
-  std::size_t offset = 0;
-  while (offset <= payload.size()) {
-    const auto delimiter = payload.find(';', offset);
-    const auto end = delimiter == std::string_view::npos
-                         ? payload.size()
-                         : delimiter;
-    const auto field = payload.substr(offset, end - offset);
-    if (field.rfind(prefix, 0) == 0) {
-      return std::string(field.substr(prefix.size()));
-    }
-    if (delimiter == std::string_view::npos) break;
-    offset = delimiter + 1;
-  }
-  return {};
-}
-
 std::vector<std::string> PayloadOptions(std::string_view payload) {
-  constexpr std::string_view prefix = "options=";
-  std::size_t options_offset = 0;
-  if (payload.rfind(prefix, 0) == 0) {
-    options_offset = prefix.size();
-  } else {
-    const auto found = payload.find(";options=");
-    if (found == std::string_view::npos) return {};
-    options_offset = found + std::string_view(";options=").size();
-  }
   std::vector<std::string> options;
-  std::size_t offset = options_offset;
-  while (offset <= payload.size()) {
-    const auto delimiter = payload.find(';', offset);
-    const auto end = delimiter == std::string_view::npos
-                         ? payload.size()
-                         : delimiter;
-    if (end != offset) {
-      options.emplace_back(payload.substr(offset, end - offset));
-    }
-    if (delimiter == std::string_view::npos) break;
-    offset = delimiter + 1;
-  }
+  if (!DecodeBinaryViewOptions(payload,&options)) return {};
   return options;
 }
 
@@ -370,15 +300,15 @@ std::optional<EngineRelationProjectionViewOutput> ParseCommonOutput(
   const auto expression_uuid =
       OptionSuffix(options[offset + 1], prefix + "expression_uuid:");
   const auto name_hex =
-      OptionSuffix(options[offset + 2], prefix + "name_hex:");
+      OptionSuffix(options[offset + 2], prefix + "name_bytes:");
   const auto type_uuid = OptionSuffix(
       options[offset + 3], prefix + "type_descriptor_uuid:");
   const auto type_kind_hex = OptionSuffix(
-      options[offset + 4], prefix + "type_descriptor_kind_hex:");
+      options[offset + 4], prefix + "type_descriptor_kind_bytes:");
   const auto type_name_hex = OptionSuffix(
-      options[offset + 5], prefix + "type_canonical_name_hex:");
+      options[offset + 5], prefix + "type_canonical_name_bytes:");
   const auto type_encoded_hex = OptionSuffix(
-      options[offset + 6], prefix + "type_encoded_descriptor_hex:");
+      options[offset + 6], prefix + "type_encoded_descriptor_bytes:");
   const auto nullable =
       OptionSuffix(options[offset + 7], prefix + "nullable:");
   const auto expression_kind =
@@ -388,10 +318,10 @@ std::optional<EngineRelationProjectionViewOutput> ParseCommonOutput(
       !expression_kind) {
     return std::nullopt;
   }
-  const auto name = HexDecode(*name_hex);
-  const auto type_kind = HexDecode(*type_kind_hex);
-  const auto type_name = HexDecode(*type_name_hex);
-  const auto type_encoded = HexDecode(*type_encoded_hex);
+  const auto name = name_hex;
+  const auto type_kind = type_kind_hex;
+  const auto type_name = type_name_hex;
+  const auto type_encoded = type_encoded_hex;
   if (!name || !type_kind || !type_name || !type_encoded ||
       (*nullable != "true" && *nullable != "false")) {
     return std::nullopt;
@@ -399,10 +329,10 @@ std::optional<EngineRelationProjectionViewOutput> ParseCommonOutput(
 
   EngineRelationProjectionViewOutput output;
   output.ordinal = ordinal;
-  output.output_column_uuid = *column_uuid;
-  output.expression_uuid = *expression_uuid;
+  output.output_column_uuid = BinaryViewUuid(*column_uuid);
+  output.expression_uuid = BinaryViewUuid(*expression_uuid);
   output.output_name = *name;
-  output.output_type.type_descriptor_uuid = *type_uuid;
+  output.output_type.type_descriptor_uuid = BinaryViewUuid(*type_uuid);
   output.output_type.descriptor_kind = *type_kind;
   output.output_type.canonical_type_name = *type_name;
   output.output_type.encoded_descriptor = *type_encoded;
@@ -450,15 +380,15 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
                          : kEngineRelationProjectionViewMarkerV2;
   descriptor.view_uuid = record.object_uuid;
   descriptor.view_descriptor_uuid =
-      options[1].substr(std::string("view_descriptor_uuid:").size());
+      BinaryViewUuid(options[1].substr(std::string("view_descriptor_uuid:").size()));
   const auto view_generation = ParseCanonicalU64(
       options[2].substr(
           std::string("view_descriptor_generation:").size()));
   descriptor.source_relation_uuid =
-      options[3].substr(std::string("source_relation_uuid:").size());
+      BinaryViewUuid(options[3].substr(std::string("source_relation_uuid:").size()));
   descriptor.source_relation_descriptor_uuid =
-      options[4].substr(
-          std::string("source_relation_descriptor_uuid:").size());
+      BinaryViewUuid(options[4].substr(
+          std::string("source_relation_descriptor_uuid:").size()));
   const auto source_generation = ParseCanonicalU64(
       options[5].substr(
           std::string("source_relation_descriptor_generation:").size()));
@@ -476,9 +406,9 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
   const auto source_type_uuid = OptionSuffix(
       options[18], "output_0_source_column_type_descriptor_uuid:");
   if (!source_column_uuid || !source_type_uuid) return std::nullopt;
-  source_output->source_column_uuid = *source_column_uuid;
+  source_output->source_column_uuid = BinaryViewUuid(*source_column_uuid);
   source_output->source_column_type_descriptor_uuid =
-      *source_type_uuid;
+      BinaryViewUuid(*source_type_uuid);
 
   std::optional<EngineRelationProjectionViewOutput> literal_output;
   if (v1) {
@@ -521,10 +451,10 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
   envelope.outputs = descriptor.outputs;
   const auto validated = ValidateEngineRelationProjectionEnvelope(envelope);
 
-  const std::string schema_uuid =
-      PayloadFieldValue(record.payload, "schema=");
-  const std::string target_uuid =
-      PayloadFieldValue(record.payload, "target=");
+  const EngineUuid schema_uuid =
+      record.target_schema_uuid;
+  const EngineUuid target_uuid =
+      record.target_object_uuid;
   if (validated.error || !SafeUnquotedIdentifier(record.default_name) ||
       target_uuid != record.object_uuid ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::schema,
@@ -536,7 +466,7 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
     return std::nullopt;
   }
 
-  std::set<std::string> identities = {
+  std::set<EngineUuid> identities = {
       record.object_uuid,
       descriptor.view_descriptor_uuid,
       descriptor.source_relation_uuid,
@@ -564,7 +494,7 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
 
 const MgaRelationColumnStorageDescriptor* FindExactColumn(
     const MgaRelationStorageDescriptor& relation,
-    std::string_view column_uuid,
+    const EngineUuid& column_uuid,
     bool* duplicate = nullptr) {
   const MgaRelationColumnStorageDescriptor* found = nullptr;
   if (duplicate != nullptr) *duplicate = false;
@@ -587,7 +517,7 @@ struct VisibleApiBehaviorLookup {
 
 VisibleApiBehaviorLookup LookupVisibleApiBehaviorRecord(
     const EngineRequestContext& context,
-    std::string_view object_uuid) {
+    const EngineUuid& object_uuid) {
   VisibleApiBehaviorLookup lookup;
   const auto loaded = LoadApiBehaviorState(context);
   if (!loaded.ok) {
@@ -627,15 +557,15 @@ bool RequestOptionsHaveExactShape(const EngineApiRequest& request) {
 struct VisibleIdentityInventory {
   bool ok = false;
   EngineApiDiagnostic diagnostic = OkDiagnostic();
-  std::set<std::string> exact_identities;
+  std::set<EngineUuid> exact_identities;
   std::vector<std::string> encoded_identity_payloads;
 };
 
 VisibleIdentityInventory LoadVisibleIdentityInventory(
     const EngineRequestContext& context) {
   VisibleIdentityInventory inventory;
-  const auto remember = [&](const std::string& identity) {
-    if (!identity.empty()) inventory.exact_identities.insert(identity);
+  const auto remember = [&](const EngineUuid& identity) {
+    if (!identity.is_nil()) inventory.exact_identities.insert(identity);
   };
   const auto behaviors = LoadApiBehaviorState(context);
   if (!behaviors.ok) {
@@ -658,11 +588,6 @@ VisibleIdentityInventory LoadVisibleIdentityInventory(
     remember(entry.scope_uuid);
     remember(entry.parent_object_uuid);
     remember(entry.parent_schema_uuid);
-    remember(entry.reference_id);
-    remember(entry.dialect_profile_uuid);
-    remember(entry.identifier_profile_uuid);
-    remember(entry.case_fold_profile_uuid);
-    remember(entry.quoted_identifier_profile_uuid);
   }
 
   // CREATE VIEW is a bounded metadata operation, so a fail-closed full
@@ -675,7 +600,7 @@ VisibleIdentityInventory LoadVisibleIdentityInventory(
     return inventory;
   }
   const RelationReadSnapshot visible_crud = BuildCrudCompatibilityStateFromMga(relations.state);
-  std::set<std::string> visited_relations;
+  std::set<EngineUuid> visited_relations;
   for (const auto& table_record : visible_crud.tables) {
     const auto visible = FindVisibleCrudTable(
         visible_crud, table_record.table_uuid, context.local_transaction_id);
@@ -717,7 +642,7 @@ VisibleIdentityInventory LoadVisibleIdentityInventory(
     remember(row.previous_version_uuid);
     for (const auto& [field, value] : row.values) {
       (void)field;
-      remember(value);
+      remember(BinaryViewUuid(value));
     }
   }
   for (const auto& entry : visible_crud.index_entries) {
@@ -740,24 +665,24 @@ VisibleIdentityInventory LoadVisibleIdentityInventory(
 }
 
 bool IdentityAlreadyVisible(const VisibleIdentityInventory& inventory,
-                            std::string_view candidate) {
-  if (inventory.exact_identities.count(std::string(candidate)) != 0) {
+                            const EngineUuid& candidate) {
+  if (inventory.exact_identities.count(candidate) != 0) {
     return true;
   }
   return std::any_of(
       inventory.encoded_identity_payloads.begin(),
       inventory.encoded_identity_payloads.end(),
       [candidate](const std::string& payload) {
-        return payload.find(candidate) != std::string::npos;
+        return payload.find(std::string_view(reinterpret_cast<const char*>(candidate.bytes.data()),16)) != std::string::npos;
       });
 }
 
-std::optional<std::string> AllocateDistinctObjectUuid(
+std::optional<EngineUuid> AllocateDistinctObjectUuid(
     const VisibleIdentityInventory& visible_inventory,
-    std::set<std::string>* identities) {
+    std::set<EngineUuid>* identities) {
   if (!visible_inventory.ok || identities == nullptr) return std::nullopt;
   for (std::size_t attempt = 0; attempt < 16; ++attempt) {
-    const std::string candidate = GenerateCrudEngineUuid("object");
+    const EngineUuid candidate = GenerateCrudEngineUuid("object");
     if (CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
                            candidate) &&
         !IdentityAlreadyVisible(visible_inventory, candidate) &&
@@ -771,7 +696,7 @@ std::optional<std::string> AllocateDistinctObjectUuid(
 EngineRelationProjectionTypeDescriptor AllocateOutputType(
     const EngineDescriptor& source,
     const VisibleIdentityInventory& visible_inventory,
-    std::set<std::string>* identities) {
+    std::set<EngineUuid>* identities) {
   EngineRelationProjectionTypeDescriptor type;
   const auto uuid =
       AllocateDistinctObjectUuid(visible_inventory, identities);
@@ -794,17 +719,16 @@ std::vector<std::string> PersistedOptions(
             ? kEngineRelationProjectionSourceColumnV1
             : kEngineRelationProjectionTypedInt32LiteralV1;
     return std::vector<std::string>{
-        prefix + "column_uuid:" + output.output_column_uuid,
-        prefix + "expression_uuid:" + output.expression_uuid,
-        prefix + "name_hex:" + HexEncode(output.output_name),
-        prefix + "type_descriptor_uuid:" +
-            output.output_type.type_descriptor_uuid,
-        prefix + "type_descriptor_kind_hex:" +
-            HexEncode(output.output_type.descriptor_kind),
-        prefix + "type_canonical_name_hex:" +
-            HexEncode(output.output_type.canonical_type_name),
-        prefix + "type_encoded_descriptor_hex:" +
-            HexEncode(output.output_type.encoded_descriptor),
+        BinaryViewUuidOption(prefix + "column_uuid:", output.output_column_uuid),
+        BinaryViewUuidOption(prefix + "expression_uuid:", output.expression_uuid),
+        prefix + "name_bytes:" + output.output_name,
+        BinaryViewUuidOption(prefix + "type_descriptor_uuid:", output.output_type.type_descriptor_uuid),
+        prefix + "type_descriptor_kind_bytes:" +
+            output.output_type.descriptor_kind,
+        prefix + "type_canonical_name_bytes:" +
+            output.output_type.canonical_type_name,
+        prefix + "type_encoded_descriptor_bytes:" +
+            output.output_type.encoded_descriptor,
         prefix + "nullable:" + (output.nullable ? "true" : "false"),
         prefix + "expression_kind:" + expression_kind};
   };
@@ -817,14 +741,11 @@ std::vector<std::string> PersistedOptions(
   }
   std::vector<std::string> options = {
       std::string("view_query_shape:") + descriptor.marker,
-      "view_descriptor_uuid:" +
-          descriptor.view_descriptor_uuid,
+      BinaryViewUuidOption("view_descriptor_uuid:", descriptor.view_descriptor_uuid),
       "view_descriptor_generation:" +
           std::to_string(descriptor.view_descriptor_generation),
-      "source_relation_uuid:" +
-          descriptor.source_relation_uuid,
-      "source_relation_descriptor_uuid:" +
-          descriptor.source_relation_descriptor_uuid,
+      BinaryViewUuidOption("source_relation_uuid:", descriptor.source_relation_uuid),
+      BinaryViewUuidOption("source_relation_descriptor_uuid:", descriptor.source_relation_descriptor_uuid),
       "source_relation_descriptor_generation:" +
           std::to_string(
               descriptor.source_relation_descriptor_generation),
@@ -834,11 +755,9 @@ std::vector<std::string> PersistedOptions(
   auto source = common(descriptor.outputs[0]);
   options.insert(options.end(), source.begin(), source.end());
   options.push_back(
-      "output_0_source_column_uuid:" +
-      descriptor.outputs[0].source_column_uuid);
+      BinaryViewUuidOption("output_0_source_column_uuid:", descriptor.outputs[0].source_column_uuid));
   options.push_back(
-      "output_0_source_column_type_descriptor_uuid:" +
-      descriptor.outputs[0].source_column_type_descriptor_uuid);
+      BinaryViewUuidOption("output_0_source_column_type_descriptor_uuid:", descriptor.outputs[0].source_column_type_descriptor_uuid));
   if (v2) return options;
   auto literal = common(descriptor.outputs[1]);
   options.insert(options.end(), literal.begin(), literal.end());
@@ -1048,7 +967,7 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
     }
   }
 
-  const std::string source_uuid =
+  const EngineUuid source_uuid =
       request.related_objects.front().uuid;
   const auto source =
       LoadMgaRelationStorageDescriptor(request.context, source_uuid);
@@ -1065,8 +984,8 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
   if (relation.relation_uuid != source_uuid ||
       relation.relation_kind != "table" ||
       relation.descriptor_uuid !=
-          SingleOptionValue(request,
-                            "source_relation_descriptor_uuid:") ||
+          BinaryViewUuid(SingleOptionValue(request,
+                            "source_relation_descriptor_uuid:")) ||
       !expected_source_generation || *expected_source_generation == 0 ||
       relation.descriptor_generation != *expected_source_generation ||
       !expected_source_resource_epoch ||
@@ -1114,7 +1033,7 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
     return result;
   }
 
-  std::set<std::string> identities = {
+  std::set<EngineUuid> identities = {
       relation.relation_uuid,
       relation.descriptor_uuid,
       source_column->column_uuid,
@@ -1243,10 +1162,10 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
 
 EngineRelationProjectionViewDescriptor DescribeEngineRelationProjectionView(
     const EngineRequestContext& context,
-    const std::string& view_uuid) {
+    const EngineUuid& view_uuid) {
   EngineRelationProjectionViewDescriptor descriptor;
   descriptor.diagnostic = OkDiagnostic();
-  if (view_uuid.empty()) {
+  if (view_uuid.is_nil()) {
     descriptor.diagnostic =
         ViewDiagnostic("relation_projection_view_uuid_required");
     return descriptor;
@@ -1267,7 +1186,7 @@ EngineRelationProjectionViewDescriptor DescribeEngineRelationProjectionView(
   const auto& record = *lookup.record;
   const auto options = PayloadOptions(record.payload);
   if (!PayloadMentionsRelationProjectionViewFamily(options)) {
-    if (record.payload.find("engine.relation_projection_view") !=
+    if ((record.payload.starts_with("SBVIEW02") && options.empty()) || record.payload.find("engine.relation_projection_view") !=
         std::string::npos) {
       descriptor.diagnostic =
           ViewDiagnostic("relation_projection_view_descriptor_invalid");
@@ -1302,12 +1221,12 @@ EngineDescriptor EngineRelationProjectionViewSemanticDescriptor(
   semantic.descriptor_uuid = descriptor.view_descriptor_uuid;
   semantic.descriptor_kind = "relation_projection_view";
   semantic.canonical_type_name = descriptor.marker;
-  semantic.encoded_descriptor =
-      std::string("marker=") + descriptor.marker +
-      ";view_uuid=" + descriptor.view_uuid +
-      ";view_descriptor_generation=" +
-      std::to_string(descriptor.view_descriptor_generation) +
-      ";output_count=" + std::to_string(expected_output_count);
+  BinaryCatalogMetadata metadata;
+  metadata.identities["view_uuid"] = descriptor.view_uuid;
+  metadata.text = {{"marker",descriptor.marker},
+      {"view_descriptor_generation",std::to_string(descriptor.view_descriptor_generation)},
+      {"output_count",std::to_string(expected_output_count)}};
+  if (!EncodeBinaryCatalogMetadata(metadata,"relation_projection_semantic.v2",&semantic.encoded_descriptor)) return {};
   return semantic;
 }
 
@@ -1702,7 +1621,7 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
     }
   }
 
-  std::set<std::string> identities = {
+  std::set<EngineUuid> identities = {
       envelope.relation_uuid,
       envelope.relation_descriptor_uuid,
       source.output_column_uuid,

@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -388,7 +389,7 @@ native::NativeSblrValueBatch NativeScalar(
 native::NativeSblrSpecializationRequest NativeRequest() {
   native::NativeSblrSpecializationRequest request;
   request.kind = native::NativeSblrSpecializationKind::kProjection;
-  request.identity.stable_template_id = "odf107.native.template";
+  request.identity.stable_template_id = scratchbird::tests::FixtureUuid(1088, 107);
   request.identity.sblr_digest = "odf107.native.digest";
   request.identity.plan_node_id = "odf107.plan";
   request.identity.template_generation = 107;

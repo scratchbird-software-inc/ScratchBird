@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -177,7 +179,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) return true;
   }
   return false;
 }
@@ -186,9 +188,9 @@ api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.cluster_authority_available = true;
-  context.database_uuid.canonical = "fse-p5-cluster-external-policy-database";
-  context.session_uuid.canonical = "fse-p5-cluster-external-policy-session";
-  context.principal_uuid.canonical = "fse-p5-cluster-external-policy-principal";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 3501);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 3502);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 3503);
   context.trace_tags.push_back("sblr_surface_fse_p5_cluster_external_authority_policy_gate");
   return context;
 }

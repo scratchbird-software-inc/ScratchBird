@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -92,7 +93,7 @@ api::EngineNoSqlPhysicalProviderContract BaseContract() {
   contract.index_generation.covers_predicate = true;
   contract.index_generation.required_generation = 5;
   contract.index_generation.available_generation = 5;
-  contract.index_generation.index_uuid = "idx-document-path";
+  contract.index_generation.index_uuid = scratchbird::tests::FixtureUuid(70, 1);
   contract.index_generation.proof_id = "index-generation:5";
   contract.delta_overlay.required = true;
   contract.delta_overlay.proof_present = true;
@@ -101,7 +102,7 @@ api::EngineNoSqlPhysicalProviderContract BaseContract() {
   contract.delta_overlay.proof_id = "delta-overlay:3";
   contract.policy.proof_present = true;
   contract.policy.allowed = true;
-  contract.policy.policy_snapshot_uuid = "policy-snapshot-local";
+  contract.policy.policy_snapshot_uuid = scratchbird::tests::FixtureUuid(70, 2);
   contract.mga_recheck.proof_present = true;
   contract.mga_recheck.row_mga_recheck_required = true;
   contract.mga_recheck.row_security_recheck_required = true;
@@ -140,7 +141,7 @@ plan::LogicalPlan NoSqlPlan(std::vector<std::string> descriptors) {
                                         plan::PhysicalAccessKind::kDocumentPathProbe,
                                         "nosql.document_find",
                                         "odf_070_document_find");
-  node.required_object_uuids.push_back("document.collection.local");
+  node.required_object_uuids.push_back(scratchbird::tests::FixtureUuid(70, 3));
   node.required_descriptors = std::move(descriptors);
   logical.nodes.push_back(std::move(node));
   return logical;

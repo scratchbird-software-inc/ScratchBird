@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_ddl_create_publication_coordinator.hpp"
 #include <cassert>
 
@@ -7,10 +8,10 @@ int main() {
   EngineRequestContext binder;
   binder.security_context_present = true;
   binder.statement_metadata_snapshot_engine_owned = true;
-  binder.statement_uuid.canonical = "publication";
+  binder.statement_uuid = scratchbird::tests::FixtureUuid(1113, 53);
   binder.trace_tags = {"private_ddl_create_publication_binder"};
   auto made = CompileSblrDdlCreatePublicationDescriptor(
-      binder, binder.statement_uuid.canonical, 1, 1, 1);
+      binder, binder.statement_uuid, 1, 1, 1);
   assert(made.ok);
 
   auto hidden = binder;

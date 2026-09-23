@@ -92,19 +92,20 @@ void VerifyEnabled() {
     RequireState(path, first.local_transaction_id, tx::TransactionState::active);
     RequireState(path, sibling.local_transaction_id, tx::TransactionState::active);
     auto malformed = first;
-    malformed.session_uuid.clear();
+    malformed.session_uuid = {};
     messages = {};
     Require(!client.DisconnectSession(malformed, &messages) &&
                 HasDiagnostic(messages, "PARSER_SERVER_IPC.SESSION_MISMATCH"),
             "authenticated embedded session with missing identity reported success");
     malformed = first;
-    malformed.connection_uuid.clear();
+    malformed.connection_uuid = {};
     messages = {};
     Require(!client.DisconnectSession(malformed, &messages) &&
                 HasDiagnostic(messages, "PARSER_SERVER_IPC.CONNECTION_MISMATCH"),
             "authenticated embedded session with missing connection reported success");
     malformed = first;
-    malformed.session_uuid[14] = '4';
+    malformed.session_uuid.bytes[6] =
+        (malformed.session_uuid.bytes[6] & 0x0f) | 0x40;
     messages = {};
     Require(!client.DisconnectSession(malformed, &messages) &&
                 HasDiagnostic(messages, "PARSER_SERVER_IPC.SESSION_MISMATCH"),

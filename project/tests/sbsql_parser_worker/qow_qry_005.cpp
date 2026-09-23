@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -155,7 +156,7 @@ sbsql::NativeRelationalBindingContext ValuesBindingContext() {
 
 sbsql::ParserConfig ParserConfigForTest() {
   sbsql::ParserConfig config;
-  config.parser_uuid = "019f0000-0000-7500-8000-000000000508";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000000508");
   config.bundle_contract_id = "sbp_sbsql@qow-qry-005-v1";
   config.build_id = "qow-qry-005-v1";
   return config;
@@ -767,31 +768,22 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
 api::EngineRequestContext GroupingSetsEngineContext() {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-0000000005b0";
-  context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-0000000005b1";
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-0000000005b2";
-  context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7100-8000-0000000005a2";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-0000000005b0");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-0000000005b1");
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-0000000005b2");
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-0000000005a2");
   context.local_transaction_id = 591;
   context.snapshot_visible_through_local_transaction_id = 592;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-0000000005b3";
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-0000000005b3");
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f0000-0000-7110-8000-0000000005a2";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7110-8000-0000000005a2");
   context.catalog_generation_id = 552;
   context.security_epoch = 553;
   context.resource_epoch = 554;
-  context.optimizer_capability_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006001";
-  context.optimizer_resource_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006002";
-  context.optimizer_route_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006003";
+  context.optimizer_capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006001");
+  context.optimizer_resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006002");
+  context.optimizer_route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006003");
   context.optimizer_route_epoch = 555;
   context.optimizer_route_generation = 556;
   context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
@@ -1068,31 +1060,22 @@ bool ValidateCanonicalLoweringAndDispatch() {
 
   api::EngineRequestContext engine_context;
   engine_context.security_context_present = true;
-  engine_context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000000510";
-  engine_context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000000511";
-  engine_context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000000512";
-  engine_context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7100-8000-000000000502";
+  engine_context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000000510");
+  engine_context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000000511");
+  engine_context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000000512");
+  engine_context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000000502");
   engine_context.local_transaction_id = 501;
   engine_context.snapshot_visible_through_local_transaction_id = 502;
   engine_context.statement_metadata_snapshot_engine_owned = true;
-  engine_context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000000513";
+  engine_context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000000513");
   engine_context.authorization_context.present = true;
-  engine_context.authorization_context.authority_uuid.canonical =
-      "019f0000-0000-7110-8000-000000000502";
+  engine_context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7110-8000-000000000502");
   engine_context.catalog_generation_id = 502;
   engine_context.security_epoch = 503;
   engine_context.resource_epoch = 504;
-  engine_context.optimizer_capability_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006001";
-  engine_context.optimizer_resource_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006002";
-  engine_context.optimizer_route_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006003";
+  engine_context.optimizer_capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006001");
+  engine_context.optimizer_resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006002");
+  engine_context.optimizer_route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006003");
   engine_context.optimizer_route_epoch = 505;
   engine_context.optimizer_route_generation = 506;
   engine_context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;

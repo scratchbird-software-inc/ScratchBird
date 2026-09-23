@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -76,7 +77,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -102,9 +103,9 @@ std::string Message(const ShardPlacementRouteRow& row,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f4100-0000-7000-8000-000000001001";
-  session.connection_uuid = "019f4100-0000-7000-8000-000000001002";
-  session.database_uuid = "019f4100-0000-7000-8000-000000001003";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000001001");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000001002");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000001003");
   session.catalog_epoch = 411;
   session.security_policy_epoch = 412;
   session.descriptor_epoch = 413;
@@ -114,7 +115,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f4100-0000-7000-8000-000000001004";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000001004");
   config.bundle_contract_id = "sbp_sbsql@shard-placement-exact-route";
   config.build_id = "sbsql-shard-placement-exact-route";
   return config;
@@ -182,7 +183,7 @@ void RequireExactLowering(const ShardPlacementRouteRow& row) {
           Message(row, "lowering", "cluster provider exclusion missing"));
   Require(HasValue(artifacts.envelope.required_rights, row.required_right),
           Message(row, "lowering", "required right missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.storage.shard_placement"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.storage.shard_placement"),
           Message(row, "lowering", "shard placement descriptor ref missing"));
   Require(Contains(artifacts.envelope.payload, "\"public_sbsql_exact_command\":true"),
           Message(row, "payload", "exact-command evidence missing"));
@@ -209,13 +210,13 @@ api::EngineRequestContext EngineContext(const ShardPlacementRouteRow& row) {
   context.request_id = "sbsql-shard-placement-exact-route";
   context.security_context_present = true;
   context.database_path = "/tmp/sbsql_shard_placement_exact_route.sbdb";
-  context.database_uuid.canonical = "019f4100-0000-7000-8000-000000002001";
-  context.session_uuid.canonical = "019f4100-0000-7000-8000-000000002002";
-  context.principal_uuid.canonical = "019f4100-0000-7000-8000-000000002003";
-  context.node_uuid.canonical = "019f4100-0000-7000-8000-000000002004";
-  context.statement_uuid.canonical = "019f4100-0000-7000-8000-000000002005";
-  context.current_diagnostic_uuid.canonical = "019f4100-0000-7000-8000-000000002006";
-  context.transaction_uuid.canonical = "019f4100-0000-7000-8000-000000002007";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000002001");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000002002");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000002003");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000002004");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000002005");
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000002006");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f4100-0000-7000-8000-000000002007");
   context.catalog_generation_id = 411;
   context.security_epoch = 412;
   context.resource_epoch = 413;

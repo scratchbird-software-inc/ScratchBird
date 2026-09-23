@@ -204,7 +204,7 @@ EngineApiValidationResult ValidateEngineColumnDescriptor(const EngineColumnDescr
 
 EngineResultShapeResult MakeEngineResultShape(EngineResultCardinality cardinality,
                                               std::vector<EngineColumnDescriptor> columns) {
-  EngineResultShape shape;
+  EngineOperationResultShape shape;
   shape.cardinality = cardinality;
   shape.columns = std::move(columns);
   shape.canonical_diagnostics = true;
@@ -212,7 +212,7 @@ EngineResultShapeResult MakeEngineResultShape(EngineResultCardinality cardinalit
   return ValidateEngineResultShape(shape);
 }
 
-EngineResultShapeResult ValidateEngineResultShape(const EngineResultShape& result_shape) {
+EngineResultShapeResult ValidateEngineResultShape(const EngineOperationResultShape& result_shape) {
   EngineResultShapeResult result;
   result.status = EngineApiOkStatus();
   result.result_shape = result_shape;

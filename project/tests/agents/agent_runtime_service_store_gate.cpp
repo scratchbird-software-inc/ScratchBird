@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "agents/agent_runtime_service_store_api.hpp"
 #include "metric_registry.hpp"
@@ -40,8 +41,8 @@ void Require(bool condition, const std::string& message) {
 
 struct TestDatabase {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
 };
 
@@ -90,13 +91,10 @@ TestDatabase CreateActiveDatabase() {
   api::EngineRequestContext bootstrap_context;
   bootstrap_context.request_id = "aeic-runtime-service-bootstrap";
   bootstrap_context.database_path = path.string();
-  bootstrap_context.database_uuid.canonical =
-      uuid::UuidToString(database_uuid.value.value);
+  bootstrap_context.database_uuid = database_uuid.value.value;
   bootstrap_context.security_context_present = true;
-  bootstrap_context.principal_uuid.canonical =
-      "018f0000-0000-7000-8000-00000000be10";
-  bootstrap_context.session_uuid.canonical =
-      "018f0000-0000-7000-8000-00000000be14";
+  bootstrap_context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be10");
+  bootstrap_context.session_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be14");
   bootstrap_context.catalog_generation_id = 1;
   bootstrap_context.security_epoch = 1;
   bootstrap_context.resource_epoch = 1;
@@ -116,8 +114,8 @@ TestDatabase CreateActiveDatabase() {
 
   TestDatabase result;
   result.path = path;
-  result.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  result.transaction_uuid = begun.transaction_uuid.canonical;
+  result.database_uuid = database_uuid.value.value;
+  result.transaction_uuid = begun.transaction_uuid;
   result.local_transaction_id = begun.local_transaction_id;
   return result;
 }
@@ -126,16 +124,14 @@ api::EngineRequestContext Context(const TestDatabase& database) {
   api::EngineRequestContext context;
   context.request_id = "aeic-runtime-service-store";
   context.database_path = database.path.string();
-  context.database_uuid.canonical = database.database_uuid;
-  context.transaction_uuid.canonical = database.transaction_uuid;
+  context.database_uuid = database.database_uuid;
+  context.transaction_uuid = database.transaction_uuid;
   context.local_transaction_id = database.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       database.local_transaction_id;
   context.security_context_present = true;
-  context.principal_uuid.canonical =
-      "018f0000-0000-7000-8000-00000000be10";
-  context.session_uuid.canonical =
-      "018f0000-0000-7000-8000-00000000be14";
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be10");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000be14");
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
@@ -148,7 +144,7 @@ api::EngineRequestContext BeginTransactionContext(const TestDatabase& database,
   api::EngineBeginTransactionRequest begin;
   begin.context = Context(database);
   begin.context.request_id = std::move(request_id);
-  begin.context.transaction_uuid.canonical.clear();
+  begin.context.transaction_uuid = {};
   begin.context.local_transaction_id = 0;
   begin.context.snapshot_visible_through_local_transaction_id = 0;
   begin.isolation_level = "read_committed";
@@ -187,7 +183,10 @@ bool MetricHasLabel(const scratchbird::core::metrics::MetricValue& value,
                     const std::string& key,
                     const std::string& expected) {
   for (const auto& label : value.labels) {
-    if (label.key == key && label.value == expected) { return true; }
+    if (label.key == key) {
+      const auto* text = std::get_if<std::string>(&label.value);
+      if (text != nullptr && *text == expected) return true;
+    }
   }
   return false;
 }
@@ -202,7 +201,9 @@ double CurrentMetricValue(const std::string& family,
     if (!label_key.empty() && !MetricHasLabel(value, label_key, label_value)) {
       continue;
     }
-    return value.value;
+    const auto* scalar = std::get_if<double>(&value.value);
+    Require(scalar != nullptr, "runtime service gauge must use its declared float64 scalar");
+    return *scalar;
   }
   return -1.0;
 }

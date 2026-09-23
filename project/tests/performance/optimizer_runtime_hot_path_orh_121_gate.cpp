@@ -1,3 +1,5 @@
+#include "datatype_catalog_manifest.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -42,16 +44,16 @@ namespace api = scratchbird::engine::internal_api;
 namespace exec = scratchbird::engine::executor;
 
 exec::PhysicalMgaStatementContext CacheMgaContext(
-    const std::string& statement_uuid =
-        "019f0000-0000-7500-8000-000000006101") {
+    const api::EngineUuid& statement_uuid =
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006101")) {
   exec::PhysicalMgaStatementContext context;
   context.statement_uuid = statement_uuid;
   context.owning_transaction_uuid =
-      "019f0000-0000-7500-8000-000000006102";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006102");
   context.statement_snapshot_uuid =
-      "019f0000-0000-7500-8000-000000006103";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006103");
   context.statement_metadata_snapshot_uuid =
-      "019f0000-0000-7500-8000-000000006104";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006104");
   context.owning_local_transaction_id = 7;
   context.visible_committed_high_watermark = 6;
   context.oldest_active_transaction_id = 7;
@@ -72,18 +74,18 @@ exec::TypedPhysicalNodeDag CacheSelectedDag(
     const exec::PhysicalMgaStatementContext& context) {
   exec::TypedPhysicalNodeDag dag;
   dag.abi_version = 2;
-  dag.selected_plan_uuid = "019f0000-0000-7500-8000-000000006120";
+  dag.selected_plan_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006120");
   dag.root_physical_node_id = 1;
   dag.local_transaction_id = context.owning_local_transaction_id;
   dag.statement_snapshot_id = context.visible_committed_high_watermark;
   dag.mga_statement_context = context;
-  dag.bound_sblr_tree_uuid = "019f0000-0000-7500-8000-000000006121";
-  dag.catalog_epoch_uuid = "019f0000-0000-7500-8000-000000006122";
-  dag.security_context_uuid = "019f0000-0000-7500-8000-000000006123";
-  dag.capability_snapshot_uuid = "019f0000-0000-7500-8000-000000006124";
-  dag.resource_snapshot_uuid = "019f0000-0000-7500-8000-000000006125";
-  dag.statistics_snapshot_uuid = "019f0000-0000-7500-8000-000000006126";
-  dag.route_snapshot_uuid = "019f0000-0000-7500-8000-000000006127";
+  dag.bound_sblr_tree_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006121");
+  dag.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006122");
+  dag.security_context_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006123");
+  dag.capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006124");
+  dag.resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006125");
+  dag.statistics_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006126");
+  dag.route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006127");
   dag.catalog_generation = 1;
   dag.security_epoch = 1;
   dag.policy_epoch = 1;
@@ -114,10 +116,10 @@ exec::TypedPhysicalNodeDag CacheSelectedDag(
   node.implementation_id = "values.materialize.v1";
   node.output_descriptor_ids = {1};
   node.causal_counter_id = 1;
-  node.selected_alternative_uuid = "019f0000-0000-7500-8000-000000006130";
-  node.executor_capability_uuid = "019f0000-0000-7500-8000-000000006131";
+  node.selected_alternative_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006130");
+  node.executor_capability_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006131");
   node.executor_capability_abi_version = 1;
-  node.cost_vector_uuid = "019f0000-0000-7500-8000-000000006132";
+  node.cost_vector_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006132");
   node.memory_bytes_required = 1;
   node.engine_capability_validated = true;
   node.mga_statement_context = context;
@@ -156,11 +158,11 @@ namespace wire = scratchbird::wire;
 #define SB_ORH121_SEED_PACK_ROOT "project/resources/seed-packs/initial-resource-pack"
 #endif
 
-constexpr const char* kDatabaseUuid = "019f2200-0000-7000-8000-000000121001";
-constexpr const char* kSchemaUuid = "019f2200-0000-7000-8000-000000121101";
-constexpr const char* kTableUuid = "019f2200-0000-7000-8000-000000121102";
-constexpr const char* kSeedRowUuid = "019f2200-0000-7000-8000-000000121201";
-constexpr const char* kInsertedRowUuid = "019f2200-0000-7000-8000-000000121202";
+constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121001");
+constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121101");
+constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
+constexpr auto kSeedRowUuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121201");
+constexpr auto kInsertedRowUuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121202");
 
 [[noreturn]] void Fail(const std::string& message) {
   std::cerr << "ORH-121 gate failure: " << message << '\n';
@@ -189,7 +191,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) {
       return true;
     }
   }
@@ -239,22 +241,22 @@ api::EngineTypedValue TextValue(std::string value) {
 api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
-  column.requested_column_uuid.canonical =
-      "019f2200-0000-7000-8000-00000012130" + std::to_string(ordinal);
+  column.requested_column_uuid =
+      scratchbird::tests::FixtureUuid(1571, 100 + ordinal);
   column.names.push_back(Name(std::move(name)));
-  column.descriptor.descriptor_uuid.canonical =
-      "019f2200-0000-7000-8000-00000012140" + std::to_string(ordinal);
+  column.descriptor.descriptor_uuid =
+      scratchbird::tests::FixtureUuid(1571, 200 + ordinal);
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
   return column;
 }
 
-api::EngineRowValue Row(std::string row_uuid,
+api::EngineRowValue Row(api::EngineUuid row_uuid,
                         std::string id,
                         std::string note) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", TextValue(std::move(id))});
   row.fields.push_back({"note", TextValue(std::move(note))});
   return row;
@@ -281,7 +283,7 @@ std::uint64_t EvidenceU64(const api::EngineApiResult& result,
       continue;
     }
     try {
-      return static_cast<std::uint64_t>(std::stoull(evidence.evidence_id));
+      return static_cast<std::uint64_t>(std::stoull(std::get<std::string>(evidence.evidence_id)));
     } catch (...) {
       return 0;
     }
@@ -295,17 +297,15 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "orh121-fault-injection";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = kDatabaseUuid;
-  context.principal_uuid.canonical = "019f2200-0000-7000-8000-000000121002";
-  context.session_uuid.canonical =
-      std::string("019f2200-0000-7000-8000-000000121") +
-      std::string(session_suffix);
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121001");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121002");
+  context.session_uuid =
+      scratchbird::tests::FixtureUuid(1571, 1000 + std::stoull(std::string(session_suffix)));
   context.security_context_present = true;
   context.catalog_generation_id = 121;
   context.security_epoch = 121;
   context.resource_epoch = 121;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 121;
@@ -352,7 +352,7 @@ void CreateLifecycleSchemaAndTable(const std::filesystem::path& database_path) {
   auto context = BeginTransaction(database_path, "101");
   api::EngineCreateSchemaRequest schema_request;
   schema_request.context = context;
-  schema_request.target_object.uuid.canonical = kSchemaUuid;
+  schema_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121101");
   schema_request.target_object.object_kind = "schema";
   schema_request.localized_names.push_back(Name("orh121_schema"));
   const auto schema = api::EngineCreateSchema(schema_request);
@@ -360,10 +360,10 @@ void CreateLifecycleSchemaAndTable(const std::filesystem::path& database_path) {
 
   api::EngineCreateTableRequest table_request;
   table_request.context = context;
-  table_request.target_schema.uuid.canonical = kSchemaUuid;
+  table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121101");
   table_request.target_schema.object_kind = "schema";
-  table_request.requested_table_uuid.canonical = kTableUuid;
-  table_request.target_object.uuid.canonical = kTableUuid;
+  table_request.requested_table_uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
+  table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
   table_request.target_object.object_kind = "table";
   table_request.table_names.push_back(Name("orh121_merge_target"));
   table_request.table_columns.push_back(Column(0, "id"));
@@ -386,7 +386,7 @@ void ProvePartialMergeBatchRollbackReopenRecovery() {
   auto seed_tx = BeginTransaction(database_path, "201");
   api::EngineInsertRowsRequest insert;
   insert.context = seed_tx;
-  insert.target_table.uuid.canonical = kTableUuid;
+  insert.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
   insert.target_table.object_kind = "table";
   insert.input_rows.push_back(Row(kSeedRowUuid, "1", "seed"));
   const auto inserted = api::EngineInsertRows(insert);
@@ -396,7 +396,7 @@ void ProvePartialMergeBatchRollbackReopenRecovery() {
   auto interrupted_tx = BeginTransaction(database_path, "202");
   api::EngineMergeRowsRequest merge;
   merge.context = interrupted_tx;
-  merge.target_table.uuid.canonical = kTableUuid;
+  merge.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
   merge.target_table.object_kind = "table";
   merge.match_predicate.predicate_kind = "row_uuid_match";
   merge.input_rows.push_back(Row(kSeedRowUuid, "1", "interrupted-update"));
@@ -430,10 +430,10 @@ void ProvePartialMergeBatchRollbackReopenRecovery() {
   auto reader = BeginTransaction(database_path, "204");
   api::EngineSelectRowsRequest verify_rollback;
   verify_rollback.context = reader;
-  verify_rollback.source_object.uuid.canonical = kTableUuid;
+  verify_rollback.source_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
   verify_rollback.source_object.object_kind = "table";
   verify_rollback.select_predicate.predicate_kind = "row_uuid_match";
-  verify_rollback.select_predicate.canonical_predicate_envelope = kSeedRowUuid;
+  verify_rollback.select_predicate.row_uuid = kSeedRowUuid;
   verify_rollback.select_projection.canonical_projection_envelopes = {"note"};
   const auto before_recovery_update = api::EngineSelectRows(verify_rollback);
   Require(before_recovery_update.ok,
@@ -444,7 +444,7 @@ void ProvePartialMergeBatchRollbackReopenRecovery() {
           "interrupted MERGE update survived rollback/reopen");
   api::EngineMergeRowsRequest probe;
   probe.context = reader;
-  probe.target_table.uuid.canonical = kTableUuid;
+  probe.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000121102");
   probe.target_table.object_kind = "table";
   probe.match_predicate.predicate_kind = "row_uuid_match";
   probe.update_when_matched = true;
@@ -681,7 +681,7 @@ api::EngineNoSqlPhysicalProviderContract ProviderContract(
   contract.provider_generation.catalog_epoch = context.catalog_generation_id;
   contract.provider_generation.generation_uuid = generation.generation_uuid;
   contract.provider_generation.provider_id = generation.provider_id;
-  contract.provider_generation.database_uuid = context.database_uuid.canonical;
+  contract.provider_generation.database_uuid = context.database_uuid;
   contract.provider_generation.collection_uuid = generation.collection_uuid;
   contract.provider_generation.publish_state = "published";
   contract.provider_generation.validation_state = "validated";
@@ -700,7 +700,7 @@ void ProveNoSqlProviderPublishRecovery() {
   const auto db_path = work / "orh121_nosql.sbdb";
   auto context = BaseContext(db_path, "501");
   const std::string provider_id = "orh121.document_path_provider";
-  const std::string collection_uuid = ObjectUuid("nosql_collection");
+  const auto collection_uuid = scratchbird::tests::FixtureUuid(1571, 500);
   api::CleanupNoSqlProviderGenerations(context, true);
   auto gen1 = api::MakeDocumentProviderGenerationMetadata(
       context, provider_id, collection_uuid, 1);
@@ -842,7 +842,8 @@ void ProveVectorJobPublishRecovery() {
 
 exec::SnapshotSafeCacheKey SnapshotCacheKey() {
   exec::SnapshotSafeCacheKey key;
-  key.normalized_operation = "orh121.snapshot.cache";
+  key.bound_sblr_tree_uuid = CacheSelectedDag(CacheMgaContext()).bound_sblr_tree_uuid;
+  key.security_context_uuid = CacheSelectedDag(CacheMgaContext()).security_context_uuid;
   key.safe_parameter_digest = "params:orh121";
   key.catalog_epoch = 121;
   key.statistics_epoch = 122;
@@ -855,8 +856,23 @@ exec::SnapshotSafeCacheKey SnapshotCacheKey() {
   key.result_contract_identity = "contract:orh121";
   key.result_contract_hash = "hash:orh121";
   key.route_compatibility = "embedded";
-  key.dialect_compatibility = "sbsql_v3";
   return key;
+}
+
+exec::SnapshotSafeCachePayload CachePayload() {
+  const auto binding = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"), 1, 1,
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"), 1);
+  Require(binding.ok, "ORH-121 int64 fixture binding unavailable");
+  auto value = exec::EncodeInt64Value(42);
+  value.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1571, 501);
+  value.descriptor.type_uuid = binding.row.type_uuid;
+  value.descriptor.descriptor_kind = "scalar";
+  value.descriptor.encoded_descriptor = "nullability=non_null";
+  exec::SnapshotSafeCachePayload payload;
+  payload.final_result.columns = {{"value", value.descriptor, false, 1}};
+  payload.final_result.rows = {{{value}}};
+  return payload;
 }
 
 exec::SnapshotSafeCacheStoreRequest SnapshotStoreRequest() {
@@ -864,8 +880,8 @@ exec::SnapshotSafeCacheStoreRequest SnapshotStoreRequest() {
   request.entry.key = SnapshotCacheKey();
   request.entry.payload_kind = exec::SnapshotSafeCachePayloadKind::kSmallFinalResult;
   request.entry.row_count = 1;
-  request.entry.cached_result_digest = "result:old";
-  request.entry.cached_mga_security_digest = "mga-security:old";
+  request.entry.payload = CachePayload();
+  request.entry.cached_result_digest = exec::SnapshotSafeCachePayloadDigest(*request.entry.payload, request.entry.payload_kind);
   request.small_final_result = true;
   BindCacheRequest(&request);
   return request;
@@ -877,8 +893,8 @@ exec::SnapshotSafeCacheLookupRequest SnapshotLookupRequest() {
   request.payload_kind = exec::SnapshotSafeCachePayloadKind::kSmallFinalResult;
   request.row_count = 1;
   request.small_final_result = true;
-  request.recomputed_result_digest = "result:old";
-  request.recomputed_mga_security_digest = "mga-security:old";
+  request.recomputed_payload = CachePayload();
+  request.recomputed_result_digest = exec::SnapshotSafeCachePayloadDigest(*request.recomputed_payload, request.payload_kind);
   BindCacheRequest(&request);
   return request;
 }
@@ -901,7 +917,10 @@ void ProveCacheInvalidationAfterReopenRecovery() {
 
   reopened_cache.Store(SnapshotStoreRequest());
   auto changed = SnapshotLookupRequest();
-  changed.recomputed_result_digest = "result:new-after-recovery";
+  auto changed_value = exec::EncodeInt64Value(43);
+  changed.recomputed_payload->final_result.rows[0].values[0].binary_value = changed_value.binary_value;
+  changed.recomputed_result_digest = exec::SnapshotSafeCachePayloadDigest(
+      *changed.recomputed_payload, changed.payload_kind);
   const auto invalidated = reopened_cache.Lookup(changed);
   Require(invalidated.accepted &&
               invalidated.action ==

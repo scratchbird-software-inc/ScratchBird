@@ -1,3 +1,4 @@
+#include "native_shard_placement.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -7,6 +8,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+#include "native_row_field.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "sblr_bound_object_identity.hpp"
 #include "sblr_projection_value_runtime.hpp"
 
@@ -27,6 +30,8 @@
 #include "dml/mutation_savepoint_capability.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "uuid.hpp"
+#include "../../wire/projection_fields.hpp"
+#include "catalog/binary_view_options.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "engine/optimizer/optimizer_catalog_backed_planning.hpp"
 #include "query/canonical_relational_bridge.hpp"
@@ -181,8 +186,8 @@ void WriteSblrLiteralEvidenceTrace(
   if (!out) return;
   out << "layer=literal_executor";
   for (std::size_t index = begin; index < evidence.size(); ++index) {
-    out << '\t' << evidence[index].evidence_kind << '='
-        << evidence[index].evidence_id;
+    const auto* text = std::get_if<std::string>(&evidence[index].evidence_id);
+    if (text) out << '\t' << evidence[index].evidence_kind << '=' << *text;
   }
   out << "\tparent_consumption=admitted_after_evidence"
          "\tparent_success_barrier=passed\n";
@@ -199,8 +204,8 @@ void WriteSblrParameterEvidenceTrace(
   if (!out) return;
   out << "layer=parameter_executor";
   for (std::size_t index = begin; index < evidence.size(); ++index) {
-    out << '\t' << evidence[index].evidence_kind << '='
-        << evidence[index].evidence_id;
+    const auto* text = std::get_if<std::string>(&evidence[index].evidence_id);
+    if (text) out << '\t' << evidence[index].evidence_kind << '=' << *text;
   }
   out << "\tparent_consumption=admitted_after_evidence"
          "\tparent_success_barrier=passed\n";
@@ -616,22 +621,6 @@ bool HasCanonicalSourceMapReference(const SblrOperationEnvelope& envelope) {
   return scratchbird::core::uuid::IsEngineIdentityUuid(descriptor_uuid) &&
          std::any_of(operand.value_body.begin() + 16, operand.value_body.end(),
                      [](std::uint8_t byte) { return byte != 0; });
-}
-
-bool IsCanonicalNonNilUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const char ch = value[index];
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-      return false;
-    }
-  }
-  return true;
 }
 
 bool IsCanonicalStatementTimestamp(std::string_view value) {
@@ -1993,16 +1982,16 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           {"opcode_version", "1.0"},
           {"operand_descriptor_id", "parameter_descriptor_ref"},
           {"parameter_set_descriptor_uuid",
-           uuid_text(reference.parameter_set_descriptor_uuid)},
+           api::EngineUuid{reference.parameter_set_descriptor_uuid}},
           {"parameter_set_generation",
            std::to_string(reference.parameter_set_generation)},
           {"slot_ordinal", std::to_string(reference.slot_ordinal)},
-          {"slot_uuid", uuid_text(value.slot_uuid)},
+          {"slot_uuid", api::EngineUuid{value.slot_uuid}},
           {"descriptor_uuid", descriptor_uuid},
           {"descriptor_generation",
            std::to_string(node->parameter_set_generation)},
           {"datatype_descriptor_uuid",
-           uuid_text(value.datatype_descriptor_uuid)},
+           api::EngineUuid{value.datatype_descriptor_uuid}},
           {"datatype_descriptor_generation",
            std::to_string(value.datatype_descriptor_generation)},
           {"value_state", value.state == SblrParameterValueStateV1::null_value
@@ -3232,19 +3221,26 @@ bool ReadExactSingleTransportOption(const api::EngineApiRequest& request,
   return true;
 }
 
+bool ReadExactSingleTransportOption(const api::EngineApiRequest& request,
+                                    std::string_view prefix,
+                                    api::EngineUuid* out) {
+  std::string bytes;
+  return ReadExactSingleTransportOption(request, prefix, &bytes) &&
+         scratchbird::wire::projection_fields::Read(bytes, out);
+}
+
 void SetInvalidGlobalAggregateProjectionTransport(
     api::EngineSelectRowsRequest* typed) {
   if (typed == nullptr) return;
   typed->global_aggregate_projection = {};
-  typed->global_aggregate_projection.relation_uuid = "invalid";
-  typed->global_aggregate_projection.relation_descriptor_uuid =
-      "invalid";
+  typed->global_aggregate_projection.relation_uuid = {};
+  typed->global_aggregate_projection.relation_descriptor_uuid = {};
   typed->global_aggregate_projection.relation_descriptor_generation = 1;
   api::EngineGlobalAggregateProjection invalid;
   invalid.operation =
       static_cast<api::EngineGlobalAggregateOperation>(0);
   invalid.aggregate_function_uuid =
-      std::string(api::EngineGlobalAggregateCountFunctionUuid());
+      api::EngineGlobalAggregateCountFunctionUuid();
   invalid.output_alias = "invalid";
   invalid.result_descriptor =
       api::EngineGlobalAggregateCountResultDescriptor();
@@ -3294,7 +3290,7 @@ bool DecodeGlobalAggregateProjectionTransportV1(
                   encoded_marker),
       typed->option_envelopes.end());
 
-  std::string aggregate_function;
+  api::EngineUuid aggregate_function;
   if (!ReadExactSingleTransportOption(
           base, "aggregate_function:", &aggregate_function) ||
       (aggregate_function != api::EngineGlobalAggregateCountFunctionUuid() &&
@@ -3341,15 +3337,15 @@ bool DecodeGlobalAggregateProjectionTransportV1(
   for (std::uint64_t index = 0; index < output_count; ++index) {
     const std::string& packed =
         *packed_outputs[static_cast<std::size_t>(index)];
-    const auto parts = SplitCompactInsertCell(packed);
+    const auto parts = scratchbird::wire::projection_fields::Decode(packed);
     if (parts.size() != 15 || parts[0] != "gag1") return true;
 
-    std::string function_uuid;
+    api::EngineUuid function_uuid;
     std::string output_alias;
-    std::string relation_uuid;
-    std::string relation_descriptor_uuid;
-    std::string column_uuid;
-    std::string source_descriptor_uuid;
+    api::EngineUuid relation_uuid;
+    api::EngineUuid relation_descriptor_uuid;
+    api::EngineUuid column_uuid;
+    api::EngineUuid source_descriptor_uuid;
     std::string source_descriptor_kind;
     std::string source_canonical_type;
     std::string source_encoded_descriptor;
@@ -3358,21 +3354,21 @@ bool DecodeGlobalAggregateProjectionTransportV1(
     std::string result_encoded_descriptor;
     std::uint64_t operation = 0;
     std::uint64_t descriptor_generation = 0;
-    if (!HexDecodeString(parts[1], &function_uuid) ||
+    if (!scratchbird::wire::projection_fields::Read(parts[1], &function_uuid) ||
         !ParseStrictTransportU64(parts[2], &operation) ||
-        !HexDecodeString(parts[3], &output_alias) ||
-        !HexDecodeString(parts[4], &relation_uuid) ||
-        !HexDecodeString(parts[5], &relation_descriptor_uuid) ||
+        !scratchbird::wire::projection_fields::Read(parts[3], &output_alias) ||
+        !scratchbird::wire::projection_fields::Read(parts[4], &relation_uuid) ||
+        !scratchbird::wire::projection_fields::Read(parts[5], &relation_descriptor_uuid) ||
         !ParseStrictTransportU64(parts[6], &descriptor_generation) ||
         descriptor_generation == 0 ||
-        !HexDecodeString(parts[7], &column_uuid) ||
-        !HexDecodeString(parts[8], &source_descriptor_uuid) ||
-        !HexDecodeString(parts[9], &source_descriptor_kind) ||
-        !HexDecodeString(parts[10], &source_canonical_type) ||
-        !HexDecodeString(parts[11], &source_encoded_descriptor) ||
-        !HexDecodeString(parts[12], &result_descriptor_kind) ||
-        !HexDecodeString(parts[13], &result_canonical_type) ||
-        !HexDecodeString(parts[14], &result_encoded_descriptor)) {
+        !scratchbird::wire::projection_fields::Read(parts[7], &column_uuid) ||
+        !scratchbird::wire::projection_fields::Read(parts[8], &source_descriptor_uuid) ||
+        !scratchbird::wire::projection_fields::Read(parts[9], &source_descriptor_kind) ||
+        !scratchbird::wire::projection_fields::Read(parts[10], &source_canonical_type) ||
+        !scratchbird::wire::projection_fields::Read(parts[11], &source_encoded_descriptor) ||
+        !scratchbird::wire::projection_fields::Read(parts[12], &result_descriptor_kind) ||
+        !scratchbird::wire::projection_fields::Read(parts[13], &result_canonical_type) ||
+        !scratchbird::wire::projection_fields::Read(parts[14], &result_encoded_descriptor)) {
       return true;
     }
     const bool count_function =
@@ -3579,11 +3575,11 @@ bool DecodeGlobalAggregateViewCreateTransportV1(
 
   std::string encoded_count;
   std::string packed;
-  std::string source_option;
+  api::EngineUuid source_option;
   std::string target_kind;
   std::string view_name;
   std::string canonical_name;
-  std::string target_schema_uuid;
+  api::EngineUuid target_schema_uuid;
   std::uint64_t projection_count = 0;
   if (!ReadExactSingleTransportOption(
           base, "view_projection_count:", &encoded_count) ||
@@ -3599,22 +3595,22 @@ bool DecodeGlobalAggregateViewCreateTransportV1(
       !ReadExactSingleTransportOption(
           base, "target_schema_uuid:", &target_schema_uuid) ||
       target_kind != "view" || view_name.empty() ||
-      view_name != canonical_name || target_schema_uuid.empty() ||
+      view_name != canonical_name || target_schema_uuid.is_nil() ||
       typed->target_schema.uuid != target_schema_uuid ||
       typed->target_object.object_kind != "view") {
     return true;
   }
 
-  const auto parts = SplitCompactInsertCell(packed);
+  const auto parts = scratchbird::wire::projection_fields::Decode(packed);
   if (parts.size() != 23 || parts[0] != kGlobalAggregateViewCreatePacketV1 ||
       (parts[1] != "0" && parts[1] != "1")) {
     return true;
   }
 
-  std::string source_relation_uuid;
-  std::string source_relation_descriptor_uuid;
-  std::string source_column_uuid;
-  std::string source_column_descriptor_uuid;
+  api::EngineUuid source_relation_uuid;
+  api::EngineUuid source_relation_descriptor_uuid;
+  api::EngineUuid source_column_uuid;
+  api::EngineUuid source_column_descriptor_uuid;
   std::string source_descriptor_kind;
   std::string source_canonical_type;
   std::string source_encoded_descriptor;
@@ -3626,34 +3622,34 @@ bool DecodeGlobalAggregateViewCreateTransportV1(
   std::string expression_descriptor_kind;
   std::string expression_canonical_type;
   std::string expression_encoded_descriptor;
-  std::string aggregate_function_uuid;
+  api::EngineUuid aggregate_function_uuid;
   std::string result_alias;
   std::string result_descriptor_kind;
   std::string result_canonical_type;
   std::string result_encoded_descriptor;
   std::uint64_t source_generation = 0;
-  if (!HexDecodeString(parts[2], &source_relation_uuid) ||
-      !HexDecodeString(parts[3], &source_relation_descriptor_uuid) ||
+  if (!scratchbird::wire::projection_fields::Read(parts[2], &source_relation_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[3], &source_relation_descriptor_uuid) ||
       !ParseStrictTransportU64(parts[4], &source_generation) ||
       source_generation == 0 ||
-      !HexDecodeString(parts[5], &source_column_uuid) ||
-      !HexDecodeString(parts[6], &source_column_descriptor_uuid) ||
-      !HexDecodeString(parts[7], &source_descriptor_kind) ||
-      !HexDecodeString(parts[8], &source_canonical_type) ||
-      !HexDecodeString(parts[9], &source_encoded_descriptor) ||
-      !HexDecodeString(parts[10], &expression_kind) ||
-      !HexDecodeString(parts[11], &literal_descriptor_kind) ||
-      !HexDecodeString(parts[12], &literal_canonical_type) ||
-      !HexDecodeString(parts[13], &literal_encoded_descriptor) ||
-      !HexDecodeString(parts[14], &literal_value) ||
-      !HexDecodeString(parts[15], &expression_descriptor_kind) ||
-      !HexDecodeString(parts[16], &expression_canonical_type) ||
-      !HexDecodeString(parts[17], &expression_encoded_descriptor) ||
-      !HexDecodeString(parts[18], &aggregate_function_uuid) ||
-      !HexDecodeString(parts[19], &result_alias) ||
-      !HexDecodeString(parts[20], &result_descriptor_kind) ||
-      !HexDecodeString(parts[21], &result_canonical_type) ||
-      !HexDecodeString(parts[22], &result_encoded_descriptor) ||
+      !scratchbird::wire::projection_fields::Read(parts[5], &source_column_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[6], &source_column_descriptor_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[7], &source_descriptor_kind) ||
+      !scratchbird::wire::projection_fields::Read(parts[8], &source_canonical_type) ||
+      !scratchbird::wire::projection_fields::Read(parts[9], &source_encoded_descriptor) ||
+      !scratchbird::wire::projection_fields::Read(parts[10], &expression_kind) ||
+      !scratchbird::wire::projection_fields::Read(parts[11], &literal_descriptor_kind) ||
+      !scratchbird::wire::projection_fields::Read(parts[12], &literal_canonical_type) ||
+      !scratchbird::wire::projection_fields::Read(parts[13], &literal_encoded_descriptor) ||
+      !scratchbird::wire::projection_fields::Read(parts[14], &literal_value) ||
+      !scratchbird::wire::projection_fields::Read(parts[15], &expression_descriptor_kind) ||
+      !scratchbird::wire::projection_fields::Read(parts[16], &expression_canonical_type) ||
+      !scratchbird::wire::projection_fields::Read(parts[17], &expression_encoded_descriptor) ||
+      !scratchbird::wire::projection_fields::Read(parts[18], &aggregate_function_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[19], &result_alias) ||
+      !scratchbird::wire::projection_fields::Read(parts[20], &result_descriptor_kind) ||
+      !scratchbird::wire::projection_fields::Read(parts[21], &result_canonical_type) ||
+      !scratchbird::wire::projection_fields::Read(parts[22], &result_encoded_descriptor) ||
       source_relation_uuid != source_option ||
       expression_kind != api::kEngineGlobalAggregateViewInt32MultiplyV1 ||
       aggregate_function_uuid != api::EngineGlobalAggregateAvgFunctionUuid()) {
@@ -3713,10 +3709,10 @@ bool DecodeGlobalAggregateViewCreateTransportV1(
       std::string("view_query_shape:") +
           std::string(api::kEngineGlobalAggregateViewMarkerV1),
       "source_relation_descriptor_uuid:" +
-          source_relation_descriptor_uuid,
+          scratchbird::wire::projection_fields::Identity(source_relation_descriptor_uuid),
       "source_relation_descriptor_generation:" +
           std::to_string(source_generation),
-      "aggregate_function_uuid:" + aggregate_function_uuid,
+      "aggregate_function_uuid:" + scratchbird::wire::projection_fields::Identity(aggregate_function_uuid),
       "aggregate_result_alias:" + result_alias};
   if (parts[1] == "1") {
     typed->option_envelopes.push_back("create_or_alter:true");
@@ -3775,9 +3771,9 @@ bool DecodeGlobalAggregateViewSelectTransportV1(
 
   std::string encoded_count;
   std::string packed;
-  std::string target_uuid;
+  api::EngineUuid target_uuid;
   std::string target_kind;
-  std::string source_uuid;
+  api::EngineUuid source_uuid;
   std::string source_kind;
   std::uint64_t projection_count = 0;
   if (!ReadExactSingleTransportOption(
@@ -3791,19 +3787,19 @@ bool DecodeGlobalAggregateViewSelectTransportV1(
           base, "target_object_kind:", &target_kind) ||
       !ReadExactSingleTransportOption(base, "source_uuid:", &source_uuid) ||
       !ReadExactSingleTransportOption(base, "source_kind:", &source_kind) ||
-      target_uuid.empty() || target_uuid != source_uuid ||
+      target_uuid.is_nil() || target_uuid != source_uuid ||
       target_kind != "view" || source_kind != "view" ||
       typed->source_object.uuid != target_uuid ||
       typed->source_object.object_kind != "view") {
     return true;
   }
-  const auto parts = SplitCompactInsertCell(packed);
+  const auto parts = scratchbird::wire::projection_fields::Decode(packed);
   if (parts.size() != 11 || parts[0] != kGlobalAggregateViewSelectPacketV1) {
     return true;
   }
 
   std::string marker;
-  std::string projection_descriptor_uuid;
+  api::EngineUuid projection_descriptor_uuid;
   std::string projection_descriptor_kind;
   std::string projection_canonical_type;
   std::string projection_encoded_descriptor;
@@ -3812,19 +3808,19 @@ bool DecodeGlobalAggregateViewSelectTransportV1(
   std::string result_canonical_type;
   std::string result_encoded_descriptor;
   std::uint64_t descriptor_generation = 0;
-  if (!HexDecodeString(parts[1], &marker) ||
-      !HexDecodeString(parts[2], &projection_descriptor_uuid) ||
+  if (!scratchbird::wire::projection_fields::Read(parts[1], &marker) ||
+      !scratchbird::wire::projection_fields::Read(parts[2], &projection_descriptor_uuid) ||
       !ParseStrictTransportU64(parts[3], &descriptor_generation) ||
       descriptor_generation == 0 ||
-      !HexDecodeString(parts[4], &projection_descriptor_kind) ||
-      !HexDecodeString(parts[5], &projection_canonical_type) ||
-      !HexDecodeString(parts[6], &projection_encoded_descriptor) ||
-      !HexDecodeString(parts[7], &result_alias) ||
-      !HexDecodeString(parts[8], &result_descriptor_kind) ||
-      !HexDecodeString(parts[9], &result_canonical_type) ||
-      !HexDecodeString(parts[10], &result_encoded_descriptor) ||
+      !scratchbird::wire::projection_fields::Read(parts[4], &projection_descriptor_kind) ||
+      !scratchbird::wire::projection_fields::Read(parts[5], &projection_canonical_type) ||
+      !scratchbird::wire::projection_fields::Read(parts[6], &projection_encoded_descriptor) ||
+      !scratchbird::wire::projection_fields::Read(parts[7], &result_alias) ||
+      !scratchbird::wire::projection_fields::Read(parts[8], &result_descriptor_kind) ||
+      !scratchbird::wire::projection_fields::Read(parts[9], &result_canonical_type) ||
+      !scratchbird::wire::projection_fields::Read(parts[10], &result_encoded_descriptor) ||
       marker != api::kEngineGlobalAggregateViewMarkerV1 ||
-      projection_descriptor_uuid.empty() ||
+      projection_descriptor_uuid.is_nil() ||
       projection_descriptor_kind != "global_aggregate_view" ||
       projection_canonical_type != api::kEngineGlobalAggregateViewMarkerV1 ||
       result_alias.empty()) {
@@ -3838,14 +3834,9 @@ bool DecodeGlobalAggregateViewSelectTransportV1(
       result_encoded_descriptor != expected_result.encoded_descriptor) {
     return true;
   }
-  const std::string expected_semantic_descriptor =
-      std::string("marker=") +
-      std::string(api::kEngineGlobalAggregateViewMarkerV1) +
-      ";view_uuid=" + target_uuid +
-      ";view_descriptor_generation=" +
-      std::to_string(descriptor_generation) +
-      ";result_alias=" + result_alias +
-      ";result_type=int64;result_nullable=true";
+  const std::string expected_semantic_descriptor = api::GlobalAggregateSemanticPayload(
+      target_uuid, descriptor_generation,
+      std::string(api::kEngineGlobalAggregateViewMarkerV1), result_alias);
   if (projection_encoded_descriptor != expected_semantic_descriptor) {
     return true;
   }
@@ -3871,23 +3862,8 @@ constexpr std::string_view kRelationProjectionViewTransportV2 =
 constexpr std::string_view kRelationProjectionViewCreatePacketV2 = "rpvc2";
 constexpr std::string_view kRelationProjectionViewDeletePacketV2 = "rpvd2";
 
-bool CanonicalTransportUuid(std::string_view value) {
-  if (value.size() != 36u || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  bool nonzero = false;
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8u || index == 13u || index == 18u || index == 23u) {
-      continue;
-    }
-    const char ch = value[index];
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-      return false;
-    }
-    nonzero = nonzero || ch != '0';
-  }
-  return nonzero;
+bool CanonicalTransportUuid(const api::EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool SafeTransportOutputName(std::string_view value) {
@@ -3979,11 +3955,11 @@ bool DecodeRelationProjectionViewCreateTransportV1(
 
   std::string encoded_count;
   std::string packed[2];
-  std::string source_option;
+  api::EngineUuid source_option;
   std::string target_kind;
   std::string view_name;
   std::string canonical_name;
-  std::string target_schema_uuid;
+  api::EngineUuid target_schema_uuid;
   std::uint64_t projection_count = 0;
   if (!ReadExactSingleTransportOption(
           base, "view_projection_count:", &encoded_count) ||
@@ -4013,14 +3989,14 @@ bool DecodeRelationProjectionViewCreateTransportV1(
 
   struct DecodedProjection {
     std::uint32_t ordinal = 0;
-    std::string relation_uuid;
-    std::string relation_descriptor_uuid;
+    api::EngineUuid relation_uuid;
+    api::EngineUuid relation_descriptor_uuid;
     std::uint64_t relation_descriptor_generation = 0;
     std::uint64_t resource_epoch = 0;
     std::string output_name;
     std::string expression_kind;
-    std::string source_column_uuid;
-    std::string source_type_descriptor_uuid;
+    api::EngineUuid source_column_uuid;
+    api::EngineUuid source_type_descriptor_uuid;
     std::string descriptor_kind;
     std::string canonical_type;
     std::string encoded_descriptor;
@@ -4029,15 +4005,15 @@ bool DecodeRelationProjectionViewCreateTransportV1(
   } decoded[2];
 
   for (std::uint32_t ordinal = 0; ordinal < 2u; ++ordinal) {
-    const auto parts = SplitCompactInsertCell(packed[ordinal]);
+    const auto parts = scratchbird::wire::projection_fields::Decode(packed[ordinal]);
     std::uint64_t encoded_ordinal = 0;
     if (parts.size() != 16u ||
         parts[0] != kRelationProjectionViewCreatePacketV1 ||
         parts[1] != "0" ||
         !ParseStrictTransportU64(parts[2], &encoded_ordinal) ||
         encoded_ordinal != ordinal ||
-        !HexDecodeString(parts[3], &decoded[ordinal].relation_uuid) ||
-        !HexDecodeString(
+        !scratchbird::wire::projection_fields::Read(parts[3], &decoded[ordinal].relation_uuid) ||
+        !scratchbird::wire::projection_fields::Read(
             parts[4], &decoded[ordinal].relation_descriptor_uuid) ||
         !ParseStrictTransportU64(
             parts[5], &decoded[ordinal].relation_descriptor_generation) ||
@@ -4045,16 +4021,16 @@ bool DecodeRelationProjectionViewCreateTransportV1(
         !ParseStrictTransportU64(
             parts[6], &decoded[ordinal].resource_epoch) ||
         decoded[ordinal].resource_epoch == 0u ||
-        !HexDecodeString(parts[7], &decoded[ordinal].output_name) ||
-        !HexDecodeString(parts[8], &decoded[ordinal].expression_kind) ||
-        !HexDecodeString(parts[9], &decoded[ordinal].source_column_uuid) ||
-        !HexDecodeString(
+        !scratchbird::wire::projection_fields::Read(parts[7], &decoded[ordinal].output_name) ||
+        !scratchbird::wire::projection_fields::Read(parts[8], &decoded[ordinal].expression_kind) ||
+        !scratchbird::wire::projection_fields::Read(parts[9], &decoded[ordinal].source_column_uuid) ||
+        !scratchbird::wire::projection_fields::Read(
             parts[10], &decoded[ordinal].source_type_descriptor_uuid) ||
-        !HexDecodeString(parts[11], &decoded[ordinal].descriptor_kind) ||
-        !HexDecodeString(parts[12], &decoded[ordinal].canonical_type) ||
-        !HexDecodeString(parts[13], &decoded[ordinal].encoded_descriptor) ||
+        !scratchbird::wire::projection_fields::Read(parts[11], &decoded[ordinal].descriptor_kind) ||
+        !scratchbird::wire::projection_fields::Read(parts[12], &decoded[ordinal].canonical_type) ||
+        !scratchbird::wire::projection_fields::Read(parts[13], &decoded[ordinal].encoded_descriptor) ||
         (parts[14] != "0" && parts[14] != "1") ||
-        !HexDecodeString(parts[15], &decoded[ordinal].typed_value) ||
+        !scratchbird::wire::projection_fields::Read(parts[15], &decoded[ordinal].typed_value) ||
         !SafeTransportOutputName(decoded[ordinal].output_name) ||
         !CanonicalTransportUuid(decoded[ordinal].relation_uuid) ||
         !CanonicalTransportUuid(
@@ -4083,13 +4059,13 @@ bool DecodeRelationProjectionViewCreateTransportV1(
       !decoded[0].typed_value.empty() ||
       decoded[1].expression_kind !=
           api::kEngineRelationProjectionTypedInt32LiteralV1 ||
-      !decoded[1].source_column_uuid.empty() ||
-      !decoded[1].source_type_descriptor_uuid.empty() ||
+      !decoded[1].source_column_uuid.is_nil() ||
+      !decoded[1].source_type_descriptor_uuid.is_nil() ||
       decoded[1].nullable ||
       !CanonicalTransportInt32(decoded[1].typed_value)) {
     return true;
   }
-  const std::set<std::string> source_identities = {
+  const std::set<api::EngineUuid> source_identities = {
       decoded[0].relation_uuid,
       decoded[0].relation_descriptor_uuid,
       decoded[0].source_column_uuid,
@@ -4142,7 +4118,7 @@ bool DecodeRelationProjectionViewCreateTransportV1(
       std::string("view_query_shape:") +
           std::string(api::kEngineRelationProjectionViewMarkerV1),
       "source_relation_descriptor_uuid:" +
-          decoded[0].relation_descriptor_uuid,
+          scratchbird::wire::projection_fields::Identity(decoded[0].relation_descriptor_uuid),
       "source_relation_descriptor_generation:" +
           std::to_string(decoded[0].relation_descriptor_generation),
       "source_resource_epoch:" +
@@ -4201,11 +4177,11 @@ bool DecodeRelationProjectionViewCreateTransportV2(
 
   std::string encoded_count;
   std::string packed;
-  std::string source_option;
+  api::EngineUuid source_option;
   std::string target_kind;
   std::string view_name;
   std::string canonical_name;
-  std::string target_schema_uuid;
+  api::EngineUuid target_schema_uuid;
   std::uint64_t projection_count = 0;
   if (!ReadExactSingleTransportOption(
           base, "view_projection_count:", &encoded_count) ||
@@ -4231,16 +4207,16 @@ bool DecodeRelationProjectionViewCreateTransportV2(
     return true;
   }
 
-  const auto parts = SplitCompactInsertCell(packed);
+  const auto parts = scratchbird::wire::projection_fields::Decode(packed);
   std::uint64_t encoded_ordinal = 0;
   std::uint64_t descriptor_generation = 0;
   std::uint64_t resource_epoch = 0;
-  std::string relation_uuid;
-  std::string relation_descriptor_uuid;
+  api::EngineUuid relation_uuid;
+  api::EngineUuid relation_descriptor_uuid;
   std::string output_name;
   std::string source_column_name;
-  std::string source_column_uuid;
-  std::string source_type_uuid;
+  api::EngineUuid source_column_uuid;
+  api::EngineUuid source_type_uuid;
   std::string descriptor_kind;
   std::string canonical_type;
   std::string encoded_descriptor;
@@ -4250,21 +4226,21 @@ bool DecodeRelationProjectionViewCreateTransportV2(
       parts[1] != "0" ||
       !ParseStrictTransportU64(parts[2], &encoded_ordinal) ||
       encoded_ordinal != 0u ||
-      !HexDecodeString(parts[3], &relation_uuid) ||
-      !HexDecodeString(parts[4], &relation_descriptor_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[3], &relation_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[4], &relation_descriptor_uuid) ||
       !ParseStrictTransportU64(parts[5], &descriptor_generation) ||
       descriptor_generation == 0u ||
       !ParseStrictTransportU64(parts[6], &resource_epoch) ||
       resource_epoch == 0u ||
-      !HexDecodeString(parts[7], &output_name) ||
-      !HexDecodeString(parts[8], &source_column_name) ||
-      !HexDecodeString(parts[9], &source_column_uuid) ||
-      !HexDecodeString(parts[10], &source_type_uuid) ||
-      !HexDecodeString(parts[11], &descriptor_kind) ||
-      !HexDecodeString(parts[12], &canonical_type) ||
-      !HexDecodeString(parts[13], &encoded_descriptor) ||
+      !scratchbird::wire::projection_fields::Read(parts[7], &output_name) ||
+      !scratchbird::wire::projection_fields::Read(parts[8], &source_column_name) ||
+      !scratchbird::wire::projection_fields::Read(parts[9], &source_column_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[10], &source_type_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[11], &descriptor_kind) ||
+      !scratchbird::wire::projection_fields::Read(parts[12], &canonical_type) ||
+      !scratchbird::wire::projection_fields::Read(parts[13], &encoded_descriptor) ||
       (parts[14] != "0" && parts[14] != "1") ||
-      !HexDecodeString(parts[15], &typed_value) ||
+      !scratchbird::wire::projection_fields::Read(parts[15], &typed_value) ||
       !typed_value.empty() || !SafeTransportOutputName(output_name) ||
       !SafeTransportOutputName(source_column_name) ||
       !CanonicalTransportUuid(relation_uuid) ||
@@ -4278,7 +4254,7 @@ bool DecodeRelationProjectionViewCreateTransportV2(
       resource_epoch != base.context.resource_epoch) {
     return true;
   }
-  const std::set<std::string> source_identities = {
+  const std::set<api::EngineUuid> source_identities = {
       relation_uuid, relation_descriptor_uuid, source_column_uuid,
       source_type_uuid};
   if (source_identities.size() != 4u) return true;
@@ -4306,7 +4282,7 @@ bool DecodeRelationProjectionViewCreateTransportV2(
   typed->option_envelopes = {
       std::string("view_query_shape:") +
           std::string(api::kEngineRelationProjectionViewMarkerV2),
-      "source_relation_descriptor_uuid:" + relation_descriptor_uuid,
+      "source_relation_descriptor_uuid:" + scratchbird::wire::projection_fields::Identity(relation_descriptor_uuid),
       "source_relation_descriptor_generation:" +
           std::to_string(descriptor_generation),
       "source_resource_epoch:" + std::to_string(resource_epoch)};
@@ -4363,9 +4339,9 @@ bool DecodeRelationProjectionViewSelectTransportV1(
 
   std::string encoded_count;
   std::string packed;
-  std::string target_uuid;
+  api::EngineUuid target_uuid;
   std::string target_kind;
-  std::string source_uuid;
+  api::EngineUuid source_uuid;
   std::string source_kind;
   std::uint64_t projection_count = 0;
   if (!ReadExactSingleTransportOption(
@@ -4386,18 +4362,18 @@ bool DecodeRelationProjectionViewSelectTransportV1(
     return true;
   }
 
-  const auto parts = SplitCompactInsertCell(packed);
+  const auto parts = scratchbird::wire::projection_fields::Decode(packed);
   constexpr std::size_t kHeaderParts = 5u;
   constexpr std::size_t kOutputParts = 8u;
   constexpr std::size_t kOutputCount = 2u;
   std::string marker;
-  std::string descriptor_uuid;
+  api::EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation = 0;
   std::uint64_t output_count = 0;
   if (parts.size() != kHeaderParts + kOutputParts * kOutputCount ||
       parts[0] != kRelationProjectionViewSelectPacketV1 ||
-      !HexDecodeString(parts[1], &marker) ||
-      !HexDecodeString(parts[2], &descriptor_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[1], &marker) ||
+      !scratchbird::wire::projection_fields::Read(parts[2], &descriptor_uuid) ||
       !ParseStrictTransportU64(parts[3], &descriptor_generation) ||
       descriptor_generation == 0u ||
       !ParseStrictTransportU64(parts[4], &output_count) ||
@@ -4410,29 +4386,29 @@ bool DecodeRelationProjectionViewSelectTransportV1(
 
   std::vector<api::EngineRelationProjectionViewSemanticOutput> outputs;
   outputs.reserve(kOutputCount);
-  std::set<std::string> identities = {target_uuid, descriptor_uuid};
+  std::set<api::EngineUuid> identities = {target_uuid, descriptor_uuid};
   std::set<std::string> names;
   for (std::uint32_t ordinal = 0; ordinal < kOutputCount; ++ordinal) {
     const std::size_t base_index = kHeaderParts + ordinal * kOutputParts;
     std::uint64_t encoded_ordinal = 0;
     std::string output_name;
-    std::string output_column_uuid;
-    std::string type_descriptor_uuid;
+    api::EngineUuid output_column_uuid;
+    api::EngineUuid type_descriptor_uuid;
     std::string descriptor_kind;
     std::string canonical_type;
     std::string encoded_descriptor;
     std::string nullable;
     if (!ParseStrictTransportU64(parts[base_index], &encoded_ordinal) ||
         encoded_ordinal != ordinal ||
-        !HexDecodeString(parts[base_index + 1u], &output_name) ||
-        !HexDecodeString(
+        !scratchbird::wire::projection_fields::Read(parts[base_index + 1u], &output_name) ||
+        !scratchbird::wire::projection_fields::Read(
             parts[base_index + 2u], &output_column_uuid) ||
-        !HexDecodeString(
+        !scratchbird::wire::projection_fields::Read(
             parts[base_index + 3u], &type_descriptor_uuid) ||
-        !HexDecodeString(parts[base_index + 4u], &descriptor_kind) ||
-        !HexDecodeString(parts[base_index + 5u], &canonical_type) ||
-        !HexDecodeString(parts[base_index + 6u], &encoded_descriptor) ||
-        !HexDecodeString(parts[base_index + 7u], &nullable) ||
+        !scratchbird::wire::projection_fields::Read(parts[base_index + 4u], &descriptor_kind) ||
+        !scratchbird::wire::projection_fields::Read(parts[base_index + 5u], &canonical_type) ||
+        !scratchbird::wire::projection_fields::Read(parts[base_index + 6u], &encoded_descriptor) ||
+        !scratchbird::wire::projection_fields::Read(parts[base_index + 7u], &nullable) ||
         (nullable != "0" && nullable != "1") ||
         !SafeTransportOutputName(output_name) ||
         !CanonicalTransportUuid(output_column_uuid) ||
@@ -4523,7 +4499,7 @@ bool DecodeRelationProjectionViewDeleteTransportV2(
     return true;
   }
 
-  std::string target_uuid;
+  api::EngineUuid target_uuid;
   std::string target_kind;
   std::string surface_variant;
   std::string encoded_count;
@@ -4576,35 +4552,35 @@ bool DecodeRelationProjectionViewDeleteTransportV2(
     return true;
   }
 
-  const auto parts = SplitCompactInsertCell(packed);
+  const auto parts = scratchbird::wire::projection_fields::Decode(packed);
   std::string marker;
-  std::string descriptor_uuid;
+  api::EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation = 0;
   std::uint64_t output_count = 0;
   std::uint64_t ordinal = 0;
   std::string output_name;
-  std::string output_column_uuid;
-  std::string type_descriptor_uuid;
+  api::EngineUuid output_column_uuid;
+  api::EngineUuid type_descriptor_uuid;
   std::string descriptor_kind;
   std::string canonical_type;
   std::string encoded_descriptor;
   std::string nullable;
   if (parts.size() != 13u ||
       parts[0] != kRelationProjectionViewDeletePacketV2 ||
-      !HexDecodeString(parts[1], &marker) ||
-      !HexDecodeString(parts[2], &descriptor_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[1], &marker) ||
+      !scratchbird::wire::projection_fields::Read(parts[2], &descriptor_uuid) ||
       !ParseStrictTransportU64(parts[3], &descriptor_generation) ||
       descriptor_generation == 0u ||
       !ParseStrictTransportU64(parts[4], &output_count) ||
       output_count != 1u ||
       !ParseStrictTransportU64(parts[5], &ordinal) || ordinal != 0u ||
-      !HexDecodeString(parts[6], &output_name) ||
-      !HexDecodeString(parts[7], &output_column_uuid) ||
-      !HexDecodeString(parts[8], &type_descriptor_uuid) ||
-      !HexDecodeString(parts[9], &descriptor_kind) ||
-      !HexDecodeString(parts[10], &canonical_type) ||
-      !HexDecodeString(parts[11], &encoded_descriptor) ||
-      !HexDecodeString(parts[12], &nullable) ||
+      !scratchbird::wire::projection_fields::Read(parts[6], &output_name) ||
+      !scratchbird::wire::projection_fields::Read(parts[7], &output_column_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[8], &type_descriptor_uuid) ||
+      !scratchbird::wire::projection_fields::Read(parts[9], &descriptor_kind) ||
+      !scratchbird::wire::projection_fields::Read(parts[10], &canonical_type) ||
+      !scratchbird::wire::projection_fields::Read(parts[11], &encoded_descriptor) ||
+      !scratchbird::wire::projection_fields::Read(parts[12], &nullable) ||
       (nullable != "0" && nullable != "1") ||
       marker != api::kEngineRelationProjectionViewMarkerV2 ||
       output_name != predicate_column ||
@@ -4617,7 +4593,7 @@ bool DecodeRelationProjectionViewDeleteTransportV2(
                                 encoded_descriptor)) {
     return true;
   }
-  const std::set<std::string> public_identities = {
+  const std::set<api::EngineUuid> public_identities = {
       target_uuid, descriptor_uuid, output_column_uuid,
       type_descriptor_uuid};
   if (public_identities.size() != 4u) return true;
@@ -4839,6 +4815,17 @@ CompactInsertScalarValidation ValidateCompactInsertScalarMarkers(
       envelope.operation_id == "dml.execute_native_bulk_ingest" ||
       envelope.operation_id == "dml.execute_import_rows";
   if (!supported_operation) return validation;
+  for (const auto& operand : envelope.operands) {
+    if ((operand.type.starts_with("row_field_binary16.") ||
+         operand.type.starts_with("row_null_field_binary16.")) &&
+        !DecodeNativeRowField(operand)) {
+      validation.ok = false;
+      validation.diagnostic_code = "SBLR.OPERATION.OPERAND_INVALID";
+      validation.diagnostic_message_key = "engine.sblr.native_row_field_invalid";
+      validation.diagnostic_detail = "row identity and UUID values require exact binary16 carriers";
+      return validation;
+    }
+  }
 
   const auto compact_format =
       TextOperandValue(envelope, "insert_values_compact_format");
@@ -5184,6 +5171,18 @@ bool CanonicalTransactionCharacteristicsOperands(
       *isolation == "snapshot";
 }
 
+bool ParseComputedRowLabel(std::string_view label, std::size_t* relation_index) {
+  constexpr std::string_view prefix = "relation-";
+  if (!label.starts_with(prefix)) return false;
+  const auto separator = label.find("-row-", prefix.size());
+  if (separator == std::string_view::npos) return false;
+  std::uint64_t relation = 0, row = 0;
+  if (!ParseStrictTransportU64(label.substr(prefix.size(), separator-prefix.size()), &relation) ||
+      !ParseStrictTransportU64(label.substr(separator+5), &row) || relation >= 16) return false;
+  *relation_index = static_cast<std::size_t>(relation);
+  return true;
+}
+
 api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
                                           const SblrDispatchRequest& request) {
   const auto phase_start = SblrSteadyClock::now();
@@ -5194,15 +5193,13 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
   api_request.option_envelopes.reserve(api_request.option_envelopes.size() +
                                        request.envelope.operands.size());
 
-  std::unordered_map<std::string, std::size_t> row_index_by_uuid;
-  row_index_by_uuid.reserve(api_request.rows.size() +
-                            request.envelope.operands.size() / 4);
+  std::map<api::EngineUuid, std::size_t> row_index_by_uuid;
+  std::map<std::string, std::size_t> computed_row_index;
   api_request.rows.reserve(api_request.rows.size() +
                            request.envelope.operands.size() / 4);
   for (std::size_t index = 0; index < api_request.rows.size(); ++index) {
-    const std::string& row_uuid =
-        api_request.rows[index].requested_row_uuid;
-    if (!row_uuid.empty()) {
+    const auto& row_uuid = api_request.rows[index].requested_row_uuid;
+    if (!row_uuid.is_nil()) {
       row_index_by_uuid.emplace(row_uuid, index);
     }
   }
@@ -5213,35 +5210,59 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
     // convert them into empty or textual option-envelope identities.
     if (IsBoundObjectIdentityRole(operand.name) || IsRelatedObjectIdentityRole(operand.name) ||
         IsProjectionFunctionIdentityRole(operand.name)) continue;
-    const auto operand_value = OperandExecutionValue(operand);
+    auto operand_value = OperandExecutionValue(operand);
+    const bool binary_row = operand.type.starts_with("row_field_binary16.") ||
+                            operand.type.starts_with("row_null_field_binary16.");
     const bool row_field = operand.type == "row_field" ||
-                           operand.type.starts_with("row_field:");
+                           operand.type.starts_with("row_field:") ||
+                           operand.type.starts_with("row_field_binary16.");
     const bool row_null_field = operand.type == "row_null_field" ||
-                                operand.type.starts_with("row_null_field:");
+                                operand.type.starts_with("row_null_field:") ||
+                                operand.type.starts_with("row_null_field_binary16.");
     if (!operand.name.empty() && !row_field && !row_null_field) {
       api_request.option_envelopes.push_back(
           operand.name + ":" + std::string(operand_value));
     }
     if (row_field || row_null_field) {
-      const auto separator = operand.name.find('|');
-      if (separator == std::string::npos || separator + 1 >= operand.name.size()) {
-        continue;
+      api::EngineUuid row_uuid;
+      std::string field_name;
+      std::size_t index = 0;
+      if (binary_row) {
+        if (operand_value.size() < 16 || operand.name.empty() ||
+            !scratchbird::wire::projection_fields::Read(operand_value.substr(0,16), &row_uuid) ||
+            row_uuid.is_nil()) continue;
+        field_name = operand.name;
+        operand_value.remove_prefix(16);
+        auto [entry, inserted] = row_index_by_uuid.emplace(row_uuid, api_request.rows.size());
+        index = entry->second;
+        if (inserted) {
+          api::EngineRowValue appended;
+          appended.requested_row_uuid = row_uuid;
+          api_request.rows.push_back(std::move(appended));
+        }
+      } else {
+        // VALUES fixtures use explicit relation/row ordinals, not UUID text.
+        // Persisted DML row identities require the binary16 carrier above.
+        if (api_request.operation_id != "query.plan_operation") continue;
+        const auto separator = operand.name.find('|');
+        if (separator == std::string::npos || separator + 1 >= operand.name.size()) continue;
+        const auto label = operand.name.substr(0,separator);
+        std::size_t relation_index = 0;
+        if (!ParseComputedRowLabel(label, &relation_index)) continue;
+        field_name = operand.name.substr(separator+1);
+        auto [entry, inserted] = computed_row_index.emplace(label, api_request.rows.size());
+        index = entry->second;
+        if (inserted) {
+          api_request.rows.emplace_back();
+          api_request.option_envelopes.push_back(
+              "plan_input_row_" + std::to_string(index) + "_relation_ordinal:" +
+              std::to_string(relation_index));
+        }
       }
-      const std::string row_uuid = operand.name.substr(0, separator);
-      const std::string field_name = operand.name.substr(separator + 1);
-      auto row_index = row_index_by_uuid.find(row_uuid);
-      if (row_index == row_index_by_uuid.end()) {
-        const std::size_t appended_index = api_request.rows.size();
-        api::EngineRowValue appended;
-        appended.requested_row_uuid = row_uuid;
-        api_request.rows.push_back(std::move(appended));
-        row_index =
-            row_index_by_uuid.emplace(row_uuid, appended_index).first;
-      }
-      api::EngineRowValue& row = api_request.rows[row_index->second];
+      api::EngineRowValue& row = api_request.rows[index];
       api::EngineTypedValue value;
       value.descriptor.descriptor_kind = "scalar";
-      const auto type_separator = operand.type.find(':');
+      const auto type_separator = operand.type.find(binary_row ? '.' : ':');
       value.descriptor.canonical_type_name =
           type_separator == std::string::npos
               ? std::string{}
@@ -5249,7 +5270,13 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
       if (!value.descriptor.canonical_type_name.empty()) {
         value.descriptor.encoded_descriptor = "type=" + value.descriptor.canonical_type_name;
       }
-      value.encoded_value = std::string(operand_value);
+      if (value.descriptor.canonical_type_name == "uuid" && !row_null_field) {
+        // User UUID values may have any version, but their carrier is binary16.
+        if (operand_value.size() != 16) continue;
+        value.binary_value.assign(operand_value.begin(), operand_value.end());
+      } else {
+        value.encoded_value = std::string(operand_value);
+      }
       value.is_null = row_null_field;
       if (value.is_null) {
         value.encoded_value.clear();
@@ -5275,9 +5302,10 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
   if (!identifier_profile_uuid.empty()) {
     api_request.context.identifier_profile_uuid = identifier_profile_uuid;
   }
-  const std::string current_role_uuid =
-      api::SecurityOptionValue(api_request, "current_role_uuid:");
-  if (!current_role_uuid.empty()) {
+  api::EngineUuid current_role_uuid;
+  const auto current_role_bytes = api::SecurityOptionValue(api_request, "current_role_uuid:");
+  if (scratchbird::wire::projection_fields::Read(current_role_bytes, &current_role_uuid) &&
+      !current_role_uuid.is_nil()) {
     api_request.context.current_role_uuid = current_role_uuid;
   }
   if (api_request.target_object.object_kind.empty()) {
@@ -6189,7 +6217,7 @@ scratchbird::core::memory::MemoryPolicyConfig DefaultMemoryPolicyConfig() {
 }
 
 void FillMemoryGovernanceDescriptor(api::EngineMemoryManagementRequest* request) {
-  request->governance.profile_uuid = "019f1000-0000-7000-8000-000000000010";
+  request->governance.profile_uuid = scratchbird::core::platform::Uuid{{0x01,0x9f,0x10,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x10}};
   request->governance.policy_config = DefaultMemoryPolicyConfig();
   request->governance.expected_policy_generation = 7;
   request->governance.observed_policy_generation = 7;
@@ -6225,7 +6253,7 @@ void FillMemoryGovernanceDescriptor(api::EngineMemoryManagementRequest* request)
 
 void FillMemoryAutomationDescriptor(api::EngineMemoryManagementRequest* request) {
   request->automation.recommendation_uuid =
-      "019f1000-0000-7000-8000-000000000020";
+      scratchbird::core::platform::Uuid{{0x01,0x9f,0x10,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x20}};
   request->automation.report_generation = 3;
   request->automation.recommendation_generation = 4;
   request->automation.report_bounded = true;
@@ -6240,12 +6268,9 @@ void FillMemoryAutomationDescriptor(api::EngineMemoryManagementRequest* request)
 }
 
 void FillMemoryObjectResidencyDescriptor(api::EngineMemoryManagementRequest* request) {
-  request->object_residency.object_uuid =
-      request->target_object.uuid.is_nil()
-          ? "019f1000-0000-7000-8000-000000000030"
-          : request->target_object.uuid;
+  request->object_residency.object_uuid = request->target_object.uuid;
   request->object_residency.filespace_uuid =
-      "019f1000-0000-7000-8000-000000000031";
+      scratchbird::core::platform::Uuid{{0x01,0x9f,0x10,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x31}};
   request->object_residency.object_kind =
       request->target_object.object_kind.empty() ? "table" : request->target_object.object_kind;
   request->object_residency.residency_class =
@@ -6276,9 +6301,9 @@ void FillMemoryRateLimitDescriptor(api::EngineMemoryManagementRequest* request) 
 
 void FillMemoryPolicyMigrationDescriptor(api::EngineMemoryManagementRequest* request) {
   request->migration.profile_uuid =
-      "019f1000-0000-7000-8000-000000000040";
+      scratchbird::core::platform::Uuid{{0x01,0x9f,0x10,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x40}};
   request->migration.policy_uuid =
-      "019f1000-0000-7000-8000-000000000041";
+      scratchbird::core::platform::Uuid{{0x01,0x9f,0x10,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x41}};
   request->migration.source_policy_version = 2;
   request->migration.target_policy_version = 3;
   request->migration.source_schema_version = 2;
@@ -6298,7 +6323,7 @@ api::EngineMemoryManagementRequest TypedMemoryManagementRequest(
   typed.memory_operation = MemoryOperationForSblrOperation(base.operation_id);
   if (typed.target_object.uuid.is_nil()) {
     typed.target_object.uuid =
-        "019f1000-0000-7000-8000-0000000000ff";
+        scratchbird::core::platform::Uuid{{0x01,0x9f,0x10,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0xff}};
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "memory_policy";
@@ -6347,17 +6372,17 @@ api::EngineStorageTierMigrationRequest TypedStorageTierMigrationRequest(
   typed.tier_operation = StorageTierOperationForSblrOperation(base.operation_id);
   if (typed.target_object.uuid.is_nil()) {
     typed.target_object.uuid =
-        "019f2000-0000-7000-8000-000000000020";
+        scratchbird::core::platform::Uuid{{0x01,0x9f,0x20,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x20}};
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "filespace";
   }
   typed.descriptor.storage_tier_policy_uuid =
-      "019f2000-0000-7000-8000-000000000010";
+      scratchbird::core::platform::Uuid{{0x01,0x9f,0x20,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x10}};
   typed.descriptor.source_tier_uuid =
-      "019f2000-0000-7000-8000-000000000011";
+      scratchbird::core::platform::Uuid{{0x01,0x9f,0x20,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x11}};
   typed.descriptor.target_tier_uuid =
-      "019f2000-0000-7000-8000-000000000012";
+      scratchbird::core::platform::Uuid{{0x01,0x9f,0x20,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x12}};
   typed.descriptor.source_tier_class = api::EngineStorageTierClass::hot;
   typed.descriptor.target_tier_class = api::EngineStorageTierClass::cold;
   typed.descriptor.target_filespace_role =
@@ -6451,74 +6476,76 @@ std::string ShardPlacementActionForSblrOperation(std::string_view operation_id) 
   return {};
 }
 
-api::EngineShardPlacementDescriptor DefaultShardPlacementDescriptor(
-    std::string shard_suffix,
-    std::uint64_t generation) {
-  api::EngineShardPlacementDescriptor descriptor;
-  descriptor.shard_uuid =
-      "019f4000-0000-7000-8000-000000000" + std::move(shard_suffix);
-  descriptor.source_filespace_uuid = "019f4000-0000-7000-8000-000000000101";
-  descriptor.target_filespace_uuid = "019f4000-0000-7000-8000-000000000102";
-  descriptor.range_begin = "0000000000000000";
-  descriptor.range_end = "ffffffffffffffff";
-  descriptor.placement_epoch = 41;
-  descriptor.placement_generation = generation;
-  descriptor.state = "planned";
-  return descriptor;
-}
-
 api::EngineShardPlacementOperationRequest TypedShardPlacementDescriptorRequest(
     const SblrDispatchRequest& request) {
   api::EngineShardPlacementOperationRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.placement_operation = ShardPlacementActionForSblrOperation(base.operation_id);
-  typed.descriptor = DefaultShardPlacementDescriptor("201", 7);
-  typed.merge_inputs = {
-      DefaultShardPlacementDescriptor("211", 5),
-      DefaultShardPlacementDescriptor("212", 5),
-  };
-  typed.operator_authorized = true;
+  if (!ReadNativeShardPlacementDescriptor(request.envelope, "", &typed.descriptor)) return typed;
+  std::size_t merge_count = 0;
+  for (const auto& operand : request.envelope.operands) {
+    constexpr std::string_view prefix = "merge_input_";
+    if (!operand.name.starts_with(prefix)) continue;
+    const auto field = std::string_view(operand.name).substr(prefix.size());
+    const auto separator = field.find('_');
+    std::size_t index = 0;
+    if (separator == std::string_view::npos || separator == 0) {
+      typed.descriptor = {}; return typed;
+    }
+    const auto [end,error] = std::from_chars(field.data(),field.data()+separator,index);
+    if (error != std::errc{} || end != field.data()+separator || index >= 128) {
+      typed.descriptor = {}; return typed;
+    }
+    merge_count = std::max(merge_count,index+1);
+  }
+  for (std::size_t index = 0; index < merge_count; ++index) {
+    const std::string prefix = "merge_input_" + std::to_string(index) + "_";
+    api::EngineShardPlacementDescriptor input;
+    if (!ReadNativeShardPlacementDescriptor(request.envelope, prefix, &input)) {
+      typed.descriptor = {};
+      return typed;
+    }
+    typed.merge_inputs.push_back(std::move(input));
+  }
+  typed.operator_authorized = false;
   typed.physical_data_movement_requested = false;
   return typed;
 }
 
-constexpr std::string_view kEncryptionRouteDatabaseUuid =
-    "019f5000-0000-7000-8000-000000000001";
-constexpr std::string_view kEncryptionRouteFilespaceUuid =
-    "019f5000-0000-7000-8000-000000000002";
-constexpr std::string_view kEncryptionRouteKeyUuid =
-    "019f5000-0000-7000-8000-000000000003";
-constexpr std::string_view kEncryptionRouteReplacementKeyUuid =
-    "019f5000-0000-7000-8000-000000000004";
-constexpr std::string_view kEncryptionRouteProtectedMaterialUuid =
-    "019f5000-0000-7000-8000-000000000005";
-constexpr std::string_view kEncryptionRouteProtectedMaterialVersionUuid =
-    "019f5000-0000-7000-8000-000000000006";
-constexpr std::string_view kEncryptionRouteProtectedMaterialNextVersionUuid =
-    "019f5000-0000-7000-8000-000000000007";
+api::EngineUuid ProtectedMaterialRouteIdentity(
+    const api::EngineApiRequest& request, std::string_view field,
+    const api::EngineUuid& bound = {}) {
+  const std::string prefix = std::string(field) + ":";
+  for (const auto& option : request.option_envelopes) {
+    if (!option.starts_with(prefix)) continue;
+    api::EngineUuid value;
+    return api::ReadMetadataUuid(std::string_view(option).substr(prefix.size()), &value)
+        ? value : api::EngineUuid{};
+  }
+  return bound;
+}
 
 void FillProtectedMaterialTargetDatabase(api::EngineApiRequest* request) {
   if (request == nullptr) return;
-  if (request->target_database.uuid.is_nil()) {
-    request->target_database.uuid =
-        request->context.database_uuid.is_nil()
-            ? std::string(kEncryptionRouteDatabaseUuid)
-            : request->context.database_uuid;
-  }
-  if (request->target_database.object_kind.empty()) {
+  if (request->target_database.uuid.is_nil())
+    request->target_database.uuid = request->context.database_uuid;
+  if (request->target_database.object_kind.empty())
     request->target_database.object_kind = "database";
-  }
 }
 
-api::EngineProtectedMaterialPolicySet ProtectedMaterialRoutePolicy() {
+api::EngineProtectedMaterialPolicySet ProtectedMaterialRoutePolicy(
+    const api::EngineApiRequest& request) {
   api::EngineProtectedMaterialPolicySet policy;
-  policy.retention_policy_uuid = "019f5000-0000-7000-8000-000000000101";
-  policy.access_policy_uuid = "019f5000-0000-7000-8000-000000000102";
-  policy.release_policy_uuid = "019f5000-0000-7000-8000-000000000103";
-  policy.purge_policy_uuid = "019f5000-0000-7000-8000-000000000104";
-  policy.audit_policy_uuid = "019f5000-0000-7000-8000-000000000105";
-  policy.release_purposes = {"filespace.open"};
+  policy.retention_policy_uuid = ProtectedMaterialRouteIdentity(request, "retention_policy_uuid");
+  policy.access_policy_uuid = ProtectedMaterialRouteIdentity(request, "access_policy_uuid");
+  policy.release_policy_uuid = ProtectedMaterialRouteIdentity(request, "release_policy_uuid");
+  policy.purge_policy_uuid = ProtectedMaterialRouteIdentity(request, "purge_policy_uuid");
+  policy.audit_policy_uuid = ProtectedMaterialRouteIdentity(request, "audit_policy_uuid");
+  for (const auto& option : request.option_envelopes) {
+    constexpr std::string_view prefix = "release_purpose:";
+    if (option.starts_with(prefix)) policy.release_purposes.push_back(option.substr(prefix.size()));
+  }
   return policy;
 }
 
@@ -6528,10 +6555,10 @@ api::EngineAdmitEncryptionKeyRequest TypedAdmitEncryptionKeyRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.key_uuid = std::string(kEncryptionRouteKeyUuid);
-  typed.key_label = "filespace-key-redacted";
-  typed.filespace_uuid = std::string(kEncryptionRouteFilespaceUuid);
-  typed.secret_evidence = "wrapped-reference:v1:route";
+  typed.key_uuid = ProtectedMaterialRouteIdentity(base, "key_uuid", base.target_object.uuid);
+  typed.key_label = api::SecurityOptionValue(base, "key_label:");
+  typed.filespace_uuid = ProtectedMaterialRouteIdentity(base, "filespace_uuid");
+  typed.secret_evidence = api::SecurityOptionValue(base, "secret_evidence:");
   typed.cache_ttl_millis = 300000;
   return typed;
 }
@@ -6542,10 +6569,10 @@ api::EngineRotateEncryptionKeyRequest TypedRotateEncryptionKeyRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.key_uuid = std::string(kEncryptionRouteKeyUuid);
-  typed.replacement_key_uuid = std::string(kEncryptionRouteReplacementKeyUuid);
-  typed.replacement_secret_evidence = "wrapped-reference:v1:route-replacement";
-  typed.rotation_reason = "public-route-rekey";
+  typed.key_uuid = ProtectedMaterialRouteIdentity(base, "key_uuid", base.target_object.uuid);
+  typed.replacement_key_uuid = ProtectedMaterialRouteIdentity(base, "replacement_key_uuid");
+  typed.replacement_secret_evidence = api::SecurityOptionValue(base, "replacement_secret_evidence:");
+  typed.rotation_reason = api::SecurityOptionValue(base, "rotation_reason:");
   typed.cache_ttl_millis = 300000;
   return typed;
 }
@@ -6565,7 +6592,7 @@ api::EnginePurgeProtectedMaterialRequest TypedPurgeProtectedMaterialRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.purge_reason = "public-route-cache-purge";
+  typed.purge_reason = api::SecurityOptionValue(base, "purge_reason:");
   return typed;
 }
 
@@ -6575,7 +6602,7 @@ api::EngineShutdownProtectedMaterialRequest TypedShutdownProtectedMaterialReques
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.shutdown_reason = "public-route-shutdown-purge";
+  typed.shutdown_reason = api::SecurityOptionValue(base, "shutdown_reason:");
   return typed;
 }
 
@@ -6586,8 +6613,8 @@ api::EngineOpenEncryptedFilespaceRequest TypedOpenEncryptedFilespaceRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
   typed.database_uuid = typed.target_database.uuid;
-  typed.filespace_uuid = std::string(kEncryptionRouteFilespaceUuid);
-  typed.key_uuid = std::string(kEncryptionRouteKeyUuid);
+  typed.filespace_uuid = ProtectedMaterialRouteIdentity(base, "filespace_uuid");
+  typed.key_uuid = ProtectedMaterialRouteIdentity(base, "key_uuid", base.target_object.uuid);
   typed.encrypted_filespace = true;
   typed.decryption_required = true;
   return typed;
@@ -6599,7 +6626,7 @@ api::EngineRequestProtectedMaterialRequest TypedRequestProtectedMaterialRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.purpose = "filespace.open";
+  typed.purpose = api::SecurityOptionValue(base, "purpose:");
   return typed;
 }
 
@@ -6609,10 +6636,9 @@ api::EnginePurgeProtectedMaterialVersionRequest TypedPurgeProtectedMaterialVersi
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
-  typed.protected_material_version_uuid =
-      std::string(kEncryptionRouteProtectedMaterialVersionUuid);
-  typed.purge_reason = "public-route-cryptographic-erase";
+  typed.protected_material_uuid = ProtectedMaterialRouteIdentity(base, "protected_material_uuid", base.target_object.uuid);
+  typed.protected_material_version_uuid = ProtectedMaterialRouteIdentity(base, "protected_material_version_uuid");
+  typed.purge_reason = api::SecurityOptionValue(base, "purge_reason:");
   return typed;
 }
 
@@ -6622,17 +6648,16 @@ api::EngineCreateProtectedMaterialRequest TypedCreateProtectedMaterialRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
-  typed.object_class = "filespace_encryption_key";
-  typed.owner_scope_uuid = std::string(kEncryptionRouteFilespaceUuid);
-  typed.purpose_class = "encryption_use";
-  typed.storage_class = "wrapped";
-  typed.policy = ProtectedMaterialRoutePolicy();
-  typed.initial_version_uuid = std::string(kEncryptionRouteProtectedMaterialVersionUuid);
-  typed.protected_reference = "kms-ref:v1:protected-material-route";
-  typed.envelope_reference = "kms-envelope:v1:protected-material-route";
-  typed.payload_hash =
-      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  typed.protected_material_uuid = ProtectedMaterialRouteIdentity(base, "protected_material_uuid", base.target_object.uuid);
+  typed.object_class = api::SecurityOptionValue(base, "object_class:");
+  typed.owner_scope_uuid = ProtectedMaterialRouteIdentity(base, "owner_scope_uuid");
+  typed.purpose_class = api::SecurityOptionValue(base, "purpose_class:");
+  typed.storage_class = api::SecurityOptionValue(base, "storage_class:");
+  typed.policy = ProtectedMaterialRoutePolicy(base);
+  typed.initial_version_uuid = ProtectedMaterialRouteIdentity(base, "initial_version_uuid");
+  typed.protected_reference = api::SecurityOptionValue(base, "protected_reference:");
+  typed.envelope_reference = api::SecurityOptionValue(base, "envelope_reference:");
+  typed.payload_hash = api::SecurityOptionValue(base, "payload_hash:");
   return typed;
 }
 
@@ -6642,16 +6667,14 @@ api::EngineAddProtectedMaterialVersionRequest TypedAddProtectedMaterialVersionRe
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
-  typed.protected_material_version_uuid =
-      std::string(kEncryptionRouteProtectedMaterialNextVersionUuid);
-  typed.protected_reference = "kms-ref:v1:protected-material-route-rotation";
-  typed.envelope_reference = "kms-envelope:v1:protected-material-route-rotation";
-  typed.payload_hash =
-      "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-  typed.storage_class = "wrapped";
-  typed.rotation_reason = "public-route-protected-material-version";
-  typed.policy_override = ProtectedMaterialRoutePolicy();
+  typed.protected_material_uuid = ProtectedMaterialRouteIdentity(base, "protected_material_uuid", base.target_object.uuid);
+  typed.protected_material_version_uuid = ProtectedMaterialRouteIdentity(base, "protected_material_version_uuid");
+  typed.protected_reference = api::SecurityOptionValue(base, "protected_reference:");
+  typed.envelope_reference = api::SecurityOptionValue(base, "envelope_reference:");
+  typed.payload_hash = api::SecurityOptionValue(base, "payload_hash:");
+  typed.storage_class = api::SecurityOptionValue(base, "storage_class:");
+  typed.rotation_reason = api::SecurityOptionValue(base, "rotation_reason:");
+  typed.policy_override = ProtectedMaterialRoutePolicy(base);
   return typed;
 }
 
@@ -6661,8 +6684,8 @@ api::EngineResolveProtectedMaterialRequest TypedResolveProtectedMaterialRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
-  typed.purpose = "filespace.open";
+  typed.protected_material_uuid = ProtectedMaterialRouteIdentity(base, "protected_material_uuid", base.target_object.uuid);
+  typed.purpose = api::SecurityOptionValue(base, "purpose:");
   return typed;
 }
 
@@ -6672,10 +6695,9 @@ api::EngineReleaseProtectedMaterialRequest TypedReleaseProtectedMaterialRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
-  typed.protected_material_version_uuid =
-      std::string(kEncryptionRouteProtectedMaterialVersionUuid);
-  typed.purpose = "filespace.open";
+  typed.protected_material_uuid = ProtectedMaterialRouteIdentity(base, "protected_material_uuid", base.target_object.uuid);
+  typed.protected_material_version_uuid = ProtectedMaterialRouteIdentity(base, "protected_material_version_uuid");
+  typed.purpose = api::SecurityOptionValue(base, "purpose:");
   return typed;
 }
 
@@ -6685,7 +6707,7 @@ api::EngineInspectProtectedMaterialCatalogRequest TypedInspectProtectedMaterialC
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
+  typed.protected_material_uuid = ProtectedMaterialRouteIdentity(base, "protected_material_uuid", base.target_object.uuid);
   typed.include_versions = true;
   typed.include_audit = true;
   return typed;
@@ -6697,10 +6719,10 @@ api::EngineExportProtectedMaterialPackageRequest TypedExportProtectedMaterialPac
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
+  typed.protected_material_uuid = ProtectedMaterialRouteIdentity(base, "protected_material_uuid", base.target_object.uuid);
   typed.include_versions = true;
   typed.include_audit = true;
-  typed.export_reason = "public-route-protected-material-package-export";
+  typed.export_reason = api::SecurityOptionValue(base, "export_reason:");
   return typed;
 }
 
@@ -6710,14 +6732,15 @@ api::EngineImportProtectedMaterialPackageRequest TypedImportProtectedMaterialPac
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.encoded_package = api::SecurityOptionValue(base, "encoded_package:");
+  const auto package = api::SecurityOptionValue(base, "encoded_package:");
+  typed.encoded_package.assign(package.begin(), package.end());
   typed.expected_package_digest =
       api::SecurityOptionValue(base, "expected_package_digest:");
   typed.import_authorized =
       api::SecurityOptionBool(base,
                               "protected_material_package_import_authorized:",
                               false);
-  typed.import_reason = "public-route-protected-material-package-import";
+  typed.import_reason = api::SecurityOptionValue(base, "import_reason:");
   return typed;
 }
 
@@ -6753,7 +6776,7 @@ api::EngineObjectReference TargetObjectForDml(const api::EngineApiRequest& reque
   if (!request.target_object.uuid.is_nil()) { return request.target_object; }
   api::EngineObjectReference target = DispatchTargetOfKind(request, default_kind);
   if (!target.uuid.is_nil()) { return target; }
-  target.uuid = api::SecurityOptionValue(request, "target_object_uuid:");
+  target.uuid = ProtectedMaterialRouteIdentity(request, "target_object_uuid");
   target.object_kind = api::SecurityOptionValue(request, "target_object_kind:");
   if (target.object_kind.empty()) target.object_kind = default_kind;
   return target;
@@ -6813,7 +6836,7 @@ std::string JoinDottedIdentifierPath(const std::vector<std::string>& parts) {
   return out;
 }
 
-std::optional<std::string> ResolveSchemaParentPathToUuid(const api::EngineApiRequest& request,
+std::optional<api::EngineUuid> ResolveSchemaParentPathToUuid(const api::EngineApiRequest& request,
                                                          const std::string& parent_path,
                                                          std::string* normalized_path) {
   if (parent_path.empty()) { return std::nullopt; }
@@ -6848,7 +6871,7 @@ std::optional<std::string> ResolveSchemaParentPathToUuid(const api::EngineApiReq
   }
   if (!loaded.ok) { return std::nullopt; }
 
-  std::optional<std::string> match;
+  std::optional<api::EngineUuid> match;
   for (const auto& entry : loaded.state.entries) {
     if (entry.deleted || entry.lifecycle_state != "active" || entry.object_class != "schema") {
       continue;
@@ -6872,19 +6895,19 @@ api::EngineCreateSchemaRequest TypedCreateSchemaRequest(const SblrDispatchReques
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   if (typed.target_object.uuid.is_nil()) {
-    typed.target_object.uuid = api::SecurityOptionValue(base, "schema_object_uuid:");
+    typed.target_object.uuid = ProtectedMaterialRouteIdentity(base, "schema_object_uuid");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "schema";
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "target_schema_uuid");
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "schema_uuid");
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_parent_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "schema_parent_uuid");
   }
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
@@ -6998,14 +7021,14 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
   typed.target_schema = base.target_schema;
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
-  const std::string explicit_target_schema_uuid =
-      api::SecurityOptionValue(base, "target_schema_uuid:");
-  const std::string explicit_schema_uuid = api::SecurityOptionValue(base, "schema_uuid:");
-  const std::string explicit_parent_schema_uuid =
-      api::SecurityOptionValue(base, "schema_parent_uuid:");
-  const bool has_explicit_schema_uuid = !explicit_target_schema_uuid.empty() ||
-                                        !explicit_schema_uuid.empty() ||
-                                        !explicit_parent_schema_uuid.empty();
+  const api::EngineUuid explicit_target_schema_uuid =
+      ProtectedMaterialRouteIdentity(base, "target_schema_uuid");
+  const api::EngineUuid explicit_schema_uuid = ProtectedMaterialRouteIdentity(base, "schema_uuid");
+  const api::EngineUuid explicit_parent_schema_uuid =
+      ProtectedMaterialRouteIdentity(base, "schema_parent_uuid");
+  const bool has_explicit_schema_uuid = !explicit_target_schema_uuid.is_nil() ||
+                                        !explicit_schema_uuid.is_nil() ||
+                                        !explicit_parent_schema_uuid.is_nil();
   bool unresolved_parent_path = false;
   if (!schema_parent_path.empty() && !has_explicit_schema_uuid) {
     const auto resolved_parent =
@@ -7036,7 +7059,7 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
   }
   typed.requested_table_uuid = base.target_object.uuid;
   if (typed.requested_table_uuid.is_nil()) {
-    typed.requested_table_uuid = api::SecurityOptionValue(base, "table_object_uuid:");
+    typed.requested_table_uuid = ProtectedMaterialRouteIdentity(base, "table_object_uuid");
   }
   typed.table_names = base.localized_names;
   if (typed.table_names.empty()) {
@@ -7198,7 +7221,7 @@ api::EngineCreateIndexTemplateRequest TypedCreateIndexTemplateRequest(const Sblr
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   if (typed.target_object.uuid.is_nil()) {
-    typed.target_object.uuid = api::SecurityOptionValue(base, "index_template_object_uuid:");
+    typed.target_object.uuid = ProtectedMaterialRouteIdentity(base, "index_template_object_uuid");
   }
   if (typed.target_object.object_kind.empty()) {
     const std::string template_kind = api::SecurityOptionValue(base, "index_template_kind:");
@@ -7220,19 +7243,19 @@ api::EngineCreateSequenceRequest TypedCreateSequenceRequest(const SblrDispatchRe
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   if (typed.target_object.uuid.is_nil()) {
-    typed.target_object.uuid = api::SecurityOptionValue(base, "sequence_object_uuid:");
+    typed.target_object.uuid = ProtectedMaterialRouteIdentity(base, "sequence_object_uuid");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "sequence";
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "target_schema_uuid");
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "schema_uuid");
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_parent_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "schema_parent_uuid");
   }
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
@@ -7293,19 +7316,19 @@ api::EngineCreateDomainRequest TypedCreateDomainRequest(const SblrDispatchReques
     if (IsDomainRuntimeOption(option)) { typed.option_envelopes.push_back(option); }
   }
   if (typed.target_object.uuid.is_nil()) {
-    typed.target_object.uuid = api::SecurityOptionValue(base, "domain_object_uuid:");
+    typed.target_object.uuid = ProtectedMaterialRouteIdentity(base, "domain_object_uuid");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "domain";
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "target_schema_uuid");
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "schema_uuid");
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_parent_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "schema_parent_uuid");
   }
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
@@ -7335,7 +7358,7 @@ api::EngineCreateDomainRequest TypedCreateDomainRequest(const SblrDispatchReques
   }
   if (typed.descriptors.empty()) {
     api::EngineDescriptor descriptor;
-    descriptor.descriptor_uuid = api::SecurityOptionValue(base, "base_descriptor_uuid:");
+    descriptor.descriptor_uuid = ProtectedMaterialRouteIdentity(base, "base_descriptor_uuid");
     descriptor.descriptor_kind = api::SecurityOptionValue(base, "base_descriptor_kind:");
     descriptor.canonical_type_name = api::SecurityOptionValue(base, "base_canonical_type_name:");
     descriptor.encoded_descriptor = api::SecurityOptionValue(base, "base_encoded_descriptor:");
@@ -7355,16 +7378,16 @@ api::EngineCreateViewRequest TypedCreateViewRequest(const SblrDispatchRequest& r
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   if (typed.target_object.uuid.is_nil()) {
-    typed.target_object.uuid = api::SecurityOptionValue(base, "view_object_uuid:");
+    typed.target_object.uuid = ProtectedMaterialRouteIdentity(base, "view_object_uuid");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "view";
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "target_schema_uuid");
   }
   if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
+    typed.target_schema.uuid = ProtectedMaterialRouteIdentity(base, "schema_uuid");
   }
   if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
@@ -7584,33 +7607,6 @@ api::EngineSelectRowsRequest TypedSelectRowsRequest(const SblrDispatchRequest& r
   return typed;
 }
 
-bool ParseRelationRowUuid(const std::string& row_uuid,
-                          std::size_t* relation_index,
-                          std::string* relation_row_uuid) {
-  constexpr std::string_view prefix = "relation-";
-  constexpr std::string_view marker = "-row-";
-  constexpr std::size_t kMaximumLegacyRelationCount = 16;
-  if (!row_uuid.starts_with(prefix)) return false;
-  const auto marker_pos = row_uuid.find(marker, prefix.size());
-  if (marker_pos == std::string::npos || marker_pos == prefix.size()) return false;
-  std::size_t parsed = 0;
-  for (std::size_t i = prefix.size(); i < marker_pos; ++i) {
-    const unsigned char ch = static_cast<unsigned char>(row_uuid[i]);
-    if (ch < '0' || ch > '9') return false;
-    const auto digit = static_cast<std::size_t>(ch - '0');
-    if (parsed > (std::numeric_limits<std::size_t>::max() - digit) / 10) {
-      return false;
-    }
-    parsed = parsed * 10u + digit;
-  }
-  if (parsed >= kMaximumLegacyRelationCount) return false;
-  if (relation_index != nullptr) *relation_index = parsed;
-  if (relation_row_uuid != nullptr) {
-    *relation_row_uuid = row_uuid.substr(marker_pos + marker.size());
-  }
-  return true;
-}
-
 api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
     const SblrDispatchRequest& request) {
   // QOW-SOURCE-WIN-001-V1
@@ -7663,14 +7659,12 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
   typed.limit = DispatchOptionU64(base, "limit:");
   typed.offset = DispatchOptionU64(base, "offset:");
 
-  for (const auto& row : base.rows) {
-    std::size_t relation_index = 0;
-    std::string relation_row_uuid;
-    if (!ParseRelationRowUuid(row.requested_row_uuid,
-                              &relation_index,
-                              &relation_row_uuid)) {
-      continue;
-    }
+  for (std::size_t row_index=0; row_index<base.rows.size(); ++row_index) {
+    const auto& row = base.rows[row_index];
+    const auto relation_option = api::SecurityOptionValue(
+        base, "plan_input_row_" + std::to_string(row_index) + "_relation_ordinal:");
+    std::uint64_t relation_index = 0;
+    if (!ParseStrictTransportU64(relation_option, &relation_index) || relation_index >= 16) continue;
     if (typed.relations.size() <= relation_index) {
       typed.relations.resize(relation_index + 1);
     }
@@ -7678,7 +7672,6 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
     relation.relation_name = "relation-" + std::to_string(relation_index);
     relation.descriptor_digest = relation.relation_name;
     api::EngineRowValue relation_row = row;
-    relation_row.requested_row_uuid = relation_row_uuid;
     relation.rows.push_back(std::move(relation_row));
   }
   return typed;
@@ -7717,7 +7710,6 @@ SblrExecutionContext SblrExecutionContextFromEngineContext(
   out.security_context_present = context.security_context_present;
   out.current_sqlstate = context.current_sqlstate;
   out.current_diagnostic_uuid = context.current_diagnostic_uuid;
-  out.current_diagnostic_id = context.current_diagnostic_uuid;
   out.client_protocol_uuid = context.client_protocol_uuid;
   out.application_name = context.application_name;
   out.read_only_mode = context.read_only_mode;
@@ -7802,9 +7794,9 @@ void PopulateSavepointContext(const api::EngineRequestContext& context,
   const auto loaded = api::ActiveMgaSavepointNames(context);
   output->active_savepoint_names = loaded.names;
   if (loaded.diagnostic.error) {
-    output->savepoint_authority_diagnostic = {
+    output->savepoint_authority_diagnostic = MakeSblrDiagnostic(
         loaded.diagnostic.code, loaded.diagnostic.message_key,
-        loaded.diagnostic.detail, SblrDiagnosticSeverity::error, {}};
+        loaded.diagnostic.detail, SblrDiagnosticSeverity::error);
   }
 }
 
@@ -7913,7 +7905,7 @@ api::EngineApiResult EngineReadSystemVariable(
   result.result_shape.columns.push_back(value.descriptor);
 
   api::EngineRowValue row;
-  row.requested_row_uuid = "system-variable-read-row-0";
+  // A computed scalar row has no persisted row identity.
   row.fields.push_back({"value", std::move(value)});
   result.result_shape.rows.push_back(std::move(row));
   result.evidence.push_back({"sblr_operation",
@@ -8870,8 +8862,7 @@ bool EnrichCanonicalFunctionResultDescriptor(
         "function result type is absent from the current core manifest";
     return false;
   }
-  const auto descriptor_uuid =
-      scratchbird::core::uuid::UuidToString(row->descriptor_uuid.value);
+  const auto descriptor_uuid = row->descriptor_uuid.value;
   value->descriptor.descriptor_uuid = descriptor_uuid;
   value->descriptor.descriptor_kind = "scalar";
   if (requested_type_name == "numeric.fixed" ||
@@ -8880,40 +8871,34 @@ bool EnrichCanonicalFunctionResultDescriptor(
       requested_type_name == "blob.binary") {
     value->descriptor.canonical_type_name = requested_type_name;
     value->descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor_uuid +
-        ";projection_profile=" + requested_type_name +
+        "projection_profile=" + requested_type_name +
         ";nullability=unknown";
   } else if (requested_type_name == "time_tz" ||
              requested_type_name == "timetz") {
     value->descriptor.canonical_type_name = "time_tz";
     value->descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor_uuid +
-        ";temporal_profile=time_timezone_profile;nullability=unknown";
+        "temporal_profile=time_timezone_profile;nullability=unknown";
   } else if (requested_type_name == "timestamp_tz" ||
              requested_type_name == "timestamptz") {
     value->descriptor.canonical_type_name = "timestamp_tz";
     value->descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor_uuid +
-        ";temporal_profile=timestamp_timezone_profile;nullability=unknown";
+        "temporal_profile=timestamp_timezone_profile;nullability=unknown";
   } else if (requested_type_name == "bit_vector") {
     value->descriptor.canonical_type_name = "bit_vector";
     value->descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor_uuid +
-        ";vector_profile=bit_vector_v1;element_type=bit;nullability=unknown";
+        "vector_profile=bit_vector_v1;element_type=bit;nullability=unknown";
   } else if (requested_type_name == "int8_vector") {
     value->descriptor.canonical_type_name = "int8_vector";
     value->descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor_uuid +
-        ";vector_profile=int8_vector_v1;element_type=int8;nullability=unknown";
+        "vector_profile=int8_vector_v1;element_type=int8;nullability=unknown";
   } else if (requested_type_name == "float16_vector") {
     value->descriptor.canonical_type_name = "float16_vector";
     value->descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor_uuid +
-        ";vector_profile=float16_vector_v1;element_type=float16;nullability=unknown";
+        "vector_profile=float16_vector_v1;element_type=float16;nullability=unknown";
   } else {
     value->descriptor.canonical_type_name = row->stable_name;
     value->descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor_uuid + ";nullability=unknown";
+        "nullability=unknown";
   }
   return true;
 }
@@ -9131,21 +9116,7 @@ api::EngineEvaluateProjectionRequest TypedEvaluateProjectionRequest(
       api::SecurityOptionValue(base,
                                "projection_0_parameter_ordinal:") == "1") {
     const auto& value_record = request.parameter_value_set->records.front();
-    const auto uuid_text = [](const std::array<std::uint8_t, 16>& bytes) {
-      constexpr char hex[] = "0123456789abcdef";
-      std::string out;
-      out.reserve(36);
-      for (std::size_t index = 0; index < bytes.size(); ++index) {
-        if (index == 4 || index == 6 || index == 8 || index == 10) {
-          out.push_back('-');
-        }
-        out.push_back(hex[bytes[index] >> 4]);
-        out.push_back(hex[bytes[index] & 0x0fu]);
-      }
-      return out;
-    };
-    const std::string descriptor_uuid =
-        uuid_text(value_record.datatype_descriptor_uuid);
+    const api::EngineUuid descriptor_uuid{value_record.datatype_descriptor_uuid};
     const auto identity = scratchbird::core::datatypes::
         LookupDatatypeTypeCodecIdentityV1(
             request.context.datatype_catalog_snapshot_uuid,
@@ -9159,9 +9130,9 @@ api::EngineEvaluateProjectionRequest TypedEvaluateProjectionRequest(
         value_record.state == SblrParameterValueStateV1::value &&
         value_record.canonical_value_bytes.size() == 8 && identity.ok &&
         identity.row.descriptor_uuid ==
-            "019d0000-0000-7000-8000-00000000d711" &&
+            api::EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x11}} &&
         identity.row.type_uuid ==
-            "019d0000-0000-7000-8000-00000000d712" &&
+            api::EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x12}} &&
         identity.row.canonical_value_exact_bytes == 8 &&
         identity.row.codec_id == "datatype.int64.le.v1") {
       std::uint64_t bits = 0;
@@ -9339,7 +9310,7 @@ void ApplyImportRejectPolicyOptions(const api::EngineApiRequest& base,
   if (!reject_payload_policy.empty()) policy->reject_payload_policy = reject_payload_policy;
   const std::string resume_policy = api::SecurityOptionValue(base, "resume_policy:");
   if (!resume_policy.empty()) policy->resume_policy = resume_policy;
-  policy->reject_target.uuid = api::SecurityOptionValue(base, "reject_target_uuid:");
+  policy->reject_target.uuid = ProtectedMaterialRouteIdentity(base, "reject_target_uuid");
   policy->reject_target.object_kind = api::SecurityOptionValue(base, "reject_target_kind:");
   if (!policy->reject_target.uuid.is_nil() && policy->reject_target.object_kind.empty()) {
     policy->reject_target.object_kind = "table";
@@ -9360,7 +9331,7 @@ void ApplyImportCheckpointPolicyOptions(const api::EngineApiRequest& base,
   if (!replay_policy.empty()) policy->replay_policy = replay_policy;
   const std::string failure_action = api::SecurityOptionValue(base, "failure_action:");
   if (!failure_action.empty()) policy->failure_action = failure_action;
-  policy->checkpoint_target.uuid = api::SecurityOptionValue(base, "checkpoint_target_uuid:");
+  policy->checkpoint_target.uuid = ProtectedMaterialRouteIdentity(base, "checkpoint_target_uuid");
   policy->checkpoint_target.object_kind = api::SecurityOptionValue(base, "checkpoint_target_kind:");
   if (!policy->checkpoint_target.uuid.is_nil() &&
       policy->checkpoint_target.object_kind.empty()) {
@@ -9434,7 +9405,7 @@ api::EngineExecuteImportRowsRequest TypedExecuteImportRowsRequest(
   typed.target_table = TargetObjectForDml(base, "table");
   typed.source.source_kind = api::SecurityOptionValue(base, "source_kind:");
   if (typed.source.source_kind.empty()) typed.source.source_kind = "native_sbsql_import";
-  typed.source.source_uuid = api::SecurityOptionValue(base, "source_uuid:");
+  typed.source.source_uuid = ProtectedMaterialRouteIdentity(base, "source_uuid");
   typed.source.source_fingerprint = api::SecurityOptionValue(base, "source_fingerprint:");
   typed.source.source_position = api::SecurityOptionValue(base, "source_position:");
   typed.source.redacted_source_handle = api::SecurityOptionValue(base, "redacted_source_handle:");
@@ -9548,14 +9519,20 @@ api::EngineSecurityRevokePrivilegeRequest TypedSecurityRevokePrivilegeRequest(
   return typed;
 }
 
+api::EngineUuid BoundSecurityIdentity(const SblrDispatchRequest& request, std::string_view role) {
+  SblrBoundObjectIdentities identities;
+  if (!DecodeSblrBoundObjectIdentities(request.envelope, &identities)) return {};
+  return identities.Find(role).value_or(api::EngineUuid{});
+}
+
 api::EngineSecurityCreateRoleRequest TypedSecurityCreateRoleRequest(
     const SblrDispatchRequest& request) {
   api::EngineSecurityCreateRoleRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.role_uuid = api::SecurityOptionValue(base, "role_uuid:");
-  if (typed.role_uuid.empty()) { typed.role_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
-  if (typed.role_uuid.empty()) { typed.role_uuid = base.target_object.uuid; }
+  typed.role_uuid = BoundSecurityIdentity(request, "role_uuid");
+  if (typed.role_uuid.is_nil()) { typed.role_uuid = BoundSecurityIdentity(request, "principal_uuid"); }
+  if (typed.role_uuid.is_nil()) { typed.role_uuid = base.target_object.uuid; }
   typed.role_name = api::SecurityOptionValue(base, "role_name:");
   if (typed.role_name.empty()) { typed.role_name = api::SecurityOptionValue(base, "name:"); }
   return typed;
@@ -9566,9 +9543,9 @@ api::EngineSecurityCreateGroupRequest TypedSecurityCreateGroupRequest(
   api::EngineSecurityCreateGroupRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.group_uuid = api::SecurityOptionValue(base, "group_uuid:");
-  if (typed.group_uuid.empty()) { typed.group_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
-  if (typed.group_uuid.empty()) { typed.group_uuid = base.target_object.uuid; }
+  typed.group_uuid = BoundSecurityIdentity(request, "group_uuid");
+  if (typed.group_uuid.is_nil()) { typed.group_uuid = BoundSecurityIdentity(request, "principal_uuid"); }
+  if (typed.group_uuid.is_nil()) { typed.group_uuid = base.target_object.uuid; }
   typed.group_name = api::SecurityOptionValue(base, "group_name:");
   if (typed.group_name.empty()) { typed.group_name = api::SecurityOptionValue(base, "name:"); }
   typed.external_authority_ref = api::SecurityOptionValue(base, "external_authority_ref:");
@@ -9584,9 +9561,9 @@ api::EngineSecurityDropRoleRequest TypedSecurityDropRoleRequest(
   api::EngineSecurityDropRoleRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.role_uuid = api::SecurityOptionValue(base, "role_uuid:");
-  if (typed.role_uuid.empty()) { typed.role_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
-  if (typed.role_uuid.empty()) { typed.role_uuid = base.target_object.uuid; }
+  typed.role_uuid = BoundSecurityIdentity(request, "role_uuid");
+  if (typed.role_uuid.is_nil()) { typed.role_uuid = BoundSecurityIdentity(request, "principal_uuid"); }
+  if (typed.role_uuid.is_nil()) { typed.role_uuid = base.target_object.uuid; }
   return typed;
 }
 
@@ -9595,9 +9572,9 @@ api::EngineSecurityDropGroupRequest TypedSecurityDropGroupRequest(
   api::EngineSecurityDropGroupRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.group_uuid = api::SecurityOptionValue(base, "group_uuid:");
-  if (typed.group_uuid.empty()) { typed.group_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
-  if (typed.group_uuid.empty()) { typed.group_uuid = base.target_object.uuid; }
+  typed.group_uuid = BoundSecurityIdentity(request, "group_uuid");
+  if (typed.group_uuid.is_nil()) { typed.group_uuid = BoundSecurityIdentity(request, "principal_uuid"); }
+  if (typed.group_uuid.is_nil()) { typed.group_uuid = base.target_object.uuid; }
   return typed;
 }
 
@@ -9608,7 +9585,7 @@ api::EngineSecurityCreatePrincipalRequest TypedSecurityCreatePrincipalRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.principal_uuid = !base.target_object.uuid.is_nil()
                              ? base.target_object.uuid
-                             : api::SecurityOptionValue(base, "principal_uuid:");
+                             : BoundSecurityIdentity(request, "principal_uuid");
   typed.principal_name = api::SecurityOptionValue(base, "principal_name:");
   typed.principal_kind = api::SecurityOptionValue(base, "principal_kind:");
   if (typed.principal_kind.empty()) typed.principal_kind = "user";
@@ -9625,7 +9602,7 @@ api::EngineSecurityAlterPrincipalRequest TypedSecurityAlterPrincipalRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.principal_uuid = !base.target_object.uuid.is_nil()
                              ? base.target_object.uuid
-                             : api::SecurityOptionValue(base, "principal_uuid:");
+                             : BoundSecurityIdentity(request, "principal_uuid");
   typed.principal_name = api::SecurityOptionValue(base, "principal_name:");
   typed.principal_kind = api::SecurityOptionValue(base, "principal_kind:");
   typed.lifecycle_state = api::SecurityOptionValue(base, "lifecycle_state:");
@@ -9640,7 +9617,7 @@ api::EngineSecuritySetRoleRequest TypedSecuritySetRoleRequest(
   api::EngineSecuritySetRoleRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.role_uuid = api::SecurityOptionValue(base, "role_uuid:");
+  typed.role_uuid = BoundSecurityIdentity(request, "role_uuid");
   typed.role_mode = api::SecurityOptionValue(base, "role_mode:");
   if (typed.role_mode.empty()) typed.role_mode = "explicit";
   return typed;
@@ -9651,24 +9628,24 @@ api::EngineSecurityCreatePolicyRequest TypedSecurityCreatePolicyRequest(
   api::EngineSecurityCreatePolicyRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.policy_uuid = api::SecurityOptionValue(base, "policy_uuid:");
-  if (typed.policy_uuid.empty()) {
+  typed.policy_uuid = BoundSecurityIdentity(request, "policy_uuid");
+  if (typed.policy_uuid.is_nil()) {
     typed.policy_uuid = base.target_object.uuid;
   }
   typed.policy_name = api::SecurityOptionValue(base, "policy_name:");
   if (typed.policy_name.empty()) { typed.policy_name = api::SecurityOptionValue(base, "name:"); }
-  typed.target_schema_uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
-  if (typed.target_schema_uuid.empty()) {
-    typed.target_schema_uuid = api::SecurityOptionValue(base, "schema_uuid:");
+  typed.target_schema_uuid = BoundSecurityIdentity(request, "target_schema_uuid");
+  if (typed.target_schema_uuid.is_nil()) {
+    typed.target_schema_uuid = BoundSecurityIdentity(request, "target_schema_uuid");
   }
-  typed.target_object_uuid = api::SecurityOptionValue(base, "target_object_uuid:");
-  if (typed.target_object_uuid.empty()) { typed.target_object_uuid = base.target_schema.uuid; }
+  typed.target_object_uuid = BoundSecurityIdentity(request, "target_object_uuid");
+
   typed.target_object_kind = api::SecurityOptionValue(base, "target_object_kind:");
   if (typed.target_object_kind.empty()) { typed.target_object_kind = "object"; }
   typed.policy_effect = api::SecurityOptionValue(base, "policy_effect:");
   if (typed.policy_effect.empty()) { typed.policy_effect = "row_filter"; }
   typed.predicate_envelope = api::SecurityOptionValue(base, "predicate_envelope:");
-  typed.definer_principal_uuid = api::SecurityOptionValue(base, "definer_principal_uuid:");
+  typed.definer_principal_uuid = BoundSecurityIdentity(request, "definer_principal_uuid");
   return typed;
 }
 
@@ -9679,12 +9656,12 @@ api::EngineSecurityAlterPolicyRequest TypedSecurityAlterPolicyRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.policy_uuid = !base.target_object.uuid.is_nil()
                           ? base.target_object.uuid
-                          : api::SecurityOptionValue(base, "policy_uuid:");
-  typed.target_object_uuid = api::SecurityOptionValue(base, "target_object_uuid:");
+                          : BoundSecurityIdentity(request, "policy_uuid");
+  typed.target_object_uuid = BoundSecurityIdentity(request, "target_object_uuid");
   typed.target_object_kind = api::SecurityOptionValue(base, "target_object_kind:");
   typed.policy_effect = api::SecurityOptionValue(base, "policy_effect:");
   typed.predicate_envelope = api::SecurityOptionValue(base, "predicate_envelope:");
-  typed.definer_principal_uuid = api::SecurityOptionValue(base, "definer_principal_uuid:");
+  typed.definer_principal_uuid = BoundSecurityIdentity(request, "definer_principal_uuid");
   typed.lifecycle_state = api::SecurityOptionValue(base, "lifecycle_state:");
   return typed;
 }
@@ -9696,7 +9673,7 @@ api::EngineSecurityDropPolicyRequest TypedSecurityDropPolicyRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.policy_uuid = !base.target_object.uuid.is_nil()
                           ? base.target_object.uuid
-                          : api::SecurityOptionValue(base, "policy_uuid:");
+                          : BoundSecurityIdentity(request, "policy_uuid");
   return typed;
 }
 
@@ -9707,8 +9684,8 @@ api::EngineSecurityDropMaskRequest TypedSecurityDropMaskRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.mask_uuid = !base.target_object.uuid.is_nil()
                         ? base.target_object.uuid
-                        : api::SecurityOptionValue(base, "mask_uuid:");
-  if (typed.mask_uuid.empty()) { typed.mask_uuid = api::SecurityOptionValue(base, "policy_uuid:"); }
+                        : BoundSecurityIdentity(request, "mask_uuid");
+  if (typed.mask_uuid.is_nil()) { typed.mask_uuid = BoundSecurityIdentity(request, "policy_uuid"); }
   return typed;
 }
 
@@ -9719,8 +9696,8 @@ api::EngineSecurityDropRlsRequest TypedSecurityDropRlsRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.rls_uuid = !base.target_object.uuid.is_nil()
                        ? base.target_object.uuid
-                       : api::SecurityOptionValue(base, "rls_uuid:");
-  if (typed.rls_uuid.empty()) { typed.rls_uuid = api::SecurityOptionValue(base, "policy_uuid:"); }
+                       : BoundSecurityIdentity(request, "rls_uuid");
+  if (typed.rls_uuid.is_nil()) { typed.rls_uuid = BoundSecurityIdentity(request, "policy_uuid"); }
   return typed;
 }
 
@@ -9729,10 +9706,10 @@ api::EngineSecurityAttachPolicyRequest TypedSecurityAttachPolicyRequest(
   api::EngineSecurityAttachPolicyRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.policy_uuid = api::SecurityOptionValue(base, "policy_uuid:");
+  typed.policy_uuid = BoundSecurityIdentity(request, "policy_uuid");
   typed.target_object_uuid = !base.target_object.uuid.is_nil()
                                  ? base.target_object.uuid
-                                 : api::SecurityOptionValue(base, "target_object_uuid:");
+                                 : BoundSecurityIdentity(request, "target_object_uuid");
   typed.target_object_kind = !base.target_object.object_kind.empty()
                                  ? base.target_object.object_kind
                                  : api::SecurityOptionValue(base, "target_object_kind:");
@@ -9742,7 +9719,7 @@ api::EngineSecurityAttachPolicyRequest TypedSecurityAttachPolicyRequest(
   typed.policy_effect = api::SecurityOptionValue(base, "policy_effect:");
   if (typed.policy_effect.empty()) typed.policy_effect = "attach";
   typed.predicate_envelope = api::SecurityOptionValue(base, "predicate_envelope:");
-  typed.definer_principal_uuid = api::SecurityOptionValue(base, "definer_principal_uuid:");
+  typed.definer_principal_uuid = BoundSecurityIdentity(request, "definer_principal_uuid");
   return typed;
 }
 
@@ -9753,7 +9730,7 @@ api::EngineSecurityActivatePolicyRequest TypedSecurityActivatePolicyRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.policy_uuid = !base.target_object.uuid.is_nil()
                           ? base.target_object.uuid
-                          : api::SecurityOptionValue(base, "policy_uuid:");
+                          : BoundSecurityIdentity(request, "policy_uuid");
   return typed;
 }
 
@@ -9764,7 +9741,7 @@ api::EngineSecurityDeactivatePolicyRequest TypedSecurityDeactivatePolicyRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.policy_uuid = !base.target_object.uuid.is_nil()
                           ? base.target_object.uuid
-                          : api::SecurityOptionValue(base, "policy_uuid:");
+                          : BoundSecurityIdentity(request, "policy_uuid");
   return typed;
 }
 
@@ -9775,7 +9752,7 @@ api::EngineSecurityValidatePolicyRequest TypedSecurityValidatePolicyRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.policy_uuid = !base.target_object.uuid.is_nil()
                           ? base.target_object.uuid
-                          : api::SecurityOptionValue(base, "policy_uuid:");
+                          : BoundSecurityIdentity(request, "policy_uuid");
   typed.observed_policy_generation =
       DispatchOptionU64(base, "observed_policy_generation:");
   typed.observed_cache_invalidation_epoch =
@@ -9803,8 +9780,7 @@ api::EngineSecurityShowPolicyRequest TypedSecurityShowPolicyRequest(
                 policy_uuid.bytes.begin());
       if (!scratchbird::core::uuid::IsNilUuid(policy_uuid) &&
           scratchbird::core::uuid::IsValidUuidVariant(policy_uuid)) {
-        typed.policy_uuid =
-            scratchbird::core::uuid::UuidToString(policy_uuid);
+        typed.policy_uuid = policy_uuid;
       }
     }
   }
@@ -9823,12 +9799,8 @@ TRequest TypedAgentHookRequest(const SblrDispatchRequest& request,
   if (typed.agent_type.empty()) { typed.agent_type = default_agent_type; }
   typed.action_class = api::SecurityOptionValue(base, "action_class:");
   if (typed.action_class.empty()) { typed.action_class = default_action; }
-  typed.agent_uuid = api::SecurityOptionValue(base, "agent_uuid:");
-  if (typed.agent_uuid.is_nil()) { typed.agent_uuid = "agent:local:" + typed.agent_type; }
-  typed.policy_snapshot_uuid = api::SecurityOptionValue(base, "policy_snapshot_uuid:");
-  if (typed.policy_snapshot_uuid.is_nil()) {
-    typed.policy_snapshot_uuid = "policy:" + typed.agent_type + ":baseline";
-  }
+  typed.agent_uuid = ProtectedMaterialRouteIdentity(base, "agent_uuid");
+  typed.policy_snapshot_uuid = ProtectedMaterialRouteIdentity(base, "policy_snapshot_uuid");
   typed.target_filespace = DispatchTargetOfKind(base, "filespace");
   typed.target_index = DispatchTargetOfKind(base, "index");
   typed.page_family = api::SecurityOptionValue(base, "page_family:");
@@ -10430,7 +10402,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
     }
     if (!request.envelope.requires_transaction_context ||
         request.context.local_transaction_id == 0 ||
-        !IsCanonicalNonNilUuid(request.context.transaction_uuid)) {
+        !scratchbird::core::uuid::IsEngineIdentityUuid(request.context.transaction_uuid)) {
       result.diagnostic_id = "MGA.TRANSACTION_INVALID";
       result.detail = "canonical TYPE DDL requires an exact live transaction identity";
       return result;
@@ -10947,7 +10919,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     }
     if (!request.envelope.requires_transaction_context ||
         request.context.local_transaction_id == 0 ||
-        !IsCanonicalNonNilUuid(request.context.transaction_uuid)) {
+        !scratchbird::core::uuid::IsEngineIdentityUuid(request.context.transaction_uuid)) {
       refuse("MGA.TRANSACTION_INVALID",
              "sblr.ddl_type.transaction_invalid",
              "canonical TYPE DDL requires an exact live transaction identity");
@@ -11677,7 +11649,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
              std::to_string(result.api_result.result_shape.rows.size())});
         std::string result_material = result.api_result.result_shape.result_kind;
         for (const auto& row : result.api_result.result_shape.rows) {
-          result_material.append("\nrow:").append(row.requested_row_uuid);
+          result_material.append("\nrow:").append(
+              reinterpret_cast<const char*>(row.requested_row_uuid.bytes.data()),
+              row.requested_row_uuid.bytes.size());
           for (const auto& field : row.fields) {
             result_material.append("\nfield:").append(field.first).append("=")
                 .append(field.second.encoded_value);

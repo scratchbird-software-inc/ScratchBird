@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -34,6 +35,7 @@ struct RouteCase {
   std::string route_kind;
   std::string route_label;
   bool driver_visible = false;
+  platform::Uuid query_identity;
 };
 
 struct RouteEvidence {
@@ -100,13 +102,13 @@ mem::AllocationPolicy AllocationPolicy() {
 
 mem::QueryMemoryContext Context(const RouteCase& route) {
   mem::QueryMemoryContext context;
-  context.query_id = "q-mmch021-" + route.route_kind;
-  context.statement_id = "stmt-mmch021";
-  context.session_id = "session-mmch021";
-  context.transaction_id = "txn-mmch021";
-  context.database_id = "db-mmch021";
-  context.engine_id = "engine-mmch021";
-  context.operation_id = "op-mmch021";
+  context.query_id = route.query_identity;
+  context.statement_id = scratchbird::tests::FixtureUuid(1534, 1);
+  context.session_id = scratchbird::tests::FixtureUuid(1534, 2);
+  context.transaction_id = scratchbird::tests::FixtureUuid(1534, 3);
+  context.database_id = scratchbird::tests::FixtureUuid(1534, 4);
+  context.engine_id = scratchbird::tests::FixtureUuid(1534, 5);
+  context.operation_id = scratchbird::tests::FixtureUuid(1534, 6);
   context.engine_mga_authoritative = true;
   return context;
 }
@@ -190,7 +192,7 @@ RouteEvidence ExecuteRoute(const RouteCase& route) {
       exec::ExecutorMemoryOperatorKind::hash_join,
       exec::ExecutorMemoryOperatorKind::sort,
       exec::ExecutorMemoryOperatorKind::streaming_result};
-  std::vector<std::pair<exec::ExecutorMemoryOperatorKind, std::string>> grant_ids;
+  std::vector<std::pair<exec::ExecutorMemoryOperatorKind, mem::QueryMemoryUuid>> grant_ids;
   for (const auto kind : operators) {
     exec::ExecutorOperatorMemoryRequest request;
     request.operator_kind = kind;
@@ -207,7 +209,7 @@ RouteEvidence ExecuteRoute(const RouteCase& route) {
     request.authority = Authority();
     auto granted = exec::RequestExecutorOperatorMemory(std::move(request));
     Require(granted.ok(), "MMCH-021 route operator grant failed");
-    Require(!granted.grant_id.empty(), "MMCH-021 route grant id missing");
+    Require(!granted.grant_id.is_nil(), "MMCH-021 route grant id missing");
     Require(EvidenceHas(granted.evidence, "MMCH_LIVE_OPERATOR_MEMORY_GRANTS"),
             "MMCH-021 operator memory evidence missing");
     Require(EvidenceHas(granted.evidence, "executor.query_memory.primitive=query_memory_arena"),
@@ -258,10 +260,10 @@ int main() {
                "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   const std::vector<RouteCase> routes = {
-      {"embedded", "embedded.sblr.select_rows.memory_heavy", false},
-      {"local_ipc", "local_ipc.sblr.select_rows.memory_heavy", false},
-      {"inet", "inet.sblr.select_rows.memory_heavy", false},
-      {"driver_visible", "driver_visible.sblr.select_rows.memory_heavy", true}};
+      {"embedded", "embedded.sblr.select_rows.memory_heavy", false, scratchbird::tests::FixtureUuid(1534, 20)},
+      {"local_ipc", "local_ipc.sblr.select_rows.memory_heavy", false, scratchbird::tests::FixtureUuid(1534, 21)},
+      {"inet", "inet.sblr.select_rows.memory_heavy", false, scratchbird::tests::FixtureUuid(1534, 22)},
+      {"driver_visible", "driver_visible.sblr.select_rows.memory_heavy", true, scratchbird::tests::FixtureUuid(1534, 23)}};
 
   std::vector<RouteEvidence> evidence;
   for (const auto& route : routes) {

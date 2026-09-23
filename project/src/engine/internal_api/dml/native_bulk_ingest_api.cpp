@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
 #include "dml/test_optimization_profile.hpp"
 
@@ -43,20 +44,11 @@ bool NativeBulkCancellationRequested(
 std::string NativeBulkStatementSavepointName(
     const EngineExecuteNativeBulkIngestRequest& request,
     std::size_t row_count) {
-  std::string material;
-  material.reserve(256);
-  material += "ScratchBird.NativeBulkLogicalStatement.V1\n";
-  material += request.context.database_uuid;
-  material.push_back('\n');
-  material += std::to_string(request.context.local_transaction_id);
-  material.push_back('\n');
-  material += request.context.transaction_uuid;
-  material.push_back('\n');
-  material += request.context.request_id;
-  material.push_back('\n');
-  material += request.target_table.uuid;
-  material.push_back('\n');
-  material += std::to_string(row_count);
+  const auto material=EncodeMgaMetadataFields({"ScratchBird.NativeBulkLogicalStatement.V2",
+      MetadataUuidBytes(request.context.database_uuid),std::to_string(request.context.local_transaction_id),
+      MetadataUuidBytes(request.context.transaction_uuid),request.context.request_id,
+      MetadataUuidBytes(request.target_table.uuid),std::to_string(row_count)});
+  if(material.empty())return {};
   const auto* bytes = reinterpret_cast<const scratchbird::core::platform::byte*>(
       material.data());
   const auto digest = scratchbird::core::hash::ComputeSha256Digest(

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -38,14 +39,14 @@ namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kTableUuid = "019f6700-0000-7000-8000-000000000101";
-constexpr std::string_view kSchemaUuid = "019f6700-0000-7000-8000-000000000102";
-constexpr std::string_view kIndexUuid = "019f6700-0000-7000-8000-000000000103";
-constexpr std::string_view kIdColumnUuid = "019f6700-0000-7000-8000-000000000104";
-constexpr std::string_view kNameColumnUuid = "019f6700-0000-7000-8000-000000000105";
-constexpr std::string_view kRowAda = "019f6700-0000-7000-8000-000000000201";
-constexpr std::string_view kRowGrace = "019f6700-0000-7000-8000-000000000202";
-constexpr std::string_view kRowKatherine = "019f6700-0000-7000-8000-000000000203";
+constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000101");
+constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000102");
+constexpr auto kIndexUuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000103");
+constexpr auto kIdColumnUuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000104");
+constexpr auto kNameColumnUuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000105");
+constexpr auto kRowAda = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000201");
+constexpr auto kRowGrace = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000202");
+constexpr auto kRowKatherine = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000203");
 
 struct ConflictRow {
   std::string_view surface_id;
@@ -85,7 +86,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && (id.empty() || evidence.evidence_id == id)) {
+    if (evidence.evidence_kind == kind && (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -105,10 +106,10 @@ std::string FieldValue(const api::EngineApiResult& result,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f6700-0000-7000-8000-000000000301";
-  session.connection_uuid = "019f6700-0000-7000-8000-000000000302";
-  session.database_uuid = "019f6700-0000-7000-8000-000000000303";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000301");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000302");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000303");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 67;
   session.security_policy_epoch = 68;
   session.descriptor_epoch = 69;
@@ -119,7 +120,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_067_on_conflict_route";
-  config.parser_uuid = "019f6700-0000-7000-8000-000000000304";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000304");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-067-on-conflict-route-test";
   config.build_id = "sbsql-sbsfc-067-on-conflict-route-test";
   return config;
@@ -134,7 +135,7 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            {std::string(kTableUuid)});
+                            {scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000101")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -195,10 +196,10 @@ void RequireExactLowering(std::string_view sql,
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.engine.mga_row_mutation_required"),
           "SBSFC-067 MGA row mutation authority missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.storage.unique_index_descriptor"),
           "SBSFC-067 unique index descriptor missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.dml.conflict_policy_descriptor"),
           "SBSFC-067 conflict policy descriptor missing");
   Require(HasValue(artifacts.envelope.policy_refs, "row_conflict_policy"),
@@ -286,7 +287,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabaseForEngineDispatch() {
+api::EngineUuid CreateMinimalDatabaseForEngineDispatch() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
   db::DatabaseCreateConfig create;
@@ -306,24 +307,23 @@ std::string CreateMinimalDatabaseForEngineDispatch() {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "SBSFC-067 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
-api::EngineRequestContext EngineContextForDatabase(const std::string& database_uuid) {
+api::EngineRequestContext EngineContextForDatabase(const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-sbsfc-067-on-conflict";
   context.database_path = TestDatabasePath().string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f6700-0000-7000-8000-000000000401";
-  context.principal_uuid.canonical = "019f6700-0000-7000-8000-000000000402";
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000401");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000402");
   context.security_context_present = true;
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000102");
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.trace_tags.push_back("right:DML_ROUTE_TEST");
@@ -339,8 +339,8 @@ sblr::SblrOperationEnvelope Envelope(std::string operation_id,
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id),
                                          std::move(opcode),
                                          std::move(trace_key));
-  envelope.parser_package_uuid = "019f6700-0000-7000-8000-000000000501";
-  envelope.registry_snapshot_uuid = "019f6700-0000-7000-8000-000000000502";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000501");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000502");
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
@@ -378,7 +378,7 @@ sblr::SblrDispatchResult Dispatch(api::EngineRequestContext context,
   return result;
 }
 
-api::EngineRequestContext BeginEngineTransaction(const std::string& database_uuid) {
+api::EngineRequestContext BeginEngineTransaction(const api::EngineUuid& database_uuid) {
   auto context = EngineContextForDatabase(database_uuid);
   auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
                                          "SBLR_TXN_BEGIN",
@@ -440,10 +440,10 @@ api::EngineLocalizedName Name(std::string name) {
 
 api::EngineColumnDefinition Column(std::uint32_t ordinal,
                                    std::string name,
-                                   std::string uuid_text) {
+                                   api::EngineUuid uuid_value) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
-  column.requested_column_uuid.canonical = std::move(uuid_text);
+  column.requested_column_uuid = uuid_value;
   column.names.push_back(Name(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
@@ -453,7 +453,7 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal,
 
 api::EngineIndexDefinition UniqueIdIndex() {
   api::EngineIndexDefinition index;
-  index.requested_index_uuid.canonical = std::string(kIndexUuid);
+  index.requested_index_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000103");
   index.names.push_back(Name("sbsfc067_customer_id_unique"));
   index.index_kind = "btree";
   index.key_envelopes.push_back("unique");
@@ -463,7 +463,7 @@ api::EngineIndexDefinition UniqueIdIndex() {
 
 void SeedSchemaAndTable(const api::EngineRequestContext& context) {
   api::EngineApiRequest schema_request;
-  schema_request.target_object.uuid.canonical = std::string(kSchemaUuid);
+  schema_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000102");
   schema_request.target_object.object_kind = "schema";
   schema_request.localized_names.push_back(Name("sbsfc067"));
   auto schema = Dispatch(context,
@@ -471,24 +471,24 @@ void SeedSchemaAndTable(const api::EngineRequestContext& context) {
                                   "SBLR_DDL_CREATE_SCHEMA",
                                   "trace.sbsfc067.create_schema"),
                          schema_request);
-  Require(schema.api_result.primary_object.uuid.canonical == kSchemaUuid,
+  Require(schema.api_result.primary_object.uuid == kSchemaUuid,
           "SBSFC-067 schema create did not preserve UUID");
 
   api::EngineApiRequest table_request;
-  table_request.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000102");
   table_request.target_schema.object_kind = "schema";
-  table_request.target_object.uuid.canonical = std::string(kTableUuid);
+  table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000101");
   table_request.target_object.object_kind = "table";
   table_request.localized_names.push_back(Name("customer"));
-  table_request.columns.push_back(Column(0, "id", std::string(kIdColumnUuid)));
-  table_request.columns.push_back(Column(1, "name", std::string(kNameColumnUuid)));
+  table_request.columns.push_back(Column(0, "id", kIdColumnUuid));
+  table_request.columns.push_back(Column(1, "name", kNameColumnUuid));
   table_request.indexes.push_back(UniqueIdIndex());
   auto table = Dispatch(context,
                         Envelope("ddl.create_table",
                                  "SBLR_DDL_CREATE_TABLE",
                                  "trace.sbsfc067.create_table"),
                         table_request);
-  Require(table.api_result.primary_object.uuid.canonical == kTableUuid,
+  Require(table.api_result.primary_object.uuid == kTableUuid,
           "SBSFC-067 table create did not preserve UUID");
   Require(HasEvidence(table.api_result, "mga_relation_metadata", "table_create"),
           "SBSFC-067 table create MGA metadata evidence missing");
@@ -511,13 +511,19 @@ api::EngineTypedValue TextValue(std::string value) {
 
 sblr::SblrDispatchResult InsertCustomer(const api::EngineRequestContext& context,
                                         std::string trace_key,
-                                        std::string row_uuid,
+                                        api::EngineUuid row_uuid,
                                         std::string id,
                                         std::string name,
                                         std::string conflict_action = {},
                                         bool update_name = false) {
   auto envelope = Envelope("dml.insert_rows", "SBLR_DML_INSERT_ROWS", std::move(trace_key));
-  AddTextOperand(&envelope, "target_object_uuid", std::string(kTableUuid));
+  sblr::SblrOperand target;
+  target.type = "uuid";
+  target.name = "target_object_uuid";
+  target.ordinal = static_cast<std::uint32_t>(envelope.operands.size() + 1);
+  target.value_kind = sblr::SblrValueKind::uuid_ref;
+  target.value_body.assign(kTableUuid.bytes.begin(), kTableUuid.bytes.end());
+  envelope.operands.push_back(std::move(target));
   AddTextOperand(&envelope, "target_object_kind", "table");
   if (!conflict_action.empty()) {
     AddTextOperand(&envelope, "on_conflict_action", std::move(conflict_action));
@@ -527,7 +533,7 @@ sblr::SblrDispatchResult InsertCustomer(const api::EngineRequestContext& context
   api::EngineApiRequest request;
   request.option_envelopes.push_back("result_payload_policy:full_payload");
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", TextValue(std::move(id))});
   row.fields.push_back({"name", TextValue(std::move(name))});
   request.rows.push_back(std::move(row));
@@ -535,13 +541,13 @@ sblr::SblrDispatchResult InsertCustomer(const api::EngineRequestContext& context
 }
 
 void RequireRuntimeConflictBehavior() {
-  const std::string database_uuid = CreateMinimalDatabaseForEngineDispatch();
+  const auto database_uuid = CreateMinimalDatabaseForEngineDispatch();
   auto context = BeginEngineTransaction(database_uuid);
   SeedSchemaAndTable(context);
 
   auto inserted = InsertCustomer(context,
                                  "trace.sbsfc067.insert_initial",
-                                 std::string(kRowAda),
+                                 kRowAda,
                                  "1",
                                  "Ada");
   Require(HasEvidence(inserted.api_result, "mga_row_store", "row_insert"),
@@ -561,7 +567,7 @@ void RequireRuntimeConflictBehavior() {
 
   auto skipped = InsertCustomer(context,
                                 "trace.sbsfc067.on_conflict_do_nothing",
-                                std::string(kRowGrace),
+                                kRowGrace,
                                 "1",
                                 "Grace",
                                 "do_nothing");
@@ -576,7 +582,7 @@ void RequireRuntimeConflictBehavior() {
 
   auto updated = InsertCustomer(context,
                                 "trace.sbsfc067.on_conflict_do_update",
-                                std::string(kRowKatherine),
+                                kRowKatherine,
                                 "1",
                                 "Grace",
                                 "do_update",

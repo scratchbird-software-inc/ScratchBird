@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_dispatch.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #include "engine/sblr/sblr_transaction_begin_runtime.hpp"
@@ -23,8 +24,8 @@ int main() {
   envelope.opcode_code = 256;
   envelope.result_shape = "transaction_handle";
   envelope.diagnostic_shape = "diagnostic_vector";
-  envelope.parser_package_uuid = "019d0000-0000-7000-8000-000000000348";
-  envelope.registry_snapshot_uuid = "019d0000-0000-7000-8000-000000000349";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000000348");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000000349");
   envelope.parser_resolved_names_to_uuids = true;
   sblr::SblrOperand operand;
   operand.ordinal = 1;

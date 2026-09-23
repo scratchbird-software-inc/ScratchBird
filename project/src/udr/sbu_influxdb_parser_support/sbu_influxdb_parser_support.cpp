@@ -319,8 +319,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus InfluxdbLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuInfluxdbPackageUuid) {
+scratchbird::udr::runtime::UdrStatus InfluxdbLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuInfluxdbPackageIdentity) {
     return {false, "UDR.INFLUXDB.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -533,7 +533,7 @@ UdrResult sbu_influxdb_debug_capabilities(std::string_view render_policy) {
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_influxdb_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuInfluxdbPackageUuid);
+  descriptor.package_uuid = kSbuInfluxdbPackageIdentity;
   descriptor.package_name = std::string(kSbuInfluxdbPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "influxdb-parser-support-beta-closure";

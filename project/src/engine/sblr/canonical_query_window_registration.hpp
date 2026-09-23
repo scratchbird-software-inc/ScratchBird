@@ -35,7 +35,7 @@ struct PreparedSortRoot;
 struct GlobalRankingWindowProfile {
   std::string_view semantic_variant_id;
   std::string_view builtin_id;
-  std::string_view function_uuid;
+  core::platform::Uuid function_uuid;
   std::string_view display_name;
   std::string_view result_type_name;
 };
@@ -52,43 +52,43 @@ struct PreparedGlobalRowNumberWindowBinding {
   std::optional<std::size_t> navigation_value_column;
   std::optional<api::EngineTypedValue> nth_value_position_operand;
   bool aggregate_count_star{false};
-  std::string window_property_uuid;
-  std::string window_frame_descriptor_uuid;
+  core::platform::Uuid window_property_uuid;
+  core::platform::Uuid window_frame_descriptor_uuid;
 };
 
 inline constexpr GlobalRankingWindowProfile kGlobalRowNumberProfile{
     "window.row-number.v1", "sb.window.row_number",
-    "019de5fc-2400-7539-bcce-00eef3ae7220", "ROW_NUMBER", "int64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x75, 0x39, 0xbc, 0xce, 0x00, 0xee, 0xf3, 0xae, 0x72, 0x20}}, "ROW_NUMBER", "int64"};
 inline constexpr GlobalRankingWindowProfile kGlobalRankProfile{
     "window.rank.v1", "sb.window.rank",
-    "019de5fc-2400-7b94-870d-0dd789ca70ab", "RANK", "int64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7b, 0x94, 0x87, 0x0d, 0x0d, 0xd7, 0x89, 0xca, 0x70, 0xab}}, "RANK", "int64"};
 inline constexpr GlobalRankingWindowProfile kGlobalDenseRankProfile{
     "window.dense-rank.v1", "sb.window.dense_rank",
-    "019de5fc-2400-741d-bef0-f079fd3ba494", "DENSE_RANK", "int64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x74, 0x1d, 0xbe, 0xf0, 0xf0, 0x79, 0xfd, 0x3b, 0xa4, 0x94}}, "DENSE_RANK", "int64"};
 inline constexpr GlobalRankingWindowProfile kGlobalPercentRankProfile{
     "window.percent-rank.v1", "sb.window.percent_rank",
-    "019de5fc-2400-7d86-86fe-96f3f27b5dd6", "PERCENT_RANK", "real64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0x86, 0x86, 0xfe, 0x96, 0xf3, 0xf2, 0x7b, 0x5d, 0xd6}}, "PERCENT_RANK", "real64"};
 inline constexpr GlobalRankingWindowProfile kGlobalCumeDistProfile{
     "window.cume-dist.v1", "sb.window.cume_dist",
-    "019de5fc-2400-721c-be64-2568b64a02b9", "CUME_DIST", "real64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0x1c, 0xbe, 0x64, 0x25, 0x68, 0xb6, 0x4a, 0x02, 0xb9}}, "CUME_DIST", "real64"};
 inline constexpr GlobalRankingWindowProfile kGlobalNtileProfile{
     "window.ntile.v1", "sb.window.ntile",
-    "019de5fc-2400-7047-9474-232ca488c094", "NTILE", "int64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x70, 0x47, 0x94, 0x74, 0x23, 0x2c, 0xa4, 0x88, 0xc0, 0x94}}, "NTILE", "int64"};
 inline constexpr GlobalRankingWindowProfile kGlobalLagProfile{
     "window.lag.v1", "sb.window.lag",
-    "019de5fc-2400-782c-8436-9ac310301738", "LAG", "int64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x78, 0x2c, 0x84, 0x36, 0x9a, 0xc3, 0x10, 0x30, 0x17, 0x38}}, "LAG", "int64"};
 inline constexpr GlobalRankingWindowProfile kGlobalLeadProfile{
     "window.lead.v1", "sb.window.lead",
-    "019de5fc-2400-7a06-bc3c-6747cf5be66f", "LEAD", "int64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7a, 0x06, 0xbc, 0x3c, 0x67, 0x47, 0xcf, 0x5b, 0xe6, 0x6f}}, "LEAD", "int64"};
 inline constexpr GlobalRankingWindowProfile kGlobalFirstValueProfile{
     "window.first-value.v1", "sb.window.first_value",
-    "019de5fc-2400-7264-90fb-d25bd0f806f2", "FIRST_VALUE", "int64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0x64, 0x90, 0xfb, 0xd2, 0x5b, 0xd0, 0xf8, 0x06, 0xf2}}, "FIRST_VALUE", "int64"};
 inline constexpr GlobalRankingWindowProfile kGlobalLastValueProfile{
     "window.last-value.v1", "sb.window.last_value",
-    "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec", "LAST_VALUE", "int64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0x23, 0xa5, 0xbe, 0x7e, 0xd3, 0xf1, 0xa5, 0xc3, 0xec}}, "LAST_VALUE", "int64"};
 inline constexpr GlobalRankingWindowProfile kGlobalNthValueProfile{
     "window.nth-value.v1", "sb.window.nth_value",
-    "019de5fc-2400-7dc9-80e6-9f2ccf08076f", "NTH_VALUE", "int64"};
+    core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0xc9, 0x80, 0xe6, 0x9f, 0x2c, 0xcf, 0x08, 0x07, 0x6f}}, "NTH_VALUE", "int64"};
 
 inline constexpr std::uint64_t kRealRankingRatioTextMaximumBytes = 36;
 inline constexpr std::uint64_t
@@ -102,55 +102,55 @@ bool DirectValueWindowUsesExactTypeForComposition(
     const api::TypedRelationalDag& dag,
     std::uint32_t relation_node_id,
     std::string_view expected_builtin_id,
-    std::string_view type_uuid);
+    core::platform::Uuid type_uuid);
 
 bool ExactCanonicalBooleanWindowSourceForComposition(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     bool runtime_nullable,
-    std::string_view boolean_type_uuid,
-    std::string_view function_uuid,
-    std::string_view result_descriptor_uuid,
-    std::string_view ordering_property_uuid,
-    std::string_view window_property_uuid,
-    std::string_view window_frame_descriptor_uuid);
+    core::platform::Uuid boolean_type_uuid,
+    core::platform::Uuid function_uuid,
+    core::platform::Uuid result_descriptor_uuid,
+    core::platform::Uuid ordering_property_uuid,
+    core::platform::Uuid window_property_uuid,
+    core::platform::Uuid window_frame_descriptor_uuid);
 
 bool ExactCanonicalScalarWindowOperandForComposition(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     bool runtime_nullable,
-    std::string_view function_uuid,
-    std::string_view result_descriptor_uuid,
-    std::string_view result_type_uuid,
-    std::string_view counterpart_descriptor_uuid,
-    std::string_view counterpart_type_uuid,
+    core::platform::Uuid function_uuid,
+    core::platform::Uuid result_descriptor_uuid,
+    core::platform::Uuid result_type_uuid,
+    core::platform::Uuid counterpart_descriptor_uuid,
+    core::platform::Uuid counterpart_type_uuid,
     bool same_operand_ordinal,
-    std::string_view ordering_property_uuid,
-    std::string_view window_property_uuid,
-    std::string_view window_frame_descriptor_uuid);
+    core::platform::Uuid ordering_property_uuid,
+    core::platform::Uuid window_property_uuid,
+    core::platform::Uuid window_frame_descriptor_uuid);
 
 bool ExactCanonicalBoundedSignedWindowSourceForComposition(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     bool runtime_nullable,
-    const std::array<std::string, 4>& bounded_signed_type_uuids,
-    std::string_view function_uuid,
-    std::string_view result_descriptor_uuid,
-    std::string_view ordering_property_uuid,
-    std::string_view window_property_uuid,
-    std::string_view window_frame_descriptor_uuid);
+    const std::array<core::platform::Uuid, 4>& bounded_signed_type_uuids,
+    core::platform::Uuid function_uuid,
+    core::platform::Uuid result_descriptor_uuid,
+    core::platform::Uuid ordering_property_uuid,
+    core::platform::Uuid window_property_uuid,
+    core::platform::Uuid window_frame_descriptor_uuid);
 
 bool ExactCanonicalBoundedSignedWindowOrderForComposition(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     bool runtime_nullable,
-    const std::array<std::string, 4>& bounded_signed_type_uuids,
-    std::string_view function_uuid,
-    std::string_view result_descriptor_uuid,
-    std::string_view result_type_uuid,
-    std::string_view ordering_property_uuid,
-    std::string_view window_property_uuid,
-    std::string_view window_frame_descriptor_uuid);
+    const std::array<core::platform::Uuid, 4>& bounded_signed_type_uuids,
+    core::platform::Uuid function_uuid,
+    core::platform::Uuid result_descriptor_uuid,
+    core::platform::Uuid result_type_uuid,
+    core::platform::Uuid ordering_property_uuid,
+    core::platform::Uuid window_property_uuid,
+    core::platform::Uuid window_frame_descriptor_uuid);
 
 GlobalRankingWindowProfile GlobalAggregateWindowProfileForComposition(
     const api::TypedRelationalDag& dag,
@@ -166,10 +166,10 @@ PrepareGlobalRankingWindowBindingForComposition(
     const PreparedSortRoot& prepared_sort,
     std::size_t materialized_column_count,
     std::size_t result_binding_count,
-    const std::string& result_type_uuid,
-    const std::string& order_type_uuid,
-    const std::string& boolean_type_uuid,
-    const std::array<std::string, 4>& bounded_signed_type_uuids,
+    const core::platform::Uuid& result_type_uuid,
+    const core::platform::Uuid& order_type_uuid,
+    const core::platform::Uuid& boolean_type_uuid,
+    const std::array<core::platform::Uuid, 4>& bounded_signed_type_uuids,
     std::string_view family_label,
     const GlobalRankingWindowProfile& profile,
     bool allow_project_root = false);
@@ -184,7 +184,7 @@ PrepareGlobalRowNumberWindowBindingForComposition(
     const PreparedSortRoot& prepared_sort,
     std::size_t materialized_column_count,
     std::size_t result_binding_count,
-    const std::string& int64_type_uuid,
+    const core::platform::Uuid& int64_type_uuid,
     std::string_view family_label,
     bool allow_project_root = false);
 
@@ -193,8 +193,8 @@ PrepareGlobalRowNumberWindowBindingForComposition(
 // factory cannot create, refresh, or finalize a transaction or snapshot.
 exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
     exec::ExecutorColumnDescriptor row_number_column,
-    std::string deterministic_order_evidence_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid deterministic_order_evidence_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t maximum_input_row_count,
     scratchbird::engine::internal_api::EngineRequestContext mga_context,
     const scratchbird::engine::internal_api::EngineRequestContext*
@@ -209,9 +209,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
     exec::ExecutorColumnDescriptor ntile_column,
     exec::CanonicalDescriptorOrderTerm order_term,
     scratchbird::engine::internal_api::EngineTypedValue bucket_count_operand,
-    std::string function_uuid,
-    std::string deterministic_order_evidence_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid function_uuid,
+    core::platform::Uuid deterministic_order_evidence_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t maximum_input_row_count,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);
 
@@ -221,8 +221,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
 exec::CanonicalPhysicalExecutorRegistration MakeLivePeerRankingRegistration(
     exec::ExecutorColumnDescriptor ranking_column,
     exec::CanonicalDescriptorOrderTerm order_term,
-    std::string deterministic_order_evidence_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid deterministic_order_evidence_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t maximum_input_row_count,
     std::size_t maximum_peer_comparisons,
     GlobalRankingWindowProfile profile,
@@ -238,10 +238,10 @@ MakeLiveNavigationWindowRegistration(
     std::size_t value_column,
     std::optional<scratchbird::engine::internal_api::EngineTypedValue>
         nth_value_position_operand,
-    std::string window_frame_descriptor_uuid,
-    std::string deterministic_order_evidence_uuid,
-    std::string frame_property_binding_evidence_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid window_frame_descriptor_uuid,
+    core::platform::Uuid deterministic_order_evidence_uuid,
+    core::platform::Uuid frame_property_binding_evidence_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t maximum_input_row_count,
     std::size_t maximum_pair_comparisons,
     std::size_t maximum_effective_row_references,
@@ -257,10 +257,10 @@ MakeLiveAggregateWindowRegistration(
     exec::CanonicalDescriptorOrderTerm order_term,
     std::optional<std::size_t> value_column,
     exec::CanonicalAggregateDescriptor aggregate_descriptor,
-    std::string window_frame_descriptor_uuid,
-    std::string deterministic_order_evidence_uuid,
-    std::string frame_property_binding_evidence_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid window_frame_descriptor_uuid,
+    core::platform::Uuid deterministic_order_evidence_uuid,
+    core::platform::Uuid frame_property_binding_evidence_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t maximum_input_row_count,
     std::size_t maximum_pair_comparisons,
     std::size_t maximum_effective_row_references,

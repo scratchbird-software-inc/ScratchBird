@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_dispatch.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #include "engine/sblr/sblr_savepoint_runtime.hpp"
@@ -17,8 +18,8 @@ int main() {
                                     "ia05.txn_savepoint.cancel");
   envelope.opcode_code=259;envelope.result_shape="savepoint_handle";
   envelope.diagnostic_shape="diagnostic_vector";
-  envelope.parser_package_uuid="019d0000-0000-7000-8000-000000000360";
-  envelope.registry_snapshot_uuid="019d0000-0000-7000-8000-000000000361";
+  envelope.parser_package_uuid=scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000000360");
+  envelope.registry_snapshot_uuid=scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000000361");
   envelope.parser_resolved_names_to_uuids=true;
   s::SblrOperand operand;operand.ordinal=1;operand.type="savepoint.descriptor";
   operand.name="savepoint";operand.value_kind=s::SblrValueKind::savepoint_descriptor;
@@ -28,7 +29,7 @@ int main() {
   std::atomic<unsigned> checks{0};
   scratchbird::engine::internal_api::EngineRequestContext context;
   // Component cancellation before any authority lookup; not live MGA proof.
-  context.transaction_uuid.canonical="03000000-0000-7000-8000-000000000000";
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("03000000-0000-7000-8000-000000000000");
   context.local_transaction_id=descriptor.local_transaction_id;
   context.security_context_present=true;
   context.query_cancellation_requested=[&]{++checks;return true;};

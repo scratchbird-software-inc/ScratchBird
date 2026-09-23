@@ -17,6 +17,7 @@ namespace scratchbird::udr::sbsql_parser_support {
 
 inline constexpr std::string_view kSbuSbsqlPackageUuid =
     "019e13c0-0000-7000-8000-000000000301";
+inline constexpr scratchbird::udr::runtime::UdrUuid kSbuSbsqlPackageIdentity{{0x01, 0x9e, 0x13, 0xc0, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01}};
 inline constexpr std::string_view kSbuSbsqlPackageName = "sbup_sbsql";
 
 struct UdrResult {
@@ -26,7 +27,9 @@ struct UdrResult {
 };
 
 UdrResult sbu_sbsql_validate_syntax(std::string_view sql_text, std::string_view profile);
-UdrResult sbu_sbsql_parse_to_sblr(std::string_view sql_text, std::string_view context_packet);
+UdrResult sbu_sbsql_parse_to_sblr(
+    std::string_view sql_text, std::string_view context_packet,
+    const runtime::UdrIdentityContext& identities = {});
 UdrResult sbu_sbsql_parse_expression(std::string_view sql_text, std::string_view descriptor_context);
 UdrResult sbu_sbsql_normalize(std::string_view sql_text, std::string_view profile);
 UdrResult sbu_sbsql_describe_statement(std::string_view sql_text, std::string_view context_packet);

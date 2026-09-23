@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -59,7 +60,9 @@ std::string Field(const info::SysInformationProjectionRow& row,
                   std::string_view name) {
   for (const auto& [field_name, value] : row.fields) {
     if (field_name == name) {
-      return value;
+      const auto* text = std::get_if<std::string>(&value);
+      Require(text != nullptr, "expected text projection field");
+      return *text;
     }
   }
   return {};
@@ -276,7 +279,7 @@ server::ServerSessionRecord MakeSession() {
   session.effective_user_uuid = session.principal_uuid;
   session.principal_claim = "ipar-server-observability-user";
   session.database_path = "/tmp/ipar_server_observability_projection_gate.sbdb";
-  session.database_uuid = "database-ipar-server-observability";
+  session.database_uuid = scratchbird::tests::FixtureUuid(1208, 2301);
   session.local_transaction_id = 7;
   session.catalog_generation = 1;
   session.security_epoch = 1;
@@ -341,11 +344,11 @@ void TestCatalogUsesLiveIparProjectionSources() {
   request.context.trust_mode = info::EngineTrustMode::server_isolated;
   request.context.request_id = "ipar.server.live_projection.select";
   request.context.database_path = session.database_path;
-  request.context.database_uuid.canonical = session.database_uuid;
-  request.context.principal_uuid.canonical =
-      server::UuidBytesToText(session.principal_uuid);
-  request.context.session_uuid.canonical =
-      server::UuidBytesToText(session.session_uuid);
+  request.context.database_uuid = session.database_uuid;
+  request.context.principal_uuid =
+      scratchbird::core::platform::Uuid{session.principal_uuid};
+  request.context.session_uuid =
+      scratchbird::core::platform::Uuid{session.session_uuid};
   request.context.local_transaction_id = session.local_transaction_id;
   request.context.catalog_generation_id = session.catalog_generation;
   request.context.security_epoch = session.security_epoch;

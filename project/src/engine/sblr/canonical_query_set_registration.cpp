@@ -52,7 +52,7 @@ bool ValidateLiveSetMemoryReceipt(
   std::uint64_t measured_output_payload_bytes = 0;
   if (resource_evidence_count != 1 ||
       resource_evidence == dag.admission_evidence.end() ||
-      resource_evidence->evidence_uuid.empty() ||
+      resource_evidence->evidence_uuid.is_nil() ||
       dag.memory_budget_bytes == 0 || node.memory_bytes_required == 0 ||
       node.memory_bytes_required > dag.memory_budget_bytes ||
       (node.retained_cost.memory_bytes_required != 0 &&
@@ -130,7 +130,7 @@ bool CanonicalSetOperationExecutionReceiptMatches(
 exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
     LiveSetRegistrationProfiles prepared_set_nodes,
     std::string implementation_id,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kSetOperation;

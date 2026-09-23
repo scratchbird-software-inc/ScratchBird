@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -70,8 +71,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -105,7 +106,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, id)) {
       return true;
     }
   }
@@ -116,7 +117,7 @@ std::string EvidenceValue(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view kind) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind) {
-      return item.evidence_id;
+      return scratchbird::tests::EvidenceTextFields(item.evidence_id);
     }
   }
   return {};
@@ -161,11 +162,11 @@ std::vector<std::string> DeferredOptions() {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string schema_uuid;
-  std::string table_uuid;
-  std::string non_unique_index_uuid;
-  std::string unique_index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid schema_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid non_unique_index_uuid;
+  api::EngineUuid unique_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -182,12 +183,12 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
+  context.current_schema_uuid = fixture.schema_uuid;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -240,7 +241,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
 
 api::CrudIndexRecord Index(const Fixture& fixture,
                            const api::EngineRequestContext& context,
-                           std::string index_uuid,
+                           api::EngineUuid index_uuid,
                            std::string column,
                            bool unique,
                            std::string family = api::kCrudIndexFamilyBtree) {
@@ -289,11 +290,11 @@ Fixture MakeFixture(
   }
   Require(created.ok(), "IPAR-P7-06 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.schema_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
-  fixture.non_unique_index_uuid = NewUuidText(platform::UuidKind::object, salt + 12);
-  fixture.unique_index_uuid = NewUuidText(platform::UuidKind::object, salt + 13);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.schema_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
+  fixture.non_unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
+  fixture.unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 13);
 
   auto context = Begin(fixture, "ipar-p706-metadata");
   const auto table = api::AppendMgaTableMetadata(context, Table(fixture, context));
@@ -321,10 +322,10 @@ api::EngineInsertRowsRequest InsertRequest(const Fixture& fixture,
                                            std::vector<std::string> options = {}) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = fixture.schema_uuid;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_schema.uuid = fixture.schema_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.bound_object_identity.object_uuid = request.target_table.uuid;
   request.bound_object_identity.catalog_generation_id =
@@ -344,7 +345,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     std::vector<std::string> options) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";
@@ -363,7 +364,7 @@ api::EngineApiU64 SelectCount(const Fixture& fixture) {
   auto context = Begin(fixture, "ipar-p706-select-count");
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
   const auto selected = api::EngineSelectRows(request);
@@ -378,7 +379,7 @@ api::EngineSelectRowsResult SelectEquals(const Fixture& fixture,
   auto context = Begin(fixture, "ipar-p706-select-equals");
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate.predicate_kind = "column_equals";
   request.select_predicate.canonical_predicate_envelope = std::move(column);

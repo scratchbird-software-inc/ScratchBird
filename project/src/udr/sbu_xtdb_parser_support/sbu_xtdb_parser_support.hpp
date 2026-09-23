@@ -17,6 +17,7 @@ namespace scratchbird::udr::xtdb_parser_support {
 
 inline constexpr std::string_view kSbuXtdbPackageUuid =
     "019e13c0-0000-7000-8000-000000000320";
+inline constexpr scratchbird::udr::runtime::UdrUuid kSbuXtdbPackageIdentity{{0x01, 0x9e, 0x13, 0xc0, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x20}};
 inline constexpr std::string_view kSbuXtdbPackageName = "sbup_xtdb";
 
 struct UdrResult {

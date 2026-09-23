@@ -510,15 +510,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "search public output coverage is not exact");
   }
-  std::unordered_set<std::string> public_descriptor_uuids;
+  std::set<api::EngineUuid> public_descriptor_uuids;
   std::vector<exec::ExecutorColumnDescriptor> public_columns;
   std::vector<api::EngineDescriptor> output_descriptors;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
-  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uuid");
-  const auto uint64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uint64");
-  const auto real64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("real64");
-  if (uuid_type_uuid.empty() || uint64_type_uuid.empty() ||
-      real64_type_uuid.empty()) {
+  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uuid");
+  const auto uint64_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("uint64");
+  const auto real64_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("real64");
+  if (uuid_type_uuid.is_nil() || uint64_type_uuid.is_nil() ||
+      real64_type_uuid.is_nil()) {
     return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                   "search public core type registry is unavailable");
   }
@@ -530,8 +530,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
             source->output_descriptor_ids[ordinal] ||
         descriptor == dag.descriptors.end() ||
         descriptor->nullability != api::RelationalNullability::kNonNull ||
-        !CanonicalUuidText(descriptor->descriptor_uuid) ||
-        !CanonicalUuidText(descriptor->type_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(descriptor->descriptor_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(descriptor->type_uuid) ||
         !public_descriptor_uuids.insert(descriptor->descriptor_uuid).second ||
         descriptor->collation_uuid.has_value() ||
         descriptor->timezone_profile_id.has_value()) {
@@ -663,7 +663,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       top_k_descriptor == dag.descriptors.end() ||
       analyzer_output_descriptor == dag.descriptors.end() ||
       generation_output_descriptor == dag.descriptors.end() ||
-      stored_text_type.empty() ||
+      stored_text_type.is_nil() ||
       query_descriptor->descriptor_uuid !=
           persisted_relation.columns[0].value_descriptor.descriptor_uuid
                ||
@@ -730,30 +730,37 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     }
   }
 
-  const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
+  // Each admitted consumer kind occurs at most once; retain issued identities
+  // for the full planning/execution/publication invocation.
+  std::array<api::EngineUuid, 28> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                               "search execution identity allocation failed");
+    identity = *issued;
+  }
   const auto provider_uuid =
-      DerivedCanonicalUuid(identity_scope, "search.provider");
+      owned_identities[0];
   const auto capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "search.capability");
+      owned_identities[1];
   const auto result_handle_uuid =
-      DerivedCanonicalUuid(identity_scope, "search.result-handle");
+      owned_identities[2];
   const auto property_uuid =
-      DerivedCanonicalUuid(identity_scope, "search.property");
+      owned_identities[3];
   const auto security_receipt_uuid =
-      DerivedCanonicalUuid(identity_scope, "search.security-receipt");
+      owned_identities[4];
   const auto policy_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "search.policy-snapshot");
+      owned_identities[5];
   const auto statistics_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "search.statistics-snapshot");
+      owned_identities[6];
   const auto resource_contract_uuid =
-      DerivedCanonicalUuid(identity_scope, "search.resource-contract");
+      owned_identities[7];
   const auto suffix = std::to_string(source->node_id) +
                       ".physical_search_rank_scan_v1";
   const auto alternative_uuid =
-      DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
+      owned_identities[8];
   const auto physical_cost_uuid =
-      DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
+      owned_identities[9];
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
 
@@ -797,13 +804,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
                                input.context.authorization_context.present;
   std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
   alternatives.push_back(MakeModelFamilyCapabilitySnapshotForCompositionV1(
-      planning, identity_scope + ".search.native",
+      planning,
       opt::ModelFamilyAlternativeRouteClassV1::kNative, provider_uuid,
       capability_uuid, persisted_relation.descriptor_generation, true,
       std::max<std::uint64_t>(1, top_k_value), 1,
       std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2)));
   const auto planned = PlanCanonicalModelFamilySourceForCompositionV1(
-      planning, identity_scope + ".search.inventory", std::move(alternatives));
+      planning, std::move(alternatives));
   if (!planned.accepted || !planned.selected ||
       !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
       planned.exact_fallback_selected ||
@@ -1052,25 +1059,25 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   bool fetch_first_rows_only = false;
   std::string limit_implementation_id;
   std::string cte_implementation_id;
-  std::string filter_capability_uuid;
-  std::string project_capability_uuid;
-  std::string sort_capability_uuid;
-  std::string window_capability_uuid;
-  std::string window_order_evidence_uuid;
-  std::string aggregate_capability_uuid;
-  std::string grouped_aggregate_capability_uuid;
+  api::EngineUuid filter_capability_uuid;
+  api::EngineUuid project_capability_uuid;
+  api::EngineUuid sort_capability_uuid;
+  api::EngineUuid window_capability_uuid;
+  api::EngineUuid window_order_evidence_uuid;
+  api::EngineUuid aggregate_capability_uuid;
+  api::EngineUuid grouped_aggregate_capability_uuid;
   std::size_t grouped_aggregate_output_row_bound = 0;
-  std::string cte_capability_uuid;
-  std::string limit_capability_uuid;
-  std::string set_values_capability_uuid;
-  std::string set_root_capability_uuid;
-  std::string recursive_term_capability_uuid;
-  std::string recursive_root_capability_uuid;
+  api::EngineUuid cte_capability_uuid;
+  api::EngineUuid limit_capability_uuid;
+  api::EngineUuid set_values_capability_uuid;
+  api::EngineUuid set_root_capability_uuid;
+  api::EngineUuid recursive_term_capability_uuid;
+  api::EngineUuid recursive_root_capability_uuid;
   std::optional<exec::CanonicalAcceptedJoinKind> mixed_join_kind;
   std::string mixed_join_component;
   std::string mixed_join_operation;
-  std::string relational_scan_capability_uuid;
-  std::string mixed_join_capability_uuid;
+  api::EngineUuid relational_scan_capability_uuid;
+  api::EngineUuid mixed_join_capability_uuid;
   CanonicalRelationalExpressionRowBinding mixed_join_predicate_binding;
   const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!core_manifest.ok()) {
@@ -1114,7 +1121,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       }
       prepared_filter = std::move(prepared);
       filter_capability_uuid =
-          DerivedCanonicalUuid(identity_scope, "search.filter.capability");
+          owned_identities[10];
       consumer_profile.implementation_id = "filter.3vl.row.v1";
       consumer_profile.capability_uuid = filter_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kFilter;
@@ -1172,7 +1179,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       composition_state.result_bindings = prepared.result_bindings;
       prepared_project = std::move(prepared);
       project_capability_uuid =
-          DerivedCanonicalUuid(identity_scope, "search.project.capability");
+          owned_identities[11];
       consumer_profile.implementation_id =
           descriptor_direct_projection ? "project.descriptor-direct.v1"
                                        : "project.typed.expression-row.v1";
@@ -1218,7 +1225,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       }
       prepared_sort = std::move(prepared);
       sort_capability_uuid =
-          DerivedCanonicalUuid(identity_scope, "search.sort.capability");
+          owned_identities[12];
       consumer_profile.implementation_id =
           prepared_sort->expression_ordering
               ? "sort.typed.expression-row.v1"
@@ -1281,11 +1288,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       composition_state.result_bindings.push_back(
           std::move(row_number_binding));
       prepared_row_number = std::move(row_number_column);
-      window_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "search.window.row-number.capability");
-      window_order_evidence_uuid = DerivedCanonicalUuid(
-          identity_scope + ":" + prepared_sort->ordering_property_uuid,
-          "search.window.deterministic-order");
+      window_capability_uuid = owned_identities[13];
+      window_order_evidence_uuid = owned_identities[14];
       consumer_profile.implementation_id = "window.row-number.v1";
       consumer_profile.capability_uuid = window_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kWindow;
@@ -1342,8 +1346,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
             prepared.sum.result_column);
         composition_state.result_bindings = prepared.result_bindings;
         prepared_grouped_aggregate = std::move(prepared);
-        grouped_aggregate_capability_uuid = DerivedCanonicalUuid(
-            identity_scope, "search.grouped-count-sum.capability");
+        grouped_aggregate_capability_uuid = owned_identities[15];
         grouped_aggregate_output_row_bound = grouped_input_row_bound;
         consumer_profile.implementation_id =
             "aggregate.registry-grouping-sets.v1";
@@ -1377,7 +1380,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       const auto int64_type_uuid = type_uuid_for("int64");
       if (consumer->output_descriptor_ids.size() != 1 ||
           count_descriptor == dag.descriptors.end() ||
-          int64_type_uuid.empty() ||
+          int64_type_uuid.is_nil() ||
           count_descriptor->type_uuid != int64_type_uuid ||
           count_descriptor->nullability !=
               api::RelationalNullability::kNonNull ||
@@ -1400,8 +1403,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       composition_state.batch.columns = {prepared.result_column};
       composition_state.result_bindings = prepared.result_bindings;
       prepared_count_star = std::move(prepared);
-      aggregate_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "search.count-star.capability");
+      aggregate_capability_uuid = owned_identities[16];
       consumer_profile.implementation_id = "aggregate.count-star.v1";
       consumer_profile.capability_uuid = aggregate_capability_uuid;
       consumer_profile.physical_node_kind =
@@ -1438,10 +1440,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       cte_implementation_id = consumer->shareable
                                   ? "cte.bound.materialize.typed.v1"
                                   : "cte.bound.inline.typed.v1";
-      cte_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, consumer->shareable
-                              ? "search.cte.materialize.capability"
-                              : "search.cte.inline.capability");
+      cte_capability_uuid = owned_identities[17];
       consumer_profile.implementation_id = cte_implementation_id;
       consumer_profile.capability_uuid = cte_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kCte;
@@ -1490,7 +1489,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
                                     ? "fetch.native.rows-only.v1"
                                     : "limit.typed.v1";
       limit_capability_uuid =
-          DerivedCanonicalUuid(identity_scope, "search.limit.capability");
+          owned_identities[18];
       consumer_profile.implementation_id = limit_implementation_id;
       consumer_profile.capability_uuid = limit_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kLimit;
@@ -1564,10 +1563,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                     "search UNION ALL VALUES memory bound was exceeded");
     }
-    set_values_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "search.set-values.capability");
-    set_root_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "search.set-union-all.capability");
+    set_values_capability_uuid = owned_identities[19];
+    set_root_capability_uuid = owned_identities[20];
 
     LivePhysicalNodeProfile values_profile;
     values_profile.logical_node_id = logical_values->logical_node_id;
@@ -1661,10 +1658,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
           "search recursive payload peak exceeds its admitted memory budget");
     }
     prepared_recursive_cte = prepared;
-    recursive_term_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "search.recursive-term.capability");
-    recursive_root_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "search.recursive-root.capability");
+    recursive_term_capability_uuid = owned_identities[21];
+    recursive_root_capability_uuid = owned_identities[22];
 
     LivePhysicalNodeProfile term_profile;
     term_profile.logical_node_id = recursive_term->node_id;
@@ -1727,10 +1722,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
                         ? "search mixed JOIN predicate is not bound"
                         : detail);
     }
-    relational_scan_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "search.mixed-join.heap-scan.capability");
-    mixed_join_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "search.mixed-join.capability");
+    relational_scan_capability_uuid = owned_identities[23];
+    mixed_join_capability_uuid = owned_identities[24];
     LivePhysicalNodeProfile heap_profile;
     heap_profile.logical_node_id = relational_scan->node_id;
     heap_profile.implementation_id = "scan.heap.v1";
@@ -2027,13 +2020,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
         for (const auto& row : read.rows) {
           exec::DescriptorTuple tuple;
           const std::array<std::string, 5> encoded{
-              row.document_uuid, row.analyzer_uuid,
+              std::string{}, std::string{},
               std::to_string(row.analyzer_generation), row.encoded_score,
               std::to_string(row.rank)};
           for (std::size_t ordinal = 0; ordinal < encoded.size(); ++ordinal) {
             api::EngineTypedValue value;
             value.descriptor = public_columns[ordinal].descriptor;
-            value.encoded_value = encoded[ordinal];
+            if (ordinal < 2) {
+              const auto& identity = ordinal == 0 ? row.document_uuid : row.analyzer_uuid;
+              value.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
+            } else value.encoded_value = encoded[ordinal];
             value.setState(api::EngineValueState::value);
             tuple.values.push_back(std::move(value));
           }
@@ -2389,9 +2385,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                     "search SORT comparison bound overflowed");
     }
-    const auto tie_uuid = DerivedCanonicalUuid(
-        identity_scope + ":" + prepared_sort->ordering_property_uuid,
-        "search.sort.deterministic-tie");
+    const auto tie_uuid = owned_identities[25];
     if (prepared_sort->expression_ordering) {
       selected.available_executors.push_back(
           MakeLiveExpressionSortRegistration(
@@ -2459,18 +2453,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(identity_scope + ":" +
-                               input.context.current_monotonic_ns,
-                           "search.execution-attempt");
+      owned_identities[26];
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id) + ":" +
-              std::to_string(
-                  input.context.snapshot_visible_through_local_transaction_id),
-          "search.transaction-effect-unchanged");
+      owned_identities[27];
   selected.result_publication_request.maximum_row_count =
       execution_row_bound;
   selected.result_publication_request.column_bindings =
@@ -2515,8 +2502,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       {"canonical.search_operation", planning.operation_id});
   result.api_result.evidence.push_back(
       {"canonical.search_analyzer",
-       *analyzer_identity->bound_name_uuid + ":" +
-           std::to_string(analyzer_generation_value)});
+       *analyzer_identity->bound_name_uuid});
+  result.api_result.evidence.push_back(
+      {"canonical.search_analyzer_generation", std::to_string(analyzer_generation_value)});
   result.api_result.evidence.push_back(
       {"canonical.search_properties",
        "search_score_desc_document_uuid_asc_v1|single_local_partition|document_uuid"});

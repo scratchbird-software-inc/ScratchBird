@@ -76,7 +76,7 @@ int main() {
                         !publication_refused.root_published &&
                         publication_refused.no_partial_root &&
                         publication_refused.root_output_batch.rows.empty() &&
-                        publication_refused.root_publication_receipt_uuid.empty() &&
+                        publication_refused.root_publication_receipt_uuid.is_nil() &&
                         publication_refused.diagnostic_id ==
                             "SB_MODEL_ROOT_PUBLICATION_REFUSED_V1" &&
                         publication_receipt !=

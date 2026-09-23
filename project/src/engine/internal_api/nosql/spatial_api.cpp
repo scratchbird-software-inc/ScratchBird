@@ -4,6 +4,7 @@
 #include "spatial_api.hpp"
 
 #include <algorithm>
+#include "uuid.hpp"
 #include <bit>
 #include <cmath>
 #include <limits>
@@ -16,20 +17,8 @@
 namespace scratchbird::engine::internal_api::nosql {
 namespace {
 
-bool CanonicalUuid(std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (i == 8 || i == 13 || i == 18 || i == 23) continue;
-    if (!((value[i] >= '0' && value[i] <= '9') ||
-          (value[i] >= 'a' && value[i] <= 'f'))) {
-      return false;
-    }
-  }
-  return true;
+bool CanonicalUuid(const core::platform::Uuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
 void PutU64Be(std::vector<std::uint8_t>* out, std::uint64_t value) {
@@ -82,6 +71,10 @@ bool AccountArray(const std::size_t count, const std::size_t element_bytes,
          CheckedAdd(*bytes, allocation, bytes);
 }
 
+// UUID storage is inline and already included in the owning carrier/array.
+bool AccountString(const core::platform::Uuid&, std::uint64_t* bytes) {
+  return bytes != nullptr;
+}
 bool AccountString(const std::string& value, std::uint64_t* bytes) {
   return bytes != nullptr && CheckedAdd(*bytes, value.capacity(), bytes) &&
          CheckedAdd(*bytes, 1, bytes);
@@ -95,11 +88,8 @@ bool AccountBytes(const std::vector<std::uint8_t>& value,
 
 bool AccountMgaContext(const executor::PhysicalMgaStatementContext& context,
                        std::uint64_t* bytes) {
-  return AccountString(context.statement_uuid, bytes) &&
-         AccountString(context.owning_transaction_uuid, bytes) &&
-         AccountString(context.statement_snapshot_uuid, bytes) &&
-         AccountString(context.statement_metadata_snapshot_uuid, bytes) &&
-         AccountArray(context.active_excluded_local_transaction_ids.capacity(),
+  // Native UUID arrays are already included in the carrier sizeof.
+  return AccountArray(context.active_excluded_local_transaction_ids.capacity(),
                       sizeof(std::uint64_t), bytes) &&
          AccountArray(
              context.in_doubt_excluded_local_transaction_ids.capacity(),
@@ -186,7 +176,7 @@ std::optional<std::uint64_t> ProjectedExecutionPeakBytes(
       !CheckedMultiply(request.source_rows.size(), sizeof(std::size_t),
                        &ordinals) ||
       !CheckedMultiply(request.source_rows.size(),
-                       sizeof(std::string) + kSetNodeOverhead,
+                       sizeof(core::platform::Uuid) + kSetNodeOverhead,
                        &uuid_set) ||
       !CheckedMultiply(request.source_rows.size(),
                        sizeof(std::size_t) + kSetNodeOverhead,
@@ -196,10 +186,10 @@ std::optional<std::uint64_t> ProjectedExecutionPeakBytes(
     return std::nullopt;
   }
   for (const auto& row : request.source_rows) {
-    if (!CheckedAdd(uuid_set, row.row_uuid.size() + 1, &uuid_set) ||
-        !CheckedAdd(result_rows, row.row_uuid.size() + 1, &result_rows) ||
+    if (!CheckedAdd(uuid_set, row.row_uuid.bytes.size() + 1, &uuid_set) ||
+        !CheckedAdd(result_rows, row.row_uuid.bytes.size() + 1, &result_rows) ||
         !CheckedAdd(result_rows, row.encoded_point.size(), &result_rows) ||
-        !CheckedAdd(result_rows, row.crs_uuid.size() + 1, &result_rows)) {
+        !CheckedAdd(result_rows, row.crs_uuid.bytes.size() + 1, &result_rows)) {
       return std::nullopt;
     }
   }
@@ -356,7 +346,7 @@ SpatialExecutionResultV1 ExecuteSpatialNativeV1(
                   "spatial source exceeds bounded row grant");
   }
 
-  std::set<std::string> row_uuids;
+  std::set<core::platform::Uuid> row_uuids;
   std::vector<SpatialPoint2dV1> decoded_points;
   decoded_points.reserve(request.source_rows.size());
   for (const auto& row : request.source_rows) {
@@ -538,7 +528,7 @@ static SpatialExecutionResultV2 ExecuteSpatialNativeV2Impl(
     std::vector<SpatialPoint2dV1> decoded_points;
     decoded_points.reserve(request.source_rows.size());
     {
-      std::set<std::string> row_uuids;
+      std::set<core::platform::Uuid> row_uuids;
       for (const auto& row : request.source_rows) {
         if (cancelled()) return cancellation_refusal();
         SpatialPoint2dV1 point;

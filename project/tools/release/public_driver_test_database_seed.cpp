@@ -69,7 +69,7 @@ constexpr std::string_view kDatatypeCatalogSnapshotUuid =
     "019d0000-0000-7000-8000-00000000d701";
 
 struct CreatedDatabaseFixture {
-  std::string database_uuid;
+  api::EngineUuid database_uuid;
   db::DatabaseLifecycleState state;
 };
 
@@ -181,7 +181,7 @@ struct FixtureTable {
   std::string path;
   std::string schema_path;
   std::string name;
-  std::string uuid;
+  api::EngineUuid uuid;
   std::vector<std::pair<std::string, std::string>> columns;
   std::vector<std::vector<std::pair<std::string, std::string>>> rows;
 };
@@ -252,6 +252,13 @@ void Fail(std::string_view message) {
   std::cerr << message << '\n';
   std::exit(EXIT_FAILURE);
 }
+
+api::EngineUuid ClientFixtureUuid(std::string_view text) {
+  const auto parsed = uuid::ParseUuid(std::string(text));
+  if (!parsed.ok()) Fail("invalid UUID in client fixture input");
+  return parsed.value;
+}
+
 
 std::array<std::uint8_t, 32> EvidenceSha256(std::string_view value) {
   const auto* bytes = reinterpret_cast<const scratchbird::core::platform::byte*>(
@@ -369,9 +376,8 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name, std:
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
   if (column.descriptor.canonical_type_name == "bigint") {
-    column.descriptor.encoded_descriptor =
-        "type=bigint;nullable=true;"
-        "type_uuid=019d0000-0000-7000-8000-00000000d712";
+    column.descriptor.type_uuid = ClientFixtureUuid("019d0000-0000-7000-8000-00000000d712");
+    column.descriptor.encoded_descriptor = "type=bigint;nullable=true";
   } else {
     column.descriptor.encoded_descriptor =
         "type=" + column.descriptor.canonical_type_name;
@@ -384,7 +390,12 @@ api::EngineTypedValue Value(std::string value, std::string type = "text") {
   typed.descriptor.descriptor_kind = "scalar";
   typed.descriptor.canonical_type_name = std::move(type);
   typed.descriptor.encoded_descriptor = "type=" + typed.descriptor.canonical_type_name;
-  typed.encoded_value = std::move(value);
+  if (typed.descriptor.canonical_type_name == "uuid") {
+    const auto identity = ClientFixtureUuid(value);
+    typed.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
+  } else {
+    typed.encoded_value = std::move(value);
+  }
   typed.is_null = false;
   typed.state = api::EngineValueState::value;
   return typed;
@@ -393,26 +404,26 @@ api::EngineTypedValue Value(std::string value, std::string type = "text") {
 api::EngineRowValue Row(const std::vector<std::pair<std::string, std::string>>& fields) {
   api::EngineRowValue row;
   for (const auto& [name, value] : fields) {
-    row.fields.push_back({name, Value(value)});
+    row.fields.push_back({name, Value(value, name == "principal_uuid" ? "uuid" : "text")});
   }
   return row;
 }
 
-api::EngineRequestContext BaseContext(const Args& args, const std::string& database_uuid) {
+api::EngineRequestContext BaseContext(const Args& args, const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.security_context_present = true;
   context.request_id = "public-driver-test-database-seed";
   context.database_path = args.output.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = std::string(kAlicePrincipalUuid);
-  context.session_uuid.canonical = "019f0a11-ce00-7000-8000-0000000000ff";
+  context.database_uuid = database_uuid;
+  context.principal_uuid = ClientFixtureUuid(kAlicePrincipalUuid);
+  context.session_uuid = ClientFixtureUuid("019f0a11-ce00-7000-8000-0000000000ff");
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      std::string(kDatatypeCatalogSnapshotUuid);
+  context.datatype_catalog_snapshot_uuid =
+      ClientFixtureUuid(kDatatypeCatalogSnapshotUuid);
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.trace_tags.push_back("public.driver_test_database_seed");
@@ -450,7 +461,7 @@ void Commit(const api::EngineRequestContext& context) {
   }
 }
 
-std::string SchemaUuidForPath(const api::EngineRequestContext& context, const std::string& path) {
+api::EngineUuid SchemaUuidForPath(const api::EngineRequestContext& context, const std::string& path) {
   api::EngineApiDiagnostic diagnostic;
   const auto schemas = api::VisibleSchemaTreeRecords(context, context.local_transaction_id, diagnostic);
   if (diagnostic.error) {
@@ -512,18 +523,18 @@ CreatedDatabaseFixture CreateDatabase(const Args& args) {
     Fail("driver test database full resource seed activation failed");
   }
   CreatedDatabaseFixture fixture;
-  fixture.database_uuid = uuid::UuidToString(database_uuid.value);
+  fixture.database_uuid = database_uuid.value;
   fixture.state = created.state;
   return fixture;
 }
 
 void CreateAppSchema(const api::EngineRequestContext& context) {
-  if (!SchemaUuidForPath(context, "app").empty()) {
+  if (!SchemaUuidForPath(context, "app").is_nil()) {
     return;
   }
   api::EngineCreateSchemaRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = std::string(kAppSchemaUuid);
+  request.target_object.uuid = ClientFixtureUuid(kAppSchemaUuid);
   request.target_object.object_kind = "schema";
   request.localized_names.push_back(Name("app", "app"));
   const auto result = api::EngineCreateSchema(request);
@@ -534,12 +545,12 @@ void CreateAppSchema(const api::EngineRequestContext& context) {
 
 api::EngineObjectReference CreateTable(const api::EngineRequestContext& context,
                                        const FixtureTable& fixture,
-                                       const std::string& schema_uuid) {
+                                       const api::EngineUuid& schema_uuid) {
   api::EngineCreateTableRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.target_schema.object_kind = "schema";
-  request.requested_table_uuid.canonical = fixture.uuid;
+  request.requested_table_uuid = fixture.uuid;
   request.table_names.push_back(Name(fixture.path, fixture.name));
   for (std::uint32_t ordinal = 0; ordinal < fixture.columns.size(); ++ordinal) {
     request.table_columns.push_back(Column(ordinal + 1,
@@ -584,7 +595,7 @@ std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
           "app.customers",
           "app",
           "customers",
-          "018f0a2b-0000-7000-9000-000000000101",
+          ClientFixtureUuid("018f0a2b-0000-7000-9000-000000000101"),
           {{"id", "bigint"}, {"customer_name", "text"}, {"status", "text"}},
           {{{"id", "1"}, {"customer_name", "Ada Lovelace"}, {"status", "active"}},
            {{"id", "2"}, {"customer_name", "Grace Hopper"}, {"status", "active"}}},
@@ -593,7 +604,7 @@ std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
           "app.customer_profiles",
           "app",
           "customer_profiles",
-          "018f0a2b-0000-7000-9000-000000000302",
+          ClientFixtureUuid("018f0a2b-0000-7000-9000-000000000302"),
           {{"id", "bigint"}, {"customer_id", "bigint"}, {"profile_json", "text"}},
           {{{"id", "10"}, {"customer_id", "1"}, {"profile_json", "{\"tier\":\"beta\"}"}}},
       },
@@ -601,7 +612,7 @@ std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
           "app.payroll_private",
           "app",
           "payroll_private",
-          "018f0a2b-0000-7000-9000-000000000301",
+          ClientFixtureUuid("018f0a2b-0000-7000-9000-000000000301"),
           {{"id", "bigint"}, {"employee_name", "text"}, {"salary_cents", "bigint"}},
           {{{"id", "100"}, {"employee_name", "Test Employee"}, {"salary_cents", "123456"}}},
       },
@@ -609,8 +620,8 @@ std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
           "sys.security.users",
           "sys.security",
           "users",
-          "018f0a2b-0000-7000-9000-000000000401",
-          {{"principal_uuid", "text"}, {"principal_name", "text"}, {"principal_state", "text"}},
+          ClientFixtureUuid("018f0a2b-0000-7000-9000-000000000401"),
+          {{"principal_uuid", "uuid"}, {"principal_name", "text"}, {"principal_state", "text"}},
           {{{"principal_uuid", std::string(kAlicePrincipalUuid)}, {"principal_name", "alice"}, {"principal_state", "active"}}},
       },
   };
@@ -619,7 +630,7 @@ std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
         "app.bulk_import_v1",
         "app",
         "bulk_import_v1",
-        "018f0a2b-0000-7000-9000-000000000501",
+        ClientFixtureUuid("018f0a2b-0000-7000-9000-000000000501"),
         {{"id", "int32"},
          {"item_name", "text"},
          {"item_state", "text"}},
@@ -631,7 +642,7 @@ std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
         "app.trig_items",
         "app",
         "trig_items",
-        "018f0a2b-0000-7000-9000-000000000601",
+        ClientFixtureUuid("018f0a2b-0000-7000-9000-000000000601"),
         {{"item_id", "bigint"},
          {"item_name", "text"},
          {"item_price", "bigint"}},
@@ -641,7 +652,7 @@ std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
         "app.trig_audit",
         "app",
         "trig_audit",
-        "018f0a2b-0000-7000-9000-000000000602",
+        ClientFixtureUuid("018f0a2b-0000-7000-9000-000000000602"),
         {{"audit_id", "bigint"},
          {"event_kind", "text"},
          {"item_id", "bigint"},
@@ -655,13 +666,13 @@ std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
 }
 
 void CreateTriggerFixtureSequence(const api::EngineRequestContext& context,
-                                  const std::string& schema_uuid) {
+                                  const api::EngineUuid& schema_uuid) {
   api::EngineCreateSequenceRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical =
-      "018f0a2b-0000-7000-9000-000000000603";
+  request.target_object.uuid =
+      ClientFixtureUuid("018f0a2b-0000-7000-9000-000000000603");
   request.target_object.object_kind = "sequence";
   request.localized_names.push_back(
       Name("app.trig_audit_seq", "trig_audit_seq"));
@@ -682,7 +693,7 @@ void CreateTriggerFixtureSequence(const api::EngineRequestContext& context,
 
 void CreateSecurityAlterPolicyFixture(
     const api::EngineRequestContext& context,
-    const std::string& schema_uuid) {
+    const api::EngineUuid& schema_uuid) {
   // Fixture publication is an engine-internal bootstrap action.  Keep this
   // authority local to the seeder: the authenticated parser session used by
   // the process E2E must obtain its own materialized POLICY_ADMIN authority.
@@ -690,19 +701,19 @@ void CreateSecurityAlterPolicyFixture(
   fixture_context.trust_mode = api::EngineTrustMode::embedded_in_process;
   fixture_context.trace_tags.push_back("security.fixture_trace_authority");
   fixture_context.trace_tags.push_back("right:POLICY_ADMIN");
-  fixture_context.statement_uuid.canonical =
-      std::string(kSecurityAlterPolicyStatementUuid);
-  fixture_context.statement_snapshot_uuid.canonical =
-      std::string(kSecurityAlterPolicyStatementSnapshotUuid);
+  fixture_context.statement_uuid =
+      ClientFixtureUuid(kSecurityAlterPolicyStatementUuid);
+  fixture_context.statement_snapshot_uuid =
+      ClientFixtureUuid(kSecurityAlterPolicyStatementSnapshotUuid);
   fixture_context.statement_snapshot_generation = 1;
-  fixture_context.statement_receipt_uuid.canonical =
-      std::string(kSecurityAlterPolicyStatementReceiptUuid);
+  fixture_context.statement_receipt_uuid =
+      ClientFixtureUuid(kSecurityAlterPolicyStatementReceiptUuid);
   fixture_context.statement_metadata_snapshot_engine_owned = true;
-  fixture_context.statement_metadata_snapshot_uuid.canonical =
-      std::string(kSecurityAlterPolicyMetadataSnapshotUuid);
+  fixture_context.statement_metadata_snapshot_uuid =
+      ClientFixtureUuid(kSecurityAlterPolicyMetadataSnapshotUuid);
 
   const auto relation = api::LoadMgaRelationStorageDescriptor(
-      fixture_context, std::string(kCustomersRelationUuid));
+      fixture_context, ClientFixtureUuid(kCustomersRelationUuid));
   if (!relation.ok || relation.descriptor.relation_generation == 0) {
     std::cerr << "security_policy_target_load_failed=app.customers\n";
     if (relation.diagnostic.error) {
@@ -715,31 +726,31 @@ void CreateSecurityAlterPolicyFixture(
 
   api::EngineSecurityCreatePolicyRequest create;
   create.context = fixture_context;
-  create.policy_uuid = std::string(kSecurityAlterPolicyFixtureUuid);
+  create.policy_uuid = ClientFixtureUuid(kSecurityAlterPolicyFixtureUuid);
   create.policy_name = "app_policy";
   create.target_schema_uuid = schema_uuid;
-  create.target_object_uuid = std::string(kCustomersRelationUuid);
+  create.target_object_uuid = ClientFixtureUuid(kCustomersRelationUuid);
   create.target_object_kind = "relation";
   create.policy_effect = "row_filter";
   create.predicate_envelope = "predicate:true";
-  create.definer_principal_uuid = std::string(kAlicePrincipalUuid);
+  create.definer_principal_uuid = ClientFixtureUuid(kAlicePrincipalUuid);
   create.localized_names.push_back(Name("app.app_policy", "app_policy"));
   create.native_authority.present = true;
   create.native_authority.policy_version_uuid =
-      std::string(kSecurityAlterPolicyVersionUuid);
+      ClientFixtureUuid(kSecurityAlterPolicyVersionUuid);
   create.native_authority.target_relation_generation =
       relation.descriptor.relation_generation;
   create.native_authority.phase = 1;
   create.native_authority.effective_policy_uuid =
-      std::string(kSecurityAlterPolicyEffectiveUuid);
+      ClientFixtureUuid(kSecurityAlterPolicyEffectiveUuid);
   create.native_authority.effective_policy_generation = 1;
   create.native_authority.effective_expression_uuid =
-      std::string(kSecurityAlterPolicyEffectiveExpressionUuid);
+      ClientFixtureUuid(kSecurityAlterPolicyEffectiveExpressionUuid);
   create.native_authority.effective_expression_generation = 1;
   create.native_authority.effective_expression_evidence_sha256 =
       EvidenceSha256("ScratchBird.PublicDriverFixture.AppPolicy.EffectiveExpression.V1");
   create.native_authority.source_expression_uuid =
-      std::string(kSecurityAlterPolicySourceExpressionUuid);
+      ClientFixtureUuid(kSecurityAlterPolicySourceExpressionUuid);
   create.native_authority.source_expression_generation = 1;
   create.native_authority.source_expression_evidence_sha256 =
       EvidenceSha256("ScratchBird.PublicDriverFixture.AppPolicy.SourceExpression.V1");
@@ -756,7 +767,7 @@ void CreateSecurityAlterPolicyFixture(
 
   api::EngineSecurityAlterPolicyRequest disable;
   disable.context = fixture_context;
-  disable.policy_uuid = std::string(kSecurityAlterPolicyFixtureUuid);
+  disable.policy_uuid = ClientFixtureUuid(kSecurityAlterPolicyFixtureUuid);
   disable.expected_policy_generation = created.policy_generation;
   disable.lifecycle_state = "disabled";
   const auto disabled = api::EngineSecurityAlterPolicy(disable);
@@ -779,8 +790,8 @@ void SeedFixtureObjects(const api::EngineRequestContext& context,
   CreateAppSchema(context);
   for (const auto& fixture :
        FixtureTables(include_bulk_import_fixture, include_trigger_fixture)) {
-    const std::string schema_uuid = SchemaUuidForPath(context, fixture.schema_path);
-    if (schema_uuid.empty()) {
+    const api::EngineUuid schema_uuid = SchemaUuidForPath(context, fixture.schema_path);
+    if (schema_uuid.is_nil()) {
       std::cerr << "schema_not_visible=" << fixture.schema_path << '\n';
       Fail("driver test database fixture schema not visible");
     }
@@ -789,14 +800,14 @@ void SeedFixtureObjects(const api::EngineRequestContext& context,
   }
   if (include_trigger_fixture) {
     const auto schema_uuid = SchemaUuidForPath(context, "app");
-    if (schema_uuid.empty()) {
+    if (schema_uuid.is_nil()) {
       Fail("driver test database trigger fixture schema not visible");
     }
     CreateTriggerFixtureSequence(context, schema_uuid);
   }
   if (include_security_alter_policy_fixture) {
     const auto schema_uuid = SchemaUuidForPath(context, "app");
-    if (schema_uuid.empty()) {
+    if (schema_uuid.is_nil()) {
       Fail("driver test database security policy fixture schema not visible");
     }
     CreateSecurityAlterPolicyFixture(context, schema_uuid);
@@ -871,7 +882,7 @@ void WriteResourceSeedCatalogJson(std::ofstream& out,
 }
 
 void WriteManifest(const Args& args,
-                   const std::string& database_uuid,
+                   const api::EngineUuid& database_uuid,
                    const db::DatabaseLifecycleState& state) {
   std::filesystem::create_directories(args.manifest.parent_path());
   std::ofstream out(args.manifest, std::ios::trunc);
@@ -881,7 +892,7 @@ void WriteManifest(const Args& args,
   out << "{\n";
   out << "  \"schema_version\": \"scratchbird_public_driver_test_database_seed_v1\",\n";
   out << "  \"database\": \"" << args.output.filename().string() << "\",\n";
-  out << "  \"database_uuid\": \"" << database_uuid << "\",\n";
+  out << "  \"database_uuid\": \"" << uuid::UuidToString(database_uuid) << "\",\n";
   out << "  \"page_size\": " << args.page_size << ",\n";
   out << "  \"creation_unix_epoch_millis\": " << kDriverFixtureCreationMillis << ",\n";
   out << "  \"full_create_database\": true,\n";
@@ -897,7 +908,7 @@ void WriteManifest(const Args& args,
   const auto tables =
       FixtureTables(args.bulk_import_fixture, args.trigger_fixture);
   for (std::size_t index = 0; index < tables.size(); ++index) {
-    out << "    {\"path\": \"" << tables[index].path << "\", \"uuid\": \"" << tables[index].uuid << "\"}";
+    out << "    {\"path\": \"" << tables[index].path << "\", \"uuid\": \"" << uuid::UuidToString(tables[index].uuid) << "\"}";
     out << (index + 1 == tables.size() && !args.trigger_fixture &&
                     !args.security_alter_policy_fixture
                 ? "\n"
@@ -958,8 +969,8 @@ int main(int argc, char** argv) {
       bootstrap_security.state.principal_name != "alice" ||
       bootstrap_security.state.credential_fingerprint !=
           kAliceBootstrapCredentialFingerprint ||
-      uuid::UuidToString(bootstrap_security.state.sysarch_role_uuid.value) !=
-          db::kCanonicalSysarchRoleObjectUuid) {
+      bootstrap_security.state.sysarch_role_uuid.value !=
+          ClientFixtureUuid(db::kCanonicalSysarchRoleObjectUuid)) {
     Fail("driver test database durable bootstrap security verification failed");
   }
   WriteManifest(args, fixture.database_uuid, fixture.state);

@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_catalog_column_fixture.hpp"
 #include "api_types.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -74,56 +77,56 @@ namespace update_wire = scratchbird::wire;
 #define SB_SBSFC021_SEED_PACK_ROOT "project/resources/seed-packs/initial-resource-pack"
 #endif
 
-constexpr const char* kDatabaseUuid = "019f2100-0000-7000-8000-000000000001";
-std::string g_database_uuid = kDatabaseUuid;
-std::string g_principal_uuid =
-    "019f2100-0000-7000-8000-000000000002";
-constexpr const char* kSchemaUuid = "019f2100-0000-7000-8000-000000000101";
-constexpr const char* kTableUuid = "019f2100-0000-7000-8000-000000000102";
-constexpr const char* kIndexUuid = "019f2100-0000-7000-8000-000000000103";
-constexpr const char* kQueryLeftTableUuid = "019f2100-0000-7000-8000-000000000104";
-constexpr const char* kQueryRightTableUuid = "019f2100-0000-7000-8000-000000000105";
-constexpr const char* kAggregateTableUuid = "019f2100-0000-7000-8000-000000000106";
-constexpr const char* kByNameLeftTableUuid = "019f2100-0000-7000-8000-000000000107";
-constexpr const char* kByNameRightTableUuid = "019f2100-0000-7000-8000-000000000108";
-constexpr const char* kBoolAggregateTableUuid = "019f2100-0000-7000-8000-000000000109";
-constexpr const char* kRowA = "019f2100-0000-7000-8000-000000000201";
-constexpr const char* kRowB = "019f2100-0000-7000-8000-000000000202";
-constexpr const char* kRowC = "019f2100-0000-7000-8000-000000000203";
-constexpr const char* kRowD = "019f2100-0000-7000-8000-000000000204";
-constexpr const char* kRowE = "019f2100-0000-7000-8000-000000000205";
-constexpr const char* kRowF = "019f2100-0000-7000-8000-000000000206";
-constexpr const char* kRowG = "019f2100-0000-7000-8000-000000000207";
-constexpr const char* kRowH = "019f2100-0000-7000-8000-000000000208";
-constexpr const char* kRowI = "019f2100-0000-7000-8000-000000000209";
-constexpr const char* kJoinRowA = "019f2100-0000-7000-8000-00000000020a";
-constexpr const char* kJoinRowB = "019f2100-0000-7000-8000-00000000020b";
-constexpr const char* kJoinRowC = "019f2100-0000-7000-8000-00000000020c";
-constexpr const char* kJoinRowD = "019f2100-0000-7000-8000-000000000210";
-constexpr const char* kJoinRowE = "019f2100-0000-7000-8000-000000000214";
-constexpr const char* kSetRowA = "019f2100-0000-7000-8000-00000000020d";
-constexpr const char* kSetRowB = "019f2100-0000-7000-8000-00000000020e";
-constexpr const char* kSetRowC = "019f2100-0000-7000-8000-00000000020f";
-constexpr const char* kSetRowD = "019f2100-0000-7000-8000-000000000215";
-constexpr const char* kAggRowA = "019f2100-0000-7000-8000-000000000211";
-constexpr const char* kAggRowB = "019f2100-0000-7000-8000-000000000212";
-constexpr const char* kAggRowC = "019f2100-0000-7000-8000-000000000213";
-constexpr const char* kBoolAggRowA = "019f2100-0000-7000-8000-00000000021a";
-constexpr const char* kBoolAggRowB = "019f2100-0000-7000-8000-00000000021b";
-constexpr const char* kBoolAggRowC = "019f2100-0000-7000-8000-00000000021c";
-constexpr const char* kBoolAggRowD = "019f2100-0000-7000-8000-00000000021d";
-constexpr const char* kBoolAggRowE = "019f2100-0000-7000-8000-00000000021e";
-constexpr const char* kInsertSourceRow = "019f2100-0000-7000-8000-00000000021f";
-constexpr const char* kBulkRowA = "019f2100-0000-7000-8000-000000000220";
-constexpr const char* kBulkRowB = "019f2100-0000-7000-8000-000000000221";
-constexpr const char* kCopyFastRowA = "019f2100-0000-7000-8000-000000000222";
-constexpr const char* kCopyFastRowB = "019f2100-0000-7000-8000-000000000223";
-constexpr const char* kPublicCopyFastRowA = "019f2100-0000-7000-8000-000000000224";
-constexpr const char* kPublicCopyFastRowB = "019f2100-0000-7000-8000-000000000225";
-constexpr const char* kByNameLeftRowA = "019f2100-0000-7000-8000-000000000216";
-constexpr const char* kByNameLeftRowB = "019f2100-0000-7000-8000-000000000217";
-constexpr const char* kByNameRightRowA = "019f2100-0000-7000-8000-000000000218";
-constexpr const char* kByNameRightRowB = "019f2100-0000-7000-8000-000000000219";
+constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000001");
+api::EngineUuid g_database_uuid = kDatabaseUuid;
+api::EngineUuid g_principal_uuid =
+    scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000002");
+constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
+constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
+constexpr auto kIndexUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000103");
+constexpr auto kQueryLeftTableUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000104");
+constexpr auto kQueryRightTableUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000105");
+constexpr auto kAggregateTableUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000106");
+constexpr auto kByNameLeftTableUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000107");
+constexpr auto kByNameRightTableUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000108");
+constexpr auto kBoolAggregateTableUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000109");
+constexpr auto kRowA = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000201");
+constexpr auto kRowB = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000202");
+constexpr auto kRowC = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000203");
+constexpr auto kRowD = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000204");
+constexpr auto kRowE = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000205");
+constexpr auto kRowF = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000206");
+constexpr auto kRowG = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000207");
+constexpr auto kRowH = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000208");
+constexpr auto kRowI = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000209");
+constexpr auto kJoinRowA = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000020a");
+constexpr auto kJoinRowB = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000020b");
+constexpr auto kJoinRowC = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000020c");
+constexpr auto kJoinRowD = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000210");
+constexpr auto kJoinRowE = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000214");
+constexpr auto kSetRowA = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000020d");
+constexpr auto kSetRowB = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000020e");
+constexpr auto kSetRowC = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000020f");
+constexpr auto kSetRowD = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000215");
+constexpr auto kAggRowA = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000211");
+constexpr auto kAggRowB = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000212");
+constexpr auto kAggRowC = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000213");
+constexpr auto kBoolAggRowA = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000021a");
+constexpr auto kBoolAggRowB = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000021b");
+constexpr auto kBoolAggRowC = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000021c");
+constexpr auto kBoolAggRowD = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000021d");
+constexpr auto kBoolAggRowE = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000021e");
+constexpr auto kInsertSourceRow = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000021f");
+constexpr auto kBulkRowA = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000220");
+constexpr auto kBulkRowB = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000221");
+constexpr auto kCopyFastRowA = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000222");
+constexpr auto kCopyFastRowB = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000223");
+constexpr auto kPublicCopyFastRowA = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000224");
+constexpr auto kPublicCopyFastRowB = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000225");
+constexpr auto kByNameLeftRowA = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000216");
+constexpr auto kByNameLeftRowB = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000217");
+constexpr auto kByNameRightRowA = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000218");
+constexpr auto kByNameRightRowB = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000219");
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -165,7 +168,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && (id.empty() || evidence.evidence_id == id)) {
+    if (evidence.evidence_kind == kind && (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -180,7 +183,7 @@ std::uint64_t EvidenceU64(const api::EngineApiResult& result, std::string_view k
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind != kind) { continue; }
     try {
-      return static_cast<std::uint64_t>(std::stoull(evidence.evidence_id));
+      return static_cast<std::uint64_t>(std::stoull(std::get<std::string>(evidence.evidence_id)));
     } catch (...) {
       return 0;
     }
@@ -251,27 +254,42 @@ ServerExecuteResultForTest DecodeServerExecuteResult(const std::vector<std::uint
   return result;
 }
 
+api::EngineUuid FixtureIdentity(std::uint64_t ordinal) {
+  auto id = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000000");
+  for (unsigned i = 0; i < 6; ++i) id.bytes[15-i] = static_cast<std::uint8_t>(ordinal >> (8*i));
+  return id;
+}
+
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
                                       std::string session_suffix = "001") {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "sbsfc021-dml-mga-row-result";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = g_database_uuid;
-  context.principal_uuid.canonical = g_principal_uuid;
-  context.session_uuid.canonical = "019f2100-0000-7000-8000-000000000" + std::move(session_suffix);
+  context.database_uuid = g_database_uuid;
+  context.principal_uuid = g_principal_uuid;
+  context.session_uuid = FixtureIdentity(std::stoull(session_suffix, nullptr, 16));
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("SBSFC-021");
   context.trace_tags.push_back("dml-mga-row-result");
   return context;
+}
+
+std::string IdentityBytes(const api::EngineUuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+
+bool EvidencePresent(const api::EngineEvidenceValue& value) {
+  if (const auto* id = std::get_if<api::EngineUuid>(&value))
+    return scratchbird::core::uuid::IsEngineIdentityUuid(*id);
+  return !std::get<std::string>(value).empty();
 }
 
 bool RequiresTransaction(std::string_view operation_id) {
@@ -331,8 +349,8 @@ void RequireServerAdmitted(std::string_view operation_id, std::string_view opcod
 sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcode) {
   auto envelope = scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
       operation_id, opcode, "SBSFC-021");
-  envelope.parser_package_uuid = "019f2100-0000-7000-8000-000000000010";
-  envelope.registry_snapshot_uuid = "019f2100-0000-7000-8000-000000000011";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000010");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000011");
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
@@ -393,7 +411,7 @@ api::EngineLocalizedName Name(std::string name) {
 
 api::EngineIndexDefinition UniqueIdIndex() {
   api::EngineIndexDefinition index;
-  index.requested_index_uuid.canonical = kIndexUuid;
+  index.requested_index_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000103");
   index.names.push_back(Name("sbsfc021_table_id_unique"));
   index.index_kind = "btree";
   index.key_envelopes.push_back("unique");
@@ -404,11 +422,11 @@ api::EngineIndexDefinition UniqueIdIndex() {
 api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
-  column.requested_column_uuid.canonical =
-      "019f2100-0000-7000-8000-00000000030" + std::to_string(ordinal);
+  column.requested_column_uuid =
+      FixtureIdentity(0x300 + ordinal);
   column.names.push_back(Name(std::move(name)));
-  column.descriptor.descriptor_uuid.canonical =
-      "019f2100-0000-7000-8000-00000000040" + std::to_string(ordinal);
+  column.descriptor.descriptor_uuid =
+      FixtureIdentity(0x400 + ordinal);
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
@@ -417,83 +435,79 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
 
 api::EngineColumnDefinition JoinColumn(std::uint32_t ordinal, std::string name) {
   api::EngineColumnDefinition column = Column(ordinal, std::move(name));
-  column.requested_column_uuid.canonical =
-      "019f2100-0000-7000-8000-00000000050" + std::to_string(ordinal);
-  column.descriptor.descriptor_uuid.canonical =
-      "019f2100-0000-7000-8000-00000000060" + std::to_string(ordinal);
+  column.requested_column_uuid =
+      FixtureIdentity(0x500 + ordinal);
+  column.descriptor.descriptor_uuid =
+      FixtureIdentity(0x600 + ordinal);
   return column;
 }
 
 api::EngineColumnDefinition QueryPlanInt64Column(std::uint32_t ordinal,
                                                  std::string name,
-                                                 std::string column_uuid,
-                                                 std::string descriptor_uuid) {
+                                                 api::EngineUuid column_uuid,
+                                                 api::EngineUuid descriptor_uuid) {
   (void)descriptor_uuid;
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
-  column.requested_column_uuid.canonical = std::move(column_uuid);
+  column.requested_column_uuid = std::move(column_uuid);
   column.names.push_back(Name(std::move(name)));
-  column.descriptor.descriptor_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d711";
+  column.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "int64";
   column.descriptor.encoded_descriptor =
-      "type=int64;nullable=false;type_uuid="
-      "019d0000-0000-7000-8000-00000000d712;"
-      "datatype_descriptor_uuid="
-      "019d0000-0000-7000-8000-00000000d711";
+      scratchbird::tests::NativeCatalogColumnFixture({{{"type", "int64"}, {"nullable", "false"}}, {{"type_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712")}, {"datatype_descriptor_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711")}}});
   return column;
 }
 
 api::EngineColumnDefinition QueryPlanBoolColumn(std::uint32_t ordinal,
                                                 std::string name,
-                                                std::string column_uuid,
-                                                std::string descriptor_uuid) {
+                                                api::EngineUuid column_uuid,
+                                                api::EngineUuid descriptor_uuid) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
-  column.requested_column_uuid.canonical = std::move(column_uuid);
+  column.requested_column_uuid = std::move(column_uuid);
   column.names.push_back(Name(std::move(name)));
-  column.descriptor.descriptor_uuid.canonical = std::move(descriptor_uuid);
+  column.descriptor.descriptor_uuid = std::move(descriptor_uuid);
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "boolean";
   column.descriptor.encoded_descriptor = "type=boolean";
   return column;
 }
 
-api::EngineRowValue Row(std::string row_uuid, std::string id, std::string note) {
+api::EngineRowValue Row(api::EngineUuid row_uuid, std::string id, std::string note) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", TextValue(std::move(id))});
   row.fields.push_back({"note", TextValue(std::move(note))});
   return row;
 }
 
-api::EngineRowValue IdOnlyRow(std::string row_uuid, std::string id) {
+api::EngineRowValue IdOnlyRow(api::EngineUuid row_uuid, std::string id) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", TextValue(std::move(id))});
   return row;
 }
 
-api::EngineRowValue AggregateRow(std::string row_uuid,
+api::EngineRowValue AggregateRow(api::EngineUuid row_uuid,
                                  std::string id,
                                  std::string dept,
                                  std::string cost) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", TextValue(std::move(id))});
   row.fields.push_back({"dept", TextValue(std::move(dept))});
   row.fields.push_back({"cost", TextValue(std::move(cost))});
   return row;
 }
 
-api::EngineRowValue BoolAggregateRow(std::string row_uuid,
+api::EngineRowValue BoolAggregateRow(api::EngineUuid row_uuid,
                                      std::string id,
                                      std::string dept,
                                      std::string flag,
                                      bool flag_is_null = false) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", TextValue(std::move(id))});
   row.fields.push_back({"dept", TextValue(std::move(dept))});
   row.fields.push_back({"flag", BoolTextValue(std::move(flag), flag_is_null)});
@@ -501,10 +515,10 @@ api::EngineRowValue BoolAggregateRow(std::string row_uuid,
 }
 
 api::EngineRowValue Int64FieldsRow(
-    std::string row_uuid,
+    api::EngineUuid row_uuid,
     std::initializer_list<std::pair<std::string_view, std::string_view>> fields) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   for (const auto& [name, value] : fields) {
     row.fields.push_back({std::string(name), TextValue(std::string(value))});
   }
@@ -516,26 +530,26 @@ api::EngineApiResult SelectById(const std::filesystem::path& database_path,
                                 std::string id);
 api::EngineApiResult InsertRowIntoTable(const std::filesystem::path& database_path,
                                         const api::EngineRequestContext& context,
-                                        std::string table_uuid,
-                                        std::string row_uuid,
+                                        api::EngineUuid table_uuid,
+                                        api::EngineUuid row_uuid,
                                         std::string id,
                                         std::string note);
 api::EngineApiResult InsertIdOnlyRowIntoTable(const std::filesystem::path& database_path,
                                               const api::EngineRequestContext& context,
-                                              std::string table_uuid,
-                                              std::string row_uuid,
+                                              api::EngineUuid table_uuid,
+                                              api::EngineUuid row_uuid,
                                               std::string id);
 api::EngineApiResult InsertAggregateRowIntoTable(const std::filesystem::path& database_path,
                                                  const api::EngineRequestContext& context,
-                                                 std::string table_uuid,
-                                                 std::string row_uuid,
+                                                 api::EngineUuid table_uuid,
+                                                 api::EngineUuid row_uuid,
                                                  std::string id,
                                                  std::string dept,
                                                  std::string cost);
 api::EngineApiResult InsertBoolAggregateRowIntoTable(const std::filesystem::path& database_path,
                                                      const api::EngineRequestContext& context,
-                                                     std::string table_uuid,
-                                                     std::string row_uuid,
+                                                     api::EngineUuid table_uuid,
+                                                     api::EngineUuid row_uuid,
                                                      std::string id,
                                                      std::string dept,
                                                      std::string flag,
@@ -543,8 +557,8 @@ api::EngineApiResult InsertBoolAggregateRowIntoTable(const std::filesystem::path
 api::EngineApiResult InsertInt64FieldsRowIntoTable(
     const std::filesystem::path& database_path,
     const api::EngineRequestContext& context,
-    std::string table_uuid,
-    std::string row_uuid,
+    api::EngineUuid table_uuid,
+    api::EngineUuid row_uuid,
     std::initializer_list<std::pair<std::string_view, std::string_view>> fields);
 
 sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
@@ -583,10 +597,10 @@ ServerRouteForTest MakeServerRoute(const std::filesystem::path& database_path,
   session.database_uuid = g_database_uuid;
   session.local_transaction_id = local_transaction_override.value_or(context.local_transaction_id);
   session.default_local_transaction_id = session.local_transaction_id;
-  session.transaction_uuid = context.transaction_uuid.canonical;
+  session.transaction_uuid = context.transaction_uuid;
   session.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
-  if (session.local_transaction_id != 0 && !session.transaction_uuid.empty()) {
+  if (session.local_transaction_id != 0 && !session.transaction_uuid.is_nil()) {
     server::ServerTransactionState transaction;
     transaction.local_transaction_id = session.local_transaction_id;
     transaction.transaction_uuid = session.transaction_uuid;
@@ -614,7 +628,7 @@ std::string PublicCopyExecuteEnvelope(bool include_target, bool include_rows) {
   std::string out = AdmissionEnvelope("dml.execute_import_rows", "SBLR_DML_EXECUTE_IMPORT_ROWS");
   if (include_target) {
     out += "target_object_uuid=";
-    out += kTableUuid;
+    out += IdentityBytes(kTableUuid);
     out += "\n";
     out += "target_object_kind=table\n";
   }
@@ -638,16 +652,16 @@ std::string PublicCopyExecuteEnvelope(bool include_target, bool include_rows) {
   out += "checkpoint_mode=disabled\n";
   if (include_rows) {
     out += "operand=row_field\t";
-    out += kRowF;
+    out += IdentityBytes(kRowF);
     out += "|id\t6\n";
     out += "operand=row_field\t";
-    out += kRowF;
+    out += IdentityBytes(kRowF);
     out += "|note\tcopy-public-a\n";
     out += "operand=row_field\t";
-    out += kRowG;
+    out += IdentityBytes(kRowG);
     out += "|id\t7\n";
     out += "operand=row_field\t";
-    out += kRowG;
+    out += IdentityBytes(kRowG);
     out += "|note\tcopy-public-b\n";
   }
   return out;
@@ -656,7 +670,7 @@ std::string PublicCopyExecuteEnvelope(bool include_target, bool include_rows) {
 std::string PublicCopyFailFastExecuteEnvelope() {
   std::string out = AdmissionEnvelope("dml.execute_import_rows", "SBLR_DML_EXECUTE_IMPORT_ROWS");
   out += "target_object_uuid=";
-  out += kTableUuid;
+  out += IdentityBytes(kTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "source_kind=csv_stream\n";
@@ -678,16 +692,16 @@ std::string PublicCopyFailFastExecuteEnvelope() {
   out += "resume_policy=fail_closed\n";
   out += "checkpoint_mode=disabled\n";
   out += "operand=row_field\t";
-  out += kPublicCopyFastRowA;
+  out += IdentityBytes(kPublicCopyFastRowA);
   out += "|id\t13\n";
   out += "operand=row_field\t";
-  out += kPublicCopyFastRowA;
+  out += IdentityBytes(kPublicCopyFastRowA);
   out += "|note\tcopy-public-fast-a\n";
   out += "operand=row_field\t";
-  out += kPublicCopyFastRowB;
+  out += IdentityBytes(kPublicCopyFastRowB);
   out += "|id\t14\n";
   out += "operand=row_field\t";
-  out += kPublicCopyFastRowB;
+  out += IdentityBytes(kPublicCopyFastRowB);
   out += "|note\tcopy-public-fast-b\n";
   return out;
 }
@@ -695,7 +709,7 @@ std::string PublicCopyFailFastExecuteEnvelope() {
 std::string PublicOrderedSelectEnvelope() {
   std::string out = AdmissionEnvelope("dml.select_rows", "SBLR_DML_SELECT_ROWS");
   out += "target_object_uuid=";
-  out += kTableUuid;
+  out += IdentityBytes(kTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "order_by=id\n";
@@ -708,7 +722,7 @@ std::string PublicOrderedSelectEnvelope() {
 std::string PublicFetchBoundedSelectEnvelope() {
   std::string out = AdmissionEnvelope("dml.select_rows", "SBLR_DML_SELECT_ROWS");
   out += "target_object_uuid=";
-  out += kTableUuid;
+  out += IdentityBytes(kTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "limit=2\n";
@@ -718,7 +732,7 @@ std::string PublicFetchBoundedSelectEnvelope() {
 std::string PublicTopBoundedSelectEnvelope() {
   std::string out = AdmissionEnvelope("dml.select_rows", "SBLR_DML_SELECT_ROWS");
   out += "target_object_uuid=";
-  out += kTableUuid;
+  out += IdentityBytes(kTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "limit=2\n";
@@ -730,11 +744,11 @@ std::string PublicTableJoinEnvelope() {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_inner_join\n";
   out += "target_object_uuid=";
-  out += kQueryLeftTableUuid;
+  out += IdentityBytes(kQueryLeftTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "related_object_0_uuid=";
-  out += kQueryRightTableUuid;
+  out += IdentityBytes(kQueryRightTableUuid);
   out += "\n";
   out += "related_object_0_kind=table\n";
   out += "join_algorithm=hash\n";
@@ -749,11 +763,11 @@ std::string PublicTableSetOperationEnvelope(std::string_view operation) {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_set_operation\n";
   out += "target_object_uuid=";
-  out += kQueryLeftTableUuid;
+  out += IdentityBytes(kQueryLeftTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "related_object_0_uuid=";
-  out += kQueryRightTableUuid;
+  out += IdentityBytes(kQueryRightTableUuid);
   out += "\n";
   out += "related_object_0_kind=table\n";
   out += "set_operation=";
@@ -766,11 +780,11 @@ std::string PublicTableSetByNameOperationEnvelope(std::string_view operation) {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_set_operation\n";
   out += "target_object_uuid=";
-  out += kByNameLeftTableUuid;
+  out += IdentityBytes(kByNameLeftTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "related_object_0_uuid=";
-  out += kByNameRightTableUuid;
+  out += IdentityBytes(kByNameRightTableUuid);
   out += "\n";
   out += "related_object_0_kind=table\n";
   out += "set_operation=";
@@ -784,7 +798,7 @@ std::string PublicRowNumberWindowEnvelope() {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_row_number_window\n";
   out += "target_object_uuid=";
-  out += kQueryLeftTableUuid;
+  out += IdentityBytes(kQueryLeftTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "order_by=id\n";
@@ -798,7 +812,7 @@ std::string PublicPartitionCountWindowEnvelope() {
   out += "query_envelope_kind=table_partition_count_window\n";
   out += "query_operation=partition_count_window\n";
   out += "target_object_uuid=";
-  out += kAggregateTableUuid;
+  out += IdentityBytes(kAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "partition_by=dept\n";
@@ -813,7 +827,7 @@ std::string PublicNavigationWindowEnvelope(std::string_view function) {
   out += "query_envelope_kind=table_window\n";
   out += "query_operation=window\n";
   out += "target_object_uuid=";
-  out += kQueryLeftTableUuid;
+  out += IdentityBytes(kQueryLeftTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "order_by=id\n";
@@ -837,7 +851,7 @@ std::string PublicGroupByAggregateEnvelope(std::string_view function = "sb.aggre
   out += function == "sb.aggregate.sum" ? "query_envelope_kind=table_group_sum\n"
                                         : "query_envelope_kind=table_group_aggregate\n";
   out += "target_object_uuid=";
-  out += kAggregateTableUuid;
+  out += IdentityBytes(kAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "group_key_field=dept\n";
@@ -855,7 +869,7 @@ std::string PublicTableCountEnvelope() {
   out += "query_envelope_kind=table_count\n";
   out += "query_operation=count_all\n";
   out += "target_object_uuid=";
-  out += kAggregateTableUuid;
+  out += IdentityBytes(kAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "aggregate_function=sb.aggregate.count\n";
@@ -877,7 +891,7 @@ std::string PublicEveryAggregateEnvelope() {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_group_aggregate\n";
   out += "target_object_uuid=";
-  out += kBoolAggregateTableUuid;
+  out += IdentityBytes(kBoolAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "group_key_field=dept\n";
@@ -892,7 +906,7 @@ std::string PublicBooleanAggregateEnvelope(std::string_view function) {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_group_aggregate\n";
   out += "target_object_uuid=";
-  out += kBoolAggregateTableUuid;
+  out += IdentityBytes(kBoolAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "group_key_field=dept\n";
@@ -909,7 +923,7 @@ std::string PublicListAggEnvelope(bool truncate = false) {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_group_aggregate\n";
   out += "target_object_uuid=";
-  out += kBoolAggregateTableUuid;
+  out += IdentityBytes(kBoolAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "group_key_field=dept\n";
@@ -933,7 +947,7 @@ std::string PublicStringAggEnvelope() {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_group_aggregate\n";
   out += "target_object_uuid=";
-  out += kBoolAggregateTableUuid;
+  out += IdentityBytes(kBoolAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "group_key_field=dept\n";
@@ -951,7 +965,7 @@ std::string PublicJsonAggEnvelope() {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_group_aggregate\n";
   out += "target_object_uuid=";
-  out += kBoolAggregateTableUuid;
+  out += IdentityBytes(kBoolAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "group_key_field=dept\n";
@@ -968,7 +982,7 @@ std::string PublicJsonObjectAggEnvelope() {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_group_aggregate\n";
   out += "target_object_uuid=";
-  out += kBoolAggregateTableUuid;
+  out += IdentityBytes(kBoolAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "group_key_field=dept\n";
@@ -987,7 +1001,7 @@ std::string PublicJsonObjectAggDuplicateEnvelope() {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_group_aggregate\n";
   out += "target_object_uuid=";
-  out += kBoolAggregateTableUuid;
+  out += IdentityBytes(kBoolAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "group_key_field=dept\n";
@@ -1006,7 +1020,7 @@ std::string PublicArrayAggEnvelope() {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_group_aggregate\n";
   out += "target_object_uuid=";
-  out += kBoolAggregateTableUuid;
+  out += IdentityBytes(kBoolAggregateTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "group_key_field=dept\n";
@@ -1041,7 +1055,7 @@ std::string PublicMaterializedCteEnvelope() {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_materialized_cte\n";
   out += "target_object_uuid=";
-  out += kQueryLeftTableUuid;
+  out += IdentityBytes(kQueryLeftTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   return out;
@@ -1073,7 +1087,7 @@ std::string PublicScalarSubqueryEnvelope() {
   std::string out = AdmissionEnvelope("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION");
   out += "query_envelope_kind=table_scalar_subquery\n";
   out += "target_object_uuid=";
-  out += kQueryLeftTableUuid;
+  out += IdentityBytes(kQueryLeftTableUuid);
   out += "\n";
   out += "target_object_kind=table\n";
   out += "project_columns=0\n";
@@ -1139,7 +1153,7 @@ api::EngineApiResult ExecuteImportRowsThroughServer(const std::filesystem::path&
   // engine import contract through the canonical in-memory dispatch seam;
   // independent COPY process tests cover the authenticated v4015 route.
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.target_object.object_kind = "table";
   request.rows.push_back(Row(kRowF, "6", "copy-public-a"));
   request.rows.push_back(Row(kRowG, "7", "copy-public-b"));
@@ -1175,7 +1189,7 @@ api::EngineApiResult ExecuteFailFastImportRowsThroughServer(
                                 true,
                                 true);
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.target_object.object_kind = "table";
   request.rows.push_back(Row(kPublicCopyFastRowA, "13", "copy-public-fast-a"));
   request.rows.push_back(Row(kPublicCopyFastRowB, "14", "copy-public-fast-b"));
@@ -2819,7 +2833,7 @@ void Rollback(const std::filesystem::path& database_path, const api::EngineReque
 
 api::EngineApiResult InsertRow(const std::filesystem::path& database_path,
                                const api::EngineRequestContext& context,
-                               std::string row_uuid,
+                               api::EngineUuid row_uuid,
                                std::string id,
                                std::string note) {
   return InsertRowIntoTable(database_path, context, kTableUuid, std::move(row_uuid), std::move(id), std::move(note));
@@ -2827,12 +2841,12 @@ api::EngineApiResult InsertRow(const std::filesystem::path& database_path,
 
 api::EngineApiResult InsertRowIntoTable(const std::filesystem::path& database_path,
                                         const api::EngineRequestContext& context,
-                                        std::string table_uuid,
-                                        std::string row_uuid,
+                                        api::EngineUuid table_uuid,
+                                        api::EngineUuid row_uuid,
                                         std::string id,
                                         std::string note) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::move(table_uuid);
+  request.target_object.uuid = std::move(table_uuid);
   request.target_object.object_kind = "table";
   request.rows.push_back(Row(std::move(row_uuid), std::move(id), std::move(note)));
   RequestFullPayload(&request);
@@ -2851,11 +2865,11 @@ api::EngineApiResult InsertRowIntoTable(const std::filesystem::path& database_pa
 
 api::EngineApiResult InsertIdOnlyRowIntoTable(const std::filesystem::path& database_path,
                                               const api::EngineRequestContext& context,
-                                              std::string table_uuid,
-                                              std::string row_uuid,
+                                              api::EngineUuid table_uuid,
+                                              api::EngineUuid row_uuid,
                                               std::string id) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::move(table_uuid);
+  request.target_object.uuid = std::move(table_uuid);
   request.target_object.object_kind = "table";
   request.rows.push_back(IdOnlyRow(std::move(row_uuid), std::move(id)));
   RequestFullPayload(&request);
@@ -2876,7 +2890,7 @@ api::EngineApiResult InsertIdOnlyRowIntoTable(const std::filesystem::path& datab
 api::EngineApiResult InsertBulkRowsIntoTable(const std::filesystem::path& database_path,
                                              const api::EngineRequestContext& context) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.target_object.object_kind = "table";
   request.rows.push_back(Row(kBulkRowA, "9", "bulk-direct-a"));
   request.rows.push_back(Row(kBulkRowB, "10", "bulk-direct-b"));
@@ -2924,13 +2938,13 @@ void RequireInsertSourceRowLabeledMgaProof(const std::filesystem::path& database
 
 api::EngineApiResult InsertAggregateRowIntoTable(const std::filesystem::path& database_path,
                                                  const api::EngineRequestContext& context,
-                                                 std::string table_uuid,
-                                                 std::string row_uuid,
+                                                 api::EngineUuid table_uuid,
+                                                 api::EngineUuid row_uuid,
                                                  std::string id,
                                                  std::string dept,
                                                  std::string cost) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::move(table_uuid);
+  request.target_object.uuid = std::move(table_uuid);
   request.target_object.object_kind = "table";
   request.rows.push_back(AggregateRow(std::move(row_uuid),
                                       std::move(id),
@@ -2953,14 +2967,14 @@ api::EngineApiResult InsertAggregateRowIntoTable(const std::filesystem::path& da
 
 api::EngineApiResult InsertBoolAggregateRowIntoTable(const std::filesystem::path& database_path,
                                                      const api::EngineRequestContext& context,
-                                                     std::string table_uuid,
-                                                     std::string row_uuid,
+                                                     api::EngineUuid table_uuid,
+                                                     api::EngineUuid row_uuid,
                                                      std::string id,
                                                      std::string dept,
                                                      std::string flag,
                                                      bool flag_is_null) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::move(table_uuid);
+  request.target_object.uuid = std::move(table_uuid);
   request.target_object.object_kind = "table";
   request.rows.push_back(BoolAggregateRow(std::move(row_uuid),
                                           std::move(id),
@@ -2985,11 +2999,11 @@ api::EngineApiResult InsertBoolAggregateRowIntoTable(const std::filesystem::path
 api::EngineApiResult InsertInt64FieldsRowIntoTable(
     const std::filesystem::path& database_path,
     const api::EngineRequestContext& context,
-    std::string table_uuid,
-    std::string row_uuid,
+    api::EngineUuid table_uuid,
+    api::EngineUuid row_uuid,
     std::initializer_list<std::pair<std::string_view, std::string_view>> fields) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::move(table_uuid);
+  request.target_object.uuid = std::move(table_uuid);
   request.target_object.object_kind = "table";
   request.rows.push_back(Int64FieldsRow(std::move(row_uuid), fields));
   RequestFullPayload(&request);
@@ -3018,7 +3032,7 @@ api::EngineApiResult SelectById(const std::filesystem::path& database_path,
   // becoming admission authority while preserving the MGA visibility check.
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = kTableUuid;
+  request.source_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.source_object.object_kind = "table";
   request.select_predicate.predicate_kind = "column_equals";
   request.select_predicate.canonical_predicate_envelope = "id";
@@ -3036,11 +3050,11 @@ api::EngineApiResult SelectById(const std::filesystem::path& database_path,
 
 api::EngineApiResult SelectFromTableById(
     const api::EngineRequestContext& context,
-    std::string_view table_uuid,
+    api::EngineUuid table_uuid,
     std::string id) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = std::string(table_uuid);
+  request.source_object.uuid = table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate.predicate_kind = "column_equals";
   request.select_predicate.canonical_predicate_envelope = "id";
@@ -3066,13 +3080,13 @@ void RequireWhereEqualityPredicateRowResult(const std::filesystem::path& databas
 
 api::EngineApiResult UpdateByRowUuid(const std::filesystem::path& database_path,
                                      const api::EngineRequestContext& context,
-                                     std::string row_uuid,
+                                     api::EngineUuid row_uuid,
                                      std::string note) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.target_object.object_kind = "table";
   request.predicate.predicate_kind = "row_uuid_match";
-  request.predicate.canonical_predicate_envelope = std::move(row_uuid);
+  request.predicate.row_uuid = row_uuid;
   request.assignments.push_back({"note", TextValue(std::move(note))});
   RequestFullPayload(&request);
   auto updated = Dispatch(database_path,
@@ -3095,13 +3109,13 @@ api::EngineApiResult UpdateByRowUuid(const std::filesystem::path& database_path,
 api::EngineApiResult UpdateIdByRowUuid(
     const std::filesystem::path& database_path,
     const api::EngineRequestContext& context,
-    std::string row_uuid,
+    api::EngineUuid row_uuid,
     std::string id) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.target_object.object_kind = "table";
   request.predicate.predicate_kind = "row_uuid_match";
-  request.predicate.canonical_predicate_envelope = std::move(row_uuid);
+  request.predicate.row_uuid = row_uuid;
   request.assignments.push_back({"id", TextValue(std::move(id))});
   RequestFullPayload(&request);
   auto updated = Dispatch(database_path,
@@ -3313,11 +3327,11 @@ void RequireTransactionalIndexLifecycle(
 
 api::EngineApiResult MergeRow(const std::filesystem::path& database_path,
                               const api::EngineRequestContext& context,
-                              std::string row_uuid,
+                              api::EngineUuid row_uuid,
                               std::string id,
                               std::string note) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.target_object.object_kind = "table";
   request.predicate.predicate_kind = "row_uuid_match";
   request.rows.push_back(Row(std::move(row_uuid), std::move(id), note));
@@ -3344,12 +3358,12 @@ api::EngineApiResult MergeRow(const std::filesystem::path& database_path,
 
 api::EngineApiResult DeleteByRowUuid(const std::filesystem::path& database_path,
                                      const api::EngineRequestContext& context,
-                                     std::string row_uuid) {
+                                     api::EngineUuid row_uuid) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.target_object.object_kind = "table";
   request.predicate.predicate_kind = "row_uuid_match";
-  request.predicate.canonical_predicate_envelope = std::move(row_uuid);
+  request.predicate.row_uuid = row_uuid;
   RequestFullPayload(&request);
   auto deleted = Dispatch(database_path,
                           "dml.delete_rows",
@@ -3371,7 +3385,7 @@ api::EngineApiResult DeleteByRowUuid(const std::filesystem::path& database_path,
 api::EngineApiResult ExecuteImportRows(const std::filesystem::path& database_path,
                                        const api::EngineRequestContext& context) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.target_object.object_kind = "table";
   request.rows.push_back(Row(kRowD, "4", "copy-exec-a"));
   request.rows.push_back(Row(kRowE, "5", "copy-exec-b"));
@@ -3409,7 +3423,7 @@ api::EngineApiResult ExecuteImportRows(const std::filesystem::path& database_pat
 api::EngineApiResult ExecuteFailFastImportRows(const std::filesystem::path& database_path,
                                                const api::EngineRequestContext& context) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.target_object.object_kind = "table";
   request.rows.push_back(Row(kCopyFastRowA, "11", "copy-fast-a"));
   request.rows.push_back(Row(kCopyFastRowB, "12", "copy-fast-b"));
@@ -3449,7 +3463,7 @@ api::EngineApiResult ExecuteFailFastImportRows(const std::filesystem::path& data
 api::EngineApiResult ExecuteRejectedImportRows(const std::filesystem::path& database_path,
                                                const api::EngineRequestContext& context) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   request.target_object.object_kind = "table";
   request.rows.push_back(Row(kRowH, "8", "copy-reject-valid"));
   request.rows.push_back(Row(kRowI, "6", "copy-reject-duplicate"));
@@ -3499,7 +3513,7 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
   auto context = BeginTransaction(database_path, "101");
 
   api::EngineApiRequest schema_request;
-  schema_request.target_object.uuid.canonical = kSchemaUuid;
+  schema_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
   schema_request.target_object.object_kind = "schema";
   schema_request.localized_names.push_back(Name("sbsfc021_schema"));
   auto schema = Dispatch(database_path,
@@ -3509,13 +3523,13 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
                          schema_request,
                          true);
   Require(schema.api_result.ok, "schema create failed");
-  Require(schema.api_result.primary_object.uuid.canonical == kSchemaUuid,
+  Require(schema.api_result.primary_object.uuid == kSchemaUuid,
           "schema create did not preserve UUID");
 
   api::EngineApiRequest table_request;
-  table_request.target_schema.uuid.canonical = kSchemaUuid;
+  table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
   table_request.target_schema.object_kind = "schema";
-  table_request.target_object.uuid.canonical = kTableUuid;
+  table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
   table_request.target_object.object_kind = "table";
   table_request.localized_names.push_back(Name("sbsfc021_table"));
   table_request.columns.push_back(Column(0, "id"));
@@ -3528,22 +3542,22 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
                         table_request,
                         true);
   Require(table.api_result.ok, "table create failed");
-  Require(table.api_result.primary_object.uuid.canonical == kTableUuid,
+  Require(table.api_result.primary_object.uuid == kTableUuid,
           "table create did not preserve UUID");
   Require(HasEvidence(table.api_result, "mga_relation_metadata", "table_create"),
           "table create MGA metadata evidence missing");
 
   api::EngineApiRequest query_left_table_request;
-  query_left_table_request.target_schema.uuid.canonical = kSchemaUuid;
+  query_left_table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
   query_left_table_request.target_schema.object_kind = "schema";
-  query_left_table_request.target_object.uuid.canonical = kQueryLeftTableUuid;
+  query_left_table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000104");
   query_left_table_request.target_object.object_kind = "table";
   query_left_table_request.localized_names.push_back(Name("sbsfc021_query_left"));
   query_left_table_request.columns.push_back(QueryPlanInt64Column(
       0,
       "id",
-      "019f2100-0000-7000-8000-000000000700",
-      "019f2100-0000-7000-8000-000000000710"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000700"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000710")));
   auto query_left_table = Dispatch(database_path,
                                    "ddl.create_table",
                                    "SBLR_DDL_CREATE_TABLE",
@@ -3551,22 +3565,22 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
                                    query_left_table_request,
                                    true);
   Require(query_left_table.api_result.ok, "query left table create failed");
-  Require(query_left_table.api_result.primary_object.uuid.canonical == kQueryLeftTableUuid,
+  Require(query_left_table.api_result.primary_object.uuid == kQueryLeftTableUuid,
           "query left table create did not preserve UUID");
   Require(HasEvidence(query_left_table.api_result, "mga_relation_metadata", "table_create"),
           "query left table create MGA metadata evidence missing");
 
   api::EngineApiRequest query_right_table_request;
-  query_right_table_request.target_schema.uuid.canonical = kSchemaUuid;
+  query_right_table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
   query_right_table_request.target_schema.object_kind = "schema";
-  query_right_table_request.target_object.uuid.canonical = kQueryRightTableUuid;
+  query_right_table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000105");
   query_right_table_request.target_object.object_kind = "table";
   query_right_table_request.localized_names.push_back(Name("sbsfc021_query_right"));
   query_right_table_request.columns.push_back(QueryPlanInt64Column(
       0,
       "id",
-      "019f2100-0000-7000-8000-000000000720",
-      "019f2100-0000-7000-8000-000000000730"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000720"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000730")));
   auto query_right_table = Dispatch(database_path,
                                     "ddl.create_table",
                                     "SBLR_DDL_CREATE_TABLE",
@@ -3574,32 +3588,32 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
                                     query_right_table_request,
                                     true);
   Require(query_right_table.api_result.ok, "query right table create failed");
-  Require(query_right_table.api_result.primary_object.uuid.canonical == kQueryRightTableUuid,
+  Require(query_right_table.api_result.primary_object.uuid == kQueryRightTableUuid,
           "query right table create did not preserve UUID");
   Require(HasEvidence(query_right_table.api_result, "mga_relation_metadata", "table_create"),
           "query right table create MGA metadata evidence missing");
 
   api::EngineApiRequest aggregate_table_request;
-  aggregate_table_request.target_schema.uuid.canonical = kSchemaUuid;
+  aggregate_table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
   aggregate_table_request.target_schema.object_kind = "schema";
-  aggregate_table_request.target_object.uuid.canonical = kAggregateTableUuid;
+  aggregate_table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000106");
   aggregate_table_request.target_object.object_kind = "table";
   aggregate_table_request.localized_names.push_back(Name("sbsfc021_aggregate"));
   aggregate_table_request.columns.push_back(QueryPlanInt64Column(
       0,
       "id",
-      "019f2100-0000-7000-8000-000000000740",
-      "019f2100-0000-7000-8000-000000000750"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000740"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000750")));
   aggregate_table_request.columns.push_back(QueryPlanInt64Column(
       1,
       "dept",
-      "019f2100-0000-7000-8000-000000000741",
-      "019f2100-0000-7000-8000-000000000751"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000741"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000751")));
   aggregate_table_request.columns.push_back(QueryPlanInt64Column(
       2,
       "cost",
-      "019f2100-0000-7000-8000-000000000742",
-      "019f2100-0000-7000-8000-000000000752"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000742"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000752")));
   auto aggregate_table = Dispatch(database_path,
                                   "ddl.create_table",
                                   "SBLR_DDL_CREATE_TABLE",
@@ -3607,32 +3621,32 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
                                   aggregate_table_request,
                                   true);
   Require(aggregate_table.api_result.ok, "aggregate table create failed");
-  Require(aggregate_table.api_result.primary_object.uuid.canonical == kAggregateTableUuid,
+  Require(aggregate_table.api_result.primary_object.uuid == kAggregateTableUuid,
           "aggregate table create did not preserve UUID");
   Require(HasEvidence(aggregate_table.api_result, "mga_relation_metadata", "table_create"),
           "aggregate table create MGA metadata evidence missing");
 
   api::EngineApiRequest bool_aggregate_table_request;
-  bool_aggregate_table_request.target_schema.uuid.canonical = kSchemaUuid;
+  bool_aggregate_table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
   bool_aggregate_table_request.target_schema.object_kind = "schema";
-  bool_aggregate_table_request.target_object.uuid.canonical = kBoolAggregateTableUuid;
+  bool_aggregate_table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000109");
   bool_aggregate_table_request.target_object.object_kind = "table";
   bool_aggregate_table_request.localized_names.push_back(Name("sbsfc021_bool_aggregate"));
   bool_aggregate_table_request.columns.push_back(QueryPlanInt64Column(
       0,
       "id",
-      "019f2100-0000-7000-8000-000000000743",
-      "019f2100-0000-7000-8000-000000000753"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000743"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000753")));
   bool_aggregate_table_request.columns.push_back(QueryPlanInt64Column(
       1,
       "dept",
-      "019f2100-0000-7000-8000-000000000744",
-      "019f2100-0000-7000-8000-000000000754"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000744"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000754")));
   bool_aggregate_table_request.columns.push_back(QueryPlanBoolColumn(
       2,
       "flag",
-      "019f2100-0000-7000-8000-000000000745",
-      "019f2100-0000-7000-8000-000000000755"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000745"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000755")));
   auto bool_aggregate_table = Dispatch(database_path,
                                        "ddl.create_table",
                                        "SBLR_DDL_CREATE_TABLE",
@@ -3640,27 +3654,27 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
                                        bool_aggregate_table_request,
                                        true);
   Require(bool_aggregate_table.api_result.ok, "boolean aggregate table create failed");
-  Require(bool_aggregate_table.api_result.primary_object.uuid.canonical == kBoolAggregateTableUuid,
+  Require(bool_aggregate_table.api_result.primary_object.uuid == kBoolAggregateTableUuid,
           "boolean aggregate table create did not preserve UUID");
   Require(HasEvidence(bool_aggregate_table.api_result, "mga_relation_metadata", "table_create"),
           "boolean aggregate table create MGA metadata evidence missing");
 
   api::EngineApiRequest by_name_left_table_request;
-  by_name_left_table_request.target_schema.uuid.canonical = kSchemaUuid;
+  by_name_left_table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
   by_name_left_table_request.target_schema.object_kind = "schema";
-  by_name_left_table_request.target_object.uuid.canonical = kByNameLeftTableUuid;
+  by_name_left_table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000107");
   by_name_left_table_request.target_object.object_kind = "table";
   by_name_left_table_request.localized_names.push_back(Name("sbsfc021_by_name_left"));
   by_name_left_table_request.columns.push_back(QueryPlanInt64Column(
       0,
       "id",
-      "019f2100-0000-7000-8000-000000000760",
-      "019f2100-0000-7000-8000-000000000770"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000760"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000770")));
   by_name_left_table_request.columns.push_back(QueryPlanInt64Column(
       1,
       "score",
-      "019f2100-0000-7000-8000-000000000761",
-      "019f2100-0000-7000-8000-000000000771"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000761"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000771")));
   auto by_name_left_table = Dispatch(database_path,
                                      "ddl.create_table",
                                      "SBLR_DDL_CREATE_TABLE",
@@ -3668,25 +3682,25 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
                                      by_name_left_table_request,
                                      true);
   Require(by_name_left_table.api_result.ok, "BY NAME left table create failed");
-  Require(by_name_left_table.api_result.primary_object.uuid.canonical == kByNameLeftTableUuid,
+  Require(by_name_left_table.api_result.primary_object.uuid == kByNameLeftTableUuid,
           "BY NAME left table create did not preserve UUID");
 
   api::EngineApiRequest by_name_right_table_request;
-  by_name_right_table_request.target_schema.uuid.canonical = kSchemaUuid;
+  by_name_right_table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
   by_name_right_table_request.target_schema.object_kind = "schema";
-  by_name_right_table_request.target_object.uuid.canonical = kByNameRightTableUuid;
+  by_name_right_table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000108");
   by_name_right_table_request.target_object.object_kind = "table";
   by_name_right_table_request.localized_names.push_back(Name("sbsfc021_by_name_right"));
   by_name_right_table_request.columns.push_back(QueryPlanInt64Column(
       0,
       "score",
-      "019f2100-0000-7000-8000-000000000762",
-      "019f2100-0000-7000-8000-000000000772"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000762"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000772")));
   by_name_right_table_request.columns.push_back(QueryPlanInt64Column(
       1,
       "id",
-      "019f2100-0000-7000-8000-000000000763",
-      "019f2100-0000-7000-8000-000000000773"));
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000763"),
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000773")));
   auto by_name_right_table = Dispatch(database_path,
                                       "ddl.create_table",
                                       "SBLR_DDL_CREATE_TABLE",
@@ -3694,7 +3708,7 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
                                       by_name_right_table_request,
                                       true);
   Require(by_name_right_table.api_result.ok, "BY NAME right table create failed");
-  Require(by_name_right_table.api_result.primary_object.uuid.canonical == kByNameRightTableUuid,
+  Require(by_name_right_table.api_result.primary_object.uuid == kByNameRightTableUuid,
           "BY NAME right table create did not preserve UUID");
 
   Commit(database_path, context);
@@ -3717,20 +3731,19 @@ std::shared_ptr<api::EngineDmlUpdateResourceGovernorV1> TypedUpdateResourceGover
 api::EngineRequestContext TypedUpdateStatementContext(
     api::EngineRequestContext context,
     std::string_view suffix, bool publish_native_snapshot = false) {
-  context.statement_uuid.canonical =
-      "019f2100-0000-7000-8000-0000000008" + std::string(suffix);
-  context.statement_receipt_uuid.canonical =
-      "019f2100-0000-7000-8000-0000000009" + std::string(suffix);
-  context.statement_snapshot_uuid.canonical =
-      "019f2100-0000-7000-8000-000000000a" + std::string(suffix);
+  context.statement_uuid =
+      FixtureIdentity(0x800 + std::stoull(std::string(suffix), nullptr, 16));
+  context.statement_receipt_uuid =
+      FixtureIdentity(0x900 + std::stoull(std::string(suffix), nullptr, 16));
+  context.statement_snapshot_uuid =
+      FixtureIdentity(0xa00 + std::stoull(std::string(suffix), nullptr, 16));
   context.statement_snapshot_generation = 1;
-  context.catalog_epoch_uuid.canonical =
-      "019f2100-0000-7000-8000-000000000d" + std::string(suffix);
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f2100-0000-7000-8000-000000000b" + std::string(suffix);
+  context.catalog_epoch_uuid =
+      FixtureIdentity(0xd00 + std::stoull(std::string(suffix), nullptr, 16));
+  context.statement_metadata_snapshot_uuid =
+      FixtureIdentity(0xb00 + std::stoull(std::string(suffix), nullptr, 16));
   context.statement_metadata_snapshot_engine_owned = true;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.trace_tags.push_back("private_dml_update_rows_binder");
@@ -3746,8 +3759,7 @@ api::EngineRequestContext TypedUpdateStatementContext(
           "typed UPDATE durable security authority was unavailable");
   context.security_epoch = security.state.security_generation;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f2100-0000-7000-8000-000000000004";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000004");
   context.authorization_context.security_context_generation =
       security.state.security_context_generation;
   context.authorization_context.principal_uuid = context.principal_uuid;
@@ -3759,16 +3771,16 @@ api::EngineRequestContext TypedUpdateStatementContext(
       context.catalog_generation_id;
   context.authorization_context.effective_subjects.push_back({context.principal_uuid, "principal"});
   for (const auto& source : security.state.grants) {
-    if (source.revoked || source.grantee_uuid != context.principal_uuid.canonical) continue;
+    if (source.revoked || source.grantee_uuid != context.principal_uuid) continue;
     api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid.canonical = source.grant_uuid;
-    grant.subject_uuid.canonical = source.grantee_uuid; grant.subject_kind = source.grantee_kind;
-    grant.target_uuid.canonical = source.target_object_uuid; grant.right = source.privilege;
+    grant.grant_uuid = source.grant_uuid;
+    grant.subject_uuid = source.grantee_uuid; grant.subject_kind = source.grantee_kind;
+    grant.target_uuid = source.target_object_uuid; grant.right = source.privilege;
     grant.security_epoch = context.security_epoch; grant.deny = source.grant_effect == "deny";
     context.authorization_context.grants.push_back(std::move(grant));
   }
-  context.resource_admission_uuid.canonical =
-      "019f2100-0000-7000-8000-000000000c" + std::string(suffix);
+  context.resource_admission_uuid =
+      FixtureIdentity(0xc00 + std::stoull(std::string(suffix), nullptr, 16));
   if (publish_native_snapshot) {
     api::EnginePublishStatementSnapshotRequest request;
     request.context = context;
@@ -3801,7 +3813,7 @@ void RequireTypedUpdateResourceGrants(std::uint64_t expected, std::string_view m
 }
 
 void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
-  constexpr const char* text_table_uuid = "019f2100-0000-7000-8000-0000000002e1";
+  constexpr auto text_table_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-0000000002e1");
   auto ddl_context = BeginTransaction(database_path, "204");
   api::EngineResolveNameRequest charset_request;
   charset_request.context = ddl_context;
@@ -3811,9 +3823,9 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   Require(charset.ok && charset.resource_descriptor.present,
           "canonical TEXT fixture charset resolution failed");
   api::EngineApiRequest table_request;
-  table_request.target_schema.uuid.canonical = kSchemaUuid;
+  table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
   table_request.target_schema.object_kind = "schema";
-  table_request.target_object.uuid.canonical = text_table_uuid;
+  table_request.target_object.uuid = text_table_uuid;
   table_request.target_object.object_kind = "table";
   table_request.localized_names.push_back(Name("text_target_authority"));
   api::EngineColumnDefinition text_column;
@@ -3822,9 +3834,7 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   text_column.descriptor.descriptor_kind = "scalar";
   text_column.descriptor.canonical_type_name = "text";
   text_column.descriptor.encoded_descriptor =
-      "type=text;character_length=256;charset_uuid=" +
-      charset.resource_descriptor.resource_uuid.canonical + ";collation_uuid=" +
-      charset.resource_descriptor.default_collation_uuid.canonical;
+      scratchbird::tests::NativeCatalogColumnFixture({{{"type", "text"}, {"character_length", "256"}}, {{"charset_uuid", charset.resource_descriptor.resource_uuid}, {"collation_uuid", charset.resource_descriptor.default_collation_uuid}}});
   table_request.columns.push_back(text_column);
   text_column.ordinal = 1;
   text_column.names = {Name("required_payload")};
@@ -3834,9 +3844,7 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   text_column.names = {Name("wide_payload")};
   text_column.nullable = true;
   text_column.descriptor.encoded_descriptor =
-      "type=text;character_length=65536;charset_uuid=" +
-      charset.resource_descriptor.resource_uuid.canonical + ";collation_uuid=" +
-      charset.resource_descriptor.default_collation_uuid.canonical;
+      scratchbird::tests::NativeCatalogColumnFixture({{{"type", "text"}, {"character_length", "65536"}}, {{"charset_uuid", charset.resource_descriptor.resource_uuid}, {"collation_uuid", charset.resource_descriptor.default_collation_uuid}}});
   table_request.columns.push_back(text_column);
   const auto created = Dispatch(database_path, "ddl.create_table", "SBLR_DDL_CREATE_TABLE",
                                 ddl_context, table_request, true);
@@ -3847,19 +3855,17 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   const auto relation = api::LoadMgaRelationStorageDescriptor(context, text_table_uuid);
   Require(relation.ok && relation.descriptor.columns.size() == 3,
           "TEXT target fixture relation did not load");
-  const auto binary_uuid = [](const std::string& text) {
-    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-    Require(parsed.ok(), "TEXT target UUID did not parse");
+  const auto binary_uuid = [](const api::EngineUuid& identity) {
     scratchbird::engine::sblr::ContextualTextUuidV2 result{};
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), result.begin());
+    std::copy(identity.bytes.begin(), identity.bytes.end(), result.begin());
     return result;
   };
   const auto& column = relation.descriptor.columns[0];
   api::MgaTextColumnKeyV2 key{
-      binary_uuid(relation.descriptor.relation_uuid.canonical),
-      binary_uuid(relation.descriptor.descriptor_uuid.canonical),
+      binary_uuid(relation.descriptor.relation_uuid),
+      binary_uuid(relation.descriptor.descriptor_uuid),
       relation.descriptor.descriptor_generation,
-      binary_uuid(column.column_uuid.canonical), column.ordinal};
+      binary_uuid(column.column_uuid), column.ordinal};
   const auto captured = api::CaptureDmlUpdateTextTargetV2(
       context, key, column.column_generation);
   if (!captured.ok) {
@@ -3872,8 +3878,8 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   Require(snapshot.key == key && snapshot.column_generation == column.column_generation &&
               snapshot.charset.canonical_name == "UTF-8" &&
               snapshot.charset.resource_epoch == context.resource_epoch &&
-              snapshot.collation.parent_resource_uuid.canonical ==
-                  snapshot.charset.resource_uuid.canonical &&
+              snapshot.collation.parent_resource_uuid ==
+                  snapshot.charset.resource_uuid &&
               !snapshot.descriptor.exact_bytes.empty() &&
               !snapshot.exact_relation_projection.empty(),
           "TEXT target capture did not retain exact descriptor/resource metadata");
@@ -3900,10 +3906,10 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   const auto legacy = api::LoadMgaRelationStorageDescriptor(context, kTableUuid);
   Require(legacy.ok && !legacy.descriptor.columns.empty(), "legacy TEXT fixture did not load");
   const api::MgaTextColumnKeyV2 legacy_key{
-      binary_uuid(legacy.descriptor.relation_uuid.canonical),
-      binary_uuid(legacy.descriptor.descriptor_uuid.canonical),
+      binary_uuid(legacy.descriptor.relation_uuid),
+      binary_uuid(legacy.descriptor.descriptor_uuid),
       legacy.descriptor.descriptor_generation,
-      binary_uuid(legacy.descriptor.columns[0].column_uuid.canonical), 0};
+      binary_uuid(legacy.descriptor.columns[0].column_uuid), 0};
   const auto plain = api::CaptureDmlUpdateTextTargetV2(
       context, legacy_key, legacy.descriptor.columns[0].column_generation);
   Require(plain.ok && !plain.handle.snapshot()->contextual &&
@@ -3918,17 +3924,17 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   Require(integer_relation.ok && !integer_relation.descriptor.columns.empty(),
           "non-TEXT target refusal fixture did not load");
   const api::MgaTextColumnKeyV2 integer_key{
-      binary_uuid(integer_relation.descriptor.relation_uuid.canonical),
-      binary_uuid(integer_relation.descriptor.descriptor_uuid.canonical),
+      binary_uuid(integer_relation.descriptor.relation_uuid),
+      binary_uuid(integer_relation.descriptor.descriptor_uuid),
       integer_relation.descriptor.descriptor_generation,
-      binary_uuid(integer_relation.descriptor.columns[0].column_uuid.canonical), 0};
+      binary_uuid(integer_relation.descriptor.columns[0].column_uuid), 0};
   Require(!api::CaptureDmlUpdateTextTargetV2(context, integer_key,
               integer_relation.descriptor.columns[0].column_generation).ok,
           "non-TEXT exact target was admitted as TEXT");
   for (unsigned field = 0; field < 10; ++field) {
     auto changed = context;
     if (field == 0) changed.resource_epoch += 1;
-    if (field == 1) changed.statement_receipt_uuid.canonical = transaction.transaction_uuid.canonical;
+    if (field == 1) changed.statement_receipt_uuid = transaction.transaction_uuid;
     if (field == 2) changed.security_context_present = false;
     if (field == 3) changed.authorization_context.policy_epoch += 1;
     if (field == 4) changed.statement_snapshot_generation += 1;
@@ -3975,7 +3981,7 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   Require(empty.ok && null.ok && empty.value.bytes().empty() && null.value.bytes().empty() &&
               empty.value.state() != null.value.state(), "empty TEXT VALUE collapsed into NULL");
   auto required_key = key;
-  required_key.column_uuid = binary_uuid(relation.descriptor.columns[1].column_uuid.canonical);
+  required_key.column_uuid = binary_uuid(relation.descriptor.columns[1].column_uuid);
   required_key.column_ordinal = 1;
   const auto required_target = api::CaptureDmlUpdateTextTargetV2(
       context, required_key, relation.descriptor.columns[1].column_generation);
@@ -4014,7 +4020,7 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   Require(!oversized.ok && oversized.diagnostic.code == "RESOURCE.BUDGET_EXCEEDED",
           "DUAV per-value ceiling was ignored");
   auto wide_key = key;
-  wide_key.column_uuid = binary_uuid(relation.descriptor.columns[2].column_uuid.canonical);
+  wide_key.column_uuid = binary_uuid(relation.descriptor.columns[2].column_uuid);
   wide_key.column_ordinal = 2;
   const auto wide_target = api::CaptureDmlUpdateTextTargetV2(
       context, wide_key, relation.descriptor.columns[2].column_generation);
@@ -4027,7 +4033,7 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   {
     memory::MemoryTag pressure_tag;
     pressure_tag.category = memory::MemoryCategory::test_probe;
-    pressure_tag.context_id = context.statement_receipt_uuid.canonical;
+    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::context] = context.statement_receipt_uuid.bytes;
     pressure_tag.purpose = "text_preparation_budget_refusal_fixture";
     auto pressure = memory::DefaultMemoryManager().AllocateScoped(
         memory::DefaultMemoryManager().policy().per_context_limit_bytes,
@@ -4122,12 +4128,26 @@ std::vector<std::uint8_t> TypedUpdateEvidenceMaterial(
   std::vector<std::string> records;
   records.reserve(evidence.size());
   for (const auto& item : evidence) {
-    Require(!item.evidence_kind.empty() && !item.evidence_id.empty() &&
+    Require(!item.evidence_kind.empty() && EvidencePresent(item.evidence_id) &&
                 item.evidence_kind.find('=') == std::string::npos &&
-                item.evidence_kind.find('\0') == std::string::npos &&
-                item.evidence_id.find('\0') == std::string::npos,
+                item.evidence_kind.find('\0') == std::string::npos,
             "typed UPDATE executor emitted malformed hash evidence");
-    records.push_back(item.evidence_kind + "=" + item.evidence_id);
+    if (const auto* identity = std::get_if<api::EngineUuid>(&item.evidence_id)) {
+      std::string encoded("\0\1", 2);
+      const auto extent = [&](std::uint64_t value) {
+        for (unsigned shift = 0; shift < 64; shift += 8)
+          encoded.push_back(static_cast<char>(value >> shift));
+      };
+      extent(item.evidence_kind.size());
+      encoded += item.evidence_kind;
+      extent(16);
+      encoded += IdentityBytes(*identity);
+      records.push_back(std::move(encoded));
+    } else {
+      const auto& label = std::get<std::string>(item.evidence_id);
+      Require(label.find('\0') == std::string::npos, "text evidence contains NUL");
+      records.push_back(item.evidence_kind + "=" + label);
+    }
   }
   std::sort(records.begin(), records.end(),
             [](std::string_view left, std::string_view right) {
@@ -4164,13 +4184,13 @@ void RequireTypedUpdateHash(std::string_view domain,
 }
 
 void VerifyTypedTextUpdateContract(const std::filesystem::path& database_path) {
-  constexpr const char* table_uuid = "019f2100-0000-7000-8000-0000000002e1";
+  constexpr auto table_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-0000000002e1");
   auto transaction = BeginTransaction(database_path, "20b");
   api::EngineApiRequest insert;
-  insert.target_object.uuid.canonical = table_uuid;
+  insert.target_object.uuid = table_uuid;
   insert.target_object.object_kind = "table";
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = "019f2100-0000-7000-8000-0000000002e2";
+  row.requested_row_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-0000000002e2");
   row.fields = {{"payload", TextValue("seed")},
                 {"required_payload", TextValue("required")},
                 {"wide_payload", TextValue("seed")}};
@@ -4184,7 +4204,7 @@ void VerifyTypedTextUpdateContract(const std::filesystem::path& database_path) {
                             std::string_view expected, bool null_value) {
     api::EngineSelectRowsRequest request;
     request.context = observer;
-    request.source_object.uuid.canonical = table_uuid;
+    request.source_object.uuid = table_uuid;
     request.source_object.object_kind = "table";
     request.select_projection.canonical_projection_envelopes = {"wide_payload"};
     const auto selected = api::EngineSelectRows(request);
@@ -4215,7 +4235,7 @@ void VerifyTypedTextUpdateContract(const std::filesystem::path& database_path) {
     suffix[1] = digits[identity & 15];
     auto context = TypedUpdateStatementContext(transaction, suffix);
     api::EngineDmlUpdateRowsBindingDemandV1 demand;
-    demand.authenticated_statement_receipt_uuid = context.statement_receipt_uuid.canonical;
+    demand.authenticated_statement_receipt_uuid = context.statement_receipt_uuid;
     demand.structural_occurrence_id = 1;
     demand.target_relation_uuid_hint = table_uuid;
     demand.assignments.push_back({1, std::move(column), std::move(value), std::move(type)});
@@ -4291,7 +4311,7 @@ void VerifyTypedTextUpdateContract(const std::filesystem::path& database_path) {
       std::string suffix{digits[identity_number >> 4], digits[identity_number & 15]};
       auto context = TypedUpdateStatementContext(crash_transaction, suffix);
       api::EngineDmlUpdateRowsBindingDemandV1 demand;
-      demand.authenticated_statement_receipt_uuid = context.statement_receipt_uuid.canonical;
+      demand.authenticated_statement_receipt_uuid = context.statement_receipt_uuid;
       demand.structural_occurrence_id = 1;
       demand.target_relation_uuid_hint = table_uuid;
       demand.assignments.push_back({1, "wide_payload", profile.first, profile.second ? "null" : "text"});
@@ -4303,10 +4323,10 @@ void VerifyTypedTextUpdateContract(const std::filesystem::path& database_path) {
         ::close(descriptors[0]);
         const auto bound = api::BindDmlUpdateRowsDescriptorV1(context, demand);
         if (!bound.ok) ::_exit(81);
-        const auto identity = scratchbird::core::uuid::ParseUuid(bound.descriptor_ref.descriptor_uuid);
-        if (!identity.ok()) ::_exit(82);
+        const auto identity = bound.descriptor_ref.descriptor_uuid;
+        if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity)) ::_exit(82);
         std::array<std::uint8_t, 24> reference{};
-        std::copy(identity.value.bytes.begin(), identity.value.bytes.end(), reference.begin());
+        std::copy(identity.bytes.begin(), identity.bytes.end(), reference.begin());
         for (unsigned n = 0; n != 8; ++n)
           reference[16 + n] = static_cast<std::uint8_t>(bound.descriptor_ref.descriptor_generation >> (8 * n));
         if (::write(descriptors[1], reference.data(), reference.size()) !=
@@ -4339,7 +4359,7 @@ void VerifyTypedTextUpdateContract(const std::filesystem::path& database_path) {
       scratchbird::core::platform::Uuid identity;
       std::copy(reference.begin(), reference.begin() + 16, identity.bytes.begin());
       api::EngineDmlUpdateRowsDescriptorRefV1 descriptor;
-      descriptor.descriptor_uuid = scratchbird::core::uuid::UuidToString(identity);
+      descriptor.descriptor_uuid = identity;
       for (unsigned n = 0; n != 8; ++n)
         descriptor.descriptor_generation |= static_cast<std::uint64_t>(reference[16 + n]) << (8 * n);
       context = TypedUpdateConsumerContext(std::move(context));
@@ -4376,9 +4396,9 @@ void VerifyTypedUpdateAllRowsContract(
     auto context = TypedUpdateStatementContext(transaction, suffix);
     api::EngineDmlUpdateRowsBindingDemandV1 demand;
     demand.authenticated_statement_receipt_uuid =
-        context.statement_receipt_uuid.canonical;
+        context.statement_receipt_uuid;
     demand.structural_occurrence_id = 1;
-    demand.target_relation_uuid_hint = kQueryRightTableUuid;
+    demand.target_relation_uuid_hint = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000105");
     demand.assignments.push_back({1, "id", "2", "int64"});
     const auto bound = api::BindDmlUpdateRowsDescriptorV1(context, demand);
     Require(bound.ok, "typed all-rows UPDATE bind failed");
@@ -4401,7 +4421,7 @@ void VerifyTypedUpdateAllRowsContract(
                         "all_visible_rows"),
             "typed all-rows UPDATE predicate evidence missing");
     for (const auto& evidence : executed.update_result.evidence) {
-      Require(!evidence.evidence_kind.empty() && !evidence.evidence_id.empty(),
+      Require(!evidence.evidence_kind.empty() && EvidencePresent(evidence.evidence_id),
               "typed all-rows UPDATE emitted empty evidence");
     }
     const auto replay = api::ExecuteDmlUpdateRowsDescriptorV1(
@@ -4412,9 +4432,9 @@ void VerifyTypedUpdateAllRowsContract(
   };
   execute_all("70", 0, 0);
   (void)InsertInt64FieldsRowIntoTable(database_path, transaction,
-      kQueryRightTableUuid, "019f2100-0000-7000-8000-000000000270", {{"id", "1"}});
+      kQueryRightTableUuid, scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000270"), {{"id", "1"}});
   (void)InsertInt64FieldsRowIntoTable(database_path, transaction,
-      kQueryRightTableUuid, "019f2100-0000-7000-8000-000000000271", {{"id", "3"}});
+      kQueryRightTableUuid, scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000271"), {{"id", "3"}});
   execute_all("71", 2, 2);
   Require(SelectFromTableById(transaction, kQueryRightTableUuid, "2")
               .result_shape.rows.size() == 2,
@@ -4434,18 +4454,16 @@ void VerifyPublicDmlResourceShutdown(const api::EngineRequestContext& transactio
   open.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
   Require(sb_engine_open(&open, &engine, nullptr) == SB_ENGINE_STATUS_OK,
           "shutdown public engine open failed");
-  const auto public_uuid = [](const std::string& text) {
-    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-    Require(parsed.ok(), "shutdown public UUID conversion failed");
+  const auto public_uuid = [](const api::EngineUuid& identity) {
     sb_engine_uuid_t result{};
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), result.bytes);
+    std::copy(identity.bytes.begin(), identity.bytes.end(), result.bytes);
     return result;
   };
   sb_engine_session_params_v1_t begin{};
   begin.struct_size = sizeof(begin);
   begin.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
-  begin.effective_user_uuid = public_uuid(transaction.principal_uuid.canonical);
-  begin.session_uuid = public_uuid(transaction.session_uuid.canonical);
+  begin.effective_user_uuid = public_uuid(transaction.principal_uuid);
+  begin.session_uuid = public_uuid(transaction.session_uuid);
   begin.default_language_utf8 = "en";
   begin.default_language_size = 2;
   begin.trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
@@ -4475,7 +4493,7 @@ void VerifyPublicDmlResourceShutdown(const api::EngineRequestContext& transactio
   acquire_context.optimizer_maximum_planning_time_ns = 5'000'000'000ull;
   acquire_context.optimizer_spill_allowed = true;
   acquire.engine_context = &acquire_context;
-  acquire.exact_transaction_uuid = transaction.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = transaction.transaction_uuid;
   bridge::StatementContextReceiptHandle handle;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t acquire_result = nullptr;
@@ -4585,8 +4603,8 @@ void VerifyTypedDeleteDescriptorContract(const std::filesystem::path& database_p
   privilege.context.trust_mode = api::EngineTrustMode::embedded_in_process;
   privilege.context.trace_tags.push_back("security.fixture_trace_authority");
   privilege.context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
-  privilege.grant_uuid = "019f2100-0000-7000-8000-000000000284";
-  privilege.grantee_uuid = g_principal_uuid; privilege.target_object_uuid = kQueryLeftTableUuid;
+  privilege.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000284");
+  privilege.grantee_uuid = g_principal_uuid; privilege.target_object_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000104");
   privilege.target_object_kind = "table"; privilege.privilege = "DELETE";
   const auto granted = api::EngineSecurityGrantPrivilege(privilege);
   if (!granted.ok && !granted.diagnostics.empty())
@@ -4595,16 +4613,16 @@ void VerifyTypedDeleteDescriptorContract(const std::filesystem::path& database_p
   Commit(database_path, seed);
   auto transaction = BeginTransaction(database_path, "280");
   (void)InsertInt64FieldsRowIntoTable(database_path, transaction, kQueryLeftTableUuid,
-      "019f2100-0000-7000-8000-000000000281", {{"id", "601"}});
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000281"), {{"id", "601"}});
   (void)InsertInt64FieldsRowIntoTable(database_path, transaction, kQueryLeftTableUuid,
-      "019f2100-0000-7000-8000-000000000282", {{"id", "602"}});
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000282"), {{"id", "602"}});
   Require(!api::CreateMgaSavepointMarker(transaction, "issue8_delete_outer").error, "DELETE outer savepoint");
   const auto bind = [&](std::string_view suffix, std::string literal) {
     auto context = TypedUpdateStatementContext(transaction, suffix, true);
     context.trace_tags = {"private_dml_delete_rows_binder"};
     api::EngineDmlDeleteRowsBindingDemandV1 demand;
-    demand.authenticated_statement_receipt_uuid = context.statement_receipt_uuid.canonical;
-    demand.structural_occurrence_id = 1; demand.target_relation_uuid_hint = kQueryLeftTableUuid;
+    demand.authenticated_statement_receipt_uuid = context.statement_receipt_uuid;
+    demand.structural_occurrence_id = 1; demand.target_relation_uuid_hint = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000104");
     demand.predicate_kind = "column_equals"; demand.predicate_column_spelling = "id";
     demand.predicate_literal_spelling = std::move(literal); demand.predicate_literal_type_spelling = "int64";
     const auto bound = api::BindDmlDeleteRowsDescriptorV1(context, demand);
@@ -4708,20 +4726,20 @@ void VerifyTypedUpdateDescriptorContract(
       database_path,
       transaction,
       kQueryLeftTableUuid,
-      "019f2100-0000-7000-8000-000000000226",
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000226"),
       {{"id", "1"}});
   auto context = TypedUpdateStatementContext(transaction, "01");
   VerifyPublicDmlResourceShutdown(TypedUpdateStatementContext(
       BeginTransaction(database_path, "2ff"), "fe"));
   const auto boolean_identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          context.datatype_catalog_snapshot_uuid.canonical,
+          context.datatype_catalog_snapshot_uuid,
           context.datatype_catalog_generation,
           context.datatype_registry_generation,
-          "01000000-626f-7f6c-a561-6e0000000000", 1);
+          scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"), 1);
   Require(boolean_identity.ok &&
               boolean_identity.row.type_uuid ==
-                  "01000000-626f-7f6c-a561-6e0000000000" &&
+                  scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000") &&
               boolean_identity.row.type_generation == 1 &&
               boolean_identity.row.codec_id == "datatype.boolean.u8.v1" &&
               boolean_identity.row.codec_version == 1 &&
@@ -4731,9 +4749,9 @@ void VerifyTypedUpdateDescriptorContract(
 
   api::EngineDmlUpdateRowsBindingDemandV1 demand;
   demand.authenticated_statement_receipt_uuid =
-      context.statement_receipt_uuid.canonical;
+      context.statement_receipt_uuid;
   demand.structural_occurrence_id = 1;
-  demand.target_relation_uuid_hint = kQueryLeftTableUuid;
+  demand.target_relation_uuid_hint = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000104");
   demand.assignments.push_back({1, "id", "2", "int64"});
   demand.predicate_kind = "column_equals";
   demand.predicate_column_spelling = "id";
@@ -4777,9 +4795,9 @@ void VerifyTypedUpdateDescriptorContract(
               "DELETE effect authority crossed statement visibility projections");
     }
     api::EngineDmlDeleteRowsBindingDemandV1 deletion;
-    deletion.authenticated_statement_receipt_uuid = context.statement_receipt_uuid.canonical;
+    deletion.authenticated_statement_receipt_uuid = context.statement_receipt_uuid;
     deletion.structural_occurrence_id = 1;
-    deletion.target_relation_uuid_hint = kQueryLeftTableUuid;
+    deletion.target_relation_uuid_hint = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000104");
     update_wire::TypedUpdateUuid descriptor{}, occurrence{};
     descriptor[0] = occurrence[0] = 1; descriptor[15] = 41; occurrence[15] = 42;
     const auto bind = [&](const api::EngineDmlDeleteRowsBindingDemandV1& input,
@@ -4817,9 +4835,9 @@ void VerifyTypedUpdateDescriptorContract(
     Require(!bind(invalid, delete_context).ok, "DELETE unresolved column admitted");
     invalid = deletion; invalid.predicate_kind.clear();
     Require(!bind(invalid, delete_context).ok, "DELETE TRUE discarded nonempty predicate fields");
-    invalid = deletion; invalid.authenticated_statement_receipt_uuid = context.transaction_uuid.canonical;
+    invalid = deletion; invalid.authenticated_statement_receipt_uuid = context.transaction_uuid;
     Require(!bind(invalid, delete_context).ok, "DELETE predicate rebound across receipts");
-    invalid = deletion; invalid.target_relation_uuid_hint = kTableUuid;
+    invalid = deletion; invalid.target_relation_uuid_hint = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000102");
     invalid.predicate_column_spelling = "note";
     Require(!bind(invalid, delete_context).ok, "DELETE invented a TEXT equality provider");
     Require(!bind(deletion, context).ok, "UPDATE binder phase conferred DELETE binding");
@@ -4844,7 +4862,7 @@ void VerifyTypedUpdateDescriptorContract(
               << bound.diagnostic.message_key << ':'
               << bound.diagnostic.detail << '\n';
   }
-  Require(bound.ok && !bound.descriptor_ref.descriptor_uuid.empty() &&
+  Require(bound.ok && !bound.descriptor_ref.descriptor_uuid.is_nil() &&
               bound.descriptor_ref.descriptor_generation == 1,
           "typed UPDATE descriptor binding failed");
   RequireTypedUpdateResourceGrants(1, "durable bound descriptor did not retain a grant");
@@ -4879,8 +4897,7 @@ void VerifyTypedUpdateDescriptorContract(
           "typed UPDATE stale descriptor generation was admitted");
 
   auto foreign_context = consumer_context;
-  foreign_context.statement_receipt_uuid.canonical =
-      "019f2100-0000-7000-8000-000000000902";
+  foreign_context.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000902");
   const auto foreign = api::ExecuteDmlUpdateRowsDescriptorV1(
       foreign_context, bound.descriptor_ref, 1);
   Require(!foreign.ok &&
@@ -4898,23 +4915,19 @@ void VerifyTypedUpdateDescriptorContract(
                 failure_message);
       };
   auto stale_transaction = consumer_context;
-  stale_transaction.transaction_uuid.canonical =
-      "019f2100-0000-7000-8000-000000000903";
+  stale_transaction.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000903");
   require_stale_context(std::move(stale_transaction),
                         "typed UPDATE crossed transaction identity");
   auto stale_statement_snapshot = consumer_context;
-  stale_statement_snapshot.statement_snapshot_uuid.canonical =
-      "019f2100-0000-7000-8000-000000000904";
+  stale_statement_snapshot.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000904");
   require_stale_context(std::move(stale_statement_snapshot),
                         "typed UPDATE crossed statement snapshot");
   auto stale_metadata_snapshot = consumer_context;
-  stale_metadata_snapshot.statement_metadata_snapshot_uuid.canonical =
-      "019f2100-0000-7000-8000-000000000905";
+  stale_metadata_snapshot.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000905");
   require_stale_context(std::move(stale_metadata_snapshot),
                         "typed UPDATE crossed catalog snapshot");
   auto stale_datatype_snapshot = consumer_context;
-  stale_datatype_snapshot.datatype_catalog_snapshot_uuid.canonical =
-      "019f2100-0000-7000-8000-000000000906";
+  stale_datatype_snapshot.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000906");
   require_stale_context(std::move(stale_datatype_snapshot),
                         "typed UPDATE crossed datatype snapshot");
   auto stale_datatype_catalog_generation = consumer_context;
@@ -5004,7 +5017,7 @@ void VerifyTypedUpdateDescriptorContract(
   auto no_effect_context = TypedUpdateStatementContext(transaction, "0e");
   auto no_effect_demand = demand;
   no_effect_demand.authenticated_statement_receipt_uuid =
-      no_effect_context.statement_receipt_uuid.canonical;
+      no_effect_context.statement_receipt_uuid;
   no_effect_demand.assignments.front().literal_spelling = "2";
   no_effect_demand.predicate_literal_spelling = "2";
   const auto no_effect_bound = api::BindDmlUpdateRowsDescriptorV1(
@@ -5028,15 +5041,15 @@ void VerifyTypedUpdateDescriptorContract(
   const auto bind_recovery_update =
       [&](std::string_view context_suffix, std::string_view prior_value,
           std::string_view replacement_value,
-          std::string_view row_uuid) {
+          api::EngineUuid row_uuid) {
         (void)InsertInt64FieldsRowIntoTable(
             database_path, transaction, kQueryLeftTableUuid,
-            std::string(row_uuid), {{"id", std::string(prior_value)}});
+            row_uuid, {{"id", std::string(prior_value)}});
         auto recovery_context =
             TypedUpdateStatementContext(transaction, context_suffix);
         auto recovery_demand = demand;
         recovery_demand.authenticated_statement_receipt_uuid =
-            recovery_context.statement_receipt_uuid.canonical;
+            recovery_context.statement_receipt_uuid;
         recovery_demand.assignments.front().literal_spelling =
             std::string(replacement_value);
         recovery_demand.predicate_literal_spelling = std::string(prior_value);
@@ -5051,7 +5064,7 @@ void VerifyTypedUpdateDescriptorContract(
       };
 
   auto [live_reload_context, live_reload_ref] = bind_recovery_update(
-      "09", "20", "21", "019f2100-0000-7000-8000-000000000228");
+      "09", "20", "21", scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000228"));
   api::ResetDmlUpdateRowsDescriptorRegistryForTestV1();
   const auto live_reload = api::ExecuteDmlUpdateRowsDescriptorV1(
       live_reload_context, live_reload_ref, 1);
@@ -5065,7 +5078,7 @@ void VerifyTypedUpdateDescriptorContract(
   RequireTypedUpdateResourceGrants(0, "bound recovery abort did not return capacity");
 
   auto [intent_fault_context, intent_fault_ref] = bind_recovery_update(
-      "0a", "30", "31", "019f2100-0000-7000-8000-000000000229");
+      "0a", "30", "31", scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000229"));
   api::SetDmlUpdateRowsTestFaultPointV1(
       api::EngineDmlUpdateRowsTestFaultPointV1::after_durable_intent);
   const auto intent_fault = api::ExecuteDmlUpdateRowsDescriptorV1(
@@ -5088,7 +5101,7 @@ void VerifyTypedUpdateDescriptorContract(
   RequireTypedUpdateResourceGrants(0, "intent recovery abort retained capacity");
 
   auto [prepared_fault_context, prepared_fault_ref] = bind_recovery_update(
-      "0b", "40", "41", "019f2100-0000-7000-8000-00000000022a");
+      "0b", "40", "41", scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000022a"));
   api::SetDmlUpdateRowsTestFaultPointV1(
       api::EngineDmlUpdateRowsTestFaultPointV1::after_prepared_outcome);
   const auto prepared_fault = api::ExecuteDmlUpdateRowsDescriptorV1(
@@ -5124,7 +5137,7 @@ void VerifyTypedUpdateDescriptorContract(
   RequireTypedUpdateResourceGrants(0, "prepared recovery abort retained capacity");
 
   auto [barrier_fault_context, barrier_fault_ref] = bind_recovery_update(
-      "0c", "50", "51", "019f2100-0000-7000-8000-00000000022b");
+      "0c", "50", "51", scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000022b"));
   api::SetDmlUpdateRowsTestFaultPointV1(
       api::EngineDmlUpdateRowsTestFaultPointV1::after_publication_barrier);
   const auto barrier_fault = api::ExecuteDmlUpdateRowsDescriptorV1(
@@ -5162,8 +5175,7 @@ void VerifyTypedUpdateDescriptorContract(
           "typed UPDATE publication-barrier recovery did not replay exactly");
   api::ResetDmlUpdateRowsDescriptorRegistryForTestV1();
   auto barrier_foreign_context = barrier_fault_context;
-  barrier_foreign_context.statement_receipt_uuid.canonical =
-      "019f2100-0000-7000-8000-00000000090d";
+  barrier_foreign_context.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000090d");
   const auto barrier_foreign = api::ExecuteDmlUpdateRowsDescriptorV1(
       barrier_foreign_context, barrier_fault_ref, 1);
   Require(!barrier_foreign.ok &&
@@ -5174,12 +5186,12 @@ void VerifyTypedUpdateDescriptorContract(
       database_path,
       transaction,
       kQueryLeftTableUuid,
-      "019f2100-0000-7000-8000-000000000227",
+      scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000227"),
       {{"id", "10"}});
   auto cancel_context = TypedUpdateStatementContext(transaction, "05");
   auto cancel_demand = demand;
   cancel_demand.authenticated_statement_receipt_uuid =
-      cancel_context.statement_receipt_uuid.canonical;
+      cancel_context.statement_receipt_uuid;
   cancel_demand.assignments.front().literal_spelling = "11";
   cancel_demand.predicate_literal_spelling = "10";
   const auto cancel_bound =
@@ -5263,7 +5275,7 @@ void VerifyTypedUpdateDescriptorContract(
   auto duplicate = demand;
   duplicate.authenticated_statement_receipt_uuid =
       TypedUpdateStatementContext(transaction, "02")
-          .statement_receipt_uuid.canonical;
+          .statement_receipt_uuid;
   duplicate.assignments.push_back({2, "id", "3", "int64"});
   auto duplicate_context = TypedUpdateStatementContext(transaction, "02");
   const auto duplicate_result =
@@ -5276,7 +5288,7 @@ void VerifyTypedUpdateDescriptorContract(
   auto unknown_context = TypedUpdateStatementContext(transaction, "03");
   auto unknown = demand;
   unknown.authenticated_statement_receipt_uuid =
-      unknown_context.statement_receipt_uuid.canonical;
+      unknown_context.statement_receipt_uuid;
   unknown.assignments.front().target_column_spelling = "unknown_column";
   const auto unknown_result =
       api::BindDmlUpdateRowsDescriptorV1(unknown_context, unknown);
@@ -5289,7 +5301,7 @@ void VerifyTypedUpdateDescriptorContract(
   cancelled_context.query_cancellation_requested = [] { return true; };
   auto cancelled = demand;
   cancelled.authenticated_statement_receipt_uuid =
-      cancelled_context.statement_receipt_uuid.canonical;
+      cancelled_context.statement_receipt_uuid;
   const auto cancelled_result =
       api::BindDmlUpdateRowsDescriptorV1(cancelled_context, cancelled);
   Require(!cancelled_result.ok &&
@@ -5301,7 +5313,7 @@ void VerifyTypedUpdateDescriptorContract(
                        api::MgaDmlUpdateDurableFaultCutpointV1::after_snapshot_write_before_bound}) {
     auto fault_context = TypedUpdateStatementContext(transaction, "f1");
     auto fault_demand = demand;
-    fault_demand.authenticated_statement_receipt_uuid = fault_context.statement_receipt_uuid.canonical;
+    fault_demand.authenticated_statement_receipt_uuid = fault_context.statement_receipt_uuid;
     api::SetMgaDmlUpdateDurableFaultCutpointForTestingV1(cutpoint);
     const auto fault_bound = api::BindDmlUpdateRowsDescriptorV1(fault_context, fault_demand);
     api::SetMgaDmlUpdateDurableFaultCutpointForTestingV1(api::MgaDmlUpdateDurableFaultCutpointV1::none);
@@ -5310,7 +5322,7 @@ void VerifyTypedUpdateDescriptorContract(
   }
   auto retired_context = TypedUpdateStatementContext(transaction, "f2");
   auto retired_demand = demand;
-  retired_demand.authenticated_statement_receipt_uuid = retired_context.statement_receipt_uuid.canonical;
+  retired_demand.authenticated_statement_receipt_uuid = retired_context.statement_receipt_uuid;
   const auto retired_bound = api::BindDmlUpdateRowsDescriptorV1(retired_context, retired_demand);
   Require(retired_bound.ok, "receipt retirement bind failed");
   retired_context.dml_update_resource_receipt.lock()->Revoke();
@@ -5322,7 +5334,7 @@ void VerifyTypedUpdateDescriptorContract(
   Require(!retired_replay.ok, "retired descriptor was executed");
   auto lost_context = TypedUpdateStatementContext(transaction, "f3");
   auto lost_demand = demand;
-  lost_demand.authenticated_statement_receipt_uuid = lost_context.statement_receipt_uuid.canonical;
+  lost_demand.authenticated_statement_receipt_uuid = lost_context.statement_receipt_uuid;
   const auto lost_bound = api::BindDmlUpdateRowsDescriptorV1(lost_context, lost_demand);
   Require(lost_bound.ok, "lost-descriptor retirement bind failed");
   api::ResetDmlUpdateRowsDescriptorRegistryForTestV1();
@@ -5336,7 +5348,7 @@ void VerifyTypedUpdateDescriptorContract(
   original_callback_context.query_cancellation_requested = [cancellation_owner] { return *cancellation_owner; };
   auto owned_cancel_context = TypedUpdateStatementContext(original_callback_context, "f4");
   auto owned_cancel_demand = demand;
-  owned_cancel_demand.authenticated_statement_receipt_uuid = owned_cancel_context.statement_receipt_uuid.canonical;
+  owned_cancel_demand.authenticated_statement_receipt_uuid = owned_cancel_context.statement_receipt_uuid;
   const auto owned_cancel_bound = api::BindDmlUpdateRowsDescriptorV1(owned_cancel_context, owned_cancel_demand);
   Require(owned_cancel_bound.ok, "owned cancellation bind failed");
   *cancellation_owner = true;
@@ -5354,7 +5366,7 @@ void VerifyTypedUpdateDescriptorContract(
           "deferred retirement fixture policy failed");
   auto deferred_context = TypedUpdateStatementContext(transaction, "f5");
   auto deferred_demand = demand;
-  deferred_demand.authenticated_statement_receipt_uuid = deferred_context.statement_receipt_uuid.canonical;
+  deferred_demand.authenticated_statement_receipt_uuid = deferred_context.statement_receipt_uuid;
   const auto deferred_bound = api::BindDmlUpdateRowsDescriptorV1(deferred_context, deferred_demand);
   Require(deferred_bound.ok, "deferred retirement bind failed");
   api::RetireDmlUpdateResourceReceiptDescriptorsV1(deferred_context);
@@ -5378,7 +5390,7 @@ void VerifyTypedUpdateDescriptorContract(
   };
   contention_context = TypedUpdateStatementContext(contention_context, "f6");
   auto contention_demand = demand;
-  contention_demand.authenticated_statement_receipt_uuid = contention_context.statement_receipt_uuid.canonical;
+  contention_demand.authenticated_statement_receipt_uuid = contention_context.statement_receipt_uuid;
   const auto contention_bound = api::BindDmlUpdateRowsDescriptorV1(contention_context, contention_demand);
   Require(contention_bound.ok, "contention driver bind failed");
   *run_retirement = true;
@@ -5412,13 +5424,13 @@ void VerifyTypedUpdateDescriptorContract(
   api::RetryRetiredDmlUpdateResourceOwnersV1(wrong_database);
   RequireTypedUpdateResourceGrants(1, "another database path drained the retired owner");
   wrong_database = contention_context;
-  wrong_database.database_uuid.canonical = "019f2100-0000-7000-8000-000000000fff";
+  wrong_database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000fff");
   api::RetryRetiredDmlUpdateResourceOwnersV1(wrong_database);
   RequireTypedUpdateResourceGrants(1, "another database identity drained the retired owner");
 
   auto retry_context = TypedUpdateStatementContext(transaction, "f7");
   auto retry_demand = demand;
-  retry_demand.authenticated_statement_receipt_uuid = retry_context.statement_receipt_uuid.canonical;
+  retry_demand.authenticated_statement_receipt_uuid = retry_context.statement_receipt_uuid;
   const auto retry_bound = api::BindDmlUpdateRowsDescriptorV1(retry_context, retry_demand);
   Require(retry_bound.ok, "admission after deferred retirement failed");
   RequireTypedUpdateResourceGrants(1, "admission did not drain the deferred owner before capture");
@@ -5446,7 +5458,7 @@ void VerifyTypedUpdateDescriptorContract(
         shutdown_context, shutdown_governor);
     shutdown_context.dml_update_resource_receipt = shutdown_receipt;
     auto shutdown_demand = demand;
-    shutdown_demand.authenticated_statement_receipt_uuid = shutdown_context.statement_receipt_uuid.canonical;
+    shutdown_demand.authenticated_statement_receipt_uuid = shutdown_context.statement_receipt_uuid;
     const auto shutdown_bound = api::BindDmlUpdateRowsDescriptorV1(shutdown_context, shutdown_demand);
     Require(shutdown_bound.ok && shutdown_governor->Observe().active_grants == 1,
             "shutdown fixture did not own a durable bound grant");
@@ -5478,7 +5490,7 @@ void VerifyTypedUpdateDescriptorContract(
     const auto old_value = std::to_string(80 + ordinal * 2);
     const auto new_value = std::to_string(81 + ordinal * 2);
     (void)InsertInt64FieldsRowIntoTable(database_path, transaction, kQueryLeftTableUuid,
-        "019f2100-0000-7000-8000-000000000fe" + std::to_string(ordinal), {{"id", old_value}});
+        FixtureIdentity(0xfe0 + ordinal), {{"id", old_value}});
     auto shutdown_context = TypedUpdateStatementContext(transaction,
         ordinal == 0 ? "fb" : ordinal == 1 ? "fc" : "fd");
     auto governor = std::make_shared<api::EngineDmlUpdateResourceGovernorV1>();
@@ -5487,7 +5499,7 @@ void VerifyTypedUpdateDescriptorContract(
     auto receipt = std::make_shared<api::EngineDmlUpdateResourceReceiptV1>(shutdown_context, governor);
     shutdown_context.dml_update_resource_receipt = receipt;
     auto interrupted_demand = demand;
-    interrupted_demand.authenticated_statement_receipt_uuid = shutdown_context.statement_receipt_uuid.canonical;
+    interrupted_demand.authenticated_statement_receipt_uuid = shutdown_context.statement_receipt_uuid;
     interrupted_demand.predicate_literal_spelling = old_value;
     interrupted_demand.assignments.front().literal_spelling = new_value;
     const auto bound = api::BindDmlUpdateRowsDescriptorV1(shutdown_context, interrupted_demand);
@@ -5547,12 +5559,12 @@ void VerifyTypedUpdateDescriptorContract(
     const auto old_value = std::to_string(880 + ordinal * 2);
     const auto new_value = std::to_string(881 + ordinal * 2);
     (void)InsertInt64FieldsRowIntoTable(database_path, transaction, kQueryLeftTableUuid,
-        "019f2100-0000-7000-8000-000000000da" + std::to_string(ordinal), {{"id", old_value}});
+        FixtureIdentity(0xda0 + ordinal), {{"id", old_value}});
     Require(!api::CreateMgaSavepointMarker(transaction, "update_io_outer").error,
             "UPDATE I/O fixture outer savepoint failed");
     auto io_context = TypedUpdateStatementContext(transaction, ordinal == 0 ? "d0" : "d1");
     auto io_demand = demand;
-    io_demand.authenticated_statement_receipt_uuid = io_context.statement_receipt_uuid.canonical;
+    io_demand.authenticated_statement_receipt_uuid = io_context.statement_receipt_uuid;
     io_demand.predicate_literal_spelling = old_value;
     io_demand.assignments.front().literal_spelling = new_value;
     const auto bound = api::BindDmlUpdateRowsDescriptorV1(io_context, io_demand);
@@ -5816,10 +5828,8 @@ int main(int argc, char** argv) {
           "credentialed lifecycle fixture database UUID missing");
   Require(created.bootstrap_principal_uuid.valid(),
           "credentialed lifecycle fixture principal UUID missing");
-  g_database_uuid = scratchbird::core::uuid::UuidToString(
-      created.state.database_uuid.value);
-  g_principal_uuid = scratchbird::core::uuid::UuidToString(
-      created.bootstrap_principal_uuid.value);
+  g_database_uuid = created.state.database_uuid.value;
+  g_principal_uuid = created.bootstrap_principal_uuid.value;
   Require(std::filesystem::exists(database_path), "lifecycle create did not create database file");
 
   auto open = Dispatch(database_path,

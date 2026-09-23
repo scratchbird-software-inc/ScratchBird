@@ -624,6 +624,16 @@ void CheckAuthenticatedIdentityAndTransactionRefusal() {
           "transaction refusal fell through and produced an execution response");
   (void)::shutdown(fds[0], SHUT_WR);
   worker.join();
+  // Read session state only after joining its owner thread. The rejected Query
+  // and Ping must not replace it; compare the wire bytes with engine authority,
+  // not merely with a second wire response that could repeat the same mistake.
+  const auto& engine_session_uuid = session.session().session_uuid.bytes;
+  const auto& engine_transaction_uuid = session.session().transaction_uuid.bytes;
+  Require(std::equal(engine_session_uuid.begin(), engine_session_uuid.end(),
+                     ready.payload.begin()) &&
+              std::equal(engine_transaction_uuid.begin(), engine_transaction_uuid.end(),
+                         ready.payload.begin() + 32),
+          "Ready identities differ from the exact engine-issued binary UUIDs");
   (void)::close(fds[0]);
   std::error_code ec;
   std::filesystem::remove_all(database_path.parent_path(), ec);

@@ -11,7 +11,7 @@
   record.base_descriptor_kind = descriptor.descriptor_kind.empty() ? "scalar" : descriptor.descriptor_kind;
   record.base_canonical_type_name = descriptor.canonical_type_name;
   record.base_encoded_descriptor = descriptor.encoded_descriptor;
-  if (record.base_canonical_type_name.empty() && DomainUuidFromDescriptor(descriptor).empty()) {
+  if (record.base_canonical_type_name.empty() && DomainUuidFromDescriptor(descriptor).is_nil()) {
     return MakeCrudDiagnosticResult<EngineCreateDomainResult>(
         request.context,
         "ddl.create_domain",
@@ -105,8 +105,8 @@
           UnsupportedCrudFeatureDiagnostic("ddl.create_domain", "unsupported_domain_constraint"));
     }
   }
-  const std::string base_domain_uuid = DomainUuidFromDescriptor(descriptor);
-  if (!base_domain_uuid.empty()) {
+  const EngineUuid base_domain_uuid = DomainUuidFromDescriptor(descriptor);
+  if (!base_domain_uuid.is_nil()) {
     if (base_domain_uuid == record.domain_uuid ||
         DomainChainContainsUuid(request.context, base_domain_uuid, record.domain_uuid, request.context.local_transaction_id)) {
       return MakeCrudDiagnosticResult<EngineCreateDomainResult>(
@@ -237,7 +237,7 @@ scratchbird::engine::sblr::SblrExecutionContext SequenceSblrContext(
 
 scratchbird::engine::sblr::SblrSequenceDefinition BuildSequenceDefinition(
     const EngineCreateSequenceRequest& request,
-    const std::string& sequence_uuid) {
+    const EngineUuid& sequence_uuid) {
   scratchbird::engine::sblr::SblrSequenceDefinition definition;
   definition.sequence_uuid = sequence_uuid;
   std::string descriptor = CreateSequenceOptionValue(request, "sequence_descriptor:");
@@ -286,12 +286,11 @@ scratchbird::engine::sblr::SblrSequenceDefinition BuildSequenceDefinition(
 
 EngineApiDiagnostic RegisterSequenceDefinitionAlias(
     const EngineCreateSequenceRequest& request,
-    std::string canonical_sequence_uuid,
+    EngineUuid canonical_sequence_uuid,
     std::string sequence_key) {
   if (sequence_key.empty()) {
     return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
-  canonical_sequence_uuid = LowerAsciiLocal(std::move(canonical_sequence_uuid));
   sequence_key = LowerAsciiLocal(std::move(sequence_key));
   const auto registered = scratchbird::engine::sblr::RegisterSblrSequenceAlias(
       &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(),
@@ -373,7 +372,8 @@ EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) 
     effective.projection.canonical_projection_envelopes.clear();
     effective.option_envelopes = prepared.canonical_persisted_options;
     auto result = PersistedCreateWithNameRegistry<EngineCreateViewResult>(
-        effective, "ddl.create_view", "view", true, "created");
+        effective, "ddl.create_view", "view", true, "created",
+        EncodeBinaryViewOptions(prepared.canonical_persisted_options));
     if (result.ok) {
       AddApiBehaviorEvidence(&result,
                              "global_aggregate_view_marker",
@@ -418,7 +418,8 @@ EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) 
     effective.projection.canonical_projection_envelopes.clear();
     effective.option_envelopes = prepared.canonical_persisted_options;
     auto result = PersistedCreateWithNameRegistry<EngineCreateViewResult>(
-        effective, "ddl.create_view", "view", true, "created");
+        effective, "ddl.create_view", "view", true, "created",
+        EncodeBinaryViewOptions(prepared.canonical_persisted_options));
     if (result.ok) {
       AddApiBehaviorEvidence(&result,
                              "relation_projection_view_marker",
@@ -460,7 +461,8 @@ EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) 
     effective.option_envelopes =
         CanonicalRelationDescriptorProjectionViewOptions(request);
     auto result = PersistedCreateWithNameRegistry<EngineCreateViewResult>(
-        effective, "ddl.create_view", object_kind, true, "created");
+        effective, "ddl.create_view", object_kind, true, "created",
+        EncodeBinaryViewOptions(effective.option_envelopes));
     if (result.ok) {
       AddApiBehaviorEvidence(&result,
                              "catalog_projection_marker",
@@ -630,7 +632,7 @@ TResult PersistedExecutableCreateWithLifecycle(const TRequest& request,
                                                 lifecycle_state.diagnostic);
     }
 
-    const auto find_visible_procedure = [&](const std::string& object_uuid) {
+    const auto find_visible_procedure = [&](const EngineUuid& object_uuid) {
       return std::find_if(
           lifecycle_state.state.objects.begin(),
           lifecycle_state.state.objects.end(),
@@ -818,7 +820,7 @@ EngineCreateTriggerResult EngineCreateTrigger(const EngineCreateTriggerRequest& 
         MakeEngineApiDiagnostic(
             "MGA.AUTHORITY_MISMATCH",
             "ddl.create_trigger.catalog_lifecycle_identity_mismatch",
-            result.primary_object.uuid, true));
+            "trigger_uuid", true));
   }
   result.catalog_row_uuid = catalog.catalog_row_uuid;
   result.evidence.insert(result.evidence.end(), catalog.evidence.begin(),

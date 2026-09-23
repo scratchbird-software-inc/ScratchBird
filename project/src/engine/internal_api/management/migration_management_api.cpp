@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "catalog/binary_view_options.hpp"
 
 #include <string>
 #include <string_view>
@@ -69,12 +70,19 @@ std::string MigrationActionState(std::string_view action) {
 }
 
 std::string MigrationPayload(const EngineApiRequest& request, std::string_view operation_kind) {
-  std::string payload = ApiBehaviorPayloadFromRequest(request);
-  if (!payload.empty()) payload.push_back(';');
-  payload += "migration_operation=";
-  payload += operation_kind;
-  payload += ";reference_storage_authority_accepted=false;reference_finality_accepted=false";
-  payload += ";mga_authority_boundary=engine_owned";
+  EngineApiRequest payload_request = request;
+  payload_request.option_envelopes.erase(
+      std::remove_if(payload_request.option_envelopes.begin(),payload_request.option_envelopes.end(),
+          [](const std::string& option){return option.starts_with("migration_ref:");}),
+      payload_request.option_envelopes.end());
+  BinaryCatalogMetadata metadata;
+  metadata.text["request"] = ApiBehaviorPayloadFromRequest(payload_request);
+  metadata.text["migration_operation"] = std::string(operation_kind);
+  metadata.text["reference_storage_authority_accepted"] = "false";
+  metadata.text["reference_finality_accepted"] = "false";
+  metadata.text["mga_authority_boundary"] = "engine_owned";
+  std::string payload;
+  if (!EncodeBinaryCatalogMetadata(metadata,"migration.v2",&payload)) return {};
   return payload;
 }
 
@@ -85,13 +93,13 @@ TResult MigrationDiagnostic(const EngineApiRequest& request, EngineApiDiagnostic
 
 EngineApiDiagnostic AddMigrationRowsFromRecords(EngineApiResult* result,
                                  const EngineApiRequest& request,
-                                 std::string_view filter_uuid) {
+                                 const EngineUuid& filter_uuid) {
   EngineApiDiagnostic diagnostic;
   const auto records = VisibleApiBehaviorRecords(request.context, std::string(kMigrationKind),
                                                 request.context.local_transaction_id, diagnostic);
   if (diagnostic.error) return diagnostic;
   for (const auto& record : records) {
-    if (!filter_uuid.empty() && record.object_uuid != filter_uuid && record.default_name != filter_uuid) {
+    if (!filter_uuid.is_nil() && record.object_uuid != filter_uuid) {
       continue;
     }
     AddApiBehaviorRow(result,
@@ -145,9 +153,10 @@ EngineAlterMigrationResult EngineAlterMigration(const EngineAlterMigrationReques
   if (auto diagnostic = ValidateMigrationSecurity(request); diagnostic.error) {
     return MigrationDiagnostic<EngineAlterMigrationResult>(request, std::move(diagnostic));
   }
-  const std::string migration_ref = OptionValue(request, "migration_ref:");
+  const EngineUuid migration_ref = request.target_object.uuid.is_nil()
+      ? BinaryViewUuid(OptionValue(request, "migration_ref:")) : request.target_object.uuid;
   const std::string action = OptionValue(request, "migration_action:");
-  if (migration_ref.empty()) {
+  if (migration_ref.is_nil()) {
     return MigrationDiagnostic<EngineAlterMigrationResult>(
         request,
         MakeInvalidRequestDiagnostic(request.operation_id, "migration_ref_required"));
@@ -188,7 +197,10 @@ EngineShowMigrationResult EngineShowMigration(const EngineShowMigrationRequest& 
       request.operation_id.empty() ? "migration.show" : request.operation_id);
   result.result_shape.result_kind = "rs.migration.status.v1";
   AddMigrationAuthorityEvidence(&result, request, "show_migration", "EngineShowMigration");
-  const std::string migration_ref = OptionValue(request, "migration_ref:");
+  const EngineUuid migration_ref = request.target_object.uuid.is_nil()
+      ? BinaryViewUuid(OptionValue(request, "migration_ref:")) : request.target_object.uuid;
+  if (migration_ref.is_nil()) return MigrationDiagnostic<EngineShowMigrationResult>(request,
+      MakeInvalidRequestDiagnostic(request.operation_id,"binary_migration_ref_required"));
   const auto behavior_diagnostic = AddMigrationRowsFromRecords(&result, request, migration_ref);
   if (behavior_diagnostic.error) return MigrationDiagnostic<EngineShowMigrationResult>(request, behavior_diagnostic);
   if (result.result_shape.rows.empty()) {

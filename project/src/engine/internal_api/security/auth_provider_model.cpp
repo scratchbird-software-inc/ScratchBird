@@ -1,3 +1,4 @@
+#include "security/native_identity_option.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <stdexcept>
 #include "security/auth_provider_model.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
@@ -175,7 +178,7 @@ bool MaterializationRequired(const std::string& family) {
   return entry != nullptr && entry->group_materialization_required;
 }
 
-void AddRow(AuthProviderDecision* decision, std::string key, std::string value) {
+void AddRow(AuthProviderDecision* decision, std::string key, SecurityRowValue value) {
   decision->rows.push_back({std::move(key), std::move(value)});
 }
 
@@ -475,13 +478,21 @@ AuthProviderDescriptor AuthProviderDescriptorFromRequest(const EngineApiRequest&
   return descriptor;
 }
 
+EngineUuid AuthProviderIdentityOption(const EngineApiRequest& request, std::string_view prefix) {
+  const auto bytes=AuthProviderOptionValue(request,std::string(prefix));
+  if(bytes.empty())return {};
+  EngineUuid identity;
+  if(!ReadMetadataUuid(bytes,&identity))throw std::invalid_argument("auth_provider_binary_identity_required");
+  return identity;
+}
+
 AuthProviderPolicy AuthProviderPolicyFromRequest(const EngineApiRequest& request) {
   AuthProviderPolicy policy;
   policy.provider_family = CanonicalAuthProviderFamily(AuthProviderOptionValue(request, "provider:"));
   if (policy.provider_family.empty()) { policy.provider_family = CanonicalAuthProviderFamily(AuthProviderOptionValue(request, "provider_family:")); }
   policy.provider_uuid = request.target_object.uuid;
-  if (policy.provider_uuid.is_nil()) { policy.provider_uuid = AuthProviderOptionValue(request, "provider_uuid:"); }
-  policy.policy_uuid = AuthProviderOptionValue(request, "policy_uuid:");
+  if (policy.provider_uuid.is_nil()) { policy.provider_uuid = AuthProviderIdentityOption(request, "provider_uuid:"); }
+  policy.policy_uuid = AuthProviderIdentityOption(request, "policy_uuid:");
   if (policy.policy_uuid.is_nil()) { policy.policy_uuid = GenerateCrudEngineUuid("policy"); }
   policy.enabled = AuthProviderOptionBool(request, "provider_enabled:", true) && !AuthProviderOptionPresent(request, "provider:disabled");
   policy.allow_password_compat = AuthProviderOptionBool(request, "allow_password_compat:", false);
@@ -830,7 +841,7 @@ AuthProviderDecision RotateAuthCredential(const EngineApiRequest& request) {
   auto decision = Ok(request, "credential_rotated");
   decision.credential_rotated = true;
   decision.provider_family = family;
-  const std::string event_uuid = GenerateCrudEngineUuid("security_event");
+  const EngineUuid event_uuid = GenerateCrudEngineUuid("security_event");
   decision.evidence.push_back({"credential_rotation", event_uuid});
   decision.evidence.push_back({"credential_rotation_audit", event_uuid});
   AddRow(&decision, "provider_family", family);
@@ -860,8 +871,8 @@ AuthProviderDecision SyncAuthProviderGroups(const EngineApiRequest& request) {
   const bool has_group_or_claim = caps.supports_group_query || caps.supports_authz_claims || MaterializationRequired(family);
   if (!has_group_or_claim) { return Fail(request, "SECURITY.GROUP.EXTERNAL_UNSYNCED", "provider_has_no_group_or_claim_capability:" + family); }
   const std::string external_group = AuthProviderOptionValue(request, "external_group:");
-  const std::string internal_group = AuthProviderOptionValue(request, "internal_group_uuid:");
-  if (external_group.empty() || internal_group.empty()) { return Fail(request, "SECURITY.GROUP.EXTERNAL_UNSYNCED", "external_group_and_internal_group_uuid_required"); }
+  EngineUuid internal_group;
+  if (external_group.empty() || !ReadSecurityIdentityOption(request, "internal_group_uuid", &internal_group)) { return Fail(request, "SECURITY.GROUP.EXTERNAL_UNSYNCED", "external_group_and_internal_group_uuid_required"); }
   auto decision = Ok(request, "groups_materialized");
   decision.materialized = true;
   decision.provider_family = family;

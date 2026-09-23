@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -86,7 +87,10 @@ runtime::UdrCallInput Input(std::string entrypoint,
                             std::string payload,
                             std::string context_packet = {}) {
   runtime::UdrCallInput input;
-  input.package_uuid = std::string(scratchbird::udr::sbsql_parser_support::kSbuSbsqlPackageUuid);
+  input.package_uuid = scratchbird::udr::sbsql_parser_support::kSbuSbsqlPackageIdentity;
+  input.identities = {scratchbird::tests::FixtureUuid(1343, 1),
+                      scratchbird::tests::FixtureUuid(1343, 2),
+                      scratchbird::tests::FixtureUuid(1343, 3), {}};
   input.entrypoint = std::move(entrypoint);
   input.payload = std::move(payload);
   input.context_packet = std::move(context_packet);
@@ -166,7 +170,7 @@ sblr::SblrOperationEnvelope BuildSourcePreservingEnvelope() {
 void CheckDescriptorAndLifecycle() {
   using namespace scratchbird::udr::sbsql_parser_support;
   auto descriptor = sbu_sbsql_package_descriptor();
-  Require(descriptor.package_uuid == kSbuSbsqlPackageUuid, "package uuid mismatch");
+  Require(descriptor.package_uuid == kSbuSbsqlPackageIdentity, "package uuid mismatch");
   Require(descriptor.package_name == kSbuSbsqlPackageName, "package name mismatch");
   Require(descriptor.abi_version == "sb_udr_v1", "abi version mismatch");
   Require(descriptor.source_revision == "sbsql-parser-support-db-lifecycle",
@@ -206,11 +210,11 @@ void CheckDescriptorAndLifecycle() {
   Require(init.ok && init.diagnostic_code == "UDR.OK", "init lifecycle failed");
   const auto shutdown = descriptor.shutdown(descriptor.package_uuid);
   Require(shutdown.ok && shutdown.diagnostic_code == "UDR.OK", "shutdown lifecycle failed");
-  const auto init_mismatch = descriptor.init("019e13c0-0000-7000-8000-00000000ffff");
+  const auto init_mismatch = descriptor.init(scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-00000000ffff"));
   Require(!init_mismatch.ok &&
               init_mismatch.diagnostic_code == "UDR.SBSQL.PACKAGE_UUID_MISMATCH",
           "init UUID mismatch did not refuse deterministically");
-  const auto shutdown_mismatch = descriptor.shutdown("019e13c0-0000-7000-8000-00000000ffff");
+  const auto shutdown_mismatch = descriptor.shutdown(scratchbird::tests::FixtureUuidLiteral("019e13c0-0000-7000-8000-00000000ffff"));
   Require(!shutdown_mismatch.ok &&
               shutdown_mismatch.diagnostic_code == "UDR.SBSQL.PACKAGE_UUID_MISMATCH",
           "shutdown UUID mismatch did not refuse deterministically");
@@ -222,11 +226,11 @@ void CheckRuntimeRegistrationAndEntrypoints() {
   const auto descriptor = sbu_sbsql_package_descriptor();
   const auto registered = runtime::RegisterPackage(descriptor);
   Require(registered.ok, "package registration failed");
-  const auto found = runtime::FindPackageDescriptor(kSbuSbsqlPackageUuid);
+  const auto found = runtime::FindPackageDescriptor(kSbuSbsqlPackageIdentity);
   Require(found.has_value(), "registered package descriptor not found");
-  const auto loaded = runtime::LoadPackage(kSbuSbsqlPackageUuid);
+  const auto loaded = runtime::LoadPackage(kSbuSbsqlPackageIdentity);
   Require(loaded.ok, "package load failed");
-  const auto state = runtime::GetPackageState(kSbuSbsqlPackageUuid);
+  const auto state = runtime::GetPackageState(kSbuSbsqlPackageIdentity);
   Require(state.has_value() && state->registered && state->loaded,
           "package state not registered and loaded");
   Require(state->capability_role == "parser_support.sbsql",
@@ -314,7 +318,7 @@ void CheckRuntimeRegistrationAndEntrypoints() {
                           "runtime bridge_dispatch open_session"),
           "runtime bridge_dispatch open_session failed");
 
-  const auto unloaded = runtime::UnloadPackage(kSbuSbsqlPackageUuid);
+  const auto unloaded = runtime::UnloadPackage(kSbuSbsqlPackageIdentity);
   Require(unloaded.ok, "package unload failed");
   runtime::ResetRuntimeForTest();
 }
@@ -462,12 +466,12 @@ int main() {
   const auto native_without_receipt = sbu_sbsql_parse_to_sblr(
       "select 1",
       "engine_context=trusted;resolver=public;"
-      "session_uuid=019e13c0-0000-7000-8000-00000000a008;"
-      "connection_uuid=019e13c0-0000-7000-8000-00000000a108;"
-      "database_uuid=019e13c0-0000-7000-8000-00000000a208;"
       "parser_uuid=019e13c0-0000-7000-8000-00000000a308;"
       "catalog_epoch=77;security_policy_epoch=78;descriptor_epoch=79;"
-      "transaction_context=udr.test.engine_context");
+      "transaction_context=udr.test.engine_context",
+      {scratchbird::tests::FixtureUuid(1343, 1),
+       scratchbird::tests::FixtureUuid(1343, 2),
+       scratchbird::tests::FixtureUuid(1343, 3), {}});
   if (!ExpectRefusal(native_without_receipt,
                      "QOW-DIAG-BOUNDAST-SCOPE",
                      "parse_to_sblr_native_without_receipt")) {
@@ -477,12 +481,12 @@ int main() {
   const auto sblr = sbu_sbsql_parse_to_sblr(
       "ENGINE QUERY BIND EXPRESSION",
       "engine_context=trusted;"
-      "session_uuid=019e13c0-0000-7000-8000-00000000a008;"
-      "connection_uuid=019e13c0-0000-7000-8000-00000000a108;"
-      "database_uuid=019e13c0-0000-7000-8000-00000000a208;"
       "parser_uuid=019e13c0-0000-7000-8000-00000000a308;"
       "catalog_epoch=77;security_policy_epoch=78;descriptor_epoch=79;"
-      "transaction_context=udr.test.engine_context");
+      "transaction_context=udr.test.engine_context",
+      {scratchbird::tests::FixtureUuid(1343, 1),
+       scratchbird::tests::FixtureUuid(1343, 2),
+       scratchbird::tests::FixtureUuid(1343, 3), {}});
   if (!ExpectOk(sblr, "parse_to_sblr_parser_only")) return EXIT_FAILURE;
   if (!Contains(sblr.payload, "SBLRExecutionEnvelope.v3") ||
       !Contains(sblr.payload, "\"operation_id\":\"query.bind_expression\"") ||

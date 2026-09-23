@@ -69,8 +69,8 @@ mem::MemoryAccountingSnapshot Snapshot() {
   snapshot.leak_candidate_count = 2;
   snapshot.page_buffer_current_bytes = 16;
   snapshot.arena_current_bytes = 32;
-  snapshot.contexts.push_back({"query", "query-secret-token-raw", 90, 120, 3, 1, 0, 2});
-  snapshot.contexts.push_back({"session", "session-visible", 10, 20, 1, 1, 0, 0});
+  snapshot.contexts.push_back({"query", "query-secret-token-raw", std::nullopt, 90, 120, 3, 1, 0, 2});
+  snapshot.contexts.push_back({"session", "session-visible", std::nullopt, 10, 20, 1, 1, 0, 0});
   snapshot.categories.push_back({mem::MemoryCategory::executor_query_reserved,
                                  80, 100, 2, 1, 0, 1});
   snapshot.categories.push_back({mem::MemoryCategory::diagnostics,

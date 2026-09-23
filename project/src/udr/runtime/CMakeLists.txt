@@ -18,4 +18,4 @@ target_compile_features(sb_udr_runtime PUBLIC cxx_std_23)
 target_include_directories(sb_udr_runtime PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
-target_link_libraries(sb_udr_runtime PUBLIC sb_core_memory)
+target_link_libraries(sb_udr_runtime PUBLIC sb_core_memory sb_core_uuid)

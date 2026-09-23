@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "engine/sblr/sblr_dispatch.hpp"
@@ -44,7 +45,7 @@ std::vector<std::uint8_t> ClusterPackage() {
   root.requires_cluster_authority = true;
 
   sblr::SblrOpcodeStream stream;
-  stream.package_descriptor_uuid = "018f1234-5678-7abc-8def-0123456789ab";
+  stream.package_descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("018f1234-5678-7abc-8def-0123456789ab");
   stream.registry_snapshot_uuid = root.registry_snapshot_uuid;
   stream.operations = {Frame(true), std::move(root), Frame(false)};
   return sblr::EncodeSblrOpcodeStream(stream);
@@ -62,10 +63,10 @@ int main(int argc, char** argv) {
   gateway_request.root_opcode_code = 0x0B00;
   gateway_request.root_opcode = "SBLR_CLUSTER_JOIN";
   gateway_request.root_operation_id = "engine.op.cluster_join";
-  gateway_request.route_snapshot_uuid = "018f1111-2222-7333-8444-555555555555";
+  gateway_request.route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("018f1111-2222-7333-8444-555555555555");
   gateway_request.route_epoch = 7;
   gateway_request.route_generation = 9;
-  gateway_request.security_snapshot_uuid = "018faaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+  gateway_request.security_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("018faaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee");
   gateway_request.security_epoch = 11;
   gateway_request.security_observation_generation = 13;
   gateway_request.route_snapshot_engine_owned = true;

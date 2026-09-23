@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "parser_server_event_ipc.hpp"
 #include "parser_server_ipc.hpp"
@@ -100,7 +101,7 @@ HostedEngineState EngineState(HostedDatabaseState state = HostedDatabaseState::k
                               bool open = true) {
   HostedDatabaseSnapshot database;
   database.state = state;
-  database.database_uuid = "018f58bd-98f0-7000-8000-00000013060f";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-00000013060f");
   database.database_path = "/tmp/sb_dblc013f_ipc.sbdb";
   database.database_open = open;
   HostedEngineState engine;
@@ -382,12 +383,12 @@ ParserServerEventSession EventSession(const std::filesystem::path& database_path
                                       bool draining = false,
                                       std::uint64_t local_transaction_id = 0) {
   ParserServerEventSession session;
-  session.parser_channel_uuid = "018f58bd-98f0-7000-8000-0000001306aa";
+  session.parser_channel_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306aa");
   session.session_bound = session_bound;
   session.draining = draining;
   session.engine_context.database_path = database_path.string();
-  session.engine_context.session_uuid.canonical = "018f58bd-98f0-7000-8000-0000001306bb";
-  session.engine_context.principal_uuid.canonical = "018f58bd-98f0-7000-8000-0000001306cc";
+  session.engine_context.session_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306bb");
+  session.engine_context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306cc");
   session.engine_context.local_transaction_id = local_transaction_id;
   session.engine_context.security_context_present = true;
   session.engine_context.trust_mode =
@@ -406,12 +407,12 @@ void SeedActiveTransaction(const std::filesystem::path& database_path, std::uint
 }
 
 void CreateEventChannel(const ParserServerEventSession& session,
-                        const std::string& channel_uuid) {
+                        const api::EngineUuid& channel_uuid) {
   api::EngineCreateEventChannelRequest request;
   request.context.request_id = "dblc013f-event-channel-create";
   request.context.database_path = session.engine_context.database_path;
-  request.context.session_uuid.canonical = session.engine_context.session_uuid.canonical;
-  request.context.principal_uuid.canonical = session.engine_context.principal_uuid.canonical;
+  request.context.session_uuid = session.engine_context.session_uuid;
+  request.context.principal_uuid = session.engine_context.principal_uuid;
   request.context.local_transaction_id = session.engine_context.local_transaction_id;
   request.context.security_context_present = session.engine_context.security_context_present;
   request.context.trust_mode =
@@ -421,8 +422,7 @@ void CreateEventChannel(const ParserServerEventSession& session,
           ? api::EngineTrustMode::embedded_in_process
           : api::EngineTrustMode::server_isolated;
   request.context.trace_tags = session.engine_context.trace_tags;
-  request.target_object = {{channel_uuid}, "event_channel"};
-  request.option_envelopes.push_back("channel_uuid:" + channel_uuid);
+  request.target_object = {channel_uuid, "event_channel"};
   request.option_envelopes.push_back("channel:dblc013f_event_channel");
   const auto created = api::EngineCreateEventChannel(request);
   Require(created.ok, "DBLC-013F failed to create engine-authorized event channel");
@@ -434,21 +434,21 @@ void TestEventIpcSessionDrainAndCleanup() {
   (void)CreateOpenDatabase(database_path);
   ParserEventNotificationRouter router;
   ParserServerEventIpcRuntime runtime(&router);
-  const std::string channel_uuid = "018f58bd-98f0-7000-8000-0000001306ff";
+  const auto channel_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306ff");
 
   PsEventSubscribeRequest unbound;
-  unbound.request_uuid = "unbound-request";
+  unbound.request_uuid = scratchbird::tests::FixtureUuid(1388, 1);
   unbound.session = EventSession(database_path, false);
-  unbound.channel_uuid = "018f58bd-98f0-7000-8000-0000001306dd";
+  unbound.channel_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306dd");
   auto unbound_result = runtime.HandleSubscribe(unbound);
   Require(unbound_result.outcome == "rejected" &&
               HasEventVector(unbound_result.message_vector_set, "PARSER_SERVER_IPC.SESSION_REQUIRED"),
           "DBLC-013F event subscribe without session was not rejected");
 
   PsEventSubscribeRequest draining;
-  draining.request_uuid = "draining-request";
+  draining.request_uuid = scratchbird::tests::FixtureUuid(1388, 2);
   draining.session = EventSession(database_path, true, true);
-  draining.channel_uuid = "018f58bd-98f0-7000-8000-0000001306ee";
+  draining.channel_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306ee");
   auto draining_result = runtime.HandleSubscribe(draining);
   Require(draining_result.outcome == "rejected" &&
               HasEventVector(draining_result.message_vector_set, "PARSER_SERVER_IPC.DRAINING"),
@@ -458,7 +458,7 @@ void TestEventIpcSessionDrainAndCleanup() {
   CreateEventChannel(EventSession(database_path, true, false, 1306), channel_uuid);
 
   PsEventSubscribeRequest accepted;
-  accepted.request_uuid = "accepted-request";
+  accepted.request_uuid = scratchbird::tests::FixtureUuid(1388, 3);
   accepted.session = EventSession(database_path, true);
   accepted.channel_uuid = channel_uuid;
   auto accepted_result = runtime.HandleSubscribe(accepted);

@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_session_control_route_bridge.hpp"
+#include "uuid.hpp"
+#include <algorithm>
 
 // SEARCH_KEY: AEIC_SESSION_CONTROL_SERVER_ROUTE_BRIDGE
 
@@ -29,6 +31,20 @@ AgentSessionControlRouteResult ApplySessionControlAgentRoute(
     return result;
   }
 
+  core::platform::Uuid session_identity;
+  if (request.session_uuid.size() != session_identity.bytes.size()) {
+    result.diagnostic_code = "SB_AGENT_SESSION_CONTROL_ROUTE.SESSION_IDENTITY_INVALID";
+    result.evidence.push_back("session_identity_requires_binary16");
+    return result;
+  }
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(request.session_uuid.data()),
+              session_identity.bytes.size(), session_identity.bytes.begin());
+  if (!core::uuid::IsEngineIdentityUuid(session_identity)) {
+    result.diagnostic_code = "SB_AGENT_SESSION_CONTROL_ROUTE.SESSION_IDENTITY_INVALID";
+    result.evidence.push_back("session_identity_requires_engine_uuid");
+    return result;
+  }
+
   result.manager_result =
       implemented::EvaluateSessionControlManagerRequest(ledger, request);
   if (!result.manager_result.ok()) {
@@ -37,7 +53,7 @@ AgentSessionControlRouteResult ApplySessionControlAgentRoute(
     return result;
   }
 
-  const auto found = registry->sessions_by_uuid.find(request.session_uuid);
+  const auto found = registry->sessions_by_uuid.find(session_identity);
   if (found == registry->sessions_by_uuid.end()) {
     result.diagnostic_code =
         "SB_AGENT_SESSION_CONTROL_ROUTE.SESSION_NOT_FOUND";

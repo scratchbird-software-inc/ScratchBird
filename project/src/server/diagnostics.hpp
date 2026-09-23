@@ -11,6 +11,7 @@
 #pragma once
 
 #include "../core/uuid/diagnostic_identity.hpp"
+#include "../core/platform/runtime_platform.hpp"
 #include "../server_engine_bridge/diagnostic_fields.hpp"
 
 #include <string>
@@ -44,6 +45,8 @@ struct ServerDiagnostic {
   std::string database_uuid;
   // Server-only deterministic branch identity. Never serialized to clients.
   std::string internal_audit_key;
+  // Native identity evidence is kept separate from human-readable fields.
+  std::vector<std::pair<std::string, core::platform::Uuid>> identity_fields;
   // Newly emitted server records own this identity. An engine-to-server
   // adapter must preserve the engine occurrence instead of using this new ID.
   std::array<std::uint8_t, 16> occurrence_uuid =

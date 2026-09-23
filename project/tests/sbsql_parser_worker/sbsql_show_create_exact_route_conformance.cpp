@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -133,9 +134,9 @@ void ConfigureMemoryFixture() {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000000701";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000000702";
-  session.database_uuid = "019f0000-0000-7000-8000-000000000703";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000701");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000702");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000703");
   session.catalog_epoch = 7;
   session.security_policy_epoch = 11;
   session.descriptor_epoch = 13;
@@ -145,7 +146,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-000000000704";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000704");
   config.bundle_contract_id = "sbp_sbsql@show-create-route-test";
   config.build_id = "sbsql-show-create-route-test";
   return config;
@@ -168,7 +169,7 @@ PipelineArtifacts RunPipeline() {
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            {std::string(kTargetUuid)});
+                            {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000901")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -197,20 +198,19 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal,
   return column;
 }
 
-api::EngineRequestContext BaseEngineContext(const std::string& database_uuid) {
+api::EngineRequestContext BaseEngineContext(const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-show-create-exact-route";
   context.database_path = std::string(kDatabasePath);
   context.security_context_present = true;
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000000802";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000000803";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000000804";
-  context.cluster_uuid.canonical = "019f0000-0000-7000-8000-000000000805";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000000806";
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000802");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000803");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000804");
+  context.cluster_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000805");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000806");
   context.catalog_generation_id = 7;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.security_epoch = 11;
@@ -247,7 +247,7 @@ api::EngineRequestContext CreateAndOpenEngineDatabase() {
 
   api::EngineOpenLifecycleRequest open;
   open.context = BaseEngineContext(
-      scratchbird::core::uuid::UuidToString(created.state.database_uuid.value));
+      created.state.database_uuid.value);
   const auto opened = api::EngineOpenLifecycle(open);
   if (!opened.ok) PrintApiDiagnostics(opened, "lifecycle.open_database");
   Require(opened.ok, "lifecycle.open_database failed while seeding SHOW CREATE fixture");
@@ -269,12 +269,12 @@ api::EngineRequestContext SeedEngineTable() {
 
   api::EngineCreateTableRequest table;
   table.context = context;
-  table.requested_table_uuid.canonical = std::string(kTargetUuid);
+  table.requested_table_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000901");
   const auto visible_schemas = api::CheckedSchemaTreeRecords(
       context, context.local_transaction_id);
   Require(!visible_schemas.empty(),
           "credentialed SHOW CREATE fixture exposed no writable schema");
-  table.target_schema.uuid.canonical = visible_schemas.front().schema_uuid;
+  table.target_schema.uuid = visible_schemas.front().schema_uuid;
   table.target_schema.object_kind = "schema";
   table.table_names.push_back(Name("replay_target"));
   table.table_columns.push_back(Column(0, "id", "int64"));
@@ -336,7 +336,7 @@ void RequireParserLoweringAndAdmission() {
           "SHOW CREATE envelope operation family mismatch");
   Require(artifacts.envelope.sblr_operation_key == kFamily,
           "SHOW CREATE envelope operation key mismatch");
-  Require(HasValue(artifacts.envelope.resolved_object_uuids, kTargetUuid),
+  Require((std::find(artifacts.envelope.resolved_object_uuids.begin(), artifacts.envelope.resolved_object_uuids.end(), scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000901")) != artifacts.envelope.resolved_object_uuids.end()),
           "SHOW CREATE envelope missing resolved target UUID");
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.engine.catalog_descriptor_api_required"),
@@ -350,7 +350,7 @@ void RequireParserLoweringAndAdmission() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_storage_or_finality"),
           "SHOW CREATE missing no storage/finality authority");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.catalog.object_descriptor"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.catalog.object_descriptor"),
           "SHOW CREATE missing object descriptor ref");
   Require(Contains(artifacts.envelope.payload, "\"catalog_envelope_kind\":\"show_create\""),
           "SHOW CREATE payload missing catalog envelope kind");
@@ -409,7 +409,7 @@ void RequireEngineDispatch() {
   engine_envelope.parser_resolved_names_to_uuids = true;
 
   api::EngineApiRequest api_request;
-  api_request.target_object.uuid.canonical = std::string(kTargetUuid);
+  api_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000901");
   api_request.target_object.object_kind = "table";
   const sblr::SblrDispatchRequest request{context, engine_envelope, api_request};
   const auto result = sblr::DispatchSblrOperation(request);
@@ -422,7 +422,7 @@ void RequireEngineDispatch() {
   Require(result.api_result.ok, "catalog.get_descriptor returned a diagnostic");
   Require(result.api_result.operation_id == kOperationId,
           "catalog.get_descriptor returned wrong operation id");
-  Require(result.api_result.primary_object.uuid.canonical == kTargetUuid,
+  Require(result.api_result.primary_object.uuid == scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000901"),
           "catalog.get_descriptor returned wrong primary object");
   Require(result.api_result.result_shape.result_kind == "descriptor",
           "catalog.get_descriptor did not preserve descriptor result kind");

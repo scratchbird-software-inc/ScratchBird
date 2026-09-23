@@ -107,19 +107,30 @@ std::string FieldOrOption(const EngineAuthenticateRequest& request,
   return SecurityOptionValue(request, option_prefix);
 }
 
-bool IsDurablePrincipalUuid(std::string_view value) {
-  if (value.empty()) { return false; }
-  const auto parsed =
-      scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
-          scratchbird::core::platform::UuidKind::principal,
-          std::string(value));
-  return parsed.ok();
+bool IsDurablePrincipalUuid(const EngineUuid& value) {
+  return scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+      scratchbird::core::platform::UuidKind::principal, value).ok();
 }
 
-std::string DurablePrincipalUuid(
-    const EngineAuthenticateRequest& request,
-    const std::map<std::string, std::string>& fields) {
-  return FieldOrOption(request, fields, "principal_uuid", "durable_principal_uuid:");
+EngineUuid DurablePrincipalUuid(const EngineAuthenticateRequest& request,
+                               const std::map<std::string, std::string>& fields) {
+  // Text evidence is never a second source of identity, even alongside a native candidate.
+  if (fields.contains("principal_uuid") || !SecurityOptionValue(request, "durable_principal_uuid:").empty()) return {};
+  return request.durable_principal_uuid;
+}
+
+EngineUuid ResolveAuthenticatedPrincipalIdentity(
+    const EngineSecurityPrincipalLifecycleState& state,
+    const std::string& principal_name, const EngineUuid& candidate) {
+  EngineUuid resolved;
+  for (const auto& principal : state.principals) {
+    if (principal.principal_name != principal_name) continue;
+    if (!resolved.is_nil() || principal.deleted || principal.lifecycle_state != "active" ||
+        !IsDurablePrincipalUuid(principal.principal_uuid) ||
+        (!candidate.is_nil() && candidate != principal.principal_uuid)) return {};
+    resolved = principal.principal_uuid;
+  }
+  return resolved;
 }
 
 void AddUniqueAuthorizationTag(std::vector<std::string>* tags, std::string tag) {
@@ -131,7 +142,7 @@ void AddUniqueAuthorizationTag(std::vector<std::string>* tags, std::string tag) 
 
 std::vector<std::string> DurableAuthorizationTagsForPrincipal(
     const EngineAuthenticateRequest& request,
-    const std::string& principal_uuid,
+    const EngineUuid& principal_uuid,
     bool include_connect_fallback,
     const EngineSecurityPrincipalLifecycleState* retained_state) {
   std::vector<std::string> tags;
@@ -149,7 +160,7 @@ std::vector<std::string> DurableAuthorizationTagsForPrincipal(
   for (const auto& grant : state->grants) {
     if (grant.grantee_kind != "principal" ||
         grant.grantee_uuid != principal_uuid ||
-        !grant.target_object_uuid.empty() ||
+        !grant.target_object_uuid.is_nil() ||
         grant.grant_effect == "deny" ||
         !IsKnownSecurityRight(grant.privilege)) {
       continue;
@@ -250,7 +261,7 @@ std::string TemporaryTokenCredentialFingerprint(std::string_view token_handle,
 EngineApiDiagnostic DurableCredentialFingerprintForPrincipal(
     const EngineAuthenticateRequest& request,
     const std::string& principal,
-    const std::string& durable_principal_uuid,
+    const EngineUuid& durable_principal_uuid,
     std::string* credential_fingerprint,
     const EngineSecurityPrincipalLifecycleState* retained_state) {
   if (credential_fingerprint == nullptr) {
@@ -297,7 +308,7 @@ EngineApiDiagnostic DurableCredentialFingerprintForPrincipal(
 EngineApiDiagnostic DurableCredentialFingerprintForPrincipalName(
     const EngineAuthenticateRequest& request,
     const std::string& principal,
-    std::string* durable_principal_uuid,
+    EngineUuid* durable_principal_uuid,
     std::string* credential_fingerprint,
     const EngineSecurityPrincipalLifecycleState* retained_state) {
   if (durable_principal_uuid == nullptr || credential_fingerprint == nullptr) {
@@ -357,7 +368,7 @@ bool LooksLikeStructuredAuthEvidence(std::string_view evidence) {
 
 EngineApiDiagnostic VerifyLocalPasswordEvidence(const EngineAuthenticateRequest& request,
                                                 const std::string& principal,
-                                                std::string* resolved_principal_uuid,
+                                                EngineUuid* resolved_principal_uuid,
                                                 bool* server_derived_connect_right,
                                                 const EngineSecurityPrincipalLifecycleState*
                                                     retained_state) {
@@ -370,11 +381,11 @@ EngineApiDiagnostic VerifyLocalPasswordEvidence(const EngineAuthenticateRequest&
   const auto scheme = fields.find("scheme");
   const auto evidence_principal = fields.find("principal");
   const auto verifier = fields.find("verifier");
-  const std::string durable_principal_uuid = DurablePrincipalUuid(request, fields);
+  const EngineUuid durable_principal_uuid = DurablePrincipalUuid(request, fields);
   const std::string storage_authority =
       FieldOrOption(request, fields, "storage_authority", "security_storage_authority:");
   if (scheme == fields.end() && !LooksLikeStructuredAuthEvidence(request.credential_evidence)) {
-    std::string resolved_uuid;
+    EngineUuid resolved_uuid;
     std::string durable_fingerprint;
     const auto durable = DurableCredentialFingerprintForPrincipalName(
         request, principal, &resolved_uuid, &durable_fingerprint,
@@ -440,7 +451,7 @@ EngineApiDiagnostic VerifySecurityDatabaseTemporaryTokenEvidence(
   const auto scheme = fields.find("scheme");
   const auto evidence_principal = fields.find("principal");
   const auto token = fields.find("token");
-  const std::string durable_principal_uuid = DurablePrincipalUuid(request, fields);
+  const EngineUuid durable_principal_uuid = DurablePrincipalUuid(request, fields);
   const std::string storage_authority =
       FieldOrOption(request, fields, "storage_authority", "security_storage_authority:");
   const std::string token_handle =
@@ -534,6 +545,7 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
                                   SecurityOptionPresent(request, "credential:valid");
   const std::string canonical_provider = CanonicalAuthProviderFamily(provider.empty() ? "local_password" : provider);
   auto credential_fields = ParseEvidenceFields(request.credential_evidence);
+  EngineUuid authenticated_principal_uuid = DurablePrincipalUuid(request, credential_fields);
   std::vector<std::string> engine_authorization_tags;
   std::shared_ptr<const EngineSecurityPrincipalLifecycleState>
       authentication_durable_security_state;
@@ -558,7 +570,7 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
     authentication_durable_security_state =
         std::make_shared<const EngineSecurityPrincipalLifecycleState>(
             std::move(loaded.state));
-    std::string resolved_principal_uuid;
+    EngineUuid resolved_principal_uuid;
     bool server_derived_connect_right = false;
     const auto local_password = VerifyLocalPasswordEvidence(
         request, principal, &resolved_principal_uuid,
@@ -567,8 +579,8 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
     if (local_password.error) {
       return AuthenticationFailureResult(request, local_password.code, local_password.detail);
     }
-    if (!resolved_principal_uuid.empty()) {
-      credential_fields.emplace("principal_uuid", resolved_principal_uuid);
+    if (!resolved_principal_uuid.is_nil()) {
+      authenticated_principal_uuid = resolved_principal_uuid;
       credential_fields.emplace("storage_authority", "mga_security_principal_lifecycle");
     }
     engine_authorization_tags = DurableAuthorizationTagsForPrincipal(
@@ -604,15 +616,27 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
                                            : provider_decision.diagnostic.detail);
   }
 
+  if (!authentication_durable_security_state) {
+    auto loaded = LoadSecurityPrincipalLifecycleState(request.context);
+    if (!loaded.ok) return AuthenticationFailureResult(request, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                                                        "durable_security_state_unavailable");
+    authentication_durable_security_state =
+        std::make_shared<const EngineSecurityPrincipalLifecycleState>(std::move(loaded.state));
+  }
+  authenticated_principal_uuid = ResolveAuthenticatedPrincipalIdentity(
+      *authentication_durable_security_state, principal, authenticated_principal_uuid);
   EngineApiRequest context_request = request;
   context_request.target_object.uuid = request.target_object.uuid;
   auto context = ConnectionSecurityContextFromRequest(context_request);
-  const std::string durable_principal_uuid =
-      DurablePrincipalUuid(request, credential_fields);
-  if (IsDurablePrincipalUuid(durable_principal_uuid)) {
-    context.effective_user_uuid = durable_principal_uuid;
-  } else if (context.effective_user_uuid.is_nil()) {
-    context.effective_user_uuid = GenerateCrudEngineUuid("principal");
+  const auto durable_principal =
+      scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+          scratchbird::core::platform::UuidKind::principal,
+          authenticated_principal_uuid);
+  if (durable_principal.ok()) {
+    context.effective_user_uuid = durable_principal.value.value;
+  } else {
+    return AuthenticationFailureResult(request, "SECURITY.AUTHENTICATION.FAILED",
+                                       "durable_principal_identity_required");
   }
   if (context.connection_uuid.is_nil()) { context.connection_uuid = GenerateCrudEngineUuid("session"); }
   if (context.authority_uuid.is_nil()) { context.authority_uuid = request.context.database_uuid; }
@@ -642,8 +666,8 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
   AddSecurityEvidence(&result,
                       "authentication_provider",
                       provider_decision.provider_family.empty() ? "local_password" : provider_decision.provider_family);
-  if (IsDurablePrincipalUuid(durable_principal_uuid)) {
-    AddSecurityEvidence(&result, "durable_principal_uuid", durable_principal_uuid);
+  if (durable_principal.ok()) {
+    AddSecurityEvidence(&result, "durable_principal_uuid", durable_principal.value.value);
   }
   const std::string storage_authority =
       FieldOrOption(request, credential_fields, "storage_authority", "security_storage_authority:");

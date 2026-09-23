@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -129,6 +130,10 @@ struct UuidFactory {
     return generated.value;
   }
 
+  platform::Uuid Identity(platform::UuidKind kind, platform::u64 salt) const {
+    return Typed(kind, salt).value;
+  }
+
   std::string Text(platform::UuidKind kind, platform::u64 salt) const {
     return uuid::UuidToString(Typed(kind, salt).value);
   }
@@ -140,9 +145,9 @@ struct TempDatabase {
   UuidFactory uuids;
   platform::TypedUuid database_uuid;
   platform::TypedUuid filespace_uuid;
-  std::string database_uuid_text;
-  std::string filespace_uuid_text;
-  std::string principal_uuid_text;
+  platform::Uuid database_identity;
+  platform::Uuid filespace_identity;
+  platform::Uuid principal_identity;
 
   explicit TempDatabase(std::string_view label) {
     dir = std::filesystem::temp_directory_path() /
@@ -152,9 +157,9 @@ struct TempDatabase {
     path = dir / "odf118.sbdb";
     database_uuid = uuids.Typed(platform::UuidKind::database, 10);
     filespace_uuid = uuids.Typed(platform::UuidKind::filespace, 11);
-    database_uuid_text = uuid::UuidToString(database_uuid.value);
-    filespace_uuid_text = uuid::UuidToString(filespace_uuid.value);
-    principal_uuid_text = uuids.Text(platform::UuidKind::principal, 12);
+    database_identity = database_uuid.value;
+    filespace_identity = filespace_uuid.value;
+    principal_identity = uuids.Identity(platform::UuidKind::principal, 12);
   }
 
   TempDatabase(const TempDatabase&) = delete;
@@ -165,9 +170,9 @@ struct TempDatabase {
         uuids(other.uuids),
         database_uuid(other.database_uuid),
         filespace_uuid(other.filespace_uuid),
-        database_uuid_text(std::move(other.database_uuid_text)),
-        filespace_uuid_text(std::move(other.filespace_uuid_text)),
-        principal_uuid_text(std::move(other.principal_uuid_text)) {
+        database_identity(std::move(other.database_identity)),
+        filespace_identity(std::move(other.filespace_identity)),
+        principal_identity(std::move(other.principal_identity)) {
     other.dir.clear();
     other.path.clear();
   }
@@ -183,9 +188,9 @@ struct TempDatabase {
       uuids = other.uuids;
       database_uuid = other.database_uuid;
       filespace_uuid = other.filespace_uuid;
-      database_uuid_text = std::move(other.database_uuid_text);
-      filespace_uuid_text = std::move(other.filespace_uuid_text);
-      principal_uuid_text = std::move(other.principal_uuid_text);
+      database_identity = std::move(other.database_identity);
+      filespace_identity = std::move(other.filespace_identity);
+      principal_identity = std::move(other.principal_identity);
       other.dir.clear();
       other.path.clear();
     }
@@ -216,10 +221,10 @@ api::EngineRequestContext BaseContext(const TempDatabase& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = fixture.database_uuid_text;
-  context.principal_uuid.canonical = fixture.principal_uuid_text;
-  context.session_uuid.canonical =
-      fixture.uuids.Text(platform::UuidKind::object, 200 + epoch);
+  context.database_uuid = fixture.database_identity;
+  context.principal_uuid = fixture.principal_identity;
+  context.session_uuid =
+      fixture.uuids.Identity(platform::UuidKind::object, 200 + epoch);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -269,7 +274,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view value = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (value.empty() || evidence.evidence_id == value)) {
+        (value.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value))) {
       return true;
     }
   }
@@ -572,26 +577,26 @@ TempDatabase CreateAndOpenFreshDatabase(std::string_view label) {
 
 api::EngineCatalogCreateObjectRequest CreateObjectRequest(
     const api::EngineRequestContext& context,
-    const std::string& object_uuid,
+    const platform::Uuid& object_uuid,
     std::string object_kind,
-    const std::string& schema_uuid,
+    const platform::Uuid& schema_uuid,
     std::string object_name) {
   api::EngineCatalogCreateObjectRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = object_uuid;
+  request.target_object.uuid = object_uuid;
   request.target_object.object_kind = std::move(object_kind);
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.localized_names.push_back(Name(std::move(object_name)));
   return request;
 }
 
 api::EngineResolveNameRequest ResolveRequest(const api::EngineRequestContext& context,
-                                             const std::string& schema_uuid,
+                                             const platform::Uuid& schema_uuid,
                                              std::string object_kind,
                                              std::string object_name) {
   api::EngineResolveNameRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.target_object.object_kind = std::move(object_kind);
   request.localized_names.push_back(Name(std::move(object_name)));
   return request;
@@ -599,23 +604,23 @@ api::EngineResolveNameRequest ResolveRequest(const api::EngineRequestContext& co
 
 api::EngineGetDescriptorRequest DescriptorRequest(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const platform::Uuid& table_uuid) {
   api::EngineGetDescriptorRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = table_uuid;
+  request.target_object.uuid = table_uuid;
   request.target_object.object_kind = "table";
   request.option_envelopes.push_back("descriptor_cache:enabled");
   return request;
 }
 
-std::string CreateResolveAndDescribeNamedTable(TempDatabase* fixture,
+platform::Uuid CreateResolveAndDescribeNamedTable(TempDatabase* fixture,
                                                std::string schema_name,
                                                std::string table_name,
                                                platform::u64 salt) {
-  const std::string schema_uuid =
-      fixture->uuids.Text(platform::UuidKind::object, salt + 1);
-  const std::string table_uuid =
-      fixture->uuids.Text(platform::UuidKind::object, salt + 2);
+  const platform::Uuid schema_uuid =
+      fixture->uuids.Identity(platform::UuidKind::object, salt + 1);
+  const platform::Uuid table_uuid =
+      fixture->uuids.Identity(platform::UuidKind::object, salt + 2);
 
   auto schema_context = Begin(*fixture, "odf118-create-schema", 1);
   const auto created_schema = api::EngineCatalogCreateObject(
@@ -632,7 +637,7 @@ std::string CreateResolveAndDescribeNamedTable(TempDatabase* fixture,
                           schema_uuid,
                           table_name));
   RequireEngineOk(created_table, "ODF-118 table create failed");
-  Require(created_table.primary_object.uuid.canonical == table_uuid,
+  Require(created_table.primary_object.uuid == table_uuid,
           "ODF-118 table create did not preserve generated object UUID");
   Commit(table_context);
 
@@ -642,13 +647,13 @@ std::string CreateResolveAndDescribeNamedTable(TempDatabase* fixture,
   const auto resolved = api::EngineResolveName(
       ResolveRequest(read_context, schema_uuid, "table", table_name));
   RequireEngineOk(resolved, "ODF-118 standard name resolver failed");
-  Require(resolved.bound_object_identity.object_uuid.canonical == table_uuid,
+  Require(resolved.bound_object_identity.object_uuid == table_uuid,
           "ODF-118 standard name resolver did not return generated UUID");
 
   const auto descriptor =
       api::EngineGetDescriptor(DescriptorRequest(read_context, table_uuid));
   RequireEngineOk(descriptor, "ODF-118 descriptor lookup failed");
-  Require(descriptor.descriptor.descriptor_uuid.canonical == table_uuid,
+  Require(descriptor.descriptor.descriptor_uuid == table_uuid,
           "ODF-118 descriptor did not bind generated UUID");
   Require(HasEvidence(descriptor, "descriptor_metadata_cache"),
           "ODF-118 descriptor cache did not record UUID-bound evidence");
@@ -659,9 +664,9 @@ std::string CreateResolveAndDescribeNamedTable(TempDatabase* fixture,
 void ProveUuidResolutionHasNoHardCodedDependency() {
   auto first = CreateAndOpenFreshDatabase("uuid_a");
   auto second = CreateAndOpenFreshDatabase("uuid_b");
-  const std::string first_table = CreateResolveAndDescribeNamedTable(
+  const auto first_table = CreateResolveAndDescribeNamedTable(
       &first, "odf118_schema", "odf118_table", 300);
-  const std::string second_table = CreateResolveAndDescribeNamedTable(
+  const auto second_table = CreateResolveAndDescribeNamedTable(
       &second, "odf118_schema", "odf118_table", 300);
   Require(first_table != second_table,
           "ODF-118 same-name objects in separate databases reused a fixed UUID");

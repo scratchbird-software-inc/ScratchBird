@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_ddl_alter_type_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_type_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_type_runtime.hpp"
@@ -141,9 +142,9 @@ inline void VerifyTypeDdlFailsClosed(
   envelope.result_shape = "ddl_result";
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
-      "019d0000-0000-7000-8000-000000002921";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002921");
   envelope.registry_snapshot_uuid =
-      "019d0000-0000-7000-8000-000000002922";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002922");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;
@@ -166,8 +167,7 @@ inline void VerifyTypeDdlFailsClosed(
 
   api::EngineRequestContext no_security;
   no_security.local_transaction_id = 1;
-  no_security.transaction_uuid.canonical =
-      "019d0000-0000-7000-8000-000000002923";
+  no_security.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002923");
   no_security.query_cancellation_requested = cancellation_probe;
 
   auto exact_context = no_security;
@@ -236,7 +236,7 @@ inline void VerifyTypeDdlFailsClosed(
   auto invalid_transaction = no_security;
   invalid_transaction.security_context_present = true;
   invalid_transaction.local_transaction_id = 0;
-  invalid_transaction.transaction_uuid.canonical.clear();
+  invalid_transaction.transaction_uuid = {};
   invalid_transaction.cluster_transaction_active = true;
   AssertTypeDdlRefusal(invalid_transaction, envelope,
                        "MGA.TRANSACTION_INVALID", cancellation_probes);

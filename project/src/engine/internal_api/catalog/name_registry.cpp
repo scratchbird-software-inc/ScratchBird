@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/name_registry.hpp"
+#include "catalog/name_registry_codec.hpp"
+#include <tuple>
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -82,11 +84,13 @@ enum class NameJournalOpenStatus { opened, absent, refused };
 
 NameJournalOpenStatus OpenNameJournal(const EngineRequestContext& context,
                                       std::ifstream& input) {
-  const std::filesystem::path path = context.database_path + ".sb.api_events";
+  const std::filesystem::path path = context.database_path + ".sb.name_events.v2";
   std::error_code error;
   const auto entry = std::filesystem::symlink_status(path, error);
   if (entry.type() == std::filesystem::file_type::not_found &&
       (!error || error == std::errc::no_such_file_or_directory)) {
+    const bool legacy=std::filesystem::exists(context.database_path+".sb.api_events",error);
+    if(legacy||error)return NameJournalOpenStatus::refused;
     return NameJournalOpenStatus::absent;
   }
   // Reject non-files before opening: opening a FIFO could block indefinitely.
@@ -97,6 +101,16 @@ NameJournalOpenStatus OpenNameJournal(const EngineRequestContext& context,
   input.open(path, std::ios::binary);
   return input.is_open() && input.good() ? NameJournalOpenStatus::opened
                                         : NameJournalOpenStatus::refused;
+}
+
+EngineApiDiagnostic AppendNativeNameRecord(const EngineRequestContext& context,const ApiBehaviorRecord& record){
+  std::string bytes;if(!EncodeApiBehaviorRecord(record,&bytes))return MakeInvalidRequestDiagnostic(record.operation_id,"name_record_invalid");
+  const auto path=context.database_path+".sb.name_events.v2";
+  std::error_code error;const bool exists=std::filesystem::exists(path,error);
+  if(error||(!exists&&std::filesystem::exists(context.database_path+".sb.api_events",error))||error)return MakeInvalidRequestDiagnostic(record.operation_id,"legacy_name_format_unsupported");
+  std::ofstream out(path,std::ios::binary|std::ios::app);out.write(bytes.data(),bytes.size());out.flush();out.close();
+  if(!out)return MakeInvalidRequestDiagnostic(record.operation_id,"name_journal_write_failed");
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK","engine.api.ok",{},false);
 }
 
 void MergeMgaRelationCatalogState(CrudState* base, const RelationReadSnapshot& mga_state) {
@@ -303,24 +317,22 @@ std::string ApiBehaviorPayloadField(const std::string& payload, const std::strin
   return {};
 }
 
-std::string EntryKey(const NameRegistryEntry& entry) {
-  return entry.object_uuid + "\t" + entry.language_tag + "\t" + entry.name_class + "\t" +
-         entry.identifier_profile_uuid + "\t" + entry.raw_name_text;
-}
+using NameEntryKey=std::tuple<EngineUuid,std::string,std::string,std::string,std::string>;
+NameEntryKey EntryKey(const NameRegistryEntry& entry){return {entry.object_uuid,entry.language_tag,entry.name_class,entry.identifier_profile_uuid,entry.raw_name_text};}
 
 void AddIfNoExplicit(NameRegistryState* state,
-                     std::set<std::string>* added_entries,
+                     std::set<NameEntryKey>* added_entries,
                      NameRegistryEntry entry) {
-  const std::string key = EntryKey(entry);
-  if (entry.object_uuid.empty() || added_entries->count(key) != 0) { return; }
+  const auto key = EntryKey(entry);
+  if (entry.object_uuid.is_nil() || added_entries->count(key) != 0) { return; }
   entry.derived_from_legacy_name = true;
   added_entries->insert(key);
   state->entries.push_back(std::move(entry));
 }
 
 void RemoveObjectEntries(NameRegistryState* state,
-                         std::set<std::string>* added_entries,
-                         const std::string& object_uuid) {
+                         std::set<NameEntryKey>* added_entries,
+                         const EngineUuid& object_uuid) {
   for (auto it = state->entries.begin(); it != state->entries.end();) {
     if (it->object_uuid == object_uuid) {
       added_entries->erase(EntryKey(*it));
@@ -332,9 +344,9 @@ void RemoveObjectEntries(NameRegistryState* state,
 }
 
 void ReplaceEntry(NameRegistryState* state,
-                  std::set<std::string>* added_entries,
+                  std::set<NameEntryKey>* added_entries,
                   NameRegistryEntry entry) {
-  const std::string key = EntryKey(entry);
+  const auto key = EntryKey(entry);
   for (auto it = state->entries.begin(); it != state->entries.end();) {
     if (EntryKey(*it) == key) { it = state->entries.erase(it); }
     else { ++it; }
@@ -345,9 +357,9 @@ void ReplaceEntry(NameRegistryState* state,
 }
 
 NameRegistryEntry EntryFromSimpleName(const EngineRequestContext& context,
-                                      const std::string& object_uuid,
+                                      const EngineUuid& object_uuid,
                                       const std::string& object_class,
-                                      const std::string& scope_uuid,
+                                      const EngineUuid& scope_uuid,
                                       const std::string& name,
                                       const std::string& language_tag = "en") {
   EngineLocalizedName localized;
@@ -379,9 +391,9 @@ std::vector<std::string> LanguageCandidates(const EngineRequestContext& context)
   return languages;
 }
 
-std::vector<std::string> ScopeCandidates(const EngineApiRequest& request) {
-  std::vector<std::string> scopes;
-  auto push = [&](std::string value) {
+std::vector<EngineUuid> ScopeCandidates(const EngineApiRequest& request) {
+  std::vector<EngineUuid> scopes;
+  auto push = [&](EngineUuid value) {
     if (std::find(scopes.begin(), scopes.end(), value) == scopes.end()) { scopes.push_back(std::move(value)); }
   };
   push(request.target_schema.uuid);
@@ -392,7 +404,7 @@ std::vector<std::string> ScopeCandidates(const EngineApiRequest& request) {
   return scopes;
 }
 
-std::vector<std::string> ResolveQualifiedNameRegistryScopes(
+std::vector<EngineUuid> ResolveQualifiedNameRegistryScopes(
     const EngineApiRequest& request,
     const NameRegistryState& state,
     const std::vector<std::string>& languages) {
@@ -400,7 +412,7 @@ std::vector<std::string> ResolveQualifiedNameRegistryScopes(
     return ScopeCandidates(request);
   }
 
-  std::vector<std::string> current_scopes = ScopeCandidates(request);
+  std::vector<EngineUuid> current_scopes = ScopeCandidates(request);
   for (const auto& segment : request.sql_object_reference.path_components) {
     const std::string raw_name = segment.raw_text;
     if (raw_name.empty()) { return {}; }
@@ -411,9 +423,9 @@ std::vector<std::string> ResolveQualifiedNameRegistryScopes(
     const std::string lookup_key = exact ? NameRegistryLookupKey(raw_name, profile, true)
                                          : NameRegistryLookupKey(raw_name, profile, false);
 
-    std::vector<std::string> next_scopes;
-    auto push_next = [&](const std::string& value) {
-      if (value.empty()) { return; }
+    std::vector<EngineUuid> next_scopes;
+    auto push_next = [&](const EngineUuid& value) {
+      if (value.is_nil()) { return; }
       if (std::find(next_scopes.begin(), next_scopes.end(), value) == next_scopes.end()) {
         next_scopes.push_back(value);
       }
@@ -473,9 +485,9 @@ std::string NameRegistryLookupKey(std::string text,
 }
 
 NameRegistryEntry MakeNameRegistryEntry(const EngineRequestContext& context,
-                                        const std::string& object_uuid,
+                                        const EngineUuid& object_uuid,
                                         const std::string& object_class,
-                                        const std::string& scope_uuid,
+                                        const EngineUuid& scope_uuid,
                                         const EngineLocalizedName& name,
                                         const std::string& fallback_name) {
   NameRegistryEntry entry;
@@ -519,42 +531,18 @@ EngineApiDiagnostic AppendNameRegistryEntry(const EngineRequestContext& context,
                                             const std::string& operation_id) {
   const auto context_status = ValidateApiBehaviorContext(context, operation_id, false, true);
   if (context_status.error) { return context_status; }
-  std::string event = std::string(kNameRegistryEventMagic) + "\tENTRY\t" +
-                      std::to_string(entry.creator_tx) + "\t" +
-                      entry.name_entry_uuid + "\t" + entry.object_uuid + "\t" + entry.object_class + "\t" +
-                      entry.scope_uuid + "\t" + entry.parent_object_uuid + "\t" + entry.parent_schema_uuid + "\t" +
-                      entry.language_tag + "\t" + entry.name_class + "\t" + entry.reference_id + "\t" +
-                      entry.dialect_profile_uuid + "\t" + entry.identifier_profile_uuid + "\t" +
-                      entry.case_fold_profile_uuid + "\t" + entry.quoted_identifier_profile_uuid + "\t" +
-                      EncodeCrudText(entry.raw_name_text) + "\t" + EncodeCrudText(entry.display_name) + "\t" +
-                      (entry.was_quoted ? "1" : "0") + "\t" + entry.quote_style + "\t" +
-                      (entry.requires_exact_match ? "1" : "0") + "\t" +
-                      EncodeCrudText(entry.normalized_lookup_key) + "\t" +
-                      EncodeCrudText(entry.exact_lookup_key) + "\t" +
-                      EncodeCrudText(entry.full_path_lookup_key) + "\t" +
-                      std::to_string(entry.catalog_generation_id) + "\t" +
-                      std::to_string(entry.resource_epoch) + "\t" +
-                      std::to_string(entry.name_resolution_epoch) + "\t" +
-                      entry.lifecycle_state + "\t" + (entry.deleted ? "1" : "0");
-  const auto appended = AppendApiBehaviorEvent(context, event);
-  if (appended.error) { return appended; }
-  const std::string invalidate = std::string(kNameRegistryEventMagic) + "\tCACHE_INVALIDATE\t" +
-                                 std::to_string(context.local_transaction_id) + "\t" +
-                                 EncodeCrudText(operation_id) + "\tENTRY\t" +
-                                 entry.object_uuid + "\t" +
-                                 EncodeCrudText(entry.object_class) + "\t" +
-                                 EncodeCrudText(entry.scope_uuid) + "\t" +
-                                 std::to_string(entry.catalog_generation_id) + "\t" +
-                                 std::to_string(entry.resource_epoch) + "\t" +
-                                 std::to_string(entry.name_resolution_epoch);
-  return AppendApiBehaviorEvent(context, invalidate);
+  ApiBehaviorRecord record;record.creator_tx=entry.creator_tx;record.operation_id=operation_id;
+  record.object_uuid=entry.name_entry_uuid;record.target_object_uuid=entry.object_uuid;
+  record.target_schema_uuid=entry.scope_uuid;record.object_kind="name_registry.entry";record.state="active";
+  if(!EncodeNameRegistryEntry(entry,&record.payload))return MakeInvalidRequestDiagnostic(operation_id,"name_entry_invalid");
+  return AppendNativeNameRecord(context,record);
 }
 
 EngineApiDiagnostic PersistNameRegistryEntriesForObject(const EngineRequestContext& context,
                                                         const std::string& operation_id,
-                                                        const std::string& object_uuid,
+                                                        const EngineUuid& object_uuid,
                                                         const std::string& object_class,
-                                                        const std::string& scope_uuid,
+                                                        const EngineUuid& scope_uuid,
                                                         const std::vector<EngineLocalizedName>& names,
                                                         const std::string& fallback_name) {
   std::vector<EngineLocalizedName> effective_names = names;
@@ -579,22 +567,13 @@ EngineApiDiagnostic PersistNameRegistryEntriesForObject(const EngineRequestConte
 
 EngineApiDiagnostic RetireNameRegistryEntriesForObject(const EngineRequestContext& context,
                                                        const std::string& operation_id,
-                                                       const std::string& object_uuid) {
+                                                       const EngineUuid& object_uuid) {
   const auto context_status = ValidateApiBehaviorContext(context, operation_id, false, true);
   if (context_status.error) { return context_status; }
-  if (object_uuid.empty()) { return MakeInvalidRequestDiagnostic(operation_id, "object_uuid_required"); }
-  const std::string event = std::string(kNameRegistryEventMagic) + "\tRETIRE_OBJECT\t" +
-                            std::to_string(context.local_transaction_id) + "\t" + object_uuid;
-  const auto appended = AppendApiBehaviorEvent(context, event);
-  if (appended.error) { return appended; }
-  const std::string invalidate = std::string(kNameRegistryEventMagic) + "\tCACHE_INVALIDATE\t" +
-                                 std::to_string(context.local_transaction_id) + "\t" +
-                                 EncodeCrudText(operation_id) + "\tRETIRE_OBJECT\t" +
-                                 object_uuid + "\t\t\t" +
-                                 std::to_string(context.catalog_generation_id) + "\t" +
-                                 std::to_string(context.resource_epoch) + "\t" +
-                                 std::to_string(context.name_resolution_epoch);
-  return AppendApiBehaviorEvent(context, invalidate);
+  if(!core::uuid::IsEngineIdentityUuid(object_uuid))return MakeInvalidRequestDiagnostic(operation_id,"object_uuid_required");
+  ApiBehaviorRecord record;record.creator_tx=context.local_transaction_id;record.operation_id=operation_id;
+  record.object_uuid=object_uuid;record.target_object_uuid=object_uuid;record.object_kind="name_registry.retire";record.state="retired";
+  return AppendNativeNameRecord(context,record);
 }
 
 NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context,
@@ -631,57 +610,27 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
   const auto transaction_inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
 
-  std::set<std::string> added_entries;
-  std::set<std::string> suppress_legacy_objects;
+  std::set<NameEntryKey> added_entries;
+  std::set<EngineUuid> suppress_legacy_objects;
   std::uint64_t event_sequence = 0;
-  std::string line;
-  while (std::getline(in, line)) {
+  while(in.is_open()&&in.peek()!=std::char_traits<char>::eof()){
+    ApiBehaviorRecord record;
+    if(!ReadApiBehaviorRecord(in,&record)){
+      result.state={};result.diagnostic=MakeInvalidRequestDiagnostic("catalog.name_registry.load","name_record_invalid");return result;
+    }
     ++event_sequence;
-    if (!StartsWithNameRegistry(line, kNameRegistryEventMagic)) { continue; }
-    const auto parts = SplitNameRegistryLine(line, '\t');
-    if (parts.size() >= 4 && parts[1] == "RETIRE_OBJECT") {
-      const std::uint64_t creator_tx = ParseNameRegistryU64(parts[2]);
-      const std::string object_uuid = parts[3];
-      if (CreatorVisible(catalog_state,
-                         transaction_inventory,
-                         creator_tx,
-                         event_sequence,
-                         observer_tx)) {
-        suppress_legacy_objects.insert(object_uuid);
-        RemoveObjectEntries(&result.state, &added_entries, object_uuid);
+    if(record.object_kind=="name_registry.retire"){
+      if(record.target_object_uuid!=record.object_uuid){result.state={};result.diagnostic=MakeInvalidRequestDiagnostic("catalog.name_registry.load","name_retirement_invalid");return result;}
+      if(CreatorVisible(catalog_state,transaction_inventory,record.creator_tx,event_sequence,observer_tx)){
+        suppress_legacy_objects.insert(record.object_uuid);RemoveObjectEntries(&result.state,&added_entries,record.object_uuid);
       }
       continue;
     }
-    if (parts.size() < 29 || parts[1] != "ENTRY") { continue; }
     NameRegistryEntry entry;
-    entry.event_sequence = event_sequence;
-    entry.creator_tx = ParseNameRegistryU64(parts[2]);
-    entry.name_entry_uuid = parts[3];
-    entry.object_uuid = parts[4];
-    entry.object_class = parts[5];
-    entry.scope_uuid = parts[6];
-    entry.parent_object_uuid = parts[7];
-    entry.parent_schema_uuid = parts[8];
-    entry.language_tag = parts[9].empty() ? "en" : parts[9];
-    entry.name_class = parts[10].empty() ? "primary" : parts[10];
-    entry.reference_id = parts[11];
-    entry.dialect_profile_uuid = parts[12];
-    entry.identifier_profile_uuid = parts[13].empty() ? "sbsql_v3" : parts[13];
-    entry.case_fold_profile_uuid = parts[14];
-    entry.quoted_identifier_profile_uuid = parts[15];
-    entry.raw_name_text = DecodeNameRegistryText(parts[16]);
-    entry.display_name = DecodeNameRegistryText(parts[17]);
-    entry.was_quoted = ParseNameRegistryBool(parts[18]);
-    entry.quote_style = parts[19].empty() ? "none" : parts[19];
-    entry.requires_exact_match = ParseNameRegistryBool(parts[20]);
-    entry.normalized_lookup_key = DecodeNameRegistryText(parts[21]);
-    entry.exact_lookup_key = DecodeNameRegistryText(parts[22]);
-    entry.full_path_lookup_key = DecodeNameRegistryText(parts[23]);
-    entry.catalog_generation_id = ParseNameRegistryU64(parts[24]);
-    entry.resource_epoch = ParseNameRegistryU64(parts[25]);
-    entry.name_resolution_epoch = ParseNameRegistryU64(parts[26]);
-    entry.lifecycle_state = parts[27].empty() ? "active" : parts[27];
-    entry.deleted = ParseNameRegistryBool(parts[28]);
+    if(record.object_kind!="name_registry.entry"||!DecodeNameRegistryEntry(record.payload,&entry)||entry.name_entry_uuid!=record.object_uuid||entry.object_uuid!=record.target_object_uuid||entry.scope_uuid!=record.target_schema_uuid||entry.creator_tx!=record.creator_tx){
+      result.state={};result.diagnostic=MakeInvalidRequestDiagnostic("catalog.name_registry.load","name_entry_invalid");return result;
+    }
+    entry.event_sequence=event_sequence;
     if (EntryVisible(catalog_state, transaction_inventory, entry, observer_tx)) {
       suppress_legacy_objects.insert(entry.object_uuid);
       ReplaceEntry(&result.state, &added_entries, std::move(entry));
@@ -718,9 +667,9 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
   for (const auto& record : behavior_records) {
     if (suppress_legacy_objects.count(record.object_uuid) != 0) { continue; }
     if (!record.default_name.empty()) {
-      std::string scope_uuid = ApiBehaviorPayloadField(record.payload, "schema");
+      EngineUuid scope_uuid = record.target_schema_uuid;
       if (record.object_kind == "database" || record.object_kind == "filespace") {
-        scope_uuid.clear();
+        scope_uuid = {};
       }
       AddIfNoExplicit(&result.state,
                       &added_entries,
@@ -792,7 +741,7 @@ NameRegistryResolveResult ResolveNameRegistryPrivate(const EngineApiRequest& req
   const auto languages = LanguageCandidates(request.context);
   const auto scopes = ResolveQualifiedNameRegistryScopes(
       request, loaded->state, languages);
-  std::set<std::string> seen_objects;
+  std::set<EngineUuid> seen_objects;
   for (const auto& wanted : wanted_names) {
     const std::string raw_name = !wanted.raw_name_text.empty() ? wanted.raw_name_text : wanted.name;
     if (raw_name.empty()) { continue; }
@@ -839,9 +788,13 @@ bool PublicNameRegistryEntryVisible(const EngineApiRequest& request,
     if (policy == "metadata_visibility:hide_all") { return false; }
 
     const std::string hide_object_prefix = "metadata_visibility:hide_object:";
-    if (NameRegistryPolicyStartsWith(policy, hide_object_prefix) &&
-        policy.substr(hide_object_prefix.size()) == entry.object_uuid) {
-      return false;
+    if(NameRegistryPolicyStartsWith(policy,hide_object_prefix)){
+      const auto bytes=std::string_view(policy).substr(hide_object_prefix.size());
+      // Targeted policy identities are exactly raw16. Malformed legacy text
+      // cannot silently turn a hiding policy into visibility permission.
+      if(bytes.size()!=16)return false;
+      EngineUuid hidden;std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()),16,hidden.bytes.begin());
+      if(!core::uuid::IsEngineIdentityUuid(hidden)||hidden==entry.object_uuid)return false;
     }
 
     const std::string hide_class_prefix = "metadata_visibility:hide_class:";
@@ -885,9 +838,9 @@ NameRegistryResolveResult ResolveNameRegistry(const EngineApiRequest& request,
 
 namespace {
 
-std::string UuidToNameTargetUuid(const EngineApiRequest& request,
-                                 const std::string& object_uuid) {
-  if (!object_uuid.empty()) { return object_uuid; }
+EngineUuid UuidToNameTargetUuid(const EngineApiRequest& request,
+                                 const EngineUuid& object_uuid) {
+  if (!object_uuid.is_nil()) { return object_uuid; }
   if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
   if (!request.bound_object_identity.object_uuid.is_nil()) {
     return request.bound_object_identity.object_uuid;
@@ -966,10 +919,10 @@ NameRegistryNameResult SelectUuidToNameCandidate(const EngineApiRequest& request
 }  // namespace
 
 NameRegistryNameResult MapNameRegistryUuidToNamePrivate(const EngineApiRequest& request,
-                                                        const std::string& object_uuid,
+                                                        const EngineUuid& object_uuid,
                                                         const std::string& requested_object_class) {
-  const std::string target_uuid = UuidToNameTargetUuid(request, object_uuid);
-  if (target_uuid.empty()) {
+  const EngineUuid target_uuid = UuidToNameTargetUuid(request, object_uuid);
+  if (target_uuid.is_nil()) {
     NameRegistryNameResult result;
     result.diagnostic = MakeInvalidRequestDiagnostic("catalog.map_uuid_to_name", "object_uuid_required");
     return result;
@@ -993,10 +946,10 @@ NameRegistryNameResult MapNameRegistryUuidToNamePrivate(const EngineApiRequest& 
 }
 
 NameRegistryNameResult MapNameRegistryUuidToNamePublic(const EngineApiRequest& request,
-                                                       const std::string& object_uuid,
+                                                       const EngineUuid& object_uuid,
                                                        const std::string& requested_object_class) {
-  const std::string target_uuid = UuidToNameTargetUuid(request, object_uuid);
-  if (target_uuid.empty()) {
+  const EngineUuid target_uuid = UuidToNameTargetUuid(request, object_uuid);
+  if (target_uuid.is_nil()) {
     NameRegistryNameResult result;
     result.diagnostic = MakeInvalidRequestDiagnostic("catalog.map_uuid_to_name", "object_uuid_required");
     return result;
@@ -1021,15 +974,15 @@ NameRegistryNameResult MapNameRegistryUuidToNamePublic(const EngineApiRequest& r
 }
 
 NameRegistryNameResult MapNameRegistryUuidToName(const EngineApiRequest& request,
-                                                 const std::string& object_uuid,
+                                                 const EngineUuid& object_uuid,
                                                  const std::string& requested_object_class) {
   return MapNameRegistryUuidToNamePublic(request, object_uuid, requested_object_class);
 }
 
 bool NameRegistryWouldConflict(const EngineRequestContext& context,
-                               const std::string& object_uuid,
+                               const EngineUuid& object_uuid,
                                const std::string& object_class,
-                               const std::string& scope_uuid,
+                               const EngineUuid& scope_uuid,
                                const std::vector<EngineLocalizedName>& names,
                                std::uint64_t observer_tx,
                                std::string* conflict_name,

@@ -22,7 +22,7 @@ namespace scratchbird::engine::internal_api {
 // Engine-owned user, role, group, privilege, row-policy, definer-rights cache,
 // audit, redaction, cache-invalidation, and MGA-visible security lifecycle.
 
-inline constexpr const char* kSecurityPrincipalLifecycleEventMagic = "SBSECPL1";
+inline constexpr const char* kSecurityPrincipalLifecycleEventMagic = "SBSECPL2";
 
 inline constexpr const char* kSecurityPrincipalDiagnosticDatabasePathRequired =
     "SECURITY.PRINCIPAL.DATABASE_PATH_REQUIRED";
@@ -80,7 +80,7 @@ inline constexpr const char* kSecurityPrivilegeTemplateDiagnosticApplicationFail
 struct EngineSecurityPrincipalRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string principal_uuid;
+  EngineUuid principal_uuid;
   std::string principal_name;
   std::string principal_kind = "user";
   std::string lifecycle_state = "active";
@@ -92,9 +92,9 @@ struct EngineSecurityPrincipalRecord {
 struct EngineSecurityRoleRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string role_uuid;
+  EngineUuid role_uuid;
   std::string role_name;
-  std::string owner_principal_uuid;
+  EngineUuid owner_principal_uuid;
   std::string lifecycle_state = "active";
   std::uint64_t security_generation = 0;
   bool deleted = false;
@@ -103,7 +103,7 @@ struct EngineSecurityRoleRecord {
 struct EngineSecurityGroupRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string group_uuid;
+  EngineUuid group_uuid;
   std::string group_name;
   std::string external_authority_ref;
   std::string lifecycle_state = "active";
@@ -114,11 +114,11 @@ struct EngineSecurityGroupRecord {
 struct EngineSecurityMembershipRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string membership_uuid;
-  std::string member_principal_uuid;
-  std::string container_uuid;
+  EngineUuid membership_uuid;
+  EngineUuid member_principal_uuid;
+  EngineUuid container_uuid;
   std::string container_kind;
-  std::string grantor_principal_uuid;
+  EngineUuid grantor_principal_uuid;
   std::uint64_t security_generation = 0;
   bool revoked = false;
 };
@@ -126,13 +126,13 @@ struct EngineSecurityMembershipRecord {
 struct EngineSecurityPrivilegeGrantRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string grant_uuid;
-  std::string grantee_uuid;
+  EngineUuid grant_uuid;
+  EngineUuid grantee_uuid;
   std::string grantee_kind = "principal";
-  std::string target_object_uuid;
+  EngineUuid target_object_uuid;
   std::string target_object_kind;
   std::string privilege;
-  std::string grantor_principal_uuid;
+  EngineUuid grantor_principal_uuid;
   std::string grant_effect = "allow";
   std::uint64_t security_generation = 0;
   bool revoked = false;
@@ -146,18 +146,18 @@ struct EngineSecurityPrivilegeGrantRecord {
 struct EngineSecurityPrivilegeTemplateRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string template_uuid;
+  EngineUuid template_uuid;
   std::string template_name;
-  std::string owner_principal_uuid;
-  std::string schema_uuid;
+  EngineUuid owner_principal_uuid;
+  EngineUuid schema_uuid;
   std::vector<std::string> object_kinds;
-  std::vector<std::string> grantee_uuids;
+  std::vector<EngineUuid> grantee_uuids;
   std::vector<std::string> privileges;
   std::vector<std::string> grant_option_privileges;
   bool enabled = true;
   std::uint64_t template_generation = 0;
-  std::string creation_transaction_uuid;
-  std::string alter_transaction_uuid;
+  EngineUuid creation_transaction_uuid;
+  EngineUuid alter_transaction_uuid;
   std::string idempotency_key;
   std::uint64_t source_policy_generation = 0;
   std::uint64_t source_catalog_generation = 0;
@@ -168,30 +168,30 @@ struct EngineSecurityPrivilegeTemplateRecord {
 struct EngineSecurityRowPolicyRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string policy_uuid;
-  std::string target_object_uuid;
+  EngineUuid policy_uuid;
+  EngineUuid target_object_uuid;
   std::string target_object_kind;
   std::string policy_effect = "deny_all";
   std::string predicate_envelope;
-  std::string definer_principal_uuid;
+  EngineUuid definer_principal_uuid;
   std::string lifecycle_state = "active";
   std::uint64_t policy_generation = 0;
   // Durable native catalog authority required by DUSV/DUSR recovery.  Legacy
   // rows with any zero/empty field remain valid for their historical security
   // surface but are not admissible as typed UPDATE policy authority.
-  std::string policy_version_uuid;
+  EngineUuid policy_version_uuid;
   std::uint64_t effective_transaction_number = 0;
   std::uint64_t target_object_generation = 0;
   std::uint8_t update_policy_phase = 0;  // 1 USING, 2 WITH CHECK.
-  std::string effective_policy_uuid;
+  EngineUuid effective_policy_uuid;
   std::uint64_t effective_policy_generation = 0;
-  std::string effective_expression_uuid;
+  EngineUuid effective_expression_uuid;
   std::uint64_t effective_expression_generation = 0;
   std::array<std::uint8_t, 32> effective_expression_evidence_sha256{};
-  std::string source_expression_uuid;
+  EngineUuid source_expression_uuid;
   std::uint64_t source_expression_generation = 0;
   std::array<std::uint8_t, 32> source_expression_evidence_sha256{};
-  std::string source_catalog_snapshot_uuid;
+  EngineUuid source_catalog_snapshot_uuid;
   std::uint64_t source_catalog_generation = 0;
   std::uint64_t source_security_generation = 0;
   bool deleted = false;
@@ -199,18 +199,18 @@ struct EngineSecurityRowPolicyRecord {
 
 struct EngineSecurityRowPolicyNativeAuthorityV1 {
   bool present = false;
-  std::string policy_version_uuid;
+  EngineUuid policy_version_uuid;
   std::uint64_t target_relation_generation = 0;
   std::uint8_t phase = 0;
-  std::string effective_policy_uuid;
+  EngineUuid effective_policy_uuid;
   std::uint64_t effective_policy_generation = 0;
-  std::string effective_expression_uuid;
+  EngineUuid effective_expression_uuid;
   std::uint64_t effective_expression_generation = 0;
   std::array<std::uint8_t, 32> effective_expression_evidence_sha256{};
-  std::string source_expression_uuid;
+  EngineUuid source_expression_uuid;
   std::uint64_t source_expression_generation = 0;
   std::array<std::uint8_t, 32> source_expression_evidence_sha256{};
-  std::string catalog_snapshot_uuid;
+  EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation = 0;
   std::uint64_t security_generation = 0;
 };
@@ -219,8 +219,8 @@ struct EngineSecurityDefinerRightsCacheRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
   std::string cache_key;
-  std::string definer_principal_uuid;
-  std::string target_object_uuid;
+  EngineUuid definer_principal_uuid;
+  EngineUuid target_object_uuid;
   std::string privilege;
   std::string decision = "deny";
   std::uint64_t policy_generation = 0;
@@ -229,10 +229,12 @@ struct EngineSecurityDefinerRightsCacheRecord {
 struct EngineSecurityAuditRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string audit_uuid;
+  EngineUuid audit_uuid;
+  EngineUuid related_identity_uuid;
+  std::string related_identity_role;
   std::string operation_id;
-  std::string actor_principal_uuid;
-  std::string target_uuid;
+  EngineUuid actor_principal_uuid;
+  EngineUuid target_uuid;
   std::string outcome;
   std::string redacted_detail;
   std::uint64_t security_generation = 0;
@@ -340,14 +342,14 @@ void ResetEngineSecurityPolicySnapshotAuthorityForTestV1();
 struct EngineOwnedSysarchRoleIdentityResult {
   bool ok = false;
   bool present = false;
-  std::string role_uuid;
-  std::string principal_uuid;
+  EngineUuid role_uuid;
+  EngineUuid principal_uuid;
   std::uint64_t policy_generation = 0;
   EngineApiDiagnostic diagnostic;
 };
 
 struct EngineSecurityCreatePrincipalRequest : EngineApiRequest {
-  std::string principal_uuid;
+  EngineUuid principal_uuid;
   std::string principal_name;
   std::string principal_kind = "user";
   std::string credential_protected_material_ref;
@@ -364,7 +366,7 @@ EngineSecurityCreatePrincipalResult EngineSecurityCreatePrincipal(
     const EngineSecurityCreatePrincipalRequest& request);
 
 struct EngineSecurityAlterPrincipalRequest : EngineApiRequest {
-  std::string principal_uuid;
+  EngineUuid principal_uuid;
   std::string principal_name;
   std::string principal_kind;
   std::string lifecycle_state;
@@ -382,7 +384,7 @@ EngineSecurityAlterPrincipalResult EngineSecurityAlterPrincipal(
     const EngineSecurityAlterPrincipalRequest& request);
 
 struct EngineSecurityCreateRoleRequest : EngineApiRequest {
-  std::string role_uuid;
+  EngineUuid role_uuid;
   std::string role_name;
 };
 struct EngineSecurityCreateRoleResult : EngineApiResult {
@@ -394,7 +396,7 @@ EngineSecurityCreateRoleResult EngineSecurityCreateRole(
     const EngineSecurityCreateRoleRequest& request);
 
 struct EngineSecurityDropRoleRequest : EngineApiRequest {
-  std::string role_uuid;
+  EngineUuid role_uuid;
 };
 struct EngineSecurityDropRoleResult : EngineApiResult {
   bool role_dropped = false;
@@ -405,7 +407,7 @@ EngineSecurityDropRoleResult EngineSecurityDropRole(
     const EngineSecurityDropRoleRequest& request);
 
 struct EngineSecurityCreateGroupRequest : EngineApiRequest {
-  std::string group_uuid;
+  EngineUuid group_uuid;
   std::string group_name;
   std::string external_authority_ref;
 };
@@ -418,7 +420,7 @@ EngineSecurityCreateGroupResult EngineSecurityCreateGroup(
     const EngineSecurityCreateGroupRequest& request);
 
 struct EngineSecurityDropGroupRequest : EngineApiRequest {
-  std::string group_uuid;
+  EngineUuid group_uuid;
 };
 struct EngineSecurityDropGroupResult : EngineApiResult {
   bool group_dropped = false;
@@ -486,12 +488,12 @@ EngineSecurityRevokePrivilegeResult EngineSecurityRevokePrivilege(
     const EngineSecurityRevokePrivilegeRequest& request);
 
 struct EngineSecurityCreatePrivilegeTemplateRequest : EngineApiRequest {
-  std::string template_uuid;
+  EngineUuid template_uuid;
   std::string template_name;
-  std::string owner_principal_uuid;
-  std::string schema_uuid;
+  EngineUuid owner_principal_uuid;
+  EngineUuid schema_uuid;
   std::vector<std::string> object_kinds;
-  std::vector<std::string> grantee_uuids;
+  std::vector<EngineUuid> grantee_uuids;
   std::vector<std::string> privileges;
   std::vector<std::string> grant_option_privileges;
   bool enabled = true;
@@ -511,25 +513,25 @@ EngineSecurityCreatePrivilegeTemplate(
     const EngineSecurityCreatePrivilegeTemplateRequest& request);
 
 struct EngineSecuritySetRoleRequest : EngineApiRequest {
-  std::string role_uuid;
+  EngineUuid role_uuid;
   std::string role_mode = "explicit";
 };
 struct EngineSecuritySetRoleResult : EngineApiResult {
   bool role_set = false;
-  std::string active_role_uuid;
+  EngineUuid active_role_uuid;
   std::uint64_t security_generation = 0;
 };
 EngineSecuritySetRoleResult EngineSecuritySetRole(
     const EngineSecuritySetRoleRequest& request);
 
 struct EngineSecurityAttachPolicyRequest : EngineApiRequest {
-  std::string policy_uuid;
-  std::string target_object_uuid;
+  EngineUuid policy_uuid;
+  EngineUuid target_object_uuid;
   std::string target_object_kind = "object";
   std::string policy_scope = "object";
   std::string policy_effect = "attach";
   std::string predicate_envelope;
-  std::string definer_principal_uuid;
+  EngineUuid definer_principal_uuid;
   EngineSecurityRowPolicyNativeAuthorityV1 native_authority;
 };
 struct EngineSecurityAttachPolicyResult : EngineApiResult {
@@ -541,14 +543,14 @@ EngineSecurityAttachPolicyResult EngineSecurityAttachPolicy(
     const EngineSecurityAttachPolicyRequest& request);
 
 struct EngineSecurityCreatePolicyRequest : EngineApiRequest {
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
   std::string policy_name;
-  std::string target_schema_uuid;
-  std::string target_object_uuid;
+  EngineUuid target_schema_uuid;
+  EngineUuid target_object_uuid;
   std::string target_object_kind = "object";
   std::string policy_effect = "row_filter";
   std::string predicate_envelope;
-  std::string definer_principal_uuid;
+  EngineUuid definer_principal_uuid;
   EngineSecurityRowPolicyNativeAuthorityV1 native_authority;
 };
 struct EngineSecurityCreatePolicyResult : EngineApiResult {
@@ -560,16 +562,16 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
     const EngineSecurityCreatePolicyRequest& request);
 
 struct EngineSecurityAlterPolicyRequest : EngineApiRequest {
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
   // Exact receipt-bound SBLR execution supplies the engine-observed policy
   // generation. A nonzero value is a mandatory compare-and-alter fence;
   // legacy direct API callers may leave it zero until their carriers migrate.
   std::uint64_t expected_policy_generation = 0;
-  std::string target_object_uuid;
+  EngineUuid target_object_uuid;
   std::string target_object_kind;
   std::string policy_effect;
   std::string predicate_envelope;
-  std::string definer_principal_uuid;
+  EngineUuid definer_principal_uuid;
   std::string lifecycle_state;
   EngineSecurityRowPolicyNativeAuthorityV1 native_authority;
 };
@@ -583,7 +585,7 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
     const EngineSecurityAlterPolicyRequest& request);
 
 struct EngineSecurityDropPolicyRequest : EngineApiRequest {
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
 };
 struct EngineSecurityDropPolicyResult : EngineApiResult {
   bool policy_dropped = false;
@@ -594,7 +596,7 @@ EngineSecurityDropPolicyResult EngineSecurityDropPolicy(
     const EngineSecurityDropPolicyRequest& request);
 
 struct EngineSecurityDropMaskRequest : EngineApiRequest {
-  std::string mask_uuid;
+  EngineUuid mask_uuid;
 };
 struct EngineSecurityDropMaskResult : EngineApiResult {
   bool mask_dropped = false;
@@ -605,7 +607,7 @@ EngineSecurityDropMaskResult EngineSecurityDropMask(
     const EngineSecurityDropMaskRequest& request);
 
 struct EngineSecurityDropRlsRequest : EngineApiRequest {
-  std::string rls_uuid;
+  EngineUuid rls_uuid;
 };
 struct EngineSecurityDropRlsResult : EngineApiResult {
   bool rls_dropped = false;
@@ -616,7 +618,7 @@ EngineSecurityDropRlsResult EngineSecurityDropRls(
     const EngineSecurityDropRlsRequest& request);
 
 struct EngineSecurityActivatePolicyRequest : EngineApiRequest {
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
 };
 struct EngineSecurityActivatePolicyResult : EngineApiResult {
   bool policy_activated = false;
@@ -627,7 +629,7 @@ EngineSecurityActivatePolicyResult EngineSecurityActivatePolicy(
     const EngineSecurityActivatePolicyRequest& request);
 
 struct EngineSecurityDeactivatePolicyRequest : EngineApiRequest {
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
 };
 struct EngineSecurityDeactivatePolicyResult : EngineApiResult {
   bool policy_deactivated = false;
@@ -638,7 +640,7 @@ EngineSecurityDeactivatePolicyResult EngineSecurityDeactivatePolicy(
     const EngineSecurityDeactivatePolicyRequest& request);
 
 struct EngineSecurityValidatePolicyRequest : EngineApiRequest {
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
   std::uint64_t observed_policy_generation = 0;
   std::uint64_t observed_cache_invalidation_epoch = 0;
 };
@@ -652,7 +654,7 @@ EngineSecurityValidatePolicyResult EngineSecurityValidatePolicy(
     const EngineSecurityValidatePolicyRequest& request);
 
 struct EngineSecurityShowPolicyRequest : EngineApiRequest {
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
   bool include_rows = true;
 };
 struct EngineSecurityShowPolicyResult : EngineApiResult {
@@ -665,27 +667,27 @@ EngineSecurityShowPolicyResult EngineSecurityShowPolicy(
     const EngineSecurityShowPolicyRequest& request);
 
 struct EngineSecurityEvaluatePrivilegeRequest : EngineApiRequest {
-  std::string principal_uuid;
-  std::string target_object_uuid;
+  EngineUuid principal_uuid;
+  EngineUuid target_object_uuid;
   std::string target_object_kind;
   std::string privilege;
 };
 struct EngineSecurityEvaluatePrivilegeResult : EngineApiResult {
   bool authorized = false;
   std::string decision = "deny";
-  std::vector<std::string> matched_grant_uuids;
+  std::vector<EngineUuid> matched_grant_uuids;
   std::uint64_t security_generation = 0;
 };
 EngineSecurityEvaluatePrivilegeResult EngineSecurityEvaluatePrivilege(
     const EngineSecurityEvaluatePrivilegeRequest& request);
 
 struct EngineSecurityPutRowPolicyRequest : EngineApiRequest {
-  std::string policy_uuid;
-  std::string target_object_uuid;
+  EngineUuid policy_uuid;
+  EngineUuid target_object_uuid;
   std::string target_object_kind;
   std::string policy_effect = "deny_all";
   std::string predicate_envelope;
-  std::string definer_principal_uuid;
+  EngineUuid definer_principal_uuid;
   EngineSecurityRowPolicyNativeAuthorityV1 native_authority;
 };
 struct EngineSecurityPutRowPolicyResult : EngineApiResult {
@@ -697,9 +699,9 @@ EngineSecurityPutRowPolicyResult EngineSecurityPutRowPolicy(
     const EngineSecurityPutRowPolicyRequest& request);
 
 struct EngineSecurityEvaluateRowPolicyRequest : EngineApiRequest {
-  std::string principal_uuid;
-  std::string target_object_uuid;
-  std::string row_owner_principal_uuid;
+  EngineUuid principal_uuid;
+  EngineUuid target_object_uuid;
+  EngineUuid row_owner_principal_uuid;
   std::uint64_t observed_policy_generation = 0;
 };
 struct EngineSecurityEvaluateRowPolicyResult : EngineApiResult {
@@ -712,8 +714,8 @@ EngineSecurityEvaluateRowPolicyResult EngineSecurityEvaluateRowPolicy(
     const EngineSecurityEvaluateRowPolicyRequest& request);
 
 struct EngineSecurityPrimeDefinerRightsCacheRequest : EngineApiRequest {
-  std::string definer_principal_uuid;
-  std::string target_object_uuid;
+  EngineUuid definer_principal_uuid;
+  EngineUuid target_object_uuid;
   std::string privilege;
 };
 struct EngineSecurityPrimeDefinerRightsCacheResult : EngineApiResult {
@@ -726,8 +728,8 @@ EngineSecurityPrimeDefinerRightsCacheResult EngineSecurityPrimeDefinerRightsCach
 
 struct EngineSecurityValidateDefinerRightsCacheRequest : EngineApiRequest {
   std::string cache_key;
-  std::string definer_principal_uuid;
-  std::string target_object_uuid;
+  EngineUuid definer_principal_uuid;
+  EngineUuid target_object_uuid;
   std::string privilege;
   std::uint64_t observed_policy_generation = 0;
   std::uint64_t observed_cache_invalidation_epoch = 0;

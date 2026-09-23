@@ -32,10 +32,9 @@ namespace {
 
 opt::ModelFamilyCapabilitySnapshotV1 MakeModelFamilyCapabilitySnapshotV1(
     const opt::ModelFamilyCoordinatorRequestV1& planning,
-    const std::string_view identity_scope,
     const opt::ModelFamilyAlternativeRouteClassV1 route_class,
-    std::string provider_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid provider_uuid,
+    core::platform::Uuid capability_uuid,
     const std::uint64_t provider_generation,
     const bool available,
     const std::uint64_t work_units,
@@ -49,10 +48,14 @@ opt::ModelFamilyCapabilitySnapshotV1 MakeModelFamilyCapabilitySnapshotV1(
   snapshot.available = available;
   snapshot.metrics.statistics_snapshot_uuid =
       planning.statistics_snapshot_uuid;
-  snapshot.metrics.property_snapshot_uuid = DerivedCanonicalUuid(
-      identity_scope, "model-family.property-snapshot.v1");
-  snapshot.metrics.calibration_profile_uuid = DerivedCanonicalUuid(
-      identity_scope, "model-family.calibration-profile.v1");
+  const auto property_identity = core::uuid::IssueRuntimeIdentityV7();
+  const auto calibration_identity = core::uuid::IssueRuntimeIdentityV7();
+  if (!property_identity || !calibration_identity) {
+    // An incomplete snapshot is refused by the profile factory before use.
+    return {};
+  }
+  snapshot.metrics.property_snapshot_uuid = *property_identity;
+  snapshot.metrics.calibration_profile_uuid = *calibration_identity;
   snapshot.metrics.statistics_generation = planning.statistics_generation;
   snapshot.metrics.confidence_basis_points = 9000;
   snapshot.metrics.startup_events = 1;
@@ -81,10 +84,8 @@ opt::ModelFamilyCapabilitySnapshotV1 MakeModelFamilyCapabilitySnapshotV1(
 
 opt::ModelFamilyCoordinatorResultV1 PlanCanonicalModelFamilySourceV1(
     opt::ModelFamilyCoordinatorRequestV1 planning,
-    std::string identity_scope,
     std::vector<opt::ModelFamilyCapabilitySnapshotV1> snapshots) {
   opt::ModelFamilyProfileFactoryRequestV1 request;
-  request.identity_scope = std::move(identity_scope);
   request.logical_request = std::move(planning);
   request.capability_snapshots = std::move(snapshots);
   return opt::PlanOptimizerOwnedModelFamilySourceV1(request);
@@ -95,17 +96,16 @@ opt::ModelFamilyCoordinatorResultV1 PlanCanonicalModelFamilySourceV1(
 opt::ModelFamilyCapabilitySnapshotV1
 MakeModelFamilyCapabilitySnapshotForCompositionV1(
     const opt::ModelFamilyCoordinatorRequestV1& planning,
-    const std::string_view identity_scope,
     const opt::ModelFamilyAlternativeRouteClassV1 route_class,
-    std::string provider_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid provider_uuid,
+    core::platform::Uuid capability_uuid,
     const std::uint64_t provider_generation,
     const bool available,
     const std::uint64_t work_units,
     const std::uint64_t sequential_pages,
     const std::uint64_t memory_bytes_required) {
   return MakeModelFamilyCapabilitySnapshotV1(
-      planning, identity_scope, route_class, std::move(provider_uuid),
+      planning, route_class, std::move(provider_uuid),
       std::move(capability_uuid), provider_generation, available, work_units,
       sequential_pages, memory_bytes_required);
 }
@@ -113,10 +113,9 @@ MakeModelFamilyCapabilitySnapshotForCompositionV1(
 opt::ModelFamilyCoordinatorResultV1
 PlanCanonicalModelFamilySourceForCompositionV1(
     opt::ModelFamilyCoordinatorRequestV1 planning,
-    std::string identity_scope,
     std::vector<opt::ModelFamilyCapabilitySnapshotV1> snapshots) {
   return PlanCanonicalModelFamilySourceV1(
-      std::move(planning), std::move(identity_scope), std::move(snapshots));
+      std::move(planning), std::move(snapshots));
 }
 
 }  // namespace scratchbird::engine::sblr

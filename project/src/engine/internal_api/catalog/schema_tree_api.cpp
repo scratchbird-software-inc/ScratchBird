@@ -33,74 +33,28 @@
 namespace scratchbird::engine::internal_api {
 namespace {
 
-std::vector<std::string> SplitSchemaPayload(const std::string& value, char delimiter) {
-  std::vector<std::string> parts;
-  std::string current;
-  std::istringstream in(value);
-  while (std::getline(in, current, delimiter)) { parts.push_back(current); }
-  return parts;
-}
-
-bool StartsWith(const std::string& value, const std::string& prefix) {
-  return value.rfind(prefix, 0) == 0;
-}
-
-std::string JoinSchemaPayload(const std::vector<std::string>& parts) {
-  std::string out;
-  for (const auto& part : parts) {
-    if (!out.empty()) { out.push_back(';'); }
-    out += part;
-  }
-  return out;
-}
-
-EngineSchemaTreeRecord SchemaTreeRecordFromApiRecord(const ApiBehaviorRecord& record) {
+std::optional<EngineSchemaTreeRecord> SchemaTreeRecordFromApiRecord(const ApiBehaviorRecord& record) {
   EngineSchemaTreeRecord schema;
   schema.creator_tx = record.creator_tx;
   schema.event_sequence = record.event_sequence;
   schema.schema_uuid = record.object_uuid;
+  schema.parent_schema_uuid=record.target_schema_uuid;
   schema.default_name = record.default_name;
   schema.payload = record.payload;
   schema.state = record.state;
-  for (const auto& part : SplitSchemaPayload(record.payload, ';')) {
-    if (StartsWith(part, "schema=")) {
-      schema.parent_schema_uuid = part.substr(7);
-    } else if (StartsWith(part, "parent_schema_uuid=")) {
-      schema.parent_schema_uuid = part.substr(19);
-    } else if (StartsWith(part, "localized_name=")) {
-      const auto fields = SplitSchemaPayload(part.substr(15), ',');
-      if (fields.size() >= 5) {
-        EngineLocalizedName name;
-        name.language_tag = fields[0];
-        name.name_class = fields[1];
-        name.path = fields[2];
-        name.name = fields[3];
-        name.default_name = fields[4] == "default" || fields[4] == "1";
-        schema.localized_names.push_back(std::move(name));
-      }
-    } else if (StartsWith(part, "comment:")) {
-      const auto rest = part.substr(8);
-      const auto pos = rest.find(':');
-      if (pos != std::string::npos) {
-        schema.localized_comments.push_back({rest.substr(0, pos), rest.substr(pos + 1)});
-      }
-    }
-  }
-  if (schema.localized_names.empty() && !schema.default_name.empty()) {
-    schema.localized_names.push_back({"en", "default", schema.default_name, schema.default_name, true});
-  }
+  if (!DecodeSchemaTreeMetadata(record.payload,&schema.localized_names,&schema.localized_comments)) return std::nullopt;
   return schema;
 }
 
 bool NameIndicatesClusterPath(const EngineLocalizedName& name) {
-  return name.path == "cluster" || StartsWith(name.path, "cluster.") || StartsWith(name.path, "cluster/");
+  return name.path == "cluster" || name.path.starts_with("cluster.") || name.path.starts_with("cluster/");
 }
 
-std::string NameConflictKey(const EngineLocalizedName& name, const std::string& parent_schema_uuid) {
-  const std::string language = name.language_tag.empty() ? "und" : name.language_tag;
-  const std::string name_class = name.name_class.empty() ? "default" : name.name_class;
-  if (!name.path.empty()) { return language + "\t" + name_class + "\tpath\t" + name.path; }
-  return language + "\t" + name_class + "\tparent\t" + parent_schema_uuid + "\tname\t" + name.name;
+using SchemaNameKey=std::tuple<std::string,std::string,bool,EngineUuid,std::string>;
+SchemaNameKey NameConflictKey(const EngineLocalizedName& name,const EngineUuid& parent_schema_uuid){
+  const auto language=name.language_tag.empty()?std::string("und"):name.language_tag;
+  const auto name_class=name.name_class.empty()?std::string("default"):name.name_class;
+  return {language,name_class,!name.path.empty(),name.path.empty()?parent_schema_uuid:EngineUuid{},name.path.empty()?name.name:name.path};
 }
 
 EngineApiDiagnostic SchemaReadError(const std::string& detail) {
@@ -184,9 +138,9 @@ std::vector<EngineSchemaTreeRecord> BootstrapSchemaTreeRecords(
     const auto& r = *payload.record;
     EngineSchemaTreeRecord schema;
     schema.creator_tx = r.creator_transaction_number;
-    schema.schema_uuid = scratchbird::core::uuid::UuidToString(r.schema_object_uuid.value);
+    schema.schema_uuid = r.schema_object_uuid.value;
     if (!r.root_schema)
-      schema.parent_schema_uuid = scratchbird::core::uuid::UuidToString(r.parent_object_uuid.value);
+      schema.parent_schema_uuid = r.parent_object_uuid.value;
     schema.default_name = r.name_cache;
     schema.localized_names.push_back({"en", "default", r.path_cache, r.name_cache, true});
     schema.payload = SchemaTreePayload(schema.parent_schema_uuid, schema.localized_names, {});
@@ -211,23 +165,14 @@ std::string SchemaTreeDefaultName(const std::vector<EngineLocalizedName>& names,
   return fallback;
 }
 
-std::string SchemaTreePayload(const std::string& parent_schema_uuid,
+std::string SchemaTreePayload(const EngineUuid& parent_schema_uuid,
                               const std::vector<EngineLocalizedName>& names,
-                              const std::vector<std::pair<std::string, std::string>>& comments) {
-  std::vector<std::string> parts;
-  if (!parent_schema_uuid.empty()) {
-    parts.push_back("schema=" + parent_schema_uuid);
-    parts.push_back("parent_schema_uuid=" + parent_schema_uuid);
-  }
-  parts.push_back("localized_name_count=" + std::to_string(names.size()));
-  for (const auto& name : names) {
-    parts.push_back("localized_name=" + name.language_tag + "," + name.name_class + "," +
-                    name.path + "," + name.name + "," + (name.default_name ? "default" : "alias"));
-  }
-  for (const auto& comment : comments) {
-    parts.push_back("comment:" + comment.first + ":" + comment.second);
-  }
-  return JoinSchemaPayload(parts);
+                              const std::vector<std::pair<std::string,std::string>>& comments,
+                              BinaryCatalogMetadata extensions) {
+  (void)parent_schema_uuid; // Parent identity lives in the native API record.
+  std::string bytes;
+  if (!EncodeSchemaTreeMetadata(names,comments,std::move(extensions),&bytes)) return {};
+  return bytes;
 }
 
 std::vector<EngineSchemaTreeRecord> VisibleSchemaTreeRecords(const EngineRequestContext& context,
@@ -241,7 +186,9 @@ std::vector<EngineSchemaTreeRecord> VisibleSchemaTreeRecords(const EngineRequest
   if (!loaded.ok) { diagnostic = loaded.diagnostic; return {}; }
   for (const auto& record : loaded.state.records) {
     if (record.object_kind != "schema" || record.state != "active") continue;
-    auto schema = SchemaTreeRecordFromApiRecord(record);
+    auto decoded = SchemaTreeRecordFromApiRecord(record);
+    if (!decoded) { diagnostic=SchemaReadError("invalid_binary_schema_metadata");return {}; }
+    auto schema = std::move(*decoded);
     const auto existing = std::find_if(schemas.begin(), schemas.end(), [&schema](const EngineSchemaTreeRecord& candidate) {
       return candidate.schema_uuid == schema.schema_uuid;
     });
@@ -251,7 +198,7 @@ std::vector<EngineSchemaTreeRecord> VisibleSchemaTreeRecords(const EngineRequest
 }
 
 std::optional<EngineSchemaTreeRecord> FindVisibleSchemaTreeRecord(const EngineRequestContext& context,
-                                                                  const std::string& schema_uuid,
+                                                                  const EngineUuid& schema_uuid,
                                                                   std::uint64_t observer_tx,
                                                                   EngineApiDiagnostic& diagnostic) {
   const auto schemas = VisibleSchemaTreeRecords(context, observer_tx, diagnostic);
@@ -261,8 +208,8 @@ std::optional<EngineSchemaTreeRecord> FindVisibleSchemaTreeRecord(const EngineRe
 }
 
 std::optional<std::string> SchemaTreePathConflict(const EngineRequestContext& context,
-                                                  const std::string& schema_uuid,
-                                                  const std::string& parent_schema_uuid,
+                                                  const EngineUuid& schema_uuid,
+                                                  const EngineUuid& parent_schema_uuid,
                                                   const std::vector<EngineLocalizedName>& names,
                                                   std::uint64_t observer_tx,
                                                   EngineApiDiagnostic& diagnostic) {
@@ -276,7 +223,7 @@ std::optional<std::string> SchemaTreePathConflict(const EngineRequestContext& co
   for (const auto& name : names) {
     if (NameIndicatesClusterPath(name) && !context.cluster_authority_available)
       return "cluster_schema_path_absent:" + name.path;
-    const std::string key = NameConflictKey(name, parent_schema_uuid);
+    const auto key = NameConflictKey(name, parent_schema_uuid);
     for (const auto& existing : schemas) {
       if (existing.schema_uuid == schema_uuid) continue;
       for (const auto& existing_name : existing.localized_names)
@@ -288,15 +235,15 @@ std::optional<std::string> SchemaTreePathConflict(const EngineRequestContext& co
 }
 
 bool SchemaTreeWouldCreateCycle(const EngineRequestContext& context,
-                                const std::string& schema_uuid,
-                                const std::string& proposed_parent_schema_uuid,
+                                const EngineUuid& schema_uuid,
+                                const EngineUuid& proposed_parent_schema_uuid,
                                 std::uint64_t observer_tx,
                                 EngineApiDiagnostic& diagnostic) {
   const auto schemas = VisibleSchemaTreeRecords(context, observer_tx, diagnostic);
   if (diagnostic.error) return false;
-  std::set<std::string> visited;
-  std::string cursor = proposed_parent_schema_uuid;
-  while (!cursor.empty()) {
+  std::set<EngineUuid> visited;
+  EngineUuid cursor = proposed_parent_schema_uuid;
+  while (!cursor.is_nil()) {
     if (cursor == schema_uuid) return true;
     if (!visited.insert(cursor).second) {
       diagnostic = SchemaReadError("existing_schema_parent_cycle"); return false;
@@ -311,10 +258,18 @@ bool SchemaTreeWouldCreateCycle(const EngineRequestContext& context,
 EngineApiDiagnostic PersistSchemaTreeRecord(const EngineRequestContext& context,
                                             const EngineSchemaTreeRecord& record,
                                             const std::string& operation_id) {
+  std::vector<EngineLocalizedName> checked_names;
+  std::vector<std::pair<std::string,std::string>> checked_comments;
+  if (!DecodeSchemaTreeMetadata(record.payload,&checked_names,&checked_comments)) {
+    return SchemaReadError("invalid_binary_schema_metadata");
+  }
   ApiBehaviorRecord api_record;
   api_record.creator_tx = context.local_transaction_id;
   api_record.operation_id = operation_id;
   api_record.object_uuid = record.schema_uuid;
+  api_record.target_database_uuid=context.database_uuid;
+  api_record.target_schema_uuid=record.parent_schema_uuid;
+  api_record.target_object_uuid=record.schema_uuid;
   api_record.object_kind = "schema";
   api_record.default_name = record.default_name;
   api_record.payload = record.payload;
@@ -326,13 +281,13 @@ EngineApiDiagnostic PersistSchemaTreeRecord(const EngineRequestContext& context,
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_CATALOG_SCHEMA_TREE_API_BEHAVIOR
 EngineListCatalogChildrenResult EngineListCatalogChildren(const EngineListCatalogChildrenRequest& request) {
   auto result = MakeApiBehaviorSuccess<EngineListCatalogChildrenResult>(request.context, "catalog.list_children");
-  const std::string requested_parent = request.target_schema.uuid;
+  const EngineUuid requested_parent = request.target_schema.uuid;
   EngineApiDiagnostic schema_diagnostic;
   const auto schemas = VisibleSchemaTreeRecords(request.context, request.context.local_transaction_id, schema_diagnostic);
   if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineListCatalogChildrenResult>(
       request.context, "catalog.list_children", schema_diagnostic);
   for (const auto& schema : schemas) {
-    if (!requested_parent.empty() && schema.parent_schema_uuid != requested_parent) { continue; }
+    if (!requested_parent.is_nil() && schema.parent_schema_uuid != requested_parent) { continue; }
     AddApiBehaviorRow(&result, {{"object_uuid", schema.schema_uuid},
                                 {"object_kind", "schema"},
                                 {"name", schema.default_name},
@@ -364,7 +319,7 @@ EngineListCatalogChildrenResult EngineListCatalogChildren(const EngineListCatalo
                                     {"object_kind", "domain"},
                                     {"name", visible->default_name},
                                     {"state", "active"},
-                                    {"payload", "schema=" + visible->schema_uuid + ";base_type=" + visible->base_canonical_type_name}});
+                                    {"schema_uuid", visible->schema_uuid}, {"payload", "base_type=" + visible->base_canonical_type_name}});
       }
     }
   }

@@ -13,6 +13,7 @@
 #include "crud_support/crud_store.hpp"
 #include "datatype_operations.hpp"
 #include "mga_relation_store/mga_relation_descriptor.hpp"
+#include "mga_relation_store/mga_binary_fields.hpp"
 
 #include <algorithm>
 #include <array>
@@ -47,6 +48,15 @@ EngineApiDiagnostic OkDiagnostic() {
 EngineApiDiagnostic AggregateDiagnostic(std::string detail) {
   return MakeInvalidRequestDiagnostic(
       std::string(kOperation), std::move(detail));
+}
+
+std::string DistinctValueKey(const EngineUuid& descriptor_uuid,
+                             std::string_view canonical_type,
+                             std::string_view value) {
+  std::string bytes(reinterpret_cast<const char*>(descriptor_uuid.bytes.data()), 16);
+  AppendBinaryString(&bytes, canonical_type);
+  AppendBinaryString(&bytes, value);
+  return bytes;
 }
 
 bool DescriptorEmpty(const EngineDescriptor& descriptor) {
@@ -110,7 +120,7 @@ bool DirectInputExpression(
 
 const MgaRelationColumnStorageDescriptor* FindColumnByUuid(
     const MgaRelationStorageDescriptor& descriptor,
-    const std::string& column_uuid,
+    const EngineUuid& column_uuid,
     bool* duplicate) {
   const MgaRelationColumnStorageDescriptor* found = nullptr;
   if (duplicate != nullptr) *duplicate = false;
@@ -283,9 +293,8 @@ bool CanonicalIntegerDistinctKey(const EngineDescriptor& descriptor,
     return false;
   }
   (void)parsed;
-  *key = descriptor.descriptor_uuid + "|" +
-         std::string(dt::CanonicalTypeName(*type_id)) + "|" +
-         canonical;
+  *key = DistinctValueKey(descriptor.descriptor_uuid,
+                          dt::CanonicalTypeName(*type_id), canonical);
   if (error_detail != nullptr) error_detail->clear();
   return true;
 }
@@ -402,8 +411,8 @@ bool CanonicalReal64Value(const EngineDescriptor& descriptor,
           static_cast<unsigned>((encoded_bits.size() - index - 1u) * 4u);
       encoded_bits[index] = kHex[(bits >> shift) & 0x0fu];
     }
-    *key = descriptor.descriptor_uuid + "|real64|" +
-           std::string(encoded_bits.data(), encoded_bits.size());
+    *key = DistinctValueKey(descriptor.descriptor_uuid, "real64",
+                            std::string_view(encoded_bits.data(), encoded_bits.size()));
   }
   if (error_detail != nullptr) error_detail->clear();
   return true;
@@ -504,11 +513,11 @@ EngineDescriptor EngineGlobalAggregateCountResultDescriptor() {
   return descriptor;
 }
 
-std::string_view EngineGlobalAggregateCountFunctionUuid() {
+EngineUuid EngineGlobalAggregateCountFunctionUuid() {
   const auto* entry =
       scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
           scratchbird::engine::executor::CanonicalAggregateFunction::count);
-  return entry == nullptr ? std::string_view{} : entry->function_uuid;
+  return entry == nullptr ? EngineUuid{} : entry->function_uuid;
 }
 
 EngineDescriptor EngineGlobalAggregateAvgIntegerResultDescriptor() {
@@ -547,11 +556,11 @@ EngineDescriptor EngineGlobalAggregateExpressionInt64ResultDescriptor() {
   return descriptor;
 }
 
-std::string_view EngineGlobalAggregateAvgFunctionUuid() {
+EngineUuid EngineGlobalAggregateAvgFunctionUuid() {
   const auto* entry =
       scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
           scratchbird::engine::executor::CanonicalAggregateFunction::avg);
-  return entry == nullptr ? std::string_view{} : entry->function_uuid;
+  return entry == nullptr ? EngineUuid{} : entry->function_uuid;
 }
 
 EngineApiDiagnostic ValidateGlobalAggregateProjectionEnvelope(
@@ -574,13 +583,13 @@ EngineApiDiagnostic ValidateGlobalAggregateProjectionEnvelope(
     return AggregateDiagnostic("global_aggregate_output_count_exceeded");
   }
 
-  const std::string& envelope_function_uuid =
+  const EngineUuid& envelope_function_uuid =
       envelope.outputs.front().aggregate_function_uuid;
-  const std::string_view count_function_uuid =
+  const EngineUuid count_function_uuid =
       EngineGlobalAggregateCountFunctionUuid();
-  const std::string_view avg_function_uuid =
+  const EngineUuid avg_function_uuid =
       EngineGlobalAggregateAvgFunctionUuid();
-  if (count_function_uuid.empty() || avg_function_uuid.empty()) {
+  if (count_function_uuid.is_nil() || avg_function_uuid.is_nil()) {
     return AggregateDiagnostic("global_aggregate_registry_unavailable");
   }
   const bool count_envelope = envelope_function_uuid == count_function_uuid;
@@ -777,13 +786,13 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
     return result;
   }
 
-  const std::string& aggregate_function_uuid =
+  const EngineUuid& aggregate_function_uuid =
       outputs.front().aggregate_function_uuid;
-  const std::string_view count_function_uuid =
+  const EngineUuid count_function_uuid =
       EngineGlobalAggregateCountFunctionUuid();
-  const std::string_view avg_function_uuid =
+  const EngineUuid avg_function_uuid =
       EngineGlobalAggregateAvgFunctionUuid();
-  if (count_function_uuid.empty() || avg_function_uuid.empty()) {
+  if (count_function_uuid.is_nil() || avg_function_uuid.is_nil()) {
     result.diagnostic =
         AggregateDiagnostic("bound_global_aggregate_registry_unavailable");
     return result;
@@ -1017,15 +1026,10 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
             integer_value = product;
             canonical_text = std::to_string(integer_value);
           }
-          distinct_key =
-              (expression_int32_literals[index]
-                   ? std::string("expression:int64")
-                   : output.source_field.value_descriptor.descriptor_uuid
-                          +
-                         "|" +
-                         output.source_field.value_descriptor
-                             .canonical_type_name) +
-              "|" + canonical_text;
+          distinct_key = expression_int32_literals[index]
+              ? DistinctValueKey({}, "expression:int64", canonical_text)
+              : DistinctValueKey(output.source_field.value_descriptor.descriptor_uuid,
+                  output.source_field.value_descriptor.canonical_type_name, canonical_text);
         } else if (avg_input_kinds[index] == AvgInputKind::real64) {
           if (!CanonicalReal64Value(
                   output.source_field.value_descriptor,

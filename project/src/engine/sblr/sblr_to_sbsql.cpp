@@ -1581,9 +1581,8 @@ SblrToSbsqlResult RenderBoundSourceArtifact(
               validation_context.expected_dialect_family_uuid.begin());
   std::copy_n(container.canonical_anchor.data() + 32, 16,
               validation_context.expected_parser_package_uuid.begin());
-  SblrSourceArtifactUuidV1 operation_parser_uuid{};
-  if (!ParseUuid(operation.parser_package_uuid, &operation_parser_uuid) ||
-      operation_parser_uuid !=
+  if (operation.parser_package_uuid.is_nil() ||
+      operation.parser_package_uuid.bytes !=
           validation_context.expected_parser_package_uuid) {
     return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
                   "source_artifact.binding");

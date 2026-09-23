@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -65,7 +66,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -101,10 +102,10 @@ void ConfigureMemoryFixture() {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000004101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000004102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000004103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000004101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000004102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000004103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 41;
   session.security_policy_epoch = 42;
   session.descriptor_epoch = 43;
@@ -115,7 +116,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsql_missing_gate_004";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000004104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000004104");
   config.bundle_contract_id = "sbp_sbsql@sbsql-missing-gate-004";
   config.build_id = "sbsql-missing-functionality-gate-004";
   return config;
@@ -177,7 +178,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -195,20 +196,20 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "Gate 004 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid,
+                                        const api::EngineUuid& database_uuid,
                                         std::string request_id,
-                                        std::string session_uuid) {
+                                        api::EngineUuid session_uuid) {
   api::EngineRequestContext context;
   context.request_id = std::move(request_id);
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = std::move(session_uuid);
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000004202";
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.database_uuid = database_uuid;
+  context.session_uuid = std::move(session_uuid);
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000004202");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000004001");
   context.security_context_present = true;
   context.cluster_authority_available = false;
   context.catalog_generation_id = 1;
@@ -220,9 +221,9 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid,
+                                                 const api::EngineUuid& database_uuid,
                                                  std::string request_id,
-                                                 std::string session_uuid) {
+                                                 api::EngineUuid session_uuid) {
   auto context = EngineContext(path, database_uuid, std::move(request_id),
                                std::move(session_uuid));
   api::EngineBeginTransactionRequest begin;
@@ -259,6 +260,21 @@ std::string FirstRowValue(const api::EngineApiResult& result, std::string_view f
   for (const auto& field : result.result_shape.rows.front().fields) {
     if (field.first == field_name) return field.second.encoded_value;
   }
+  return {};
+}
+
+api::EngineUuid FirstRowUuid(const api::EngineApiResult& result, std::string_view field_name) {
+  Require(!result.result_shape.rows.empty(), "Gate 004 expected a native UUID row");
+  for (const auto& [name, value] : result.result_shape.rows.front().fields) {
+    if (name != field_name) continue;
+    Require(!value.is_null && value.state == api::EngineValueState::value &&
+                value.encoded_value.empty() && value.binary_value.size() == 16,
+            "Gate 004 migration identity was not binary16");
+    api::EngineUuid identity;
+    std::copy(value.binary_value.begin(), value.binary_value.end(), identity.bytes.begin());
+    return identity;
+  }
+  Require(false, "Gate 004 expected UUID field missing");
   return {};
 }
 
@@ -457,13 +473,13 @@ void RequireSecurityRefusal(const PipelineArtifacts& artifacts,
           "Gate 004 security-context diagnostic missing");
 }
 
-std::string RequireMigrationEnginePath(const std::filesystem::path& path,
-                                       const std::string& database_uuid) {
+api::EngineUuid RequireMigrationEnginePath(const std::filesystem::path& path,
+                                       const api::EngineUuid& database_uuid) {
   auto context = BeginEngineTransaction(
       path,
       database_uuid,
       "sbsql-missing-gate-004-migration",
-      "019f0000-0000-7000-8000-000000004301");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000004301"));
 
   const auto begin = RequireMigrationRoute(
       "MIGRATE FROM REFERENCE postgres WITH PACKAGE pg_compat_pack;",
@@ -471,7 +487,7 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
       "SBLR_MIGRATION_BEGIN_FROM_REFERENCE",
       "EngineBeginMigration",
       "rs.migration.status.v1");
-  Require(HasValue(begin.envelope.descriptor_refs, "sys.migration.context"),
+  Require(HasValue(begin.envelope.descriptor_requirements, "sys.migration.context"),
           "Gate 004 begin migration descriptor missing");
   Require(Contains(begin.envelope.payload, "\"reference_profile\":\"postgres\""),
           "Gate 004 begin migration reference profile operand missing");
@@ -494,13 +510,13 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
           "Gate 004 begin migration entered private cluster execution");
   Require(HasEvidence(begin_result, "wal_recovery_authority", "false"),
           "Gate 004 begin migration carried WAL authority");
-  const std::string migration_uuid = begin_result.primary_object.uuid.canonical;
-  Require(!migration_uuid.empty(), "Gate 004 begin migration did not persist UUID");
+  const auto migration_uuid = begin_result.primary_object.uuid;
+  Require(!migration_uuid.is_nil(), "Gate 004 begin migration did not persist UUID");
   Require(FirstRowValue(begin_result, "state") == "prepared",
           "Gate 004 begin migration state drifted");
 
   const auto alter = RequireMigrationRoute(
-      "ALTER MIGRATION " + migration_uuid + " START;",
+      "ALTER MIGRATION " + uuid::UuidToString(migration_uuid) + " START;",
       "op.migration.alter",
       "SBLR_MIGRATION_ALTER",
       "EngineAlterMigration",
@@ -515,7 +531,7 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
           "Gate 004 alter migration state drifted");
 
   const auto show = RequireMigrationRoute(
-      "SHOW MIGRATION " + migration_uuid + ";",
+      "SHOW MIGRATION " + uuid::UuidToString(migration_uuid) + ";",
       "op.show.migration",
       "SBLR_SHOW_MIGRATION",
       "EngineShowMigration",
@@ -528,7 +544,7 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
           "Gate 004 show migration API evidence missing");
   Require(FirstRowValue(show_result, "state") == "running",
           "Gate 004 show migration did not observe running state");
-  Require(FirstRowValue(show_result, "migration_uuid") == migration_uuid,
+  Require(FirstRowUuid(show_result, "migration_uuid") == migration_uuid,
           "Gate 004 show migration UUID drifted");
 
   const auto show_all = RequireMigrationRoute(
@@ -545,7 +561,7 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
           "Gate 004 show migrations API evidence missing");
   Require(!show_all_result.result_shape.rows.empty(),
           "Gate 004 show migrations returned no rows");
-  Require(FirstRowValue(show_all_result, "migration_uuid") == migration_uuid,
+  Require(FirstRowUuid(show_all_result, "migration_uuid") == migration_uuid,
           "Gate 004 show migrations did not list migration UUID");
   Require(FirstRowValue(show_all_result, "reference_storage_authority_accepted") == "false",
           "Gate 004 show migrations row accepted reference storage authority");
@@ -557,8 +573,8 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
 }
 
 void RequireMigrationReopenPath(const std::filesystem::path& path,
-                                const std::string& database_uuid,
-                                const std::string& migration_uuid) {
+                                const api::EngineUuid& database_uuid,
+                                const api::EngineUuid& migration_uuid) {
   db::DatabaseOpenConfig open;
   open.path = path.string();
   const auto opened = db::OpenDatabaseFile(open);
@@ -574,17 +590,17 @@ void RequireMigrationReopenPath(const std::filesystem::path& path,
       path,
       database_uuid,
       "sbsql-missing-gate-004-migration-reopen",
-      "019f0000-0000-7000-8000-000000004302");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000004302"));
 
   const auto show = RequireMigrationRoute(
-      "SHOW MIGRATION " + migration_uuid + ";",
+      "SHOW MIGRATION " + uuid::UuidToString(migration_uuid) + ";",
       "op.show.migration",
       "SBLR_SHOW_MIGRATION",
       "EngineShowMigration",
       "rs.migration.status.v1");
   auto show_result = CallMigrationApi(context, show);
   Require(show_result.ok, "Gate 004 reopen show migration API failed");
-  Require(FirstRowValue(show_result, "migration_uuid") == migration_uuid,
+  Require(FirstRowUuid(show_result, "migration_uuid") == migration_uuid,
           "Gate 004 reopen show migration UUID drifted");
   Require(FirstRowValue(show_result, "state") == "running",
           "Gate 004 reopen show migration did not preserve running state");
@@ -603,7 +619,7 @@ void RequireMigrationReopenPath(const std::filesystem::path& path,
   Require(show_all_result.ok, "Gate 004 reopen show migrations API failed");
   Require(!show_all_result.result_shape.rows.empty(),
           "Gate 004 reopen show migrations returned no rows");
-  Require(FirstRowValue(show_all_result, "migration_uuid") == migration_uuid,
+  Require(FirstRowUuid(show_all_result, "migration_uuid") == migration_uuid,
           "Gate 004 reopen show migrations did not list migration UUID");
   Require(FirstRowValue(show_all_result, "state") == "running",
           "Gate 004 reopen show migrations did not preserve running state");

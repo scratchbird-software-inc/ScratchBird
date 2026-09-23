@@ -1,3 +1,6 @@
+#include "datatype_catalog_manifest.hpp"
+#include <cstdlib>
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -50,27 +53,27 @@ bool StableNamesAreUnique(const std::vector<Slot>& slots) {
   return std::adjacent_find(names.begin(), names.end()) == names.end();
 }
 
-api::EngineUuid Uuid(const std::string& value) {
-  api::EngineUuid uuid;
-  uuid.canonical = value;
-  return uuid;
-}
-
-api::EngineDescriptor Descriptor(const std::string& uuid,
-                                 const std::string& type,
-                                 const std::string& encoded) {
-  auto descriptor = exec::MakeExecutorDescriptor(type, encoded);
-  descriptor.descriptor_uuid = Uuid(uuid);
-  descriptor.descriptor_kind = "executor.scalar";
-  return descriptor;
-}
-
-api::EngineColumnDefinition Column(const std::string& uuid,
+api::EngineColumnDefinition Column(const api::EngineUuid& column_uuid,
                                    const std::string& type,
                                    std::uint32_t ordinal) {
+  using scratchbird::tests::FixtureUuidLiteral;
+  const auto descriptor_uuid = type == "int64"
+      ? FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711")
+      : FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
+  if (!Require(type == "int64" || type == "text", "unexpected fixture datatype")) std::abort();
+  const auto binding = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
+      1, 1, descriptor_uuid, 1);
+  if (!Require(binding.ok, "canonical fixture datatype binding unavailable")) std::abort();
   api::EngineColumnDefinition column;
-  column.requested_column_uuid = Uuid(uuid);
-  column.descriptor = Descriptor("desc:" + uuid, type, "type=" + type + ";uuid=" + uuid);
+  column.requested_column_uuid = column_uuid;
+  column.descriptor.descriptor_uuid = binding.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
+  column.descriptor.type_uuid = binding.row.type_uuid;
+  column.descriptor.descriptor_kind = "executor.scalar";
+  column.descriptor.canonical_type_name = type;
+  column.descriptor.encoded_descriptor = "type=" + type;
   column.ordinal = ordinal;
   column.nullable = false;
   return column;
@@ -78,20 +81,20 @@ api::EngineColumnDefinition Column(const std::string& uuid,
 
 api::EngineRequestContext BaseContext() {
   api::EngineRequestContext context;
-  context.database_uuid = Uuid("db.odf020");
-  context.principal_uuid = Uuid("principal.odf020");
-  context.current_role_uuid = Uuid("role.reader");
-  context.session_uuid = Uuid("session.odf020");
+  context.database_uuid = scratchbird::tests::FixtureUuid(1267, 1);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1267, 2);
+  context.current_role_uuid = scratchbird::tests::FixtureUuid(1267, 3);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1267, 4);
   context.transaction_uuid =
-      Uuid("019f0200-0000-7000-8000-000000000002");
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000002");
   context.statement_uuid =
-      Uuid("019f0200-0000-7000-8000-000000000003");
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000003");
   context.statement_snapshot_uuid =
-      Uuid("019f0200-0000-7000-8000-000000000004");
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000004");
   context.statement_metadata_snapshot_uuid =
-      Uuid("019f0200-0000-7000-8000-000000000005");
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000005");
   context.catalog_epoch_uuid =
-      Uuid("019f0200-0000-7000-8000-000000000001");
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000001");
   context.local_transaction_id = 88;
   context.snapshot_visible_through_local_transaction_id = 0;
   context.transaction_isolation_level = "snapshot";
@@ -106,12 +109,12 @@ api::EngineRequestContext BaseContext() {
 exec::PhysicalMgaStatementContext StatementContext(
     const api::EngineRequestContext& context) {
   exec::PhysicalMgaStatementContext statement;
-  statement.statement_uuid = context.statement_uuid.canonical;
-  statement.owning_transaction_uuid = context.transaction_uuid.canonical;
+  statement.statement_uuid = context.statement_uuid;
+  statement.owning_transaction_uuid = context.transaction_uuid;
   statement.statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   statement.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   statement.owning_local_transaction_id = context.local_transaction_id;
   statement.visible_committed_high_watermark =
       context.snapshot_visible_through_local_transaction_id;
@@ -148,19 +151,19 @@ api::EngineApiRequest BaseRequest(const api::EngineRequestContext& context) {
   api::EngineApiRequest request;
   request.context = context;
   request.operation_id = "query.execute";
-  request.target_database.uuid = Uuid("db.odf020");
+  request.target_database.uuid = scratchbird::tests::FixtureUuid(1267, 1);
   request.target_database.object_kind = "database";
-  request.target_schema.uuid = Uuid("schema.public");
+  request.target_schema.uuid = scratchbird::tests::FixtureUuid(1267, 5);
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid = Uuid("rel.customer");
+  request.target_object.uuid = scratchbird::tests::FixtureUuid(1267, 6);
   request.target_object.object_kind = "relation";
   request.related_objects = {
-      {Uuid("rel.customer"), "relation"},
-      {Uuid("fn.redaction_policy"), "function"},
+      {scratchbird::tests::FixtureUuid(1267, 6), "relation"},
+      {scratchbird::tests::FixtureUuid(1267, 7), "function"},
   };
   request.columns = {
-      Column("col.customer_id", "int64", 0),
-      Column("col.customer_name", "text", 1),
+      Column(scratchbird::tests::FixtureUuid(1267, 100), "int64", 0),
+      Column(scratchbird::tests::FixtureUuid(1267, 101), "text", 1),
   };
   request.descriptors = {
       request.columns[0].descriptor,
@@ -175,13 +178,13 @@ api::EngineApiRequest BaseRequest(const api::EngineRequestContext& context) {
   request.predicate.canonical_predicate_envelope = "sblr.predicate.uuid_bound.v1";
   request.predicate.bound_values.push_back(exec::MakeExecutorValue(request.columns[0].descriptor, "42", false));
   api::EngineIndexDefinition index;
-  index.requested_index_uuid = Uuid("idx.customer.customer_id");
+  index.requested_index_uuid = scratchbird::tests::FixtureUuid(1267, 8);
   index.index_kind = "btree";
   index.key_envelopes = {"col.customer_id"};
   index.physical_profile = "mga_visible_index";
   request.indexes.push_back(index);
   request.policy_profile.names = {"tenant_visibility", "role_authorization"};
-  request.policy_profile.encoded_profiles = {"policy_uuid=policy.customer.visible"};
+  request.policy_profile.encoded_profiles = {"policy_name=customer.visible"};
   return request;
 }
 
@@ -191,9 +194,9 @@ sblr::SblrOperationEnvelope BaseEnvelope() {
                                          "trace.odf020.select.customer");
   envelope.opcode_code = 0x1207;
   envelope.parser_package_uuid =
-      "019f0200-0000-7000-8000-000000000101";
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000101");
   envelope.registry_snapshot_uuid =
-      "019f0200-0000-7000-8000-000000000102";
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000102");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.result_shape = "engine.result.customer_projection.v1";
@@ -254,7 +257,7 @@ bool FirstPreparePopulatesTemplateAndSecondReusesIt() {
          Require(prepared.key.epochs.name_resolution_epoch == context.name_resolution_epoch,
                  "name-resolution epoch was not cached in the template key") &&
          Require(prepared.key.catalog_epoch_uuid ==
-                     context.catalog_epoch_uuid.canonical,
+                     context.catalog_epoch_uuid,
                  "catalog epoch UUID was not cached independently") &&
          Require(exec::PreparedTemplateCanonicalKey(prepared.key).find(
                      "visibility") == std::string::npos,
@@ -302,7 +305,7 @@ bool BindRefusesWithExactDiagnostics() {
   }
 
   changed = bind_context;
-  changed.engine_context.principal_uuid = Uuid("principal.odf020.changed");
+  changed.engine_context.principal_uuid = scratchbird::tests::FixtureUuid(1267, 9);
   if (!expect_code(changed, "SB_PREPARED_TEMPLATE_POLICY_METADATA_MISMATCH", "changed authorization identity")) {
     return false;
   }
@@ -320,7 +323,7 @@ bool BindRefusesWithExactDiagnostics() {
   }
 
   changed = bind_context;
-  changed.mga_authority.statement_context.statement_uuid = "malformed";
+  changed.mga_authority.statement_context.statement_uuid.bytes[6] = 0x40;
   if (!expect_code(changed, "SB_PREPARED_TEMPLATE_MGA_STATEMENT_CONTEXT_INVALID", "malformed MGA context")) {
     return false;
   }
@@ -339,7 +342,7 @@ bool BindRefusesWithExactDiagnostics() {
   changed = bind_context;
   changed.mga_authority.resolve_current = [current = StatementContext(context)]() mutable {
     current.owning_transaction_uuid =
-        "019f0200-0000-7000-8000-000000000012";
+        scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000012");
     exec::CanonicalMgaCurrentResolution resolution;
     resolution.statement_context = current;
     return resolution;
@@ -350,7 +353,7 @@ bool BindRefusesWithExactDiagnostics() {
 
   changed = bind_context;
   changed.mga_authority.resolve_current = [current = StatementContext(context)]() mutable {
-    current.statement_uuid = "019f0200-0000-7000-8000-000000000013";
+    current.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000013");
     exec::CanonicalMgaCurrentResolution resolution;
     resolution.statement_context = current;
     return resolution;
@@ -469,13 +472,13 @@ bool SharedMetadataReusesAcrossStatementsButReceiptsDoNot() {
 
   auto second_context = first_context;
   second_context.transaction_uuid =
-      Uuid("019f0200-0000-7000-8000-000000000022");
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000022");
   second_context.statement_uuid =
-      Uuid("019f0200-0000-7000-8000-000000000023");
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000023");
   second_context.statement_snapshot_uuid =
-      Uuid("019f0200-0000-7000-8000-000000000024");
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000024");
   second_context.statement_metadata_snapshot_uuid =
-      Uuid("019f0200-0000-7000-8000-000000000025");
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000025");
   second_context.local_transaction_id = 89;
   second_context.snapshot_visible_through_local_transaction_id = 56;
   auto second_request = BaseRequest(second_context);

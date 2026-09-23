@@ -6,7 +6,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "snapshot_safe_result_cache.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -52,11 +55,8 @@ bool HasEvidencePrefix(const std::vector<std::string>& evidence,
                      });
 }
 
-std::string CacheUuid(const std::uint64_t suffix) {
-  std::ostringstream out;
-  out << "019f0000-0000-7500-8000-" << std::hex << std::setfill('0')
-      << std::setw(12) << suffix;
-  return out.str();
+scratchbird::core::platform::Uuid CacheUuid(const std::uint64_t suffix) {
+  return scratchbird::tests::FixtureUuid(1402, suffix);
 }
 
 exec::PhysicalMgaStatementContext CacheStatementContext(
@@ -110,7 +110,7 @@ exec::TypedPhysicalNodeDag CacheSelectedDag(
   dag.optimizer_published = true;
   dag.immutable_node_identity_validated = true;
   dag.capability_validated_before_access = true;
-  const std::vector<std::string> evidence{
+  const std::vector<scratchbird::core::platform::Uuid> evidence{
       dag.bound_sblr_tree_uuid, dag.catalog_epoch_uuid,
       dag.security_context_uuid, context.statement_snapshot_uuid,
       dag.capability_snapshot_uuid, dag.resource_snapshot_uuid,
@@ -146,7 +146,7 @@ struct CacheCurrentState {
 struct CacheBinding {
   exec::CanonicalExecutionMgaAuthority authority;
   exec::TypedPhysicalNodeDag selected_dag;
-  std::string catalog_epoch_uuid;
+  scratchbird::core::platform::Uuid catalog_epoch_uuid;
   std::shared_ptr<CacheCurrentState> current;
 };
 
@@ -193,7 +193,8 @@ void ApplyBinding(SnapshotSafeCacheLookupRequest* request,
 
 SnapshotSafeCacheKey BaseKey() {
   SnapshotSafeCacheKey key;
-  key.normalized_operation = "select document where tenant=? and status=?";
+  key.bound_sblr_tree_uuid = CacheUuid(5121);
+  key.security_context_uuid = CacheUuid(5123);
   key.safe_parameter_digest = "safe_params:tenant_hash,status_active";
   key.catalog_epoch = 11;
   key.statistics_epoch = 12;
@@ -206,8 +207,54 @@ SnapshotSafeCacheKey BaseKey() {
   key.result_contract_identity = "candidate_rowset.v1";
   key.result_contract_hash = "sha256:candidate-rowset-contract";
   key.route_compatibility = "embedded_ipc_v1";
-  key.dialect_compatibility = "sbsql_v1";
   return key;
+}
+
+exec::SnapshotSafeCachePayload CandidatePayload(std::size_t count = 32) {
+  exec::SnapshotSafeCachePayload payload;
+  for (std::size_t index = 0; index < count; ++index) {
+    exec::CanonicalScanCandidateEvidence candidate;
+    candidate.candidate_uuid = CacheUuid(6000 + index);
+    candidate.record_uuid = CacheUuid(7000 + index);
+    candidate.relation_uuid = CacheUuid(8000);
+    candidate.visibility_decision_uuid = CacheUuid(9000 + index);
+    candidate.row_version_id = index + 1;
+    candidate.candidate_generation = candidate.observed_generation = 1;
+    candidate.creator_local_transaction_id = 1;
+    candidate.visibility = exec::CanonicalMgaVisibilityDecision::kVisible;
+    candidate.security_decision = exec::CanonicalMgaSecurityDecision::kAllowed;
+    candidate.locator_identity_matches = true;
+    payload.candidates.push_back(candidate);
+  }
+  return payload;
+}
+
+exec::SnapshotSafeCachePayload SmallPayload() {
+  exec::SnapshotSafeCachePayload payload;
+  namespace dt = scratchbird::core::datatypes;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "core datatype manifest is unavailable");
+  const auto row = std::find_if(manifest.manifest.descriptor_rows.begin(),
+      manifest.manifest.descriptor_rows.end(),
+      [](const auto& entry) { return entry.stable_name == "int64"; });
+  Require(row != manifest.manifest.descriptor_rows.end(), "int64 descriptor missing");
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(CacheUuid(9990),
+      manifest.manifest.catalog_epoch, 1, row->descriptor_uuid.value,
+      row->descriptor_epoch);
+  auto descriptor = exec::EncodeInt64Value(1).descriptor;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.descriptor_uuid = CacheUuid(9991);
+  descriptor.type_uuid = identity.ok ? identity.row.type_uuid : row->descriptor_uuid.value;
+  descriptor.encoded_descriptor = "nullability=non_null";
+  payload.final_result.columns.push_back({"value", descriptor, false, 1});
+  for (std::int64_t number = 1; number <= 4; ++number) {
+    auto value = exec::EncodeInt64Value(number);
+    value.descriptor = descriptor;
+    payload.final_result.rows.push_back({{value}});
+  }
+  const auto validation = exec::ValidateCanonicalDescriptorBatch(payload.final_result, {1});
+  Require(validation.ok, "small payload descriptor invalid: " + validation.detail);
+  return payload;
 }
 
 SnapshotSafeCacheEntry CandidateEntry() {
@@ -215,8 +262,7 @@ SnapshotSafeCacheEntry CandidateEntry() {
   entry.key = BaseKey();
   entry.payload_kind = SnapshotSafeCachePayloadKind::kCandidateSet;
   entry.row_count = 32;
-  entry.cached_result_digest = "candidate_digest:32:ordered";
-  entry.cached_mga_security_digest = "mga_security_digest:visible_authorized_32";
+  entry.payload = CandidatePayload();
   return entry;
 }
 
@@ -237,9 +283,7 @@ SnapshotSafeCacheLookupRequest CandidateLookupRequest() {
   request.read_only_operation = true;
   request.candidate_set_snapshot_safe = true;
   request.row_count = 32;
-  request.recomputed_result_digest = "candidate_digest:32:ordered";
-  request.recomputed_mga_security_digest =
-      "mga_security_digest:visible_authorized_32";
+  request.recomputed_payload = CandidatePayload();
   ApplyBinding(&request, MakeCacheBinding());
   return request;
 }
@@ -256,14 +300,14 @@ void RequireKeyEvidence(const SnapshotSafeCacheDecision& decision) {
           "missing ODFR-051 search key");
   Require(HasEvidencePrefix(evidence, "snapshot_cache_key="),
           "missing strict cache key text");
-  Require(HasEvidencePrefix(evidence, "normalized_operation="),
-          "missing normalized operation key evidence");
+  Require(HasEvidence(evidence, "operation_authority=bound_binary_sblr_tree"),
+          "missing bound binary operation authority evidence");
   Require(HasEvidencePrefix(evidence, "safe_parameter_digest="),
           "missing safe parameter digest evidence");
   Require(HasEvidence(evidence, "catalog_epoch=11"),
           "missing catalog epoch evidence");
-  Require(HasEvidence(evidence, "catalog_epoch_uuid=" + CacheUuid(5122)),
-          "missing independent catalog UUID evidence");
+  Require(HasEvidence(evidence, "catalog_identity=binary_uuid"),
+          "missing binary catalog identity evidence");
   Require(HasEvidence(evidence, "statistics_epoch=12"),
           "missing statistics epoch evidence");
   Require(HasEvidence(evidence, "security_epoch=13"),
@@ -282,10 +326,10 @@ void RequireKeyEvidence(const SnapshotSafeCacheDecision& decision) {
           "missing result contract hash evidence");
   Require(HasEvidence(evidence, "route_compatibility=embedded_ipc_v1"),
           "missing route compatibility evidence");
-  Require(HasEvidence(evidence, "dialect_compatibility=sbsql_v1"),
-          "missing dialect compatibility evidence");
-  Require(HasEvidence(evidence, "support_bundle_ready=true"),
-          "missing support bundle evidence");
+  Require(!HasEvidencePrefix(evidence, "dialect_compatibility="),
+          "parser dialect must not become engine cache authority");
+  Require(!HasEvidencePrefix(evidence, "support_bundle_ready="),
+          "cache decision must not claim support bundle publication");
   RequireAuthorityEvidence(decision);
 }
 
@@ -308,7 +352,7 @@ void ProveCandidateSetHitRequiresIdenticalRecompute() {
                       "snapshot_cache_identical_to_recompute=true"),
           "candidate hit missing recompute identity proof");
   Require(HasEvidence(hit.evidence,
-                      "snapshot_cache_recompute_mga_security_match=true"),
+                      "snapshot_cache_recompute_result_match=true"),
           "candidate hit missing MGA/security recompute proof");
   Require(HasEvidence(hit.evidence,
                       "snapshot_cache_payload_kind_match=true"),
@@ -323,8 +367,7 @@ void ProveSmallFinalResultHit() {
   auto entry = CandidateEntry();
   entry.payload_kind = SnapshotSafeCachePayloadKind::kSmallFinalResult;
   entry.row_count = 4;
-  entry.cached_result_digest = "small_result_digest:4";
-  entry.cached_mga_security_digest = "mga_security_digest:small_visible_4";
+  entry.payload = SmallPayload();
 
   SnapshotSafeCacheStoreRequest store_request;
   store_request.entry = entry;
@@ -341,9 +384,7 @@ void ProveSmallFinalResultHit() {
   lookup.read_only_operation = true;
   lookup.small_final_result = true;
   lookup.row_count = 4;
-  lookup.recomputed_result_digest = "small_result_digest:4";
-  lookup.recomputed_mga_security_digest =
-      "mga_security_digest:small_visible_4";
+  lookup.recomputed_payload = SmallPayload();
   ApplyBinding(&lookup, MakeCacheBinding());
   const auto hit = cache.Lookup(lookup);
   Require(hit.accepted && hit.cache_hit && !hit.fail_closed,
@@ -368,9 +409,7 @@ void ProvePayloadKindsDoNotCollideForSameBaseKey() {
   auto small_entry = CandidateEntry();
   small_entry.payload_kind = SnapshotSafeCachePayloadKind::kSmallFinalResult;
   small_entry.row_count = 4;
-  small_entry.cached_result_digest = "small_result_digest:4";
-  small_entry.cached_mga_security_digest =
-      "mga_security_digest:small_visible_4";
+  small_entry.payload = SmallPayload();
   SnapshotSafeCacheStoreRequest small_store;
   small_store.entry = small_entry;
   small_store.read_only_operation = true;
@@ -395,9 +434,7 @@ void ProvePayloadKindsDoNotCollideForSameBaseKey() {
   small_lookup.read_only_operation = true;
   small_lookup.small_final_result = true;
   small_lookup.row_count = 4;
-  small_lookup.recomputed_result_digest = "small_result_digest:4";
-  small_lookup.recomputed_mga_security_digest =
-      "mga_security_digest:small_visible_4";
+  small_lookup.recomputed_payload = SmallPayload();
   ApplyBinding(&small_lookup, MakeCacheBinding());
   const auto small_hit = cache.Lookup(small_lookup);
   Require(small_hit.accepted && small_hit.cache_hit,
@@ -412,6 +449,7 @@ void ProveRowCountMismatchInvalidatesBeforeHit() {
   cache.Store(CandidateStoreRequest());
   auto lookup = CandidateLookupRequest();
   lookup.row_count = 31;
+  lookup.recomputed_payload = CandidatePayload(31);
   const auto decision = cache.Lookup(lookup);
   Require(decision.accepted && !decision.fail_closed,
           "row-count mismatch should recompute, not fail closed");
@@ -430,7 +468,8 @@ void ProveMismatchInvalidatesBeforeHit() {
   SnapshotSafeResultCache cache;
   cache.Store(CandidateStoreRequest());
   auto lookup = CandidateLookupRequest();
-  lookup.recomputed_mga_security_digest = "mga_security_digest:changed";
+  lookup.recomputed_payload->candidates.front().security_decision =
+      exec::CanonicalMgaSecurityDecision::kDenied;
   const auto decision = cache.Lookup(lookup);
   Require(decision.accepted && !decision.fail_closed,
           "digest mismatch should recompute, not fail closed");
@@ -438,7 +477,7 @@ void ProveMismatchInvalidatesBeforeHit() {
   Require(decision.action == SnapshotSafeCacheAction::kInvalidateRecompute,
           "digest mismatch did not invalidate");
   Require(HasEvidence(decision.evidence,
-                      "snapshot_cache_recompute_mga_security_match=false"),
+                      "snapshot_cache_recompute_result_match=false"),
           "missing mismatch evidence");
   Require(HasEvidence(decision.evidence, "snapshot_cache_invalidated=true"),
           "missing invalidation evidence");
@@ -554,7 +593,7 @@ void ProveEligibilityAndRecomputeProofRequired() {
 
   cache.Store(CandidateStoreRequest());
   auto missing_recompute = CandidateLookupRequest();
-  missing_recompute.recomputed_result_digest.clear();
+  missing_recompute.recomputed_payload.reset();
   const auto missing = cache.Lookup(missing_recompute);
   Require(!missing.accepted && missing.fail_closed,
           "missing recompute proof must refuse");

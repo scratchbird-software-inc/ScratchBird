@@ -1,3 +1,5 @@
+#include "../support/engine_evidence_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -69,29 +71,29 @@ struct UuidFactory {
     return typed.value;
   }
 
-  std::string Text(platform::UuidKind kind, platform::u64 salt) const {
-    return uuid::UuidToString(Typed(kind, salt).value);
+  platform::Uuid Identity(platform::UuidKind kind, platform::u64 salt) const {
+    return Typed(kind, salt).value;
   }
 };
 
 struct TestIds {
-  std::string database;
-  std::string table;
-  std::string index;
-  std::string generation;
-  std::string principal;
-  std::string session;
-  std::string transaction;
+  platform::Uuid database;
+  platform::Uuid table;
+  platform::Uuid index;
+  platform::Uuid generation;
+  platform::Uuid principal;
+  platform::Uuid session;
+  platform::Uuid transaction;
 };
 
 TestIds MakeIds(const UuidFactory& uuids, platform::u64 salt) {
-  return {uuids.Text(platform::UuidKind::database, salt + 1),
-          uuids.Text(platform::UuidKind::object, salt + 2),
-          uuids.Text(platform::UuidKind::object, salt + 3),
-          uuids.Text(platform::UuidKind::object, salt + 4),
-          uuids.Text(platform::UuidKind::principal, salt + 5),
-          uuids.Text(platform::UuidKind::session, salt + 6),
-          uuids.Text(platform::UuidKind::transaction, salt + 7)};
+  return {uuids.Identity(platform::UuidKind::database, salt + 1),
+          uuids.Identity(platform::UuidKind::object, salt + 2),
+          uuids.Identity(platform::UuidKind::object, salt + 3),
+          uuids.Identity(platform::UuidKind::object, salt + 4),
+          uuids.Identity(platform::UuidKind::principal, salt + 5),
+          uuids.Identity(platform::UuidKind::session, salt + 6),
+          uuids.Identity(platform::UuidKind::transaction, salt + 7)};
 }
 
 api::EngineRequestContext Context(const TestIds& ids,
@@ -100,10 +102,10 @@ api::EngineRequestContext Context(const TestIds& ids,
   api::EngineRequestContext context;
   context.security_context_present = security_context_present;
   context.request_id = "dpc066-security-privilege";
-  context.database_uuid.canonical = ids.database;
-  context.principal_uuid.canonical = ids.principal;
-  context.session_uuid.canonical = ids.session;
-  context.transaction_uuid.canonical = ids.transaction;
+  context.database_uuid = ids.database;
+  context.principal_uuid = ids.principal;
+  context.session_uuid = ids.session;
+  context.transaction_uuid = ids.transaction;
   context.local_transaction_id = 66;
   context.snapshot_visible_through_local_transaction_id = 66;
   context.catalog_generation_id = 1066;
@@ -136,6 +138,12 @@ void AddOption(api::EngineApiRequest* request, std::string key, std::string valu
   request->option_envelopes.push_back(std::move(key) + ":" + std::move(value));
 }
 
+void AddOption(api::EngineApiRequest* request, std::string key,
+               const platform::Uuid& value) {
+  request->option_envelopes.push_back(std::move(key) + ":" +
+      std::string(reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()));
+}
+
 api::EngineIndexManagementRequest IndexRequest(const TestIds& ids,
                                                std::string operation_id,
                                                std::vector<std::string> tags,
@@ -143,8 +151,8 @@ api::EngineIndexManagementRequest IndexRequest(const TestIds& ids,
   api::EngineIndexManagementRequest request;
   request.context = Context(ids, std::move(tags), security_context_present);
   request.operation_id = std::move(operation_id);
-  request.target_database.uuid.canonical = ids.database;
-  request.target_object.uuid.canonical = ids.index;
+  request.target_database.uuid = ids.database;
+  request.target_object.uuid = ids.index;
   request.target_object.object_kind = "index";
   AddOption(&request, "database_uuid", ids.database);
   AddOption(&request, "table_uuid", ids.table);
@@ -167,6 +175,16 @@ void AddOperand(engine_sblr::SblrOperationEnvelope* envelope,
                 std::string name,
                 std::string value) {
   envelope->operands.push_back({"text", std::move(name), std::move(value)});
+}
+
+void AddOperand(engine_sblr::SblrOperationEnvelope* envelope,
+                std::string name, const platform::Uuid& value) {
+  engine_sblr::SblrOperand operand;
+  operand.type = "uuid_ref";
+  operand.name = std::move(name);
+  operand.value_kind = engine_sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(value.bytes.begin(), value.bytes.end());
+  envelope->operands.push_back(std::move(operand));
 }
 
 std::string OpcodeFor(std::string_view operation_id) {
@@ -200,9 +218,9 @@ engine_sblr::SblrOperationEnvelope IndexEnvelope(const TestIds& ids,
           "DPC-066 SBLR registry operation is unavailable");
   envelope.opcode_code = registry->code;
   envelope.parser_package_uuid =
-      "12345678-1234-7000-8000-000000000031";
+      scratchbird::tests::FixtureUuidLiteral("12345678-1234-7000-8000-000000000031");
   envelope.registry_snapshot_uuid =
-      "12345678-1234-7000-8000-000000000032";
+      scratchbird::tests::FixtureUuidLiteral("12345678-1234-7000-8000-000000000032");
   envelope.parser_resolved_names_to_uuids = true;
   const auto literal_type_uuid =
       uuid::ParseUuid("12345678-1234-7000-8000-000000000051");
@@ -297,7 +315,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) {
       return true;
     }
   }

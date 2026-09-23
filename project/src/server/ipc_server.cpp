@@ -1,3 +1,5 @@
+#include "../wire/projection_fields.hpp"
+#include "../wire/parser_server_ipc/public_relation_projection_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -9,6 +11,10 @@
 // SEARCH_KEY: SB_SERVER_IPC_FOUNDATION_ENDPOINT
 
 #include "ipc_server.hpp"
+#include "../core/uuid/uuid.hpp"
+#include "engine/internal_api/mga_relation_store/mga_metadata_record_codec.hpp"
+#include <set>
+#include <stdexcept>
 #include "../wire/parser_server_ipc/binary_identity_io.hpp"
 
 #include "parser_server_event_frame_dispatcher.hpp"
@@ -580,29 +586,37 @@ std::uint32_t EventSchemaFor(std::uint16_t message_type) {
   return sbps::kSchemaNone;
 }
 
-std::vector<std::pair<std::string, std::string>> DecodeEventFieldPayload(
+std::optional<ParserServerEventFields> DecodeEventFieldPayload(
     const std::vector<std::uint8_t>& payload) {
-  std::vector<std::pair<std::string, std::string>> fields;
-  if (payload.size() < 2) return fields;
+  ParserServerEventFields fields;
+  if (payload.size() < 2) return std::nullopt;
   std::size_t offset = 0;
   const auto count = GetU16(payload, offset);
   offset += 2;
+  std::set<std::string> keys;
   for (std::uint16_t i = 0; i < count; ++i) {
     std::string key;
     std::string value;
-    if (!ReadString(payload, &offset, &key) || !ReadString(payload, &offset, &value)) {
-      fields.clear();
-      return fields;
+    if (!ReadString(payload, &offset, &key) || !ReadString(payload, &offset, &value) ||
+        key.empty() || !keys.insert(key).second) return std::nullopt;
+    if (key.ends_with("_uuid")) {
+      ParserServerEventUuidRef id;
+      if (value.size() != id.bytes.size()) return std::nullopt;
+      std::copy(value.begin(), value.end(), id.bytes.begin());
+      if (!id.is_nil() && !scratchbird::core::uuid::IsEngineIdentityUuid(id)) return std::nullopt;
+      fields.emplace_back(std::move(key), id);
+    } else {
+      fields.emplace_back(std::move(key), std::move(value));
     }
-    fields.push_back({std::move(key), std::move(value)});
   }
+  if (offset != payload.size()) return std::nullopt;
   return fields;
 }
 
 std::vector<std::uint8_t> EncodeEventFieldPayload(
-    const std::vector<std::pair<std::string, std::string>>& fields,
+    const ParserServerEventFields& fields,
     const std::vector<ParserServerMessageVector>& vectors = {}) {
-  std::vector<std::pair<std::string, std::string>> all = fields;
+  ParserServerEventFields all = fields;
   for (const auto& vector : vectors) {
     all.push_back({"message_class", vector.message_class});
     all.push_back({"diagnostic_code", vector.diagnostic_code});
@@ -612,11 +626,20 @@ std::vector<std::uint8_t> EncodeEventFieldPayload(
       all.push_back({"message_vector." + field.first, field.second});
     }
   }
+  if (all.size() > UINT16_MAX) throw std::length_error("event_field_count_limit");
   std::vector<std::uint8_t> out;
   PutU16(&out, static_cast<std::uint16_t>(all.size()));
   for (const auto& field : all) {
+    if (field.first.size() > UINT16_MAX) throw std::length_error("event_field_name_limit");
     PutString(&out, field.first);
-    PutString(&out, field.second);
+    if (const auto* id = std::get_if<ParserServerEventUuidRef>(&field.second)) {
+      PutU16(&out, static_cast<std::uint16_t>(id->bytes.size()));
+      out.insert(out.end(), id->bytes.begin(), id->bytes.end());
+    } else {
+      const auto& value = std::get<std::string>(field.second);
+      if (value.size() > UINT16_MAX) throw std::length_error("event_field_value_limit");
+      PutString(&out, value);
+    }
   }
   return out;
 }
@@ -636,7 +659,7 @@ ParserServerEventEngineContext EventEngineContextFromSession(
   context.trust_mode = session.embedded_in_process
                            ? ParserServerEventTrustMode::embedded_in_process
                            : ParserServerEventTrustMode::server_isolated;
-  context.request_id = UuidBytesToText(request.header.request_uuid);
+  context.request_id.assign(reinterpret_cast<const char*>(request.header.request_uuid.data()), request.header.request_uuid.size());
   context.database_path = session.database_path;
   context.database_uuid = session.database_uuid;
   if (context.database_path.empty()) {
@@ -706,8 +729,8 @@ std::optional<ParserServerEventSession> EventSessionFromFrame(
   if (!session) return std::nullopt;
   ParserServerEventSession event_session;
   event_session.parser_channel_uuid = sbps::IsZeroUuid(request.header.connection_uuid)
-                                          ? UuidBytesToText(request.header.session_uuid)
-                                          : UuidBytesToText(request.header.connection_uuid);
+                                          ? ParserServerEventUuidRef{request.header.session_uuid}
+                                          : ParserServerEventUuidRef{request.header.connection_uuid};
   event_session.engine_context = EventEngineContextFromSession(*session, engine_state, request);
   event_session.session_bound = true;
   event_session.draining =
@@ -766,7 +789,7 @@ bool PumpEventNotifications(IpcSocketHandle client_fd,
   ParserServerEventIpcRuntime runtime(event_router);
   ParserServerEventFrameDispatcher dispatcher(&runtime);
   PsEventDeliveryPumpRequest pump;
-  pump.request_uuid = UuidBytesToText(request.header.request_uuid);
+  pump.request_uuid = ParserServerEventUuidRef{request.header.request_uuid};
   pump.session = *event_session;
   pump.max_events = 64;
   const auto dispatch = dispatcher.PumpCommittedEvents(pump);
@@ -790,9 +813,17 @@ bool HandleEventFrame(IpcSocketHandle client_fd,
   }
   ParserServerEventFrame event_frame;
   event_frame.message_type = static_cast<ParserServerEventMessageType>(request.header.message_type);
-  event_frame.request_uuid = UuidBytesToText(request.header.request_uuid);
+  event_frame.request_uuid = ParserServerEventUuidRef{request.header.request_uuid};
   event_frame.session = *event_session;
-  event_frame.fields = DecodeEventFieldPayload(request.payload);
+  const auto event_fields = DecodeEventFieldPayload(request.payload);
+  if (!event_fields) {
+    WriteAll(client_fd, ErrorFrame({sbps::IpcDiagnostic(
+        "PARSER_SERVER_IPC.INVALID_EVENT_FIELDS", "parser_server_ipc.invalid_event_fields",
+        "Event payload requires complete fields and binary16 identities.")},
+        request.header.request_uuid, request.header.sequence_number));
+    return false;
+  }
+  event_frame.fields = *event_fields;
   ParserServerEventIpcRuntime runtime(event_router);
   ParserServerEventFrameDispatcher dispatcher(&runtime);
   const auto dispatch = dispatcher.DispatchParserFrame(event_frame);
@@ -948,31 +979,6 @@ std::array<std::uint8_t, 16> PsNameGetUuid(const std::vector<std::uint8_t>& data
   return uuid;
 }
 
-int PsNameHexValue(char ch) {
-  if (ch >= '0' && ch <= '9') return ch - '0';
-  if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-  if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-  return -1;
-}
-
-std::optional<std::array<std::uint8_t, 16>> PsNameUuidFromText(std::string_view text) {
-  std::array<std::uint8_t, 16> uuid{};
-  std::size_t nibble = 0;
-  for (char ch : text) {
-    if (ch == '-') continue;
-    const int value = PsNameHexValue(ch);
-    if (value < 0 || nibble >= 32) return std::nullopt;
-    if ((nibble % 2) == 0) {
-      uuid[nibble / 2] = static_cast<std::uint8_t>(value << 4);
-    } else {
-      uuid[nibble / 2] = static_cast<std::uint8_t>(uuid[nibble / 2] | value);
-    }
-    ++nibble;
-  }
-  if (nibble != 32) return std::nullopt;
-  return uuid;
-}
-
 std::optional<std::array<std::uint8_t, 16>> PsNameUuidFromIdentity(
     const engine_api::EngineUuid& identity) {
   if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity)) {
@@ -1104,7 +1110,7 @@ engine_api::EngineRequestContext PsNameEngineContextFromSession(
   context.trust_mode = session.embedded_in_process
                            ? engine_api::EngineTrustMode::embedded_in_process
                            : engine_api::EngineTrustMode::server_isolated;
-  context.request_id = UuidBytesToText(frame.header.request_uuid);
+  context.request_id.assign(reinterpret_cast<const char*>(frame.header.request_uuid.data()), frame.header.request_uuid.size());
   context.database_path = session.database_path;
   context.database_uuid = session.database_uuid;
   if (context.database_path.empty()) {
@@ -1189,6 +1195,7 @@ std::string PsNameCanonicalIdentifierProfile(std::string value) {
   if (value.empty() || value == "default" || value == "native" || value == "sbsql" ||
       value == "embedded" || value == "local_ipc" || value == "local-ipc" ||
       value == "inet" || value == "inet_listener" || value == "managed" ||
+      value == "sbsql.syntax.standard" ||
       value == "sif.test") {
     return "sbsql_v3";
   }
@@ -1250,14 +1257,14 @@ bool PsNameRegistryMatchVisibleForSession(
 
 bool PsNameResolutionCacheable(const engine_api::EngineRequestContext& context,
                                std::string_view object_class,
-                               std::string_view object_uuid) {
-  if (object_uuid.empty()) return false;
+                               const engine_api::EngineUuid& object_uuid) {
+  if (object_uuid.is_nil()) return false;
   if (object_class == "charset" || object_class == "collation") return false;
   if (object_class != "table" && object_class != "relation") {
     return true;
   }
   const auto visibility =
-      engine_api::CheckMgaTemporaryTableVisibility(context, std::string(object_uuid));
+      engine_api::CheckMgaTemporaryTableVisibility(context, object_uuid);
   if (!visibility.ok) return false;
   if (visibility.hidden_by_temporary_visibility) return false;
   if (visibility.known_temporary) return false;
@@ -1276,7 +1283,7 @@ bool PsNameRelationLikeObjectClass(std::string_view object_class) {
 bool PsNameStableResolutionCacheable(
     const engine_api::EngineRequestContext& context,
     std::string_view object_class,
-    std::string_view object_uuid) {
+    const engine_api::EngineUuid& object_uuid) {
   return PsNameRelationLikeObjectClass(object_class) &&
          PsNameResolutionCacheable(context, object_class, object_uuid);
 }
@@ -1309,7 +1316,7 @@ struct PsNameResolveRequest {
   std::array<std::uint8_t, 16> session_uuid{};
   std::string presented_name;
   bool quoted = false;
-  std::string dialect_profile;
+  scratchbird::core::platform::Uuid dialect_profile;
   std::string language;
   std::string search_path;
   std::string object_class;
@@ -1356,8 +1363,8 @@ std::optional<PsNameResolveRequest> DecodePsNameResolveRequest(
   const std::uint8_t quoted = payload[offset++];
   if (v3 && quoted > 1) return std::nullopt;
   request.quoted = quoted != 0;
-  if (!read_request_string(&request.dialect_profile,
-                           kMaxPsRelationMetadataTextBytes) ||
+  if (!scratchbird::wire::parser_server_ipc::ReadEngineIdentityUuid(
+          payload, &offset, &request.dialect_profile) ||
       !read_request_string(&request.language,
                            kMaxPsRelationMetadataTextBytes) ||
       !read_request_string(&request.search_path,
@@ -1433,7 +1440,7 @@ void WritePsNameResolutionTrace(const PsNameResolveRequest& request,
                                 const ServerSessionRecord* session,
                                 std::string_view outcome,
                                 std::string_view detail,
-                                std::string_view object_uuid,
+                                const engine_api::EngineUuid& object_uuid,
                                 std::string_view object_class,
                                 std::string_view cache_key,
                                 std::string_view stable_cache_key,
@@ -1447,80 +1454,64 @@ void WritePsNameResolutionTrace(const PsNameResolveRequest& request,
   if (trace_path == nullptr || *trace_path == '\0') return;
   std::ofstream out(trace_path, std::ios::app | std::ios::binary);
   if (!out) return;
-  out << "layer=server_public_name_resolution"
-      << "\toutcome=" << outcome
-      << "\tdetail=" << PsNameTraceField(detail)
-      << "\tpresented=" << PsNameTraceField(request.presented_name)
-      << "\tclass=" << PsNameTraceField(request.object_class)
-      << "\tresolved_class=" << PsNameTraceField(object_class)
-      << "\tobject_uuid=" << PsNameTraceField(object_uuid)
-      << "\tcache_key=" << PsNameTraceField(cache_key)
-      << "\tstable_cache_key=" << PsNameTraceField(stable_cache_key)
-      << "\tquoted=" << (request.quoted ? "true" : "false")
-      << "\tbypass_cache=" << (request.bypass_cache ? "true" : "false")
-      << "\tdialect=" << PsNameTraceField(request.dialect_profile)
-      << "\tlanguage=" << PsNameTraceField(request.language)
-      << "\tsearch_path=" << PsNameTraceField(request.search_path)
-      << "\tnormal_cache_checked=" << (normal_cache_checked ? "true" : "false")
-      << "\tnormal_cache_hit=" << (normal_cache_hit ? "true" : "false")
-      << "\tstable_cache_checked=" << (stable_cache_checked ? "true" : "false")
-      << "\tstable_cache_hit=" << (stable_cache_hit ? "true" : "false")
-      << "\tstable_cache_entries="
-      << (registry == nullptr ? 0 : registry->stable_public_name_resolution_cache_by_key.size())
-      << "\tnormal_cache_entries="
-      << (registry == nullptr ? 0 : registry->public_name_resolution_cache_by_key.size())
-      << "\telapsed_us=" << elapsed_us;
-  if (session != nullptr) {
-    out << "\tdatabase_uuid=" << PsNameTraceField(session->database_uuid)
-        << "\tuser_uuid=" << UuidBytesToText(session->effective_user_uuid)
-        << "\tcatalog_generation=" << session->catalog_generation
-        << "\tdescriptor_epoch=" << session->descriptor_epoch
-        << "\tname_resolution_epoch=" << session->name_resolution_epoch
-        << "\tsecurity_epoch=" << session->security_epoch
-        << "\tgrant_epoch=" << session->grant_epoch
-        << "\tpolicy_generation=" << session->policy_generation
-        << "\trole_hash=" << PsNameTraceField(session->role_set_hash)
-        << "\tgroup_hash=" << PsNameTraceField(session->group_set_hash)
-        << "\tsearch_path_hash=" << PsNameTraceField(session->search_path_hash)
-        << "\tlanguage_tag=" << PsNameTraceField(session->language_tag)
-        << "\tdefault_language_tag=" << PsNameTraceField(session->default_language_tag);
-  }
-  out << '\n';
+  const auto bytes = engine_api::EncodeMgaMetadataFields({
+      "ps.name.resolution.trace.v2",
+      std::string(outcome),
+      std::string(detail),
+      request.presented_name,
+      request.object_class,
+      std::string(object_class),
+      engine_api::MetadataUuidBytes(object_uuid),
+      std::string(cache_key),
+      std::string(stable_cache_key),
+      request.quoted ? "1" : "0",
+      request.bypass_cache ? "1" : "0",
+      engine_api::MetadataUuidBytes(request.dialect_profile),
+      request.language,
+      request.search_path,
+      normal_cache_checked ? "1" : "0",
+      normal_cache_hit ? "1" : "0",
+      stable_cache_checked ? "1" : "0",
+      stable_cache_hit ? "1" : "0",
+      std::to_string(elapsed_us),
+      session ? engine_api::MetadataUuidBytes(session->database_uuid) : std::string{},
+      session ? std::string(reinterpret_cast<const char*>(session->effective_user_uuid.data()), session->effective_user_uuid.size()) : std::string{}});
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
 std::string PsNameResolutionCacheKey(const ServerSessionRecord& session,
                                      const PsNameResolveRequest& request,
                                      std::string_view identifier_profile) {
-  std::ostringstream key;
-  key << "db=" << session.database_uuid
-      << "|user=" << UuidBytesToText(session.effective_user_uuid)
-      << "|presented=" << request.presented_name
-      << "|quoted=" << (request.quoted ? "1" : "0")
-      << "|class=" << request.object_class
-      << "|dialect=" << request.dialect_profile
-      << "|identifier_profile=" << identifier_profile
-      << "|request_language=" << request.language
-      << "|request_search_path=" << request.search_path
-      << "|catalog=" << session.catalog_generation
-      << "|security=" << session.security_epoch
-      << "|descriptor=" << session.descriptor_epoch
-      << "|grant=" << session.grant_epoch
-      << "|policy=" << session.policy_generation
-      << "|name_resolution=" << session.name_resolution_epoch
-      << "|role_hash=" << session.role_set_hash
-      << "|group_hash=" << session.group_set_hash
-      << "|search_path_hash=" << session.search_path_hash
-      << "|language_profile=" << session.language_profile
-      << "|language_tag=" << session.language_tag
-      << "|input_syntax=" << session.input_syntax_profile
-      << "|input_fallback=" << session.input_language_fallback_tag
-      << "|common_resource=" << session.common_resource_hash
-      << "|language_resource=" << session.language_resource_epoch
-      << "|localized_name=" << session.localized_name_epoch
-      << "|message_resource=" << session.message_resource_epoch
-      << "|resource_compat=" << session.resource_compatibility_identity
-      << "|resource_version=" << session.resource_version_identity;
-  return key.str();
+  return engine_api::EncodeMgaMetadataFields({
+      "ps.name.cache.v2",
+      engine_api::MetadataUuidBytes(session.database_uuid),
+      std::string(reinterpret_cast<const char*>(session.effective_user_uuid.data()), session.effective_user_uuid.size()),
+      request.presented_name,
+      request.quoted ? "1" : "0",
+      request.object_class,
+      engine_api::MetadataUuidBytes(request.dialect_profile),
+      std::string(identifier_profile),
+      request.language,
+      request.search_path,
+      std::to_string(session.catalog_generation),
+      std::to_string(session.security_epoch),
+      std::to_string(session.descriptor_epoch),
+      std::to_string(session.grant_epoch),
+      std::to_string(session.policy_generation),
+      std::to_string(session.name_resolution_epoch),
+      session.role_set_hash,
+      session.group_set_hash,
+      session.search_path_hash,
+      session.language_profile,
+      session.language_tag,
+      session.input_syntax_profile,
+      session.input_language_fallback_tag,
+      session.common_resource_hash,
+      std::to_string(session.language_resource_epoch),
+      std::to_string(session.localized_name_epoch),
+      std::to_string(session.message_resource_epoch),
+      session.resource_compatibility_identity,
+      session.resource_version_identity});
 }
 
 std::string PsNameStableResolutionCacheKey(const ServerSessionRecord& session,
@@ -1529,40 +1520,38 @@ std::string PsNameStableResolutionCacheKey(const ServerSessionRecord& session,
   const bool qualified = request.presented_name.find('.') != std::string_view::npos;
   const std::string_view stable_search_path_hash =
       qualified ? std::string_view("<qualified>") : std::string_view(session.search_path_hash);
-  std::ostringstream key;
-  key << "stable_relation_v1"
-      << "|db=" << session.database_uuid
-      << "|user=" << UuidBytesToText(session.effective_user_uuid)
-      << "|presented=" << request.presented_name
-      << "|quoted=" << (request.quoted ? "1" : "0")
-      << "|class=" << request.object_class
-      << "|dialect=" << request.dialect_profile
-      << "|identifier_profile=" << identifier_profile
-      << "|request_language=" << request.language
-      << "|request_search_path=" << (qualified ? std::string_view("<qualified>")
-                                               : std::string_view(request.search_path))
-      << "|security=" << session.security_epoch
-      << "|grant=" << session.grant_epoch
-      << "|policy=" << session.policy_generation
-      << "|role_hash=" << session.role_set_hash
-      << "|group_hash=" << session.group_set_hash
-      << "|search_path_hash=" << stable_search_path_hash
-      << "|language_profile=" << session.language_profile
-      << "|language_tag=" << session.language_tag
-      << "|input_syntax=" << session.input_syntax_profile
-      << "|input_fallback=" << session.input_language_fallback_tag
-      << "|common_resource=" << session.common_resource_hash
-      << "|language_resource=" << session.language_resource_epoch
-      << "|localized_name=" << session.localized_name_epoch
-      << "|message_resource=" << session.message_resource_epoch
-      << "|resource_compat=" << session.resource_compatibility_identity
-      << "|resource_version=" << session.resource_version_identity;
-  return key.str();
+  return engine_api::EncodeMgaMetadataFields({
+      "ps.name.stable.cache.v2",
+      engine_api::MetadataUuidBytes(session.database_uuid),
+      std::string(reinterpret_cast<const char*>(session.effective_user_uuid.data()), session.effective_user_uuid.size()),
+      request.presented_name,
+      request.quoted ? "1" : "0",
+      request.object_class,
+      engine_api::MetadataUuidBytes(request.dialect_profile),
+      std::string(identifier_profile),
+      request.language,
+      qualified ? std::string("<qualified>") : request.search_path,
+      std::to_string(session.security_epoch),
+      std::to_string(session.grant_epoch),
+      std::to_string(session.policy_generation),
+      session.role_set_hash,
+      session.group_set_hash,
+      std::string(stable_search_path_hash),
+      session.language_profile,
+      session.language_tag,
+      session.input_syntax_profile,
+      session.input_language_fallback_tag,
+      session.common_resource_hash,
+      std::to_string(session.language_resource_epoch),
+      std::to_string(session.localized_name_epoch),
+      std::to_string(session.message_resource_epoch),
+      session.resource_compatibility_identity,
+      session.resource_version_identity});
 }
 
 bool PsNameCachedRecordValid(const ServerPublicNameResolutionCacheRecord& record,
                              const ServerSessionRecord& session) {
-  return !record.object_uuid.empty() &&
+  return !record.object_uuid.is_nil() &&
          record.database_uuid == session.database_uuid &&
          record.effective_user_uuid == session.effective_user_uuid &&
          record.catalog_generation == session.catalog_generation &&
@@ -1589,7 +1578,7 @@ bool PsNameCachedRecordValid(const ServerPublicNameResolutionCacheRecord& record
 bool PsNameStableCachedRecordValid(
     const ServerPublicNameResolutionCacheRecord& record,
     const ServerSessionRecord& session) {
-  return !record.object_uuid.empty() &&
+  return !record.object_uuid.is_nil() &&
          record.database_uuid == session.database_uuid &&
          record.effective_user_uuid == session.effective_user_uuid &&
          record.security_epoch == session.security_epoch &&
@@ -1670,12 +1659,12 @@ std::optional<ServerPublicNameResolutionCacheRecord> LookupPsNameStableCache(
 void StorePsNameCache(ServerSessionRegistry* registry,
                       const ServerSessionRecord& session,
                       const std::string& cache_key,
-                      std::string_view object_uuid,
+                      const engine_api::EngineUuid& object_uuid,
                       std::string_view canonical_name,
                       std::string_view object_class,
                       std::uint64_t catalog_epoch,
                       std::uint64_t security_epoch) {
-  if (registry == nullptr || cache_key.empty() || object_uuid.empty()) return;
+  if (registry == nullptr || cache_key.empty() || object_uuid.is_nil()) return;
   (void)catalog_epoch;
   (void)security_epoch;
   constexpr std::size_t kMaxServerPublicNameResolutionCacheEntries = 8192;
@@ -1683,9 +1672,8 @@ void StorePsNameCache(ServerSessionRegistry* registry,
   record.cache_key = cache_key;
   record.effective_user_uuid = session.effective_user_uuid;
   record.database_uuid = session.database_uuid;
-  record.object_uuid = std::string(object_uuid);
-  record.canonical_name = canonical_name.empty() ? std::string(object_uuid)
-                                                 : std::string(canonical_name);
+  record.object_uuid = object_uuid;
+  record.canonical_name = std::string(canonical_name);
   record.object_class = std::string(object_class);
   record.catalog_generation = session.catalog_generation;
   record.security_epoch = session.security_epoch;
@@ -1726,19 +1714,18 @@ void StorePsNameCache(ServerSessionRegistry* registry,
 void StorePsNameStableCache(ServerSessionRegistry* registry,
                             const ServerSessionRecord& session,
                             const std::string& cache_key,
-                            std::string_view object_uuid,
+                            const engine_api::EngineUuid& object_uuid,
                             std::string_view canonical_name,
                             std::string_view object_class,
                             std::string_view search_path_hash) {
-  if (registry == nullptr || cache_key.empty() || object_uuid.empty()) return;
+  if (registry == nullptr || cache_key.empty() || object_uuid.is_nil()) return;
   constexpr std::size_t kMaxServerStablePublicNameResolutionCacheEntries = 8192;
   ServerPublicNameResolutionCacheRecord record;
   record.cache_key = cache_key;
   record.effective_user_uuid = session.effective_user_uuid;
   record.database_uuid = session.database_uuid;
-  record.object_uuid = std::string(object_uuid);
-  record.canonical_name = canonical_name.empty() ? std::string(object_uuid)
-                                                 : std::string(canonical_name);
+  record.object_uuid = object_uuid;
+  record.canonical_name = std::string(canonical_name);
   record.object_class = std::string(object_class);
   record.catalog_generation = session.catalog_generation;
   record.security_epoch = session.security_epoch;
@@ -1782,12 +1769,12 @@ void StorePsNameCacheVariants(ServerSessionRegistry* registry,
                               const PsNameResolveRequest& request,
                               std::string_view identifier_profile,
                               const engine_api::EngineRequestContext& context,
-                              std::string_view object_uuid,
+                              const engine_api::EngineUuid& object_uuid,
                               std::string_view canonical_name,
                               std::string_view object_class,
                               std::uint64_t catalog_epoch,
                               std::uint64_t security_epoch) {
-  if (registry == nullptr || object_uuid.empty()) return;
+  if (registry == nullptr || object_uuid.is_nil()) return;
   std::vector<PsNameResolveRequest> requests;
   requests.push_back(request);
   if (!object_class.empty() && object_class != request.object_class) {
@@ -1878,6 +1865,8 @@ struct PsPublicRelationColumnProjection {
   std::string type_descriptor_kind;
   std::string canonical_type_name;
   std::string encoded_type_descriptor;
+  parser::ipc::PublicRelationTypeShapeV1 type_shape;
+  core::platform::Uuid datatype_descriptor_uuid;
   bool nullable = true;
   bool generated = false;
   bool identity_column = false;
@@ -2091,6 +2080,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
         source.value_descriptor.canonical_type_name;
     column.encoded_type_descriptor =
         source.value_descriptor.encoded_descriptor;
+    column.datatype_descriptor_uuid = source.value_descriptor.datatype_descriptor_uuid;
     column.nullable = source.nullable;
     column.generated = source.generated;
     column.identity_column = source.identity_column;
@@ -2287,59 +2277,77 @@ EncodePsNameResolvePayloadV3(
   PsNamePutU8(&payload, relation_projection == nullptr ? 0 : 1);
   if (relation_projection == nullptr) return payload;
 
-  std::vector<std::uint8_t> extension;
-  PsNamePutUuid(&extension, relation_projection->descriptor_uuid);
-  PsNamePutUuid(&extension, relation_projection->relation_uuid);
-  PsNamePutUuid(&extension, relation_projection->schema_uuid);
-  PsNamePutU64(&extension, relation_projection->descriptor_generation);
-  PsNamePutU64(&extension, relation_projection->validated_resource_epoch);
-  PsNamePutUuid(&extension,
-                relation_projection->datatype_catalog_snapshot_uuid);
-  PsNamePutU64(&extension,
-               relation_projection->datatype_catalog_generation);
-  PsNamePutU64(&extension,
-               relation_projection->datatype_registry_generation);
-  PsNamePutU32(
-      &extension,
-      static_cast<std::uint32_t>(relation_projection->columns.size()));
+  parser::ipc::PublicRelationProjectionV4 projection;
+  projection.descriptor_uuid = core::platform::Uuid{relation_projection->descriptor_uuid};
+  projection.relation_uuid = core::platform::Uuid{relation_projection->relation_uuid};
+  projection.schema_uuid = core::platform::Uuid{relation_projection->schema_uuid};
+  projection.datatype_catalog_snapshot_uuid = core::platform::Uuid{relation_projection->datatype_catalog_snapshot_uuid};
+  projection.descriptor_generation = relation_projection->descriptor_generation;
+  projection.validated_resource_epoch = relation_projection->validated_resource_epoch;
+  projection.datatype_catalog_generation = relation_projection->datatype_catalog_generation;
+  projection.datatype_registry_generation = relation_projection->datatype_registry_generation;
   for (const auto& column : relation_projection->columns) {
-    PsNamePutUuid(&extension, column.column_uuid);
-    PsNamePutU32(&extension, column.ordinal);
-    PsNamePutString(&extension, column.canonical_name_key);
-    PsNamePutUuid(&extension, column.type_descriptor_uuid);
-    PsNamePutString(&extension, column.type_descriptor_kind);
-    PsNamePutString(&extension, column.canonical_type_name);
-    PsNamePutString(&extension, column.encoded_type_descriptor);
-    std::uint8_t attributes = 0;
-    if (column.nullable) attributes |= 0x01u;
-    if (column.generated) attributes |= 0x02u;
-    if (column.identity_column) attributes |= 0x04u;
-    if (column.charset_variable_width) attributes |= 0x08u;
-    PsNamePutU8(&extension, attributes);
-    PsNamePutUuid(&extension, column.charset_uuid);
-    PsNamePutString(&extension, column.charset_canonical_name);
-    PsNamePutUuid(&extension, column.collation_uuid);
-    PsNamePutString(&extension, column.collation_canonical_name);
-    PsNamePutU32(&extension, column.character_length);
-    PsNamePutU32(&extension, column.charset_min_bytes);
-    PsNamePutU32(&extension, column.charset_max_bytes);
-    PsNamePutU8(&extension, column.datatype_identity_present ? 1u : 0u);
-    if (column.datatype_identity_present) {
-      PsNamePutU64(&extension, column.datatype_descriptor_generation);
-      PsNamePutUuid(&extension, column.datatype_type_uuid);
-      PsNamePutU64(&extension, column.datatype_type_generation);
-      PsNamePutString(&extension, column.datatype_codec_id);
-      PsNamePutU16(&extension, column.datatype_codec_version);
-      PsNamePutU64(&extension, column.datatype_codec_generation);
-      PsNamePutU32(&extension, column.datatype_canonical_value_bytes);
-      PsNamePutU8(&extension, column.datatype_null_encoding);
-    }
-    if (extension.size() > kMaxPsRelationProjectionBytes) {
+    parser::ipc::PublicRelationProjectionColumnV4 target;
+    target.column_uuid = core::platform::Uuid{column.column_uuid};
+    target.ordinal = column.ordinal;
+    target.canonical_name = column.canonical_name_key;
+    target.descriptor_uuid = core::platform::Uuid{column.type_descriptor_uuid};
+    target.descriptor_kind = column.type_descriptor_kind;
+    target.canonical_type_name = column.canonical_type_name;
+    target.scalar_metadata = column.encoded_type_descriptor;
+    target.datatype_descriptor_uuid = column.datatype_descriptor_uuid;
+    target.nullable = column.nullable;
+    target.generated = column.generated;
+    target.identity_column = column.identity_column;
+    target.charset_uuid = core::platform::Uuid{column.charset_uuid};
+    target.charset_name = column.charset_canonical_name;
+    target.collation_uuid = core::platform::Uuid{column.collation_uuid};
+    target.collation_name = column.collation_canonical_name;
+    target.character_length = column.character_length;
+    target.charset_min_bytes = column.charset_min_bytes;
+    target.charset_max_bytes = column.charset_max_bytes;
+    target.charset_variable_width = column.charset_variable_width;
+    target.descriptor_generation = column.datatype_descriptor_generation;
+    target.type_uuid = core::platform::Uuid{column.datatype_type_uuid};
+    target.type_generation = column.datatype_type_generation;
+    target.codec_id = column.datatype_codec_id;
+    target.codec_version = column.datatype_codec_version;
+    target.codec_generation = column.datatype_codec_generation;
+    target.canonical_value_width = column.datatype_canonical_value_bytes;
+    target.null_encoding = column.datatype_null_encoding;
+    if (!parser::ipc::relation_projection_detail::ScalarMetadata(target.scalar_metadata))
       return std::nullopt;
+    // Descriptor shape is scalar metadata; identities are separate native fields.
+    std::string_view remaining = target.scalar_metadata;
+    while (!remaining.empty()) {
+      const auto delimiter = remaining.find(';');
+      const auto field = remaining.substr(0, delimiter);
+      const auto equal = field.find('=');
+      const auto key = field.substr(0, equal), value = field.substr(equal + 1);
+      std::optional<std::uint32_t>* number = nullptr;
+      if (key == "width") number = &target.shape.width;
+      else if (key == "precision") number = &target.shape.precision;
+      else if (key == "scale") number = &target.shape.scale;
+      if (number) {
+        std::uint32_t parsed = 0;
+        const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+        if (error != std::errc{} || end != value.data() + value.size()) return std::nullopt;
+        *number = parsed;
+      } else if (key == "timezone_profile_id") target.shape.timezone_profile_id = value;
+      else if (key == "nullable" && value != (column.nullable ? "true" : "false")) return std::nullopt;
+      else if (key == "nullability" && value != (column.nullable ? "nullable" : "non_null")) return std::nullopt;
+      if (delimiter == std::string_view::npos) break;
+      remaining.remove_prefix(delimiter + 1);
     }
+    if (target.shape.scale && (!target.shape.precision || *target.shape.scale > *target.shape.precision))
+      return std::nullopt;
+    projection.columns.push_back(std::move(target));
   }
-  PsNamePutU8(&payload, kPsRelationDescriptorExtensionKind);
-  PsNamePutU8(&payload, kPsRelationDescriptorExtensionVersion);
+  std::vector<std::uint8_t> extension;
+  if (!parser::ipc::EncodePublicRelationProjectionV4(projection,
+          kMaxPsRelationProjectionBytes, &extension)) return std::nullopt;
+  PsNamePutU8(&payload, parser::ipc::kPublicRelationProjectionKindV4);
+  PsNamePutU8(&payload, parser::ipc::kPublicRelationProjectionVersionV4);
   PsNamePutU32(&payload, static_cast<std::uint32_t>(extension.size()));
   payload.insert(payload.end(), extension.begin(), extension.end());
   return payload;
@@ -2358,17 +2366,6 @@ struct PsNameSemanticDetailResult {
 };
 
 // SB_SERVER_GLOBAL_AGGREGATE_VIEW_SEMANTIC_DETAIL_V1_BEGIN
-std::string PsNameHexEncode(std::string_view value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string encoded;
-  encoded.reserve(value.size() * 2u);
-  for (const unsigned char byte : value) {
-    encoded.push_back(kHex[(byte >> 4u) & 0x0fu]);
-    encoded.push_back(kHex[byte & 0x0fu]);
-  }
-  return encoded;
-}
-
 std::optional<std::string> EncodeGlobalAggregateViewSemanticDetail(
     const engine_api::EngineResolvedSemanticProjection& projection) {
   const auto expected_result =
@@ -2392,28 +2389,16 @@ std::optional<std::string> EncodeGlobalAggregateViewSemanticDetail(
     return std::nullopt;
   }
 
-  std::ostringstream packed;
-  packed << "gavs1|" << PsNameHexEncode(projection.marker) << '|'
-         << PsNameHexEncode(
-                projection.projection_descriptor.descriptor_uuid)
-         << '|' << projection.descriptor_generation << '|'
-         << PsNameHexEncode(
-                projection.projection_descriptor.descriptor_kind)
-         << '|'
-         << PsNameHexEncode(
-                projection.projection_descriptor.canonical_type_name)
-         << '|'
-         << PsNameHexEncode(
-                projection.projection_descriptor.encoded_descriptor)
-         << '|' << PsNameHexEncode(projection.result_alias) << '|'
-         << PsNameHexEncode(projection.result_descriptor.descriptor_kind)
-         << '|'
-         << PsNameHexEncode(
-                projection.result_descriptor.canonical_type_name)
-         << '|'
-         << PsNameHexEncode(
-                projection.result_descriptor.encoded_descriptor);
-  return packed.str();
+  namespace fields = scratchbird::wire::projection_fields;
+  return fields::Encode({"gavs1", projection.marker,
+      fields::Identity(projection.projection_descriptor.descriptor_uuid),
+      std::to_string(projection.descriptor_generation),
+      projection.projection_descriptor.descriptor_kind,
+      projection.projection_descriptor.canonical_type_name,
+      projection.projection_descriptor.encoded_descriptor,
+      projection.result_alias, projection.result_descriptor.descriptor_kind,
+      projection.result_descriptor.canonical_type_name,
+      projection.result_descriptor.encoded_descriptor});
 }
 
 std::optional<std::string> EncodeRelationProjectionViewSemanticDetail(
@@ -2436,7 +2421,7 @@ std::optional<std::string> EncodeRelationProjectionViewSemanticDetail(
     return std::nullopt;
   }
 
-  std::set<std::string> identities = {
+  std::set<engine_api::EngineUuid> identities = {
       projection.projection_descriptor.descriptor_uuid};
   std::set<std::string> names;
   for (std::size_t index = 0; index < projection.ordered_outputs.size();
@@ -2456,33 +2441,28 @@ std::optional<std::string> EncodeRelationProjectionViewSemanticDetail(
     }
   }
 
-  std::ostringstream packed;
-  packed << (v1 ? "rpvs1|" : "rpvd2|")
-         << PsNameHexEncode(projection.marker) << '|'
-         << PsNameHexEncode(
-                projection.projection_descriptor.descriptor_uuid)
-         << '|' << projection.descriptor_generation << '|'
-         << expected_output_count;
+  namespace fields = scratchbird::wire::projection_fields;
+  std::vector<std::string> packed = {
+      v1 ? "rpvs1" : "rpvd2", projection.marker,
+      fields::Identity(projection.projection_descriptor.descriptor_uuid),
+      std::to_string(projection.descriptor_generation),
+      std::to_string(expected_output_count)};
   for (const auto& output : projection.ordered_outputs) {
-    packed << '|' << output.ordinal << '|'
-           << PsNameHexEncode(output.output_name) << '|'
-           << PsNameHexEncode(output.output_column_uuid) << '|'
-           << PsNameHexEncode(
-                  output.output_type.type_descriptor_uuid)
-           << '|' << PsNameHexEncode(output.output_type.descriptor_kind)
-           << '|' << PsNameHexEncode(
-                  output.output_type.canonical_type_name)
-           << '|' << PsNameHexEncode(
-                  output.output_type.encoded_descriptor)
-           << '|' << PsNameHexEncode(output.nullable ? "1" : "0");
+    const std::vector<std::string> item = {
+        std::to_string(output.ordinal), output.output_name,
+        fields::Identity(output.output_column_uuid),
+        fields::Identity(output.output_type.type_descriptor_uuid),
+        output.output_type.descriptor_kind, output.output_type.canonical_type_name,
+        output.output_type.encoded_descriptor, output.nullable ? "1" : "0"};
+    packed.insert(packed.end(), item.begin(), item.end());
   }
-  return packed.str();
+  return fields::Encode(packed);
 }
 // SB_SERVER_GLOBAL_AGGREGATE_VIEW_SEMANTIC_DETAIL_V1_END
 
 PsNameSemanticDetailResult BuildPsNameSemanticDetail(
     const engine_api::EngineRequestContext& context,
-    std::string_view object_uuid,
+    const engine_api::EngineUuid& object_uuid,
     std::string_view object_class,
     std::string_view ordinary_detail,
     const engine_api::EngineResolvedSemanticProjection*
@@ -2521,7 +2501,7 @@ PsNameSemanticDetailResult BuildPsNameSemanticDetail(
 
   const auto aggregate_view =
       engine_api::DescribeEngineGlobalAggregateView(
-          context, std::string(object_uuid));
+          context, object_uuid);
   if (aggregate_view.diagnostic.error) {
     result.ok = false;
     result.detail.clear();
@@ -2561,7 +2541,7 @@ PsNameSemanticDetailResult BuildPsNameSemanticDetail(
 
   const auto relation_view =
       engine_api::DescribeEngineRelationProjectionView(
-          context, std::string(object_uuid));
+          context, object_uuid);
   if (relation_view.diagnostic.error) {
     result.ok = false;
     result.detail.clear();
@@ -2602,7 +2582,7 @@ PsNameSemanticDetailResult BuildPsNameSemanticDetail(
 
   const auto descriptor =
       engine_api::DescribeEngineCatalogRelationProjectionView(
-          context, std::string(object_uuid));
+          context, object_uuid);
   if (descriptor.diagnostic.error) {
     result.ok = false;
     result.detail.clear();
@@ -2865,6 +2845,17 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                       frame.header.sequence_number,
                       static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
   }
+  // Name resolution must use the dialect identity admitted on this session's
+  // physical channel. The symbolic folding profile comes from the bound
+  // server language context, never from a UUID spelling supplied by a parser.
+  if (decoded->dialect_profile.bytes != session->admitted_dialect_profile_uuid) {
+    return ErrorFrame({sbps::IpcDiagnostic(
+                          "PARSER_SERVER_IPC.DIALECT_PROFILE_MISMATCH",
+                          "parser_server_ipc.dialect_profile_mismatch",
+                          "Name resolution requires the session's admitted dialect identity.")},
+                      frame.header.request_uuid, frame.header.sequence_number,
+                      static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+  }
   const auto normalized = PsNameLower(decoded->presented_name);
   const std::string virtual_system_name = PsNameVirtualSystemName(normalized);
   if (!virtual_system_name.empty()) {
@@ -2884,7 +2875,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                &*session,
                                "resolved",
                                "virtual_system_object",
-                               virtual_system_name,
+                               {},
                                decoded->object_class.empty() ? "relation" : decoded->object_class,
                                "",
                                "",
@@ -2937,7 +2928,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
   const auto parts = PsNameSplitPresentedName(decoded->presented_name, decoded->quoted);
   if (session && parts && !parts->empty()) {
     const std::string identifier_profile =
-        PsNameCanonicalIdentifierProfile(decoded->dialect_profile);
+        PsNameCanonicalIdentifierProfile(session->input_syntax_profile);
     const std::string cache_key =
         PsNameResolutionCacheKey(*session, *decoded, identifier_profile);
     const std::string stable_cache_key =
@@ -2971,7 +2962,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
         !descriptor_resolution_request) {
       if (const auto cached =
               LookupPsNameCache(session_registry, *session, cache_key)) {
-        if (const auto object_uuid = PsNameUuidFromText(cached->object_uuid)) {
+        if (const auto object_uuid = PsNameUuidFromIdentity(cached->object_uuid)) {
           normal_cache_hit = true;
           WritePsNameResolutionTrace(*decoded,
                                      &*session,
@@ -3006,7 +2997,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
               session_registry,
               *session,
               stable_cache_key)) {
-        if (const auto object_uuid = PsNameUuidFromText(stable_cached->object_uuid)) {
+        if (const auto object_uuid = PsNameUuidFromIdentity(stable_cached->object_uuid)) {
           stable_cache_hit = true;
           WritePsNameResolutionTrace(*decoded,
                                      &*session,
@@ -3173,7 +3164,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
           transaction_routed);
       if (registry_match &&
           PsNameRegistryMatchVisibleForSession(request.context, *registry_match)) {
-        const auto object_uuid = PsNameUuidFromText(registry_match->object_uuid);
+        const auto object_uuid = PsNameUuidFromIdentity(registry_match->object_uuid);
         if (object_uuid) {
           if (!decoded->bypass_cache &&
               !semantic_view_resolution_request &&
@@ -3273,7 +3264,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                &*session,
                                "not_found_or_not_visible",
                                "public_resolver_returned_no_uuid",
-                               "",
+                               {},
                                decoded->object_class,
                                cache_key,
                                stable_cache_key,
@@ -3289,7 +3280,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                nullptr,
                                "not_found_or_not_visible",
                                "missing_session_or_invalid_parts",
-                               "",
+                               {},
                                decoded->object_class,
                                "",
                                "",

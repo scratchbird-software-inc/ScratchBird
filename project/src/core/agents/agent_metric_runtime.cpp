@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_metric_runtime.hpp"
+#include "uuid.hpp"
+#include "hash_digest.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -18,13 +20,13 @@
 namespace scratchbird::core::agents {
 namespace {
 
-std::string ExpectedScopeUuid(const AgentRuntimeContext& context,
+scratchbird::core::platform::Uuid ExpectedScopeUuid(const AgentRuntimeContext& context,
                               const AgentMetricDependency& dependency,
                               const AgentMetricSnapshotEvaluationOptions& options) {
-  if (!options.expected_scope_uuid.empty()) {
+  if (!options.expected_scope_uuid.is_nil()) {
     return options.expected_scope_uuid;
   }
-  if (dependency.cluster_only && !context.cluster_uuid.empty()) {
+  if (dependency.cluster_only) {
     return context.cluster_uuid;
   }
   return context.database_uuid;
@@ -112,38 +114,54 @@ std::string SnapshotInputDigest(
               }
               return left.snapshot_id < right.snapshot_id;
             });
-  std::ostringstream key;
-  key << "agent_metric_snapshot_input|" << descriptor.type_id << '|'
-      << context.database_uuid << '|';
+  std::vector<scratchbird::core::platform::byte> bytes;
+  const auto field = [&](std::string_view value) {
+    const auto length=static_cast<std::uint64_t>(value.size());
+    for (unsigned shift=0;shift!=64;shift+=8) bytes.push_back((length>>shift)&255);
+    bytes.insert(bytes.end(),value.begin(),value.end());
+  };
+  const auto identity = [&](const scratchbird::core::platform::Uuid& value) {
+    field(std::string_view(reinterpret_cast<const char*>(value.bytes.data()),16));
+  };
+  field("agent_metric_snapshot_input.v2"); field(descriptor.type_id);
+  identity(context.database_uuid); identity(context.cluster_uuid);
+  field(std::to_string(sorted.size()));
   for (const auto& snapshot : sorted) {
-    std::vector<std::string> authority_claims = snapshot.authority_claims;
-    std::sort(authority_claims.begin(), authority_claims.end());
-    key << snapshot.metric_family << ',' << snapshot.namespace_path << ','
-        << snapshot.source_id << ',' << snapshot.generation << ','
-        << snapshot.source_sequence << ',' << snapshot.previous_source_sequence
-        << ',' << snapshot.observed_wall_microseconds << ','
-        << snapshot.scope_uuid << ',' << snapshot.digest << ','
-        << snapshot.value_digest << ',' << snapshot.schema_digest << ','
-        << static_cast<int>(snapshot.source_quality) << ','
-        << (snapshot.trusted ? "trusted" : "untrusted") << ','
-        << (snapshot.attestation_verified ? "attested" : "unattested") << ','
-        << (snapshot.gap_detected ? "gap" : "no_gap") << ','
-        << (snapshot.replay_detected ? "replay" : "no_replay") << ','
-        << (snapshot.disagreement_detected ? "disagree" : "agree") << ','
-        << (snapshot.redacted ? "redacted" : "unredacted") << ','
-        << (snapshot.protected_material_present ? "protected_present"
-                                                : "protected_absent")
-        << ',' << (snapshot.external_provider_attested ? "external_provider"
-                                                       : "local_provider")
-        << ',' << snapshot.trust_provenance << ','
-        << snapshot.provenance_record << ',' << snapshot.attestation_key_id
-        << ',' << snapshot.attestation_digest << ',' << snapshot.snapshot_id;
-    for (const auto& claim : authority_claims) {
-      key << ",authority_claim=" << claim;
-    }
-    key << ';';
+    field(snapshot.metric_family);
+    field(snapshot.namespace_path);
+    field(snapshot.source_id);
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.generation)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.source_sequence)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.previous_source_sequence)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.observed_wall_microseconds)));
+    identity(snapshot.scope_uuid);
+    field(snapshot.digest);
+    field(snapshot.value_digest);
+    field(snapshot.schema_digest);
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.source_quality)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.trusted)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.attestation_verified)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.gap_detected)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.replay_detected)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.disagreement_detected)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.redacted)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.protected_material_present)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.external_provider_attested)));
+    field(snapshot.trust_provenance);
+    field(snapshot.provenance_record);
+    field(snapshot.attestation_key_id);
+    field(snapshot.attestation_digest);
+    field(snapshot.snapshot_id);
+    identity(snapshot.evidence_uuid);
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.present)));
+    field(std::to_string(static_cast<std::uint64_t>(snapshot.schema_compatible)));
+    auto claims=snapshot.authority_claims;
+    std::sort(claims.begin(),claims.end());
+    field(std::to_string(claims.size()));
+    for (const auto& claim:claims) field(claim);
   }
-  return DeterministicAgentRuntimeObjectUuidFromKey(key.str());
+  const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);
+  return digest.ok() ? scratchbird::core::hash::HexLower(digest.digest) : std::string{};
 }
 
 AgentMetricSnapshotDiagnostic MetricDiagnostic(
@@ -162,10 +180,8 @@ AgentMetricSnapshotDiagnostic MetricDiagnostic(
     diagnostic.snapshot_id = snapshot->snapshot_id;
     diagnostic.source_id = snapshot->source_id;
   }
-  if (diagnostic.evidence_uuid.empty()) {
-    diagnostic.evidence_uuid = DeterministicAgentRuntimeObjectUuidFromKey(
-        "agent_metric_snapshot|" + dependency.metric_family + "|" +
-        diagnostic.diagnostic_code);
+  if (diagnostic.evidence_uuid.is_nil()) {
+    diagnostic.evidence_uuid = scratchbird::core::uuid::IssueRuntimeIdentityV7().value_or(scratchbird::core::platform::Uuid{});
   }
   return diagnostic;
 }
@@ -245,8 +261,11 @@ AgentMetricSnapshotEvaluation EvaluateAgentObservedMetricSnapshots(
         "SB_AGENT_METRIC_SNAPSHOT.RELAXED_TEST_PROBE_ONLY";
     diagnostic.detail = "registry_only_test_probe_mode";
     diagnostic.failed_closed = false;
-    diagnostic.evidence_uuid = DeterministicAgentRuntimeObjectUuidFromKey(
-        "agent_metric_snapshot_relaxed|" + descriptor.type_id);
+    diagnostic.evidence_uuid = scratchbird::core::uuid::IssueRuntimeIdentityV7().value_or(scratchbird::core::platform::Uuid{});
+    if (diagnostic.evidence_uuid.is_nil() || evaluation.input_digest.empty()) {
+      evaluation.status=AgentError("SB_AGENT_METRIC_SNAPSHOT.EVIDENCE_UNAVAILABLE",descriptor.type_id);
+      evaluation.accepted=false; evaluation.failed_closed=true; diagnostic.failed_closed=true;
+    }
     evaluation.diagnostics.push_back(std::move(diagnostic));
     return evaluation;
   }
@@ -388,10 +407,11 @@ AgentMetricSnapshotEvaluation EvaluateAgentObservedMetricSnapshots(
             "SB_AGENT_METRIC_SNAPSHOT.NAMESPACE_SCHEMA_INCOMPATIBLE",
             "schema incompatible", required_source_quorum, source_ids.size());
       }
-      if (expected_scope.empty() || snapshot->scope_uuid != expected_scope) {
+      if (!scratchbird::core::uuid::IsEngineIdentityUuid(expected_scope) ||
+          snapshot->scope_uuid != expected_scope) {
         return RefuseMetric(descriptor, context, snapshots, dependency, snapshot,
                             "SB_AGENT_METRIC_SNAPSHOT.SCOPE_MISMATCH",
-                            snapshot->scope_uuid, required_source_quorum,
+                            "observed_scope_does_not_match_bound_scope", required_source_quorum,
                             source_ids.size());
       }
       if (!snapshot->trusted ||
@@ -495,9 +515,11 @@ AgentMetricSnapshotEvaluation EvaluateAgentObservedMetricSnapshots(
   diagnostic.diagnostic_code = "SB_AGENT_METRIC_SNAPSHOT.ACCEPTED";
   diagnostic.detail = descriptor.type_id;
   diagnostic.failed_closed = false;
-  diagnostic.evidence_uuid = DeterministicAgentRuntimeObjectUuidFromKey(
-      "agent_metric_snapshot_accepted|" + descriptor.type_id + "|" +
-      evaluation.input_digest);
+  diagnostic.evidence_uuid = scratchbird::core::uuid::IssueRuntimeIdentityV7().value_or(scratchbird::core::platform::Uuid{});
+  if (diagnostic.evidence_uuid.is_nil() || evaluation.input_digest.empty()) {
+    evaluation.status=AgentError("SB_AGENT_METRIC_SNAPSHOT.EVIDENCE_UNAVAILABLE",descriptor.type_id);
+    evaluation.accepted=false; evaluation.failed_closed=true; diagnostic.failed_closed=true;
+  }
   evaluation.diagnostics.push_back(std::move(diagnostic));
   return evaluation;
 }

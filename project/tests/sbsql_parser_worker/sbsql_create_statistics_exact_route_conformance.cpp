@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -28,8 +29,8 @@ constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
 constexpr std::string_view kSurfaceId = "SBSQL-442E76222244";
 constexpr std::string_view kSurfaceName = "create_statistics_stmt";
 constexpr std::string_view kFixtureId = "SBSQL-SURFACE-E00E98016322";
-constexpr std::string_view kResolvedTableUuid =
-    "019f0000-0000-7000-8000-000000442001";
+constexpr auto kResolvedTableUuid = scratchbird::tests::FixtureUuidLiteral(
+    "019f0000-0000-7000-8000-000000442001");
 
 struct PipelineArtifacts {
   CstDocument cst;
@@ -75,10 +76,10 @@ void PrintMessages(const MessageVectorSet& messages) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000442101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000442102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000442103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000442101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000442102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000442103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 44;
   session.security_policy_epoch = 45;
   session.descriptor_epoch = 46;
@@ -89,7 +90,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000442104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000442104");
   config.bundle_contract_id = "sbp_sbsql@create-statistics-refusal-test";
   config.build_id = "sbsql-create-statistics-refusal-test";
   return config;
@@ -102,7 +103,7 @@ PipelineArtifacts RunPipeline() {
   artifacts.ast = BuildAst(artifacts.cst);
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst,
                             ParserConfigForTest(), session,
-                            {std::string(kResolvedTableUuid)});
+                            {kResolvedTableUuid});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;

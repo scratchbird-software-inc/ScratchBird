@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_sequence_runtime.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <limits>
 #include <mutex>
@@ -54,43 +55,42 @@ SblrResult ScalarResult(std::string operation_id, SblrValue value) {
 
 SblrRuntimeDiagnostic SequenceDiagnostic(std::string diagnostic_id,
                                          const SblrExecutionContext& context,
-                                         std::string sequence_uuid,
+                                         SblrUuid sequence_uuid,
                                          std::string detail) {
   auto diagnostic = MakeSblrRefusalDiagnostic(std::move(diagnostic_id), context, std::move(detail));
   diagnostic.fields.push_back({"sequence_uuid", std::move(sequence_uuid)});
   return diagnostic;
 }
 
-SblrSequenceState* FindSequenceState(SblrSequenceRegistry* registry, std::string_view sequence_uuid) {
+SblrSequenceState* FindSequenceState(SblrSequenceRegistry* registry, const SblrUuid& sequence_uuid) {
   for (auto& state : registry->states) {
     if (state.definition.sequence_uuid == sequence_uuid) return &state;
-  }
-  for (const auto& alias : registry->aliases) {
-    if (alias.first != sequence_uuid) continue;
-    for (auto& state : registry->states) {
-      if (state.definition.sequence_uuid == alias.second) return &state;
-    }
   }
   return nullptr;
 }
 
 const SblrSequenceState* FindSequenceState(const SblrSequenceRegistry* registry,
-                                           std::string_view sequence_uuid) {
+                                           const SblrUuid& sequence_uuid) {
   for (const auto& state : registry->states) {
     if (state.definition.sequence_uuid == sequence_uuid) return &state;
-  }
-  for (const auto& alias : registry->aliases) {
-    if (alias.first != sequence_uuid) continue;
-    for (const auto& state : registry->states) {
-      if (state.definition.sequence_uuid == alias.second) return &state;
-    }
   }
   return nullptr;
 }
 
+// The caller holds the registry mutex. Names only select a previously
+// registered alias; they never manufacture a UUID or a separate sequence state.
+SblrUuid ResolveSequenceUuid(const SblrSequenceRegistry& registry,
+                             const SblrUuid& identity,
+                             std::string_view name_hint) {
+  if (!identity.is_nil()) return identity;
+  for (const auto& alias : registry.aliases)
+    if (alias.first == name_hint) return alias.second;
+  return {};
+}
+
 void AppendEvidence(SblrSequenceRegistry* registry,
                     const SblrExecutionContext& context,
-                    std::string sequence_uuid,
+                    SblrUuid sequence_uuid,
                     std::string action,
                     std::string value,
                     std::string policy) {
@@ -107,7 +107,7 @@ void AppendEvidence(SblrSequenceRegistry* registry,
 
 SblrResult EnsureRegistry(SblrSequenceRegistry* registry,
                           const SblrExecutionContext& context,
-                          std::string sequence_uuid,
+                          SblrUuid sequence_uuid,
                           std::string operation_id) {
   if (registry != nullptr) return MakeSblrSuccess(std::move(operation_id));
   return MakeSblrFailure(SblrStatusCode::execution_failed,
@@ -140,6 +140,36 @@ std::optional<std::int64_t> AdvanceValue(const SblrSequenceDefinition& definitio
 
 }  // namespace
 
+bool BindSblrSequenceArgumentIdentity(const SblrValue& argument,
+                                      SblrSequenceRequest* request) {
+  if (request == nullptr || argument.is_null) return false;
+  SblrUuid identity;
+  std::string name;
+  if (argument.payload_kind == SblrValuePayloadKind::uuid_binary) {
+    std::vector<std::uint8_t> bytes;
+    if (!CopySblrUuidPayload(argument, &bytes) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(argument.uuid_value))
+      return false;
+    identity = argument.uuid_value;
+  } else if (argument.payload_kind == SblrValuePayloadKind::text) {
+    if (!argument.uuid_value.is_nil() || !argument.uuid_array_value.empty() ||
+        !argument.binary_value.empty() || argument.has_int64_value ||
+        argument.has_uint64_value || argument.has_real64_value ||
+        (!argument.text_value.empty() && !argument.encoded_value.empty() &&
+         argument.text_value != argument.encoded_value)) return false;
+    name = argument.text_value.empty() ? argument.encoded_value : argument.text_value;
+    if (name.empty()) return false;
+    const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
+        scratchbird::core::platform::UuidKind::object, name);
+    if (parsed.ok()) { identity = parsed.value.value; name.clear(); }
+  } else {
+    return false;
+  }
+  request->sequence_uuid = identity;
+  request->sequence_name_hint = std::move(name);
+  return true;
+}
+
 SblrSequenceRegistry& ProcessSblrSequenceRegistry() {
   static SblrSequenceRegistry registry;
   return registry;
@@ -150,7 +180,7 @@ SblrResult RegisterSblrSequence(SblrSequenceRegistry* registry,
                                 const SblrExecutionContext& context) {
   auto registry_status = EnsureRegistry(registry, context, definition.sequence_uuid, "sblr.sequence.register");
   if (!registry_status.ok()) return registry_status;
-  if (definition.sequence_uuid.empty()) {
+  if (definition.sequence_uuid.is_nil()) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,
                            "sblr.sequence.register",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_UUID_REQUIRED",
@@ -190,22 +220,19 @@ SblrResult RegisterSblrSequence(SblrSequenceRegistry* registry,
 }
 
 SblrResult RegisterSblrSequenceAlias(SblrSequenceRegistry* registry,
-                                     std::string canonical_sequence_uuid,
+                                     SblrUuid canonical_sequence_uuid,
                                      std::string alias_key,
                                      const SblrExecutionContext& context) {
   auto registry_status =
       EnsureRegistry(registry, context, canonical_sequence_uuid, "sblr.sequence.register_alias");
   if (!registry_status.ok()) return registry_status;
-  if (canonical_sequence_uuid.empty() || alias_key.empty()) {
+  if (canonical_sequence_uuid.is_nil() || alias_key.empty()) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,
                            "sblr.sequence.register_alias",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_UUID_REQUIRED",
                                               context,
                                               std::move(canonical_sequence_uuid),
                                               "canonical sequence UUID and alias key are required"));
-  }
-  if (alias_key == canonical_sequence_uuid) {
-    return MakeSblrSuccess("sblr.sequence.register_alias");
   }
   std::lock_guard<std::mutex> guard(registry->mutex);
   if (FindSequenceState(registry, canonical_sequence_uuid) == nullptr) {
@@ -242,24 +269,26 @@ SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
                              const SblrExecutionContext& context) {
   auto registry_status = EnsureRegistry(registry, context, alteration.sequence_uuid, "sblr.sequence.alter");
   if (!registry_status.ok()) return registry_status;
-  if (alteration.sequence_uuid.empty()) {
+  std::lock_guard<std::mutex> guard(registry->mutex);
+  const SblrUuid sequence_uuid = ResolveSequenceUuid(*registry, alteration.sequence_uuid,
+                                                      alteration.sequence_name_hint);
+  if (sequence_uuid.is_nil()) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,
                            "sblr.sequence.alter",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_UUID_REQUIRED",
                                               context,
-                                              alteration.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence UUID is required for sequence alteration"));
   }
-  std::lock_guard<std::mutex> guard(registry->mutex);
-  SblrSequenceState* state = FindSequenceState(registry, alteration.sequence_uuid);
+  SblrSequenceState* state = FindSequenceState(registry, sequence_uuid);
   if (state == nullptr) {
     SblrSequenceDefinition definition;
-    definition.sequence_uuid = alteration.sequence_uuid;
+    definition.sequence_uuid = sequence_uuid;
     registry->states.push_back(SblrSequenceState{definition});
     state = &registry->states.back();
-    AppendEvidence(registry, context, alteration.sequence_uuid, "sequence.implicit_bind", "", "alter_default_definition");
+    AppendEvidence(registry, context, sequence_uuid, "sequence.implicit_bind", "", "alter_default_definition");
   }
-  const std::string evidence_uuid = state->definition.sequence_uuid;
+  const SblrUuid evidence_uuid = state->definition.sequence_uuid;
   SblrSequenceDefinition updated = state->definition;
   if (alteration.minimum_value.has_value()) {
     updated.minimum_value = *alteration.minimum_value;
@@ -278,7 +307,7 @@ SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
                            "sblr.sequence.alter",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_INCREMENT_ZERO",
                                               context,
-                                              alteration.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence increment cannot be zero"));
   }
   if (updated.minimum_value > updated.maximum_value ||
@@ -288,7 +317,7 @@ SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
                            "sblr.sequence.alter",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_BOUNDS_INVALID",
                                               context,
-                                              alteration.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence alteration produces invalid configured bounds"));
   }
   if (state->current_value_present &&
@@ -297,7 +326,7 @@ SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
                            "sblr.sequence.alter",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_BOUNDS_INVALID",
                                               context,
-                                              alteration.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence current value is outside altered bounds"));
   }
   if (state->next_value_override_present &&
@@ -306,7 +335,7 @@ SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
                            "sblr.sequence.alter",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_BOUNDS_INVALID",
                                               context,
-                                              alteration.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence pending restart value is outside altered bounds"));
   }
   state->definition = updated;
@@ -322,32 +351,34 @@ SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
 SblrResult NextSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSequenceRequest& request) {
   auto registry_status = EnsureRegistry(registry, request.context, request.sequence_uuid, "sblr.sequence.next");
   if (!registry_status.ok()) return registry_status;
-  if (request.sequence_uuid.empty()) {
+  std::lock_guard<std::mutex> guard(registry->mutex);
+  const SblrUuid sequence_uuid = ResolveSequenceUuid(*registry, request.sequence_uuid,
+                                                      request.sequence_name_hint);
+  if (sequence_uuid.is_nil()) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,
                            "sblr.sequence.next",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_UUID_REQUIRED",
                                               request.context,
-                                              request.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence UUID is required for next sequence value"));
   }
-  std::lock_guard<std::mutex> guard(registry->mutex);
-  SblrSequenceState* state = FindSequenceState(registry, request.sequence_uuid);
+  SblrSequenceState* state = FindSequenceState(registry, sequence_uuid);
   if (state == nullptr) {
     SblrSequenceDefinition definition;
-    definition.sequence_uuid = request.sequence_uuid;
+    definition.sequence_uuid = sequence_uuid;
     definition.descriptor_id = request.result_descriptor_id.empty() ? "int64" : request.result_descriptor_id;
     registry->states.push_back(SblrSequenceState{definition});
     state = &registry->states.back();
-    AppendEvidence(registry, request.context, request.sequence_uuid, "sequence.implicit_bind", "", "planner_test_default");
+    AppendEvidence(registry, request.context, sequence_uuid, "sequence.implicit_bind", "", "planner_test_default");
   }
-  const std::string evidence_uuid = state->definition.sequence_uuid;
+  const SblrUuid evidence_uuid = state->definition.sequence_uuid;
   const std::int64_t increment = request.has_increment_override ? request.increment_override : state->definition.increment;
   if (increment == 0) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,
                            "sblr.sequence.next",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_INCREMENT_ZERO",
                                               request.context,
-                                              request.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence increment override cannot be zero"));
   }
   if (state->next_value_override_present) {
@@ -357,7 +388,7 @@ SblrResult NextSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSeque
                              "sblr.sequence.next",
                              SequenceDiagnostic("SB_DIAG_SEQUENCE_BOUNDS_INVALID",
                                                 request.context,
-                                                request.sequence_uuid,
+                                                sequence_uuid,
                                                 "sequence next override is outside configured bounds"));
     }
     state->next_value_override_present = false;
@@ -380,7 +411,7 @@ SblrResult NextSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSeque
                            "sblr.sequence.next",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_EXHAUSTED",
                                               request.context,
-                                              request.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence reached its configured bounds and cycle is disabled"));
   }
   state->current_value = *next;
@@ -401,13 +432,15 @@ SblrResult CurrentSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSe
   auto registry_status = EnsureRegistry(registry, request.context, request.sequence_uuid, "sblr.sequence.current");
   if (!registry_status.ok()) return registry_status;
   std::lock_guard<std::mutex> guard(registry->mutex);
-  const auto* state = FindSequenceState(registry, request.sequence_uuid);
+  const SblrUuid sequence_uuid = ResolveSequenceUuid(*registry, request.sequence_uuid,
+                                                      request.sequence_name_hint);
+  const auto* state = FindSequenceState(registry, sequence_uuid);
   if (state == nullptr || !state->current_value_present) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,
                            "sblr.sequence.current",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_CURRENT_UNDEFINED",
                                               request.context,
-                                              request.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence current value is undefined until NEXT is called in this runtime"));
   }
   AppendEvidence(registry,
@@ -425,31 +458,33 @@ SblrResult CurrentSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSe
 SblrResult SetSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSequenceRequest& request) {
   auto registry_status = EnsureRegistry(registry, request.context, request.sequence_uuid, "sblr.sequence.set");
   if (!registry_status.ok()) return registry_status;
-  if (request.sequence_uuid.empty()) {
+  std::lock_guard<std::mutex> guard(registry->mutex);
+  const SblrUuid sequence_uuid = ResolveSequenceUuid(*registry, request.sequence_uuid,
+                                                      request.sequence_name_hint);
+  if (sequence_uuid.is_nil()) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,
                            "sblr.sequence.set",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_UUID_REQUIRED",
                                               request.context,
-                                              request.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence UUID is required for set sequence value"));
   }
-  std::lock_guard<std::mutex> guard(registry->mutex);
-  SblrSequenceState* state = FindSequenceState(registry, request.sequence_uuid);
+  SblrSequenceState* state = FindSequenceState(registry, sequence_uuid);
   if (state == nullptr) {
     SblrSequenceDefinition definition;
-    definition.sequence_uuid = request.sequence_uuid;
+    definition.sequence_uuid = sequence_uuid;
     definition.descriptor_id = request.result_descriptor_id.empty() ? "int64" : request.result_descriptor_id;
     registry->states.push_back(SblrSequenceState{definition});
     state = &registry->states.back();
-    AppendEvidence(registry, request.context, request.sequence_uuid, "sequence.implicit_bind", "", "planner_test_default");
+    AppendEvidence(registry, request.context, sequence_uuid, "sequence.implicit_bind", "", "planner_test_default");
   }
-  const std::string evidence_uuid = state->definition.sequence_uuid;
+  const SblrUuid evidence_uuid = state->definition.sequence_uuid;
   if (request.set_value < state->definition.minimum_value || request.set_value > state->definition.maximum_value) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,
                            "sblr.sequence.set",
                            SequenceDiagnostic("SB_DIAG_SEQUENCE_BOUNDS_INVALID",
                                               request.context,
-                                              request.sequence_uuid,
+                                              sequence_uuid,
                                               "sequence set value is outside configured bounds"));
   }
   state->current_value = request.set_value;
@@ -479,7 +514,7 @@ SblrSequenceOptimizerMetadata SequenceOptimizerMetadata() {
   return SblrSequenceOptimizerMetadata{};
 }
 
-SblrResult RefuseSblrSequenceHook(const SblrExecutionContext& context, std::string sequence_uuid) {
+SblrResult RefuseSblrSequenceHook(const SblrExecutionContext& context, SblrUuid sequence_uuid) {
   auto diagnostic = MakeSblrRefusalDiagnostic("SB_DIAG_SEQUENCE_RUNTIME_REFUSED", context,
                                               "sequence operation was explicitly routed to refusal hook");
   diagnostic.fields.push_back({"sequence_uuid", std::move(sequence_uuid)});

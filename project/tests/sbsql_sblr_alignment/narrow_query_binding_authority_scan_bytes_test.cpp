@@ -12,6 +12,8 @@
 #include "runtime_platform.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "wire/narrow_query_binding_demand_codec.hpp"
 
 #include <algorithm>
@@ -35,12 +37,9 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 namespace wire = scratchbird::wire;
 
-constexpr std::string_view kDatatypeCatalogSnapshotUuid =
-    "019d0000-0000-7000-8000-00000000d701";
-constexpr std::string_view kInt32DescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d716";
-constexpr std::string_view kInt32TypeUuid =
-    "019d0000-0000-7000-8000-00000000d717";
+constexpr auto kDatatypeCatalogSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+constexpr auto kInt32DescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716");
+constexpr auto kInt32TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717");
 constexpr std::uint64_t kScanBytes = 64ull * 1024ull * 1024ull;
 constexpr std::uint64_t kTransportBytes = 64ull * 1024ull;
 
@@ -73,38 +72,50 @@ std::uint64_t NowMillis() {
           .count());
 }
 
-std::string NewUuid(platform::UuidKind kind) {
+platform::Uuid NewUuid(platform::UuidKind kind) {
   static std::atomic<std::uint64_t> sequence{1};
   const auto generated = uuid::GenerateEngineIdentityV7(
       kind, NowMillis() + sequence.fetch_add(1));
   Require(generated.ok(), "engine UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
-wire::NarrowQueryUuid WireUuid(std::string_view text) {
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  Require(parsed.ok(), "wire UUID parse failed");
-  wire::NarrowQueryUuid result{};
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            result.begin());
-  return result;
+wire::NarrowQueryUuid WireUuid(const platform::Uuid& value) {
+  return value.bytes;
 }
 
 std::string Int32Descriptor() {
-  return "type=int32;datatype_descriptor_uuid=" +
-         std::string(kInt32DescriptorUuid) + ";type_uuid=" +
-         std::string(kInt32TypeUuid) + ";nullable=false";
+  return "type=int32;nullable=false";
+}
+
+api::EngineColumnDefinition Int32Column() {
+  const auto lookup = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      kDatatypeCatalogSnapshotUuid, 1, 1, kInt32DescriptorUuid, 1);
+  Require(lookup.ok && lookup.row.type_uuid == kInt32TypeUuid,
+          "exact fixture datatype catalog binding is unavailable");
+  api::EngineColumnDefinition column;
+  column.requested_column_uuid = NewUuid(platform::UuidKind::object);
+  column.ordinal = 0;
+  column.nullable = false;
+  column.descriptor.descriptor_uuid = lookup.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_uuid = lookup.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = lookup.row.descriptor_generation;
+  column.descriptor.type_uuid = lookup.row.type_uuid;
+  column.descriptor.descriptor_kind = "scalar";
+  column.descriptor.canonical_type_name = lookup.row.canonical_name;
+  column.descriptor.encoded_descriptor = Int32Descriptor();
+  return column;
 }
 
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string filespace_uuid;
-  std::string schema_uuid;
-  std::string relation_uuid;
-  std::string principal_uuid;
-  std::string session_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid filespace_uuid;
+  platform::Uuid schema_uuid;
+  platform::Uuid relation_uuid;
+  platform::Uuid principal_uuid;
+  platform::Uuid session_uuid;
   api::EngineRequestContext transaction;
   api::MgaRelationStorageDescriptor descriptor;
   std::shared_ptr<std::atomic_bool> cancelled =
@@ -121,12 +132,12 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "narrow-authority-scan-bytes";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
+  context.database_uuid = fixture.database_uuid;
   context.database_page_size_bytes = 16384;
-  context.default_root_uuid.canonical = fixture.filespace_uuid;
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
-  context.principal_uuid.canonical = fixture.principal_uuid;
-  context.session_uuid.canonical = fixture.session_uuid;
+  context.default_root_uuid = fixture.filespace_uuid;
+  context.current_schema_uuid = fixture.schema_uuid;
+  context.principal_uuid = fixture.principal_uuid;
+  context.session_uuid = fixture.session_uuid;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -134,11 +145,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.maximum_mga_relation_decoded_bytes_per_pass = kScanBytes;
   context.maximum_typed_result_transport_bytes_per_packet = kTransportBytes;
   context.name_resolution_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      std::string(kDatatypeCatalogSnapshotUuid);
+  context.datatype_catalog_snapshot_uuid =
+      kDatatypeCatalogSnapshotUuid;
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
-  context.catalog_epoch_uuid.canonical = NewUuid(platform::UuidKind::object);
+  context.catalog_epoch_uuid = NewUuid(platform::UuidKind::object);
   context.query_cancellation_requested = [flag = fixture.cancelled]() {
     return flag->load();
   };
@@ -169,8 +180,8 @@ Fixture MakeFixture() {
   Require(db::CreateDatabaseFile(create).ok(),
           "fixture database creation failed");
 
-  fixture.database_uuid = uuid::UuidToString(database.value.value);
-  fixture.filespace_uuid = uuid::UuidToString(filespace.value.value);
+  fixture.database_uuid = database.value.value;
+  fixture.filespace_uuid = filespace.value.value;
   fixture.schema_uuid = NewUuid(platform::UuidKind::object);
   fixture.relation_uuid = NewUuid(platform::UuidKind::object);
   fixture.principal_uuid = NewUuid(platform::UuidKind::principal);
@@ -193,6 +204,9 @@ Fixture MakeFixture() {
   table.table_uuid = fixture.relation_uuid;
   table.default_name = "authority_scan_values";
   table.columns = {{"id", Int32Descriptor()}};
+  table.bound_columns = {Int32Column()};
+  table.bound_relation_generation = 1;
+  table.bound_column_generation = 1;
   Require(!api::AppendMgaTableMetadata(fixture.transaction, table).error,
           "fixture table metadata append failed");
   const auto ensured = api::EnsureMgaRelationStorageDescriptor(
@@ -205,8 +219,8 @@ Fixture MakeFixture() {
 api::EngineRequestContext BindingContext(Fixture* fixture) {
   Require(fixture != nullptr, "fixture is absent");
   auto context = fixture->transaction;
-  context.statement_uuid.canonical = NewUuid(platform::UuidKind::object);
-  context.statement_receipt_uuid.canonical =
+  context.statement_uuid = NewUuid(platform::UuidKind::object);
+  context.statement_receipt_uuid =
       NewUuid(platform::UuidKind::object);
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = context;
@@ -216,10 +230,10 @@ api::EngineRequestContext BindingContext(Fixture* fixture) {
   context.snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical =
+  context.statement_metadata_snapshot_uuid =
       NewUuid(platform::UuidKind::object);
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
+  context.authorization_context.authority_uuid =
       NewUuid(platform::UuidKind::object);
   context.authorization_context.security_context_generation = 1;
   context.authorization_context.principal_uuid = context.principal_uuid;
@@ -232,10 +246,10 @@ api::EngineRequestContext BindingContext(Fixture* fixture) {
   subject.subject_kind = "principal";
   context.authorization_context.effective_subjects.push_back(subject);
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = NewUuid(platform::UuidKind::object);
+  grant.grant_uuid = NewUuid(platform::UuidKind::object);
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = fixture->relation_uuid;
+  grant.target_uuid = fixture->relation_uuid;
   grant.right = "SELECT";
   grant.security_epoch = context.security_epoch;
   context.authorization_context.grants.push_back(std::move(grant));
@@ -248,7 +262,7 @@ wire::NarrowQueryBindingDemand MakeDemand(
     const Fixture& fixture) {
   wire::NarrowQueryBindingDemand demand;
   demand.statement_receipt_uuid =
-      WireUuid(context.statement_receipt_uuid.canonical);
+      WireUuid(context.statement_receipt_uuid);
   demand.requested_profile = wire::NarrowQueryProfile::projection_occurrence;
   demand.maximum_mga_relation_decoded_bytes_per_pass = kScanBytes;
   wire::NarrowQuerySourceDemand source;
@@ -295,7 +309,7 @@ void TestAuthorityScanByteAndProjectionContract() {
   api::EngineNarrowQueryBindingAuthorityIssueRequestV1 issue;
   issue.context = binder_context;
   issue.demand = MakeDemand(binder_context, fixture);
-  issue.policy_snapshot_uuid.canonical = NewUuid(platform::UuidKind::object);
+  issue.policy_snapshot_uuid = NewUuid(platform::UuidKind::object);
   issue.policy_generation = binder_context.authorization_context.policy_epoch;
   issue.maximum_source_rows_per_occurrence = 64;
   issue.maximum_cumulative_source_rows = 64;

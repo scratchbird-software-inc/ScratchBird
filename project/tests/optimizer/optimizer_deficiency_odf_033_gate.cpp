@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "database_lifecycle.hpp"
@@ -71,8 +72,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -93,13 +94,27 @@ api::EngineRowValue Row(std::string id, std::string name, std::string note) {
 }
 
 bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
+                 std::string_view kind, const platform::Uuid& identity) {
+  for (const auto& entry : evidence)
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceIdentityEquals(entry.evidence_id, identity)) return true;
+  return false;
+}
+
+bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& entry : evidence) {
-    if (entry.evidence_kind == kind && entry.evidence_id == id) {
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceTextFields(entry.evidence_id) == id) {
       return true;
     }
   }
+  return false;
+}
+
+bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
+                      std::string_view kind, const platform::Uuid& identity) {
+  for (const auto& entry : evidence)
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceIdentityEquals(entry.evidence_id, identity)) return true;
   return false;
 }
 
@@ -108,7 +123,7 @@ bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
                       std::string_view token) {
   for (const auto& entry : evidence) {
     if (entry.evidence_kind == kind &&
-        entry.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFields(entry.evidence_id).find(token) != std::string::npos) {
       return true;
     }
   }
@@ -143,9 +158,9 @@ std::string FieldValue(const api::EngineInsertRowsResult& result,
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid id_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -163,11 +178,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = security_context_present;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -250,9 +265,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-033 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
+  fixture.id_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
 
   auto context = Begin(fixture, "odf033-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
@@ -272,7 +287,7 @@ api::EngineInsertRowsResult InsertRows(
     std::vector<std::string> options = {}) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows = std::move(rows);
   request.estimated_row_count = request.input_rows.size();
@@ -415,7 +430,7 @@ void UnsafeRoutesFailClosed() {
     auto fixture = MakeFixture("missing_tx", 38000);
     api::EngineInsertRowsRequest request;
     request.context = BaseContext(fixture, "odf033-missing-tx");
-    request.target_table.uuid.canonical = fixture.table_uuid;
+    request.target_table.uuid = fixture.table_uuid;
     request.target_table.object_kind = "table";
     request.input_rows.push_back(Row("1", "amy", "missing tx"));
     const auto refused = api::EngineInsertRows(request);
@@ -431,7 +446,7 @@ void UnsafeRoutesFailClosed() {
     request.bound_object_identity.catalog_generation_id = 9;
     request.bound_object_identity.security_epoch = 19;
     request.bound_object_identity.resource_epoch = 29;
-    request.target_table.uuid.canonical = fixture.table_uuid;
+    request.target_table.uuid = fixture.table_uuid;
     request.target_table.object_kind = "table";
     request.input_rows.push_back(Row("1", "amy", "unsafe"));
     request.option_envelopes.push_back("odf033.disable_mga_visibility_recheck=true");
@@ -505,7 +520,7 @@ void EvidenceHasNoRuntimeDocDependency() {
   for (const auto& evidence : inserted.evidence) {
     for (const auto token : forbidden) {
       Require(evidence.evidence_kind.find(token) == std::string::npos &&
-                  evidence.evidence_id.find(token) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFields(evidence.evidence_id).find(token) == std::string::npos,
               "ODF-033 runtime evidence leaked forbidden documentation token");
     }
   }

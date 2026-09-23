@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -76,8 +77,8 @@ int main() {
       "approx_percentile_disc", "approx_top_k", "mode"};
 
   sblr::SblrExecutionContext context;
-  context.database_uuid = "rcp025-registry-db";
-  context.transaction_uuid = "rcp025-registry-tx";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 4001);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 4002);
   context.transaction_context_present = true;
 
   for (const auto alias : legacy_state_aliases) {
@@ -94,7 +95,7 @@ int main() {
 
     sblr::SblrAggregateWindowState state;
     const auto initialized = sblr::InitializeSblrAggregateState(
-        alias, std::string(function_uuid), "result_descriptor", context,
+        alias, function_uuid, "result_descriptor", context,
         &state);
     Require(initialized.ok() && state.function_id == entry->builtin_id &&
                 state.function_uuid == entry->function_uuid,
@@ -145,7 +146,7 @@ int main() {
   Require(exec::LookupCanonicalAggregateByBuiltinIdV1(
               "sb.aggregate.registry_bypass") == nullptr &&
               exec::LookupCanonicalAggregateByUuidV1(
-                  "019f0000-0000-7000-8000-00000000ffff") == nullptr,
+                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000ffff")) == nullptr,
           "unknown aggregate registry identity did not fail closed");
 
   std::cout << "rcp025_canonical_aggregate_registry_conformance=passed "

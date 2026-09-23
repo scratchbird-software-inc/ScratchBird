@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -126,16 +127,16 @@ mga::RowVersionMetadata Version(const mga::RowIdentity& row,
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.database_uuid.canonical =
-      uuid::UuidToString(NewUuid(platform::UuidKind::database).value);
-  context.node_uuid.canonical =
-      uuid::UuidToString(NewUuid(platform::UuidKind::object).value);
-  context.session_uuid.canonical =
-      uuid::UuidToString(NewUuid(platform::UuidKind::object).value);
-  context.principal_uuid.canonical =
-      uuid::UuidToString(NewUuid(platform::UuidKind::principal).value);
-  context.transaction_uuid.canonical =
-      uuid::UuidToString(NewUuid(platform::UuidKind::transaction).value);
+  context.database_uuid =
+      NewUuid(platform::UuidKind::database).value;
+  context.node_uuid =
+      NewUuid(platform::UuidKind::object).value;
+  context.session_uuid =
+      NewUuid(platform::UuidKind::object).value;
+  context.principal_uuid =
+      NewUuid(platform::UuidKind::principal).value;
+  context.transaction_uuid =
+      NewUuid(platform::UuidKind::transaction).value;
   context.local_transaction_id = 42;
   context.trace_tags.push_back("right:MGA_CLEANUP_INSPECT");
   scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
@@ -263,7 +264,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
   }

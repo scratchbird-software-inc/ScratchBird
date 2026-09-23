@@ -62,28 +62,28 @@ TriggerTarget PrepareTriggerTarget(const Fixture& fixture,
       NewUuid(platform::UuidKind::schema, 26240),
       NewUuid(platform::UuidKind::object, 26241), {}};
   context->database_page_size_bytes = 16384;
-  context->default_root_uuid.canonical = Text(fixture.filespace_uuid);
-  context->current_schema_uuid.canonical = Text(target.schema_uuid);
+  context->default_root_uuid = Identity(fixture.filespace_uuid);
+  context->current_schema_uuid = Identity(target.schema_uuid);
   context->identifier_profile_uuid = "sbsql_v3";
   context->language_context.language_tag = "en";
   context->language_context.default_language_tag = "en";
 
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object, 26242));
+  grant.grant_uuid =
+      Identity(NewUuid(platform::UuidKind::object, 26242));
   grant.subject_uuid = context->principal_uuid;
   grant.subject_kind = "principal";
   // The fixture principal is the database-local catalog administrator. The
   // empty target is the materialized wildcard used by the security model, so
   // the same frozen grant authorizes the engine-allocated trigger UUID after
   // the database-level bind check.
-  grant.target_uuid.canonical.clear();
+  grant.target_uuid = {};
   grant.right = "CATALOG_MUTATE";
   grant.security_epoch = context->security_epoch;
   context->authorization_context.grants.push_back(std::move(grant));
 
   api::CrudTableRecord table;
-  table.table_uuid = Text(target.relation_uuid);
+  table.table_uuid = Identity(target.relation_uuid);
   table.default_name = "trig_items";
   table.columns = {
       {"item_id",
@@ -113,16 +113,16 @@ TriggerTarget PrepareTriggerTarget(const Fixture& fixture,
   };
   api::EngineCatalogCreateObjectRequest schema;
   schema.context = *context;
-  schema.target_object.uuid.canonical = Text(target.schema_uuid);
+  schema.target_object.uuid = Identity(target.schema_uuid);
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(lifecycle_name("app"));
   Require(api::EngineCatalogCreateObject(schema).ok,
           "002624 target schema lifecycle publication failed");
   api::EngineCatalogCreateObjectRequest relation;
   relation.context = *context;
-  relation.target_object.uuid.canonical = table.table_uuid;
+  relation.target_object.uuid = table.table_uuid;
   relation.target_object.object_kind = "table";
-  relation.target_schema.uuid.canonical = Text(target.schema_uuid);
+  relation.target_schema.uuid = Identity(target.schema_uuid);
   relation.target_schema.object_kind = "schema";
   relation.localized_names.push_back(lifecycle_name(table.default_name));
   Require(api::EngineCatalogCreateObject(relation).ok,
@@ -135,7 +135,7 @@ TriggerTarget PrepareTriggerTarget(const Fixture& fixture,
       lifecycle.state.metadata_epoch;
   Require(!api::PersistNameRegistryEntriesForObject(
                *context, "test.ddl_create_trigger.cancellation",
-               table.table_uuid, "table", Text(target.schema_uuid),
+               table.table_uuid, "table", Identity(target.schema_uuid),
                {lifecycle_name(table.default_name)}, table.default_name)
                .error,
           "002624 target-table resolver publication failed");
@@ -148,7 +148,7 @@ TriggerTarget PrepareTriggerTarget(const Fixture& fixture,
                     return !entry.deleted &&
                            entry.object_uuid == table.table_uuid &&
                            entry.object_class == "table" &&
-                           entry.parent_schema_uuid == Text(target.schema_uuid);
+                           entry.parent_schema_uuid == Identity(target.schema_uuid);
                   }) >= 1,
           "002624 target-table resolver entry was not visible");
   api::EngineResolveNameRequest resolve;
@@ -176,7 +176,7 @@ TriggerTarget PrepareTriggerTarget(const Fixture& fixture,
     }
   }
   Require(resolved.ok &&
-              resolved.primary_object.uuid.canonical == table.table_uuid &&
+              resolved.primary_object.uuid == table.table_uuid &&
               resolved.primary_object.object_kind == "table",
           "002624 target-table engine resolution failed");
   return target;
@@ -243,7 +243,7 @@ bridge::StatementDdlCreateTriggerBindRequestV1 TriggerDemand(
 
 sblr::SblrOperationEnvelope TriggerMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const bridge::StatementDdlCreateTriggerAuthorityV1& authority) {
   auto operand_bytes = authority.canonical_descriptor_bytes;
   Require(operand_bytes.size() ==
@@ -282,7 +282,7 @@ void RequireCancellation(
     const Fixture& fixture, PublicSession& session,
     const bridge::StatementContextReceiptView& view,
     bridge::StatementContextReceiptHandle receipt,
-    std::string_view parser_uuid, const Submission& submission,
+    const platform::Uuid& parser_uuid, const Submission& submission,
     std::atomic<unsigned>* probes, std::atomic<unsigned>* cancel_on_probe,
     unsigned expected_probe, std::string_view expected_key) {
   probes->store(0, std::memory_order_relaxed);
@@ -324,12 +324,12 @@ void RequireCancellation(
 
 void PublishBaselineTrigger(
     const Fixture& fixture, PublicSession& session,
-    api::EngineRequestContext* context, std::string_view parser_uuid) {
+    api::EngineRequestContext* context, const platform::Uuid& parser_uuid) {
   Require(context != nullptr,
           "002624 baseline CREATE TRIGGER context is required");
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = context;
-  acquire.exact_transaction_uuid = context->transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context->transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;
@@ -407,11 +407,11 @@ int main() {
   const auto target = PrepareTriggerTarget(fixture, &context);
   (void)target;
 
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 26243));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 26243));
+  context.current_package_uuid = parser_uuid;
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;

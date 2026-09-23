@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -29,10 +30,10 @@ namespace sblr = scratchbird::engine::sblr;
 using sblr::SblrValue;
 using sblr::SblrValuePayloadKind;
 
-constexpr const char* kSessionUuid = "019f4800-0000-7000-8000-000000000002";
-constexpr const char* kOtherSessionUuid = "019f4800-0000-7000-8000-000000000099";
-constexpr const char* kTransactionUuid = "019f4800-0000-7000-8000-000000000004";
-constexpr const char* kPrincipalUuid = "019f4800-0000-7000-8000-000000000003";
+constexpr auto kSessionUuid = scratchbird::tests::FixtureUuidLiteral("019f4800-0000-7000-8000-000000000002");
+constexpr auto kOtherSessionUuid = scratchbird::tests::FixtureUuidLiteral("019f4800-0000-7000-8000-000000000099");
+constexpr auto kTransactionUuid = scratchbird::tests::FixtureUuidLiteral("019f4800-0000-7000-8000-000000000004");
+constexpr auto kPrincipalUuid = scratchbird::tests::FixtureUuidLiteral("019f4800-0000-7000-8000-000000000003");
 constexpr std::uint64_t kBackendPid = 314159;
 constexpr std::uint64_t kLocalTransactionId = 49001;
 constexpr std::int64_t kSessionLockKey = 4242;
@@ -184,8 +185,8 @@ bool ContainsSessionEvidence(const sblr::SblrExecutionContext& context,
   return std::any_of(
       context.session_runtime_state->advisory_lock_evidence.begin(),
       context.session_runtime_state->advisory_lock_evidence.end(),
-      [fragment](const std::string& evidence) {
-        return evidence.find(fragment) != std::string::npos;
+      [fragment](const sblr::SblrAdvisoryLockEvidence& evidence) {
+        return (evidence.function_name + "." + evidence.action + ":").find(fragment) != std::string::npos;
       });
 }
 
@@ -195,8 +196,8 @@ bool ContainsTransactionEvidence(const sblr::SblrExecutionContext& context,
   return std::any_of(
       context.session_runtime_state->transaction_advisory_lock_evidence.begin(),
       context.session_runtime_state->transaction_advisory_lock_evidence.end(),
-      [fragment](const std::string& evidence) {
-        return evidence.find(fragment) != std::string::npos;
+      [fragment](const sblr::SblrAdvisoryLockEvidence& evidence) {
+        return (evidence.function_name + "." + evidence.action + ":").find(fragment) != std::string::npos;
       });
 }
 
@@ -225,9 +226,9 @@ sblr::SblrOperationEnvelope ProjectionEnvelope(
 api::EngineRequestContext ProjectionContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsfc048-advisory-lock-release-projection";
-  context.session_uuid.canonical = kSessionUuid;
-  context.principal_uuid.canonical = kPrincipalUuid;
-  context.transaction_uuid.canonical = kTransactionUuid;
+  context.session_uuid = kSessionUuid;
+  context.principal_uuid = kPrincipalUuid;
+  context.transaction_uuid = kTransactionUuid;
   context.local_transaction_id = kLocalTransactionId;
   context.snapshot_visible_through_local_transaction_id = kLocalTransactionId;
   context.application_name = "sbsfc048-advisory-lock-release";
@@ -340,8 +341,8 @@ int main() {
                      true) && ok;
   const auto* transaction_entry = FindTransactionLockEntry(context, kTransactionLockKey);
   ok = (transaction_entry != nullptr &&
-        transaction_entry->owner_transaction_token ==
-            std::string("transaction:") + kTransactionUuid &&
+        transaction_entry->owner_transaction_uuid == kTransactionUuid &&
+        transaction_entry->owner_local_transaction_id == 0 &&
         transaction_entry->acquisition_count == 2) && ok;
   ok = (FindSessionLockEntry(context, kTransactionLockKey) == nullptr) && ok;
   ok = ContainsTransactionEvidence(context, "pg_advisory_xact_lock.reentrant:") && ok;
@@ -353,7 +354,7 @@ int main() {
 
   auto no_transaction_context = BaseSblrContext();
   no_transaction_context.transaction_context_present = false;
-  no_transaction_context.transaction_uuid.clear();
+  no_transaction_context.transaction_uuid = {};
   no_transaction_context.local_transaction_id = 0;
   ok = ExpectDiagnostic(
            "SBSFC048-pg-advisory-xact-lock-missing-transaction",

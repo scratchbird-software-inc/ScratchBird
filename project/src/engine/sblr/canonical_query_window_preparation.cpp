@@ -14,8 +14,10 @@
 #include "canonical_query_sort_registration.hpp"
 #include "canonical_query_window_registration.hpp"
 #include "canonical_relational_expression.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 #include <algorithm>
+#include <set>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -45,8 +47,8 @@ bool DirectValueWindowUsesExactTypeV1(
     const api::TypedRelationalDag& dag,
     const std::uint32_t relation_node_id,
     const std::string_view expected_builtin_id,
-    const std::string_view type_uuid) {
-  if (type_uuid.empty() ||
+    const core::platform::Uuid type_uuid) {
+  if (type_uuid.is_nil() ||
       (expected_builtin_id != "sb.window.lag" &&
        expected_builtin_id != "sb.window.lead" &&
        expected_builtin_id != "sb.window.first_value" &&
@@ -89,13 +91,13 @@ bool ExactCanonicalBooleanWindowSourceV1(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     const bool runtime_nullable,
-    const std::string_view boolean_type_uuid,
-    const std::string_view function_uuid,
-    const std::string_view result_descriptor_uuid,
-    const std::string_view ordering_property_uuid,
-    const std::string_view window_property_uuid,
-    const std::string_view window_frame_descriptor_uuid) {
-  return !boolean_type_uuid.empty() &&
+    const core::platform::Uuid boolean_type_uuid,
+    const core::platform::Uuid function_uuid,
+    const core::platform::Uuid result_descriptor_uuid,
+    const core::platform::Uuid ordering_property_uuid,
+    const core::platform::Uuid window_property_uuid,
+    const core::platform::Uuid window_frame_descriptor_uuid) {
+  return !boolean_type_uuid.is_nil() &&
          relational_descriptor.descriptor_uuid ==
              runtime_descriptor.descriptor_uuid &&
          relational_descriptor.descriptor_uuid !=
@@ -118,9 +120,9 @@ bool ExactCanonicalBooleanWindowSourceV1(
          runtime_descriptor.descriptor_kind == "scalar" &&
          runtime_descriptor.canonical_type_name == "boolean" &&
          api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) &&
+         runtime_descriptor.type_uuid == boolean_type_uuid &&
          runtime_descriptor.encoded_descriptor ==
-             "type_uuid=" + std::string(boolean_type_uuid) +
-                 ";nullability=" +
+             std::string("nullability=") +
                  (runtime_nullable ? "nullable" : "non_null");
 }
 
@@ -128,26 +130,22 @@ bool CanonicalDescriptorFieldEqualsV1(
     const api::EngineDescriptor& descriptor,
     const std::string_view key,
     const std::optional<std::string_view> expected) {
-  const auto prefix = std::string(key) + "=";
-  std::optional<std::string_view> value;
-  std::size_t begin = 0;
-  while (begin <= descriptor.encoded_descriptor.size()) {
-    const auto end = descriptor.encoded_descriptor.find(';', begin);
-    const auto field = std::string_view(descriptor.encoded_descriptor).substr(
-        begin, end == std::string::npos ? std::string::npos : end - begin);
-    if (field.starts_with(prefix)) {
-      if (value.has_value()) return false;
-      value = field.substr(prefix.size());
-    }
-    if (end == std::string::npos) break;
-    begin = end + 1;
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)) return false;
+  if (key.ends_with("uuid")) {
+    if (expected) return false;
+    if (key == "type_uuid" && !descriptor.type_uuid.is_nil()) return false;
+    if (key == "collation_uuid" && !descriptor.collation_uuid.is_nil()) return false;
+    return !fields.identities.contains(std::string(key));
   }
-  return expected.has_value() ? value == expected : !value.has_value();
+  const auto found = fields.text.find(std::string(key));
+  return expected ? found != fields.text.end() && found->second == *expected
+                  : found == fields.text.end();
 }
 
 
 unsigned ExactBoundedSignedIntegerTypeRankV1(
-    const std::string_view type_uuid) {
+    const core::platform::Uuid type_uuid) {
   constexpr std::array<std::string_view, 4> kTypes{
       "int8", "int16", "int32", "int64"};
   for (std::size_t ordinal = 0; ordinal < kTypes.size(); ++ordinal) {
@@ -163,15 +161,15 @@ bool ExactCanonicalScalarWindowOperandV1(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     const bool runtime_nullable,
-    const std::string_view function_uuid,
-    const std::string_view result_descriptor_uuid,
-    const std::string_view result_type_uuid,
-    const std::string_view counterpart_descriptor_uuid,
-    const std::string_view counterpart_type_uuid,
+    const core::platform::Uuid function_uuid,
+    const core::platform::Uuid result_descriptor_uuid,
+    const core::platform::Uuid result_type_uuid,
+    const core::platform::Uuid counterpart_descriptor_uuid,
+    const core::platform::Uuid counterpart_type_uuid,
     const bool same_operand_ordinal,
-    const std::string_view ordering_property_uuid,
-    const std::string_view window_property_uuid,
-    const std::string_view window_frame_descriptor_uuid) {
+    const core::platform::Uuid ordering_property_uuid,
+    const core::platform::Uuid window_property_uuid,
+    const core::platform::Uuid window_frame_descriptor_uuid) {
   const auto expected_nullability =
       runtime_nullable ? std::string_view("nullable")
                        : std::string_view("non_null");
@@ -207,8 +205,8 @@ bool ExactCanonicalScalarWindowOperandV1(
             ? std::optional<std::string_view>(*value)
             : std::optional<std::string_view>{});
   };
-  return CanonicalUuidText(relational_descriptor.type_uuid) &&
-         !result_type_uuid.empty() &&
+  return core::uuid::IsEngineIdentityUuid(relational_descriptor.type_uuid) &&
+         !result_type_uuid.is_nil() &&
          relational_descriptor.descriptor_uuid ==
              runtime_descriptor.descriptor_uuid &&
          relational_descriptor.descriptor_uuid !=
@@ -238,17 +236,12 @@ bool ExactCanonicalScalarWindowOperandV1(
          exec::CanonicalDerivedDescriptorTypeMatches(
              runtime_descriptor, runtime_nullable, runtime_descriptor,
              runtime_nullable) &&
-         CanonicalDescriptorFieldEqualsV1(runtime_descriptor, "type_uuid",
-                                          relational_descriptor.type_uuid) &&
+         runtime_descriptor.type_uuid == relational_descriptor.type_uuid &&
          exact_nullability &&
-         CanonicalDescriptorFieldEqualsV1(
-             runtime_descriptor, "collation_uuid",
-             relational_descriptor.collation_uuid.has_value()
-                 ? std::optional<std::string_view>(
-                       *relational_descriptor.collation_uuid)
-                 : std::optional<std::string_view>{}) &&
+         runtime_descriptor.collation_uuid ==
+             relational_descriptor.collation_uuid.value_or(core::platform::Uuid{}) &&
          (!relational_descriptor.collation_uuid.has_value() ||
-          CanonicalUuidText(*relational_descriptor.collation_uuid)) &&
+          core::uuid::IsEngineIdentityUuid(*relational_descriptor.collation_uuid)) &&
          CanonicalDescriptorFieldEqualsV1(
              runtime_descriptor, "timezone_profile_id",
              relational_descriptor.timezone_profile_id.has_value()
@@ -264,12 +257,12 @@ bool ExactCanonicalBoundedSignedWindowSourceV1(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     const bool runtime_nullable,
-    const std::array<std::string, 4>& bounded_signed_type_uuids,
-    const std::string_view function_uuid,
-    const std::string_view result_descriptor_uuid,
-    const std::string_view ordering_property_uuid,
-    const std::string_view window_property_uuid,
-    const std::string_view window_frame_descriptor_uuid) {
+    const std::array<core::platform::Uuid, 4>& bounded_signed_type_uuids,
+    const core::platform::Uuid function_uuid,
+    const core::platform::Uuid result_descriptor_uuid,
+    const core::platform::Uuid ordering_property_uuid,
+    const core::platform::Uuid window_property_uuid,
+    const core::platform::Uuid window_frame_descriptor_uuid) {
   constexpr std::array<std::string_view, 4> kBoundedSignedTypeNames = {
       "int8", "int16", "int32", "int64"};
   const auto type_uuid = std::ranges::find(
@@ -278,8 +271,8 @@ bool ExactCanonicalBoundedSignedWindowSourceV1(
       std::distance(bounded_signed_type_uuids.begin(), type_uuid));
   const auto& result_type_uuid = bounded_signed_type_uuids.back();
   return type_uuid != bounded_signed_type_uuids.end() &&
-         !type_uuid->empty() && type_index < kBoundedSignedTypeNames.size() &&
-         !result_type_uuid.empty() &&
+         !type_uuid->is_nil() && type_index < kBoundedSignedTypeNames.size() &&
+         !result_type_uuid.is_nil() &&
          relational_descriptor.descriptor_uuid ==
              runtime_descriptor.descriptor_uuid &&
          relational_descriptor.descriptor_uuid !=
@@ -312,8 +305,9 @@ bool ExactCanonicalBoundedSignedWindowSourceV1(
          exec::IsCanonicalBoundedSignedIntegerDescriptor(
              runtime_descriptor) &&
          api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) &&
+         runtime_descriptor.type_uuid == *type_uuid &&
          runtime_descriptor.encoded_descriptor ==
-             "type_uuid=" + *type_uuid + ";nullability=" +
+             std::string("nullability=") +
                  (runtime_nullable ? "nullable" : "non_null");
 }
 
@@ -321,13 +315,13 @@ bool ExactCanonicalBoundedSignedWindowOrderV1(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     const bool runtime_nullable,
-    const std::array<std::string, 4>& bounded_signed_type_uuids,
-    const std::string_view function_uuid,
-    const std::string_view result_descriptor_uuid,
-    const std::string_view result_type_uuid,
-    const std::string_view ordering_property_uuid,
-    const std::string_view window_property_uuid,
-    const std::string_view window_frame_descriptor_uuid) {
+    const std::array<core::platform::Uuid, 4>& bounded_signed_type_uuids,
+    const core::platform::Uuid function_uuid,
+    const core::platform::Uuid result_descriptor_uuid,
+    const core::platform::Uuid result_type_uuid,
+    const core::platform::Uuid ordering_property_uuid,
+    const core::platform::Uuid window_property_uuid,
+    const core::platform::Uuid window_frame_descriptor_uuid) {
   constexpr std::array<std::string_view, 4> kBoundedSignedTypeNames = {
       "int8", "int16", "int32", "int64"};
   const auto type_uuid = std::ranges::find(
@@ -335,8 +329,8 @@ bool ExactCanonicalBoundedSignedWindowOrderV1(
   const auto type_index = static_cast<std::size_t>(
       std::distance(bounded_signed_type_uuids.begin(), type_uuid));
   return type_uuid != bounded_signed_type_uuids.end() &&
-         !type_uuid->empty() && type_index < kBoundedSignedTypeNames.size() &&
-         !result_type_uuid.empty() &&
+         !type_uuid->is_nil() && type_index < kBoundedSignedTypeNames.size() &&
+         !result_type_uuid.is_nil() &&
          relational_descriptor.descriptor_uuid ==
              runtime_descriptor.descriptor_uuid &&
          relational_descriptor.descriptor_uuid !=
@@ -367,8 +361,9 @@ bool ExactCanonicalBoundedSignedWindowOrderV1(
          exec::IsCanonicalBoundedSignedIntegerDescriptor(
              runtime_descriptor) &&
          api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) &&
+         runtime_descriptor.type_uuid == *type_uuid &&
          runtime_descriptor.encoded_descriptor ==
-             "type_uuid=" + *type_uuid + ";nullability=" +
+             std::string("nullability=") +
                  (runtime_nullable ? "nullable" : "non_null");
 }
 
@@ -433,10 +428,10 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
     const PreparedSortRoot& prepared_sort,
     const std::size_t materialized_column_count,
     const std::size_t result_binding_count,
-    const std::string& result_type_uuid,
-    const std::string& order_type_uuid,
-    const std::string& boolean_type_uuid,
-    const std::array<std::string, 4>& bounded_signed_type_uuids,
+    const core::platform::Uuid& result_type_uuid,
+    const core::platform::Uuid& order_type_uuid,
+    const core::platform::Uuid& boolean_type_uuid,
+    const std::array<core::platform::Uuid, 4>& bounded_signed_type_uuids,
     const std::string_view family_label,
     const GlobalRankingWindowProfile& profile,
     const bool allow_project_root = false) {
@@ -627,7 +622,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       typed_sort != dag.nodes.end() &&
       typed_sort->bound_expression_ids.size() == 1 &&
       consumer.required_property_uuids ==
-          std::vector<std::string>{prepared_sort.ordering_property_uuid} &&
+          std::vector<core::platform::Uuid>{prepared_sort.ordering_property_uuid} &&
       consumer.delivered_property_uuids.size() == 2 &&
       std::ranges::find(consumer.delivered_property_uuids,
                         prepared_sort.ordering_property_uuid) !=
@@ -690,7 +685,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       function->expression_kind !=
           api::RelationalExpressionKind::kFunctionCall ||
       function->function_uuid !=
-          std::optional<std::string>(profile.function_uuid) ||
+          std::optional<core::platform::Uuid>(profile.function_uuid) ||
       function->bound_name_uuid.has_value() ||
       function->operator_name.has_value() ||
       function->literal_kind.has_value() ||
@@ -699,7 +694,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           invocations.front()->argument_expression_ids ||
       function->result_descriptor_id !=
           invocations.front()->result_descriptor_id ||
-      result_descriptor == dag.descriptors.end() || result_type_uuid.empty() ||
+      result_descriptor == dag.descriptors.end() || result_type_uuid.is_nil() ||
       result_descriptor->type_uuid != result_type_uuid ||
       result_descriptor->nullability !=
           (value_window && !aggregate_count_window
@@ -746,8 +741,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           plan::CanonicalLogicalPropertyKind::kWindow ||
       window_property->origin_logical_node_id != consumer.node_id ||
       window_property->dependency_property_uuids !=
-          std::vector<std::string>{prepared_sort.ordering_property_uuid} ||
-      window_property->window_frame_descriptor_uuid.empty()) {
+          std::vector<core::platform::Uuid>{prepared_sort.ordering_property_uuid} ||
+      window_property->window_frame_descriptor_uuid.is_nil()) {
     result.diagnostic_id = "QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1";
     result.detail = std::string(family_label) + " " +
                     std::string(profile.display_name) +
@@ -755,18 +750,18 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
     return result;
   }
   if (fixed_unqualified_ranking_result_window) {
-    const std::array<std::string_view, 6> ranking_identity_domain{
+    const std::array<core::platform::Uuid, 6> ranking_identity_domain{
         result_descriptor->descriptor_uuid,
         result_type_uuid,
         profile.function_uuid,
         prepared_sort.ordering_property_uuid,
         *window_property_uuid,
         window_property->window_frame_descriptor_uuid};
-    const std::unordered_set<std::string_view> distinct_ranking_identities(
+    const std::set<core::platform::Uuid> distinct_ranking_identities(
         ranking_identity_domain.begin(), ranking_identity_domain.end());
     if (distinct_ranking_identities.size() != ranking_identity_domain.size() ||
         std::ranges::any_of(ranking_identity_domain, [](const auto identity) {
-          return !CanonicalUuidText(identity);
+          return !core::uuid::IsEngineIdentityUuid(identity);
         })) {
       result.detail = std::string(family_label) + " " +
                       std::string(profile.display_name) +
@@ -879,7 +874,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           std::ranges::find(bounded_signed_type_uuids,
                             argument_descriptor->type_uuid) !=
               bounded_signed_type_uuids.end()) ||
-         (aggregate_boolean_window && !boolean_type_uuid.empty() &&
+         (aggregate_boolean_window && !boolean_type_uuid.is_nil() &&
           argument_descriptor->type_uuid == boolean_type_uuid));
     if (argument == dag.expressions.end() ||
         argument->expression_kind !=
@@ -913,7 +908,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         (!aggregate_window &&
          (argument_descriptor->type_uuid != result_type_uuid ||
           (argument_descriptor->type_uuid != order_type_uuid &&
-           (!navigation_value_window || boolean_type_uuid.empty() ||
+           (!navigation_value_window || boolean_type_uuid.is_nil() ||
             argument_descriptor->type_uuid != boolean_type_uuid)) ||
           result_descriptor->type_uuid != argument_descriptor->type_uuid ||
           argument_descriptor->collation_uuid.has_value() ||
@@ -1096,14 +1091,14 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
     const PreparedSortRoot& prepared_sort,
     const std::size_t materialized_column_count,
     const std::size_t result_binding_count,
-    const std::string& int64_type_uuid,
+    const core::platform::Uuid& int64_type_uuid,
     const std::string_view family_label,
     const bool allow_project_root = false) {
   return PrepareGlobalRankingWindowBinding(
       dag, logical_properties, consumer, logical_consumer, previous_logical,
       prepared_sort, materialized_column_count, result_binding_count,
       int64_type_uuid, int64_type_uuid, int64_type_uuid,
-      std::array<std::string, 4>{}, family_label, kGlobalRowNumberProfile,
+      std::array<core::platform::Uuid, 4>{}, family_label, kGlobalRowNumberProfile,
       allow_project_root);
 }
 
@@ -1120,7 +1115,7 @@ bool DirectValueWindowUsesExactTypeForComposition(
     const api::TypedRelationalDag& dag,
     const std::uint32_t relation_node_id,
     const std::string_view expected_builtin_id,
-    const std::string_view type_uuid) {
+    const core::platform::Uuid type_uuid) {
   return DirectValueWindowUsesExactTypeV1(
       dag, relation_node_id, expected_builtin_id, type_uuid);
 }
@@ -1129,12 +1124,12 @@ bool ExactCanonicalBooleanWindowSourceForComposition(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     const bool runtime_nullable,
-    const std::string_view boolean_type_uuid,
-    const std::string_view function_uuid,
-    const std::string_view result_descriptor_uuid,
-    const std::string_view ordering_property_uuid,
-    const std::string_view window_property_uuid,
-    const std::string_view window_frame_descriptor_uuid) {
+    const core::platform::Uuid boolean_type_uuid,
+    const core::platform::Uuid function_uuid,
+    const core::platform::Uuid result_descriptor_uuid,
+    const core::platform::Uuid ordering_property_uuid,
+    const core::platform::Uuid window_property_uuid,
+    const core::platform::Uuid window_frame_descriptor_uuid) {
   return ExactCanonicalBooleanWindowSourceV1(
       relational_descriptor, runtime_descriptor, runtime_nullable,
       boolean_type_uuid, function_uuid, result_descriptor_uuid,
@@ -1146,15 +1141,15 @@ bool ExactCanonicalScalarWindowOperandForComposition(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     const bool runtime_nullable,
-    const std::string_view function_uuid,
-    const std::string_view result_descriptor_uuid,
-    const std::string_view result_type_uuid,
-    const std::string_view counterpart_descriptor_uuid,
-    const std::string_view counterpart_type_uuid,
+    const core::platform::Uuid function_uuid,
+    const core::platform::Uuid result_descriptor_uuid,
+    const core::platform::Uuid result_type_uuid,
+    const core::platform::Uuid counterpart_descriptor_uuid,
+    const core::platform::Uuid counterpart_type_uuid,
     const bool same_operand_ordinal,
-    const std::string_view ordering_property_uuid,
-    const std::string_view window_property_uuid,
-    const std::string_view window_frame_descriptor_uuid) {
+    const core::platform::Uuid ordering_property_uuid,
+    const core::platform::Uuid window_property_uuid,
+    const core::platform::Uuid window_frame_descriptor_uuid) {
   return ExactCanonicalScalarWindowOperandV1(
       relational_descriptor, runtime_descriptor, runtime_nullable,
       function_uuid, result_descriptor_uuid, result_type_uuid,
@@ -1167,12 +1162,12 @@ bool ExactCanonicalBoundedSignedWindowSourceForComposition(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     const bool runtime_nullable,
-    const std::array<std::string, 4>& bounded_signed_type_uuids,
-    const std::string_view function_uuid,
-    const std::string_view result_descriptor_uuid,
-    const std::string_view ordering_property_uuid,
-    const std::string_view window_property_uuid,
-    const std::string_view window_frame_descriptor_uuid) {
+    const std::array<core::platform::Uuid, 4>& bounded_signed_type_uuids,
+    const core::platform::Uuid function_uuid,
+    const core::platform::Uuid result_descriptor_uuid,
+    const core::platform::Uuid ordering_property_uuid,
+    const core::platform::Uuid window_property_uuid,
+    const core::platform::Uuid window_frame_descriptor_uuid) {
   return ExactCanonicalBoundedSignedWindowSourceV1(
       relational_descriptor, runtime_descriptor, runtime_nullable,
       bounded_signed_type_uuids, function_uuid, result_descriptor_uuid,
@@ -1184,13 +1179,13 @@ bool ExactCanonicalBoundedSignedWindowOrderForComposition(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     const bool runtime_nullable,
-    const std::array<std::string, 4>& bounded_signed_type_uuids,
-    const std::string_view function_uuid,
-    const std::string_view result_descriptor_uuid,
-    const std::string_view result_type_uuid,
-    const std::string_view ordering_property_uuid,
-    const std::string_view window_property_uuid,
-    const std::string_view window_frame_descriptor_uuid) {
+    const std::array<core::platform::Uuid, 4>& bounded_signed_type_uuids,
+    const core::platform::Uuid function_uuid,
+    const core::platform::Uuid result_descriptor_uuid,
+    const core::platform::Uuid result_type_uuid,
+    const core::platform::Uuid ordering_property_uuid,
+    const core::platform::Uuid window_property_uuid,
+    const core::platform::Uuid window_frame_descriptor_uuid) {
   return ExactCanonicalBoundedSignedWindowOrderV1(
       relational_descriptor, runtime_descriptor, runtime_nullable,
       bounded_signed_type_uuids, function_uuid, result_descriptor_uuid,
@@ -1214,10 +1209,10 @@ PrepareGlobalRankingWindowBindingForComposition(
     const PreparedSortRoot& prepared_sort,
     const std::size_t materialized_column_count,
     const std::size_t result_binding_count,
-    const std::string& result_type_uuid,
-    const std::string& order_type_uuid,
-    const std::string& boolean_type_uuid,
-    const std::array<std::string, 4>& bounded_signed_type_uuids,
+    const core::platform::Uuid& result_type_uuid,
+    const core::platform::Uuid& order_type_uuid,
+    const core::platform::Uuid& boolean_type_uuid,
+    const std::array<core::platform::Uuid, 4>& bounded_signed_type_uuids,
     const std::string_view family_label,
     const GlobalRankingWindowProfile& profile,
     const bool allow_project_root) {
@@ -1238,7 +1233,7 @@ PrepareGlobalRowNumberWindowBindingForComposition(
     const PreparedSortRoot& prepared_sort,
     const std::size_t materialized_column_count,
     const std::size_t result_binding_count,
-    const std::string& int64_type_uuid,
+    const core::platform::Uuid& int64_type_uuid,
     const std::string_view family_label,
     const bool allow_project_root) {
   return PrepareGlobalRowNumberWindowBinding(
@@ -1248,7 +1243,7 @@ PrepareGlobalRowNumberWindowBindingForComposition(
 }
 
 unsigned ExactBoundedSignedIntegerTypeRankForComposition(
-    const std::string_view type_uuid) {
+    const core::platform::Uuid type_uuid) {
   return ExactBoundedSignedIntegerTypeRankV1(type_uuid);
 }
 

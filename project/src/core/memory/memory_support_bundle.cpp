@@ -167,7 +167,7 @@ bool BoundedAppendRow(MemorySupportBundleResult* result,
                       MemorySupportBundleRow row,
                       const MemorySupportBundleLimits& limits) {
   const u64 row_bytes = RowSizeEstimate(row.key, row.value);
-  if (result->rows.size() >= limits.max_rows ||
+  if (result->rows.size() + result->metric_records.size() >= limits.max_rows ||
       result->output_bytes > limits.max_output_bytes ||
       row_bytes > limits.max_output_bytes - result->output_bytes) {
     ++result->dropped_row_count;
@@ -175,6 +175,61 @@ bool BoundedAppendRow(MemorySupportBundleResult* result,
   }
   result->output_bytes += row_bytes;
   result->rows.push_back(std::move(row));
+  return true;
+}
+
+bool ProjectMemoryMetric(const metrics::MetricDescriptor& descriptor,
+                         const MetricValue& value, bool allow_protected,
+                         MemorySupportBundleMetricRecord* output) {
+  if (!output) return false;
+  MemorySupportBundleMetricRecord staged;
+  MetricValue visible;
+  if (!metrics::ProjectMetricForSupport(descriptor, value, allow_protected,
+                                        &staged.metric, &visible)) return false;
+  staged.family = descriptor.family;
+  if (!allow_protected) {
+    const auto* text = std::get_if<std::string>(&visible.value);
+    bool protected_value = LooksProtected(staged.family) ||
+        (text && LooksProtected(*text)) || LooksProtected(visible.state_text);
+    for (const auto& label : visible.labels) {
+      const auto* label_text = std::get_if<std::string>(&label.value);
+      protected_value |= LooksProtected(label.key) ||
+                         (label_text && LooksProtected(*label_text));
+    }
+    if (protected_value) {
+      staged.metric.encoded_value.clear();
+      staged.value_redacted = true;
+      if (LooksProtected(staged.family)) staged.family = "<redacted>";
+    }
+  }
+  const std::string_view bytes(
+      reinterpret_cast<const char*>(staged.metric.encoded_value.data()),
+      staged.metric.encoded_value.size());
+  staged.tamper_evidence_digest = DigestRow(staged.family, bytes,
+                                           "binary_metric", staged.value_redacted);
+  *output = std::move(staged);
+  return true;
+}
+
+bool BoundedAppendMetric(MemorySupportBundleResult* result,
+                         MemorySupportBundleMetricRecord record,
+                         const MemorySupportBundleLimits& limits) {
+  u64 bytes = sizeof(record) + record.family.size() +
+      record.metric.encoded_value.size() + record.tamper_evidence_digest.size();
+  for (const auto& label : record.metric.omitted_sensitive_labels)
+    bytes += sizeof(label) + label.size();
+  if (result->rows.size() + result->metric_records.size() >= limits.max_rows ||
+      result->metric_records.size() >= limits.max_metrics ||
+      record.metric.encoded_value.size() > limits.max_value_bytes ||
+      result->output_bytes > limits.max_output_bytes ||
+      bytes > limits.max_output_bytes - result->output_bytes) {
+    ++result->dropped_row_count; return false;
+  }
+  result->output_bytes += bytes;
+  if (record.value_redacted || !record.metric.omitted_sensitive_labels.empty())
+    ++result->redacted_row_count;
+  result->metric_records.push_back(std::move(record));
+  ++result->metric_count;
   return true;
 }
 
@@ -714,10 +769,16 @@ MemorySupportBundleResult BuildMemorySupportBundleEvidence(
         ++result.dropped_row_count;
         break;
       }
-      const std::string prefix = "metric." + std::to_string(result.metric_count);
-      add(prefix + ".family", metric.family);
-      add(prefix + ".value", std::to_string(metric.value));
-      ++result.metric_count;
+      const auto* descriptor = metrics::DefaultMetricRegistry().FindDescriptor(metric.family);
+      MemorySupportBundleMetricRecord record;
+      if (!descriptor || !ProjectMemoryMetric(*descriptor, metric,
+            request.allow_protected_material && !request.exclude_protected_material, &record)) {
+        result.status = InvalidRequestStatus();
+        result.evidence.push_back("memory_support_bundle.invalid_metric=true");
+        ++result.dropped_row_count;
+        continue;
+      }
+      BoundedAppendMetric(&result, std::move(record), request.limits);
     }
   }
 
@@ -764,7 +825,7 @@ MemorySupportBundleResult BuildMemorySupportBundleEvidence(
   }
 
   result.evidence.push_back("memory_support_bundle.row_count=" +
-                            std::to_string(result.rows.size()));
+                            std::to_string(result.rows.size() + result.metric_records.size()));
   result.evidence.push_back("memory_support_bundle.redacted_row_count=" +
                             std::to_string(result.redacted_row_count));
   result.evidence.push_back("memory_support_bundle.foreign_source_count=" +

@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -43,7 +44,7 @@ using scratchbird::server::ServerSessionRegistry;
 using scratchbird::server::SessionOperationResult;
 namespace sbps = scratchbird::server::sbps;
 
-constexpr std::string_view kDatabaseUuid = "019e0ef1-7b00-7000-8000-000000000001";
+constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("019e0ef1-7b00-7000-8000-000000000001");
 constexpr std::string_view kVerifier =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 constexpr std::string_view kWrongVerifier =
@@ -53,22 +54,14 @@ constexpr std::string_view kCredentialFingerprint =
     "salt=0123456789abcdef0123456789abcdef:"
     "verifier=0358b60b6875c81e17d3e0ab67f8b785f"
     "49d4146547c79da401f21dc641c2c16";
-constexpr std::string_view kAlicePrincipalUuid =
-    "019e108d-1700-7000-8000-0000000007aa";
-constexpr std::string_view kSysarchRoleUuid =
-    "019e108d-1700-7000-8000-0000000007a1";
-constexpr std::string_view kPublicGroupUuid =
-    "019e108d-1700-7000-8000-0000000007a2";
-constexpr std::string_view kAliceSysarchMembershipUuid =
-    "019e108d-1700-7000-8000-0000000007b1";
-constexpr std::string_view kAlicePublicMembershipUuid =
-    "019e108d-1700-7000-8000-0000000007b2";
-constexpr std::string_view kSysarchConnectGrantUuid =
-    "019e108d-1700-7000-8000-0000000007c1";
-constexpr std::string_view kSysarchSelectGrantUuid =
-    "019e108d-1700-7000-8000-0000000007c2";
-constexpr std::string_view kAliceConnectDenyGrantUuid =
-    "019e108d-1700-7000-8000-0000000007d1";
+constexpr auto kAlicePrincipalUuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007aa");
+constexpr auto kSysarchRoleUuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007a1");
+constexpr auto kPublicGroupUuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007a2");
+constexpr auto kAliceSysarchMembershipUuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007b1");
+constexpr auto kAlicePublicMembershipUuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007b2");
+constexpr auto kSysarchConnectGrantUuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007c1");
+constexpr auto kSysarchSelectGrantUuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007c2");
+constexpr auto kAliceConnectDenyGrantUuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007d1");
 
 struct AuthFixture {
   std::array<std::uint8_t, 16> connection_uuid{};
@@ -139,8 +132,8 @@ std::filesystem::path MakeTempDir() {
 }
 
 void CreateOpenDatabase(const std::filesystem::path& path) {
-  const auto database_uuid = uuid::ParseDurableEngineIdentityUuid(
-      UuidKind::database, std::string(kDatabaseUuid));
+  const auto database_uuid = uuid::MakeTypedUuid(
+      UuidKind::database, kDatabaseUuid);
   Require(database_uuid.ok(), "DBLC-007 fixed database identity was invalid");
   db::DatabaseCreateConfig create;
   create.path = path.string();
@@ -207,14 +200,12 @@ SecurityMutationTransaction BeginSecurityMutationTransaction(
   auto& context = transaction.context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.database_path = database_path.string();
-  context.database_uuid.canonical = std::string(kDatabaseUuid);
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e0ef1-7b00-7000-8000-000000000001");
   context.database_page_size_bytes = 16384;
-  context.principal_uuid.canonical =
-      uuid::UuidToString(bootstrap.state.principal_uuid.value);
-  context.session_uuid.canonical =
-      scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
-  context.transaction_uuid.canonical =
-      uuid::UuidToString(begun.entry.identity.transaction_uuid.value);
+  context.principal_uuid = bootstrap.state.principal_uuid.value;
+  context.session_uuid =
+      scratchbird::core::platform::Uuid{sbps::MakeUuidV7Bytes()};
+  context.transaction_uuid = begun.entry.identity.transaction_uuid.value;
   context.local_transaction_id = begun.entry.identity.local_id.value;
   context.snapshot_visible_through_local_transaction_id =
       begun.entry.begin_visible_through_local_transaction_id;
@@ -274,9 +265,9 @@ void SeedPageBackedAuthorizationStore(
 
   api::EngineSecurityCreatePrincipalRequest principal;
   principal.context = transaction.context;
-  principal.target_object.uuid.canonical = std::string(kAlicePrincipalUuid);
+  principal.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007aa");
   principal.target_object.object_kind = "security_principal";
-  principal.principal_uuid = std::string(kAlicePrincipalUuid);
+  principal.principal_uuid = kAlicePrincipalUuid;
   principal.principal_name = "alice";
   principal.credential_fingerprint = std::string(kCredentialFingerprint);
   principal.option_envelopes.push_back("principal_authority:engine");
@@ -289,9 +280,9 @@ void SeedPageBackedAuthorizationStore(
 
   api::EngineSecurityCreateRoleRequest role;
   role.context = transaction.context;
-  role.target_object.uuid.canonical = std::string(kSysarchRoleUuid);
+  role.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007a1");
   role.target_object.object_kind = "security_role";
-  role.role_uuid = std::string(kSysarchRoleUuid);
+  role.role_uuid = kSysarchRoleUuid;
   role.role_name = "sysarch";
   role.option_envelopes.push_back("role_authority:engine");
   const auto created_role = api::EngineSecurityCreateRole(role);
@@ -302,9 +293,9 @@ void SeedPageBackedAuthorizationStore(
 
   api::EngineSecurityCreateGroupRequest group;
   group.context = transaction.context;
-  group.target_object.uuid.canonical = std::string(kPublicGroupUuid);
+  group.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007a2");
   group.target_object.object_kind = "security_group";
-  group.group_uuid = std::string(kPublicGroupUuid);
+  group.group_uuid = kPublicGroupUuid;
   group.group_name = "PUBLIC";
   group.option_envelopes.push_back("group_authority:engine");
   const auto created_group = api::EngineSecurityCreateGroup(group);
@@ -314,14 +305,14 @@ void SeedPageBackedAuthorizationStore(
   RefreshSecurityContextGeneration(&transaction,
                                    created_group.security_generation);
 
-  auto grant_membership = [&](std::string_view membership_uuid,
-                              std::string_view container_uuid,
+  auto grant_membership = [&](const api::EngineUuid& membership_uuid,
+                              const api::EngineUuid& container_uuid,
                               std::string_view container_kind) {
     api::EngineSecurityGrantMembershipRequest request;
     request.context = transaction.context;
-    request.membership_uuid = std::string(membership_uuid);
-    request.member_principal_uuid = std::string(kAlicePrincipalUuid);
-    request.container_uuid = std::string(container_uuid);
+    request.membership_uuid = membership_uuid;
+    request.member_principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007aa");
+    request.container_uuid = container_uuid;
     request.container_kind = std::string(container_kind);
     request.option_envelopes.push_back("grant_authority:engine");
     const auto granted = api::EngineSecurityGrantMembership(request);
@@ -334,15 +325,15 @@ void SeedPageBackedAuthorizationStore(
   grant_membership(kAliceSysarchMembershipUuid, kSysarchRoleUuid, "role");
   grant_membership(kAlicePublicMembershipUuid, kPublicGroupUuid, "group");
 
-  auto grant_privilege = [&](std::string_view grant_uuid,
+  auto grant_privilege = [&](const api::EngineUuid& grant_uuid,
                              std::string_view privilege,
                              std::string_view effect) {
     api::EngineSecurityGrantPrivilegeRequest request;
     request.context = transaction.context;
-    request.grant_uuid = std::string(grant_uuid);
-    request.grantee_uuid = std::string(kSysarchRoleUuid);
+    request.grant_uuid = grant_uuid;
+    request.grantee_uuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007a1");
     request.grantee_kind = "role";
-    request.target_object_uuid.clear();
+    request.target_object_uuid = {};
     request.target_object_kind.clear();
     request.privilege = std::string(privilege);
     request.grant_effect = std::string(effect);
@@ -360,7 +351,7 @@ void SeedPageBackedAuthorizationStore(
   CommitSecurityMutationTransaction(transaction, 1779101003000ull);
   auto committed_context = transaction.context;
   committed_context.local_transaction_id = 0;
-  committed_context.transaction_uuid.canonical.clear();
+  committed_context.transaction_uuid = {};
   committed_context.snapshot_visible_through_local_transaction_id = 0;
   const auto committed =
       api::LoadSecurityPrincipalLifecycleState(committed_context);
@@ -378,10 +369,10 @@ void AppendAliceConnectDeny(const std::filesystem::path& database_path) {
       BeginSecurityMutationTransaction(database_path, 1779101004000ull);
   api::EngineSecurityGrantPrivilegeRequest request;
   request.context = transaction.context;
-  request.grant_uuid = std::string(kAliceConnectDenyGrantUuid);
-  request.grantee_uuid = std::string(kAlicePrincipalUuid);
+  request.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007d1");
+  request.grantee_uuid = scratchbird::tests::FixtureUuidLiteral("019e108d-1700-7000-8000-0000000007aa");
   request.grantee_kind = "principal";
-  request.target_object_uuid.clear();
+  request.target_object_uuid = {};
   request.target_object_kind.clear();
   request.privilege = "CONNECT";
   request.grant_effect = "deny";
@@ -402,7 +393,7 @@ HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
   database.state = state;
   database.database_open = true;
   database.database_path = database_path.string();
-  database.database_uuid = std::string(kDatabaseUuid);
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e0ef1-7b00-7000-8000-000000000001");
   database.read_only = state == HostedDatabaseState::kReadOnly;
   database.write_admission_fenced = false;
   engine_state.databases.push_back(std::move(database));
@@ -523,7 +514,7 @@ void TestAcceptedAuthAttach(const std::filesystem::path& database_path) {
   ServerSessionRegistry registry;
   const auto engine_state = MakeEngineState(database_path);
   auto auth = Authenticate(&registry, engine_state, "alice", "default", "en", "sysarch");
-  auto attach = Attach(&registry, engine_state, auth, std::string(kDatabaseUuid), "read_write");
+  auto attach = Attach(&registry, engine_state, auth, std::string(reinterpret_cast<const char*>(kDatabaseUuid.bytes.data()), 16), "read_write");
   if (!attach.accepted) PrintDiagnostics(attach);
   Require(attach.accepted, "valid auth plus attach was rejected");
   Require(registry.channel_state == ServerChannelState::kReady, "attach did not move channel to ready");
@@ -554,15 +545,15 @@ void TestAcceptedAuthAttach(const std::filesystem::path& database_path) {
   Require(session.resource_version_identity == "sbsql.resource-pack.v1",
           "session did not carry resource version identity");
   Require(session.local_transaction_id != 0, "attach did not admit the required active transaction");
-  Require(!session.transaction_uuid.empty(), "attach did not bind the active transaction UUID");
-  Require(scratchbird::server::UuidBytesToText(session.active_role_uuid) == kSysarchRoleUuid,
+  Require(!session.transaction_uuid.is_nil(), "attach did not bind the active transaction UUID");
+  Require(session.active_role_uuid == kSysarchRoleUuid.bytes,
           "session did not activate requested sysarch role");
   Require(session.effective_role_uuids.size() == 1,
           "session did not materialize sysarch effective role");
   Require(session.effective_group_uuids.size() == 1,
           "session did not materialize PUBLIC effective group");
-  Require(scratchbird::server::UuidBytesToText(session.effective_group_uuids.front()) ==
-              kPublicGroupUuid,
+  Require(session.effective_group_uuids.front() ==
+              kPublicGroupUuid.bytes,
           "session did not materialize expected PUBLIC group");
   Require(PayloadContains(attach, "accepted"), "attach result did not report accepted outcome");
   const auto status = scratchbird::server::SessionRegistryStatusJson(registry);
@@ -706,6 +697,14 @@ void TestAttachRefusals(const std::filesystem::path& database_path) {
     Require(HasDiagnostic(result, "PARSER_SERVER_IPC.ATTACH_DATABASE_UNAVAILABLE"),
             "attach without database did not report database unavailable");
     Require(registry.sessions_by_uuid.empty(), "failed attach created a session");
+  }
+  {
+    ServerSessionRegistry registry;
+    const auto auth = Authenticate(&registry, MakeEngineState(database_path));
+    auto result = Attach(&registry, MakeEngineState(database_path), auth,
+                         "019e0ef1-7b00-7000-8000-000000000001");
+    RequireDblcDenied(result, "text UUID selector was accepted");
+    Require(registry.sessions_by_uuid.empty(), "text UUID selector created a session");
   }
   {
     ServerSessionRegistry registry;

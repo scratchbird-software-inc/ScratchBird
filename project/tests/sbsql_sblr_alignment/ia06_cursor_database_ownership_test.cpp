@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_cursor_open_coordinator.hpp"
 #include "hash_digest.hpp"
 
@@ -37,17 +38,18 @@ struct Directory {
 api::EngineRequestContext Context(const fs::path& directory, bool second) {
   api::EngineRequestContext context;
   context.database_path = (directory / (second ? "database-b" : "database-a")).string();
-  context.database_uuid.canonical = second ? "019d0000-0000-7000-8000-000000006382"
-                                           : "019d0000-0000-7000-8000-000000006381";
+  context.database_uuid = second
+      ? scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006382")
+      : scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006381");
   // Deliberately identical session/principal/transaction: database is the only
   // ownership difference. Injecting both contexts into one private component is
   // adversarial defense-in-depth testing, NOT an admitted multi-database server.
   // Deployment isolation requires distinct processes and no shared runtime
   // memory/caches. No SQL, parser or real query producer is exercised here.
-  context.session_uuid.canonical = "019d0000-0000-7000-8000-000000006383";
-  context.principal_uuid.canonical = "019d0000-0000-7000-8000-000000006384";
-  context.statement_uuid.canonical = "019d0000-0000-7000-8000-000000006385";
-  context.transaction_uuid.canonical = "019d0000-0000-7000-8000-000000006386";
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006383");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006384");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006385");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006386");
   context.security_context_present = true;
   context.statement_metadata_snapshot_engine_owned = true;
   context.trace_tags = {"private_executable_plan_receipt_compiler", "private_cursor_open",
@@ -55,7 +57,7 @@ api::EngineRequestContext Context(const fs::path& directory, bool second) {
   return context;
 }
 std::string Journal(const api::EngineRequestContext& context) {
-  std::ifstream input(context.database_path + ".sb.sblr_cursor_open.v1", std::ios::binary);
+  std::ifstream input(context.database_path + ".sb.sblr_cursor_open.v2", std::ios::binary);
   if (!input.is_open()) return {};
   const std::string bytes{std::istreambuf_iterator<char>(input), {}};
   Require(!input.bad(), "journal read failed");
@@ -65,7 +67,7 @@ api::SblrCursorOpenSnapshot Publish(const api::EngineRequestContext& context,
                                    std::uint64_t occurrence = 1) {
   // Known synthetic legacy constructor, used solely to seed real registry state.
   const auto result = api::CompileAndPublishSblrExecutablePlanReceipt(
-      context, context.statement_uuid.canonical, occurrence, 1, 1, 64, 1);
+      context, context.statement_uuid, occurrence, 1, 1, 64, 1);
   Require(result.ok, "fixture descriptor failed");
   return result.snapshot;
 }
@@ -95,7 +97,7 @@ void Hidden(const api::SblrCursorOpenResult& result) {
   Require(!result.ok && result.diagnostic.error &&
       result.diagnostic.code == "SECURITY.ACCESS_DENIED" &&
       result.diagnostic.message_key == "sblr.cursor.hidden" &&
-      result.snapshot.cursor_uuid.empty() && result.snapshot.descriptor_uuid.empty(),
+      result.snapshot.cursor_uuid.is_nil() && result.snapshot.descriptor_uuid.is_nil(),
       "foreign database accessed or distinguished cursor authority");
 }
 void Access(const fs::path& directory) {
@@ -108,7 +110,7 @@ void Access(const fs::path& directory) {
   b.database_path = a.database_path;
   Hidden(Open(b, descriptor));
   auto alias = a;
-  alias.database_uuid.canonical = "019D0000-0000-7000-8000-000000006381";
+  alias.database_uuid = scratchbird::tests::FixtureUuidLiteral("019D0000-0000-7000-8000-000000006381");
   auto opened = Open(alias, descriptor);
   Require(opened.ok, "foreign OPEN consumed descriptor");
   const auto live = Journal(a);
@@ -141,8 +143,11 @@ void Recovery(const fs::path& directory) {
           "recovery ignored capability");
   Require(api::RecoverSblrOpenCursors(b).code == "OK", "database recovery failed");
   Require(Journal(a) == before_a, "recovery wrote foreign database journal");
-  const auto expected = "X\t" + live_b.snapshot.descriptor_uuid + "\t" +
-      live_b.snapshot.cursor_uuid + "\t" + std::to_string(live_b.snapshot.cursor_generation) + "\n";
+  std::string expected("SBCUROP2X");
+  for (const auto& identity : {live_b.snapshot.descriptor_uuid, live_b.snapshot.cursor_uuid})
+    expected.append(reinterpret_cast<const char*>(identity.bytes.data()), 16);
+  for (unsigned n = 0; n < 8; ++n)
+    expected.push_back(static_cast<char>((live_b.snapshot.cursor_generation >> (n * 8)) & 255));
   Require(Journal(b) == before_b + expected,
           "recovery journal includes another database's cursor");
   Hidden(Fetch(b, live_b.snapshot));
@@ -164,19 +169,22 @@ void InvalidIdentity(const fs::path& directory) {
   const auto live = Open(owner, Publish(owner, 2));
   Require(live.ok, "fixture OPEN failed");
   const auto before = Journal(owner);
-  for (const std::string identity : {"", "malformed", "00000000-0000-0000-0000-000000000000",
-       "019d0000-0000-4000-8000-000000006381", "019d0000-0000-7000-0000-000000006381"}) {
+  // Native operands have no malformed spelling: test invalid UUID bytes.
+  auto wrong_version = owner.database_uuid;wrong_version.bytes[6] = 0x40;
+  auto wrong_variant = owner.database_uuid;wrong_variant.bytes[8] = 0;
+  api::EngineUuid invalid_bytes;invalid_bytes.bytes.fill(255);
+  for (const auto& identity : {api::EngineUuid{}, invalid_bytes, wrong_version, wrong_variant}) {
     auto invalid = owner;
-    invalid.database_uuid.canonical = identity;
+    invalid.database_uuid = identity;
     Require(api::RecoverSblrOpenCursors(invalid).code == "SECURITY.ACCESS_DENIED",
             "invalid database identity accepted for recovery");
     Hidden(Open(invalid, pending));
     Hidden(Fetch(invalid, live.snapshot));
     Hidden(Close(invalid, live.snapshot));
     const auto publication = api::CompileAndPublishSblrExecutablePlanReceipt(
-        invalid, invalid.statement_uuid.canonical, 3, 1, 1, 64, 1);
+        invalid, invalid.statement_uuid, 3, 1, 1, 64, 1);
     Require(!publication.ok && publication.diagnostic.code == "SECURITY.ACCESS_DENIED" &&
-        publication.snapshot.descriptor_uuid.empty(), "invalid database identity published descriptor");
+        publication.snapshot.descriptor_uuid.is_nil(), "invalid database identity published descriptor");
     Require(Journal(owner) == before, "invalid database identity mutated journal");
   }
   Require(Close(owner, live.snapshot).ok, "invalid identity consumed live cursor");

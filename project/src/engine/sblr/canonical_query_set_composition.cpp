@@ -15,6 +15,7 @@
 #include "canonical_query_scalar_support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <ranges>
@@ -181,13 +182,18 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
                   "live set-operation inputs exceed the admitted memory budget");
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
+  std::array<api::EngineUuid, 4> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "set-operation identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
-  const auto set_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "set." + set_profile.identity_component +
-                          ".capability");
+      owned_identities[0];
+  const auto set_capability_uuid = owned_identities[1];
   std::vector<LivePhysicalNodeProfile> profiles;
   for (const auto& node : graph.nodes) {
     const bool values =
@@ -407,17 +413,9 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "set." + set_profile.identity_component + ".execution-attempt");
+      owned_identities[2];
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(request.context.local_transaction_id) + ":" +
-              std::to_string(
-                  request.context.snapshot_visible_through_local_transaction_id),
-          "set." + set_profile.identity_component +
-              ".transaction-effect-unchanged");
+      owned_identities[3];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -669,23 +667,33 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
                   "nested set-operation exceeds the admitted memory budget");
   }
 
-  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid;
+  std::array<api::EngineUuid, 3> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "set-operation identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
-  std::unordered_map<std::string, std::string> set_capability_uuids;
+      owned_identities[0];
+  std::unordered_map<std::string, api::EngineUuid> set_capability_uuids;
   std::string graph_identity = "nested-set";
   for (const auto& node : graph.nodes) {
     const auto prepared = prepared_set_nodes.find(node.logical_node_id);
     if (prepared == prepared_set_nodes.end()) continue;
     graph_identity += "." + std::to_string(node.logical_node_id) + "." +
                       prepared->second.profile.identity_component;
-    set_capability_uuids.try_emplace(
-        prepared->second.profile.implementation_id,
-        DerivedCanonicalUuid(
-            identity_scope,
-            "set." + prepared->second.profile.implementation_id +
-                ".capability"));
+    const auto& implementation = prepared->second.profile.implementation_id;
+    if (!set_capability_uuids.contains(implementation)) {
+      const auto issued = core::uuid::IssueRuntimeIdentityV7();
+      if (!issued) {
+        return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                      "nested set capability identity allocation failed");
+      }
+      set_capability_uuids.emplace(implementation, *issued);
+    }
   }
 
   std::vector<LivePhysicalNodeProfile> profiles;
@@ -766,16 +774,9 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          graph_identity + ".execution-attempt");
+      owned_identities[1];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      graph_identity + ".transaction-effect-unchanged");
+      .transaction_effect_evidence_uuid = owned_identities[2];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =

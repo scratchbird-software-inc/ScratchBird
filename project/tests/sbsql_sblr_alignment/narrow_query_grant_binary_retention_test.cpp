@@ -38,7 +38,7 @@ auto IssueRequest(Fixture& fixture) {
   api::EngineNarrowQueryBindingAuthorityIssueRequestV1 issue;
   issue.context = BindingContext(&fixture);
   issue.demand = MakeDemand(issue.context, fixture);
-  issue.policy_snapshot_uuid.canonical = NewUuid(platform::UuidKind::object);
+  issue.policy_snapshot_uuid = NewUuid(platform::UuidKind::object);
   issue.policy_generation = issue.context.authorization_context.policy_epoch;
   issue.maximum_source_rows_per_occurrence = 64;
   issue.maximum_cumulative_source_rows = 64;

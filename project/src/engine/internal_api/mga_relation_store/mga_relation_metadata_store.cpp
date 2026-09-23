@@ -7,10 +7,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
+#include "mga_relation_store/mga_descriptor_record_codec.hpp"
 
 #include "api_diagnostics.hpp"
 #include "crud_support/crud_store.hpp"
@@ -45,8 +47,6 @@ namespace {
 // supplied by the canonical relation/MGA authority and is never inferred here.
 
 constexpr const char* kRowStoreMagic = "SBMGA1";
-constexpr const char* kDescriptorMagic = "SBMGADESC1";
-constexpr std::string_view kLineHexFieldPrefix = "SBHEX:";
 constexpr std::string_view kSealedTableMetadataKindV2 =
     "TABLE_METADATA_SEALED_DESCRIPTOR_V2";
 constexpr std::string_view kSealedTableMetadataFormatV2 =
@@ -77,36 +77,25 @@ constexpr std::string_view kBigintMigrationFormat =
     "datatype_bigint_identity_migration_v1";
 constexpr std::string_view kBigintMigrationId =
     "core.datatype.bigint.identity.v1";
-constexpr std::string_view kLegacyBigintTypeUuid =
-    "67000000-696e-7436-b400-000000000000";
-constexpr std::string_view kCanonicalBigintTypeUuid =
-    "019d0000-0000-7000-8000-00000000d712";
+constexpr EngineUuid kLegacyBigintTypeUuid{{0x67,0x00,0x00,0x00,0x69,0x6e,0x74,0x36,0xb4,0x00,0x00,0x00,0x00,0x00,0x00,0x00}};
+constexpr EngineUuid kCanonicalBigintTypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x12}};
 constexpr std::string_view kInt32MigrationFormat =
     "datatype_int32_identity_migration_v1";
 constexpr std::string_view kInt32MigrationId =
     "core.datatype.int32.identity.v1";
-constexpr std::string_view kLegacyInt32DescriptorUuid =
-    "66000000-696e-7433-b200-000000000000";
-constexpr std::string_view kLegacyInt32TypeUuid =
-    "66000000-696e-7433-b200-000000000000";
-constexpr std::string_view kCanonicalInt32DescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d716";
-constexpr std::string_view kCanonicalInt32TypeUuid =
-    "019d0000-0000-7000-8000-00000000d717";
+constexpr EngineUuid kLegacyInt32DescriptorUuid{{0x66,0x00,0x00,0x00,0x69,0x6e,0x74,0x33,0xb2,0x00,0x00,0x00,0x00,0x00,0x00,0x00}};
+constexpr EngineUuid kLegacyInt32TypeUuid{{0x66,0x00,0x00,0x00,0x69,0x6e,0x74,0x33,0xb2,0x00,0x00,0x00,0x00,0x00,0x00,0x00}};
+constexpr EngineUuid kCanonicalInt32DescriptorUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x16}};
+constexpr EngineUuid kCanonicalInt32TypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x17}};
 constexpr std::string_view kTextMigrationFormat =
     "datatype_text_identity_migration_v1";
 constexpr std::string_view kTextMigrationId =
     "core.datatype.text.identity.v1";
-constexpr std::string_view kLegacyTextDescriptorUuid =
-    "2c010000-6368-7172-a163-746572000000";
-constexpr std::string_view kLegacyTextTypeUuid =
-    "2c010000-6368-7172-a163-746572000000";
-constexpr std::string_view kCanonicalTextDescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d718";
-constexpr std::string_view kCanonicalTextTypeUuid =
-    "019d0000-0000-7000-8000-00000000d719";
-constexpr std::string_view kCanonicalTextCodecUuid =
-    "019d0000-0000-7000-8000-00000000d71a";
+constexpr EngineUuid kLegacyTextDescriptorUuid{{0x2c,0x01,0x00,0x00,0x63,0x68,0x71,0x72,0xa1,0x63,0x74,0x65,0x72,0x00,0x00,0x00}};
+constexpr EngineUuid kLegacyTextTypeUuid{{0x2c,0x01,0x00,0x00,0x63,0x68,0x71,0x72,0xa1,0x63,0x74,0x65,0x72,0x00,0x00,0x00}};
+constexpr EngineUuid kCanonicalTextDescriptorUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x18}};
+constexpr EngineUuid kCanonicalTextTypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x19}};
+constexpr EngineUuid kCanonicalTextCodecUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x1a}};
 constexpr std::string_view kCanonicalTextCodecId =
     "datatype.text.utf8.v1";
 
@@ -132,28 +121,13 @@ EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-std::vector<std::string> SplitTabs(const std::string& line) {
+std::vector<std::string> SplitTabs(const std::string& record) {
   std::vector<std::string> fields;
-  std::size_t start = 0;
-  while (start <= line.size()) {
-    const auto tab = line.find('\t', start);
-    if (tab == std::string::npos) {
-      fields.push_back(line.substr(start));
-      break;
-    }
-    fields.push_back(line.substr(start, tab - start));
-    start = tab + 1;
-  }
+  DecodeMgaMetadataFields(record, &fields);
   return fields;
 }
-
 std::string JoinLine(const std::vector<std::string>& fields) {
-  std::string line;
-  for (std::size_t index = 0; index < fields.size(); ++index) {
-    if (index != 0) line.push_back('\t');
-    line += fields[index];
-  }
-  return line;
+  return EncodeMgaMetadataFields(fields);
 }
 
 MetadataStoreFileIdentity MetadataStoreTextFileIdentity(const std::string& path);
@@ -162,23 +136,23 @@ struct MetadataReadResult {
   bool ok = false;
   MetadataStoreFileIdentity identity;
   std::vector<std::string> lines;
-  std::vector<scratchbird::core::index::byte> marker_bytes;
+  std::vector<scratchbird::core::index::byte> binary_bytes;
   scratchbird::core::hash::Digest256 content_sha256{};
 };
 
-MetadataReadResult ReadContent(const std::string& path, bool binary_markers) {
+MetadataReadResult ReadContent(const std::string& path, bool binary_records) {
   MetadataReadResult result;
   const auto before = MetadataStoreTextFileIdentity(path);
   std::vector<scratchbird::core::index::byte> bytes;
   if (!ReadCompleteMgaBinaryFile(path,&bytes)) return result;
   // Hash the exact same admitted bytes that supply the decoded records.
   // A size/mtime pair is an observation fence, never cache content authority.
-  if (!binary_markers && !bytes.empty() && bytes.back()!='\n') return result;
+  if (!binary_records && !bytes.empty() && bytes.back()!='\n') return result;
   const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);
   if (!digest.ok() || digest.digest_bytes!=scratchbird::core::hash::kSha256DigestBytes) return result;
   result.content_sha256=digest.digest;
-  if (binary_markers) {
-    result.marker_bytes = std::move(bytes);
+  if (binary_records) {
+    result.binary_bytes = std::move(bytes);
   } else {
     auto begin=bytes.begin();
     while(begin!=bytes.end()) {
@@ -192,6 +166,15 @@ MetadataReadResult ReadContent(const std::string& path, bool binary_markers) {
       before.file_mtime_ticks != after.file_mtime_ticks) return {};
   result.identity = after;
   result.ok = true;
+  return result;
+}
+
+MetadataReadResult ReadMetadataRecords(const std::string& path) {
+  auto result = ReadContent(path, true);
+  if (!result.ok || !DecodeMgaMetadataStream(result.binary_bytes, &result.lines)) {
+    result.ok = false;
+    result.lines.clear();
+  }
   return result;
 }
 
@@ -219,31 +202,6 @@ std::uint64_t ParseU64(const std::string& text,
   } catch (...) {
     return fallback;
   }
-}
-
-int HexValue(const char value) {
-  if (value >= '0' && value <= '9') return value - '0';
-  if (value >= 'a' && value <= 'f') return 10 + value - 'a';
-  if (value >= 'A' && value <= 'F') return 10 + value - 'A';
-  return -1;
-}
-
-std::string DecodeCrudTextLocal(const std::string& encoded) {
-  if ((encoded.size() % 2) != 0) return {};
-  std::string decoded;
-  decoded.reserve(encoded.size() / 2);
-  for (std::size_t index = 0; index < encoded.size(); index += 2) {
-    const int high = HexValue(encoded[index]);
-    const int low = HexValue(encoded[index + 1]);
-    if (high < 0 || low < 0) return {};
-    decoded.push_back(static_cast<char>((high << 4) | low));
-  }
-  return decoded;
-}
-
-std::string DecodeLineHexFieldOrRaw(const std::string& field) {
-  if (field.rfind(kLineHexFieldPrefix, 0) != 0) return field;
-  return DecodeCrudTextLocal(field.substr(kLineHexFieldPrefix.size()));
 }
 
 MetadataStoreFileIdentity MetadataStoreTextFileIdentity(
@@ -287,42 +245,15 @@ auto MetadataSavepointCacheDigest(const MetadataReadResult& records,
   return scratchbird::core::hash::ComputeSha256Digest(bytes);
 }
 
-std::vector<std::pair<std::string, std::string>> DecodeCrudPairsWithKeyCache(
-    const std::string& encoded,
-    std::unordered_map<std::string, std::string>* decoded_key_cache) {
-  std::vector<std::pair<std::string, std::string>> pairs;
-  std::size_t start = 0;
-  while (start <= encoded.size()) {
-    const std::size_t end = encoded.find(',', start);
-    const std::size_t part_end =
-        end == std::string::npos ? encoded.size() : end;
-    const std::size_t equals = encoded.find('=', start);
-    if (equals != std::string::npos && equals < part_end) {
-      const std::string encoded_key = encoded.substr(start, equals - start);
-      std::string key;
-      if (decoded_key_cache != nullptr) {
-        auto found = decoded_key_cache->find(encoded_key);
-        if (found == decoded_key_cache->end()) {
-          found = decoded_key_cache
-                      ->emplace(encoded_key, DecodeCrudTextLocal(encoded_key))
-                      .first;
-        }
-        key = found->second;
-      } else {
-        key = DecodeCrudTextLocal(encoded_key);
-      }
-      pairs.emplace_back(
-          std::move(key),
-          DecodeCrudTextLocal(
-              encoded.substr(equals + 1, part_end - equals - 1)));
-    }
-    if (end == std::string::npos) break;
-    start = end + 1;
-  }
-  return pairs;
-}
-
 }  // namespace
+
+bool ReadCompleteMgaMetadataRecords(const std::string& path, std::vector<std::string>* records) {
+  if (!records) return false;
+  const auto read = ReadMetadataRecords(path);
+  if (!read.ok) { records->clear(); return false; }
+  *records = read.lines;
+  return true;
+}
 
 bool ReadCompleteMgaTextRecords(const std::string& path,
                                std::vector<std::string>* records) {
@@ -343,16 +274,13 @@ std::uint64_t ChecksumText(const std::string& value) {
   return checksum;
 }
 
-void AppendCanonicalBatchField(std::string* out,
-                               std::string_view key,
-                               std::string_view value) {
-  if (out == nullptr) return;
-  out->append(std::to_string(key.size()));
-  out->push_back(':');
-  out->append(key);
-  out->append(std::to_string(value.size()));
-  out->push_back(':');
-  out->append(value);
+void AppendCanonicalBatchField(std::string* out, std::string_view key, std::string_view value) {
+  if (!out) return;
+  AppendBinaryString(out, key);
+  AppendBinaryString(out, value);
+}
+void AppendCanonicalBatchField(std::string* out, std::string_view key, const EngineUuid& value) {
+  AppendCanonicalBatchField(out, key, MetadataUuidBytes(value));
 }
 
 std::string CanonicalConstraintMutationBatchPayload(
@@ -360,7 +288,7 @@ std::string CanonicalConstraintMutationBatchPayload(
     std::uint64_t creator_local_transaction_id,
     std::uint64_t metadata_event_sequence) {
   std::string payload;
-  auto field = [&](std::string_view key, std::string_view value) {
+  auto field = [&](std::string_view key, const auto& value) {
     AppendCanonicalBatchField(&payload, key, value);
   };
   field("format_version", batch.format_version);
@@ -410,7 +338,7 @@ std::string CanonicalConstraintMutationBatchPayload(
         batch.canonical_constraint_envelope);
   field("updated_table_uuid", batch.updated_table.table_uuid);
   field("updated_table_default_name", batch.updated_table.default_name);
-  field("updated_table_columns", EncodeCrudPairs(batch.updated_table.columns));
+  field("updated_table_columns", EncodeMetadataPairs(batch.updated_table.columns));
   field("updated_table_temporary",
         batch.updated_table.temporary ? "true" : "false");
   field("updated_table_temporary_scope", batch.updated_table.temporary_scope);
@@ -441,11 +369,11 @@ std::string CanonicalBigintMigrationPayload(
     const MgaBigintIdentityMigrationRequest& request,
     std::uint64_t creator_tx,
     std::uint64_t event_sequence,
-    std::string_view transaction_uuid,
+    const EngineUuid& transaction_uuid,
     const std::vector<CrudTableRecord>& tables,
     const std::vector<std::string>& decision_hashes) {
   std::string payload;
-  auto field = [&](std::string_view key, std::string_view value) {
+  auto field = [&](std::string_view key, const auto& value) {
     AppendCanonicalBatchField(&payload, key, value);
   };
   field("format_version", kBigintMigrationFormat);
@@ -472,7 +400,7 @@ std::string CanonicalBigintMigrationPayload(
     field("new_row_generation", std::to_string(table.event_sequence));
     field("decision_sha256", decision_hashes[i]);
     field("table_default_name", table.default_name);
-    field("table_columns", EncodeCrudPairs(table.columns));
+    field("table_columns", EncodeMetadataPairs(table.columns));
   }
   return payload;
 }
@@ -493,9 +421,9 @@ std::string BigintMigrationDecisionHash(
     const MgaBigintIdentityMigrationRequest& request,
     const MgaBigintIdentityMigrationRow& row,
     std::uint64_t new_row_generation,
-    std::string_view transaction_uuid) {
+    const EngineUuid& transaction_uuid) {
   std::string payload;
-  auto field = [&](std::string_view key, std::string_view value) {
+  auto field = [&](std::string_view key, const auto& value) {
     AppendCanonicalBatchField(&payload, key, value);
   };
   field("migration_id", request.migration_id);
@@ -517,11 +445,11 @@ std::string CanonicalInt32MigrationPayload(
     const MgaInt32IdentityMigrationRequest& request,
     std::uint64_t creator_tx,
     std::uint64_t event_sequence,
-    std::string_view transaction_uuid,
+    const EngineUuid& transaction_uuid,
     const std::vector<CrudTableRecord>& tables,
     const std::vector<std::string>& decision_hashes) {
   std::string payload;
-  auto field = [&](std::string_view key, std::string_view value) {
+  auto field = [&](std::string_view key, const auto& value) {
     AppendCanonicalBatchField(&payload, key, value);
   };
   field("format_version", kInt32MigrationFormat);
@@ -550,7 +478,7 @@ std::string CanonicalInt32MigrationPayload(
     field("new_row_generation", std::to_string(table.event_sequence));
     field("decision_sha256", decision_hashes[i]);
     field("table_default_name", table.default_name);
-    field("table_columns", EncodeCrudPairs(table.columns));
+    field("table_columns", EncodeMetadataPairs(table.columns));
   }
   return payload;
 }
@@ -559,9 +487,9 @@ std::string Int32MigrationDecisionHash(
     const MgaInt32IdentityMigrationRequest& request,
     const MgaInt32IdentityMigrationRow& row,
     std::uint64_t new_row_generation,
-    std::string_view transaction_uuid) {
+    const EngineUuid& transaction_uuid) {
   std::string payload;
-  auto field = [&](std::string_view key, std::string_view value) {
+  auto field = [&](std::string_view key, const auto& value) {
     AppendCanonicalBatchField(&payload, key, value);
   };
   field("migration_id", request.migration_id);
@@ -587,8 +515,8 @@ std::string CanonicalTextMigrationPayload(
     const MgaTextIdentityMigrationRequest& request,
     std::uint64_t creator_tx,
     std::uint64_t event_sequence,
-    std::string_view transaction_uuid,
-    std::string_view datatype_catalog_snapshot_uuid,
+    const EngineUuid& transaction_uuid,
+    const EngineUuid& datatype_catalog_snapshot_uuid,
     std::uint64_t datatype_catalog_generation,
     std::uint64_t datatype_registry_generation,
     const std::vector<CrudTableRecord>& tables,
@@ -596,7 +524,7 @@ std::string CanonicalTextMigrationPayload(
         relation_descriptor_snapshots,
     const std::vector<std::string>& decision_hashes) {
   std::string payload;
-  auto field = [&](std::string_view key, std::string_view value) {
+  auto field = [&](std::string_view key, const auto& value) {
     AppendCanonicalBatchField(&payload, key, value);
   };
   field("format_version", kTextMigrationFormat);
@@ -634,7 +562,7 @@ std::string CanonicalTextMigrationPayload(
     field("new_row_generation", std::to_string(table.event_sequence));
     field("decision_sha256", decision_hashes[i]);
     field("table_default_name", table.default_name);
-    field("table_columns", EncodeCrudPairs(table.columns));
+    field("table_columns", EncodeMetadataPairs(table.columns));
     const auto& snapshot = relation_descriptor_snapshots[i];
     field("relation_descriptor_uuid", snapshot.relation_descriptor_uuid);
     field("relation_descriptor_generation",
@@ -646,7 +574,7 @@ std::string CanonicalTextMigrationPayload(
     field("contextual_sidecar_count",
           std::to_string(snapshot.contextual_sidecar_count));
     field("relation_descriptor_fields",
-          EncodeCrudPairs(snapshot.descriptor_fields));
+          EncodeMetadataPairs(snapshot.descriptor_fields));
   }
   return payload;
 }
@@ -655,13 +583,13 @@ std::string TextMigrationDecisionHash(
     const MgaTextIdentityMigrationRequest& request,
     const MgaTextIdentityMigrationRow& row,
     std::uint64_t new_row_generation,
-    std::string_view transaction_uuid,
-    std::string_view datatype_catalog_snapshot_uuid,
+    const EngineUuid& transaction_uuid,
+    const EngineUuid& datatype_catalog_snapshot_uuid,
     std::uint64_t datatype_catalog_generation,
     std::uint64_t datatype_registry_generation,
     const CrudSealedRelationDescriptorSnapshot& relation_snapshot) {
   std::string payload;
-  auto field = [&](std::string_view key, std::string_view value) {
+  auto field = [&](std::string_view key, const auto& value) {
     AppendCanonicalBatchField(&payload, key, value);
   };
   field("migration_id", request.migration_id);
@@ -700,17 +628,16 @@ std::string TextMigrationDecisionHash(
   field("contextual_sidecar_count",
         std::to_string(relation_snapshot.contextual_sidecar_count));
   field("relation_descriptor_fields",
-        EncodeCrudPairs(relation_snapshot.descriptor_fields));
+        EncodeMetadataPairs(relation_snapshot.descriptor_fields));
   return Sha256Tagged(payload);
 }
 
-bool ValidConstraintBatchUuid(
-    std::string_view value,
-    scratchbird::core::platform::UuidKind kind) {
-  if (value.empty()) return false;
-  return scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
-             kind, std::string(value))
-      .ok();
+bool ValidConstraintBatchUuid(const EngineUuid& value, core::platform::UuidKind kind) {
+  return core::uuid::MakeDurableEngineIdentityUuid(kind, value).ok();
+}
+bool ValidConstraintBatchUuid(std::string_view bytes, core::platform::UuidKind kind) {
+  EngineUuid value;
+  return ReadMetadataUuid(bytes, &value) && ValidConstraintBatchUuid(value, kind);
 }
 
 namespace constraint_batch_field {
@@ -775,25 +702,25 @@ std::vector<std::string> ConstraintMutationBatchLineFields(
       std::to_string(creator_tx),
       std::to_string(event_sequence),
       batch.format_version,
-      batch.batch_uuid,
+      MetadataUuidBytes(batch.batch_uuid),
       "sealed",
       batch.batch_hash,
       std::to_string(batch.mutation_count),
-      batch.database_uuid,
-      batch.constraint_uuid,
-      batch.owner_table_uuid,
-      batch.child_schema_uuid,
-      batch.child_relation_descriptor_uuid,
+      MetadataUuidBytes(batch.database_uuid),
+      MetadataUuidBytes(batch.constraint_uuid),
+      MetadataUuidBytes(batch.owner_table_uuid),
+      MetadataUuidBytes(batch.child_schema_uuid),
+      MetadataUuidBytes(batch.child_relation_descriptor_uuid),
       std::to_string(batch.child_relation_descriptor_generation),
-      batch.child_column_uuid,
-      batch.parent_table_uuid,
-      batch.parent_schema_uuid,
-      batch.parent_relation_descriptor_uuid,
+      MetadataUuidBytes(batch.child_column_uuid),
+      MetadataUuidBytes(batch.parent_table_uuid),
+      MetadataUuidBytes(batch.parent_schema_uuid),
+      MetadataUuidBytes(batch.parent_relation_descriptor_uuid),
       std::to_string(batch.parent_relation_descriptor_generation),
-      batch.parent_column_uuid,
-      batch.parent_candidate_key_constraint_uuid,
-      batch.key_descriptor_uuid,
-      batch.support_uuid,
+      MetadataUuidBytes(batch.parent_column_uuid),
+      MetadataUuidBytes(batch.parent_candidate_key_constraint_uuid),
+      MetadataUuidBytes(batch.key_descriptor_uuid),
+      MetadataUuidBytes(batch.support_uuid),
       batch.support_family,
       batch.support_policy,
       batch.match_policy,
@@ -803,15 +730,15 @@ std::vector<std::string> ConstraintMutationBatchLineFields(
       std::to_string(batch.constraint_metadata_generation),
       std::to_string(batch.base_table_event_sequence),
       std::to_string(batch.parent_base_table_event_sequence),
-      EncodeCrudText(batch.constraint_name),
+      std::string(batch.constraint_name),
       batch.constraint_kind,
-      EncodeCrudText(batch.canonical_constraint_envelope),
-      table.table_uuid,
-      EncodeCrudText(table.default_name),
-      EncodeCrudPairs(table.columns),
+      std::string(batch.canonical_constraint_envelope),
+      MetadataUuidBytes(table.table_uuid),
+      std::string(table.default_name),
+      EncodeMetadataPairs(table.columns),
       table.temporary ? "1" : "0",
       table.temporary_scope,
-      table.temporary_session_uuid,
+      MetadataUuidBytes(table.temporary_session_uuid),
       table.on_commit_action};
   return fields;
 }
@@ -885,11 +812,7 @@ LoadAdmittedDescriptorFieldsSnapshot(
   // re-read the durable store even if its coarse file identity is unchanged.
   // A genuine durable miss remains fail-closed in the caller.
   DescriptorFieldsByRelation descriptors;
-  for (const auto& line : lines.lines) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() < 4 || fields[0] != kDescriptorMagic || fields[1] != "RELATION") { continue; }
-    descriptors[fields[2]] = DecodeCrudPairs(fields[3]);
-  }
+  if (!DecodeMgaDescriptorRecords(lines.binary_bytes, &descriptors)) return nullptr;
   {
     const std::lock_guard<std::mutex> guard(DescriptorFieldsCacheMutex());
     auto immutable =
@@ -904,7 +827,7 @@ LoadDescriptorFieldsSnapshot(
     const EngineRequestContext& context,
     const EngineUuid& required_relation_uuid) {
   const std::string path = DescriptorStorePath(context);
-  return LoadAdmittedDescriptorFieldsSnapshot(path, ReadLines(path), required_relation_uuid);
+  return LoadAdmittedDescriptorFieldsSnapshot(path, ReadContent(path, true), required_relation_uuid);
 }
 
 DescriptorFieldsByRelation LoadDescriptorFieldsByRelation(
@@ -916,14 +839,20 @@ DescriptorFieldsByRelation LoadDescriptorFieldsByRelation(
 }
 
 EngineApiDiagnostic PersistDescriptorFields(const EngineRequestContext& context,
-                                            const std::string& relation_uuid,
+                                            const EngineUuid& relation_uuid,
                                             const std::vector<std::pair<std::string, std::string>>& fields) {
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "database_path_required");
   }
-  const std::string line = JoinLine({kDescriptorMagic, "RELATION", relation_uuid, EncodeCrudPairs(fields)});
+  std::string record;
+  if (!AppendMgaDescriptorRecord(relation_uuid, fields, &record)) {
+    return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "invalid_descriptor_record");
+  }
   const std::string path = DescriptorStorePath(context);
-  if (!AppendLine(path, line)) {
+  std::ofstream output(path, std::ios::app | std::ios::binary);
+  output.write(record.data(), static_cast<std::streamsize>(record.size()));
+  output.flush();
+  if (!output) {
     return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "descriptor_store_append_failed");
   }
   {
@@ -944,9 +873,9 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
   const std::string metadata_path = MetadataStorePath(context);
   const std::string savepoint_path = SavepointStorePath(context);
   const std::string descriptor_path = DescriptorStorePath(context);
-  const auto metadata_lines = ReadLines(metadata_path);
+  const auto metadata_lines = ReadMetadataRecords(metadata_path);
   const auto savepoint_lines = ReadSavepointBytes(savepoint_path);
-  const auto descriptor_lines = ReadLines(descriptor_path);
+  const auto descriptor_lines = ReadContent(descriptor_path, true);
   if (!metadata_lines.ok || !savepoint_lines.ok || !descriptor_lines.ok) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata",
         !metadata_lines.ok ? "metadata_store_read_failed" :
@@ -954,7 +883,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
   }
   const auto metadata_identity = metadata_lines.identity;
   const auto savepoint_identity = savepoint_lines.identity;
-  const auto savepoints = ParseSavepointBytes(context, savepoint_lines.marker_bytes);
+  const auto savepoints = ParseSavepointBytes(context, savepoint_lines.binary_bytes);
   if (savepoints.diagnostic.error) return savepoints.diagnostic;
   const auto savepoint_digest = MetadataSavepointCacheDigest(savepoint_lines, savepoints);
   if (!savepoint_digest.ok()) return MakeInvalidRequestDiagnostic(
@@ -990,6 +919,12 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       return OkDiagnostic();
     }
   }
+  bool nested_metadata_valid = true;
+  const auto decode_pairs = [&](const std::string& bytes) {
+    std::vector<std::pair<std::string, std::string>> pairs;
+    if (!DecodeMetadataPairs(bytes, &pairs)) nested_metadata_valid = false;
+    return pairs;
+  };
   MgaMetadataCacheEntry decoded;
   for (const auto& line : metadata_lines.lines) {
     const auto fields = SplitTabs(line);
@@ -1001,14 +936,20 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       CrudTableRecord table;
       table.creator_tx = ParseU64(fields[2]);
       table.event_sequence = ParseU64(fields[3]);
-      table.table_uuid = fields[4];
-      table.default_name = DecodeCrudTextLocal(fields[5]);
-      table.columns = DecodeCrudPairs(fields[6]);
+      if (!ReadMetadataUuid(fields[4], &table.table_uuid)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "binary_metadata_uuid_invalid");
+      }
+      table.default_name = std::string(fields[5]);
+      table.columns = decode_pairs(fields[6]);
       table.temporary = fields[7] == "1";
       table.temporary_scope = fields[8];
-      table.temporary_session_uuid = fields[9];
+      if (!ReadMetadataUuid(fields[9], &table.temporary_session_uuid, true)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "binary_metadata_uuid_invalid");
+      }
       table.on_commit_action = fields[10];
-      if (table.temporary && !table.table_uuid.empty()) {
+      if (table.temporary && !table.table_uuid.is_nil()) {
         decoded.known_temporary_relation_uuids.insert(table.table_uuid);
       }
       if (MetadataEventRolledBackBySavepoint(savepoints,
@@ -1071,23 +1012,28 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       CrudTableRecord table;
       table.creator_tx = creator_tx;
       table.event_sequence = event_sequence;
-      table.table_uuid = fields[stf::kTableUuid];
-      table.default_name = DecodeCrudTextLocal(fields[stf::kDefaultName]);
-      table.columns = DecodeCrudPairs(fields[stf::kColumns]);
+      if (!ReadMetadataUuid(fields[stf::kTableUuid], &table.table_uuid)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "binary_metadata_uuid_invalid");
+      }
+      table.default_name = std::string(fields[stf::kDefaultName]);
+      table.columns = decode_pairs(fields[stf::kColumns]);
       table.temporary = fields[stf::kTemporary] == "1";
       table.temporary_scope = fields[stf::kTemporaryScope];
-      table.temporary_session_uuid =
-          fields[stf::kTemporarySessionUuid];
+      if (!ReadMetadataUuid(fields[stf::kTemporarySessionUuid], &table.temporary_session_uuid, true)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "binary_metadata_uuid_invalid");
+      }
       table.on_commit_action = fields[stf::kOnCommitAction];
-      if (table.temporary && !table.table_uuid.empty()) {
+      if (table.temporary && !table.table_uuid.is_nil()) {
         decoded.known_temporary_relation_uuids.insert(table.table_uuid);
       }
       const auto complete_fields =
-          DecodeCrudPairs(fields[stf::kDescriptorFields]);
-      if (EncodeCrudText(table.default_name) !=
+          decode_pairs(fields[stf::kDescriptorFields]);
+      if (std::string(table.default_name) !=
               fields[stf::kDefaultName] ||
-          EncodeCrudPairs(table.columns) != fields[stf::kColumns] ||
-          EncodeCrudPairs(complete_fields) !=
+          EncodeMetadataPairs(table.columns) != fields[stf::kColumns] ||
+          EncodeMetadataPairs(complete_fields) !=
               fields[stf::kDescriptorFields] ||
           complete_fields.size() != descriptor_field_count) {
         return MakeInvalidRequestDiagnostic(
@@ -1108,7 +1054,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
               context.database_uuid ||
           descriptor.relation_uuid != table.table_uuid ||
           descriptor.relation_generation != event_sequence ||
-          descriptor.descriptor_uuid !=
+          MetadataUuidBytes(descriptor.descriptor_uuid) !=
               fields[stf::kRelationDescriptorUuid] ||
           descriptor.descriptor_generation != descriptor_generation) {
         return MakeInvalidRequestDiagnostic(
@@ -1144,8 +1090,10 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       snapshot.creator_tx = creator_tx;
       snapshot.event_sequence = event_sequence;
       snapshot.relation_uuid = table.table_uuid;
-      snapshot.relation_descriptor_uuid =
-          fields[stf::kRelationDescriptorUuid];
+      if (!ReadMetadataUuid(fields[stf::kRelationDescriptorUuid], &snapshot.relation_descriptor_uuid)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "binary_metadata_uuid_invalid");
+      }
       snapshot.relation_descriptor_generation = descriptor_generation;
       snapshot.descriptor_field_count = descriptor_field_count;
       snapshot.descriptor_field_bytes = descriptor_field_bytes;
@@ -1214,34 +1162,33 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
           ParseU64(fields[cbf::kParentBaseTableEventSequence]) == 0 ||
           fields[cbf::kConstraintKind] != "foreign_key" ||
           fields[cbf::kTableUuid] != fields[cbf::kOwnerTableUuid] ||
-          fields[cbf::kDatabaseUuid] != context.database_uuid) {
+          fields[cbf::kDatabaseUuid] != MetadataUuidBytes(context.database_uuid)) {
         return MakeInvalidRequestDiagnostic(
             "mga.relation_metadata", "constraint_mutation_batch_invalid");
       }
       MgaConstraintMutationBatch batch;
       batch.format_version = fields[cbf::kFormatVersion];
-      batch.batch_uuid = fields[cbf::kBatchUuid];
+      if (!ReadMetadataUuid(fields[cbf::kBatchUuid], &batch.batch_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
       batch.batch_hash = fields[cbf::kBatchHash];
       batch.mutation_count = static_cast<std::uint32_t>(
           ParseU64(fields[cbf::kMutationCount]));
-      batch.database_uuid = fields[cbf::kDatabaseUuid];
-      batch.constraint_uuid = fields[cbf::kConstraintUuid];
-      batch.owner_table_uuid = fields[cbf::kOwnerTableUuid];
-      batch.child_schema_uuid = fields[cbf::kChildSchemaUuid];
-      batch.child_relation_descriptor_uuid = fields[cbf::kChildDescriptorUuid];
+      if (!ReadMetadataUuid(fields[cbf::kDatabaseUuid], &batch.database_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[cbf::kConstraintUuid], &batch.constraint_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[cbf::kOwnerTableUuid], &batch.owner_table_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[cbf::kChildSchemaUuid], &batch.child_schema_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[cbf::kChildDescriptorUuid], &batch.child_relation_descriptor_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
       batch.child_relation_descriptor_generation =
           ParseU64(fields[cbf::kChildDescriptorGeneration]);
-      batch.child_column_uuid = fields[cbf::kChildColumnUuid];
-      batch.parent_table_uuid = fields[cbf::kParentTableUuid];
-      batch.parent_schema_uuid = fields[cbf::kParentSchemaUuid];
-      batch.parent_relation_descriptor_uuid = fields[cbf::kParentDescriptorUuid];
+      if (!ReadMetadataUuid(fields[cbf::kChildColumnUuid], &batch.child_column_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[cbf::kParentTableUuid], &batch.parent_table_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[cbf::kParentSchemaUuid], &batch.parent_schema_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[cbf::kParentDescriptorUuid], &batch.parent_relation_descriptor_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
       batch.parent_relation_descriptor_generation =
           ParseU64(fields[cbf::kParentDescriptorGeneration]);
-      batch.parent_column_uuid = fields[cbf::kParentColumnUuid];
-      batch.parent_candidate_key_constraint_uuid =
-          fields[cbf::kParentCandidateConstraintUuid];
-      batch.key_descriptor_uuid = fields[cbf::kReferencedKeyDescriptorUuid];
-      batch.support_uuid = fields[cbf::kSupportUuid];
+      if (!ReadMetadataUuid(fields[cbf::kParentColumnUuid], &batch.parent_column_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[cbf::kParentCandidateConstraintUuid], &batch.parent_candidate_key_constraint_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[cbf::kReferencedKeyDescriptorUuid], &batch.key_descriptor_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[cbf::kSupportUuid], &batch.support_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
       batch.support_family = fields[cbf::kSupportFamily];
       batch.support_policy = fields[cbf::kSupportPolicy];
       batch.match_policy = fields[cbf::kMatchPolicy];
@@ -1254,22 +1201,28 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
           ParseU64(fields[cbf::kBaseTableEventSequence]);
       batch.parent_base_table_event_sequence =
           ParseU64(fields[cbf::kParentBaseTableEventSequence]);
-      batch.constraint_name = DecodeCrudTextLocal(fields[cbf::kConstraintName]);
+      batch.constraint_name = std::string(fields[cbf::kConstraintName]);
       batch.constraint_kind = fields[cbf::kConstraintKind];
       batch.canonical_constraint_envelope =
-          DecodeCrudTextLocal(fields[cbf::kCanonicalEnvelope]);
+          std::string(fields[cbf::kCanonicalEnvelope]);
       CrudTableRecord table;
       table.creator_tx = ParseU64(fields[cbf::kCreatorTx]);
       table.event_sequence = ParseU64(fields[cbf::kEventSequence]);
-      table.table_uuid = fields[cbf::kTableUuid];
-      table.default_name = DecodeCrudTextLocal(fields[cbf::kTableDefaultName]);
-      table.columns = DecodeCrudPairs(fields[cbf::kTableColumns]);
+      if (!ReadMetadataUuid(fields[cbf::kTableUuid], &table.table_uuid)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "binary_metadata_uuid_invalid");
+      }
+      table.default_name = std::string(fields[cbf::kTableDefaultName]);
+      table.columns = decode_pairs(fields[cbf::kTableColumns]);
       table.temporary = fields[cbf::kTableTemporary] == "1";
       table.temporary_scope = fields[cbf::kTableTemporaryScope];
-      table.temporary_session_uuid = fields[cbf::kTableTemporarySessionUuid];
+      if (!ReadMetadataUuid(fields[cbf::kTableTemporarySessionUuid], &table.temporary_session_uuid, true)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "binary_metadata_uuid_invalid");
+      }
       table.on_commit_action = fields[cbf::kTableOnCommitAction];
       if (table.temporary || !table.temporary_scope.empty() ||
-          !table.temporary_session_uuid.empty() ||
+          !table.temporary_session_uuid.is_nil() ||
           !table.on_commit_action.empty()) {
         return MakeInvalidRequestDiagnostic(
             "mga.relation_metadata",
@@ -1323,23 +1276,26 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         return MakeInvalidRequestDiagnostic(
             "mga.relation_metadata", "bigint_migration_batch_invalid");
       }
+      EngineUuid migration_transaction_uuid;
+      if (!ReadMetadataUuid(fields[8], &migration_transaction_uuid)) return MakeInvalidRequestDiagnostic(
+          "mga.relation_metadata", "migration_transaction_uuid_invalid");
       MgaBigintIdentityMigrationRequest request;
       request.migration_id = fields[7];
-      request.prior_catalog_snapshot_uuid = fields[9];
-      request.new_catalog_snapshot_uuid = fields[10];
+      if (!ReadMetadataUuid(fields[9], &request.prior_catalog_snapshot_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[10], &request.new_catalog_snapshot_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
       request.prior_catalog_generation = ParseU64(fields[11]);
       request.new_catalog_generation = ParseU64(fields[12]);
       std::vector<CrudTableRecord> tables;
       std::vector<std::string> decisions;
-      std::set<std::pair<std::string, std::string>> identities;
+      std::set<std::pair<EngineUuid, EngineUuid>> identities;
       for (std::size_t i = 0; i < mutation_count; ++i) {
         const std::size_t base = kHeaderFields + i * kFieldsPerRow;
         MgaBigintIdentityMigrationRow row;
-        row.object_uuid = fields[base];
-        row.column_uuid = fields[base + 1];
+        if (!ReadMetadataUuid(fields[base], &row.object_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+        if (!ReadMetadataUuid(fields[base + 1], &row.column_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
         row.old_row_generation = ParseU64(fields[base + 4]);
-        if (fields[base + 2] != kLegacyBigintTypeUuid ||
-            fields[base + 3] != kCanonicalBigintTypeUuid ||
+        if (fields[base + 2] != MetadataUuidBytes(kLegacyBigintTypeUuid) ||
+            fields[base + 3] != MetadataUuidBytes(kCanonicalBigintTypeUuid) ||
             row.old_row_generation == 0 ||
             ParseU64(fields[base + 5]) != event_sequence ||
             fields[base + 6].size() != 71 ||
@@ -1351,15 +1307,22 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         CrudTableRecord table;
         table.creator_tx = creator_tx;
         table.event_sequence = event_sequence;
+        if (!core::uuid::IsEngineIdentityUuid(row.object_uuid)) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "binary_metadata_uuid_invalid");
+        }
         table.table_uuid = row.object_uuid;
-        table.default_name = DecodeCrudTextLocal(fields[base + 7]);
-        table.columns = DecodeCrudPairs(fields[base + 8]);
+        table.default_name = std::string(fields[base + 7]);
+        table.columns = decode_pairs(fields[base + 8]);
         table.temporary = fields[base + 9] == "1";
         table.temporary_scope = fields[base + 10];
-        table.temporary_session_uuid = fields[base + 11];
+        if (!ReadMetadataUuid(fields[base + 11], &table.temporary_session_uuid, true)) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "binary_metadata_uuid_invalid");
+        }
         table.on_commit_action = fields[base + 12];
         if (table.temporary || !table.temporary_scope.empty() ||
-            !table.temporary_session_uuid.empty() ||
+            !table.temporary_session_uuid.is_nil() ||
             !table.on_commit_action.empty()) {
           return MakeInvalidRequestDiagnostic(
               "mga.relation_metadata", "bigint_migration_temporary_unsupported");
@@ -1370,7 +1333,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       }
       for (std::size_t i = 0; i < request.rows.size(); ++i) {
         const std::string expected_decision = BigintMigrationDecisionHash(
-            request, request.rows[i], tables[i].event_sequence, fields[8]);
+            request, request.rows[i], tables[i].event_sequence, migration_transaction_uuid);
         if (!scratchbird::core::hash::ConstantTimeEqual(
                 expected_decision, decisions[i])) {
           return MakeInvalidRequestDiagnostic(
@@ -1379,7 +1342,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         }
       }
       const std::string payload = CanonicalBigintMigrationPayload(
-          request, creator_tx, event_sequence, fields[8], tables, decisions);
+          request, creator_tx, event_sequence, migration_transaction_uuid, tables, decisions);
       if (!scratchbird::core::hash::ConstantTimeEqual(
               Sha256Tagged(payload), fields[6])) {
         return MakeInvalidRequestDiagnostic(
@@ -1414,27 +1377,30 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         return MakeInvalidRequestDiagnostic(
             "mga.relation_metadata", "int32_migration_batch_invalid");
       }
+      EngineUuid migration_transaction_uuid;
+      if (!ReadMetadataUuid(fields[8], &migration_transaction_uuid)) return MakeInvalidRequestDiagnostic(
+          "mga.relation_metadata", "migration_transaction_uuid_invalid");
       MgaInt32IdentityMigrationRequest request;
       request.migration_id = fields[7];
-      request.prior_catalog_snapshot_uuid = fields[9];
-      request.new_catalog_snapshot_uuid = fields[10];
+      if (!ReadMetadataUuid(fields[9], &request.prior_catalog_snapshot_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[10], &request.new_catalog_snapshot_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
       request.prior_catalog_generation = ParseU64(fields[11]);
       request.new_catalog_generation = ParseU64(fields[12]);
       std::vector<CrudTableRecord> tables;
       std::vector<std::string> decisions;
-      std::set<std::pair<std::string, std::string>> identities;
-      std::map<std::string, std::string> table_projections;
-      std::map<std::string, CrudTableRecord> unique_tables;
+      std::set<std::pair<EngineUuid, EngineUuid>> identities;
+      std::map<EngineUuid, std::string> table_projections;
+      std::map<EngineUuid, CrudTableRecord> unique_tables;
       for (std::size_t i = 0; i < mutation_count; ++i) {
         const std::size_t base = kHeaderFields + i * kFieldsPerRow;
         MgaInt32IdentityMigrationRow row;
-        row.object_uuid = fields[base];
-        row.column_uuid = fields[base + 1];
+        if (!ReadMetadataUuid(fields[base], &row.object_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+        if (!ReadMetadataUuid(fields[base + 1], &row.column_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
         row.old_row_generation = ParseU64(fields[base + 6]);
-        if (fields[base + 2] != kLegacyInt32DescriptorUuid ||
-            fields[base + 3] != kCanonicalInt32DescriptorUuid ||
-            fields[base + 4] != kLegacyInt32TypeUuid ||
-            fields[base + 5] != kCanonicalInt32TypeUuid ||
+        if (fields[base + 2] != MetadataUuidBytes(kLegacyInt32DescriptorUuid) ||
+            fields[base + 3] != MetadataUuidBytes(kCanonicalInt32DescriptorUuid) ||
+            fields[base + 4] != MetadataUuidBytes(kLegacyInt32TypeUuid) ||
+            fields[base + 5] != MetadataUuidBytes(kCanonicalInt32TypeUuid) ||
             row.old_row_generation == 0 ||
             ParseU64(fields[base + 7]) != event_sequence ||
             fields[base + 8].size() != 71 ||
@@ -1446,15 +1412,22 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         CrudTableRecord table;
         table.creator_tx = creator_tx;
         table.event_sequence = event_sequence;
+        if (!core::uuid::IsEngineIdentityUuid(row.object_uuid)) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "binary_metadata_uuid_invalid");
+        }
         table.table_uuid = row.object_uuid;
-        table.default_name = DecodeCrudTextLocal(fields[base + 9]);
-        table.columns = DecodeCrudPairs(fields[base + 10]);
+        table.default_name = std::string(fields[base + 9]);
+        table.columns = decode_pairs(fields[base + 10]);
         table.temporary = fields[base + 11] == "1";
         table.temporary_scope = fields[base + 12];
-        table.temporary_session_uuid = fields[base + 13];
+        if (!ReadMetadataUuid(fields[base + 13], &table.temporary_session_uuid, true)) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "binary_metadata_uuid_invalid");
+        }
         table.on_commit_action = fields[base + 14];
         if (table.temporary || !table.temporary_scope.empty() ||
-            !table.temporary_session_uuid.empty() ||
+            !table.temporary_session_uuid.is_nil() ||
             !table.on_commit_action.empty()) {
           return MakeInvalidRequestDiagnostic(
               "mga.relation_metadata", "int32_migration_temporary_unsupported");
@@ -1478,7 +1451,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       }
       for (std::size_t i = 0; i < request.rows.size(); ++i) {
         const std::string expected_decision = Int32MigrationDecisionHash(
-            request, request.rows[i], tables[i].event_sequence, fields[8]);
+            request, request.rows[i], tables[i].event_sequence, migration_transaction_uuid);
         if (!scratchbird::core::hash::ConstantTimeEqual(
                 expected_decision, decisions[i])) {
           return MakeInvalidRequestDiagnostic(
@@ -1487,7 +1460,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         }
       }
       const std::string payload = CanonicalInt32MigrationPayload(
-          request, creator_tx, event_sequence, fields[8], tables, decisions);
+          request, creator_tx, event_sequence, migration_transaction_uuid, tables, decisions);
       if (!scratchbird::core::hash::ConstantTimeEqual(
               Sha256Tagged(payload), fields[6])) {
         return MakeInvalidRequestDiagnostic(
@@ -1535,7 +1508,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
           ParseU64(fields[12]) != ParseU64(fields[11]) + 1 ||
           !CanonicalNonNilMigrationUuid(fields[13]) ||
           fields[13] !=
-              context.datatype_catalog_snapshot_uuid ||
+              MetadataUuidBytes(context.datatype_catalog_snapshot_uuid) ||
           datatype_catalog_generation == 0 ||
           std::to_string(datatype_catalog_generation) != fields[14] ||
           datatype_catalog_generation !=
@@ -1548,27 +1521,31 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         return MakeInvalidRequestDiagnostic(
             "mga.relation_metadata", "text_migration_batch_invalid");
       }
+      EngineUuid migration_transaction_uuid;
+      if (!ReadMetadataUuid(fields[8], &migration_transaction_uuid)) return MakeInvalidRequestDiagnostic(
+          "mga.relation_metadata", "migration_transaction_uuid_invalid");
       MgaTextIdentityMigrationRequest request;
       request.migration_id = fields[7];
-      request.prior_catalog_snapshot_uuid = fields[9];
-      request.new_catalog_snapshot_uuid = fields[10];
+      if (!ReadMetadataUuid(fields[9], &request.prior_catalog_snapshot_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+      if (!ReadMetadataUuid(fields[10], &request.new_catalog_snapshot_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
       request.prior_catalog_generation = ParseU64(fields[11]);
       request.new_catalog_generation = ParseU64(fields[12]);
       std::vector<CrudTableRecord> tables;
       std::vector<CrudSealedRelationDescriptorSnapshot>
           relation_descriptor_snapshots;
       std::vector<std::string> decisions;
-      std::set<std::pair<std::string, std::string>> identities;
-      std::map<std::string, std::string> table_projections;
-      std::map<std::string, std::string> descriptor_projections;
-      std::map<std::string, CrudTableRecord> unique_tables;
-      std::map<std::string, CrudSealedRelationDescriptorSnapshot>
+      std::set<std::pair<EngineUuid, EngineUuid>> identities;
+      std::map<EngineUuid, std::string> table_projections;
+      std::map<EngineUuid, std::string> descriptor_projections;
+      std::map<EngineUuid, CrudTableRecord> unique_tables;
+      std::map<EngineUuid, CrudSealedRelationDescriptorSnapshot>
           unique_descriptors;
       for (std::size_t i = 0; i < mutation_count; ++i) {
         const std::size_t base = kHeaderFields + i * kFieldsPerRow;
-        if (!CanonicalNonNilMigrationUuid(fields[base]) ||
-            !CanonicalNonNilMigrationUuid(fields[base + 1]) ||
-            !identities.emplace(fields[base], fields[base + 1]).second) {
+        EngineUuid object_uuid, column_uuid;
+        if (!ReadMetadataUuid(fields[base], &object_uuid) ||
+            !ReadMetadataUuid(fields[base + 1], &column_uuid) ||
+            !identities.emplace(object_uuid, column_uuid).second) {
           return MakeInvalidRequestDiagnostic(
               "mga.relation_metadata", "text_migration_batch_conflict");
         }
@@ -1576,14 +1553,14 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       for (std::size_t i = 0; i < mutation_count; ++i) {
         const std::size_t base = kHeaderFields + i * kFieldsPerRow;
         MgaTextIdentityMigrationRow row;
-        row.object_uuid = fields[base];
-        row.column_uuid = fields[base + 1];
+        if (!ReadMetadataUuid(fields[base], &row.object_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
+        if (!ReadMetadataUuid(fields[base + 1], &row.column_uuid)) return MakeInvalidRequestDiagnostic("mga.relation_metadata", "binary_metadata_uuid_invalid");
         row.old_row_generation = ParseU64(fields[base + 10]);
-        if (fields[base + 2] != kLegacyTextDescriptorUuid ||
-            fields[base + 3] != kCanonicalTextDescriptorUuid ||
-            fields[base + 4] != kLegacyTextTypeUuid ||
-            fields[base + 5] != kCanonicalTextTypeUuid ||
-            fields[base + 6] != kCanonicalTextCodecUuid ||
+        if (fields[base + 2] != MetadataUuidBytes(kLegacyTextDescriptorUuid) ||
+            fields[base + 3] != MetadataUuidBytes(kCanonicalTextDescriptorUuid) ||
+            fields[base + 4] != MetadataUuidBytes(kLegacyTextTypeUuid) ||
+            fields[base + 5] != MetadataUuidBytes(kCanonicalTextTypeUuid) ||
+            fields[base + 6] != MetadataUuidBytes(kCanonicalTextCodecUuid) ||
             fields[base + 7] != kCanonicalTextCodecId ||
             fields[base + 8] != "1" || fields[base + 9] != "1" ||
             row.old_row_generation == 0 ||
@@ -1596,18 +1573,25 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         CrudTableRecord table;
         table.creator_tx = creator_tx;
         table.event_sequence = event_sequence;
+        if (!core::uuid::IsEngineIdentityUuid(row.object_uuid)) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "binary_metadata_uuid_invalid");
+        }
         table.table_uuid = row.object_uuid;
-        table.default_name = DecodeCrudTextLocal(fields[base + 13]);
-        table.columns = DecodeCrudPairs(fields[base + 14]);
+        table.default_name = std::string(fields[base + 13]);
+        table.columns = decode_pairs(fields[base + 14]);
         table.temporary = fields[base + 21] == "1";
         table.temporary_scope = fields[base + 22];
-        table.temporary_session_uuid = fields[base + 23];
+        if (!ReadMetadataUuid(fields[base + 23], &table.temporary_session_uuid, true)) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "binary_metadata_uuid_invalid");
+        }
         table.on_commit_action = fields[base + 24];
         if (fields[base + 21] != "0" || table.temporary ||
-            EncodeCrudText(table.default_name) != fields[base + 13] ||
-            EncodeCrudPairs(table.columns) != fields[base + 14] ||
+            std::string(table.default_name) != fields[base + 13] ||
+            EncodeMetadataPairs(table.columns) != fields[base + 14] ||
             !table.temporary_scope.empty() ||
-            !table.temporary_session_uuid.empty() ||
+            !table.temporary_session_uuid.is_nil() ||
             !table.on_commit_action.empty()) {
           return MakeInvalidRequestDiagnostic(
               "mga.relation_metadata", "text_migration_temporary_unsupported");
@@ -1625,8 +1609,8 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
           migrated_column_name = column_name;
           migrated_column_descriptor = descriptor;
         }
-        const auto relation_fields = DecodeCrudPairs(fields[base + 15]);
-        if (EncodeCrudPairs(relation_fields) != fields[base + 15]) {
+        const auto relation_fields = decode_pairs(fields[base + 15]);
+        if (EncodeMetadataPairs(relation_fields) != fields[base + 15]) {
           return MakeInvalidRequestDiagnostic(
               "mga.relation_metadata",
               "text_migration_relation_descriptor_encoding_invalid");
@@ -1675,7 +1659,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
             ParseU64(fields[base + 20]);
         if (!CanonicalNonNilMigrationUuid(fields[base + 16]) ||
             fields[base + 16] !=
-                relation_descriptor.descriptor_uuid ||
+                MetadataUuidBytes(relation_descriptor.descriptor_uuid) ||
             descriptor_generation == 0 ||
             descriptor_generation !=
                 relation_descriptor.descriptor_generation ||
@@ -1718,7 +1702,10 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         relation_snapshot.creator_tx = creator_tx;
         relation_snapshot.event_sequence = event_sequence;
         relation_snapshot.relation_uuid = row.object_uuid;
-        relation_snapshot.relation_descriptor_uuid = fields[base + 16];
+        if (!ReadMetadataUuid(fields[base + 16], &relation_snapshot.relation_descriptor_uuid)) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "binary_metadata_uuid_invalid");
+        }
         relation_snapshot.relation_descriptor_generation =
             descriptor_generation;
         relation_snapshot.descriptor_field_count = descriptor_field_count;
@@ -1790,7 +1777,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         if (prior_table == nullptr ||
             newest_prior_generation != row.old_row_generation ||
             prior_table->temporary || !prior_table->temporary_scope.empty() ||
-            !prior_table->temporary_session_uuid.empty() ||
+            !prior_table->temporary_session_uuid.is_nil() ||
             !prior_table->on_commit_action.empty()) {
           return MakeInvalidRequestDiagnostic(
               "mga.relation_metadata",
@@ -1798,6 +1785,10 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         }
         const auto persisted = LoadAdmittedDescriptorFieldsSnapshot(
             descriptor_path, descriptor_lines, row.object_uuid);
+        if (!persisted) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "descriptor_store_decode_failed");
+        }
         const auto prior_fields = persisted->find(row.object_uuid);
         if (prior_fields == persisted->end()) {
           return MakeInvalidRequestDiagnostic(
@@ -1925,8 +1916,8 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       }
       for (std::size_t i = 0; i < request.rows.size(); ++i) {
         const std::string expected_decision = TextMigrationDecisionHash(
-            request, request.rows[i], tables[i].event_sequence, fields[8],
-            fields[13], datatype_catalog_generation,
+            request, request.rows[i], tables[i].event_sequence, migration_transaction_uuid,
+            context.datatype_catalog_snapshot_uuid, datatype_catalog_generation,
             datatype_registry_generation,
             relation_descriptor_snapshots[i]);
         if (!scratchbird::core::hash::ConstantTimeEqual(
@@ -1937,7 +1928,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         }
       }
       const std::string payload = CanonicalTextMigrationPayload(
-          request, creator_tx, event_sequence, fields[8], fields[13],
+          request, creator_tx, event_sequence, migration_transaction_uuid, context.datatype_catalog_snapshot_uuid,
           datatype_catalog_generation, datatype_registry_generation, tables,
           relation_descriptor_snapshots, decisions);
       if (!scratchbird::core::hash::ConstantTimeEqual(
@@ -1967,21 +1958,27 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       CrudIndexRecord index;
       index.creator_tx = ParseU64(fields[2]);
       index.event_sequence = ParseU64(fields[3]);
-      index.index_uuid = fields[4];
-      index.table_uuid = fields[5];
+      if (!ReadMetadataUuid(fields[4], &index.index_uuid)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "binary_metadata_uuid_invalid");
+      }
+      if (!ReadMetadataUuid(fields[5], &index.table_uuid)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "binary_metadata_uuid_invalid");
+      }
       index.profile = NormalizeCrudIndexProfile(fields[6]);
       index.family = fields[7].empty() ? CrudIndexFamilyForProfile(index.profile) : fields[7];
-      index.default_name = DecodeCrudTextLocal(fields[8]);
-      index.column_name = DecodeCrudTextLocal(fields[9]);
+      index.default_name = std::string(fields[8]);
+      index.column_name = std::string(fields[9]);
       std::vector<std::string> key_envelopes;
-      for (const auto& pair : DecodeCrudPairs(fields[10])) { key_envelopes.push_back(pair.second); }
+      for (const auto& pair : decode_pairs(fields[10])) { key_envelopes.push_back(pair.second); }
       index.key_envelopes = std::move(key_envelopes);
       std::vector<std::string> include_columns;
-      for (const auto& pair : DecodeCrudPairs(fields[11])) { include_columns.push_back(pair.second); }
+      for (const auto& pair : decode_pairs(fields[11])) { include_columns.push_back(pair.second); }
       index.include_columns = std::move(include_columns);
       index.predicate_kind = fields[12];
-      index.predicate_column = DecodeCrudTextLocal(fields[13]);
-      index.predicate_value = DecodeCrudTextLocal(fields[14]);
+      index.predicate_column = std::string(fields[13]);
+      index.predicate_value = std::string(fields[14]);
       index.unique = fields[15] == "1";
       index.approximate = IsApproximateCrudIndexFamily(index.family);
       index.exact_fallback = index.approximate || fields[16] == "1";
@@ -1995,6 +1992,8 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       decoded.indexes.push_back(std::move(index));
     }
   }
+  if (!nested_metadata_valid) return MakeInvalidRequestDiagnostic(
+      "mga.relation_metadata", "nested_binary_metadata_invalid");
   state->tables.insert(state->tables.end(),
                        decoded.tables.begin(),
                        decoded.tables.end());
@@ -2032,9 +2031,9 @@ MgaMetadataSnapshotLoadResult LoadMgaMetadataSnapshot(
   const std::string descriptor_path = DescriptorStorePath(context);
   // A previously decoded generation cannot turn current I/O failure into
   // authoritative metadata. Validate all three complete streams before cache use.
-  const auto metadata_lines = ReadLines(metadata_path);
+  const auto metadata_lines = ReadMetadataRecords(metadata_path);
   const auto savepoint_lines = ReadSavepointBytes(savepoint_path);
-  const auto descriptor_lines = ReadLines(descriptor_path);
+  const auto descriptor_lines = ReadContent(descriptor_path, true);
   if (!metadata_lines.ok || !savepoint_lines.ok || !descriptor_lines.ok) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.relation_metadata",
         !metadata_lines.ok ? "metadata_store_read_failed" :
@@ -2043,7 +2042,7 @@ MgaMetadataSnapshotLoadResult LoadMgaMetadataSnapshot(
   }
   const auto metadata_identity = metadata_lines.identity;
   const auto savepoint_identity = savepoint_lines.identity;
-  const auto savepoints = ParseSavepointBytes(context, savepoint_lines.marker_bytes);
+  const auto savepoints = ParseSavepointBytes(context, savepoint_lines.binary_bytes);
   if (savepoints.diagnostic.error) {
     result.diagnostic = savepoints.diagnostic;
     return result;

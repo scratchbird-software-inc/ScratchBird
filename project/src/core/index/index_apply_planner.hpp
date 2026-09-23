@@ -20,7 +20,7 @@ namespace scratchbird::core::index {
 struct CommitGroupLocalityIndexApplyItem {
   std::size_t source_batch_ordinal = 0;
   std::size_t source_row_ordinal = 0;
-  std::string index_uuid;
+  scratchbird::core::platform::Uuid index_uuid;
   std::string family;
   std::string profile;
   bool unique = false;
@@ -29,9 +29,16 @@ struct CommitGroupLocalityIndexApplyItem {
   PageAwareSecondaryChangeBufferRequest secondary_change_buffer_request;
 };
 
+struct IndexApplyLocalityKey {
+  scratchbird::core::platform::Uuid index_uuid;
+  std::uint8_t bucket = 0;
+  bool unique_order = false;
+  auto operator<=>(const IndexApplyLocalityKey&) const = default;
+};
+
 struct CommitGroupLocalityIndexApplyGroup {
   std::string family_profile_key;
-  std::string target_leaf_page_locality_key;
+  IndexApplyLocalityKey target_leaf_page_locality_key;
   bool unique_order_preserved = false;
   std::vector<std::size_t> item_ordinals;
 };
@@ -45,7 +52,7 @@ struct CommitGroupLocalityIndexApplyPlan {
   bool planned_before_append = false;
   bool unique_order_preserved = true;
   std::vector<std::string> family_profile_keys;
-  std::vector<std::string> target_leaf_page_locality_keys;
+  std::vector<IndexApplyLocalityKey> target_leaf_page_locality_keys;
   std::vector<CommitGroupLocalityIndexApplyGroup> groups;
   std::vector<PageAwareSecondaryChangeBufferDecision>
       secondary_change_buffer_decisions;
@@ -54,7 +61,7 @@ struct CommitGroupLocalityIndexApplyPlan {
 CommitGroupLocalityIndexApplyPlan PlanCommitGroupLocalityIndexApply(
     const std::vector<CommitGroupLocalityIndexApplyItem>& items);
 
-std::string CommitGroupLocalityTargetKey(
+IndexApplyLocalityKey CommitGroupLocalityTargetKey(
     const CommitGroupLocalityIndexApplyItem& item);
 
 }  // namespace scratchbird::core::index

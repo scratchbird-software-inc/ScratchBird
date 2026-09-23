@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include <tuple>
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
@@ -36,14 +38,33 @@ namespace datatypes = scratchbird::core::datatypes;
 
 namespace {
 
-constexpr std::string_view kCanonicalInt64TypeUuid =
-    "019d0000-0000-7000-8000-00000000d712";
+constexpr auto kCanonicalInt64TypeUuid =
+    scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
 
-std::string Uuid(const std::uint64_t value) {
-  char buffer[37];
-  std::snprintf(buffer, sizeof(buffer), "019f0000-0000-7000-8000-%012llx",
-                static_cast<unsigned long long>(value));
-  return buffer;
+api::EngineUuid Uuid(const std::uint64_t value) {
+  auto uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000000");
+  for (unsigned i = 0; i < 6; ++i) uuid.bytes[15 - i] = static_cast<std::uint8_t>(value >> (8 * i));
+  return uuid;
+}
+
+api::EngineDescriptor FixtureDescriptor(std::string type, api::EngineUuid type_uuid,
+                                       std::string attributes) {
+  auto descriptor = executor::MakeExecutorDescriptor(std::move(type), std::move(attributes));
+  descriptor.type_uuid = type_uuid;
+  return descriptor;
+}
+
+api::EngineTypedValue FixtureValue(const api::EngineDescriptor& descriptor,
+                                   const api::EngineUuid& uuid) {
+  api::EngineTypedValue value;
+  value.descriptor = descriptor;
+  value.binary_value.assign(uuid.bytes.begin(), uuid.bytes.end());
+  return value;
+}
+
+api::EngineTypedValue FixtureValue(const api::EngineDescriptor& descriptor,
+                                   std::string text, bool is_null = false) {
+  return executor::MakeExecutorValue(descriptor, std::move(text), is_null);
 }
 
 bool Require(const bool condition, const std::string_view detail) {
@@ -200,12 +221,10 @@ executor::TypedPhysicalNodeDag DirectDag(
 
 executor::DescriptorBatch DirectLegBatch(const std::uint32_t descriptor_id,
                                          const std::uint64_t identity) {
-  auto descriptor = executor::MakeExecutorDescriptor(
-      "uuid", "canonical=uuid;type_uuid=" + Uuid(6400) +
-                  ";nullable=false");
-  descriptor.descriptor_uuid.canonical = Uuid(6500 + identity);
+  auto descriptor = FixtureDescriptor("uuid", Uuid(6400), "canonical=uuid;nullable=false");
+  descriptor.descriptor_uuid = Uuid(6500 + identity);
   descriptor.descriptor_kind = "scalar";
-  auto value = executor::MakeExecutorValue(descriptor, Uuid(6600 + identity));
+  auto value = FixtureValue(descriptor, Uuid(6600 + identity));
   return executor::MakeDescriptorBatch(
       {{"family_" + std::to_string(identity), descriptor, false,
         descriptor_id}},
@@ -239,17 +258,15 @@ DirectLegExecution ExecuteDirectLeg(const std::size_t ordinal,
   const auto descriptor = [&](const std::string& name,
                               const std::string& type,
                               const std::uint32_t descriptor_id,
-                              const std::string& value) {
-    auto engine_descriptor = executor::MakeExecutorDescriptor(
-        type, "canonical=" + type + ";type_uuid=" +
-                  Uuid(9000 + descriptor_id) + ";nullable=false");
-    engine_descriptor.descriptor_uuid.canonical =
+                              const auto& value) {
+    auto engine_descriptor = FixtureDescriptor(type, Uuid(9000 + descriptor_id), "canonical=" + type + ";nullable=false");
+    engine_descriptor.descriptor_uuid =
         Uuid(10'000 + descriptor_id);
     engine_descriptor.descriptor_kind = "scalar";
     return std::pair{
         executor::ExecutorColumnDescriptor{name, engine_descriptor, false,
                                            descriptor_id},
-        executor::MakeExecutorValue(engine_descriptor, value)};
+        FixtureValue(engine_descriptor, value)};
   };
   std::vector<std::pair<executor::ExecutorColumnDescriptor,
                         api::EngineTypedValue>> cells;
@@ -358,7 +375,7 @@ DirectLegExecution ExecuteDirectLeg(const std::size_t ordinal,
   }
   if (family == "spatial") {
     request.input.spatial_geometry_descriptor_uuid =
-        batch.columns[1].descriptor.descriptor_uuid.canonical;
+        batch.columns[1].descriptor.descriptor_uuid;
     request.input.spatial_geometry_type_uuid = Uuid(12'500 + ordinal);
     request.input.spatial_crs_uuid = Uuid(12'000 + ordinal);
     request.input.spatial_crs_generation = 1;
@@ -444,8 +461,11 @@ DirectLegExecution ExecuteDirectLeg(const std::size_t ordinal,
       const auto row_uuid = Uuid(11'000 +
                                  (input.physical_node_id - 1));
       if (family == "document") {
-        identity.document_uuid =
-            provider.provider_batch.batch.rows.front().values.front().encoded_value;
+        const auto& document = provider.provider_batch.batch.rows.front().values.front();
+        if (document.binary_value.size() != identity.document_uuid.bytes.size())
+          throw std::runtime_error("document_identity_requires_binary16");
+        std::copy(document.binary_value.begin(), document.binary_value.end(),
+                  identity.document_uuid.bytes.begin());
         identity.row_uuid = Uuid(13'000 + input.physical_node_id);
       } else if (family == "graph") {
         identity.row_uuid = row_uuid;
@@ -517,7 +537,7 @@ DirectLegExecution ExecuteDirectLeg(const std::size_t ordinal,
 struct DirectJoinProof {
   bool accepted{false};
   executor::DescriptorBatch output;
-  std::string selected_plan_uuid;
+  api::EngineUuid selected_plan_uuid;
   std::uint64_t executed_physical_node_id{0};
   std::uint64_t causal_counter_id{0};
   std::string diagnostic;
@@ -745,11 +765,8 @@ bool DirectConsumerSpine(const executor::DescriptorBatch& root,
       count_entry->abi_version, count_entry->function,
       count_entry->builtin_id, count_entry->function_uuid, true};
   aggregate_request.input_batch = recursive.output_batch;
-  auto aggregate_descriptor = executor::MakeExecutorDescriptor(
-      "int64", "canonical=int64;type_uuid=" +
-                   std::string(kCanonicalInt64TypeUuid) +
-                   ";nullable=false");
-  aggregate_descriptor.descriptor_uuid.canonical = Uuid(6700 + receipt_salt);
+  auto aggregate_descriptor = FixtureDescriptor("int64", kCanonicalInt64TypeUuid, "canonical=int64;nullable=false");
+  aggregate_descriptor.descriptor_uuid = Uuid(6700 + receipt_salt);
   aggregate_descriptor.descriptor_kind = "scalar";
   aggregate_request.result_column = {
       "root_count", aggregate_descriptor, false, aggregate_descriptor_id};
@@ -872,18 +889,8 @@ bool DirectConsumerSpine(const executor::DescriptorBatch& root,
     executor::CanonicalResultColumnDescriptor published;
     published.ordinal = static_cast<std::uint32_t>(ordinal);
     published.name_utf8 = column.stable_name;
-    published.descriptor_uuid = column.descriptor.descriptor_uuid.canonical;
-    const auto type_prefix = std::string_view("type_uuid=");
-    const auto type_offset =
-        column.descriptor.encoded_descriptor.find(type_prefix);
-    if (type_offset == std::string::npos) return fail("result-type");
-    const auto type_begin = type_offset + type_prefix.size();
-    const auto type_end =
-        column.descriptor.encoded_descriptor.find(';', type_begin);
-    published.type_uuid = column.descriptor.encoded_descriptor.substr(
-        type_begin, type_end == std::string::npos
-                        ? std::string::npos
-                        : type_end - type_begin);
+    published.descriptor_uuid = column.descriptor.descriptor_uuid;
+    published.type_uuid = column.descriptor.type_uuid;
     published.nullability = column.nullable
                                 ? executor::CanonicalResultNullability::kNullable
                                 : executor::CanonicalResultNullability::kNonNull;
@@ -1080,7 +1087,7 @@ bool CanonicalSpatialPointExpression() {
   dag.expressions = {std::move(x), std::move(y), std::move(point)};
   sblr::CanonicalRelationalExpressionRuntimeServices services;
   services.descriptor_type_resolver =
-      [&](const std::string_view type_uuid, std::string* type_name,
+      [&](const api::EngineUuid& type_uuid, std::string* type_name,
           std::string*, std::string*) {
         if (type_uuid == Uuid(61)) {
           *type_name = "int64";
@@ -1121,7 +1128,7 @@ bool CanonicalSpatialPointExpression() {
 std::vector<optimizer::MultilegDescriptorProfileV1> Profiles() {
   std::vector<optimizer::MultilegDescriptorProfileV1> profiles;
   profiles.reserve(320);
-  const std::array<std::string, 5> types = {
+  const std::array<api::EngineUuid, 5> types = {
       Uuid(500), Uuid(501), Uuid(502), Uuid(503), Uuid(504)};
   for (std::uint16_t pair = 0; pair < 5; ++pair) {
     for (std::uint16_t nullable = 0; nullable < 2; ++nullable) {
@@ -1172,7 +1179,7 @@ bool DescriptorAllocation() {
     }
     std::map<std::uint8_t, std::size_t> actual_kind_counts;
     std::map<std::uint8_t, std::uint16_t> next_slot;
-    std::set<std::string> descriptor_uuids;
+    std::set<api::EngineUuid> descriptor_uuids;
     for (std::size_t ordinal = 0; ordinal < demands.size(); ++ordinal) {
       const auto& allocation = result.allocations[ordinal];
       const auto profile_ordinal =
@@ -1276,7 +1283,8 @@ bool DescriptorAllocation() {
   credit("RCP079-DV-006", outer_exact);
 
   auto non_v7 = profiles;
-  non_v7.front().descriptor_uuid[14] = '6';
+  non_v7.front().descriptor_uuid.bytes[6] =
+      (non_v7.front().descriptor_uuid.bytes[6] & 0x0f) | 0x60;
   const auto identity_refusal =
       optimizer::AllocateMultilegResultDescriptorsV1(non_v7, {});
   passed &= Require(!identity_refusal.accepted &&
@@ -1361,12 +1369,12 @@ bool CompositionProfiles() {
         first.diagnostic_id == replay.diagnostic_id &&
         first.lifecycle_contract_id == replay.lifecycle_contract_id &&
         (first.accepted
-             ? (!first.composition_receipt_uuid.empty() &&
+             ? (!first.composition_receipt_uuid.is_nil() &&
                 first.composition_receipt_uuid ==
                     replay.composition_receipt_uuid &&
                 first.lexical_legs.size() == expected.arity)
-             : (first.composition_receipt_uuid.empty() &&
-                replay.composition_receipt_uuid.empty() &&
+             : (first.composition_receipt_uuid.is_nil() &&
+                replay.composition_receipt_uuid.is_nil() &&
                 first.lexical_legs.empty() && replay.lexical_legs.empty()));
     passed &= Require(exact_outcome,
                       std::string(expected.profile_id) +
@@ -1425,7 +1433,7 @@ bool CompositionProfiles() {
       const auto joined = DirectJoin(left, right);
       if (!joined.accepted) std::cerr << joined.diagnostic << '\n';
       execution_ok = execution_ok && joined.accepted &&
-                     !joined.selected_plan_uuid.empty() &&
+                     !joined.selected_plan_uuid.is_nil() &&
                      joined.executed_physical_node_id == 3 &&
                      joined.causal_counter_id == 3;
       ++join_count;
@@ -1478,7 +1486,7 @@ bool CompositionProfiles() {
       auto visible_outer = outer.result.output.batch;
       if (!visible_outer.rows.empty() && !visible_outer.columns.empty()) {
         auto second = visible_outer.rows.front();
-        second.values.front() = executor::MakeExecutorValue(
+        second.values.front() = FixtureValue(
             visible_outer.columns.front().descriptor, Uuid(9001));
         visible_outer.rows.push_back(std::move(second));
       } else {
@@ -1637,7 +1645,7 @@ bool CompositionProfiles() {
                        !refused.root_publication_allowed &&
                        refused.no_partial_root &&
                        refused.lexical_legs.empty() &&
-                       refused.composition_receipt_uuid.empty() &&
+                       refused.composition_receipt_uuid.is_nil() &&
                        refused.diagnostic_id == diagnostic,
                    detail);
   };
@@ -1685,7 +1693,7 @@ struct SemanticJoinReceipt {
   std::size_t unmatched_left_count{0};
   std::size_t unmatched_right_count{0};
   std::size_t scope_execution_count{0};
-  std::string selected_plan_uuid;
+  api::EngineUuid selected_plan_uuid;
   std::uint64_t executed_physical_node_id{0};
   std::uint64_t causal_counter_id{0};
   std::string output_signature;
@@ -1704,17 +1712,16 @@ executor::DescriptorBatch SemanticInt64Batch(
     const std::vector<std::optional<std::int64_t>>& values) {
   const bool nullable = std::ranges::any_of(
       values, [](const auto& value) { return !value.has_value(); });
-  auto descriptor = executor::MakeExecutorDescriptor(
-      "int64", "canonical=int64;type_uuid=" + Uuid(17'000 + identity) +
-                   ";nullable=" + (nullable ? "true" : "false"));
-  descriptor.descriptor_uuid.canonical = Uuid(18'000 + identity);
+  auto descriptor = FixtureDescriptor("int64", Uuid(17'000 + identity),
+      std::string("canonical=int64;nullable=") + (nullable ? "true" : "false"));
+  descriptor.descriptor_uuid = Uuid(18'000 + identity);
   descriptor.descriptor_kind = "scalar";
   executor::DescriptorBatch batch;
   batch.columns = {{"join_key", descriptor, nullable, descriptor_id}};
   for (const auto value : values) {
     api::EngineTypedValue cell;
     if (value.has_value()) {
-      cell = executor::MakeExecutorValue(descriptor,
+      cell = FixtureValue(descriptor,
                                          std::to_string(*value));
     } else {
       cell.descriptor = descriptor;
@@ -1864,15 +1871,13 @@ std::string ExpectedSemanticValueBag(const std::string_view form,
 
 std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
   if (scenario == "JOIN-SCENARIO-LOSSLESS-COERCION-V1") {
-    auto source_descriptor = executor::MakeExecutorDescriptor(
-        "int32", "type_uuid=" + Uuid(26'001) + ";nullability=non_null");
-    source_descriptor.descriptor_uuid.canonical = Uuid(26'002);
+    auto source_descriptor = FixtureDescriptor("int32", Uuid(26'001), "nullability=non_null");
+    source_descriptor.descriptor_uuid = Uuid(26'002);
     source_descriptor.descriptor_kind = "scalar";
-    auto target_descriptor = executor::MakeExecutorDescriptor(
-        "int64", "type_uuid=" + Uuid(26'003) + ";nullability=non_null");
-    target_descriptor.descriptor_uuid.canonical = Uuid(26'004);
+    auto target_descriptor = FixtureDescriptor("int64", Uuid(26'003), "nullability=non_null");
+    target_descriptor.descriptor_uuid = Uuid(26'004);
     target_descriptor.descriptor_kind = "scalar";
-    const auto input = executor::MakeExecutorValue(source_descriptor, "2");
+    const auto input = FixtureValue(source_descriptor, "2");
     api::EngineTypedValue output;
     std::string category;
     std::string refusal;
@@ -1921,8 +1926,8 @@ std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
     int comparison = 1;
     std::string refusal;
     const bool accepted = api::QowCompareCanonicalCollatedScalarsV1(
-        executor::MakeExecutorValue(descriptor(26'011), "A"),
-        executor::MakeExecutorValue(descriptor(26'012), "a"),
+        FixtureValue(descriptor(26'011), "A"),
+        FixtureValue(descriptor(26'012), "a"),
         collation_uuid, 31, 17, authority, &comparison,
         &refusal);
     return accepted && comparison == 0 && refusal.empty()
@@ -1930,12 +1935,11 @@ std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
                : "";
   }
   if (scenario == "JOIN-SCENARIO-TIMEZONE-V1") {
-    auto descriptor = executor::MakeExecutorDescriptor(
-        "timestamp", "type_uuid=" + Uuid(26'020) +
-                         ";nullability=non_null;timezone_profile_id="
+    auto descriptor = FixtureDescriptor(
+        "timestamp", Uuid(26'020), "nullability=non_null;timezone_profile_id="
                          "timestamp_timezone_profile;"
                          "fractional_second_precision=6");
-    descriptor.descriptor_uuid.canonical = Uuid(26'021);
+    descriptor.descriptor_uuid = Uuid(26'021);
     descriptor.descriptor_kind = "scalar";
     datatypes::TimezoneSeedAuthority authority;
     authority.active = true;
@@ -1955,12 +1959,12 @@ std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
     std::string utc_refusal;
     std::string offset_refusal;
     const auto utc_accepted = api::QowNormalizeCanonicalTimezoneScalarV1(
-        executor::MakeExecutorValue(descriptor,
+        FixtureValue(descriptor,
                                     "2026-08-11T20:00:00Z"),
         authority, 41, 19, &utc_output, &utc_zone, &utc_minutes, &utc_seed,
         &utc_refusal);
     const auto offset_accepted = api::QowNormalizeCanonicalTimezoneScalarV1(
-        executor::MakeExecutorValue(descriptor,
+        FixtureValue(descriptor,
                                     "2026-08-11T15:00:00-05:00"),
         authority, 41, 19, &offset_output, &offset_zone, &offset_minutes,
         &offset_seed, &offset_refusal);
@@ -2164,7 +2168,7 @@ bool ValidateSemanticReceipt(const std::string_view form,
   }
   if (!receipt.accepted || receipt.output_row_count !=
                                ExpectedSemanticRows(form, scenario) ||
-      receipt.selected_plan_uuid.empty() ||
+      receipt.selected_plan_uuid.is_nil() ||
       receipt.executed_physical_node_id == 0 ||
       receipt.causal_counter_id == 0 || receipt.output_signature.empty()) {
     return false;
@@ -2254,9 +2258,9 @@ SemanticJoinReceipt ExecuteLateralSemanticVector(
 }
 
 struct AsofFixtureRow {
-  std::string metric_uuid;
+  api::EngineUuid metric_uuid;
   std::int64_t second{0};
-  std::string row_uuid;
+  api::EngineUuid row_uuid;
 };
 
 std::string AsofTimestamp(const std::int64_t second) {
@@ -2273,10 +2277,8 @@ executor::DescriptorBatch SemanticAsofBatch(
   const auto make_column = [&](const std::string& name,
                                const std::string& type,
                                const std::uint32_t descriptor_id) {
-    auto descriptor = executor::MakeExecutorDescriptor(
-        type, "canonical=" + type + ";type_uuid=" + Uuid(21'000 + descriptor_id) +
-                  ";nullable=false");
-    descriptor.descriptor_uuid.canonical = Uuid(22'000 + descriptor_id);
+    auto descriptor = FixtureDescriptor(type, Uuid(21'000 + descriptor_id), "canonical=" + type + ";nullable=false");
+    descriptor.descriptor_uuid = Uuid(22'000 + descriptor_id);
     descriptor.descriptor_kind = "scalar";
     return executor::ExecutorColumnDescriptor{name, descriptor, false,
                                                descriptor_id};
@@ -2293,13 +2295,13 @@ executor::DescriptorBatch SemanticAsofBatch(
   for (const auto& fixture : rows) {
     executor::DescriptorTuple row;
     row.values = {
-        executor::MakeExecutorValue(batch.columns[0].descriptor,
+        FixtureValue(batch.columns[0].descriptor,
                                     fixture.metric_uuid),
-        executor::MakeExecutorValue(batch.columns[1].descriptor, "{}"),
-        executor::MakeExecutorValue(batch.columns[2].descriptor,
+        FixtureValue(batch.columns[1].descriptor, "{}"),
+        FixtureValue(batch.columns[2].descriptor,
                                     AsofTimestamp(fixture.second))};
     if (raw) {
-      row.values.push_back(executor::MakeExecutorValue(
+      row.values.push_back(FixtureValue(
           batch.columns[3].descriptor, fixture.row_uuid));
     }
     batch.rows.push_back(std::move(row));
@@ -2474,7 +2476,7 @@ bool ExactDirectionalExecutionReceipts() {
       "relational", "document", "graph", "key_value", "time_series",
       "vector", "search", "spatial", "columnar"};
   std::set<std::string> direction_keys;
-  std::set<std::string> receipt_identities;
+  std::set<std::tuple<std::string, api::EngineUuid, std::uint64_t, std::uint64_t, std::string>> receipt_identities;
   std::size_t fresh_leg_execution_count = 0;
   std::size_t fresh_provider_call_count = 0;
   std::size_t cleanup_once_count = 0;
@@ -2490,9 +2492,9 @@ bool ExactDirectionalExecutionReceipts() {
         relational ||
         (execution.result.output.exact_exchange_validated &&
          execution.result.data_access_observed &&
-         !execution.result.output.selected_alternative_uuid.empty() &&
+         !execution.result.output.selected_alternative_uuid.is_nil() &&
          execution.result.output.physical_node_id != 0 &&
-         !execution.result.output.result_handle_uuid.empty() &&
+         !execution.result.output.result_handle_uuid.is_nil() &&
          execution.result.output.causal_counter_id != 0 &&
          execution.result.output.ordered_row_identities.size() == 1);
     return execution.result.accepted && execution.result.execution_started &&
@@ -2557,17 +2559,16 @@ bool ExactDirectionalExecutionReceipts() {
       const auto direction_key = std::string(left_family) + "|" +
                                  std::string(right_family);
       const bool join_exact =
-          joined.accepted && !joined.selected_plan_uuid.empty() &&
+          joined.accepted && !joined.selected_plan_uuid.is_nil() &&
           joined.executed_physical_node_id != 0 &&
           joined.causal_counter_id != 0 && !joined.output.rows.empty() &&
           !output_signature.empty();
       const bool consumer_exact =
           join_exact && DirectConsumerSpine(joined.output,
                                             1000 + direction_ordinal);
-      const auto receipt_identity =
-          direction_key + "|" + joined.selected_plan_uuid + "|" +
-          std::to_string(joined.executed_physical_node_id) + "|" +
-          std::to_string(joined.causal_counter_id) + "|" + output_signature;
+      const auto receipt_identity = std::make_tuple(
+          direction_key, joined.selected_plan_uuid, joined.executed_physical_node_id,
+          joined.causal_counter_id, output_signature);
       const bool exact = left_exact && right_exact && join_exact &&
                          consumer_exact &&
                          direction_keys.insert(direction_key).second &&
@@ -2577,7 +2578,7 @@ bool ExactDirectionalExecutionReceipts() {
                             direction_key);
       if (exact) {
         std::cout << "RCP-079 directional actual execution receipt="
-                  << receipt_identity << '\n';
+                  << direction_key << '\n';
       }
       ++direction_ordinal;
     }
@@ -2711,7 +2712,7 @@ bool ExhaustiveJoinAdmissionMatrix() {
                       semantic->second.accepted &&
                       semantic->second.output_row_count ==
                           ExpectedSemanticRows(join_form, scenario) &&
-                      !semantic->second.selected_plan_uuid.empty() &&
+                      !semantic->second.selected_plan_uuid.is_nil() &&
                       semantic->second.executed_physical_node_id != 0 &&
                       semantic->second.causal_counter_id != 0 &&
                       !semantic->second.output_signature.empty(),

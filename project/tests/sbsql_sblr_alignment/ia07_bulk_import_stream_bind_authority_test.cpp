@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/native_catalog_column_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "catalog/name_registry.hpp"
 #include "database_lifecycle.hpp"
 #include "engine/internal_api/mga_relation_store/mga_relation_store.hpp"
@@ -66,14 +68,12 @@ platform::TypedUuid NewUuid(platform::UuidKind kind) {
   return generated.value;
 }
 
-std::string Text(const platform::TypedUuid& value) {
-  return uuid::UuidToString(value.value);
+platform::Uuid Identity(const platform::TypedUuid& value) {
+  return value.value;
 }
 
-std::array<std::uint8_t, 16> Bytes(std::string_view text) {
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  Require(parsed.ok(), "fixture UUID parse failed");
-  return parsed.value.bytes;
+std::array<std::uint8_t, 16> Bytes(const platform::Uuid& value) {
+  return value.bytes;
 }
 
 sb_engine_uuid_t PublicUuid(const platform::TypedUuid& value) {
@@ -105,12 +105,12 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "bulk-import-bind-authority";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = Text(fixture.database);
+  context.database_uuid = Identity(fixture.database);
   context.database_page_size_bytes = 16384;
-  context.default_root_uuid.canonical = Text(fixture.filespace);
-  context.current_schema_uuid.canonical = Text(fixture.schema);
-  context.principal_uuid.canonical = Text(fixture.principal);
-  context.session_uuid.canonical = Text(fixture.session);
+  context.default_root_uuid = Identity(fixture.filespace);
+  context.current_schema_uuid = Identity(fixture.schema);
+  context.principal_uuid = Identity(fixture.principal);
+  context.session_uuid = Identity(fixture.session);
   context.identifier_profile_uuid = "sbsql_v3";
   context.security_context_present = true;
   context.catalog_generation_id = 1;
@@ -118,8 +118,8 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object));
+  context.authorization_context.authority_uuid =
+      Identity(NewUuid(platform::UuidKind::object));
   context.authorization_context.security_context_generation = 1;
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
@@ -131,10 +131,10 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   subject.subject_kind = "principal";
   context.authorization_context.effective_subjects.push_back(subject);
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = Text(NewUuid(platform::UuidKind::object));
+  grant.grant_uuid = Identity(NewUuid(platform::UuidKind::object));
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = Text(fixture.relation);
+  grant.target_uuid = Identity(fixture.relation);
   grant.right = "INSERT";
   grant.security_epoch = context.security_epoch;
   context.authorization_context.grants.push_back(grant);
@@ -173,12 +173,12 @@ std::unique_ptr<Fixture> MakeFixture() {
   fixture->transaction.transaction_isolation_level = begun.isolation_level;
 
   api::CrudTableRecord table;
-  table.table_uuid = Text(fixture->relation);
+  table.table_uuid = Identity(fixture->relation);
   table.default_name = "bulk_import_authority_target";
-  table.columns = {{"id",
-                    "type=int32;datatype_descriptor_uuid="
-                    "019d0000-0000-7000-8000-00000000d716;type_uuid="
-                    "019d0000-0000-7000-8000-00000000d717;nullable=false"}};
+  table.columns = {{"id", scratchbird::tests::NativeCatalogColumnFixture({
+      {{"type", "int32"}, {"nullable", "false"}},
+      {{"datatype_descriptor_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716")},
+       {"type_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717")}}})}};
   Require(!api::AppendMgaTableMetadata(fixture->transaction, table).error,
           "table metadata append failed");
   Require(!api::EnsureMgaRelationStorageDescriptor(
@@ -195,7 +195,7 @@ std::unique_ptr<Fixture> MakeFixture() {
   name.identifier_profile_uuid = "sbsql_v3";
   Require(!api::PersistNameRegistryEntriesForObject(
                fixture->transaction, "test.bulk_import_bind",
-               table.table_uuid, "table", Text(fixture->schema), {name},
+               table.table_uuid, "table", Identity(fixture->schema), {name},
                table.default_name)
                .error,
           "name registry publication failed");
@@ -250,7 +250,7 @@ bridge::StatementContextReceiptHandle Acquire(
     bridge::StatementContextReceiptView* view) {
   bridge::StatementContextAcquireRequest request;
   request.engine_context = &context;
-  request.exact_transaction_uuid = context.transaction_uuid.canonical;
+  request.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   sb_engine_result_t result = nullptr;
   const auto status = bridge::AcquireStatementContextReceipt(
@@ -339,16 +339,16 @@ int main() {
 
   server::ServerSessionRegistry server_registry;
   server::ServerSessionRecord server_session;
-  server_session.session_uuid = Bytes(Text(fixture->session));
-  server_registry.sessions_by_uuid.emplace(scratchbird::core::platform::Uuid{fixture->session},
+  server_session.session_uuid = Bytes(Identity(fixture->session));
+  server_registry.sessions_by_uuid.emplace(fixture->session.value,
                                             std::move(server_session));
   const auto cross_session_uuid = NewUuid(platform::UuidKind::session);
   server::ServerSessionRecord cross_session;
-  cross_session.session_uuid = Bytes(Text(cross_session_uuid));
-  server_registry.sessions_by_uuid.emplace(scratchbird::core::platform::Uuid{cross_session_uuid},
+  cross_session.session_uuid = Bytes(Identity(cross_session_uuid));
+  server_registry.sessions_by_uuid.emplace(cross_session_uuid.value,
                                             std::move(cross_session));
   server::ServerStatementContextRecord statement_record;
-  statement_record.session_uuid = Bytes(Text(fixture->session));
+  statement_record.session_uuid = Bytes(Identity(fixture->session));
   statement_record.statement_uuid = view.statement_uuid;
   statement_record.owning_local_transaction_id =
       view.owning_local_transaction_id;
@@ -361,7 +361,7 @@ int main() {
   bind_frame.header.message_type = static_cast<std::uint16_t>(
       sbps::MessageType::kBulkImportStreamBind);
   bind_frame.header.payload_schema_id = sbps::kSchemaBulkImportStreamBindV1;
-  bind_frame.header.session_uuid = Bytes(Text(fixture->session));
+  bind_frame.header.session_uuid = Bytes(Identity(fixture->session));
   bind_frame.payload = request.exact_bind_request_bytes;
   const auto bind_response = server::HandleBindBulkImportStream(
       &server_registry, server::HostedEngineState{}, bind_frame);
@@ -383,7 +383,7 @@ int main() {
           "malformed SBPS bind did not fail before receipt authority");
 
   auto cross_session_frame = bind_frame;
-  cross_session_frame.header.session_uuid = Bytes(Text(cross_session_uuid));
+  cross_session_frame.header.session_uuid = Bytes(Identity(cross_session_uuid));
   const auto cross_session_response = server::HandleBindBulkImportStream(
       &server_registry, server::HostedEngineState{}, cross_session_frame);
   Require(!cross_session_response.accepted &&
@@ -426,11 +426,11 @@ int main() {
   bridge::StatementBulkImportAuthorityV1 authority;
   Require(bridge::CopyStatementBulkImportAuthorityV1(
               receipt, 11, 3, &authority, &result) == SB_ENGINE_STATUS_OK &&
-              authority.target_relation_uuid == Text(fixture->relation) &&
+              authority.target_relation_uuid == Identity(fixture->relation) &&
               authority.target_relation_generation ==
                   fixture->descriptor.relation_generation &&
               authority.row_shape_uuid ==
-                  fixture->descriptor.descriptor_uuid.canonical &&
+                  fixture->descriptor.descriptor_uuid &&
               authority.row_shape_generation ==
                   fixture->descriptor.descriptor_generation &&
               authority.resource_grant_uuid == view.resource_admission_uuid &&

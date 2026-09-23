@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -32,10 +33,10 @@ bool ContainsPrefix(const std::vector<std::string>& values, const std::string& p
   });
 }
 
-opt::OptimizerStatsIdentity Identity(const std::string& object_uuid) {
+opt::OptimizerStatsIdentity Identity(std::uint64_t fixture_ordinal) {
   opt::OptimizerStatsIdentity identity;
-  identity.object_uuid = object_uuid;
-  identity.statistic_uuid = "stats:" + object_uuid;
+  identity.object_uuid = scratchbird::tests::FixtureUuid(62, fixture_ordinal);
+  identity.statistic_uuid = scratchbird::tests::FixtureUuid(62, 100 + fixture_ordinal);
   identity.stats_epoch = 6201;
   identity.catalog_epoch = 6200;
   identity.transaction_visibility_epoch = 6202;
@@ -47,9 +48,9 @@ opt::OptimizerStatsIdentity Identity(const std::string& object_uuid) {
 
 opt::IndexStats TextIndex(const std::string& family) {
   opt::IndexStats index;
-  index.identity = Identity("idx.text.062");
-  index.index_uuid = "idx.text.062";
-  index.relation_uuid = "rel.docs.062";
+  index.identity = Identity(1);
+  index.index_uuid = scratchbird::tests::FixtureUuid(62, 1);
+  index.relation_uuid = scratchbird::tests::FixtureUuid(62, 2);
   index.index_family = family;
   index.height = 3;
   index.leaf_pages = 4096;
@@ -68,7 +69,7 @@ opt::IndexStats TextIndex(const std::string& family) {
 
 opt::TableCardinalityStats Table() {
   opt::TableCardinalityStats table;
-  table.identity = Identity("rel.docs.062");
+  table.identity = Identity(2);
   table.row_count = 2'000'000;
   table.visible_row_count = 1'950'000;
   table.page_count = 50'000;

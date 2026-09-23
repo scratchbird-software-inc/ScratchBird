@@ -34,10 +34,10 @@ struct OptimizerStorageMetricAuthority {
 };
 
 struct OptimizerStorageMetricSample {
-  std::string scope_uuid;
-  std::string database_uuid;
-  std::string filespace_uuid;
-  std::string node_uuid = "local";
+  scratchbird::core::metrics::MetricUuid scope_uuid;
+  scratchbird::core::metrics::MetricUuid database_uuid;
+  scratchbird::core::metrics::MetricUuid filespace_uuid;
+  scratchbird::core::metrics::MetricUuid node_uuid;
   std::string route_label;
   std::string page_family;
   std::string page_class;
@@ -71,6 +71,7 @@ struct OptimizerStorageMetricPublishResult {
   std::string diagnostic_code;
   std::string detail;
   std::vector<std::string> evidence;
+  scratchbird::core::metrics::MetricUuid filespace_uuid;
   std::vector<scratchbird::core::metrics::MetricValidationResult>
       metric_results;
 };

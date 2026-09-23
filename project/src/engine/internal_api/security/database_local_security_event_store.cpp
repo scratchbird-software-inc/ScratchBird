@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "security_lifecycle_event_codec.hpp"
 #include "database_local_security_event_store.hpp"
 #include "api_diagnostics.hpp"
 
@@ -37,6 +38,7 @@
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
+namespace sec_event = scratchbird::storage::database::security_event_codec;
 namespace {
 
 namespace core_uuid = scratchbird::core::uuid;
@@ -51,7 +53,7 @@ using scratchbird::core::platform::Uuid;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::platform::byte;
 
-constexpr std::string_view kLifecycleMagic = "SBSECPL1";
+constexpr std::string_view kLifecycleMagic = "SBSECPL2";
 constexpr std::string_view kSuccessorKind = "AUTH_CONTEXT_SUCCESSOR";
 
 struct ParsedBatch {
@@ -143,20 +145,6 @@ bool ParseExactU64(std::string_view text, std::uint64_t* value) {
   return true;
 }
 
-std::vector<std::string_view> SplitTabs(std::string_view line) {
-  std::vector<std::string_view> parts;
-  std::size_t begin = 0;
-  while (begin <= line.size()) {
-    const std::size_t separator = line.find('\t', begin);
-    if (separator == std::string_view::npos) {
-      parts.push_back(line.substr(begin));
-      break;
-    }
-    parts.push_back(line.substr(begin, separator - begin));
-    begin = separator + 1;
-  }
-  return parts;
-}
 
 bool IsAuthorityKind(std::string_view kind) {
   static constexpr std::array<std::string_view, 8> kKinds = {
@@ -172,7 +160,7 @@ std::size_t ExactFieldCount(std::string_view kind) {
   if (kind == "MEMBERSHIP") return 10;
   if (kind == "GRANT") return 13;
   if (kind == "REVOKE") return 8;
-  if (kind == "AUDIT") return 10;
+  if (kind == "AUDIT") return 12;
   if (kind == "CACHE_INVALIDATE") return 6;
   if (kind == "ROW_POLICY") return 27;
   if (kind == "PRIVILEGE_TEMPLATE") return 20;
@@ -196,12 +184,8 @@ bool ValidateLifecycleLine(std::string_view line,
                            std::string_view expected_kind,
                            std::uint64_t creator_tx,
                            std::uint64_t expected_generation,
-                           std::vector<std::string_view>* parts_out) {
-  if (line.empty() || line.find('\n') != std::string_view::npos ||
-      line.find('\r') != std::string_view::npos) {
-    return false;
-  }
-  auto parts = SplitTabs(line);
+                           sec_event::Parts* parts_out) {
+  auto parts = sec_event::Decode(line);
   if (parts.size() != ExactFieldCount(expected_kind) ||
       parts[0] != kLifecycleMagic || parts[1] != expected_kind) {
     return false;
@@ -224,7 +208,7 @@ bool ValidateLifecycleLine(std::string_view line,
 
 bool ValidateUnsealedEvents(const std::vector<std::string>& events,
                             std::uint64_t creator_tx,
-                            std::string_view actor_principal_uuid,
+                            const EngineUuid& actor_principal_uuid,
                             std::uint64_t expected_generation,
                             std::string* refusal) {
   auto refuse = [&](std::string reason) {
@@ -232,7 +216,7 @@ bool ValidateUnsealedEvents(const std::vector<std::string>& events,
     return false;
   };
   if (events.size() != 3) return refuse("exact_authority_audit_cache_batch_required");
-  const auto authority_parts = SplitTabs(events[0]);
+  const auto authority_parts = sec_event::Decode(events[0]);
   if (authority_parts.size() < 2 || !IsAuthorityKind(authority_parts[1])) {
     return refuse("exactly_one_authority_event_required");
   }
@@ -244,10 +228,10 @@ bool ValidateUnsealedEvents(const std::vector<std::string>& events,
       authority_parts[10] != "deny") {
     return refuse("grant_effect_invalid");
   }
-  std::vector<std::string_view> audit_parts;
+  sec_event::Parts audit_parts;
   if (!ValidateLifecycleLine(events[1], "AUDIT", creator_tx,
                              expected_generation, &audit_parts) ||
-      audit_parts[5] != actor_principal_uuid || audit_parts[7] != "success") {
+      audit_parts.identity(5) != actor_principal_uuid || audit_parts[7] != "success") {
     return refuse("audit_event_invalid");
   }
   if (!ValidateLifecycleLine(events[2], "CACHE_INVALIDATE", creator_tx,
@@ -257,23 +241,12 @@ bool ValidateUnsealedEvents(const std::vector<std::string>& events,
   return true;
 }
 
-std::string NewlineTerminated(const std::vector<std::string>& events) {
-  std::string payload;
-  for (const auto& event : events) {
-    payload.append(event);
-    payload.push_back('\n');
-  }
-  return payload;
-}
-
 std::string SuccessorEvent(std::uint64_t creator_tx,
                            std::uint64_t generation,
                            const std::vector<std::string>& unsealed_events) {
-  return std::string(kLifecycleMagic) + "\t" + std::string(kSuccessorKind) +
-         "\t" + std::to_string(creator_tx) + "\t" +
-         std::to_string(generation) +
-         "\tsecurity-context-successor:v1:sha256:" +
-         SecuritySha256Hex(NewlineTerminated(unsealed_events));
+  return sec_event::Encode("AUTH_CONTEXT_SUCCESSOR", creator_tx,
+      {std::to_string(generation), "security-context-successor:v1:sha256:" +
+       SecuritySha256Hex(sec_event::Frame(unsealed_events))});
 }
 
 std::vector<byte> EncodeBatch(const ParsedBatch& batch) {
@@ -316,8 +289,8 @@ bool DecodeBatch(const std::vector<byte>& encoded,
 }
 
 TypedUuid SecurityRelationUuid() {
-  const auto parsed = core_uuid::ParseDurableEngineIdentityUuid(
-      UuidKind::object, std::string(kDatabaseLocalSecurityRelationUuidV1));
+  const auto parsed = core_uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::object, kDatabaseLocalSecurityRelationUuidV1);
   return parsed.ok() ? parsed.value : TypedUuid{};
 }
 
@@ -335,7 +308,7 @@ bool ExactTransactionIdentity(const EngineRequestContext& context,
     }
     return false;
   }
-  const auto transaction_uuid = core_uuid::ParseDurableEngineIdentityUuid(
+  const auto transaction_uuid = core_uuid::MakeDurableEngineIdentityUuid(
       UuidKind::transaction, context.transaction_uuid);
   const auto found = mga::LookupLocalTransaction(
       inventory, mga::MakeLocalTransactionId(context.local_transaction_id));
@@ -409,7 +382,7 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
                                   "bootstrap_security_catalog_invalid");
     return result;
   }
-  const auto expected_database = core_uuid::ParseDurableEngineIdentityUuid(
+  const auto expected_database = core_uuid::MakeDurableEngineIdentityUuid(
       UuidKind::database, context.database_uuid);
   if (!expected_database.ok()) {
     result.diagnostic = ErrorDiagnostic(
@@ -814,7 +787,7 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
       bootstrap.state.present;
   if (bootstrap.state.principal_uuid.valid()) {
     result.state.bootstrap_authority.principal_uuid =
-        core_uuid::UuidToString(bootstrap.state.principal_uuid.value);
+        bootstrap.state.principal_uuid.value;
   }
   result.state.bootstrap_authority.principal_name =
       bootstrap.state.principal_name;
@@ -822,11 +795,11 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
       bootstrap.state.credential_fingerprint;
   if (bootstrap.state.sysarch_role_uuid.valid()) {
     result.state.bootstrap_authority.sysarch_role_uuid =
-        core_uuid::UuidToString(bootstrap.state.sysarch_role_uuid.value);
+        bootstrap.state.sysarch_role_uuid.value;
   }
   if (bootstrap.state.membership_uuid.valid()) {
     result.state.bootstrap_authority.membership_uuid =
-        core_uuid::UuidToString(bootstrap.state.membership_uuid.value);
+        bootstrap.state.membership_uuid.value;
   }
   result.state.bootstrap_authority.creator_tx = bootstrap.state.creator_tx;
   result.state.bootstrap_authority.policy_generation =
@@ -903,7 +876,7 @@ AppendDatabaseLocalSecurityEventBatchV1(
         "authenticated_engine_private_lifecycle_tag_required");
     return result;
   }
-  const auto actor = core_uuid::ParseDurableEngineIdentityUuid(
+  const auto actor = core_uuid::MakeDurableEngineIdentityUuid(
       UuidKind::principal, context.principal_uuid);
   if (!actor.ok()) {
     result.diagnostic = ErrorDiagnostic(

@@ -8,18 +8,18 @@
 
 namespace api = scratchbird::engine::internal_api;
 namespace {
-std::string Id(scratchbird::core::platform::UuidKind kind) {
+api::EngineUuid Id(scratchbird::core::platform::UuidKind kind) {
   static std::uint64_t stamp = 1787003000000ull;
   if (!scratchbird::core::uuid::UuidKindAllowsDurableIdentity(kind)) {
     auto raw = scratchbird::core::uuid::GenerateCompatibilityUnixTimeV7(++stamp);
     assert(raw.ok());
     auto typed = scratchbird::core::uuid::MakeTypedUuid(kind, raw.value);
     assert(typed.ok());
-    return scratchbird::core::uuid::UuidToString(typed.value.value);
+    return typed.value.value;
   }
   auto value = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, ++stamp);
   assert(value.ok());
-  return scratchbird::core::uuid::UuidToString(value.value.value);
+  return value.value.value;
 }
 }
 
@@ -29,10 +29,10 @@ int main() {
           std::chrono::steady_clock::now().time_since_epoch().count()));
   api::EngineRequestContext context;
   context.database_path = base.string();
-  context.database_uuid.canonical = Id(scratchbird::core::platform::UuidKind::database);
-  context.session_uuid.canonical = Id(scratchbird::core::platform::UuidKind::session);
-  context.transaction_uuid.canonical = Id(scratchbird::core::platform::UuidKind::object);
-  context.statement_uuid.canonical = Id(scratchbird::core::platform::UuidKind::object);
+  context.database_uuid = Id(scratchbird::core::platform::UuidKind::database);
+  context.session_uuid = Id(scratchbird::core::platform::UuidKind::session);
+  context.transaction_uuid = Id(scratchbird::core::platform::UuidKind::object);
+  context.statement_uuid = Id(scratchbird::core::platform::UuidKind::object);
   context.local_transaction_id = 41;
   context.security_context_present = true;
   context.statement_metadata_snapshot_engine_owned = true;
@@ -41,22 +41,22 @@ int main() {
   const std::string transaction_evidence = "sha256:" + std::string(64, 'a');
   const std::string symbol_sha = "sha256:" + std::string(64, 'b');
   auto reserved = api::ReserveSblrSavepoint(
-      context, context.statement_uuid.canonical, transaction_evidence, 7, symbol_sha);
+      context, context.statement_uuid, transaction_evidence, 7, symbol_sha);
   assert(reserved.ok && reserved.snapshot.transaction_ordinal == 1 &&
          reserved.snapshot.state == api::SblrSavepointState::reserved);
   auto replay = api::ActivateSblrSavepoint(
-      context, context.statement_uuid.canonical, reserved.snapshot.descriptor_uuid,
+      context, context.statement_uuid, reserved.snapshot.descriptor_uuid,
       reserved.snapshot.descriptor_generation + 1,
       reserved.snapshot.descriptor_evidence_sha256, 1);
   assert(!replay.ok && replay.diagnostic.code == "MGA.SAVEPOINT.STALE");
   auto active = api::ActivateSblrSavepoint(
-      context, context.statement_uuid.canonical, reserved.snapshot.descriptor_uuid,
+      context, context.statement_uuid, reserved.snapshot.descriptor_uuid,
       reserved.snapshot.descriptor_generation,
       reserved.snapshot.descriptor_evidence_sha256, 1);
   assert(active.ok && active.snapshot.state == api::SblrSavepointState::active &&
          active.snapshot.stack_generation == 1);
   replay = api::ActivateSblrSavepoint(
-      context, context.statement_uuid.canonical, reserved.snapshot.descriptor_uuid,
+      context, context.statement_uuid, reserved.snapshot.descriptor_uuid,
       reserved.snapshot.descriptor_generation,
       reserved.snapshot.descriptor_evidence_sha256, 1);
   assert(!replay.ok && replay.diagnostic.code == "MGA.SAVEPOINT.STALE");
@@ -72,7 +72,7 @@ int main() {
   const auto installed = api::LoadSblrExecutorAvailabilitySnapshot(context, row);
   assert(installed.ok && installed.snapshot.installed);
   api::SblrExecutorAvailabilitySetRequest request;
-  request.database_uuid = context.database_uuid.canonical;
+  request.database_uuid = context.database_uuid;
   request.expected_snapshot_uuid = installed.snapshot.snapshot_uuid;
   request.expected_generation = installed.snapshot.generation;
   request.exact_row_identity = row;

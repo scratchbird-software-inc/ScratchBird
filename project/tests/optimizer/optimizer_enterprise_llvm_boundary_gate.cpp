@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -27,8 +28,8 @@ void Require(bool condition, const std::string& message) {
 native::NativeCompileRequest BaseRequest() {
   native::NativeCompileRequest request;
   request.module_payload = "sblr:predicate:col_i32_gt_const";
-  request.target_object_uuid = "018f0000-0000-7000-8000-00000000ae04";
-  request.principal_uuid = "018f0000-0000-7000-8000-00000000ae05";
+  request.target_object_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ae04");
+  request.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ae05");
   request.database_path = "/tmp/sb_oeic_llvm_boundary";
   request.catalog_generation_id = 100;
   request.security_epoch = 101;
@@ -40,7 +41,7 @@ native::NativeCompileRequest BaseRequest() {
   request.memory_accounting.production_like = false;
   request.memory_accounting.evidence.push_back(
       "optimizer_enterprise_llvm_boundary_gate.fixture=true");
-  request.descriptors.push_back({"018f0000-0000-7000-8000-00000000d001",
+  request.descriptors.push_back({scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000d001"),
                                  "table_descriptor",
                                  "sys.test",
                                  "columns:i32"});

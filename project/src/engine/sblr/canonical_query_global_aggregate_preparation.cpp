@@ -608,11 +608,11 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   }
   constexpr std::array<std::string_view, 4> kBoundedSignedTypeNames = {
       "int8", "int16", "int32", "int64"};
-  std::array<std::string, kBoundedSignedTypeNames.size()>
+  std::array<core::platform::Uuid, kBoundedSignedTypeNames.size()>
       bounded_signed_source_type_uuids;
-  std::string core_int64_type_uuid;
-  std::string core_real64_result_type_uuid;
-  std::string core_boolean_type_uuid;
+  core::platform::Uuid core_int64_type_uuid;
+  core::platform::Uuid core_real64_result_type_uuid;
+  core::platform::Uuid core_boolean_type_uuid;
   if (uses_exact_core_int64_result || requires_bounded_signed_input ||
       is_ordered_set ||
       has_widened_independent_order_argument) {
@@ -644,7 +644,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       }
       bounded_signed_source_type_uuids[index] =
           ExactCanonicalCoreDatatypeTypeUuidV1(stable_name);
-      if (bounded_signed_source_type_uuids[index].empty()) {
+      if (bounded_signed_source_type_uuids[index].is_nil()) {
         result.detail =
             "global bounded-signed aggregate/order core datatype identity is "
             "unavailable";
@@ -654,7 +654,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   }
   if (uses_exact_core_int64_result || requires_bounded_signed_input) {
     core_int64_type_uuid = ExactCanonicalInt64TypeUuidV1();
-    if (core_int64_type_uuid.empty()) {
+    if (core_int64_type_uuid.is_nil()) {
       result.detail =
           "global aggregate core int64 datatype identity is unavailable";
       return result;
@@ -681,9 +681,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           "global real64 aggregate result core datatype cohort is incomplete";
       return result;
     }
-    core_real64_result_type_uuid = scratchbird::core::uuid::UuidToString(
-        real64_type->descriptor_uuid.value);
-    if (core_real64_result_type_uuid.empty()) {
+    core_real64_result_type_uuid = real64_type->descriptor_uuid.value;
+    if (core_real64_result_type_uuid.is_nil()) {
       result.detail =
           "global real64 aggregate result core datatype identity is unavailable";
       return result;
@@ -710,9 +709,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           "global aggregate boolean-input core datatype cohort is incomplete";
       return result;
     }
-    core_boolean_type_uuid = scratchbird::core::uuid::UuidToString(
-        boolean_type->descriptor_uuid.value);
-    if (core_boolean_type_uuid.empty()) {
+    core_boolean_type_uuid = boolean_type->descriptor_uuid.value;
+    if (core_boolean_type_uuid.is_nil()) {
       result.detail =
           "global aggregate boolean-input core datatype identity is unavailable";
       return result;
@@ -905,7 +903,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
               });
           const auto& source_column = input.batch.columns[value_column];
           return input_type == "boolean" &&
-                 !core_boolean_type_uuid.empty() &&
+                 !core_boolean_type_uuid.is_nil() &&
                  source_descriptor != dag.descriptors.end() &&
                  source_descriptor->descriptor_uuid ==
                      source_column.descriptor.descriptor_uuid &&

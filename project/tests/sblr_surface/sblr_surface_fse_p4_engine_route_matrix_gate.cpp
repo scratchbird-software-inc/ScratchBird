@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -163,10 +164,10 @@ bool HasDecodeDiagnostic(const sblr::SblrDecodeResult& result,
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-00000000f401";
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000f401");
   context.local_transaction_id = 4404;
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-00000000f402";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-00000000f403";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000f402");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000f403");
   return context;
 }
 

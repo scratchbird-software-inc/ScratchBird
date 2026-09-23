@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -54,10 +55,10 @@ opt::OptimizerPlanCacheKeyInput BaseInput() {
   input.compatibility_epoch = 107;
   input.format_compatibility_epoch = 108;
   input.route_epoch = 109;
-  input.object_uuids = {"rel.customer"};
-  input.function_uuids = {"fn.mask_email"};
-  input.index_uuids = {"idx.customer_id"};
-  input.filespace_uuids = {"filespace.hot"};
+  input.object_uuids = {scratchbird::tests::FixtureUuid(1275, 1)};
+  input.function_uuids = {scratchbird::tests::FixtureUuid(1275, 2)};
+  input.index_uuids = {scratchbird::tests::FixtureUuid(1275, 3)};
+  input.filespace_uuids = {scratchbird::tests::FixtureUuid(1275, 4)};
   return input;
 }
 

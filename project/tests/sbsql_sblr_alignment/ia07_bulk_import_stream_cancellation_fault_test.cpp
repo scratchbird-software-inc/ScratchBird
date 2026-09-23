@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "core/hash/hash_digest.hpp"
 #include "engine/internal_api/sblr_bulk_import_stream_coordinator.hpp"
 #include "uuid.hpp"
@@ -100,22 +101,16 @@ api::SblrBulkImportStreamAuthorityInputV1 Authority() {
 api::EngineRequestContext Context(
     const api::SblrBulkImportStreamAuthorityInputV1& authority) {
   api::EngineRequestContext context;
-  context.statement_receipt_uuid.canonical =
-      "10000000-0000-4000-8000-000000000001";
-  context.transaction_uuid.canonical =
-      "10000000-0000-4000-8000-000000000004";
+  context.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000004");
   context.local_transaction_id = authority.owning_local_transaction_id;
-  context.statement_snapshot_uuid.canonical =
-      "10000000-0000-4000-8000-000000000005";
-  context.catalog_epoch_uuid.canonical =
-      "10000000-0000-4000-8000-000000000006";
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000005");
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000006");
   context.catalog_generation_id = authority.catalog_generation;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "10000000-0000-4000-8000-000000000007";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000007");
   context.authorization_context.security_epoch = authority.security_epoch;
-  context.resource_admission_uuid.canonical =
-      "10000000-0000-4000-8000-00000000000b";
+  context.resource_admission_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-00000000000b");
   context.resource_epoch = authority.resource_grant_generation;
   context.security_context_present = true;
   context.statement_metadata_snapshot_engine_owned = true;

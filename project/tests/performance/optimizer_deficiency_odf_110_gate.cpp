@@ -8,6 +8,7 @@
 
 // ODF-110 SQL exact-parity benchmark closure gate.
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -17,6 +18,7 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "relational_descriptor_codec.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -105,8 +107,8 @@ std::string Quote(std::string_view value) {
   return "\"" + JsonEscape(value) + "\"";
 }
 
-std::string Id(platform::UuidKind kind, platform::u64 seed) {
-  static std::map<std::pair<int, platform::u64>, std::string> generated_ids;
+platform::Uuid Id(platform::UuidKind kind, platform::u64 seed) {
+  static std::map<std::pair<int, platform::u64>, platform::Uuid> generated_ids;
   const auto key = std::make_pair(static_cast<int>(kind), seed);
   const auto found = generated_ids.find(key);
   if (found != generated_ids.end()) return found->second;
@@ -126,7 +128,7 @@ std::string Id(platform::UuidKind kind, platform::u64 seed) {
   }
 
   const auto [inserted, _] =
-      generated_ids.emplace(key, uuid::UuidToString(generated_uuid.value));
+      generated_ids.emplace(key, generated_uuid.value);
   return inserted->second;
 }
 
@@ -158,7 +160,7 @@ api::EngineQueryRelation Relation(std::string name,
   relation.relation_name = std::move(name);
   relation.descriptor_digest = "descriptor:" + relation.relation_name;
   if (source_seed != 0) {
-    relation.source_object.uuid.canonical = Id(platform::UuidKind::object, source_seed);
+    relation.source_object.uuid = Id(platform::UuidKind::object, source_seed);
     relation.source_object.object_kind = "table";
   }
   relation.rows = std::move(rows);
@@ -190,7 +192,7 @@ std::vector<api::EngineRowValue> OrderRows() {
 struct DurableQueryFixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
+  platform::Uuid database_uuid;
 
   DurableQueryFixture() = default;
   DurableQueryFixture(const DurableQueryFixture&) = delete;
@@ -222,9 +224,9 @@ DurableQueryFixture PrepareDurableQueryContext() {
 
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
-  const auto database_uuid = uuid::ParseTypedUuid(
+  const auto database_uuid = uuid::MakeTypedUuid(
       platform::UuidKind::database, Id(platform::UuidKind::database, 110));
-  const auto filespace_uuid = uuid::ParseTypedUuid(
+  const auto filespace_uuid = uuid::MakeTypedUuid(
       platform::UuidKind::filespace, Id(platform::UuidKind::filespace, 109));
   Require(database_uuid.ok() && filespace_uuid.ok(),
           "ODF-110 durable fixture UUID parsing failed");
@@ -243,10 +245,10 @@ DurableQueryFixture PrepareDurableQueryContext() {
   context.security_context_present = true;
   context.request_id = "odf110-sql-exact-parity";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.node_uuid.canonical = Id(platform::UuidKind::object, 111);
-  context.principal_uuid.canonical = Id(platform::UuidKind::principal, 112);
-  context.session_uuid.canonical = Id(platform::UuidKind::session, 113);
+  context.database_uuid = fixture.database_uuid;
+  context.node_uuid = Id(platform::UuidKind::object, 111);
+  context.principal_uuid = Id(platform::UuidKind::principal, 112);
+  context.session_uuid = Id(platform::UuidKind::session, 113);
   context.catalog_generation_id = 2110;
   context.security_epoch = 3110;
   context.resource_epoch = 4110;
@@ -263,7 +265,7 @@ DurableQueryFixture PrepareDurableQueryContext() {
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
-  context.statement_uuid.canonical = Id(platform::UuidKind::object, 115);
+  context.statement_uuid = Id(platform::UuidKind::object, 115);
 
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = context;
@@ -272,12 +274,12 @@ DurableQueryFixture PrepareDurableQueryContext() {
   context.statement_snapshot_uuid = published.statement_snapshot_uuid;
   context.snapshot_visible_through_local_transaction_id =
       published.snapshot_vector.visible_committed_high_watermark;
-  context.statement_metadata_snapshot_uuid.canonical =
+  context.statement_metadata_snapshot_uuid =
       Id(platform::UuidKind::object, 117);
-  context.catalog_epoch_uuid.canonical = Id(platform::UuidKind::object, 118);
+  context.catalog_epoch_uuid = Id(platform::UuidKind::object, 118);
   context.statement_metadata_snapshot_engine_owned = true;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
+  context.authorization_context.authority_uuid =
       Id(platform::UuidKind::object, 119);
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
@@ -289,11 +291,11 @@ DurableQueryFixture PrepareDurableQueryContext() {
   subject.subject_kind = "principal";
   context.authorization_context.effective_subjects.push_back(
       std::move(subject));
-  context.optimizer_capability_snapshot_uuid.canonical =
+  context.optimizer_capability_snapshot_uuid =
       Id(platform::UuidKind::object, 124);
-  context.optimizer_resource_snapshot_uuid.canonical =
+  context.optimizer_resource_snapshot_uuid =
       Id(platform::UuidKind::object, 125);
-  context.optimizer_route_snapshot_uuid.canonical =
+  context.optimizer_route_snapshot_uuid =
       Id(platform::UuidKind::object, 126);
   context.optimizer_route_epoch = 6110;
   context.optimizer_route_generation = 7110;
@@ -332,7 +334,7 @@ SessionContext ParserSession() {
   session.session_uuid = Id(platform::UuidKind::session, 120);
   session.connection_uuid = Id(platform::UuidKind::object, 121);
   session.database_uuid = Id(platform::UuidKind::database, 122);
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 110;
   session.security_policy_epoch = 111;
   session.descriptor_epoch = 112;
@@ -357,7 +359,7 @@ struct PipelineArtifacts {
 };
 
 PipelineArtifacts RunPipeline(std::string_view sql,
-                              std::vector<std::string> resolved_objects) {
+                              std::vector<platform::Uuid> resolved_objects) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
@@ -381,7 +383,7 @@ struct ParserEvidence {
 ParserEvidence CheckParserRoute(std::string_view row_id,
                                 std::string_view sql,
                                 std::string_view expected_operation,
-                                std::vector<std::string> resolved_objects) {
+                                std::vector<platform::Uuid> resolved_objects) {
   ParserEvidence evidence;
   if (sql.empty()) {
     evidence.status = "exact_refusal";
@@ -481,7 +483,7 @@ struct BenchmarkRow {
   std::vector<std::string> options;
   std::vector<std::string> plan_markers;
   std::vector<std::string> required_engine_evidence;
-  std::vector<std::string> resolved_parser_objects;
+  std::vector<platform::Uuid> resolved_parser_objects;
   std::string benchmark_refusal_code;
   std::string reference_equivalence_class;
   bool parameter_shape_pair = false;
@@ -512,7 +514,7 @@ bool RowOptionEnabled(const BenchmarkRow& row,
 
 bool EvidenceTextContains(const api::EngineApiResult& result, std::string_view needle) {
   for (const auto& evidence : result.evidence) {
-    if (Contains(evidence.evidence_kind, needle) || Contains(evidence.evidence_id, needle)) {
+    if (Contains(evidence.evidence_kind, needle) || (std::holds_alternative<std::string>(evidence.evidence_id) && Contains(std::get<std::string>(evidence.evidence_id), needle))) {
       return true;
     }
   }
@@ -622,9 +624,92 @@ void AppendLittleEndianU64(std::vector<std::uint8_t>* output,
   }
 }
 
+sblr::SblrOperand IdentityOperand(std::string name, const platform::Uuid& id) {
+  sblr::SblrOperand out;
+  out.type = "uuid";
+  out.name = std::move(name);
+  out.value_kind = sblr::SblrValueKind::uuid_ref;
+  out.value_body.assign(id.bytes.begin(), id.bytes.end());
+  return out;
+}
+
+sblr::SblrOperand DescriptorOperand(std::uint32_t id, const platform::Uuid& identity,
+                                   const platform::Uuid& type) {
+  api::RelationalTypeDescriptor value;
+  value.descriptor_id = id;
+  value.descriptor_uuid = identity;
+  value.type_uuid = type;
+  value.nullability = api::RelationalNullability::kNonNull;
+  sblr::SblrOperand out;
+  out.type = "relational_descriptor_v1";
+  out.name = "slot_" + std::to_string(id);
+  out.value_kind = sblr::SblrValueKind::relational_type_descriptor;
+  Require(sblr::EncodeRelationalTypeDescriptorV1(value, &out.value_body), "ODF-110 descriptor encoding failed");
+  return out;
+}
+
+sblr::SblrOperand ExpressionOperand(std::uint32_t id, std::uint32_t descriptor,
+    api::RelationalExpressionKind kind, std::vector<std::uint32_t> children = {},
+    std::optional<platform::Uuid> name = {}, std::optional<std::string> literal = {},
+    std::optional<std::string> op = {}) {
+  api::RelationalExpressionRecord value;
+  value.expression_id = id;
+  value.result_descriptor_id = descriptor;
+  value.expression_kind = kind;
+  value.child_expression_ids = std::move(children);
+  value.bound_name_uuid = name;
+  value.literal_or_parameter_ref = std::move(literal);
+  value.operator_name = std::move(op);
+  if (kind == api::RelationalExpressionKind::kLiteral)
+    value.literal_kind = api::RelationalLiteralKind::kNumeric;
+  sblr::SblrOperand out;
+  out.type = "relational_expression_v1";
+  out.name = "slot_" + std::to_string(id);
+  out.value_kind = sblr::SblrValueKind::relational_expression;
+  Require(sblr::EncodeRelationalExpressionV1(value, &out.value_body), "ODF-110 expression encoding failed");
+  return out;
+}
+
+sblr::SblrOperand BindingOperand(std::uint32_t node, std::string variant,
+    std::vector<std::uint32_t> expressions, std::optional<platform::Uuid> property = {}) {
+  sblr::RelationalNodeBindingRecord value;
+  value.node_id = node;
+  value.semantic_variant_id = std::move(variant);
+  value.bound_expression_ids = std::move(expressions);
+  if (property) {
+    value.required_property_uuids = {*property};
+    value.delivered_property_uuids = {*property};
+  }
+  sblr::SblrOperand out;
+  out.type = "relational_node_binding_v1";
+  out.name = "slot_" + std::to_string(node);
+  out.value_kind = sblr::SblrValueKind::relational_node_binding;
+  Require(sblr::EncodeRelationalNodeBindingV1(value, &out.value_body), "ODF-110 binding encoding failed");
+  return out;
+}
+
+sblr::SblrOperand OrderingOperand(const platform::Uuid& id, std::uint32_t node,
+                                 std::uint32_t expression, bool descending) {
+  api::RelationalPropertyRecord value;
+  value.property_uuid = id;
+  value.origin_node_id = node;
+  api::RelationalPropertyOrderingTerm term;
+  term.expression_id = expression;
+  term.direction = descending ? api::RelationalPropertySortDirection::kDescending
+                              : api::RelationalPropertySortDirection::kAscending;
+  value.ordering_terms.push_back(term);
+  sblr::SblrOperand out;
+  out.type = "relational_property_v1";
+  out.name = "property_" + std::to_string(node);
+  out.value_kind = sblr::SblrValueKind::relational_property;
+  Require(sblr::EncodeRelationalPropertyV1(value, &out.value_body), "ODF-110 property encoding failed");
+  return out;
+}
+
 void FinalizeProductionOperands(sblr::SblrOperationEnvelope* envelope) {
   std::uint32_t ordinal = 1;
   for (auto& operand : envelope->operands) {
+    if (!operand.value_body.empty()) { operand.ordinal = ordinal++; continue; }
     if (!operand.name.empty() &&
         std::all_of(operand.name.begin(), operand.name.end(),
                     [](const unsigned char ch) {
@@ -652,10 +737,8 @@ void FinalizeProductionOperands(sblr::SblrOperationEnvelope* envelope) {
 }
 
 sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
-  constexpr std::string_view kInt64TypeUuid =
-      "019d0000-0000-7000-8000-00000000d711";
-  constexpr std::string_view kBooleanTypeUuid =
-      "01000000-626f-7f6c-a561-6e0000000000";
+  constexpr auto kInt64TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
+  constexpr auto kBooleanTypeUuid = scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000");
   const auto context = Context();
   const auto seed = 20'000 + Fnv1a64(row.id) % 100'000;
   auto envelope = sblr::MakeSblrEnvelope(
@@ -698,10 +781,7 @@ sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
       const auto descriptor_id = next_descriptor++;
       source.descriptor_ids.push_back(descriptor_id);
       source.names.push_back(field.first);
-      records.push_back({"relational_descriptor_v1",
-                         std::to_string(descriptor_id),
-                         Id(platform::UuidKind::object, seed + uuid_offset++) + "|" +
-                             std::string(kInt64TypeUuid) + "|1|-|-|-|-|-"});
+      records.push_back(DescriptorOperand(descriptor_id, Id(platform::UuidKind::object, seed + uuid_offset++), kInt64TypeUuid));
     }
     std::vector<std::uint32_t> all_cell_expressions;
     std::vector<std::uint32_t> first_row_expressions;
@@ -713,11 +793,7 @@ sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
         const auto expression_id = next_expression++;
         row_expressions.push_back(expression_id);
         all_cell_expressions.push_back(expression_id);
-        records.push_back({"relational_expression_v1",
-                           std::to_string(expression_id),
-                           "1|-|" + std::to_string(source.descriptor_ids[column]) +
-                               "|-|-|1|-|" +
-                               EncodeHex(input_row.fields[column].second.encoded_value)});
+        records.push_back(ExpressionOperand(expression_id, source.descriptor_ids[column], api::RelationalExpressionKind::kLiteral, {}, {}, input_row.fields[column].second.encoded_value));
       }
       if (first_row_expressions.empty()) first_row_expressions = row_expressions;
       const auto row_id = next_values_row++;
@@ -741,9 +817,7 @@ sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
     nodes.push_back({"relational_node_v1", std::to_string(node_id),
                      "13|0|-|" + JoinHandles(source.descriptor_ids) + "|" +
                          JoinHandles(source_row_ids)});
-    bindings.push_back({"relational_node_binding_v1", std::to_string(node_id),
-                        EncodeHex("values.literal-table.v1") + "|" +
-                            JoinHandles(all_cell_expressions) + "|-|-|-"});
+    bindings.push_back(BindingOperand(node_id, "values.literal-table.v1", all_cell_expressions));
     return source;
   };
 
@@ -760,24 +834,13 @@ sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
             "ODF-110 INNER JOIN requires exactly two descriptor sources");
     const auto right = add_source(row.relations[1], next_node_id++);
     const auto bool_descriptor = next_descriptor++;
-    records.push_back({"relational_descriptor_v1",
-                       std::to_string(bool_descriptor),
-                       Id(platform::UuidKind::object, seed + uuid_offset++) + "|" +
-                           std::string(kBooleanTypeUuid) + "|1|-|-|-|-|-"});
+    records.push_back(DescriptorOperand(bool_descriptor, Id(platform::UuidKind::object, seed + uuid_offset++), kBooleanTypeUuid));
     const auto left_identifier = next_expression++;
     const auto right_identifier = next_expression++;
     const auto predicate = next_expression++;
-    records.push_back({"relational_expression_v1",
-                       std::to_string(left_identifier),
-                       "3|-|" + std::to_string(left.descriptor_ids[0]) + "|-|" +
-                           Id(platform::UuidKind::object, seed + uuid_offset++) + "|-|-|-"});
-    records.push_back({"relational_expression_v1",
-                       std::to_string(right_identifier),
-                       "3|-|" + std::to_string(right.descriptor_ids[0]) + "|-|" +
-                           Id(platform::UuidKind::object, seed + uuid_offset++) + "|-|-|-"});
-    records.push_back({"relational_expression_v1", std::to_string(predicate),
-                       "6|" + JoinHandles({left_identifier, right_identifier}) + "|" +
-                           std::to_string(bool_descriptor) + "|-|-|-|3d|-"});
+    records.push_back(ExpressionOperand(left_identifier, left.descriptor_ids[0], api::RelationalExpressionKind::kIdentifier, {}, Id(platform::UuidKind::object, seed + uuid_offset++)));
+    records.push_back(ExpressionOperand(right_identifier, right.descriptor_ids[0], api::RelationalExpressionKind::kIdentifier, {}, Id(platform::UuidKind::object, seed + uuid_offset++)));
+    records.push_back(ExpressionOperand(predicate, bool_descriptor, api::RelationalExpressionKind::kBinary, {left_identifier, right_identifier}, {}, {}, "="));
     current_descriptors.insert(current_descriptors.end(),
                                right.descriptor_ids.begin(),
                                right.descriptor_ids.end());
@@ -786,38 +849,24 @@ sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
     nodes.push_back({"relational_node_v1", std::to_string(root_node_id),
                      "4|0|" + JoinHandles({left.node_id, right.node_id}) + "|" +
                          JoinHandles(current_descriptors) + "|-"});
-    bindings.push_back({"relational_node_binding_v1", std::to_string(root_node_id),
-                        EncodeHex("join.inner.v1") + "|" +
-                            std::to_string(predicate) + "|-|-|-"});
+    bindings.push_back(BindingOperand(root_node_id, "join.inner.v1", {predicate}));
   } else {
     Require(row.relations.size() == 1,
             "ODF-110 unary query requires exactly one descriptor source");
     if (row.operation == "filter_gt") {
       const auto bool_descriptor = next_descriptor++;
-      records.push_back({"relational_descriptor_v1",
-                         std::to_string(bool_descriptor),
-                         Id(platform::UuidKind::object, seed + uuid_offset++) + "|" +
-                             std::string(kBooleanTypeUuid) + "|1|-|-|-|-|-"});
+      records.push_back(DescriptorOperand(bool_descriptor, Id(platform::UuidKind::object, seed + uuid_offset++), kBooleanTypeUuid));
       const auto identifier = next_expression++;
       const auto threshold = next_expression++;
       const auto predicate = next_expression++;
-      records.push_back({"relational_expression_v1", std::to_string(identifier),
-                         "3|-|" + std::to_string(left.descriptor_ids[0]) + "|-|" +
-                             Id(platform::UuidKind::object, seed + uuid_offset++) + "|-|-|-"});
-      records.push_back({"relational_expression_v1", std::to_string(threshold),
-                         "1|-|" + std::to_string(left.descriptor_ids[0]) +
-                             "|-|-|1|-|" +
-                             EncodeHex(std::to_string(UnsignedOption(row, "threshold", 0)))});
-      records.push_back({"relational_expression_v1", std::to_string(predicate),
-                         "6|" + JoinHandles({identifier, threshold}) + "|" +
-                             std::to_string(bool_descriptor) + "|-|-|-|3e|-"});
+      records.push_back(ExpressionOperand(identifier, left.descriptor_ids[0], api::RelationalExpressionKind::kIdentifier, {}, Id(platform::UuidKind::object, seed + uuid_offset++)));
+      records.push_back(ExpressionOperand(threshold, left.descriptor_ids[0], api::RelationalExpressionKind::kLiteral, {}, {}, std::to_string(UnsignedOption(row, "threshold", 0))));
+      records.push_back(ExpressionOperand(predicate, bool_descriptor, api::RelationalExpressionKind::kBinary, {identifier, threshold}, {}, {}, ">"));
       root_node_id = next_node_id++;
       nodes.push_back({"relational_node_v1", std::to_string(root_node_id),
                        "2|0|" + std::to_string(left.node_id) + "|" +
                            JoinHandles(current_descriptors) + "|-"});
-      bindings.push_back({"relational_node_binding_v1", std::to_string(root_node_id),
-                          EncodeHex("filter.where.v1") + "|" +
-                              std::to_string(predicate) + "|-|-|-"});
+      bindings.push_back(BindingOperand(root_node_id, "filter.where.v1", {predicate}));
     } else {
       Require(row.operation == "scan", "ODF-110 unsupported canonical query shape");
     }
@@ -834,11 +883,7 @@ sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
         projection_expressions.push_back(expression_id);
         projected_descriptors.push_back(current_descriptors[source_column]);
         projected_names.push_back(current_names[source_column]);
-        records.push_back({"relational_expression_v1", std::to_string(expression_id),
-                           "3|-|" + std::to_string(current_descriptors[source_column]) +
-                               "|-|" +
-                               Id(platform::UuidKind::object, seed + uuid_offset++) +
-                               "|-|-|-"});
+        records.push_back(ExpressionOperand(expression_id, current_descriptors[source_column], api::RelationalExpressionKind::kIdentifier, {}, Id(platform::UuidKind::object, seed + uuid_offset++)));
         records.push_back({"relational_output_v1", std::to_string(next_output++),
                            std::to_string(project_node_id) + "|" +
                                std::to_string(expression_id) + "|" +
@@ -849,10 +894,7 @@ sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
       nodes.push_back({"relational_node_v1", std::to_string(project_node_id),
                        "3|0|" + std::to_string(root_node_id) + "|" +
                            JoinHandles(projected_descriptors) + "|-"});
-      bindings.push_back({"relational_node_binding_v1",
-                          std::to_string(project_node_id),
-                          EncodeHex("project.select-list.v1") + "|" +
-                              JoinHandles(projection_expressions) + "|-|-|-"});
+      bindings.push_back(BindingOperand(project_node_id, "project.select-list.v1", projection_expressions));
       root_node_id = project_node_id;
       current_descriptors = std::move(projected_descriptors);
       current_expressions = std::move(projection_expressions);
@@ -873,52 +915,34 @@ sblr::SblrOperationEnvelope EnvelopeFor(const BenchmarkRow& row) {
       nodes.push_back({"relational_node_v1", std::to_string(sort_node_id),
                        "6|0|" + std::to_string(root_node_id) + "|" +
                            JoinHandles(current_descriptors) + "|-"});
-      bindings.push_back({"relational_node_binding_v1", std::to_string(sort_node_id),
-                          EncodeHex("sort.required-order.v1") + "|" +
-                              std::to_string(order_expression) + "|-|" +
-                              property_uuid + "|" + property_uuid});
-      properties.push_back({"relational_property_v1", property_uuid,
-                            "1|" + std::to_string(sort_node_id) + "|-|" +
-                                std::to_string(order_expression) + ':' + direction +
-                                ":2:-|-|-"});
+      bindings.push_back(BindingOperand(sort_node_id, "sort.required-order.v1", {order_expression}, property_uuid));
+      properties.push_back(OrderingOperand(property_uuid, sort_node_id, order_expression, std::string_view(direction) == "2"));
       root_node_id = sort_node_id;
     }
 
     if (const auto limit = OptionValue(row, "limit"); limit.has_value()) {
       const auto limit_descriptor = next_descriptor++;
       const auto limit_expression = next_expression++;
-      records.push_back({"relational_descriptor_v1",
-                         std::to_string(limit_descriptor),
-                         Id(platform::UuidKind::object, seed + uuid_offset++) + "|" +
-                             std::string(kInt64TypeUuid) + "|1|-|-|-|-|-"});
-      records.push_back({"relational_expression_v1", std::to_string(limit_expression),
-                         "1|-|" + std::to_string(limit_descriptor) +
-                             "|-|-|1|-|" + EncodeHex(*limit)});
+      records.push_back(DescriptorOperand(limit_descriptor, Id(platform::UuidKind::object, seed + uuid_offset++), kInt64TypeUuid));
+      records.push_back(ExpressionOperand(limit_expression, limit_descriptor, api::RelationalExpressionKind::kLiteral, {}, {}, *limit));
       const auto limit_node_id = next_node_id++;
       nodes.push_back({"relational_node_v1", std::to_string(limit_node_id),
                        "7|0|" + std::to_string(root_node_id) + "|" +
                            JoinHandles(current_descriptors) + "|-"});
-      bindings.push_back({"relational_node_binding_v1", std::to_string(limit_node_id),
-                          EncodeHex("limit.bound-count.v1") + "|" +
-                              std::to_string(limit_expression) + "|-|-|-"});
+      bindings.push_back(BindingOperand(limit_node_id, "limit.bound-count.v1", {limit_expression}));
       root_node_id = limit_node_id;
     }
   }
 
   envelope.operands = {
       {"uint16", "relational_wire_version", "2"},
-      {"uuid", "relational_bound_sblr_tree_uuid",
-       Id(platform::UuidKind::object, seed + 3)},
-      {"uuid", "relational_catalog_epoch_uuid", context.catalog_epoch_uuid.canonical},
-      {"uuid", "relational_security_context_uuid",
-       context.authorization_context.authority_uuid.canonical},
-      {"uuid", "relational_statement_uuid", context.statement_uuid.canonical},
-      {"uuid", "relational_owning_transaction_uuid",
-       context.transaction_uuid.canonical},
-      {"uuid", "relational_statement_snapshot_uuid",
-       context.statement_snapshot_uuid.canonical},
-      {"uuid", "relational_statement_metadata_snapshot_uuid",
-       context.statement_metadata_snapshot_uuid.canonical},
+      IdentityOperand("relational_bound_sblr_tree_uuid", Id(platform::UuidKind::object, seed + 3)),
+      IdentityOperand("relational_catalog_epoch_uuid", context.catalog_epoch_uuid),
+      IdentityOperand("relational_security_context_uuid", context.authorization_context.authority_uuid),
+      IdentityOperand("relational_statement_uuid", context.statement_uuid),
+      IdentityOperand("relational_owning_transaction_uuid", context.transaction_uuid),
+      IdentityOperand("relational_statement_snapshot_uuid", context.statement_snapshot_uuid),
+      IdentityOperand("relational_statement_metadata_snapshot_uuid", context.statement_metadata_snapshot_uuid),
       {"uint64", "relational_local_transaction_id",
        std::to_string(context.local_transaction_id)},
       {"uint64", "relational_snapshot_visible_through_local_transaction_id",
@@ -1056,7 +1080,7 @@ RouteResult RunRoutes(const BenchmarkRow& row) {
   }
   Require(route.sblr_result.optimizer_admission_stage_count == 8 &&
               route.sblr_result.physical_node_count > 0 &&
-              !route.sblr_result.selected_plan_uuid.empty() &&
+              !route.sblr_result.selected_plan_uuid.is_nil() &&
               !route.sblr_result.canonical_result_bytes.empty(),
           "ODF-110 canonical optimizer/result receipts are incomplete");
   return route;
@@ -1340,13 +1364,24 @@ void RequireDifferentialPair(const BenchmarkRow& row, const std::string& first_h
           "ODF-110 differential fuzz equivalent row lost result parity");
 }
 
+std::string EvidenceValueJson(const api::EngineEvidenceValue& value) {
+  if (const auto* text = std::get_if<std::string>(&value)) return Quote(*text);
+  const auto& id = std::get<platform::Uuid>(value);
+  std::string output = "[";
+  for (std::size_t i = 0; i < id.bytes.size(); ++i) {
+    if (i) output += ',';
+    output += std::to_string(id.bytes[i]);
+  }
+  return output + ']';
+}
+
 std::string EvidenceJson(const std::vector<api::EngineEvidenceReference>& evidence) {
   std::ostringstream out;
   out << '[';
   for (std::size_t i = 0; i < evidence.size(); ++i) {
     if (i != 0) out << ',';
     out << "{\"kind\":" << Quote(evidence[i].evidence_kind)
-        << ",\"id\":" << Quote(evidence[i].evidence_id) << '}';
+        << ",\"id\":" << EvidenceValueJson(evidence[i].evidence_id) << '}';
   }
   out << ']';
   return out.str();

@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "../../core/platform/runtime_platform.hpp"
+
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -16,9 +18,9 @@
 namespace scratchbird::storage::page {
 
 struct OrderedIngestPhysicalClusteringDescriptor {
-  std::string relation_uuid;
+  scratchbird::core::platform::Uuid relation_uuid;
   std::string placement_key_column;
-  std::string policy_uuid;
+  scratchbird::core::platform::Uuid policy_uuid;
   std::uint64_t descriptor_generation = 0;
   bool physical_clustering_enabled = false;
 };
@@ -26,7 +28,7 @@ struct OrderedIngestPhysicalClusteringDescriptor {
 struct OrderedIngestPhysicalClusteringRequest {
   OrderedIngestPhysicalClusteringDescriptor current_descriptor;
   std::string requested_placement_key_column;
-  std::string requested_policy_uuid;
+  scratchbird::core::platform::Uuid requested_policy_uuid;
   bool ordered_ingest_selected = false;
   bool physical_clustering_requested = false;
   bool explicit_policy_present = false;

@@ -17,6 +17,7 @@ namespace scratchbird::udr::cassandra_parser_support {
 
 inline constexpr std::string_view kSbuCassandraPackageUuid =
     "019e13c0-0000-7000-8000-00000000030d";
+inline constexpr scratchbird::udr::runtime::UdrUuid kSbuCassandraPackageIdentity{{0x01, 0x9e, 0x13, 0xc0, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0d}};
 inline constexpr std::string_view kSbuCassandraPackageName = "sbup_cassandra";
 
 struct UdrResult {

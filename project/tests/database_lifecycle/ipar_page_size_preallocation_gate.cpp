@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -58,16 +59,16 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid index_uuid;
   platform::u32 page_size = 0;
   platform::u64 salt = 0;
   api::EngineRequestContext context;
@@ -137,11 +138,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture, std::string reques
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -196,9 +197,9 @@ Fixture MakeFixture(platform::u32 page_size, platform::u64 salt) {
   Require(created.state.header.page_size == page_size,
           "IPAR preallocation database page size drifted");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
   fixture.context = Begin(fixture, "ipar-page-size-preallocation-metadata");
 
   const auto table = api::AppendMgaTableMetadata(fixture.context, Table(fixture));
@@ -219,7 +220,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, id)) {
       return true;
     }
   }
@@ -233,7 +234,7 @@ api::EngineApiU64 EvidenceU64(const std::vector<api::EngineEvidenceReference>& e
       continue;
     }
     try {
-      return static_cast<api::EngineApiU64>(std::stoull(item.evidence_id));
+      return static_cast<api::EngineApiU64>(std::stoull(std::get<std::string>(item.evidence_id)));
     } catch (...) {
       return 0;
     }
@@ -377,9 +378,9 @@ api::EngineInsertRowsRequest InsertRequest(Fixture& fixture,
   api::EngineInsertRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = std::move(request_id);
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.estimated_row_count = static_cast<api::EngineApiU64>(rows.size());
   request.input_rows = std::move(rows);
@@ -395,9 +396,9 @@ api::EngineExecuteImportRowsRequest ImportRequest(
   api::EngineExecuteImportRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = std::move(request_id);
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";

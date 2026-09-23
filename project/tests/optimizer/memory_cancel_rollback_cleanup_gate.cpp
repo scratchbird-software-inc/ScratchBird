@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "memory.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "operator_memory_grant.hpp"
 #include "query_memory_arena.hpp"
 #include "query_memory_arena_executor.hpp"
@@ -73,15 +74,20 @@ mem::AllocationPolicy AllocationPolicy() {
   return policy;
 }
 
-mem::QueryMemoryContext Context(std::string suffix) {
+mem::QueryMemoryContext Context(std::uint32_t ordinal) {
   mem::QueryMemoryContext context;
-  context.query_id = "q-mmch022-" + suffix;
-  context.statement_id = "stmt-mmch022";
-  context.session_id = "session-mmch022";
-  context.transaction_id = "txn-mmch022";
-  context.database_id = "db-mmch022";
-  context.engine_id = "engine-mmch022";
-  context.operation_id = "op-mmch022";
+  context.query_id = scratchbird::tests::FixtureUuid(1484, ordinal);
+  context.statement_id = scratchbird::tests::FixtureUuid(1484, 10);
+  context.session_id = scratchbird::tests::FixtureUuid(1484, 11);
+  context.transaction_id = scratchbird::tests::FixtureUuid(1484, 12);
+  context.database_id = scratchbird::tests::FixtureUuid(1484, 13);
+  context.engine_id = scratchbird::tests::FixtureUuid(1484, 14);
+  context.operation_id = scratchbird::tests::FixtureUuid(1484, 15);
+  context.snapshot_boundary = scratchbird::tests::FixtureUuid(1484, 16);
+  context.metadata_boundary = scratchbird::tests::FixtureUuid(1484, 17);
+  context.resource_budget_reference = scratchbird::tests::FixtureUuid(1484, 100 + ordinal);
+  context.policy_generation = 1;
+  context.security_generation = 1;
   context.engine_mga_authoritative = true;
   return context;
 }
@@ -100,6 +106,8 @@ mem::QueryMemoryArenaLimits Limits() {
 mem::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
   mem::TempWorkspacePolicy policy;
   policy.policy_name = "mmch022_temp";
+  policy.database_uuid = scratchbird::tests::FixtureUuid(1484, 13);
+  policy.engine_uuid = scratchbird::tests::FixtureUuid(1484, 14);
   policy.root_path = root;
   policy.filespace_quota_bytes = 256 * 1024;
   policy.session_quota_bytes = 256 * 1024;
@@ -143,12 +151,12 @@ exec::ExecutorOperatorMemoryAuthority Authority() {
 }
 
 struct Harness {
-  explicit Harness(std::string suffix)
+  explicit Harness(std::string suffix, std::uint32_t ordinal)
       : root(std::filesystem::temp_directory_path() / ("sb_mmch022_" + suffix)),
         allocator(AllocationPolicy()),
         temp(TempPolicy(root)),
-        unified("mmch022_" + suffix, 256 * 1024),
-        arena(Context(std::move(suffix)), Limits(), &allocator, &temp, &unified) {
+        unified(scratchbird::tests::FixtureUuid(1484, 100 + ordinal), 256 * 1024),
+        arena(Context(ordinal), Limits(), &allocator, &temp, &unified) {
     std::filesystem::remove_all(root);
   }
 
@@ -179,7 +187,7 @@ struct Harness {
 };
 
 void CancellationReleasesSpillAndBudget() {
-  Harness harness("cancel");
+  Harness harness("cancel", 1);
   exec::ExecutorQueryMemoryRequest request;
   request.shape = exec::ExecutorQueryShape::search;
   request.bytes = 80 * 1024;
@@ -205,7 +213,7 @@ void CancellationReleasesSpillAndBudget() {
 }
 
 void RollbackCleanupDoesNotBecomeFinalityAuthority() {
-  Harness harness("rollback");
+  Harness harness("rollback", 2);
   exec::ExecutorQueryMemoryRequest request;
   request.shape = exec::ExecutorQueryShape::dml;
   request.bytes = 4096;
@@ -224,7 +232,7 @@ void RollbackCleanupDoesNotBecomeFinalityAuthority() {
 }
 
 void AutocommitFailureReleasesOperatorGrant() {
-  Harness harness("autocommit");
+  Harness harness("autocommit", 3);
   exec::ExecutorOperatorMemoryRequest request;
   request.operator_kind = exec::ExecutorMemoryOperatorKind::dml_write;
   request.route_label = "embedded.sblr.dml.autocommit_failure";
@@ -248,7 +256,7 @@ void AutocommitFailureReleasesOperatorGrant() {
 }
 
 void RefusedGrantLeavesNoResidue() {
-  Harness harness("refused");
+  Harness harness("refused", 4);
   exec::ExecutorQueryMemoryRequest request;
   request.shape = exec::ExecutorQueryShape::relational;
   request.bytes = 512 * 1024;

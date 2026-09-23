@@ -6,6 +6,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+using scratchbird::tests::FixtureIdentityForLabel;
 #include "agents/admission_control_manager.hpp"
 #include "agents/alert_manager.hpp"
 #include "agents/memory_governor.hpp"
@@ -53,16 +57,16 @@ agents::DurableAgentCatalogImage DurableCatalog() {
   image.authority.durable_catalog_authority = true;
   image.authority.mga_transaction_evidence = true;
   image.authority.mga_transaction_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("aeic-local-mga");
+      FixtureIdentityForLabel("aeic-local-mga");
   image.authority.transaction_generation = 9;
   image.authority.evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("aeic-local-open");
+      FixtureIdentityForLabel("aeic-local-open");
   image.authority.database_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("aeic-local-db");
+      FixtureIdentityForLabel("aeic-local-db");
   image.authority.catalog_storage_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("aeic-local-storage");
+      FixtureIdentityForLabel("aeic-local-storage");
   image.authority.storage_commit_evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("aeic-local-commit");
+      FixtureIdentityForLabel("aeic-local-commit");
   image.authority.catalog_generation = 1;
   image.authority.local_transaction_id = 42;
   image.authority.storage_catalog_record_evidence = true;
@@ -89,7 +93,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
                                   : dependency.namespace_prefix + ".observed";
     snapshot.generation = 7;
     snapshot.observed_wall_microseconds = observed_wall_microseconds;
-    snapshot.scope_uuid = scope_uuid;
+    snapshot.scope_uuid = NativeFixtureIdentity(scope_uuid);
     snapshot.digest = "sha256:aeic-local-resource:" + dependency.metric_family;
     snapshot.source_quality = agents::AgentMetricSourceQuality::trusted;
     snapshot.present = true;
@@ -97,8 +101,8 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
     snapshot.schema_compatible = true;
     snapshot.trust_provenance = "test_metric_registry";
     snapshot.evidence_uuid =
-        agents::DeterministicAgentRuntimeObjectUuidFromKey(
-            "aeic-local-resource-metric-evidence|" + dependency.metric_family);
+        NativeFixtureIdentity(FixtureIdentityForLabel(
+            "aeic-local-resource-metric-evidence|" + dependency.metric_family));
     snapshot.snapshot_id = "aeic-local-resource:" + dependency.metric_family;
     snapshot.value_digest = snapshot.digest;
     snapshot.schema_digest = "schema:" + snapshot.metric_family + ":" +
@@ -117,7 +121,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
     source_a.attestation_key_id = "metric-key:" + source_a.source_id;
     source_a.attestation_digest = "attestation:" + source_a.metric_family +
                                   ":" + source_a.source_id;
-    source_a.evidence_uuid += ":source-a";
+    source_a.evidence_uuid = NativeFixtureIdentity(FixtureIdentityForLabel(BinaryFixtureIdentity(snapshot.evidence_uuid) + ":source-a"));
     source_a.snapshot_id += ":source-a";
     snapshots.push_back(std::move(source_a));
 
@@ -128,7 +132,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
     source_b.attestation_key_id = "metric-key:" + source_b.source_id;
     source_b.attestation_digest = "attestation:" + source_b.metric_family +
                                   ":" + source_b.source_id;
-    source_b.evidence_uuid += ":source-b";
+    source_b.evidence_uuid = NativeFixtureIdentity(FixtureIdentityForLabel(BinaryFixtureIdentity(snapshot.evidence_uuid) + ":source-b"));
     source_b.snapshot_id += ":source-b";
     snapshots.push_back(std::move(source_b));
   }
@@ -146,26 +150,26 @@ void PersistDecision(agents::DurableAgentCatalogImage* catalog,
   request.catalog = catalog;
   request.agent_type_id = agent_type_id;
   request.instance_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(agent_type_id + "-instance");
+      FixtureIdentityForLabel(agent_type_id + "-instance");
   request.operation_id = operation_id;
   request.principal_uuid =
-      agents::DeterministicAgentRuntimePrincipalUuidFromKey("aeic-local-principal");
+      FixtureIdentityForLabel("aeic-local-principal");
   request.rights_used = {"agent.execute", "agent.observe"};
   request.scope_uuids = {
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("aeic-local-scope")};
+      FixtureIdentityForLabel("aeic-local-scope")};
   request.policy_generation = 11;
   request.decision_kind = decision_kind;
   request.result_state = "completed";
   request.diagnostic_code = diagnostic_code;
   request.decision_fields = fields;
   request.outcome_verification_evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(agent_type_id + "-verification");
+      FixtureIdentityForLabel(agent_type_id + "-verification");
   request.created_at_microseconds = before_generation + 100;
-  request.metric_context.database_uuid = request.scope_uuids.front();
-  request.metric_context.principal_uuid = request.principal_uuid;
+  request.metric_context.database_uuid = NativeFixtureIdentity(request.scope_uuids.front());
+  request.metric_context.principal_uuid = NativeFixtureIdentity(request.principal_uuid);
   request.metric_context.security_context_present = true;
   request.metric_context.wall_now_microseconds = request.created_at_microseconds;
-  request.metric_snapshot_options.expected_scope_uuid = request.scope_uuids.front();
+  request.metric_snapshot_options.expected_scope_uuid = NativeFixtureIdentity(request.scope_uuids.front());
   request.observed_metric_snapshots = ObservedSnapshotsFor(
       agent_type_id, request.scope_uuids.front(), request.created_at_microseconds);
   const auto persisted = agents::AppendEnterpriseAgentDecisionEvidence(request);

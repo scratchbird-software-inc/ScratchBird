@@ -107,7 +107,7 @@ std::filesystem::path MakeTempDir() {
   return std::filesystem::path(made);
 }
 
-std::string CreateOpenDatabase(const std::filesystem::path& path) {
+scratchbird::core::platform::Uuid CreateOpenDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, 1780000001000).value;
@@ -127,11 +127,11 @@ std::string CreateOpenDatabase(const std::filesystem::path& path) {
   Require(opened.ok(), "DBLC-013G database first-open failed");
   const auto clean = db::MarkDatabaseCleanShutdown(path.string());
   Require(clean.ok(), "DBLC-013G clean shutdown marker failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
-                                  const std::string& database_uuid) {
+                                  const scratchbird::core::platform::Uuid& database_uuid) {
   HostedEngineState engine_state;
   engine_state.engine_context_active = true;
   HostedDatabaseSnapshot database;
@@ -518,7 +518,7 @@ void TestDisconnectUnknownOutcome(const std::filesystem::path& database_path,
 int main() {
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "dblc013g_session_request_cursor.sbdb";
-  const std::string database_uuid = CreateOpenDatabase(database_path);
+  const auto database_uuid = CreateOpenDatabase(database_path);
   const auto engine_state = MakeEngineState(database_path, database_uuid);
 
   ServerSessionRegistry registry;

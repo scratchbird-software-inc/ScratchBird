@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "large_payload.hpp"
+#include "database_lifecycle.hpp"
+#include "transaction/transaction_api.hpp"
+#include <filesystem>
 #include "nosql/key_value_api.hpp"
 #include "uuid.hpp"
 
@@ -42,8 +45,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string UuidText(const platform::TypedUuid& value) {
-  return uuid::UuidToString(value.value);
+std::string IdentityOptionBytes(const platform::Uuid& value) {
+  return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
 }
 
 std::vector<platform::byte> Bytes(std::size_t count, char value) {
@@ -97,7 +100,7 @@ bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
                       const std::string& kind,
                       const std::string& id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && std::holds_alternative<std::string>(item.evidence_id) && std::get<std::string>(item.evidence_id) == id) {
       return true;
     }
   }
@@ -252,28 +255,48 @@ void GcRespectsMgaHorizonAndStaleLookupFailsClosed() {
 
 void NoSqlKeyValueStoresAndFetchesDescriptor() {
   const Ids ids;
-  const std::string database_path = "/tmp/sb_odf_062_gate_api.sbdb";
-  std::remove(database_path.c_str());
-  std::remove((database_path + ".sb.api_events").c_str());
-  {
-    std::ofstream crud(database_path, std::ios::binary | std::ios::trunc);
-    crud << "SBCRUD1\tTX_BEGIN\t77\t" << UuidText(ids.transaction_uuid) << '\n';
-  }
-
+  std::string pattern = "/tmp/sb_odf062_api.XXXXXX";
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  const char* made = ::mkdtemp(writable.data());
+  Require(made != nullptr, "ODF-062 temporary directory failed");
+  const std::filesystem::path directory(made);
+  const auto database_path = (directory / "test.sbdb").string();
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = database_path;
+  create.database_uuid = ids.database_uuid;
+  create.filespace_uuid = ids.filespace_uuid;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = 1779621000000ull;
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
+          "ODF-062 database creation failed");
+  api::EngineBeginTransactionRequest begin;
+  begin.context.database_path = database_path;
+  begin.context.database_uuid = ids.database_uuid.value;
+  begin.context.principal_uuid = NewUuid(platform::UuidKind::principal, 6).value;
+  begin.context.session_uuid = NewUuid(platform::UuidKind::object, 7).value;
+  begin.context.security_context_present = true;
+  begin.isolation_level = "read_committed";
+  begin.transaction_policy_profile.encoded_profiles = {
+      "fail_closed:true", "transaction_read_only:false", "transaction_read_mode:read_write"};
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok && begun.local_transaction_id != 0, "ODF-062 engine begin failed");
   api::EngineKeyValuePutRequest put;
-  put.context.database_path = database_path;
-  put.context.local_transaction_id = 77;
-  put.context.database_uuid.canonical = UuidText(ids.database_uuid);
-  put.context.transaction_uuid.canonical = UuidText(ids.transaction_uuid);
-  put.target_object.uuid.canonical = UuidText(ids.owner_uuid);
+  put.context = begin.context;
+  put.context.local_transaction_id = begun.local_transaction_id;
+  put.context.transaction_uuid = begun.transaction_uuid;
+  put.context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+  put.target_object.uuid = ids.owner_uuid.value;
   put.localized_names.push_back({"en", "primary", "", "odf062-key", true});
   put.option_envelopes.push_back("large_payload.payload=" + std::string(6000, 'K'));
   put.option_envelopes.push_back("large_payload.inline_threshold=64");
-  put.option_envelopes.push_back("large_payload.database_uuid=" + UuidText(ids.database_uuid));
-  put.option_envelopes.push_back("large_payload.filespace_uuid=" + UuidText(ids.filespace_uuid));
-  put.option_envelopes.push_back("large_payload.owner_object_uuid=" + UuidText(ids.owner_uuid));
-  put.option_envelopes.push_back("large_payload.transaction_uuid=" + UuidText(ids.transaction_uuid));
-  put.option_envelopes.push_back("large_payload.chunk_policy_uuid=" + UuidText(ids.chunk_policy_uuid));
+  put.option_envelopes.push_back("large_payload.database_uuid=" + IdentityOptionBytes(ids.database_uuid.value));
+  put.option_envelopes.push_back("large_payload.filespace_uuid=" + IdentityOptionBytes(ids.filespace_uuid.value));
+  put.option_envelopes.push_back("large_payload.owner_object_uuid=" + IdentityOptionBytes(ids.owner_uuid.value));
+  put.option_envelopes.push_back("large_payload.transaction_uuid=" + IdentityOptionBytes(put.context.transaction_uuid));
+  put.option_envelopes.push_back("large_payload.chunk_policy_uuid=" + IdentityOptionBytes(ids.chunk_policy_uuid.value));
 
   const auto put_result = api::EngineKeyValuePut(put);
   Require(put_result.ok, "ODF-062 NoSQL key/value large payload put failed");
@@ -306,14 +329,17 @@ void NoSqlKeyValueStoresAndFetchesDescriptor() {
 
   api::EngineKeyValueGetRequest get;
   get.context = put.context;
-  get.target_object.uuid.canonical = UuidText(ids.owner_uuid);
+  get.target_object.uuid = ids.owner_uuid.value;
   const auto get_result = api::EngineKeyValueGet(get);
   Require(get_result.ok, "ODF-062 NoSQL key/value get failed");
   const auto fetched = RowField(get_result, "value");
   Require(fetched == second_payload, "ODF-062 NoSQL get did not fetch latest stored descriptor");
 
-  std::remove(database_path.c_str());
-  std::remove((database_path + ".sb.api_events").c_str());
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = put.context;
+  Require(api::EngineRollbackTransaction(rollback).ok, "ODF-062 engine rollback failed");
+  std::error_code ignored;
+  std::filesystem::remove_all(directory, ignored);
 }
 
 }  // namespace

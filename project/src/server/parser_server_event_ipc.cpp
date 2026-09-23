@@ -21,6 +21,12 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 
+std::string BinaryIdentityOption(const char* prefix, const ParserServerEventUuidRef& id) {
+  std::string out(prefix);
+  out.append(reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size());
+  return out;
+}
+
 std::string ValueOr(const std::string& value, const std::string& fallback) {
   return value.empty() ? fallback : value;
 }
@@ -130,7 +136,7 @@ bool ParserServerEventIpcRuntime::SessionReady(const ParserServerEventSession& s
     }
     return false;
   }
-  if (!session.session_bound || session.parser_channel_uuid.empty() ||
+  if (!session.session_bound || session.parser_channel_uuid.is_nil() ||
       session.engine_context.session_uuid.is_nil() || session.engine_context.database_path.empty()) {
     if (vectors != nullptr) {
       vectors->push_back(DiagnosticVector("PARSER_SERVER_IPC.SESSION_REQUIRED",
@@ -163,8 +169,8 @@ PsEventSubscribeResult ParserServerEventIpcRuntime::HandleSubscribe(const PsEven
   api::EngineListenNotificationRequest engine_request;
   engine_request.context = EngineContextFrom(request.session.engine_context);
   engine_request.operation_id = "event.channel.listen";
-  engine_request.target_object = {{request.channel_uuid}, "event_channel"};
-  engine_request.option_envelopes.push_back("channel_uuid:" + request.channel_uuid);
+  engine_request.target_object = {request.channel_uuid, "event_channel"};
+  engine_request.option_envelopes.push_back(BinaryIdentityOption("channel_uuid:", request.channel_uuid));
   engine_request.option_envelopes.push_back("delivery_profile:" + ValueOr(request.delivery_profile, "ephemeral_session"));
   const auto engine_result = api::EngineListenNotification(engine_request);
   if (!engine_result.ok) {
@@ -208,8 +214,7 @@ PsEventUnsubscribeResult ParserServerEventIpcRuntime::HandleUnsubscribe(const Ps
     api::EngineUnlistenSessionNotificationsRequest engine_request;
     engine_request.context = EngineContextFrom(request.session.engine_context);
     engine_request.operation_id = "session.notification.unlisten_all";
-    engine_request.option_envelopes.push_back("session_uuid:" +
-                                             request.session.engine_context.session_uuid);
+    engine_request.option_envelopes.push_back(BinaryIdentityOption("session_uuid:", request.session.engine_context.session_uuid));
     const auto engine_result = api::EngineUnlistenSessionNotifications(engine_request);
     if (!engine_result.ok) {
       result.outcome = "rejected";
@@ -229,12 +234,12 @@ PsEventUnsubscribeResult ParserServerEventIpcRuntime::HandleUnsubscribe(const Ps
     return result;
   }
 
-  std::string channel_uuid = request.channel_uuid;
-  if (channel_uuid.empty() && !request.subscription_uuid.empty()) {
+  ParserServerEventUuidRef channel_uuid = request.channel_uuid;
+  if (channel_uuid.is_nil() && !request.subscription_uuid.is_nil()) {
     const auto* subscription = router_->FindSubscription(request.session.parser_channel_uuid, request.subscription_uuid);
     if (subscription != nullptr) channel_uuid = subscription->event_channel_uuid;
   }
-  if (channel_uuid.empty() && request.subscription_uuid.empty()) {
+  if (channel_uuid.is_nil() && request.subscription_uuid.is_nil()) {
     result.outcome = "rejected";
     result.message_vector_set.push_back(DiagnosticVector("EVENT.SUBSCRIBE_DENIED",
                                                          "event.unsubscribe_target_required",
@@ -242,7 +247,7 @@ PsEventUnsubscribeResult ParserServerEventIpcRuntime::HandleUnsubscribe(const Ps
                                                          true));
     return result;
   }
-  if (channel_uuid.empty()) {
+  if (channel_uuid.is_nil()) {
     result.outcome = "rejected";
     result.message_vector_set.push_back(DiagnosticVector("EVENT.SUBSCRIBE_DENIED",
                                                          "event.unsubscribe_target_required",
@@ -254,10 +259,10 @@ PsEventUnsubscribeResult ParserServerEventIpcRuntime::HandleUnsubscribe(const Ps
   api::EngineUnlistenNotificationRequest engine_request;
   engine_request.context = EngineContextFrom(request.session.engine_context);
   engine_request.operation_id = "event.channel.unlisten";
-  engine_request.target_object = {{channel_uuid}, "event_channel"};
-  engine_request.option_envelopes.push_back("channel_uuid:" + channel_uuid);
-  if (!request.subscription_uuid.empty()) {
-    engine_request.option_envelopes.push_back("subscription_uuid:" + request.subscription_uuid);
+  engine_request.target_object = {channel_uuid, "event_channel"};
+  engine_request.option_envelopes.push_back(BinaryIdentityOption("channel_uuid:", channel_uuid));
+  if (!request.subscription_uuid.is_nil()) {
+    engine_request.option_envelopes.push_back(BinaryIdentityOption("subscription_uuid:", request.subscription_uuid));
   }
   const auto engine_result = api::EngineUnlistenNotification(engine_request);
   if (!engine_result.ok) {
@@ -359,8 +364,8 @@ PsEventAckResult ParserServerEventIpcRuntime::HandleAck(const PsEventAckRequest&
   api::EngineAcknowledgeEventDeliveryRequest engine_request;
   engine_request.context = EngineContextFrom(request.session.engine_context);
   engine_request.operation_id = "event.delivery.ack";
-  engine_request.option_envelopes.push_back("subscription_uuid:" + request.subscription_uuid);
-  engine_request.option_envelopes.push_back("event_uuid:" + request.event_uuid);
+  engine_request.option_envelopes.push_back(BinaryIdentityOption("subscription_uuid:", request.subscription_uuid));
+  engine_request.option_envelopes.push_back(BinaryIdentityOption("event_uuid:", request.event_uuid));
   engine_request.option_envelopes.push_back("delivery_sequence:" + std::to_string(request.delivery_sequence));
   engine_request.option_envelopes.push_back("ack_state:" + ValueOr(request.ack_state, "acknowledged"));
   const auto engine_result = api::EngineAcknowledgeEventDelivery(engine_request);
@@ -388,8 +393,7 @@ PsEventDisconnectResult ParserServerEventIpcRuntime::HandleDisconnect(const PsEv
     api::EngineUnlistenSessionNotificationsRequest engine_request;
     engine_request.context = EngineContextFrom(request.session.engine_context);
     engine_request.operation_id = "session.notification.unlisten_all";
-    engine_request.option_envelopes.push_back("session_uuid:" +
-                                             request.session.engine_context.session_uuid);
+    engine_request.option_envelopes.push_back(BinaryIdentityOption("session_uuid:", request.session.engine_context.session_uuid));
     const auto engine_result = api::EngineUnlistenSessionNotifications(engine_request);
     if (!engine_result.ok) {
       AppendEngineDiagnostics(engine_result, &result.message_vector_set);

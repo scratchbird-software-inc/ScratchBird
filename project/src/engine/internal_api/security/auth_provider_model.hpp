@@ -67,7 +67,7 @@ struct AuthProviderDecision {
   std::string principal;
   std::string decision;
   EngineApiDiagnostic diagnostic;
-  std::vector<std::pair<std::string, std::string>> rows;
+  SecurityRowFields rows;
   std::vector<EngineEvidenceReference> evidence;
 };
 

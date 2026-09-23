@@ -10,6 +10,7 @@
 #include "mga_relation_store/mga_binary_identity_codec.hpp"
 
 #include "api_diagnostics.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include <cctype>
 #include <cstdlib>
 #include <limits>
@@ -48,25 +49,10 @@ std::string LowerDescriptorText(std::string value) {
 
 std::string EncodedDescriptorField(const std::string& descriptor,
                                    const std::string& requested_field) {
-  const std::string normalized_field = LowerDescriptorText(requested_field);
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto delimiter = descriptor.find(';', offset);
-    const auto length = delimiter == std::string::npos
-                            ? descriptor.size() - offset
-                            : delimiter - offset;
-    const std::string part =
-        TrimDescriptorText(descriptor.substr(offset, length));
-    const auto equals = part.find('=');
-    if (equals != std::string::npos &&
-        LowerDescriptorText(TrimDescriptorText(part.substr(0, equals))) ==
-            normalized_field) {
-      return TrimDescriptorText(part.substr(equals + 1));
-    }
-    if (delimiter == std::string::npos) break;
-    offset = delimiter + 1;
-  }
-  return {};
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor, &fields)) return {};
+  const auto it = fields.text.find(LowerDescriptorText(requested_field));
+  return it == fields.text.end() ? std::string{} : it->second;
 }
 
 std::uint32_t EncodedDescriptorU32(const std::string& descriptor,

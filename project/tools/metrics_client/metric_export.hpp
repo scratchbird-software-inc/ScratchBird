@@ -4,7 +4,8 @@
 #include "metric_registry.hpp"
 #include <span>
 
-namespace scratchbird::core::metrics {
+namespace scratchbird::client::metrics {
+using namespace scratchbird::core::metrics;
 struct MetricExportContext {
   MetricUuid export_profile_uuid, source_scope_uuid, redaction_policy_uuid;
   u64 schema_version=0, observation_time_utc_ns=0, export_time_utc_ns=0;
@@ -36,4 +37,4 @@ inline constexpr std::size_t kMetricExportMaximumBytes=16*1024*1024;
 // read a live registry, record observations, persist data or send a response.
 MetricExportResult RenderOpenMetricsProjection(const MetricExportContext&,
     std::span<const MetricExportSample>,std::size_t maximum_bytes=kMetricExportMaximumBytes) noexcept;
-} // namespace scratchbird::core::metrics
+} // namespace scratchbird::client::metrics

@@ -15,6 +15,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace scratchbird::engine::native_compile {
 
@@ -41,7 +42,7 @@ enum class NativeSblrSpecializationRoute {
 };
 
 struct NativeSblrTemplateIdentity {
-  std::string stable_template_id;
+  core::platform::Uuid stable_template_id;
   std::string sblr_digest;
   std::string plan_node_id;
   std::uint64_t template_generation = 0;
@@ -163,6 +164,7 @@ struct NativeSblrSpecializationResult {
   std::string diagnostic_code;
   std::string diagnostic_detail;
   std::vector<std::string> evidence;
+  std::vector<std::pair<std::string, core::platform::Uuid>> identity_evidence;
 };
 
 const char* NativeSblrSpecializationKindName(

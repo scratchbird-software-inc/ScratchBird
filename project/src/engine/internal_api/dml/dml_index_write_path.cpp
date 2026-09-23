@@ -251,20 +251,20 @@ EngineApiU64 CurrentUnixMillis() {
 }
 
 struct StagedPhysicalTree {
-  std::string index_uuid;
+  EngineUuid index_uuid;
   page::IndexBtreePhysicalTree* original = nullptr;
   page::IndexBtreePhysicalTree staged;
 };
 
 struct StagedDeltaLedger {
-  std::string index_uuid;
+  EngineUuid index_uuid;
   idx::PersistentSecondaryIndexDeltaLedger* original = nullptr;
   idx::PersistentSecondaryIndexDeltaLedger staged;
   idx::SecondaryIndexDeltaLedgerLimits limits;
 };
 
 StagedPhysicalTree* FindStagedTree(std::vector<StagedPhysicalTree>* trees,
-                                   const std::string& index_uuid) {
+                                   const EngineUuid& index_uuid) {
   for (auto& tree : *trees) {
     if (tree.index_uuid == index_uuid) {
       return &tree;
@@ -274,7 +274,7 @@ StagedPhysicalTree* FindStagedTree(std::vector<StagedPhysicalTree>* trees,
 }
 
 StagedDeltaLedger* FindStagedLedger(std::vector<StagedDeltaLedger>* ledgers,
-                                    const std::string& index_uuid) {
+                                    const EngineUuid& index_uuid) {
   for (auto& ledger : *ledgers) {
     if (ledger.index_uuid == index_uuid) {
       return &ledger;
@@ -296,14 +296,14 @@ struct EncodedKeyResult {
 EncodedKeyResult EncodePhysicalKey(const CrudIndexRecord& index,
                                    const std::string& key) {
   const auto descriptor_uuid =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
+      uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::object,
                                            index.index_uuid);
   if (!descriptor_uuid.ok()) {
     EncodedKeyResult result;
     result.diagnostic = MakeEngineApiDiagnostic(
         "SB-DML-INDEX-WRITE-INDEX-UUID-PROOF-REQUIRED",
         "dml.index_write.index_uuid_proof_required",
-        "index_uuid=" + index.index_uuid,
+        "index_uuid=" + uuid::UuidToString(index.index_uuid),
         true);
     return result;
   }
@@ -337,24 +337,24 @@ TypedRowUuidResult ParseRowImageUuids(const DmlIndexWriteRowImage& row,
                                       std::string_view label) {
   TypedRowUuidResult result;
   const auto parsed_row =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::row,
+      uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::row,
                                            row.row_uuid);
   if (!parsed_row.ok()) {
     result.diagnostic = MakeEngineApiDiagnostic(
         "SB-DML-INDEX-WRITE-ROW-UUID-PROOF-REQUIRED",
         "dml.index_write.row_uuid_proof_required",
-        std::string(label) + ":row_uuid=" + row.row_uuid,
+        std::string(label) + ":row_uuid=" + uuid::UuidToString(row.row_uuid),
         true);
     return result;
   }
   const auto parsed_version =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::row,
+      uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::row,
                                            row.version_uuid);
   if (!parsed_version.ok()) {
     result.diagnostic = MakeEngineApiDiagnostic(
         "SB-DML-INDEX-WRITE-VERSION-UUID-PROOF-REQUIRED",
         "dml.index_write.version_uuid_proof_required",
-        std::string(label) + ":version_uuid=" + row.version_uuid,
+        std::string(label) + ":version_uuid=" + uuid::UuidToString(row.version_uuid),
         true);
     return result;
   }
@@ -404,35 +404,35 @@ struct ParsedDeltaIdentities {
 ParsedDeltaIdentities ParseDeltaIdentities(const DmlIndexWriteEvent& event) {
   ParsedDeltaIdentities result;
   const auto parsed_index =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
+      uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::object,
                                            event.index.index_uuid);
   if (!parsed_index.ok()) {
     result.diagnostic = MakeEngineApiDiagnostic(
         "SB-DML-HOT-DELTA-INDEX-UUID-PROOF-REQUIRED",
         "dml.hot_delta.index_uuid_proof_required",
-        "index_uuid=" + event.index.index_uuid,
+        "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
         true);
     return result;
   }
   const auto parsed_table =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
+      uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::object,
                                            event.table_uuid);
   if (!parsed_table.ok()) {
     result.diagnostic = MakeEngineApiDiagnostic(
         "SB-DML-HOT-DELTA-TABLE-UUID-PROOF-REQUIRED",
         "dml.hot_delta.table_uuid_proof_required",
-        "table_uuid=" + event.table_uuid,
+        "table_uuid=" + uuid::UuidToString(event.table_uuid),
         true);
     return result;
   }
   const auto parsed_tx =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::transaction,
+      uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::transaction,
                                            event.transaction_uuid);
   if (!parsed_tx.ok()) {
     result.diagnostic = MakeEngineApiDiagnostic(
         "SB-DML-HOT-DELTA-TRANSACTION-UUID-PROOF-REQUIRED",
         "dml.hot_delta.transaction_uuid_proof_required",
-        "transaction_uuid=" + event.transaction_uuid,
+        "transaction_uuid=" + uuid::UuidToString(event.transaction_uuid),
         true);
     return result;
   }
@@ -497,10 +497,10 @@ bool KeyListEqual(const std::vector<PlannedCell>& left,
 EngineApiDiagnostic ValidateProofs(const DmlIndexWriteEvent& event,
                                    const std::string& family,
                                    bool unique) {
-  if (event.table_uuid.empty() || event.index.index_uuid.empty()) {
+  if (event.table_uuid.is_nil() || event.index.index_uuid.is_nil()) {
     return Invalid("table_and_index_uuid_required");
   }
-  if (event.local_transaction_id == 0 || event.transaction_uuid.empty() ||
+  if (event.local_transaction_id == 0 || event.transaction_uuid.is_nil() ||
       !event.mga_transaction_identity_proof ||
       !event.mga_transaction_finality_authority_proof) {
     return MakeEngineApiDiagnostic(
@@ -521,7 +521,7 @@ EngineApiDiagnostic ValidateProofs(const DmlIndexWriteEvent& event,
     return MakeEngineApiDiagnostic(
         "SB-DML-INDEX-WRITE-DESCRIPTOR-CAPABILITY-PROOF-REQUIRED",
         "dml.index_write.descriptor_capability_proof_required",
-        "index_uuid=" + event.index.index_uuid,
+        "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
         true);
   }
   if ((family == "expression" && !event.key_extraction_proof) ||
@@ -530,7 +530,7 @@ EngineApiDiagnostic ValidateProofs(const DmlIndexWriteEvent& event,
     return MakeEngineApiDiagnostic(
         "SB-DML-INDEX-WRITE-KEY-PAYLOAD-PROOF-REQUIRED",
         "dml.index_write.key_payload_proof_required",
-        "family=" + family + ";index_uuid=" + event.index.index_uuid,
+        "family=" + family + ";index_uuid=" + uuid::UuidToString(event.index.index_uuid),
         true);
   }
   if (unique &&
@@ -539,7 +539,7 @@ EngineApiDiagnostic ValidateProofs(const DmlIndexWriteEvent& event,
     return MakeEngineApiDiagnostic(
         "SB-DML-INDEX-WRITE-UNIQUE-PREFLIGHT-PROOF-REQUIRED",
         "dml.index_write.unique_preflight_proof_required",
-        "index_uuid=" + event.index.index_uuid,
+        "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
         true);
   }
   return OkDiagnostic();
@@ -578,7 +578,7 @@ EngineApiDiagnostic ValidateDeferredLedgerProofs(
     return HotDeltaDiagnostic(
         "SB-DML-HOT-DELTA-UNIQUE-PROOF-REQUIRED",
         "dml.hot_delta.unique_proof_required",
-        "unique index " + event.index.index_uuid +
+        "unique index " + uuid::UuidToString(event.index.index_uuid) +
             " requires reservation protocol and deferred route closure proof");
   }
   return OkDiagnostic();
@@ -640,7 +640,7 @@ EngineApiDiagnostic PreflightUniqueInsert(const PlannedEvent& planned,
       return MakeEngineApiDiagnostic(
           "SB-DML-INDEX-WRITE-UNIQUE-DUPLICATE",
           "dml.index_write.unique_duplicate_refused",
-          "index_uuid=" + planned.event->index.index_uuid,
+          "index_uuid=" + uuid::UuidToString(planned.event->index.index_uuid),
           true);
     }
   }
@@ -732,8 +732,12 @@ idx::SecondaryIndexDeltaLedgerRecord BuildDeltaRecord(
   record.delta.committed = false;
   record.commit_state =
       idx::SecondaryIndexDeltaLedgerCommitState::precommit_uncommitted;
+  // This length-framed ledger field is opaque binary provenance. The UUID
+  // contributes exactly 16 octets; it is never parsed as a text identifier.
   record.source_evidence_reference =
-      "dml_hot_delta_ledger:" + event.index.index_uuid + ":" +
+      "dml_hot_delta_ledger:" +
+      std::string(reinterpret_cast<const char*>(event.index.index_uuid.bytes.data()),
+                  event.index.index_uuid.bytes.size()) + ":" +
       idx::SecondaryIndexDeltaKindName(kind);
   return record;
 }
@@ -1208,7 +1212,7 @@ DmlIndexWritePathResult ApplyDmlIndexWritePath(
               MakeEngineApiDiagnostic(
                   "SB-DML-HOT-DELTA-LEDGER-REQUIRED",
                   "dml.hot_delta.ledger_required",
-                  "index_uuid=" + event.index.index_uuid,
+                  "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
                   true),
               std::move(result.evidence));
         }
@@ -1229,7 +1233,7 @@ DmlIndexWritePathResult ApplyDmlIndexWritePath(
             MakeEngineApiDiagnostic(
                 "SB-DML-HOT-DELTA-LEDGER-REQUIRED",
                 "dml.hot_delta.ledger_required",
-                "index_uuid=" + event.index.index_uuid,
+                "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
                 true),
             std::move(result.evidence));
       }
@@ -1241,7 +1245,7 @@ DmlIndexWritePathResult ApplyDmlIndexWritePath(
             MakeEngineApiDiagnostic(
                 "SB-DML-INDEX-WRITE-PHYSICAL-TREE-REQUIRED",
                 "dml.index_write.physical_tree_required",
-                "index_uuid=" + event.index.index_uuid,
+                "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
                 true),
             std::move(result.evidence));
       }

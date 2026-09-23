@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/name_resolution_api.hpp"
@@ -76,19 +78,19 @@ platform::TypedUuid NewTypedUuid(platform::UuidKind kind,
   return generated.value;
 }
 
-std::string NewUuid(platform::UuidKind kind, std::uint64_t salt) {
-  return uuid::UuidToString(NewTypedUuid(kind, salt).value);
+platform::Uuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
+  return NewTypedUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string principal_uuid;
-  std::string values_table_uuid;
-  std::string nulls_table_uuid;
-  std::string expression_table_uuid;
-  std::string schema_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid principal_uuid;
+  platform::Uuid values_table_uuid;
+  platform::Uuid nulls_table_uuid;
+  platform::Uuid expression_table_uuid;
+  platform::Uuid schema_uuid;
   std::uint64_t salt = 0;
 
   ~Fixture() {
@@ -124,7 +126,7 @@ Fixture CreateFixture() {
   }
   Require(created.ok(), "global aggregate database creation failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   fixture.principal_uuid =
       NewUuid(platform::UuidKind::principal, fixture.salt + 4);
   fixture.values_table_uuid =
@@ -146,9 +148,9 @@ api::EngineRequestContext Begin(const Fixture& fixture,
   begin.context.request_id =
       "global-aggregate-begin-" + std::to_string(ordinal);
   begin.context.database_path = fixture.database_path.string();
-  begin.context.database_uuid.canonical = fixture.database_uuid;
-  begin.context.principal_uuid.canonical = fixture.principal_uuid;
-  begin.context.session_uuid.canonical =
+  begin.context.database_uuid = fixture.database_uuid;
+  begin.context.principal_uuid = fixture.principal_uuid;
+  begin.context.session_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 100 + ordinal);
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
@@ -165,7 +167,7 @@ api::EngineRequestContext Begin(const Fixture& fixture,
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
+  context.current_schema_uuid = fixture.schema_uuid;
   return context;
 }
 
@@ -184,7 +186,7 @@ void Rollback(const api::EngineRequestContext& context) {
 }
 
 api::CrudTableRecord Table(const api::EngineRequestContext& context,
-                           std::string table_uuid,
+                           platform::Uuid table_uuid,
                            std::string name) {
   api::CrudTableRecord table;
   table.creator_tx = context.local_transaction_id;
@@ -196,7 +198,7 @@ api::CrudTableRecord Table(const api::EngineRequestContext& context,
 }
 
 api::CrudTableRecord Int32Table(const api::EngineRequestContext& context,
-                                std::string table_uuid,
+                                platform::Uuid table_uuid,
                                 std::string name) {
   api::CrudTableRecord table;
   table.creator_tx = context.local_transaction_id;
@@ -209,7 +211,7 @@ api::CrudTableRecord Int32Table(const api::EngineRequestContext& context,
 
 api::CrudTableRecord FirebirdIntegerTable(
     const api::EngineRequestContext& context,
-    std::string table_uuid,
+    platform::Uuid table_uuid,
     std::string name) {
   api::CrudTableRecord table;
   table.creator_tx = context.local_transaction_id;
@@ -278,19 +280,19 @@ api::EngineTypedValue NullInt64Value() {
 api::EngineRowValue Row(std::uint64_t ordinal,
                         api::EngineTypedValue value) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical =
+  row.requested_row_uuid =
       NewUuid(platform::UuidKind::row, NowMillis() + ordinal);
   row.fields.push_back({"value", std::move(value)});
   return row;
 }
 
 void Insert(const api::EngineRequestContext& context,
-            const std::string& table_uuid,
+            const platform::Uuid& table_uuid,
             std::vector<api::EngineRowValue> rows) {
   api::EngineInsertRowsRequest insert;
   insert.context = context;
   insert.context.request_id = "global-aggregate-insert";
-  insert.target_table.uuid.canonical = table_uuid;
+  insert.target_table.uuid = table_uuid;
   insert.target_table.object_kind = "table";
   insert.input_rows = std::move(rows);
   insert.estimated_row_count = insert.input_rows.size();
@@ -302,7 +304,7 @@ void Insert(const api::EngineRequestContext& context,
 
 api::MgaRelationColumnStorageDescriptor ValueColumn(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const platform::Uuid& table_uuid) {
   const auto loaded =
       api::LoadMgaRelationStorageDescriptor(context, table_uuid);
   if (!loaded.ok) {
@@ -318,8 +320,8 @@ api::MgaRelationColumnStorageDescriptor ValueColumn(
 api::EngineGlobalAggregateProjection CountStar(std::string alias) {
   api::EngineGlobalAggregateProjection projection;
   projection.operation = api::EngineGlobalAggregateOperation::count_star;
-  projection.aggregate_function_uuid.canonical =
-      std::string(api::EngineGlobalAggregateCountFunctionUuid());
+  projection.aggregate_function_uuid =
+      api::EngineGlobalAggregateCountFunctionUuid();
   projection.output_alias = std::move(alias);
   projection.result_descriptor =
       api::EngineGlobalAggregateCountResultDescriptor();
@@ -332,8 +334,8 @@ api::EngineGlobalAggregateProjection CountField(
     const api::MgaRelationColumnStorageDescriptor& column) {
   api::EngineGlobalAggregateProjection projection;
   projection.operation = operation;
-  projection.aggregate_function_uuid.canonical =
-      std::string(api::EngineGlobalAggregateCountFunctionUuid());
+  projection.aggregate_function_uuid =
+      api::EngineGlobalAggregateCountFunctionUuid();
   projection.source_field.column_uuid = column.column_uuid;
   projection.source_field.value_descriptor = column.value_descriptor;
   projection.output_alias = std::move(alias);
@@ -348,8 +350,8 @@ api::EngineGlobalAggregateProjection AvgField(
     const api::MgaRelationColumnStorageDescriptor& column) {
   api::EngineGlobalAggregateProjection projection;
   projection.operation = operation;
-  projection.aggregate_function_uuid.canonical =
-      std::string(api::EngineGlobalAggregateAvgFunctionUuid());
+  projection.aggregate_function_uuid =
+      api::EngineGlobalAggregateAvgFunctionUuid();
   projection.source_field.column_uuid = column.column_uuid;
   projection.source_field.value_descriptor = column.value_descriptor;
   projection.output_alias = std::move(alias);
@@ -364,12 +366,12 @@ api::EngineGlobalAggregateProjection AvgField(
 
 api::EngineSelectRowsRequest AggregateRequest(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid,
+    const platform::Uuid& table_uuid,
     const api::MgaRelationColumnStorageDescriptor& column) {
   api::EngineSelectRowsRequest request;
   request.context = context;
   request.context.request_id = "global-aggregate-select";
-  request.source_object.uuid.canonical = table_uuid;
+  request.source_object.uuid = table_uuid;
   request.source_object.object_kind = "table";
   const auto descriptor =
       api::LoadMgaRelationStorageDescriptor(context, table_uuid);
@@ -396,12 +398,12 @@ api::EngineSelectRowsRequest AggregateRequest(
 
 api::EngineSelectRowsRequest AvgRequest(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid,
+    const platform::Uuid& table_uuid,
     const api::MgaRelationColumnStorageDescriptor& column) {
   api::EngineSelectRowsRequest request;
   request.context = context;
   request.context.request_id = "global-avg-select";
-  request.source_object.uuid.canonical = table_uuid;
+  request.source_object.uuid = table_uuid;
   request.source_object.object_kind = "table";
   const auto descriptor =
       api::LoadMgaRelationStorageDescriptor(context, table_uuid);
@@ -427,7 +429,15 @@ api::EngineSelectRowsRequest AvgRequest(
 std::string EvidenceValue(const api::EngineApiResult& result,
                           std::string_view kind) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind) return evidence.evidence_id;
+    if (evidence.evidence_kind == kind) return scratchbird::tests::EvidenceTextFields(evidence.evidence_id);
+  }
+  return {};
+}
+
+platform::Uuid EvidenceUuid(const api::EngineApiResult& result, std::string_view kind) {
+  for(const auto& evidence:result.evidence) {
+    if(evidence.evidence_kind!=kind) continue;
+    if(const auto* id=std::get_if<platform::Uuid>(&evidence.evidence_id))return *id;
   }
   return {};
 }
@@ -474,7 +484,7 @@ void RequireCounts(const api::EngineSelectRowsResult& result,
   Require(EvidenceValue(result, "global_aggregate_visible_rows_scanned") ==
               std::to_string(expected_star),
           "global aggregate visible scan count drifted");
-  Require(EvidenceValue(result, "global_aggregate_function_uuid") ==
+  Require(EvidenceUuid(result, "global_aggregate_function_uuid") ==
               api::EngineGlobalAggregateCountFunctionUuid(),
           "global aggregate canonical COUNT UUID evidence missing");
 }
@@ -524,7 +534,7 @@ void RequireAvgs(const api::EngineSelectRowsResult& result,
               EvidenceValue(result,
                             "global_aggregate_visible_rows_scanned") ==
                   std::to_string(expected_scanned) &&
-              EvidenceValue(result, "global_aggregate_function_uuid") ==
+              EvidenceUuid(result, "global_aggregate_function_uuid") ==
                   api::EngineGlobalAggregateAvgFunctionUuid(),
           "global AVG MGA scan/UUID evidence drifted");
 }
@@ -585,7 +595,7 @@ api::EngineCreateViewRequest GlobalAggregateViewRequest(
     const api::MgaRelationStorageDescriptor& relation,
     std::string view_name,
     std::int32_t literal,
-    std::string view_uuid = {},
+    platform::Uuid view_uuid = {},
     bool create_or_alter = false) {
   Require(relation.columns.size() == 1,
           "global aggregate view source descriptor width drifted");
@@ -597,9 +607,9 @@ api::EngineCreateViewRequest GlobalAggregateViewRequest(
   request.operation_id = create_or_alter
                              ? "ddl.create_or_alter_view"
                              : "ddl.create_view";
-  request.target_schema.uuid.canonical = fixture.schema_uuid;
+  request.target_schema.uuid = fixture.schema_uuid;
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = std::move(view_uuid);
+  request.target_object.uuid = std::move(view_uuid);
   request.target_object.object_kind = "view";
   request.localized_names.push_back(Name(std::move(view_name)));
   request.related_objects.push_back(
@@ -621,12 +631,10 @@ api::EngineCreateViewRequest GlobalAggregateViewRequest(
   request.option_envelopes = {
       std::string("view_query_shape:") +
           api::kEngineGlobalAggregateViewMarkerV1,
-      "source_relation_descriptor_uuid:" +
-          relation.descriptor_uuid.canonical,
+      api::BinaryViewUuidOption("source_relation_descriptor_uuid:", relation.descriptor_uuid),
       "source_relation_descriptor_generation:" +
           std::to_string(relation.descriptor_generation),
-      "aggregate_function_uuid:" +
-          std::string(api::EngineGlobalAggregateAvgFunctionUuid()),
+      api::BinaryViewUuidOption("aggregate_function_uuid:", api::EngineGlobalAggregateAvgFunctionUuid()),
       "aggregate_result_alias:AVG_RESULT"};
   if (create_or_alter) {
     request.option_envelopes.push_back("create_or_alter:true");
@@ -641,7 +649,7 @@ api::EngineResolveNameRequest ResolveViewRequest(
   api::EngineResolveNameRequest request;
   request.context = context;
   request.context.request_id = "global-aggregate-view-resolve";
-  request.target_schema.uuid.canonical = fixture.schema_uuid;
+  request.target_schema.uuid = fixture.schema_uuid;
   request.target_schema.object_kind = "schema";
   request.target_object.object_kind = "view";
   request.localized_names.push_back(Name(view_name));
@@ -712,8 +720,8 @@ api::EngineGlobalAggregateProjection CheckedInt32MultiplyAvg(
     std::string literal) {
   api::EngineGlobalAggregateProjection projection;
   projection.operation = api::EngineGlobalAggregateOperation::avg_field;
-  projection.aggregate_function_uuid.canonical =
-      std::string(api::EngineGlobalAggregateAvgFunctionUuid());
+  projection.aggregate_function_uuid =
+      api::EngineGlobalAggregateAvgFunctionUuid();
   projection.source_field.column_uuid = column.column_uuid;
   projection.source_field.value_descriptor = column.value_descriptor;
   projection.input_expression.kind =
@@ -733,7 +741,7 @@ api::EngineGlobalAggregateProjection CheckedInt32MultiplyAvg(
 
 void TestBoundIdentityAndTypedIntegerDistinct(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid,
+    const platform::Uuid& table_uuid,
     const api::MgaRelationColumnStorageDescriptor& column) {
   const auto loaded =
       api::LoadMgaRelationStorageDescriptor(context, table_uuid);
@@ -742,11 +750,10 @@ void TestBoundIdentityAndTypedIntegerDistinct(
   const auto bound = api::BindGlobalAggregateProjectionEnvelope(
       request.global_aggregate_projection, loaded.descriptor);
   Require(bound.ok && bound.outputs.size() == 3 &&
-              bound.outputs[1].source_field.column_uuid.canonical ==
-                  column.column_uuid.canonical &&
-              bound.outputs[1].source_field.value_descriptor.descriptor_uuid
-                      .canonical ==
-                  column.value_descriptor.descriptor_uuid.canonical,
+              bound.outputs[1].source_field.column_uuid ==
+                  column.column_uuid &&
+              bound.outputs[1].source_field.value_descriptor.descriptor_uuid ==
+                  column.value_descriptor.descriptor_uuid,
           "bound aggregate dropped the field UUID or descriptor");
 
   auto row = [](std::string field_name, std::string value) {
@@ -858,7 +865,7 @@ void TestBoundIdentityAndTypedIntegerDistinct(
           "bound aggregate execution accepted duplicate exact field keys");
 
   auto uuid_drift = bound.outputs;
-  uuid_drift[1].source_field.column_uuid.canonical =
+  uuid_drift[1].source_field.column_uuid =
       NewUuid(platform::UuidKind::object, NowMillis());
   RequireExecutionRejectedBeforeScan(
       api::ExecuteGlobalAggregateProjection(
@@ -905,7 +912,7 @@ void TestBoundIdentityAndTypedIntegerDistinct(
 
 void TestAvgTypedFinalizationAndRefusals(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid,
+    const platform::Uuid& table_uuid,
     const api::MgaRelationColumnStorageDescriptor& column) {
   const auto loaded =
       api::LoadMgaRelationStorageDescriptor(context, table_uuid);
@@ -914,10 +921,10 @@ void TestAvgTypedFinalizationAndRefusals(
   const auto bound = api::BindGlobalAggregateProjectionEnvelope(
       request.global_aggregate_projection, loaded.descriptor);
   Require(bound.ok && bound.outputs.size() == 2 &&
-              bound.outputs[0].aggregate_function_uuid.canonical ==
+              bound.outputs[0].aggregate_function_uuid ==
                   api::EngineGlobalAggregateAvgFunctionUuid() &&
-              bound.outputs[0].source_field.column_uuid.canonical ==
-                  column.column_uuid.canonical &&
+              bound.outputs[0].source_field.column_uuid ==
+                  column.column_uuid &&
               bound.outputs[0].result_descriptor.encoded_descriptor ==
                   api::EngineGlobalAggregateAvgIntegerResultDescriptor()
                       .encoded_descriptor,
@@ -1063,12 +1070,12 @@ void TestAvgTypedFinalizationAndRefusals(
             "real64 AVG accepted a non-finite or malformed value");
   }
 
-  for (const std::string_view rejected_uuid : {
-           "019dffbb-f000-7fd3-b228-03bf40871b10",
-           "019dffbb-f000-710f-9410-919aad901ae2"}) {
+  for (const auto rejected_uuid : {
+           scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7fd3-b228-03bf40871b10"),
+           scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-710f-9410-919aad901ae2")}) {
     auto rejected = request;
     for (auto& output : rejected.global_aggregate_projection.outputs) {
-      output.aggregate_function_uuid.canonical = rejected_uuid;
+      output.aggregate_function_uuid = rejected_uuid;
     }
     RequireRejected(api::EngineSelectRows(rejected),
                     "global_aggregate_function_uuid_invalid",
@@ -1079,8 +1086,8 @@ void TestAvgTypedFinalizationAndRefusals(
   auto& mixed_output = mixed.global_aggregate_projection.outputs.back();
   mixed_output.operation =
       api::EngineGlobalAggregateOperation::count_non_null_field;
-  mixed_output.aggregate_function_uuid.canonical =
-      std::string(api::EngineGlobalAggregateCountFunctionUuid());
+  mixed_output.aggregate_function_uuid =
+      api::EngineGlobalAggregateCountFunctionUuid();
   mixed_output.result_descriptor =
       api::EngineGlobalAggregateCountResultDescriptor();
   RequireRejected(api::EngineSelectRows(mixed),
@@ -1091,7 +1098,7 @@ void TestAvgTypedFinalizationAndRefusals(
 
 void TestInvalidBindingsFailClosed(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid,
+    const platform::Uuid& table_uuid,
     const api::MgaRelationColumnStorageDescriptor& column) {
   auto invalid_operation = AggregateRequest(context, table_uuid, column);
   invalid_operation.global_aggregate_projection.outputs.front().operation =
@@ -1101,11 +1108,11 @@ void TestInvalidBindingsFailClosed(
                   "global aggregate accepted an unknown operation");
 
   for (const auto legacy_uuid : {
-           std::string("019dffbb-f000-7613-a71e-84b03ef18e1d"),
-           std::string("019dffbb-f000-7293-b215-aa84d8693576")}) {
+           scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7613-a71e-84b03ef18e1d"),
+           scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7293-b215-aa84d8693576")}) {
     auto invalid_function = AggregateRequest(context, table_uuid, column);
     invalid_function.global_aggregate_projection.outputs.front()
-        .aggregate_function_uuid.canonical = legacy_uuid;
+        .aggregate_function_uuid = legacy_uuid;
     RequireRejected(api::EngineSelectRows(invalid_function),
                     "global_aggregate_function_uuid_invalid",
                     "global aggregate accepted a non-canonical COUNT UUID");
@@ -1120,7 +1127,7 @@ void TestInvalidBindingsFailClosed(
 
   auto missing_field = AggregateRequest(context, table_uuid, column);
   missing_field.global_aggregate_projection.outputs[1]
-      .source_field.column_uuid.canonical =
+      .source_field.column_uuid =
       NewUuid(platform::UuidKind::object, NowMillis());
   RequireRejected(api::EngineSelectRows(missing_field),
                   "global_aggregate_source_field_not_found",
@@ -1141,7 +1148,7 @@ void TestInvalidBindingsFailClosed(
                   "global aggregate accepted COUNT_STAR with a field");
 
   auto relation_mismatch = AggregateRequest(context, table_uuid, column);
-  relation_mismatch.global_aggregate_projection.relation_uuid.canonical =
+  relation_mismatch.global_aggregate_projection.relation_uuid =
       NewUuid(platform::UuidKind::object, NowMillis());
   RequireRejected(api::EngineSelectRows(relation_mismatch),
                   "global_aggregate_relation_uuid_mismatch",
@@ -1149,7 +1156,7 @@ void TestInvalidBindingsFailClosed(
 
   auto descriptor_mismatch = AggregateRequest(context, table_uuid, column);
   descriptor_mismatch.global_aggregate_projection.relation_descriptor_uuid
-      .canonical = NewUuid(platform::UuidKind::object, NowMillis());
+       = NewUuid(platform::UuidKind::object, NowMillis());
   RequireRejected(api::EngineSelectRows(descriptor_mismatch),
                   "global_aggregate_relation_descriptor_uuid_mismatch",
                   "global aggregate accepted a mismatched relation descriptor UUID");
@@ -1171,11 +1178,11 @@ void TestInvalidBindingsFailClosed(
 
 void TestLegacyCountProjectionPreserved(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid,
+    const platform::Uuid& table_uuid,
     std::int64_t expected) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = table_uuid;
+  request.source_object.uuid = table_uuid;
   request.source_object.object_kind = "table";
   request.option_envelopes.push_back("result_projection:count");
   const auto selected = api::EngineSelectRows(request);
@@ -1195,8 +1202,8 @@ void TestNeutralSblrTransport(
       "dml.select_rows", "SBLR_DML_SELECT_ROWS",
       "SBLR-RETIRED-GLOBAL-AGGREGATE-ROOT-REFUSAL");
   envelope.opcode_code = 0;
-  envelope.parser_package_uuid = context.session_uuid.canonical;
-  envelope.registry_snapshot_uuid = context.database_uuid.canonical;
+  envelope.parser_package_uuid = context.session_uuid;
+  envelope.registry_snapshot_uuid = context.database_uuid;
   envelope.requires_transaction_context = true;
 
   sblr::SblrDispatchRequest request;
@@ -1219,7 +1226,7 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
   auto metadata = Begin(fixture, 20);
   api::EngineCreateSchemaRequest schema;
   schema.context = metadata;
-  schema.target_object.uuid.canonical = fixture.schema_uuid;
+  schema.target_object.uuid = fixture.schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("aggregate_view_schema"));
   RequireOk(api::EngineCreateSchema(schema),
@@ -1257,8 +1264,8 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
   const auto created = api::EngineCreateView(GlobalAggregateViewRequest(
       fixture, create, source_descriptor, "V_AVG_EXPRESSION", 2100000000));
   RequireOk(created, "persisted global aggregate view create failed");
-  const std::string view_uuid = created.primary_object.uuid.canonical;
-  Require(!view_uuid.empty() &&
+  const platform::Uuid view_uuid = created.primary_object.uuid;
+  Require(!view_uuid.is_nil() &&
               EvidenceValue(created, "global_aggregate_view_marker") ==
                   api::kEngineGlobalAggregateViewMarkerV1 &&
               EvidenceValue(created, "global_aggregate_view_parser_sql") ==
@@ -1312,7 +1319,7 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
   RequireOk(rolled_back_created,
             "rollback probe global aggregate view create failed");
   const auto rollback_own = api::DescribeEngineGlobalAggregateView(
-      rollback_create, rolled_back_created.primary_object.uuid.canonical);
+      rollback_create, rolled_back_created.primary_object.uuid);
   Require(!rollback_own.diagnostic.error && rollback_own.present,
           "rollback probe view lacked own-transaction visibility");
   Rollback(rollback_create);
@@ -1327,7 +1334,7 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
   const auto rolled_back_descriptor =
       api::DescribeEngineGlobalAggregateView(
           rollback_reader,
-          rolled_back_created.primary_object.uuid.canonical);
+          rolled_back_created.primary_object.uuid);
   Require(!rolled_back_descriptor.diagnostic.error &&
               !rolled_back_descriptor.present,
           "rolled-back global aggregate descriptor remained visible");
@@ -1337,7 +1344,7 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
   const auto baseline = api::EngineResolveName(
       ResolveViewRequest(fixture, baseline_reader, "V_AVG_EXPRESSION"));
   RequireOk(baseline, "committed global aggregate view did not resolve");
-  Require(baseline.bound_object_identity.object_uuid.canonical == view_uuid &&
+  Require(baseline.bound_object_identity.object_uuid == view_uuid &&
               baseline.semantic_projection.present &&
               baseline.semantic_projection.marker ==
                   api::kEngineGlobalAggregateViewMarkerV1 &&
@@ -1347,7 +1354,7 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
                       .canonical_type_name == "int64" &&
               baseline.semantic_projection.projection_descriptor
                       .encoded_descriptor.find(
-                          fixture.expression_table_uuid) == std::string::npos &&
+                          std::string(reinterpret_cast<const char*>(fixture.expression_table_uuid.bytes.data()), 16)) == std::string::npos &&
               baseline.semantic_projection.projection_descriptor
                       .encoded_descriptor.find("2100000000") ==
                   std::string::npos,
@@ -1401,10 +1408,10 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
       api::DescribeEngineGlobalAggregateView(rollback_alter, view_uuid);
   Require(!rollback_alter_descriptor.diagnostic.error &&
               rollback_alter_descriptor.present &&
-              rollback_alter_descriptor.view_uuid.canonical == view_uuid &&
+              rollback_alter_descriptor.view_uuid == view_uuid &&
               rollback_alter_descriptor.view_descriptor_generation == 2 &&
-              rollback_alter_descriptor.view_descriptor_uuid.canonical !=
-                  own_descriptor.view_descriptor_uuid.canonical,
+              rollback_alter_descriptor.view_descriptor_uuid !=
+                  own_descriptor.view_descriptor_uuid,
           "CREATE OR ALTER did not retain view UUID/new descriptor generation");
   const auto rollback_alter_resolved = api::EngineResolveName(
       ResolveViewRequest(fixture, rollback_alter, "V_AVG_EXPRESSION"));
@@ -1443,8 +1450,8 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
   Require(post_rollback_resolved.semantic_projection.descriptor_generation ==
               1 &&
               post_rollback_resolved.semantic_projection.projection_descriptor
-                      .descriptor_uuid.canonical ==
-                  own_descriptor.view_descriptor_uuid.canonical,
+                      .descriptor_uuid ==
+                  own_descriptor.view_descriptor_uuid,
           "rolled-back alter changed the durable descriptor generation");
   RequireGlobalAggregateViewValue(
       api::EngineSelectRows(GlobalAggregateViewSelectRequest(
@@ -1479,8 +1486,8 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
   Require(old_snapshot_after_commit.semantic_projection
                   .descriptor_generation == 1 &&
               old_snapshot_after_commit.semantic_projection
-                      .projection_descriptor.descriptor_uuid.canonical ==
-                  own_descriptor.view_descriptor_uuid.canonical,
+                      .projection_descriptor.descriptor_uuid ==
+                  own_descriptor.view_descriptor_uuid,
           "old snapshot selected the post-snapshot ALTER generation");
   RequireGlobalAggregateViewValue(
       api::EngineSelectRows(GlobalAggregateViewSelectRequest(
@@ -1494,11 +1501,11 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
   const auto fresh = api::EngineResolveName(
       ResolveViewRequest(fixture, fresh_reader, "V_AVG_EXPRESSION"));
   RequireOk(fresh, "fresh reader did not resolve committed ALTER");
-  Require(fresh.bound_object_identity.object_uuid.canonical == view_uuid &&
+  Require(fresh.bound_object_identity.object_uuid == view_uuid &&
               fresh.semantic_projection.descriptor_generation == 2 &&
               fresh.semantic_projection.projection_descriptor.descriptor_uuid
-                      .canonical ==
-                  committed_alter_descriptor.view_descriptor_uuid.canonical,
+                       ==
+                  committed_alter_descriptor.view_descriptor_uuid,
           "fresh reader did not select committed descriptor generation two");
   RequireGlobalAggregateViewValue(
       api::EngineSelectRows(
@@ -1515,7 +1522,7 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
                             "global_aggregate_relation_scan").empty(),
           "fresh reader accepted stale semantic descriptor generation one");
 
-  const std::string malformed_view_uuid =
+  const platform::Uuid malformed_view_uuid =
       NewUuid(platform::UuidKind::object, NowMillis());
   api::ApiBehaviorRecord malformed_record;
   malformed_record.creator_tx = fresh_reader.local_transaction_id;
@@ -1524,31 +1531,19 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
   malformed_record.object_kind = "view";
   malformed_record.default_name = "V_MALFORMED";
   malformed_record.state = "created";
-  malformed_record.payload =
-      "schema=" + fixture.schema_uuid + ";target=" + malformed_view_uuid +
-      ";options=view_query_shape:" +
-      api::kEngineGlobalAggregateViewMarkerV1 +
-      ";view_descriptor_uuid:not-a-canonical-uuid"
-      ";view_descriptor_generation:1"
-      ";source_relation_uuid:" + source_descriptor.relation_uuid.canonical +
-      ";source_relation_descriptor_uuid:" +
-      source_descriptor.descriptor_uuid.canonical +
-      ";source_relation_descriptor_generation:" +
-      std::to_string(source_descriptor.descriptor_generation) +
-      ";source_column_uuid:" +
-      source_descriptor.columns.front().column_uuid.canonical +
-      ";source_column_descriptor_uuid:" +
-      source_descriptor.columns.front()
-          .value_descriptor.descriptor_uuid.canonical +
-      ";expression_kind:" +
-      api::kEngineGlobalAggregateViewInt32MultiplyV1 +
-      ";expression_literal_type:int32"
-      ";expression_literal_value:2100000000"
-      ";expression_result_type:int64"
-      ";aggregate_function_uuid:" +
-      std::string(api::EngineGlobalAggregateAvgFunctionUuid()) +
-      ";aggregate_result_alias:AVG_RESULT"
-      ";aggregate_result_type:int64_nullable";
+  malformed_record.payload = api::EncodeBinaryViewOptions({
+      std::string("view_query_shape:") + api::kEngineGlobalAggregateViewMarkerV1,
+      "view_descriptor_uuid:not-a-native-uuid", "view_descriptor_generation:1",
+      api::BinaryViewUuidOption("source_relation_uuid:", source_descriptor.relation_uuid),
+      api::BinaryViewUuidOption("source_relation_descriptor_uuid:", source_descriptor.descriptor_uuid),
+      "source_relation_descriptor_generation:" + std::to_string(source_descriptor.descriptor_generation),
+      api::BinaryViewUuidOption("source_column_uuid:", source_descriptor.columns.front().column_uuid),
+      api::BinaryViewUuidOption("source_column_descriptor_uuid:", source_descriptor.columns.front().value_descriptor.descriptor_uuid),
+      std::string("expression_kind:") + api::kEngineGlobalAggregateViewInt32MultiplyV1,
+      "expression_literal_type:int32", "expression_literal_value:2100000000",
+      "expression_result_type:int64",
+      api::BinaryViewUuidOption("aggregate_function_uuid:", api::EngineGlobalAggregateAvgFunctionUuid()),
+      "aggregate_result_alias:AVG_RESULT", "aggregate_result_type:int64_nullable"});
   Require(!api::AppendApiBehaviorEvent(
                fresh_reader,
                api::MakeApiBehaviorRecordEvent(malformed_record))

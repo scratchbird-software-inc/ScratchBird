@@ -8,6 +8,11 @@
 
 // SEARCH_KEY: DPC_AGENT_SCHEDULER_FAIRNESS_GATE
 
+#include "agent_binary_identity_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+using scratchbird::tests::FixtureIdentityForLabel;
 #include "agent_background_jobs.hpp"
 #include "agent_runtime.hpp"
 #include "agent_workload_resource_quota.hpp"
@@ -68,7 +73,7 @@ std::string DiagnosticSummary(
 std::string TypedUuid(platform::UuidKind kind, platform::u64 seed) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, seed);
   Require(generated.ok(), "typed UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return BinaryFixtureIdentity(generated.value.value);
 }
 
 agents::AgentRuntimeContext Context() {
@@ -77,9 +82,9 @@ agents::AgentRuntimeContext Context() {
   context.private_features_available = true;
   context.standalone_edition = true;
   context.cluster_authority_available = false;
-  context.database_uuid = TypedUuid(platform::UuidKind::database, 36001);
+  context.database_uuid = NativeFixtureIdentity(TypedUuid(platform::UuidKind::database, 36001));
   context.principal_uuid =
-      agents::DeterministicAgentRuntimePrincipalUuidFromKey("dpc-036");
+      NativeFixtureIdentity(FixtureIdentityForLabel("dpc-036"));
   context.groups = {"OPS"};
   context.rights = {
       "OBS_AGENT_STATE_READ",
@@ -471,7 +476,7 @@ void TestDisabledAndSafeModePreserveForeground(std::vector<EvidenceRow>* rows) {
 
   agents::AgentInstanceRecord instance;
   instance.instance_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("dpc036-safe-mode");
+      FixtureIdentityForLabel("dpc036-safe-mode");
   instance.agent_type_id = "page_allocation_manager";
   instance.state = agents::AgentLifecycleState::safe_mode;
   instance.safe_mode = true;
@@ -599,8 +604,8 @@ void TestLiveServerRuntimeStatusEvidence(std::vector<EvidenceRow>* rows) {
   database.state = server::HostedDatabaseState::kOpen;
   database.database_open = true;
   database.database_path = create.path;
-  database.database_uuid = uuid::UuidToString(database_uuid_value.value.value);
-  database.filespace_uuid = uuid::UuidToString(filespace_uuid_value.value.value);
+  database.database_uuid = database_uuid_value.value.value;
+  database.filespace_uuid = filespace_uuid_value.value.value;
   database.write_admission_fenced = false;
   database.config_policy_security_lifecycle_present = true;
   database.policy_generation = 1;

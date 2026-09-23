@@ -7,6 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/plan_api.hpp"
+#include "query/canonical_sample_descriptor_registry.hpp"
+#include "uuid.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <mutex>
+#include <tuple>
 #include "query/canonical_relational_bridge.hpp"
 #include "query/expression_api.hpp"
 #include "optimizer_plan_cache.hpp"
@@ -20,6 +25,7 @@
 #include "catalog/name_registry.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "catalog/sys_information_projection.hpp"
+#include "catalog/sys_information_security_context.hpp"
 #include "catalog_index_profile.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
@@ -4890,6 +4896,29 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
 
 namespace {
 
+bool StoredTimezoneProfileMatches(
+    const scratchbird::engine::optimizer::CanonicalPreparedPlanResultDescriptor& stored,
+    const std::optional<std::string>& published_profile) {
+  // Profile names (for example UTC) are text metadata, not UUID spellings.
+  // This publication carrier has no bound timezone identity: a retained UUID
+  // therefore cannot be revalidated through it and must refuse cache reuse.
+  if (!stored.timezone_uuid.is_nil()) { return false; }
+  std::optional<std::string> stored_profile;
+  constexpr std::string_view prefix = "timezone_profile_id=";
+  std::string_view fields = stored.encoded_descriptor;
+  while (!fields.empty()) {
+    const auto end = fields.find(';');
+    const auto field = fields.substr(0, end);
+    if (field.starts_with(prefix)) {
+      if (stored_profile.has_value() || field.size() == prefix.size()) { return false; }
+      stored_profile = std::string(field.substr(prefix.size()));
+    }
+    if (end == std::string_view::npos) { break; }
+    fields.remove_prefix(end + 1);
+  }
+  return stored_profile == published_profile;
+}
+
 std::uint64_t MixCanonicalSampleUnit(std::uint64_t value) {
   value += 0x9e3779b97f4a7c15ULL;
   value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
@@ -4899,42 +4928,9 @@ std::uint64_t MixCanonicalSampleUnit(std::uint64_t value) {
 
 }  // namespace
 
-std::string CanonicalSeededSampleDescriptorUuid(
+EngineUuid CanonicalSeededSampleDescriptorUuid(
     const CanonicalSeededSampleRequest& request) {
-  if ((request.method != CanonicalSeededSampleMethod::kBernoulli &&
-       request.method != CanonicalSeededSampleMethod::kSystem) ||
-      !request.repeatable_seed_is_bound ||
-      request.sample_basis_points > 10000 ||
-      (request.method == CanonicalSeededSampleMethod::kSystem &&
-       request.system_block_row_count == 0) ||
-      (request.method == CanonicalSeededSampleMethod::kBernoulli &&
-       request.system_block_row_count != 0)) {
-    return {};
-  }
-  const auto method = static_cast<std::uint64_t>(request.method);
-  const auto profile =
-      (static_cast<std::uint64_t>(request.sample_basis_points) << 32U) ^
-      method;
-  const auto high = MixCanonicalSampleUnit(
-      request.repeatable_seed ^ profile ^ 0x6f4d5b39a18c27e3ULL);
-  const auto low = MixCanonicalSampleUnit(
-      high ^ static_cast<std::uint64_t>(request.system_block_row_count) ^
-      0x15a4c8e92d73b60fULL);
-  const auto group1 = static_cast<std::uint32_t>(high >> 32U);
-  const auto group2 = static_cast<std::uint16_t>(high >> 16U);
-  const auto group3 = static_cast<std::uint16_t>(
-      (high & 0x0fffU) | 0x5000U);
-  const auto group4 = static_cast<std::uint16_t>(
-      ((low >> 48U) & 0x3fffU) | 0x8000U);
-  const auto group5 = low & 0x0000ffffffffffffULL;
-  std::ostringstream out;
-  out << std::hex << std::nouppercase << std::setfill('0')
-      << std::setw(8) << group1 << '-'
-      << std::setw(4) << group2 << '-'
-      << std::setw(4) << group3 << '-'
-      << std::setw(4) << group4 << '-'
-      << std::setw(12) << group5;
-  return out.str();
+  return ResolveCanonicalSampleDescriptor(request);
 }
 
 // QOW-SOURCE-QRY-015-V1
@@ -5465,8 +5461,7 @@ ExecuteCanonicalExecutablePlanCacheHit(
         binding.published_descriptor->nullability != expected_nullability ||
         binding.published_descriptor->collation_uuid.value_or(EngineUuid{}) !=
             stored.collation_uuid ||
-        binding.published_descriptor->timezone_profile_id.value_or("") !=
-            stored.timezone_uuid) {
+        !StoredTimezoneProfileMatches(stored, binding.published_descriptor->timezone_profile_id)) {
       return refuse("pre_access_result_publication_schema");
     }
   }
@@ -5574,8 +5569,7 @@ ExecuteCanonicalExecutablePlanCacheHit(
         published.type_uuid != stored.type_uuid ||
         published.nullability != expected_nullability ||
         published.collation_uuid.value_or(EngineUuid{}) != stored.collation_uuid ||
-        published.timezone_profile_id.value_or("") !=
-            stored.timezone_uuid) {
+        !StoredTimezoneProfileMatches(stored, published.timezone_profile_id)) {
       result.dispatch = std::move(execution.dispatch);
       result.result_publication = std::move(execution.result_publication);
       return refuse("exact_cache_hit_result_schema", false,
@@ -7406,21 +7400,21 @@ bool RelationNameLooksResolvable(const std::string& relation_name) {
 }
 
 struct PlanCacheBinding {
-  std::vector<std::string> object_uuids;
+  std::vector<EngineUuid> object_uuids;
   std::vector<std::string> descriptor_digests;
-  std::vector<std::string> evidence;
+  std::vector<EngineEvidenceReference> evidence;
 };
 
 std::string DescriptorDigest(const EngineDescriptor& descriptor) {
-  return descriptor.descriptor_uuid + ":" + descriptor.descriptor_kind + ":" +
-         descriptor.canonical_type_name + ":" + descriptor.encoded_descriptor;
+  return EncodeMgaMetadataFields({"plan.descriptor.binding.v2", MetadataUuidBytes(descriptor.descriptor_uuid),
+      MetadataUuidBytes(descriptor.type_uuid), descriptor.descriptor_kind, descriptor.canonical_type_name, descriptor.encoded_descriptor});
 }
 
 void AddDescriptorBinding(PlanCacheBinding* binding,
                           const EnginePlanOperationRequest& request,
-                          const std::string& object_uuid,
+                          const EngineUuid& object_uuid,
                           const std::string& object_kind) {
-  if (binding == nullptr || object_uuid.empty()) return;
+  if (binding == nullptr || object_uuid.is_nil()) return;
   EngineGetDescriptorRequest descriptor_request;
   descriptor_request.context = request.context;
   descriptor_request.target_object.uuid = object_uuid;
@@ -7430,10 +7424,10 @@ void AddDescriptorBinding(PlanCacheBinding* binding,
   binding->object_uuids.push_back(object_uuid);
   if (descriptor.ok) {
     binding->descriptor_digests.push_back(DescriptorDigest(descriptor.descriptor));
-    binding->evidence.push_back("descriptor:" + object_uuid);
+    binding->evidence.push_back({"descriptor", object_uuid});
   } else {
-    binding->descriptor_digests.push_back("descriptor_unavailable:" + object_uuid);
-    binding->evidence.push_back("descriptor_unavailable:" + object_uuid);
+    binding->descriptor_digests.push_back(EncodeMgaMetadataFields({"descriptor_unavailable", MetadataUuidBytes(object_uuid)}));
+    binding->evidence.push_back({"descriptor_unavailable", object_uuid});
   }
 }
 
@@ -7458,7 +7452,7 @@ PlanCacheBinding BindPlanCacheRelations(const EnginePlanOperationRequest& reques
       resolve.localized_names.push_back(NameForPlanCacheResolution(request, relation.relation_name));
       const auto resolved = EngineResolveName(resolve);
       if (resolved.ok && !resolved.bound_object_identity.object_uuid.is_nil()) {
-        binding.evidence.push_back("resolver:" + resolved.bound_object_identity.object_uuid);
+        binding.evidence.push_back({"resolver", resolved.bound_object_identity.object_uuid});
         AddDescriptorBinding(&binding,
                              request,
                              resolved.bound_object_identity.object_uuid,
@@ -7515,25 +7509,24 @@ std::string PlanCacheParameterShapeDigest(const EnginePlanOperationRequest& requ
                                           const std::vector<EngineQueryRelation>& relations) {
   const std::string explicit_digest = OptionValue(request, "parameter_shape_digest:");
   if (!explicit_digest.empty()) return explicit_digest;
-  std::ostringstream out;
-  out << "predicate=" << request.predicate.predicate_kind
-      << ";range=" << OptionValue(request, "parameter_range_shape:")
-      << ";cardinality=" << OptionValue(request, "parameter_cardinality_shape:")
-      << ";values=";
-  std::uint64_t ordinal = 0;
+  std::vector<std::string> fields={"plan.parameter.shape.v2",request.predicate.predicate_kind,
+      OptionValue(request,"parameter_range_shape:"),OptionValue(request,"parameter_cardinality_shape:"),
+      std::to_string(request.predicate.bound_values.size())};
   for (const auto& value : request.predicate.bound_values) {
-    out << ordinal++ << ':'
-        << value.descriptor.descriptor_uuid << ':'
-        << value.descriptor.canonical_type_name << ':'
-        << value.descriptor.descriptor_kind << ':'
-        << (value.is_null ? "null" : "not_null") << ':'
-        << (value.encoded_value.empty() ? "unbound_or_empty" : "bound") << ';';
+    fields.push_back(MetadataUuidBytes(value.descriptor.descriptor_uuid));
+    fields.push_back(MetadataUuidBytes(value.descriptor.type_uuid));
+    fields.push_back(value.descriptor.canonical_type_name);
+    fields.push_back(value.descriptor.descriptor_kind);
+    fields.push_back(value.is_null ? "null" : "not_null");
+    fields.push_back(value.encoded_value.empty() && value.binary_value.empty() ? "unbound_or_empty" : "bound");
   }
-  out << "relations=";
+  fields.push_back(std::to_string(relations.size()));
   for (const auto& relation : relations) {
-    out << relation.relation_name << ':' << relation.rows.size() << ';';
+    fields.push_back(relation.relation_name);
+    fields.push_back(MetadataUuidBytes(relation.source_object.uuid));
+    fields.push_back(std::to_string(relation.rows.size()));
   }
-  return out.str();
+  return EncodeMgaMetadataFields(fields);
 }
 
 std::string PlanCacheMemoryGrantClass(const EnginePlanOperationRequest& request) {
@@ -7575,7 +7568,11 @@ opt::OptimizerPlanCacheKeyInput BuildLiveOptimizerPlanCacheKeyInput(
   if (input.sblr_digest.empty()) {
     input.sblr_digest = "engine.query.plan_operation:" + operation;
   }
-  input.descriptor_set_digest = JoinSortedValues(binding.descriptor_digests, ',');
+  auto descriptors = binding.descriptor_digests;
+  std::sort(descriptors.begin(), descriptors.end());
+  descriptors.erase(std::unique(descriptors.begin(), descriptors.end()), descriptors.end());
+  descriptors.insert(descriptors.begin(), "plan.descriptor.set.v2");
+  input.descriptor_set_digest = EncodeMgaMetadataFields(descriptors);
   input.statistics_snapshot_id = PlanCacheStatisticsSnapshotId(request, relations);
   input.catalog_stats_digest = OptionValue(request, "catalog_stats_digest:");
   if (input.catalog_stats_digest.empty()) input.catalog_stats_digest = input.statistics_snapshot_id;
@@ -7630,10 +7627,18 @@ opt::OptimizerPlanCacheKeyInput BuildLiveOptimizerPlanCacheKeyInput(
       input.index_uuids.push_back(index.requested_index_uuid);
     }
   }
-  const std::string function_dependency = OptionValue(request, "function_dependency_uuid:");
-  if (!function_dependency.empty()) input.function_uuids.push_back(function_dependency);
-  const std::string filespace_dependency = OptionValue(request, "filespace_dependency_uuid:");
-  if (!filespace_dependency.empty()) input.filespace_uuids.push_back(filespace_dependency);
+  const auto function_dependency_bytes = OptionValue(request, "function_dependency_uuid:");
+  if (!function_dependency_bytes.empty()) {
+    EngineUuid identity;
+    if (!ReadMetadataUuid(function_dependency_bytes, &identity)) throw std::invalid_argument("plan_dependency_binary_uuid_required");
+    input.function_uuids.push_back(identity);
+  }
+  const auto filespace_dependency_bytes = OptionValue(request, "filespace_dependency_uuid:");
+  if (!filespace_dependency_bytes.empty()) {
+    EngineUuid identity;
+    if (!ReadMetadataUuid(filespace_dependency_bytes, &identity)) throw std::invalid_argument("plan_dependency_binary_uuid_required");
+    input.filespace_uuids.push_back(identity);
+  }
   return input;
 }
 
@@ -7663,7 +7668,7 @@ void AttachLivePlanCacheEvidence(EnginePlanOperationResult* result,
     AddApiBehaviorEvidence(result, "optimizer_live_plan_cache_evidence", evidence);
   }
   for (const auto& item : binding.evidence) {
-    AddApiBehaviorEvidence(result, "optimizer_live_plan_cache_binding", item);
+    result->evidence.push_back(item);
   }
   AddApiBehaviorEvidence(result, "parser_executes_sql", "false");
   AddApiBehaviorEvidence(result, "parser_claims_transaction_finality", "false");
@@ -7697,7 +7702,7 @@ opt::OptimizerStatisticsCatalog BuildLegacyPreAccessOptimizerStatistics(
   if (StatisticsForcedStale(request)) {
     catalog.Add(opt::MakeStatistic("preaccess_relation_statistics_forced_stale",
                                    "relation",
-                                   "preaccess.request",
+                                   opt::OptimizerStatisticTarget::LocalDefault(),
                                    0.0,
                                    opt::StatisticSource::kUnavailable,
                                    0,
@@ -7712,13 +7717,13 @@ opt::OptimizerStatisticsCatalog BuildLegacyPreAccessOptimizerStatistics(
   // a pre-access estimate. Record unavailable object-scoped statistics and let
   // the legacy cost layer use its explicitly non-benchmark policy defaults.
   for (const auto& relation : relations) {
-    const std::string object_uuid = !relation.source_object.uuid.is_nil()
-        ? relation.source_object.uuid
-        : (relation.descriptor_digest.empty() ? relation.relation_name : relation.descriptor_digest);
+    const auto target = relation.source_object.uuid.is_nil()
+        ? opt::OptimizerStatisticTarget::LocalDefault()
+        : opt::OptimizerStatisticTarget::Object(relation.source_object.uuid);
     for (const auto statistic_name : {"row_count", "page_count"}) {
       catalog.Add(opt::MakeStatistic(statistic_name,
                                      "relation",
-                                     object_uuid,
+                                     target,
                                      0.0,
                                      opt::StatisticSource::kUnavailable,
                                      request.context.catalog_generation_id,
@@ -7737,10 +7742,11 @@ bool StatisticsForcedStale(const EnginePlanOperationRequest& request) {
 
 bool StatisticUsable(const opt::OptimizerStatisticsCatalog& statistics,
                      const std::string& name,
-                     const std::string& object_uuid,
+                     const EngineUuid& object_uuid,
                      const EnginePlanOperationRequest& request) {
   if (StatisticsForcedStale(request)) return false;
-  const auto statistic = statistics.Find(name, object_uuid);
+  if (object_uuid.is_nil()) return false;
+  const auto statistic = statistics.Find(name, opt::OptimizerStatisticTarget::Object(object_uuid));
   if (!statistic || !statistic->available) return false;
   if (statistic->confidence == opt::CostConfidence::kUnknown ||
       statistic->confidence == opt::CostConfidence::kRejected) {
@@ -7751,13 +7757,8 @@ bool StatisticUsable(const opt::OptimizerStatisticsCatalog& statistics,
   return statistic->freshness_microseconds <= max_freshness;
 }
 
-std::string RelationObjectUuid(const EngineQueryRelation& relation) {
-  if (!relation.source_object.uuid.is_nil()) {
-    return relation.source_object.uuid;
-  }
-  if (!relation.descriptor_digest.empty()) return relation.descriptor_digest;
-  if (!relation.relation_name.empty()) return relation.relation_name;
-  return "local.default";
+EngineUuid RelationObjectUuid(const EngineQueryRelation& relation) {
+  return relation.source_object.uuid;
 }
 
 bool PredicateCanUseScalarBtree(const EnginePredicateEnvelope& predicate) {
@@ -7789,10 +7790,10 @@ bool RequestProjectionCovered(const EnginePlanOperationRequest& request,
 }
 
 std::optional<CrudIndexRecord> UsableCrudIndexForPredicate(const EnginePlanOperationRequest& request,
-                                                           const std::string& relation_uuid,
+                                                           const EngineUuid& relation_uuid,
                                                            const EnginePredicateEnvelope& predicate,
                                                            std::vector<EngineEvidenceReference>* evidence) {
-  if (relation_uuid.empty() || relation_uuid == "local.default" ||
+  if (relation_uuid.is_nil() ||
       request.context.local_transaction_id == 0 || request.context.database_path.empty()) {
     return std::nullopt;
   }
@@ -7866,7 +7867,7 @@ plan::PhysicalAccessKind PlannedAccessKindForRequest(const EnginePlanOperationRe
   const auto& predicate = request.predicate;
   if (predicate.predicate_kind.empty()) return plan::PhysicalAccessKind::kTableScan;
 
-  const std::string relation_uuid = RelationObjectUuid(relations.front());
+  const EngineUuid relation_uuid = RelationObjectUuid(relations.front());
   const bool row_stats_usable = StatisticUsable(statistics, "row_count", relation_uuid, request) &&
                                 StatisticUsable(statistics, "page_count", relation_uuid, request);
   if (!row_stats_usable) {
@@ -11104,12 +11105,12 @@ EngineResultShape UnpivotResultShape(const EnginePlanOperationRequest& request,
 }
 
 EngineQueryRelation CrudRelation(const RelationReadSnapshot& state,
-                                 const std::string& table_uuid,
+                                 const EngineUuid& table_uuid,
                                  const EngineRequestContext& context,
                                  const EnginePredicateEnvelope& predicate) {
   EngineQueryRelation relation;
-  relation.relation_name = "crud:" + table_uuid;
-  relation.descriptor_digest = relation.relation_name;
+  relation.relation_name = "crud";
+  relation.descriptor_digest = EncodeMgaMetadataFields({"crud.relation.binding.v2", MetadataUuidBytes(table_uuid)});
   relation.source_object.uuid = table_uuid;
   relation.source_object.object_kind = "table";
   auto rows = VisibleCrudRowsForContext(state, table_uuid, context);
@@ -11458,32 +11459,7 @@ SysInformationProjectionContext ProjectionContextFromRequest(
                                  ? "en"
                                  : request.context.language_context.default_language_tag;
   context.session_uuid = request.context.session_uuid;
-  context.principal_uuid = request.context.principal_uuid;
-  context.principal_name = OptionValue(request, "principal_name:");
-  context.requested_role_name = OptionValue(request, "requested_role_name:");
-  context.active_role_name = OptionValue(request, "active_role_name:");
-  if (context.active_role_name.empty()) context.active_role_name = context.requested_role_name;
-  context.active_role_uuid = request.context.current_role_uuid;
-  if (context.active_role_uuid.empty()) {
-    context.active_role_uuid = OptionValue(request, "current_role_uuid:");
-  }
-  if (!context.active_role_name.empty()) {
-    context.effective_role_names.push_back(context.active_role_name);
-  }
-  if (!context.active_role_uuid.empty()) {
-    context.effective_role_uuids.push_back(context.active_role_uuid);
-  }
-  for (const auto& role_uuid : Split(OptionValue(request, "effective_role_uuid_set:"), ',')) {
-    if (!role_uuid.empty() &&
-        std::find(context.effective_role_uuids.begin(),
-                  context.effective_role_uuids.end(),
-                  role_uuid) == context.effective_role_uuids.end()) {
-      context.effective_role_uuids.push_back(role_uuid);
-    }
-  }
-  for (const auto& group_uuid : Split(OptionValue(request, "effective_group_uuid_set:"), ',')) {
-    if (!group_uuid.empty()) context.effective_group_uuids.push_back(group_uuid);
-  }
+  PopulateSysInformationSecurityContext(request.context, &context);
   // Query-built sys projections already read through MGA/CRUD/API visibility filters.
   // Some listener/parser sessions carry a stale catalog_generation_id between
   // statements, so applying it again here can hide committed descriptor rows.
@@ -11521,9 +11497,9 @@ EngineRequestContext QueryProjectionCatalogReadContext(EngineRequestContext cont
 
 std::string QueryProjectionSchemaDisplayPath(
     const std::vector<EngineSchemaTreeRecord>& schemas,
-    const std::string& schema_uuid,
-    std::map<std::string, std::string>* cache) {
-  if (schema_uuid.empty() || cache == nullptr) { return {}; }
+    const EngineUuid& schema_uuid,
+    std::map<EngineUuid, std::string>* cache) {
+  if (schema_uuid.is_nil() || cache == nullptr) { return {}; }
   const auto cached = cache->find(schema_uuid);
   if (cached != cache->end()) { return cached->second; }
   const auto found = std::find_if(schemas.begin(), schemas.end(), [&schema_uuid](const auto& schema) {
@@ -11546,14 +11522,14 @@ std::string QueryProjectionSchemaDisplayPath(
 
 void AddQueryProjectionResolverName(
     std::vector<SysInformationResolverNameSource>* resolver_names,
-    std::string object_uuid,
+    EngineUuid object_uuid,
     std::string object_class,
-    std::string scope_uuid,
+    EngineUuid scope_uuid,
     std::string language_tag,
     std::string name_class,
     std::string display_name,
     std::uint64_t catalog_generation_id) {
-  if (resolver_names == nullptr || object_uuid.empty() || display_name.empty()) { return; }
+  if (resolver_names == nullptr || object_uuid.is_nil() || display_name.empty()) { return; }
   SysInformationResolverNameSource name;
   name.object_uuid = std::move(object_uuid);
   name.object_class = std::move(object_class);
@@ -11574,7 +11550,7 @@ void AddQueryProjectionNameRegistryResolverNames(
     std::vector<SysInformationResolverNameSource>* resolver_names,
     const NameRegistryState& name_state) {
   for (const auto& entry : name_state.entries) {
-    if (entry.deleted || entry.object_uuid.empty()) { continue; }
+    if (entry.deleted || entry.object_uuid.is_nil()) { continue; }
     AddQueryProjectionResolverName(
         resolver_names,
         entry.object_uuid,
@@ -11588,10 +11564,10 @@ void AddQueryProjectionNameRegistryResolverNames(
 }
 
 const NameRegistryEntry* QueryProjectionScopedNameEntry(
-    const std::map<std::string, std::vector<const NameRegistryEntry*>>& names_by_object,
-    const std::string& object_uuid,
+    const std::map<EngineUuid, std::vector<const NameRegistryEntry*>>& names_by_object,
+    const EngineUuid& object_uuid,
     const std::string& object_class,
-    const std::map<std::string, std::string>& schema_path_by_uuid) {
+    const std::map<EngineUuid, std::string>& schema_path_by_uuid) {
   const auto found = names_by_object.find(object_uuid);
   if (found == names_by_object.end()) { return nullptr; }
   const NameRegistryEntry* fallback = nullptr;
@@ -11663,44 +11639,31 @@ CrudState QueryProjectionReadableCrudState(const EngineRequestContext& context) 
 void AddQueryProjectionSystemObject(
     std::vector<SysInformationCatalogObjectSource>* objects,
     std::vector<SysInformationResolverNameSource>* resolver_names,
-    const std::map<std::string, std::string>& schema_uuid_by_path,
+    const std::map<std::string, EngineUuid>& schema_uuid_by_path,
     const std::string& path,
     const std::string& object_class,
-    const std::string& table_type,
-    const std::string& uuid_prefix) {
-  const std::string schema_path = QueryProjectionParentPath(path);
-  const auto schema = schema_uuid_by_path.find(schema_path);
-  if (schema == schema_uuid_by_path.end()) { return; }
-  const std::string object_uuid = uuid_prefix + path;
-  SysInformationCatalogObjectSource object;
-  object.object_uuid = object_uuid;
-  object.object_class = object_class;
-  object.schema_uuid = schema->second;
-  object.parent_object_uuid = schema->second;
-  object.table_type = table_type;
-  object.catalog_generation_id = 1;
-  object.created_local_transaction_id = 1;
-  objects->push_back(std::move(object));
-  AddQueryProjectionResolverName(resolver_names,
-                                 object_uuid,
-                                 object_class,
-                                 schema->second,
-                                 "en",
-                                 "primary",
-                                 QueryProjectionLeafName(path),
-                                 1);
+    const std::string& table_type) {
+  const auto identity = SysInformationObjectIdentity(*resolver_names, schema_uuid_by_path,
+                                                    path, object_class);
+  if (identity.is_nil()) { return; }
+  for (auto& object : *objects) {
+    if (object.object_uuid == identity && object.object_class == object_class) {
+      object.table_type = table_type;
+    }
+  }
 }
 
 void AddQueryProjectionSystemColumns(
     std::vector<SysInformationColumnSource>* columns,
-    std::set<std::string>* column_keys_in_projection,
-    const std::string& object_uuid,
+    std::set<std::pair<EngineUuid, std::uint32_t>>* column_keys_in_projection,
+    const EngineUuid& object_uuid,
     const SysInformationProjectionDefinition& definition) {
+  if (object_uuid.is_nil()) { return; }
   std::uint32_t ordinal = 0;
   for (const auto& column : definition.columns) {
     ++ordinal;
     if (column.column_name.empty()) { continue; }
-    const std::string key = object_uuid + ":" + std::to_string(ordinal);
+    const auto key = std::make_pair(object_uuid, ordinal);
     if (!column_keys_in_projection->insert(key).second) { continue; }
     SysInformationColumnSource source;
     source.relation_object_uuid = object_uuid;
@@ -11737,15 +11700,15 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
       QueryProjectionCatalogReadContext(request.context);
   const std::uint64_t observer_tx = QueryProjectionObserverTx(request.context);
 
-  std::map<std::string, std::string> schema_path_by_uuid;
-  std::map<std::string, std::string> schema_uuid_by_path;
-  std::set<std::string> object_uuids_in_projection;
-  std::set<std::string> column_keys_in_projection;
+  std::map<EngineUuid, std::string> schema_path_by_uuid;
+  std::map<std::string, EngineUuid> schema_uuid_by_path;
+  std::set<EngineUuid> object_uuids_in_projection;
+  std::set<std::pair<EngineUuid, std::uint32_t>> column_keys_in_projection;
 
   const auto schemas = VisibleSchemaTreeRecords(request.context, observer_tx, sources.diagnostic);
   if (sources.diagnostic.error) return sources;
   for (const auto& schema : schemas) {
-    if (schema.schema_uuid.empty()) { continue; }
+    if (schema.schema_uuid.is_nil()) { continue; }
     const std::string schema_path =
         QueryProjectionSchemaDisplayPath(schemas, schema.schema_uuid, &schema_path_by_uuid);
     if (!schema_path.empty()) { schema_uuid_by_path[schema_path] = schema.schema_uuid; }
@@ -11781,9 +11744,9 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
   }
 
   const CrudState crud = QueryProjectionReadableCrudState(catalog_read_context);
-  std::set<std::string> crud_table_uuids;
+  std::set<EngineUuid> crud_table_uuids;
   for (const auto& table : crud.tables) {
-    if (table.table_uuid.empty() ||
+    if (table.table_uuid.is_nil() ||
         !CrudCreatorVisible(crud, table.creator_tx, table.event_sequence, observer_tx)) {
       continue;
     }
@@ -11793,7 +11756,7 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
   const auto lifecycle = LoadCatalogObjectLifecycleState(request.context);
   if (lifecycle.ok) {
     for (const auto& record : lifecycle.state.objects) {
-      if (record.deleted || record.object_uuid.empty()) { continue; }
+      if (record.deleted || record.object_uuid.is_nil()) { continue; }
       if (record.object_kind == "table" &&
           crud_table_uuids.count(record.object_uuid) != 0) {
         continue;
@@ -11822,11 +11785,11 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
                                      name.metadata_epoch == 0 ? name.creator_tx : name.metadata_epoch);
     }
     for (const auto& column : lifecycle.state.columns) {
-      if (column.deleted || column.owner_object_uuid.empty()) { continue; }
+      if (column.deleted || column.owner_object_uuid.is_nil()) { continue; }
       if (crud_table_uuids.count(column.owner_object_uuid) != 0) { continue; }
       SysInformationColumnSource source;
       source.relation_object_uuid = column.owner_object_uuid;
-      source.column_name = column.column_uuid;
+      source.column_uuid = column.column_uuid;
       for (const auto& name : lifecycle.state.names) {
         if (name.deleted || name.object_uuid != column.column_uuid) { continue; }
         source.column_name = name.display_name.empty() ? name.raw_name_text : name.display_name;
@@ -11836,8 +11799,7 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
       source.datatype_name = column.canonical_type_name;
       source.is_nullable = column.nullable ? "YES" : "NO";
       source.catalog_generation_id = column.metadata_epoch == 0 ? column.creator_tx : column.metadata_epoch;
-      const std::string key =
-          source.relation_object_uuid + ":" + std::to_string(source.ordinal_position);
+      const auto key = std::make_pair(source.relation_object_uuid, source.ordinal_position);
       if (column_keys_in_projection.insert(key).second) {
         sources.columns.push_back(std::move(source));
       }
@@ -11845,18 +11807,18 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
   }
 
   const auto name_registry = LoadNameRegistryState(catalog_read_context, observer_tx);
-  std::map<std::string, std::vector<const NameRegistryEntry*>> names_by_object;
+  std::map<EngineUuid, std::vector<const NameRegistryEntry*>> names_by_object;
   if (name_registry.ok) {
     AddQueryProjectionNameRegistryResolverNames(&sources.resolver_names, name_registry.state);
     for (const auto& entry : name_registry.state.entries) {
-      if (entry.deleted || entry.object_uuid.empty()) { continue; }
+      if (entry.deleted || entry.object_uuid.is_nil()) { continue; }
       names_by_object[entry.object_uuid].push_back(&entry);
     }
   }
 
-  std::map<std::string, std::string> table_schema_by_uuid;
+  std::map<EngineUuid, EngineUuid> table_schema_by_uuid;
   for (const auto& table : crud.tables) {
-    if (table.table_uuid.empty() ||
+    if (table.table_uuid.is_nil() ||
         !CrudCreatorVisible(crud, table.creator_tx, table.event_sequence, observer_tx)) {
       continue;
     }
@@ -11886,10 +11848,13 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
     std::uint32_t ordinal = 0;
     for (const auto& [column_name, datatype_name] : table.columns) {
       ++ordinal;
-      const std::string key = table.table_uuid + ":" + std::to_string(ordinal);
+      const auto key = std::make_pair(table.table_uuid, ordinal);
       if (column_name.empty() || !column_keys_in_projection.insert(key).second) { continue; }
       SysInformationColumnSource source;
       source.relation_object_uuid = table.table_uuid;
+      for (const auto& binding : table.bound_columns) {
+        if (binding.ordinal == ordinal) { source.column_uuid = binding.requested_column_uuid; break; }
+      }
       source.schema_uuid = name->scope_uuid;
       source.column_name = column_name;
       source.ordinal_position = ordinal;
@@ -11908,10 +11873,10 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
       if (!visible) { continue; }
       const auto* name = QueryProjectionScopedNameEntry(
           names_by_object, visible->domain_uuid, "domain", schema_path_by_uuid);
-      std::string schema_uuid = visible->schema_uuid;
+      EngineUuid schema_uuid = visible->schema_uuid;
       std::string domain_name = visible->default_name;
       if (name != nullptr) {
-        if (!name->scope_uuid.empty()) { schema_uuid = name->scope_uuid; }
+        if (!name->scope_uuid.is_nil()) { schema_uuid = name->scope_uuid; }
         const std::string display = QueryProjectionNameText(*name);
         if (!display.empty()) { domain_name = display; }
       } else if (!domain_name.empty()) {
@@ -11938,7 +11903,7 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
       const auto schema_path = schema_path_by_uuid.find(schema_uuid);
       SysInformationDomainSource source;
       source.domain_uuid = visible->domain_uuid;
-      source.row_uuid = visible->catalog_row_uuid.empty() ? visible->domain_uuid
+      source.row_uuid = visible->catalog_row_uuid.is_nil() ? visible->domain_uuid
                                                           : visible->catalog_row_uuid;
       source.schema_uuid = schema_uuid;
       source.source_type_name =
@@ -11957,7 +11922,7 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
   }
 
   for (const auto& index : crud.indexes) {
-    if (index.index_uuid.empty() || index.table_uuid.empty() ||
+    if (index.index_uuid.is_nil() || index.table_uuid.is_nil() ||
         !CrudCreatorVisible(crud, index.creator_tx, index.event_sequence, observer_tx)) {
       continue;
     }
@@ -11991,17 +11956,17 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
     return sources;
   }
   for (const auto& record : behavior_records) {
-    if (record.object_uuid.empty() ||
+    if (record.object_uuid.is_nil() ||
         ApiBehaviorFallbackSuppressedObjectKind(record.object_kind) ||
         !object_uuids_in_projection.insert(record.object_uuid).second) {
       continue;
     }
     const auto* name = QueryProjectionScopedNameEntry(
         names_by_object, record.object_uuid, record.object_kind, schema_path_by_uuid);
-    std::string scope_uuid = name == nullptr ? QueryProjectionPayloadField(record.payload, "schema")
+    EngineUuid scope_uuid = name == nullptr ? record.target_schema_uuid
                                              : name->scope_uuid;
     if (record.object_kind == "filespace" || record.object_kind == "database") {
-      scope_uuid.clear();
+      scope_uuid = {};
     }
     SysInformationCatalogObjectSource object;
     object.object_uuid = record.object_uuid;
@@ -12027,7 +11992,7 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
   const auto security_state = LoadSecurityPrincipalLifecycleState(catalog_read_context);
   if (security_state.ok) {
     for (const auto& role : security_state.state.roles) {
-      if (role.deleted || role.role_uuid.empty() ||
+      if (role.deleted || role.role_uuid.is_nil() ||
           !object_uuids_in_projection.insert(role.role_uuid).second) {
         continue;
       }
@@ -12040,14 +12005,14 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
       AddQueryProjectionResolverName(&sources.resolver_names,
                                      role.role_uuid,
                                      "role",
-                                     "",
+                                     {},
                                      "en",
                                      "primary",
                                      role.role_name,
                                      role.security_generation);
     }
     for (const auto& group : security_state.state.groups) {
-      if (group.deleted || group.group_uuid.empty() ||
+      if (group.deleted || group.group_uuid.is_nil() ||
           !object_uuids_in_projection.insert(group.group_uuid).second) {
         continue;
       }
@@ -12060,14 +12025,14 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
       AddQueryProjectionResolverName(&sources.resolver_names,
                                      group.group_uuid,
                                      "group",
-                                     "",
+                                     {},
                                      "en",
                                      "primary",
                                      group.group_name,
                                      group.security_generation);
     }
     for (const auto& principal : security_state.state.principals) {
-      if (principal.deleted || principal.principal_uuid.empty() ||
+      if (principal.deleted || principal.principal_uuid.is_nil() ||
           !object_uuids_in_projection.insert(principal.principal_uuid).second) {
         continue;
       }
@@ -12083,14 +12048,14 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
       AddQueryProjectionResolverName(&sources.resolver_names,
                                      principal.principal_uuid,
                                      object.object_class,
-                                     "",
+                                     {},
                                      "en",
                                      "primary",
                                      principal.principal_name,
                                      principal.security_generation);
     }
     for (const auto& policy : security_state.state.row_policies) {
-      if (policy.deleted || policy.policy_uuid.empty() ||
+      if (policy.deleted || policy.policy_uuid.is_nil() ||
           !object_uuids_in_projection.insert(policy.policy_uuid).second) {
         continue;
       }
@@ -12108,16 +12073,7 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
           policy.policy_generation == 0 ? 1 : policy.policy_generation;
       object.created_local_transaction_id = policy.creator_tx;
       sources.objects.push_back(std::move(object));
-      if (names_by_object.find(policy.policy_uuid) == names_by_object.end()) {
-        AddQueryProjectionResolverName(&sources.resolver_names,
-                                       policy.policy_uuid,
-                                       object.object_class,
-                                       "",
-                                       "en",
-                                       "primary",
-                                       policy.policy_uuid,
-                                       policy.policy_generation);
-      }
+
     }
   }
 
@@ -12143,8 +12099,7 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
                                    schema_uuid_by_path,
                                    view_path,
                                    "view",
-                                   "SYSTEM VIEW",
-                                   "sysview:");
+                                   "SYSTEM VIEW");
   }
   for (const auto& table_path : system_tables) {
     AddQueryProjectionSystemObject(&sources.objects,
@@ -12152,8 +12107,7 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
                                    schema_uuid_by_path,
                                    table_path,
                                    "table",
-                                   "SYSTEM TABLE",
-                                   "systable:");
+                                   "SYSTEM TABLE");
   }
   for (const auto& definition : BuiltinSysInformationProjectionDefinitions()) {
     if (definition.view_path.empty() ||
@@ -12163,8 +12117,8 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
     const bool is_system_table = system_tables.find(definition.view_path) != system_tables.end();
     AddQueryProjectionSystemColumns(&sources.columns,
                                     &column_keys_in_projection,
-                                    std::string(is_system_table ? "systable:" : "sysview:") +
-                                        definition.view_path,
+                                    SysInformationObjectIdentity(sources.resolver_names, schema_uuid_by_path,
+                                                                 definition.view_path, is_system_table ? "table" : "view"),
                                     definition);
     if (!is_system_table && definition.view_path.rfind("sys.information.", 0) == 0) {
       const std::string information_schema_path =
@@ -12172,7 +12126,8 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
           definition.view_path.substr(std::string("sys.information.").size());
       AddQueryProjectionSystemColumns(&sources.columns,
                                       &column_keys_in_projection,
-                                      "sysview:" + information_schema_path,
+                                      SysInformationObjectIdentity(sources.resolver_names, schema_uuid_by_path,
+                                                                   information_schema_path, "view"),
                                       definition);
     }
   }
@@ -12228,20 +12183,20 @@ std::optional<EngineQueryRelation> SysInformationProjectionRelation(
 
   EngineQueryRelation relation;
   relation.relation_name = "sys_projection:" + projection;
-  relation.descriptor_digest = relation.relation_name;
+  relation.descriptor_digest = EncodeMgaMetadataFields({"crud.relation.binding.v2", MetadataUuidBytes(request.target_object.uuid)});
   relation.source_object.object_kind = "view";
   relation.source_object.uuid = request.target_object.uuid;
   if (!projection_result.rows.empty()) {
     for (const auto& [field, ignored] : projection_result.rows.front().fields) {
       (void)ignored;
-      relation.columns.push_back(TextDescriptor());
+      relation.columns.push_back(SysInformationTypedValue(ignored).descriptor);
     }
   }
   for (const auto& source_row : projection_result.rows) {
     EngineRowValue row;
     row.fields.reserve(source_row.fields.size());
     for (const auto& [field, value] : source_row.fields) {
-      row.fields.emplace_back(field, TextValue(value));
+      row.fields.emplace_back(field, SysInformationTypedValue(value));
     }
     const auto matches =
         ProjectionRowMatchesPredicate(row, request.predicate, error_detail);
@@ -12724,12 +12679,12 @@ bool AttachLegacyOptimizerSelectionEvidence(
   for (const auto& statistic : statistics.Statistics()) {
     if (!statistic.available) {
       if (statistic.cluster_only) {
-        evidence->push_back({"optimizer_metric_unavailable", statistic.statistic_name + ":" + statistic.object_uuid + ":" + opt::StatisticSourceName(statistic.source)});
+        evidence->push_back({"optimizer_metric_unavailable", EncodeMgaMetadataFields({statistic.statistic_name, std::to_string(static_cast<unsigned>(statistic.target.kind)), MetadataUuidBytes(statistic.target.object_uuid), opt::StatisticSourceName(statistic.source)})});
       }
       continue;
     }
     if (emitted_stats >= 12) { continue; }
-    evidence->push_back({"optimizer_metric_input", statistic.statistic_name + ":" + statistic.object_uuid + ":" + opt::StatisticSourceName(statistic.source)});
+    evidence->push_back({"optimizer_metric_input", EncodeMgaMetadataFields({statistic.statistic_name, std::to_string(static_cast<unsigned>(statistic.target.kind)), MetadataUuidBytes(statistic.target.object_uuid), opt::StatisticSourceName(statistic.source)})});
     ++emitted_stats;
   }
   if (!optimized.ok) {
@@ -13585,8 +13540,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       result.evidence.push_back({"query_join_right_key_column", std::to_string(right_key_column)});
       result.evidence.push_back({"optimizer_join_left_cardinality", std::to_string((*relations)[0].rows.size())});
       result.evidence.push_back({"optimizer_join_right_cardinality", std::to_string((*relations)[1].rows.size())});
-      result.evidence.push_back({"optimizer_join_relation_order",
-                                 RelationObjectUuid((*relations)[0]) + "," + RelationObjectUuid((*relations)[1])});
+      result.evidence.push_back({"optimizer_join_left_relation", RelationObjectUuid((*relations)[0])});
+      result.evidence.push_back({"optimizer_join_right_relation", RelationObjectUuid((*relations)[1])});
       result.evidence.push_back({"query_join_key_binding",
                                  request.left_key_field.empty() ? "ordinal" : "descriptor_field"});
       std::string join_algorithm = LowerAscii(!request.join_algorithm.empty()
@@ -14356,8 +14311,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
   }
   std::vector<EngineQueryRelation> planned_relations;
   EngineQueryRelation planned_relation;
-  planned_relation.relation_name = request.target_object.uuid.is_nil() ? "request_rows" : "crud:" + request.target_object.uuid;
-  planned_relation.descriptor_digest = planned_relation.relation_name;
+  planned_relation.relation_name = request.target_object.uuid.is_nil() ? "request_rows" : "crud";
+  planned_relation.descriptor_digest = EncodeMgaMetadataFields({"planned.relation.binding.v2", MetadataUuidBytes(request.target_object.uuid)});
   planned_relation.source_object = request.target_object;
   planned_relations.push_back(std::move(planned_relation));
   std::string error_detail;

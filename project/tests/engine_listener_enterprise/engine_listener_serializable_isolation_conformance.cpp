@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -141,7 +142,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == value) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, value)) {
       return true;
     }
   }
@@ -177,9 +178,9 @@ std::filesystem::path TempRoot() {
 struct ApiFixture {
   std::filesystem::path root;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid index_uuid;
 
   ~ApiFixture() {
     if (!root.empty()) {
@@ -189,8 +190,8 @@ struct ApiFixture {
   }
 };
 
-std::string UuidText(UuidKind kind, u64 offset) {
-  return uuid::UuidToString(MakeUuid(kind, offset).value);
+api::EngineUuid NativeIdentity(UuidKind kind, u64 offset) {
+  return MakeUuid(kind, offset).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -235,9 +236,9 @@ api::EngineRequestContext BaseContext(const ApiFixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = UuidText(UuidKind::principal, 410);
-  context.session_uuid.canonical = UuidText(UuidKind::object, 411);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = NativeIdentity(UuidKind::principal, 410);
+  context.session_uuid = NativeIdentity(UuidKind::object, 411);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -309,9 +310,9 @@ ApiFixture MakeApiFixture() {
   ApiFixture fixture;
   fixture.root = TempRoot();
   fixture.database_path = fixture.root / "eler021_serializable_api.sbdb";
-  fixture.database_uuid = UuidText(UuidKind::database, 401);
-  fixture.table_uuid = UuidText(UuidKind::object, 402);
-  fixture.index_uuid = UuidText(UuidKind::object, 403);
+  fixture.database_uuid = NativeIdentity(UuidKind::database, 401);
+  fixture.table_uuid = NativeIdentity(UuidKind::object, 402);
+  fixture.index_uuid = NativeIdentity(UuidKind::object, 403);
 
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
@@ -358,7 +359,7 @@ api::EngineSelectRowsResult SelectRange(const ApiFixture& fixture,
                                         std::string upper) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate =
       RangePredicate("id", std::move(lower), std::move(upper));
@@ -372,7 +373,7 @@ api::EngineInsertRowsResult InsertRow(const ApiFixture& fixture,
                                       std::string note) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), std::move(note)));
   request.estimated_row_count = 1;
@@ -385,7 +386,7 @@ api::EngineUpdateRowsResult UpdateRow(const ApiFixture& fixture,
                                       std::string id) {
   api::EngineUpdateRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = EqualsPredicate("id", std::move(id));
   request.assignments.push_back({"note", TextValue("updated")});
@@ -398,7 +399,7 @@ api::EngineDeleteRowsResult DeleteRow(const ApiFixture& fixture,
                                       std::string id) {
   api::EngineDeleteRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate = EqualsPredicate("id", std::move(id));
   request.option_envelopes = DmlOptions();
@@ -470,7 +471,7 @@ bool SerializableIntegratedEngineApiProof() {
   auto external = Begin(fixture, "eler021-external-authority");
   api::EngineInsertRowsRequest external_request;
   external_request.context = external;
-  external_request.target_table.uuid.canonical = fixture.table_uuid;
+  external_request.target_table.uuid = fixture.table_uuid;
   external_request.target_table.object_kind = "table";
   external_request.input_rows.push_back(Row("300", "external"));
   external_request.estimated_row_count = 1;

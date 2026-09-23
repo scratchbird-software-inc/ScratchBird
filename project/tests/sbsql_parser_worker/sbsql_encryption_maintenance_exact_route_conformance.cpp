@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -35,14 +36,10 @@ namespace sblr = scratchbird::engine::sblr;
 
 constexpr std::string_view kDatabaseUuid =
     "019f5000-0000-7000-8000-000000000001";
-constexpr std::string_view kFilespaceUuid =
-    "019f5000-0000-7000-8000-000000000002";
-constexpr std::string_view kKeyUuid =
-    "019f5000-0000-7000-8000-000000000003";
-constexpr std::string_view kProtectedMaterialUuid =
-    "019f5000-0000-7000-8000-000000000005";
-constexpr std::string_view kProtectedMaterialVersionUuid =
-    "019f5000-0000-7000-8000-000000000006";
+constexpr auto kFilespaceUuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000002");
+constexpr auto kKeyUuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000003");
+constexpr auto kProtectedMaterialUuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000005");
+constexpr auto kProtectedMaterialVersionUuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000006");
 constexpr std::string_view kDatabasePath =
     "/tmp/sbsql_encryption_maintenance_exact_route.sbdb";
 
@@ -106,7 +103,8 @@ bool HasRowField(const api::EngineApiResult& result,
 
 bool ResultContains(const api::EngineApiResult& result, std::string_view text) {
   for (const auto& evidence : result.evidence) {
-    if (Contains(evidence.evidence_kind, text) || Contains(evidence.evidence_id, text)) {
+    if (Contains(evidence.evidence_kind, text) || (std::holds_alternative<std::string>(evidence.evidence_id) &&
+        Contains(std::get<std::string>(evidence.evidence_id), text))) {
       return true;
     }
   }
@@ -130,9 +128,9 @@ std::string Message(const EncryptionRouteRow& row,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f5100-0000-7000-8000-000000001001";
-  session.connection_uuid = "019f5100-0000-7000-8000-000000001002";
-  session.database_uuid = std::string(kDatabaseUuid);
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f5100-0000-7000-8000-000000001001");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f5100-0000-7000-8000-000000001002");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000001");
   session.catalog_epoch = 511;
   session.security_policy_epoch = 512;
   session.descriptor_epoch = 513;
@@ -142,7 +140,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f5100-0000-7000-8000-000000001004";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f5100-0000-7000-8000-000000001004");
   config.bundle_contract_id = "sbp_sbsql@encryption-maintenance-exact-route";
   config.build_id = "sbsql-encryption-maintenance-exact-route";
   return config;
@@ -215,10 +213,10 @@ void RequireExactLowering(const EncryptionRouteRow& row) {
           Message(row, "lowering", "cluster provider exclusion missing"));
   Require(HasValue(artifacts.envelope.required_rights, row.required_right),
           Message(row, "lowering", "required right missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.security.protected_material_cache") ||
-              HasValue(artifacts.envelope.descriptor_refs, "sys.security.protected_material_catalog") ||
-              HasValue(artifacts.envelope.descriptor_refs, "sys.security.encryption_profile") ||
-              HasValue(artifacts.envelope.descriptor_refs, "sys.storage.filespace"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.security.protected_material_cache") ||
+              HasValue(artifacts.envelope.descriptor_requirements, "sys.security.protected_material_catalog") ||
+              HasValue(artifacts.envelope.descriptor_requirements, "sys.security.encryption_profile") ||
+              HasValue(artifacts.envelope.descriptor_requirements, "sys.storage.filespace"),
           Message(row, "lowering", "protected material descriptor ref missing"));
   Require(HasValue(artifacts.envelope.policy_refs, "protected_material_control_policy") ||
               HasValue(artifacts.envelope.policy_refs, "protected_material_release_policy"),
@@ -248,13 +246,13 @@ api::EngineRequestContext EngineContext(const EncryptionRouteRow& row) {
   context.request_id = "sbsql-encryption-maintenance-exact-route";
   context.security_context_present = true;
   context.database_path = std::string(kDatabasePath);
-  context.database_uuid.canonical = std::string(kDatabaseUuid);
-  context.session_uuid.canonical = "019f5100-0000-7000-8000-000000002002";
-  context.principal_uuid.canonical = "019f5100-0000-7000-8000-000000002003";
-  context.node_uuid.canonical = "019f5100-0000-7000-8000-000000002004";
-  context.statement_uuid.canonical = "019f5100-0000-7000-8000-000000002005";
-  context.current_diagnostic_uuid.canonical = "019f5100-0000-7000-8000-000000002006";
-  context.transaction_uuid.canonical = "019f5100-0000-7000-8000-000000002007";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000001");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f5100-0000-7000-8000-000000002002");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f5100-0000-7000-8000-000000002003");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f5100-0000-7000-8000-000000002004");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f5100-0000-7000-8000-000000002005");
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f5100-0000-7000-8000-000000002006");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f5100-0000-7000-8000-000000002007");
   context.catalog_generation_id = 511;
   context.security_epoch = 512;
   context.resource_epoch = 513;
@@ -283,11 +281,11 @@ sblr::SblrOperationEnvelope EngineEnvelope(const EncryptionRouteRow& row) {
 
 api::EngineProtectedMaterialPolicySet MaterialPolicy() {
   api::EngineProtectedMaterialPolicySet policy;
-  policy.retention_policy_uuid = "019f5000-0000-7000-8000-000000000101";
-  policy.access_policy_uuid = "019f5000-0000-7000-8000-000000000102";
-  policy.release_policy_uuid = "019f5000-0000-7000-8000-000000000103";
-  policy.purge_policy_uuid = "019f5000-0000-7000-8000-000000000104";
-  policy.audit_policy_uuid = "019f5000-0000-7000-8000-000000000105";
+  policy.retention_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000101");
+  policy.access_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000102");
+  policy.release_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000103");
+  policy.purge_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000104");
+  policy.audit_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000105");
   policy.release_purposes = {"filespace.open"};
   return policy;
 }
@@ -295,11 +293,11 @@ api::EngineProtectedMaterialPolicySet MaterialPolicy() {
 void SeedKeyCache(const EncryptionRouteRow& row) {
   api::EngineAdmitEncryptionKeyRequest request;
   request.context = EngineContext(row);
-  request.target_database.uuid.canonical = std::string(kDatabaseUuid);
+  request.target_database.uuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000001");
   request.target_database.object_kind = "database";
-  request.key_uuid = std::string(kKeyUuid);
+  request.key_uuid = kKeyUuid;
   request.key_label = "test-key-redacted";
-  request.filespace_uuid = std::string(kFilespaceUuid);
+  request.filespace_uuid = kFilespaceUuid;
   request.secret_evidence = "wrapped-reference:v1:seed";
   const auto result = api::EngineAdmitEncryptionKey(request);
   for (const auto& diagnostic : result.diagnostics) {
@@ -312,15 +310,15 @@ void SeedKeyCache(const EncryptionRouteRow& row) {
 void SeedProtectedMaterialVersion(const EncryptionRouteRow& row) {
   api::EngineCreateProtectedMaterialRequest request;
   request.context = EngineContext(row);
-  request.target_database.uuid.canonical = std::string(kDatabaseUuid);
+  request.target_database.uuid = scratchbird::tests::FixtureUuidLiteral("019f5000-0000-7000-8000-000000000001");
   request.target_database.object_kind = "database";
-  request.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  request.protected_material_uuid = kProtectedMaterialUuid;
   request.object_class = "filespace_encryption_key";
-  request.owner_scope_uuid = std::string(kFilespaceUuid);
+  request.owner_scope_uuid = kFilespaceUuid;
   request.purpose_class = "encryption_use";
   request.storage_class = "wrapped";
   request.policy = MaterialPolicy();
-  request.initial_version_uuid = std::string(kProtectedMaterialVersionUuid);
+  request.initial_version_uuid = kProtectedMaterialVersionUuid;
   request.protected_reference = "kms-ref:v1:wrapped-material-route";
   request.envelope_reference = "kms-envelope:v1:wrapped-material-route";
   request.payload_hash =

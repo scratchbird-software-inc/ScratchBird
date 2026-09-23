@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "agents/agent_management_api.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 
@@ -36,8 +37,8 @@ void Require(bool condition, const std::string& message) {
 
 struct TestDatabase {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
 };
 
@@ -99,8 +100,8 @@ TestDatabase CreateActiveDatabase(const char* basename,
 
   TestDatabase result;
   result.path = path;
-  result.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  result.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
+  result.database_uuid = database_uuid.value.value;
+  result.transaction_uuid = transaction_uuid.value.value;
   result.local_transaction_id = begun.entry.identity.local_id.value;
   return result;
 }
@@ -108,11 +109,11 @@ TestDatabase CreateActiveDatabase(const char* basename,
 api::EngineRequestContext Context(std::initializer_list<std::string_view> rights) {
   api::EngineRequestContext context;
   context.request_id = "arhc-092-agent-management-route-evidence";
-  context.database_uuid.canonical = "019f0920-0000-7000-8000-000000000001";
-  context.principal_uuid.canonical = "019f0920-0000-7000-8000-000000000002";
-  context.transaction_uuid.canonical = "019f0920-0000-7000-8000-000000000003";
-  context.session_uuid.canonical = "019f0920-0000-7000-8000-000000000004";
-  context.node_uuid.canonical = "019f0920-0000-7000-8000-000000000005";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0920-0000-7000-8000-000000000001");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0920-0000-7000-8000-000000000002");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0920-0000-7000-8000-000000000003");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0920-0000-7000-8000-000000000004");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0920-0000-7000-8000-000000000005");
   context.local_transaction_id = 92092;
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
@@ -131,8 +132,8 @@ api::EngineRequestContext StoreContext(
     std::initializer_list<std::string_view> rights) {
   auto context = Context(rights);
   context.database_path = database.path.string();
-  context.database_uuid.canonical = database.database_uuid;
-  context.transaction_uuid.canonical = database.transaction_uuid;
+  context.database_uuid = database.database_uuid;
+  context.transaction_uuid = database.transaction_uuid;
   context.local_transaction_id = database.local_transaction_id;
   return context;
 }

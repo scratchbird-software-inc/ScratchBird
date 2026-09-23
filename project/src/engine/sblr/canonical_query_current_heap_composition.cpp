@@ -33,6 +33,7 @@
 #include "transaction/transaction_api.hpp"
 
 #include <algorithm>
+#include <set>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -66,7 +67,7 @@ namespace {
 
 struct CurrentHeapStreamingScanBinding {
   const api::RelationalDagNode* node{nullptr};
-  std::string relation_uuid;
+  api::EngineUuid relation_uuid;
   api::MgaRelationStorageDescriptor persisted;
   std::vector<const api::MgaRelationColumnStorageDescriptor*> columns;
   std::vector<api::EngineDescriptor> descriptors;
@@ -108,8 +109,7 @@ bool CurrentHeapAccountString(const std::string& value,
 
 bool CurrentHeapAccountDescriptor(const api::EngineDescriptor& descriptor,
                                   std::uint64_t* total) {
-  return CurrentHeapAccountString(descriptor.descriptor_uuid, total) &&
-         CurrentHeapAccountString(descriptor.descriptor_kind, total) &&
+  return CurrentHeapAccountString(descriptor.descriptor_kind, total) &&
          CurrentHeapAccountString(descriptor.canonical_type_name, total) &&
          CurrentHeapAccountString(descriptor.encoded_descriptor, total);
 }
@@ -120,18 +120,7 @@ bool CurrentHeapStreamingBindingMemory(
   if (total == nullptr) return false;
   *total = sizeof(binding);
   std::uint64_t allocation = 0;
-  if (!CurrentHeapAccountString(binding.relation_uuid, total) ||
-      !CurrentHeapAccountString(binding.persisted.descriptor_uuid,
-                                total) ||
-      !CurrentHeapAccountString(binding.persisted.database_uuid,
-                                total) ||
-      !CurrentHeapAccountString(binding.persisted.schema_uuid,
-                                total) ||
-      !CurrentHeapAccountString(binding.persisted.relation_uuid,
-                                total) ||
-      !CurrentHeapAccountString(
-          binding.persisted.primary_filespace_uuid, total) ||
-      !CurrentHeapAccountString(binding.persisted.relation_kind, total) ||
+  if (!CurrentHeapAccountString(binding.persisted.relation_kind, total) ||
       !CurrentHeapAccountString(binding.persisted.storage_profile, total) ||
       !CurrentHeapMemoryMultiply(
           binding.persisted.columns.capacity(),
@@ -147,12 +136,9 @@ bool CurrentHeapStreamingBindingMemory(
     return false;
   }
   for (const auto& column : binding.persisted.columns) {
-    if (!CurrentHeapAccountString(column.column_uuid, total) ||
-        !CurrentHeapAccountString(column.canonical_name_key, total) ||
+    if (!CurrentHeapAccountString(column.canonical_name_key, total) ||
         !CurrentHeapAccountDescriptor(column.value_descriptor, total) ||
         !CurrentHeapAccountString(column.storage_class, total) ||
-        !CurrentHeapAccountString(column.charset_uuid, total) ||
-        !CurrentHeapAccountString(column.collation_uuid, total) ||
         !CurrentHeapAccountString(column.overflow_policy, total)) {
       return false;
     }
@@ -203,7 +189,7 @@ bool PrepareCurrentHeapStreamingScanBinding(
   prepared.persisted = std::move(descriptor);
   prepared.columns.reserve(scan.output_descriptor_ids.size());
   prepared.descriptors.reserve(scan.output_descriptor_ids.size());
-  std::unordered_set<std::string> projected_column_uuids;
+  std::set<api::EngineUuid> projected_column_uuids;
   for (std::size_t ordinal = 0; ordinal < scan.output_descriptor_ids.size();
        ++ordinal) {
     const auto expression = std::ranges::find_if(
@@ -245,10 +231,7 @@ bool PrepareCurrentHeapStreamingScanBinding(
     const bool nullable = relational_descriptor->nullability ==
                           api::RelationalNullability::kNullable;
     const auto expected_collation =
-        relational_descriptor->collation_uuid.has_value()
-            ? std::optional<std::string_view>{
-                  *relational_descriptor->collation_uuid}
-            : std::nullopt;
+        relational_descriptor->collation_uuid.value_or(api::EngineUuid{});
     const auto expected_timezone =
         relational_descriptor->timezone_profile_id.has_value()
             ? std::optional<std::string_view>{
@@ -276,19 +259,15 @@ bool PrepareCurrentHeapStreamingScanBinding(
             relational_descriptor->descriptor_uuid ||
         column->value_descriptor.canonical_type_name.empty() ||
         column->nullable != nullable ||
-        !CanonicalDescriptorFieldEqualsForComposition(
-            column->value_descriptor, "type_uuid",
-            std::optional<std::string_view>{relational_descriptor->type_uuid}) ||
+        column->value_descriptor.type_uuid != relational_descriptor->type_uuid ||
         !exact_nullability_carrier ||
-        !CanonicalDescriptorFieldEqualsForComposition(column->value_descriptor,
-                                           "collation_uuid",
-                                           expected_collation) ||
+        column->value_descriptor.collation_uuid != expected_collation ||
         !CanonicalDescriptorFieldEqualsForComposition(column->value_descriptor,
                                            "timezone_profile_id",
                                            expected_timezone) ||
         (relational_descriptor->collation_uuid.has_value()
              ? column->collation_uuid != *relational_descriptor->collation_uuid
-             : !column->collation_uuid.empty())) {
+             : !column->collation_uuid.is_nil())) {
       *detail = "streaming heap persisted descriptor differs from binding";
       return false;
     }
@@ -535,13 +514,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
       input.context, input.relational_dag, admission.request,
       admission.admission};
   const auto& graph = admission.request.logical_graph;
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
+  std::array<api::EngineUuid, 27> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live current_heap identity allocation failed");
+    }
+    identity = *issued;
+  }
   LivePhysicalNodeProfile scan_profile;
   scan_profile.logical_node_id = scan_node->node_id;
   scan_profile.implementation_id = "scan.heap.v1";
   scan_profile.capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "heap-scan.capability");
+      owned_identities[0];
   scan_profile.logical_node_kind =
       plan::CanonicalLogicalRelationalNodeKind::kRelationSource;
   scan_profile.physical_node_kind = exec::PhysicalNodeKind::kScan;
@@ -558,7 +544,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
   std::vector<LivePhysicalNodeProfile> profiles;
   profiles.push_back(std::move(scan_profile));
   CanonicalRelationalExpressionRowBinding filter_row_binding;
-  std::string filter_capability_uuid;
+  api::EngineUuid filter_capability_uuid;
   if (filter_composition) {
     std::string detail;
     if (filter_node->semantic_variant_id !=
@@ -575,7 +561,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
                          : detail);
     }
     filter_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-filter.capability");
+        owned_identities[1];
     profiles.push_back(
         {filter_node->node_id, "filter.3vl.row.v1",
          filter_capability_uuid,
@@ -586,7 +572,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
          1, 1});
   }
   PreparedGlobalAggregateRoot prepared_heap_aggregate;
-  std::string aggregate_capability_uuid;
+  api::EngineUuid aggregate_capability_uuid;
   const bool grouped_sum_int64_int128_profile =
       aggregate_composition && !filter_composition && !project_composition &&
       !sort_composition && !window_composition && !cte_composition &&
@@ -595,16 +581,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
           "aggregate.grouped-int64-key-sum.v1";
   if (aggregate_composition) {
     if (grouped_sum_int64_int128_profile) {
-      constexpr std::string_view kBigintDescriptorUuid =
-          "019d0000-0000-7000-8000-00000000d711";
-      constexpr std::string_view kBigintTypeUuid =
-          "019d0000-0000-7000-8000-00000000d712";
-      constexpr std::string_view kInt128DescriptorUuid =
-          "019d0000-0000-7000-8000-00000000d714";
-      constexpr std::string_view kInt128TypeUuid =
-          "019d0000-0000-7000-8000-00000000d715";
-      constexpr std::string_view kSumFunctionUuid =
-          "019de5fc-2400-72e4-8549-82b2eef5a777";
+      constexpr api::EngineUuid kBigintDescriptorUuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x11}};
+      constexpr api::EngineUuid kBigintTypeUuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x12}};
+      constexpr api::EngineUuid kInt128DescriptorUuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x14}};
+      constexpr api::EngineUuid kInt128TypeUuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x15}};
+      constexpr api::EngineUuid kSumFunctionUuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0xe4, 0x85, 0x49, 0x82, 0xb2, 0xee, 0xf5, 0xa7, 0x77}};
       const auto descriptor_for = [&](const std::uint32_t id) {
         const auto found = std::ranges::find_if(
             dag.descriptors, [&](const auto& descriptor) {
@@ -644,12 +625,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
               ? expression_for(aggregate_node->bound_expression_ids[1])
               : nullptr;
       const auto exact_identity = [&](const api::RelationalTypeDescriptor* d,
-                                      const std::string_view descriptor_uuid,
-                                      const std::string_view type_uuid,
+                                      const api::EngineUuid descriptor_uuid,
+                                      const api::EngineUuid type_uuid,
                                       const std::string_view codec_id,
                                       const api::RelationalNullability nullability) {
         if (d == nullptr || !d->datatype_identity_authoritative ||
-            !CanonicalUuidText(d->descriptor_uuid) ||
+            !core::uuid::IsEngineIdentityUuid(d->descriptor_uuid) ||
             d->descriptor_generation != 1 || d->type_uuid != type_uuid ||
             d->type_generation != 1 || d->codec_id != codec_id ||
             d->codec_version != 1 || d->codec_generation != 1 ||
@@ -669,7 +650,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
         const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
             d->datatype_catalog_snapshot_uuid,
             d->datatype_catalog_generation,
-            d->datatype_registry_generation, std::string(descriptor_uuid),
+            d->datatype_registry_generation, descriptor_uuid,
             d->descriptor_generation);
         return identity.ok && identity.row.type_uuid == d->type_uuid &&
                identity.row.type_generation == d->type_generation &&
@@ -726,7 +707,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
             "catalog grouped SUM exact DAG or live datatype identity is invalid");
       }
       aggregate_capability_uuid =
-          DerivedCanonicalUuid(identity_scope, "heap-grouped-sum.capability");
+          owned_identities[2];
       profiles.push_back(
           {aggregate_node->node_id,
            "aggregate.grouped-int64-key-sum-int128.streaming.v1",
@@ -816,7 +797,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
               : prepared_heap_aggregate.detail);
     }
     aggregate_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-aggregate.capability");
+        owned_identities[3];
     profiles.push_back(
         {aggregate_node->node_id,
          aggregate_profile.count_star ? "aggregate.count-star.v1"
@@ -831,8 +812,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
   }
   std::vector<plan::CanonicalLogicalPropertyOrderingTerm> heap_order_terms;
   std::vector<exec::CanonicalDescriptorOrderTerm> heap_descriptor_order_terms;
-  std::string sort_capability_uuid;
-  std::string ordering_property_uuid;
+  api::EngineUuid sort_capability_uuid;
+  api::EngineUuid ordering_property_uuid;
   PreparedSortRoot heap_sort_binding;
   if (sort_composition) {
     const auto& properties = admission.request.logical_properties.properties;
@@ -918,7 +899,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
     heap_sort_binding.ordering_property_uuid = ordering_property_uuid;
     heap_sort_binding.order_terms = heap_descriptor_order_terms;
     sort_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-sort.capability");
+        owned_identities[4];
     profiles.push_back(
         {sort_node->node_id, "sort.typed.terms.v1", sort_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kSort,
@@ -946,10 +927,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
   std::optional<std::size_t> prepared_heap_navigation_value_column;
   std::optional<api::EngineTypedValue>
       prepared_heap_navigation_nth_value_position_operand;
-  std::string prepared_heap_navigation_frame_descriptor_uuid;
+  api::EngineUuid prepared_heap_navigation_frame_descriptor_uuid;
   GlobalRankingWindowProfile prepared_heap_navigation_profile;
-  std::string heap_navigation_order_term_binding_evidence_uuid;
-  std::string heap_navigation_frame_property_binding_evidence_uuid;
+  api::EngineUuid heap_navigation_frame_property_binding_evidence_uuid;
   std::optional<exec::ExecutorColumnDescriptor>
       prepared_heap_aggregate_window;
   std::optional<exec::CanonicalDescriptorOrderTerm>
@@ -957,14 +937,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
   std::optional<std::size_t> prepared_heap_aggregate_window_value_column;
   exec::CanonicalAggregateDescriptor
       prepared_heap_aggregate_window_descriptor;
-  std::string prepared_heap_aggregate_window_frame_descriptor_uuid;
-  std::string heap_aggregate_window_order_term_binding_evidence_uuid;
-  std::string heap_aggregate_window_frame_property_binding_evidence_uuid;
-  std::string heap_aggregate_window_capability_uuid;
-  std::string window_capability_uuid;
-  std::string heap_ntile_order_term_binding_evidence_uuid;
-  std::string heap_peer_ranking_order_term_binding_evidence_uuid;
-  std::string window_order_evidence_uuid;
+  api::EngineUuid prepared_heap_aggregate_window_frame_descriptor_uuid;
+  api::EngineUuid heap_aggregate_window_frame_property_binding_evidence_uuid;
+  api::EngineUuid heap_aggregate_window_capability_uuid;
+  api::EngineUuid window_capability_uuid;
+  api::EngineUuid window_order_evidence_uuid;
   if (window_composition) {
     const bool rank_window =
         window_node->semantic_variant_id == "window.rank.v1";
@@ -1058,7 +1035,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
     }
     const auto result_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1(
         ranking_profile.result_type_name);
-    const std::array<std::string, 4> bounded_signed_type_uuids = {
+    const std::array<api::EngineUuid, 4> bounded_signed_type_uuids = {
         ExactCanonicalCoreDatatypeTypeUuidV1("int8"),
         ExactCanonicalCoreDatatypeTypeUuidV1("int16"),
         ExactCanonicalCoreDatatypeTypeUuidV1("int32"),
@@ -1226,9 +1203,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
             output_descriptor->descriptor_uuid;
         descriptor.descriptor_kind = "scalar";
         descriptor.canonical_type_name = "int64";
-        descriptor.encoded_descriptor =
-            "type_uuid=" + output_descriptor->type_uuid +
-            ";nullability=nullable";
+        descriptor.type_uuid = output_descriptor->type_uuid;
+        descriptor.encoded_descriptor = "nullability=nullable";
       } else if (!aggregate_count_window) {
         descriptor = source_descriptor;
         descriptor.descriptor_uuid =
@@ -1240,9 +1216,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
                     api::RelationalNullability::kNullable,
                 descriptor, true) ||
             (aggregate_boolean_window &&
-             descriptor.encoded_descriptor !=
-                 "type_uuid=" + boolean_type_uuid +
-                     ";nullability=nullable")) {
+             (descriptor.type_uuid != boolean_type_uuid ||
+              descriptor.encoded_descriptor != "nullability=nullable"))) {
           return refuse(
               "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
               "object-backed " + std::string(ranking_name) +
@@ -1254,9 +1229,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
             output_descriptor->descriptor_uuid;
         descriptor.descriptor_kind = "scalar";
         descriptor.canonical_type_name = "int64";
-        descriptor.encoded_descriptor =
-            "type_uuid=" + output_descriptor->type_uuid +
-            ";nullability=non_null";
+        descriptor.type_uuid = output_descriptor->type_uuid;
+        descriptor.encoded_descriptor = "nullability=non_null";
       }
     } else {
       descriptor.descriptor_uuid =
@@ -1264,9 +1238,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
       descriptor.descriptor_kind = "scalar";
       descriptor.canonical_type_name =
           std::string(ranking_profile.result_type_name);
-      descriptor.encoded_descriptor =
-          "type_uuid=" + output_descriptor->type_uuid +
-          ";nullability=non_null";
+      descriptor.type_uuid = output_descriptor->type_uuid;
+      descriptor.encoded_descriptor = "nullability=non_null";
     }
     exec::ExecutorColumnDescriptor ranking_column{
         ranking.outputs.back()->output_name_utf8, descriptor,
@@ -1294,12 +1267,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
                       "object-backed " + std::string(ranking_name) +
                           " order-term receipt exceeds its memory budget");
       }
-      const auto order_term_binding_evidence_uuid =
+      const auto order_term_binding_digest =
           exec::ComputeCanonicalDescriptorOrderTermBindingDigest(
               heap_descriptor_order_terms.front(), ordering_property_uuid,
               planned_receipt_workspace_bytes,
               &actual_receipt_workspace_bytes);
-      if (order_term_binding_evidence_uuid.empty() ||
+      if (!order_term_binding_digest.has_value() ||
           actual_receipt_workspace_bytes !=
               planned_receipt_workspace_bytes) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
@@ -1331,26 +1304,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
             ranking.aggregate_count_star};
         prepared_heap_aggregate_window_frame_descriptor_uuid =
             ranking.window_frame_descriptor_uuid;
-        heap_aggregate_window_order_term_binding_evidence_uuid =
-            order_term_binding_evidence_uuid;
         heap_aggregate_window_frame_property_binding_evidence_uuid =
-            DerivedCanonicalUuid(
-                identity_scope + ":" +
-                    std::string(ranking_profile.function_uuid) + ":" +
-                    ranking.window_property_uuid + ":" +
-                    ranking.window_frame_descriptor_uuid,
-                "heap-window.aggregate-sum.frame-property-binding");
-        heap_aggregate_window_capability_uuid = DerivedCanonicalUuid(
-            identity_scope + ":" +
-                std::string(ranking_profile.function_uuid) + ":" +
-                output_descriptor->descriptor_uuid + ":" +
-                heap_aggregate_window_order_term_binding_evidence_uuid + ":" +
-                heap_aggregate_window_frame_property_binding_evidence_uuid,
-            "heap-window.aggregate-sum.capability");
+            owned_identities[5];
+        heap_aggregate_window_capability_uuid = owned_identities[6];
         window_capability_uuid = heap_aggregate_window_capability_uuid;
-        if (window_capability_uuid.empty() ||
-            window_capability_uuid ==
-                heap_aggregate_window_order_term_binding_evidence_uuid ||
+        if (window_capability_uuid.is_nil() ||
             window_capability_uuid ==
                 heap_aggregate_window_frame_property_binding_evidence_uuid) {
           return refuse(
@@ -1369,28 +1327,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
         prepared_heap_navigation_frame_descriptor_uuid =
             ranking.window_frame_descriptor_uuid;
         prepared_heap_navigation_profile = ranking_profile;
-        heap_navigation_order_term_binding_evidence_uuid =
-            order_term_binding_evidence_uuid;
         heap_navigation_frame_property_binding_evidence_uuid =
-            DerivedCanonicalUuid(
-                identity_scope + ":" + ranking.window_property_uuid + ":" +
-                    ranking.window_frame_descriptor_uuid,
-                "heap-window.frame-property-binding");
-        window_capability_uuid = DerivedCanonicalUuid(
-            identity_scope + ":" + output_descriptor->descriptor_uuid + ":" +
-                heap_navigation_order_term_binding_evidence_uuid + ":" +
-                heap_navigation_frame_property_binding_evidence_uuid,
-            first_value_window
-                ? "heap-window.first-value.capability"
-                : (last_value_window
-                       ? "heap-window.last-value.capability"
-                       : (nth_value_window
-                              ? "heap-window.nth-value.capability"
-                              : (lag_window ? "heap-window.lag.capability"
-                                            : "heap-window.lead.capability"))));
-        if (window_capability_uuid.empty() ||
-            window_capability_uuid ==
-                heap_navigation_order_term_binding_evidence_uuid ||
+            owned_identities[7];
+        window_capability_uuid = owned_identities[8];
+        if (window_capability_uuid.is_nil() ||
             window_capability_uuid ==
                 heap_navigation_frame_property_binding_evidence_uuid) {
           return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
@@ -1403,28 +1343,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
             heap_descriptor_order_terms.front();
         prepared_heap_ntile_bucket_count_operand =
             *ranking.ntile_bucket_count_operand;
-        heap_ntile_order_term_binding_evidence_uuid =
-            order_term_binding_evidence_uuid;
-        window_capability_uuid =
-            heap_ntile_order_term_binding_evidence_uuid;
+        window_capability_uuid = owned_identities[25];
       } else {
         prepared_heap_peer_ranking = std::move(ranking_column);
         prepared_heap_peer_ranking_order_term =
             heap_descriptor_order_terms.front();
         prepared_heap_peer_ranking_profile = ranking_profile;
-        heap_peer_ranking_order_term_binding_evidence_uuid =
-            order_term_binding_evidence_uuid;
-        window_capability_uuid =
-            heap_peer_ranking_order_term_binding_evidence_uuid;
+        window_capability_uuid = owned_identities[26];
       }
     } else {
       prepared_heap_row_number = std::move(ranking_column);
       window_capability_uuid =
-          DerivedCanonicalUuid(identity_scope, "heap-window.capability");
+          owned_identities[9];
     }
-    window_order_evidence_uuid = DerivedCanonicalUuid(
-        identity_scope + ":" + ordering_property_uuid,
-        "heap-window.deterministic-order");
+    window_order_evidence_uuid = owned_identities[10];
     profiles.push_back(
         {window_node->node_id,
          aggregate_window
@@ -1463,7 +1395,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
           plan::CanonicalLogicalPropertyKind::kWindow}});
   }
   std::vector<std::size_t> projected_columns;
-  std::string project_capability_uuid;
+  api::EngineUuid project_capability_uuid;
   if (project_composition) {
     const auto& project_input_descriptor_ids =
         window_composition ? window_node->output_descriptor_ids
@@ -1555,7 +1487,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
                     "object-backed hidden-column PROJECT binding is not exact");
     }
     project_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-project.capability");
+        owned_identities[11];
     profiles.push_back(
         {project_node->node_id, "project.descriptor-direct.v1",
          project_capability_uuid,
@@ -1568,7 +1500,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
   std::uint64_t row_limit = 0;
   std::uint64_t row_offset = 0;
   std::string limit_implementation_id;
-  std::string limit_capability_uuid;
+  api::EngineUuid limit_capability_uuid;
   if (limit_composition) {
     CanonicalRelationalExpressionRuntime expression_runtime(
         input.relational_dag, {});
@@ -1592,7 +1524,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
     }
     limit_implementation_id = "limit.typed.v1";
     limit_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-limit.capability");
+        owned_identities[12];
     profiles.push_back(
         {limit_node->node_id, limit_implementation_id,
          limit_capability_uuid,
@@ -1606,13 +1538,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
          1, 1});
   }
   std::string cte_implementation_id;
-  std::string cte_capability_uuid;
+  api::EngineUuid cte_capability_uuid;
   if (cte_composition) {
     cte_implementation_id =
         cte_node->shareable ? "cte.bound.materialize.typed.v1"
                             : "cte.bound.inline.typed.v1";
     cte_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-cte.capability");
+        owned_identities[13];
     LivePhysicalNodeProfile cte_profile;
     cte_profile.logical_node_id = cte_node->node_id;
     cte_profile.implementation_id = cte_implementation_id;
@@ -1792,10 +1724,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
         exec::CanonicalInt128SumStateV1 accumulator;
       };
       constexpr std::uint64_t kGroupedSumStateMemoryCharge = 256;
-      constexpr std::string_view kInt128DescriptorUuid =
-          "019d0000-0000-7000-8000-00000000d714";
-      constexpr std::string_view kInt128TypeUuid =
-          "019d0000-0000-7000-8000-00000000d715";
+      constexpr api::EngineUuid kInt128DescriptorUuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x14}};
+      constexpr api::EngineUuid kInt128TypeUuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x15}};
       const auto& cancellation_requested =
           input.context.query_cancellation_requested
               ? input.context.query_cancellation_requested
@@ -2056,9 +1986,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
           result_descriptor->descriptor_uuid;
       int128_descriptor.descriptor_kind = "scalar";
       int128_descriptor.canonical_type_name = "int128";
-      int128_descriptor.encoded_descriptor =
-          "type_uuid=" + result_descriptor->type_uuid +
-          ";nullability=nullable";
+      int128_descriptor.type_uuid = result_descriptor->type_uuid;
+      int128_descriptor.encoded_descriptor = "nullability=nullable";
       std::vector<exec::CanonicalResultColumnBinding> column_bindings;
       exec::DescriptorBatch pending_page;
       pending_page.columns = {
@@ -2102,14 +2031,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
       pending_page.rows.reserve(kGroupedSumPageRows);
       std::shared_ptr<exec::CanonicalResultCursorSession> cursor_session;
       const auto cursor_uuid =
-          DerivedCanonicalUuid(identity_scope, "heap-grouped-sum-result.cursor");
-      const auto execution_attempt_uuid = DerivedCanonicalUuid(
-          identity_scope + ":" + input.context.current_monotonic_ns,
-          "heap-grouped-sum.execution-attempt");
-      const auto transaction_effect_uuid = DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id),
-          "heap-grouped-sum.transaction-effect-unchanged");
+          owned_identities[14];
+      const auto execution_attempt_uuid = owned_identities[15];
+      const auto transaction_effect_uuid = owned_identities[16];
       std::uint64_t cursor_batch_ordinal = 0;
       std::uint64_t cursor_first_row_ordinal = 0;
       bool initial_page = true;
@@ -2739,14 +2663,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
       pending_page.rows.reserve(kStreamingTopkPageRows);
       std::shared_ptr<exec::CanonicalResultCursorSession> cursor_session;
       const auto cursor_uuid =
-          DerivedCanonicalUuid(identity_scope, "heap-topk-result.cursor");
-      const auto execution_attempt_uuid = DerivedCanonicalUuid(
-          identity_scope + ":" + input.context.current_monotonic_ns,
-          "heap-topk.execution-attempt");
-      const auto transaction_effect_uuid = DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id),
-          "heap-topk.transaction-effect-unchanged");
+          owned_identities[17];
+      const auto execution_attempt_uuid = owned_identities[18];
+      const auto transaction_effect_uuid = owned_identities[19];
       std::uint64_t cursor_batch_ordinal = 0;
       std::uint64_t cursor_first_row_ordinal = 0;
       bool initial_page = true;
@@ -2906,8 +2825,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
       selected.available_executors.push_back(
           MakeLiveSortRegistration(
               heap_descriptor_order_terms,
-              DerivedCanonicalUuid(identity_scope + ":" + ordering_property_uuid,
-                                   "heap-sort.deterministic-tie"),
+              owned_identities[20],
               sort_capability_uuid, maximum_output_rows,
               std::max<std::size_t>(
                   1, static_cast<std::size_t>(maximum_pair_comparisons_u64)),
@@ -2959,7 +2877,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
             MakeLiveNtileRegistration(
                 *prepared_heap_ntile, *prepared_heap_ntile_order_term,
                 *prepared_heap_ntile_bucket_count_operand,
-                std::string(kGlobalNtileProfile.function_uuid),
+                kGlobalNtileProfile.function_uuid,
                 window_order_evidence_uuid, window_capability_uuid,
                 maximum_output_rows, input.context));
       } else if (prepared_heap_peer_ranking.has_value() &&
@@ -3006,41 +2924,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
     selected.result_publication_request.statement_uuid =
         input.context.statement_uuid;
     selected.result_publication_request.execution_attempt_uuid =
-        DerivedCanonicalUuid(
-            identity_scope + ":" + input.context.current_monotonic_ns,
-            cte_is_root
-                ? "heap-cte.execution-attempt"
-                : limit_composition
-                ? "heap-limit.execution-attempt"
-                : (aggregate_composition
-                       ? "heap-aggregate.execution-attempt"
-                       : (project_composition
-                       ? "heap-project.execution-attempt"
-                       : (window_composition
-                              ? "heap-window.execution-attempt"
-                              : (sort_composition
-                                     ? "heap-sort.execution-attempt"
-                                     : "heap-filter.execution-attempt")))));
+        owned_identities[21];
     selected.result_publication_request.transaction_effect_evidence_uuid =
-        DerivedCanonicalUuid(
-            identity_scope + ":" +
-                std::to_string(input.context.local_transaction_id) + ":" +
-            std::to_string(
-                    input.context
-                        .snapshot_visible_through_local_transaction_id),
-            cte_is_root
-                ? "heap-cte.transaction-effect-unchanged"
-                : limit_composition
-                ? "heap-limit.transaction-effect-unchanged"
-                : (aggregate_composition
-                       ? "heap-aggregate.transaction-effect-unchanged"
-                       : (project_composition
-                       ? "heap-project.transaction-effect-unchanged"
-                       : (window_composition
-                              ? "heap-window.transaction-effect-unchanged"
-                              : (sort_composition
-                                     ? "heap-sort.transaction-effect-unchanged"
-                                     : "heap-filter.transaction-effect-unchanged")))));
+        owned_identities[22];
     selected.result_publication_request.result_kind =
         exec::CanonicalResultKind::kRows;
     selected.result_publication_request.invocation_mode =
@@ -3145,15 +3031,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
       input.context.query_cancellation_requested
           ? input.context.query_cancellation_requested
           : std::function<bool()>([] { return false; });
-  execution_request.execution_attempt_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" + input.context.current_monotonic_ns,
-      "heap-scan.execution-attempt");
-  execution_request.transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(input.context.local_transaction_id) + ":" +
-          std::to_string(
-              input.context.snapshot_visible_through_local_transaction_id),
-      "heap-scan.transaction-effect-unchanged");
+  execution_request.execution_attempt_uuid = owned_identities[23];
+  execution_request.transaction_effect_evidence_uuid = owned_identities[24];
   execution_request.authority_cohort = admission.authority_cohort;
 
   const auto execution =

@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include <map>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -41,8 +43,16 @@ bool HasPrefix(const std::vector<std::string>& values, std::string_view prefix) 
   });
 }
 
-opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
-                                          const std::string& statistic_uuid) {
+scratchbird::core::platform::Uuid StatisticIdentityFor(
+    const scratchbird::core::platform::Uuid& object_uuid) {
+  static std::map<scratchbird::core::platform::Uuid, scratchbird::core::platform::Uuid> identities;
+  auto [entry, inserted] = identities.try_emplace(object_uuid);
+  if (inserted) entry->second = scratchbird::tests::FixtureUuid(1486, 500 + identities.size());
+  return entry->second;
+}
+
+opt::OptimizerStatsIdentity FreshIdentity(const scratchbird::core::platform::Uuid& object_uuid,
+                                          const scratchbird::core::platform::Uuid& statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = object_uuid;
   identity.statistic_uuid = statistic_uuid;
@@ -55,17 +65,17 @@ opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
   return identity;
 }
 
-opt::IndexStats BasePartialIndex(const std::string& relation_uuid,
-                                 const std::string& index_uuid,
+opt::IndexStats BasePartialIndex(const scratchbird::core::platform::Uuid& relation_uuid,
+                                 const scratchbird::core::platform::Uuid& index_uuid,
                                  const std::string& partial_predicate) {
   opt::IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, index_uuid + ":index");
+  stats.identity = FreshIdentity(index_uuid, StatisticIdentityFor(index_uuid));
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = "btree";
   stats.descriptor_digest = "desc:partial:v1";
   stats.collation_identity = "unicode.casefold.det";
-  stats.key_column_uuids = {"col.amount"};
+  stats.key_column_uuids = {scratchbird::tests::FixtureUuid(1486, 405)};
   stats.partial = true;
   stats.partial_predicate_text = partial_predicate;
   stats.height = 3;
@@ -78,9 +88,9 @@ opt::IndexStats BasePartialIndex(const std::string& relation_uuid,
   return stats;
 }
 
-opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
+opt::TableCardinalityStats TableStats(const scratchbird::core::platform::Uuid& relation_uuid) {
   opt::TableCardinalityStats stats;
-  stats.identity = FreshIdentity(relation_uuid, relation_uuid + ":table");
+  stats.identity = FreshIdentity(relation_uuid, StatisticIdentityFor(relation_uuid));
   stats.row_count = 50000;
   stats.visible_row_count = 45000;
   stats.page_count = 900;
@@ -242,10 +252,10 @@ bool CoreProofRefusesParseErrors() {
 }
 
 bool OptimizerRouteConsumesCoreProof() {
-  const std::string relation_uuid = "rel.partial.implication";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1486, 401);
   auto index = BasePartialIndex(
       relation_uuid,
-      "idx.partial.amount.active",
+      scratchbird::tests::FixtureUuid(1486, 402),
       "active = true and amount > 50 and tenant_id is not null");
 
   const auto match = opt::MatchPredicateToIndex(
@@ -284,7 +294,7 @@ bool OptimizerRouteConsumesCoreProof() {
       candidates.begin(),
       candidates.end(),
       [&](const opt::PlanCandidate& candidate) {
-        return candidate.candidate_id == "CAND-OPT-INDEX:" + index.index_uuid;
+        return candidate.candidate_id == "CAND-OPT-INDEX" && candidate.index_uuid == index.index_uuid;
       });
   return Require(found != candidates.end(),
                  "access path candidate using partial index was missing") &&
@@ -299,8 +309,8 @@ bool OptimizerRouteConsumesCoreProof() {
 }
 
 bool OptimizerRouteRefusesUnsafeCoreProof() {
-  auto index = BasePartialIndex("rel.partial.refused",
-                                "idx.partial.unsafe",
+  auto index = BasePartialIndex(scratchbird::tests::FixtureUuid(1486, 403),
+                                scratchbird::tests::FixtureUuid(1486, 404),
                                 "active = true");
   index.partial_predicate_security_safe = false;
   const auto match = opt::MatchPredicateToIndex({"active",

@@ -14,8 +14,13 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <variant>
 
 namespace scratchbird::server {
+
+using ParserServerEventUuidRef = scratchbird::core::platform::Uuid;
+using ParserServerEventFieldValue = std::variant<std::string, ParserServerEventUuidRef>;
+using ParserServerEventFields = std::vector<std::pair<std::string, ParserServerEventFieldValue>>;
 
 // SEARCH_KEY: EVN_IMPL_010_SB_SERVER_EVENT_IPC_RUNTIME
 enum class ParserServerEventMessageType : std::uint16_t {
@@ -36,10 +41,9 @@ struct ParserServerMessageVector {
   std::string safe_message_key;
   std::string detail;
   bool error = false;
-  std::vector<std::pair<std::string, std::string>> fields;
+  ParserServerEventFields fields;
 };
 
-using ParserServerEventUuidRef = scratchbird::core::platform::Uuid;
 
 enum class ParserServerEventTrustMode {
   server_isolated,
@@ -88,40 +92,40 @@ struct ParserServerEventEngineContext {
 };
 
 struct ParserServerEventSession {
-  std::string parser_channel_uuid;
-  std::string parser_family_uuid;
-  std::string parser_package_uuid;
+  ParserServerEventUuidRef parser_channel_uuid;
+  ParserServerEventUuidRef parser_family_uuid;
+  ParserServerEventUuidRef parser_package_uuid;
   ParserServerEventEngineContext engine_context;
   bool session_bound = false;
   bool draining = false;
 };
 
 struct PsEventSubscribeRequest {
-  std::string request_uuid;
+  ParserServerEventUuidRef request_uuid;
   ParserServerEventSession session;
-  std::string channel_uuid;
-  std::string rendering_profile_uuid;
+  ParserServerEventUuidRef channel_uuid;
+  ParserServerEventUuidRef rendering_profile_uuid;
   std::string delivery_profile = "ephemeral_session";
   std::uint64_t policy_generation = 0;
 };
 
 struct PsEventSubscribeResult {
-  std::string request_uuid;
-  std::string subscription_uuid;
+  ParserServerEventUuidRef request_uuid;
+  ParserServerEventUuidRef subscription_uuid;
   std::string outcome;
   std::vector<ParserServerMessageVector> message_vector_set;
 };
 
 struct PsEventUnsubscribeRequest {
-  std::string request_uuid;
+  ParserServerEventUuidRef request_uuid;
   ParserServerEventSession session;
-  std::string subscription_uuid;
-  std::string channel_uuid;
+  ParserServerEventUuidRef subscription_uuid;
+  ParserServerEventUuidRef channel_uuid;
   bool all_channels = false;
 };
 
 struct PsEventUnsubscribeResult {
-  std::string request_uuid;
+  ParserServerEventUuidRef request_uuid;
   std::string outcome;
   std::uint64_t removed_count = 0;
   std::vector<ParserServerMessageVector> message_vector_set;
@@ -129,17 +133,17 @@ struct PsEventUnsubscribeResult {
 
 struct PsEventNotificationFrame {
   ParserServerEventMessageType message_type = ParserServerEventMessageType::kEventNotification;
-  std::string parser_channel_uuid;
-  std::string subscription_uuid;
-  std::string event_uuid;
+  ParserServerEventUuidRef parser_channel_uuid;
+  ParserServerEventUuidRef subscription_uuid;
+  ParserServerEventUuidRef event_uuid;
   std::uint64_t delivery_sequence = 0;
   ParserServerMessageVector notification_vector;
 };
 
 struct PsEventBackpressureFrame {
   ParserServerEventMessageType message_type = ParserServerEventMessageType::kEventBackpressure;
-  std::string parser_channel_uuid;
-  std::string subscription_uuid;
+  ParserServerEventUuidRef parser_channel_uuid;
+  ParserServerEventUuidRef subscription_uuid;
   std::uint64_t queued_events = 0;
   std::uint64_t queued_bytes = 0;
   std::string overflow_behavior;
@@ -147,14 +151,14 @@ struct PsEventBackpressureFrame {
 };
 
 struct PsEventDeliveryPumpRequest {
-  std::string request_uuid;
+  ParserServerEventUuidRef request_uuid;
   ParserServerEventSession session;
   std::uint64_t max_events = 64;
   ParserEventQueuePolicy queue_policy;
 };
 
 struct PsEventDeliveryPumpResult {
-  std::string request_uuid;
+  ParserServerEventUuidRef request_uuid;
   std::string outcome;
   std::vector<PsEventNotificationFrame> notifications;
   std::vector<PsEventBackpressureFrame> backpressure_frames;
@@ -162,18 +166,18 @@ struct PsEventDeliveryPumpResult {
 };
 
 struct PsEventAckRequest {
-  std::string request_uuid;
+  ParserServerEventUuidRef request_uuid;
   ParserServerEventSession session;
-  std::string subscription_uuid;
-  std::string event_uuid;
+  ParserServerEventUuidRef subscription_uuid;
+  ParserServerEventUuidRef event_uuid;
   std::uint64_t delivery_sequence = 0;
   std::string ack_state = "acknowledged";
 };
 
 struct PsEventAckResult {
-  std::string request_uuid;
+  ParserServerEventUuidRef request_uuid;
   std::string outcome;
-  std::string acknowledgement_uuid;
+  ParserServerEventUuidRef acknowledgement_uuid;
   std::vector<ParserServerMessageVector> message_vector_set;
 };
 

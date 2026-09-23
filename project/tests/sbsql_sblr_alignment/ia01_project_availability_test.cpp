@@ -3,7 +3,7 @@
 int main() {
   namespace api = scratchbird::engine::internal_api;
   scratchbird::tests::ia01::RequireMissingExecutorEvidence(
-      "project", "019d0000-0000-7000-8000-000000002535", ".project",
+      "project", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002535"), ".project",
       {api::kSblrProjectExecutorId, api::kSblrProjectOpcodeCode,
        api::kSblrProjectOpcodeVersion, api::kSblrProjectOperandDescriptorId,
        api::kSblrProjectResultDescriptorId,

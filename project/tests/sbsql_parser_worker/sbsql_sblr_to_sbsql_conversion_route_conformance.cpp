@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "sblr_to_sbsql.hpp"
@@ -68,8 +69,8 @@ SblrOperationEnvelope CanonicalOperation(SblrOperationEnvelope envelope) {
   Require(entry != nullptr && entry->opcode == envelope.opcode && entry->code != 0,
           "renderer fixture operation lacks an exact canonical registry identity");
   envelope.opcode_code = entry->code;
-  envelope.parser_package_uuid = "019dffbb-f000-7000-8000-000000000501";
-  envelope.registry_snapshot_uuid = "019dffbb-f000-7000-8000-000000000502";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000501");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000502");
   envelope.parser_resolved_names_to_uuids = true;
   for (std::size_t index = 0; index < envelope.operands.size(); ++index) {
     auto& operand = envelope.operands[index];

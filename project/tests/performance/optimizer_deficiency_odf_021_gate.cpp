@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -29,37 +30,32 @@ bool Require(bool condition, const std::string& message) {
   return true;
 }
 
-bool Has(const std::vector<std::string>& values, const std::string& expected) {
+template <typename T, typename U>
+bool Has(const std::vector<T>& values, const U& expected) {
   return std::find(values.begin(), values.end(), expected) != values.end();
 }
 
-api::EngineUuid Uuid(const std::string& value) {
-  api::EngineUuid uuid;
-  uuid.canonical = value;
-  return uuid;
-}
-
-api::EngineDescriptor Descriptor(const std::string& uuid, const std::string& encoded) {
+api::EngineDescriptor Descriptor(const api::EngineUuid& uuid, const std::string& encoded) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = Uuid(uuid);
+  descriptor.descriptor_uuid = uuid;
   descriptor.descriptor_kind = "table";
   descriptor.canonical_type_name = "customer";
   descriptor.encoded_descriptor = encoded;
   return descriptor;
 }
 
-constexpr const char* kCatalogEpochUuid =
-    "019f0210-0000-7000-8000-000000000001";
+constexpr auto kCatalogEpochUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000001");
 
 exec::PhysicalMgaStatementContext StatementContext(
     const api::EngineRequestContext& context) {
   exec::PhysicalMgaStatementContext statement;
-  statement.statement_uuid = context.statement_uuid.canonical;
-  statement.owning_transaction_uuid = context.transaction_uuid.canonical;
+  statement.statement_uuid = context.statement_uuid;
+  statement.owning_transaction_uuid = context.transaction_uuid;
   statement.statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   statement.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   statement.owning_local_transaction_id = context.local_transaction_id;
   statement.visible_committed_high_watermark =
       context.snapshot_visible_through_local_transaction_id;
@@ -99,8 +95,8 @@ api::CatalogPinnedDescriptorCacheKey BaseCatalogKey() {
   key.resource_policy_epoch = 303;
   key.name_resolution_epoch = 404;
   key.descriptor_set_digest = "descset.customer.v1";
-  key.object_uuids = {"rel.customer", "schema.public"};
-  key.index_uuids = {"idx.customer.id"};
+  key.object_uuids = {scratchbird::tests::FixtureUuid(1548, 1), scratchbird::tests::FixtureUuid(1548, 2)};
+  key.index_uuids = {scratchbird::tests::FixtureUuid(1548, 3)};
   key.security_policy_identity = "security.policy.reader";
   key.redaction_policy_identity = "redaction.policy.customer_mask";
   key.resource_policy_identity = "resource.policy.oltp";
@@ -110,9 +106,9 @@ api::CatalogPinnedDescriptorCacheKey BaseCatalogKey() {
 api::CatalogPinnedDescriptorSnapshot BaseCatalogSnapshot(api::CatalogPinnedDescriptorCacheKey key) {
   api::CatalogPinnedDescriptorSnapshot snapshot;
   snapshot.key = std::move(key);
-  snapshot.descriptor = Descriptor("rel.customer", "version=1;columns=id,name");
+  snapshot.descriptor = Descriptor(scratchbird::tests::FixtureUuid(1548, 1), "version=1;columns=id,name");
   snapshot.descriptors = {snapshot.descriptor};
-  snapshot.descriptor_owner = {Uuid("rel.customer"), "table"};
+  snapshot.descriptor_owner = {scratchbird::tests::FixtureUuid(1548, 1), "table"};
   snapshot.primary_object = snapshot.descriptor_owner;
   snapshot.result_shape.result_kind = "descriptor";
   snapshot.result_shape.columns = snapshot.descriptors;
@@ -155,24 +151,19 @@ bool CatalogPinnedCacheHitMissRefusalAndImmutableSnapshot() {
          Require(hit.snapshot->descriptor.encoded_descriptor == "version=1;columns=id,name",
                  "catalog pinned descriptor did not preserve immutable copied snapshot") &&
          Require(hit.snapshot.use_count() >= 1, "catalog pinned descriptor did not return shared const snapshot") &&
-         Require(hit.cache_key.find("catalog_epoch=101") != std::string::npos,
-                 "catalog cache key omitted catalog epoch") &&
-         Require(hit.cache_key.find("security_epoch=202") != std::string::npos,
-                 "catalog cache key omitted security epoch") &&
-         Require(hit.cache_key.find("resource_policy_epoch=303") != std::string::npos,
-                 "catalog cache key omitted resource/policy epoch") &&
-         Require(hit.cache_key.find("name_resolution_epoch=404") != std::string::npos,
-                 "catalog cache key omitted name-resolution epoch") &&
-         Require(hit.cache_key.find("descset.customer.v1") != std::string::npos,
-                 "catalog cache key omitted descriptor set digest") &&
-         Require(hit.cache_key.find("rel.customer") != std::string::npos,
-                 "catalog cache key omitted object UUID") &&
-         Require(hit.cache_key.find("idx.customer.id") != std::string::npos,
-                 "catalog cache key omitted index UUID") &&
-         Require(hit.cache_key.find("security.policy.reader") != std::string::npos,
-                 "catalog cache key omitted security policy identity") &&
-         Require(hit.cache_key.find("redaction.policy.customer_mask") != std::string::npos,
-                 "catalog cache key omitted redaction policy identity");
+         Require(hit.snapshot->key.catalog_epoch == key.catalog_epoch &&
+                 hit.snapshot->key.security_epoch == key.security_epoch &&
+                 hit.snapshot->key.resource_policy_epoch == key.resource_policy_epoch &&
+                 hit.snapshot->key.name_resolution_epoch == key.name_resolution_epoch,
+                 "catalog snapshot lost epoch bindings") &&
+         Require(hit.snapshot->key.descriptor_set_digest == key.descriptor_set_digest &&
+                 hit.snapshot->key.object_uuids == key.object_uuids &&
+                 hit.snapshot->key.index_uuids == key.index_uuids &&
+                 hit.snapshot->key.security_policy_identity == key.security_policy_identity &&
+                 hit.snapshot->key.redaction_policy_identity == key.redaction_policy_identity,
+                 "catalog snapshot lost descriptor/identity/policy bindings") &&
+         Require(hit.cache_key == api::CatalogPinnedDescriptorCacheKeyText(key),
+                 "catalog diagnostic key differs from the admitted typed key");
 }
 
 bool CatalogInvalidationReportsExactEntriesAndReasons() {
@@ -182,7 +173,7 @@ bool CatalogInvalidationReportsExactEntriesAndReasons() {
 
   api::CatalogPinnedDescriptorInvalidationEvent event;
   event.event_kind = "catalog_alter";
-  event.dependency_uuid = "rel.customer";
+  event.dependency_uuid = scratchbird::tests::FixtureUuid(1548, 1);
   event.event_epoch = 102;
   event.reason = "ddl_catalog_mutation";
   const auto invalidated = cache.Invalidate(event);
@@ -190,7 +181,7 @@ bool CatalogInvalidationReportsExactEntriesAndReasons() {
                "catalog DDL invalidation did not report exactly one entry") ||
       !Require(invalidated.invalidated_entries[0].reason == "ddl_catalog_mutation",
                "catalog DDL invalidation reason mismatch") ||
-      !Require(Has(invalidated.invalidated_entries[0].object_uuids, "rel.customer"),
+      !Require(Has(invalidated.invalidated_entries[0].object_uuids, scratchbird::tests::FixtureUuid(1548, 1)),
                "catalog invalidation did not expose invalidated object UUID") ||
       !Require(!cache.Lookup(key).ok, "catalog descriptor remained cached after DDL invalidation")) {
     return false;
@@ -215,8 +206,8 @@ bool CatalogInvalidationReportsExactEntriesAndReasons() {
                  "redaction policy invalidation did not evict pinned descriptor");
 }
 
-opt::OptimizerStatsIdentity StatsIdentity(const std::string& object_uuid,
-                                          const std::string& statistic_uuid) {
+opt::OptimizerStatsIdentity StatsIdentity(const api::EngineUuid& object_uuid,
+                                          const api::EngineUuid& statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = object_uuid;
   identity.statistic_uuid = statistic_uuid;
@@ -237,17 +228,17 @@ opt::OptimizerPinnedStatsDescriptorKey BaseStatsKey() {
   key.name_resolution_epoch = 404;
   key.stats_epoch = 505;
   key.descriptor_set_digest = "descset.customer.v1";
-  key.object_uuids = {"rel.customer"};
-  key.index_uuids = {"idx.customer.id"};
-  key.security_policy_identity = "security.policy.reader";
-  key.redaction_policy_identity = "redaction.policy.customer_mask";
+  key.object_uuids = {scratchbird::tests::FixtureUuid(1548, 1)};
+  key.index_uuids = {scratchbird::tests::FixtureUuid(1548, 3)};
+  key.security_policy_identity = scratchbird::tests::FixtureUuid(1548, 8);
+  key.redaction_policy_identity = scratchbird::tests::FixtureUuid(1548, 9);
   return key;
 }
 
 opt::OptimizerPinnedStatsDescriptorSnapshot BaseStatsSnapshot() {
   opt::OptimizerStatisticsStore store;
   opt::TableCardinalityStats table;
-  table.identity = StatsIdentity("rel.customer", "stat.customer.table");
+  table.identity = StatsIdentity(scratchbird::tests::FixtureUuid(1548, 1), scratchbird::tests::FixtureUuid(1548, 4));
   table.row_count = 100;
   table.visible_row_count = 99;
   table.page_count = 7;
@@ -255,10 +246,10 @@ opt::OptimizerPinnedStatsDescriptorSnapshot BaseStatsSnapshot() {
   store.UpsertTable(table);
 
   opt::IndexStats index;
-  index.identity = StatsIdentity("rel.customer", "stat.customer.idx");
-  index.index_uuid = "idx.customer.id";
-  index.relation_uuid = "rel.customer";
-  index.key_column_uuids = {"col.customer.id"};
+  index.identity = StatsIdentity(scratchbird::tests::FixtureUuid(1548, 1), scratchbird::tests::FixtureUuid(1548, 5));
+  index.index_uuid = scratchbird::tests::FixtureUuid(1548, 3);
+  index.relation_uuid = scratchbird::tests::FixtureUuid(1548, 1);
+  index.key_column_uuids = {scratchbird::tests::FixtureUuid(1548, 6)};
   index.height = 2;
   index.leaf_pages = 4;
   index.distinct_keys = 100;
@@ -266,7 +257,7 @@ opt::OptimizerPinnedStatsDescriptorSnapshot BaseStatsSnapshot() {
 
   opt::OptimizerPinnedStatsDescriptorSnapshot snapshot;
   snapshot.key = BaseStatsKey();
-  snapshot.stats_snapshot = store.Snapshot("stats.customer.505");
+  snapshot.stats_snapshot = store.Snapshot(scratchbird::tests::FixtureUuid(1548, 7));
   return snapshot;
 }
 
@@ -289,16 +280,17 @@ bool OptimizerStatsPinnedCacheHitRefusalAndInvalidation() {
       !Require(hit.ok && hit.cache_hit, "stats pinned descriptor did not hit after put") ||
       !Require(hit.snapshot->stats_snapshot.stats_epoch == 505,
                "stats pinned descriptor did not preserve stats epoch") ||
-      !Require(hit.cache_key.find("stats_epoch=505") != std::string::npos,
-               "stats cache key omitted stats epoch") ||
-      !Require(hit.cache_key.find("idx.customer.id") != std::string::npos,
-               "stats cache key omitted index UUID")) {
+      !Require(hit.snapshot->key.stats_epoch == key.stats_epoch &&
+               hit.snapshot->key.index_uuids == key.index_uuids,
+               "statistics snapshot lost epoch/index bindings") ||
+      !Require(hit.cache_key == opt::OptimizerPinnedStatsDescriptorCacheKeyText(key),
+               "statistics key differs from the admitted typed key")) {
     return false;
   }
 
   opt::StatsInvalidationEvent stats_refresh;
   stats_refresh.event_kind = "statistics_refresh";
-  stats_refresh.object_uuid = "rel.customer";
+  stats_refresh.object_uuid = scratchbird::tests::FixtureUuid(1548, 1);
   stats_refresh.new_stats_epoch = 506;
   stats_refresh.reason = "stats_refresh";
   const auto invalidated = cache.Invalidate(stats_refresh);
@@ -312,7 +304,7 @@ bool OptimizerStatsPinnedCacheHitRefusalAndInvalidation() {
   if (!Require(cache.Put(BaseStatsSnapshot()).ok, "stats put before policy invalidation failed")) return false;
   opt::StatsInvalidationEvent policy_change;
   policy_change.event_kind = "redaction_policy_change";
-  policy_change.redaction_policy_identity = "redaction.policy.customer_mask";
+  policy_change.redaction_policy_identity = scratchbird::tests::FixtureUuid(1548, 9);
   policy_change.reason = "redaction_policy_epoch_change";
   return Require(cache.Invalidate(policy_change).invalidated_entries.size() == 1,
                  "redaction policy change did not invalidate pinned stats descriptor");
@@ -329,7 +321,7 @@ bool OptimizerStatisticsStoreInvalidatesGlobalPinnedStatsCache() {
 
   opt::OptimizerStatisticsStore store;
   opt::TableCardinalityStats refreshed;
-  refreshed.identity = StatsIdentity("rel.customer", "stat.customer.table");
+  refreshed.identity = StatsIdentity(scratchbird::tests::FixtureUuid(1548, 1), scratchbird::tests::FixtureUuid(1548, 4));
   refreshed.identity.stats_epoch = 506;
   refreshed.row_count = 101;
   store.UpsertTable(refreshed);
@@ -341,13 +333,13 @@ bool OptimizerStatisticsStoreInvalidatesGlobalPinnedStatsCache() {
       !Require(cache.Lookup(key).ok, "global stats cache did not hit before stale mark")) {
     return false;
   }
-  store.MarkStaleByObject("rel.customer", 102);
+  store.MarkStaleByObject(scratchbird::tests::FixtureUuid(1548, 1), 102);
   return Require(!cache.Lookup(key).ok, "stats stale mark did not invalidate global pinned stats cache");
 }
 
 bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
   exec::PreparedTemplateCache cache;
-  api::EngineDescriptor descriptor = Descriptor("rel.customer", "version=1;columns=id,name");
+  api::EngineDescriptor descriptor = Descriptor(scratchbird::tests::FixtureUuid(1548, 1), "version=1;columns=id,name");
 
   exec::PreparedDescriptorSlot slot;
   slot.stable_name = "col.customer.id";
@@ -363,21 +355,21 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
   admission.result_shape = result_shape;
   admission.key.operation_id = "dml.select.odf021";
   admission.key.sblr_digest_or_trace_key = "trace.odf021";
-  admission.key.catalog_epoch_uuid = kCatalogEpochUuid;
+  admission.key.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000001");
   admission.key.descriptor_set_digest = "descset.customer.v1";
   admission.key.result_shape_digest = result_shape.digest;
   admission.key.epochs.catalog_epoch = 101;
   admission.key.epochs.security_epoch = 202;
   admission.key.epochs.policy_resource_epoch = 303;
   admission.key.epochs.name_resolution_epoch = 404;
-  admission.key.dependency_uuids = {"rel.customer", "idx.customer.id"};
+  admission.key.dependency_uuids = {scratchbird::tests::FixtureUuid(1548, 1), scratchbird::tests::FixtureUuid(1548, 3)};
 
   exec::PreparedPinnedDescriptorReference pinned;
   pinned.cache_key = api::CatalogPinnedDescriptorCacheKeyText(BaseCatalogKey());
-  pinned.catalog_epoch_uuid = kCatalogEpochUuid;
-  pinned.descriptor_uuid = "rel.customer";
-  pinned.object_uuid = "rel.customer";
-  pinned.index_uuid = "idx.customer.id";
+  pinned.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000001");
+  pinned.descriptor_uuid = scratchbird::tests::FixtureUuid(1548, 1);
+  pinned.object_uuid = scratchbird::tests::FixtureUuid(1548, 1);
+  pinned.index_uuid = scratchbird::tests::FixtureUuid(1548, 3);
   pinned.descriptor_set_digest = "descset.customer.v1";
   pinned.catalog_epoch = 101;
   pinned.security_epoch = 202;
@@ -394,15 +386,15 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
   }
 
   exec::PreparedTemplateBindContext bind_context;
-  bind_context.engine_context.catalog_epoch_uuid = Uuid(kCatalogEpochUuid);
+  bind_context.engine_context.catalog_epoch_uuid = kCatalogEpochUuid;
   bind_context.engine_context.transaction_uuid =
-      Uuid("019f0210-0000-7000-8000-000000000002");
+      scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000002");
   bind_context.engine_context.statement_uuid =
-      Uuid("019f0210-0000-7000-8000-000000000003");
+      scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000003");
   bind_context.engine_context.statement_snapshot_uuid =
-      Uuid("019f0210-0000-7000-8000-000000000004");
+      scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000004");
   bind_context.engine_context.statement_metadata_snapshot_uuid =
-      Uuid("019f0210-0000-7000-8000-000000000005");
+      scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000005");
   bind_context.engine_context.local_transaction_id = 88;
   bind_context.engine_context.snapshot_visible_through_local_transaction_id =
       0;
@@ -454,7 +446,7 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
 
 bool PreparedPinnedDescriptorsSeparateTemplateCacheIdentity() {
   exec::PreparedTemplateCache cache;
-  api::EngineDescriptor descriptor = Descriptor("rel.customer", "version=1;columns=id,name");
+  api::EngineDescriptor descriptor = Descriptor(scratchbird::tests::FixtureUuid(1548, 1), "version=1;columns=id,name");
 
   exec::PreparedDescriptorSlot slot;
   slot.stable_name = "col.customer.id";
@@ -471,19 +463,19 @@ bool PreparedPinnedDescriptorsSeparateTemplateCacheIdentity() {
     admission.result_shape = result_shape;
     admission.key.operation_id = "dml.select.odf021.identity";
     admission.key.sblr_digest_or_trace_key = "trace.odf021.identity";
-    admission.key.catalog_epoch_uuid = kCatalogEpochUuid;
+    admission.key.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000001");
     admission.key.descriptor_set_digest = "descset.customer.v1";
     admission.key.result_shape_digest = result_shape.digest;
     admission.key.epochs.catalog_epoch = 101;
     admission.key.epochs.security_epoch = 202;
     admission.key.epochs.policy_resource_epoch = 303;
     admission.key.epochs.name_resolution_epoch = 404;
-    admission.key.dependency_uuids = {"rel.customer"};
+    admission.key.dependency_uuids = {scratchbird::tests::FixtureUuid(1548, 1)};
     exec::PreparedPinnedDescriptorReference pinned;
     pinned.cache_key = std::move(cache_key);
-    pinned.catalog_epoch_uuid = kCatalogEpochUuid;
-    pinned.descriptor_uuid = "rel.customer";
-    pinned.object_uuid = "rel.customer";
+    pinned.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000001");
+    pinned.descriptor_uuid = scratchbird::tests::FixtureUuid(1548, 1);
+    pinned.object_uuid = scratchbird::tests::FixtureUuid(1548, 1);
     pinned.descriptor_set_digest = "descset.customer.v1";
     pinned.catalog_epoch = 101;
     pinned.security_epoch = 202;
@@ -530,9 +522,9 @@ bool UnsafeSnapshotsFailClosed() {
   exec::PreparedTemplateAdmission admission;
   admission.key.operation_id = "dml.select.odf021.unsafe";
   admission.key.sblr_digest_or_trace_key = "trace.unsafe";
-  admission.key.catalog_epoch_uuid = kCatalogEpochUuid;
+  admission.key.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000001");
   admission.key.descriptor_set_digest = "descset.customer.v1";
-  api::EngineDescriptor descriptor = Descriptor("rel.customer", "version=1");
+  api::EngineDescriptor descriptor = Descriptor(scratchbird::tests::FixtureUuid(1548, 1), "version=1");
   exec::PreparedDescriptorSlot slot;
   slot.stable_name = "rel.customer";
   slot.descriptor = descriptor;
@@ -543,8 +535,8 @@ bool UnsafeSnapshotsFailClosed() {
   admission.key.result_shape_digest = admission.result_shape.digest;
   exec::PreparedPinnedDescriptorReference pinned;
   pinned.cache_key = "unsafe";
-  pinned.catalog_epoch_uuid = kCatalogEpochUuid;
-  pinned.object_uuid = "rel.customer";
+  pinned.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0210-0000-7000-8000-000000000001");
+  pinned.object_uuid = scratchbird::tests::FixtureUuid(1548, 1);
   pinned.descriptor_set_digest = "descset.customer.v1";
   pinned.finality_authority_cached = true;
   admission.pinned_descriptors = {pinned};

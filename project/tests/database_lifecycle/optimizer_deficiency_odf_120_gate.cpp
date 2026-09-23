@@ -681,10 +681,10 @@ api::EngineRequestContext SupportContext(const UuidFactory& uuids) {
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "odf120-support";
   context.database_path = "/tmp/scratchbird_odf120_support_bundle.sbdb";
-  context.database_uuid.canonical = uuids.Text(platform::UuidKind::database, 20000);
-  context.principal_uuid.canonical =
-      uuids.Text(platform::UuidKind::principal, 20001);
-  context.session_uuid.canonical = uuids.Text(platform::UuidKind::object, 20002);
+  context.database_uuid = uuids.Typed(platform::UuidKind::database, 20000).value;
+  context.principal_uuid =
+      uuids.Typed(platform::UuidKind::principal, 20001).value;
+  context.session_uuid = uuids.Typed(platform::UuidKind::object, 20002).value;
   context.security_context_present = true;
   context.catalog_generation_id = 120;
   context.security_epoch = 120;

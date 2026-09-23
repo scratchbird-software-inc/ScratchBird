@@ -171,15 +171,19 @@ inline std::pair<bool, EngineApiU64> EngineNoSqlOptionU64(
   }
 }
 
-inline scratchbird::core::platform::TypedUuid EngineNoSqlParseUuid(
-    scratchbird::core::platform::UuidKind kind,
-    const std::string& text) {
-  if (text.empty()) {
-    return {};
-  }
-  const auto parsed =
-      scratchbird::core::uuid::ParseDurableEngineIdentityUuid(kind, text);
-  return parsed.ok() ? parsed.value : scratchbird::core::platform::TypedUuid{};
+inline std::optional<EngineUuid> EngineNoSqlUuidOption(
+    const EngineApiRequest& request,const std::string& key) {
+  const auto bytes=EngineNoSqlOptionValue(request,key);
+  if(!bytes)return std::nullopt;
+  EngineUuid id;
+  if(bytes->size()!=16)return id;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes->data()),16,id.bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(id)?id:EngineUuid{};
+}
+inline scratchbird::core::platform::TypedUuid EngineNoSqlNativeUuid(
+    scratchbird::core::platform::UuidKind kind,const EngineUuid& id) {
+  const auto admitted=core::uuid::MakeDurableEngineIdentityUuid(kind,id);
+  return admitted.ok()?admitted.value:core::platform::TypedUuid{};
 }
 
 inline std::string EngineNoSqlDiagnosticDetail(
@@ -230,11 +234,9 @@ inline std::vector<scratchbird::core::platform::byte> EngineNoSqlPayloadBytes(
 inline scratchbird::storage::page::LargePayloadStore& EngineNoSqlLargePayloadStoreForContext(
     const EngineRequestContext& context) {
   namespace page = scratchbird::storage::page;
-  static std::map<std::string, page::LargePayloadStore> stores;
-  std::string key = context.database_path;
-  if (key.empty()) { key = context.database_uuid; }
-  if (key.empty()) { key = "embedded_transient_large_payload_store"; }
-  return stores[key];
+  using StoreKey=std::pair<std::string,EngineUuid>;
+  static std::map<StoreKey, page::LargePayloadStore> stores;
+  return stores[{context.database_path,context.database_uuid}];
 }
 
 inline EngineApiU64 EngineNoSqlDiagnosticPayloadSeed(
@@ -251,7 +253,9 @@ inline EngineApiU64 EngineNoSqlDiagnosticPayloadSeed(
   };
   mix(operation_id);
   mix(object_kind);
-  mix(request.target_object.uuid);
+  for(const auto ch:request.target_object.uuid.bytes) {
+    hash ^= static_cast<EngineApiU64>(ch);hash *= 1099511628211ULL;
+  }
   mix(payload);
   hash ^= request.context.local_transaction_id;
   return hash == 0 ? 1 : hash;
@@ -284,27 +288,27 @@ inline EngineNoSqlPayloadResolution EngineNoSqlResolvePayloadForStorage(
 
     page::HotColdRowSplitRequest split_request;
     split_request.large_payload_store = &store;
-    split_request.database_uuid = EngineNoSqlParseUuid(
+    split_request.database_uuid = EngineNoSqlNativeUuid(
         platform::UuidKind::database,
-        EngineNoSqlOptionValue(request, "large_payload.database_uuid")
+        EngineNoSqlUuidOption(request, "large_payload.database_uuid")
             .value_or(request.context.database_uuid));
-    split_request.filespace_uuid = EngineNoSqlParseUuid(
+    split_request.filespace_uuid = EngineNoSqlNativeUuid(
         platform::UuidKind::filespace,
-        EngineNoSqlOptionValue(request, "large_payload.filespace_uuid")
-            .value_or(std::string{}));
-    split_request.owner_object_uuid = EngineNoSqlParseUuid(
+        EngineNoSqlUuidOption(request, "large_payload.filespace_uuid")
+            .value_or(EngineUuid{}));
+    split_request.owner_object_uuid = EngineNoSqlNativeUuid(
         platform::UuidKind::object,
-        EngineNoSqlOptionValue(request, "large_payload.owner_object_uuid")
+        EngineNoSqlUuidOption(request, "large_payload.owner_object_uuid")
             .value_or(request.target_object.uuid));
     split_request.row_uuid = split_request.owner_object_uuid;
-    split_request.transaction_uuid = EngineNoSqlParseUuid(
+    split_request.transaction_uuid = EngineNoSqlNativeUuid(
         platform::UuidKind::transaction,
-        EngineNoSqlOptionValue(request, "large_payload.transaction_uuid")
+        EngineNoSqlUuidOption(request, "large_payload.transaction_uuid")
             .value_or(request.context.transaction_uuid));
-    split_request.chunk_policy_uuid = EngineNoSqlParseUuid(
+    split_request.chunk_policy_uuid = EngineNoSqlNativeUuid(
         platform::UuidKind::object,
-        EngineNoSqlOptionValue(request, "large_payload.chunk_policy_uuid")
-            .value_or(EngineNoSqlOptionValue(request, "large_payload.owner_object_uuid")
+        EngineNoSqlUuidOption(request, "large_payload.chunk_policy_uuid")
+            .value_or(EngineNoSqlUuidOption(request, "large_payload.owner_object_uuid")
                           .value_or(request.target_object.uuid)));
     split_request.local_transaction_id = request.context.local_transaction_id;
     split_request.family = EngineNoSqlLargePayloadFamily(object_kind);
@@ -316,7 +320,7 @@ inline EngineNoSqlPayloadResolution EngineNoSqlResolvePayloadForStorage(
         "nosql_hot_cold_split;diagnostic_only=true;finality_authority=false;visibility_authority=false;mga_authority=durable_transaction_inventory";
     split_request.fields.push_back({"surface", object_kind, true, true, true, false, true, false});
     split_request.fields.push_back({"object_uuid",
-                                    request.target_object.uuid,
+                                    std::string(reinterpret_cast<const char*>(request.target_object.uuid.bytes.data()),16),
                                     true,
                                     true,
                                     true,
@@ -373,26 +377,26 @@ inline EngineNoSqlPayloadResolution EngineNoSqlResolvePayloadForStorage(
     store.overflow_ledger.next_evidence_sequence = diagnostic_seed;
   }
   page::LargePayloadStoreRequest storage_request;
-  storage_request.database_uuid = EngineNoSqlParseUuid(
+  storage_request.database_uuid = EngineNoSqlNativeUuid(
       platform::UuidKind::database,
-      EngineNoSqlOptionValue(request, "large_payload.database_uuid")
+      EngineNoSqlUuidOption(request, "large_payload.database_uuid")
           .value_or(request.context.database_uuid));
-  storage_request.filespace_uuid = EngineNoSqlParseUuid(
+  storage_request.filespace_uuid = EngineNoSqlNativeUuid(
       platform::UuidKind::filespace,
-      EngineNoSqlOptionValue(request, "large_payload.filespace_uuid")
-          .value_or(std::string{}));
-  storage_request.owner_object_uuid = EngineNoSqlParseUuid(
+      EngineNoSqlUuidOption(request, "large_payload.filespace_uuid")
+          .value_or(EngineUuid{}));
+  storage_request.owner_object_uuid = EngineNoSqlNativeUuid(
       platform::UuidKind::object,
-      EngineNoSqlOptionValue(request, "large_payload.owner_object_uuid")
+      EngineNoSqlUuidOption(request, "large_payload.owner_object_uuid")
           .value_or(request.target_object.uuid));
-  storage_request.transaction_uuid = EngineNoSqlParseUuid(
+  storage_request.transaction_uuid = EngineNoSqlNativeUuid(
       platform::UuidKind::transaction,
-      EngineNoSqlOptionValue(request, "large_payload.transaction_uuid")
+      EngineNoSqlUuidOption(request, "large_payload.transaction_uuid")
           .value_or(request.context.transaction_uuid));
-  storage_request.chunk_policy_uuid = EngineNoSqlParseUuid(
+  storage_request.chunk_policy_uuid = EngineNoSqlNativeUuid(
       platform::UuidKind::object,
-      EngineNoSqlOptionValue(request, "large_payload.chunk_policy_uuid")
-          .value_or(EngineNoSqlOptionValue(request, "large_payload.owner_object_uuid")
+      EngineNoSqlUuidOption(request, "large_payload.chunk_policy_uuid")
+          .value_or(EngineNoSqlUuidOption(request, "large_payload.owner_object_uuid")
                         .value_or(request.target_object.uuid)));
   storage_request.local_transaction_id = request.context.local_transaction_id;
   storage_request.family = EngineNoSqlLargePayloadFamily(object_kind);
@@ -509,12 +513,9 @@ inline void AddEngineNoSqlHeavyGenerationSuccessEvidence(
     EngineApiResult* result,
     const scratchbird::core::index::HeavyImmutableGenerationResult& published,
     const std::string& operation_evidence_kind) {
-  const auto generation_uuid = scratchbird::core::uuid::UuidToString(
-      published.generation.identity.generation_uuid.value);
-  const auto collection_uuid = scratchbird::core::uuid::UuidToString(
-      published.generation.identity.table_or_collection_uuid.value);
-  const auto transaction_uuid = scratchbird::core::uuid::UuidToString(
-      published.generation.identity.transaction_uuid.value);
+  const auto generation_uuid = published.generation.identity.generation_uuid.value;
+  const auto collection_uuid = published.generation.identity.table_or_collection_uuid.value;
+  const auto transaction_uuid = published.generation.identity.transaction_uuid.value;
   AddApiBehaviorEvidence(result,
                          "heavy_immutable_generation_validation_state",
                          "validated");
@@ -587,16 +588,15 @@ TResult EngineNoSqlPublishHeavyImmutableGeneration(
 
   idx::HeavyImmutableGenerationLedger ledger;
   idx::HeavyImmutableGenerationValidationRequest validation;
-  validation.identity.generation_uuid = EngineNoSqlParseUuid(
+  validation.identity.generation_uuid = EngineNoSqlNativeUuid(
       platform::UuidKind::object,
-      EngineNoSqlOptionValue(request, "heavy_generation.generation_uuid")
-          .value_or(std::string{}));
-  validation.identity.table_or_collection_uuid = EngineNoSqlParseUuid(
+      EngineNoSqlUuidOption(request, "heavy_generation.generation_uuid")
+          .value_or(EngineUuid{}));
+  validation.identity.table_or_collection_uuid = EngineNoSqlNativeUuid(
       platform::UuidKind::object,
-      EngineNoSqlOptionValue(request,
-                             "heavy_generation.table_or_collection_uuid")
+      EngineNoSqlUuidOption(request, "heavy_generation.table_or_collection_uuid")
           .value_or(request.target_object.uuid));
-  validation.identity.transaction_uuid = EngineNoSqlParseUuid(
+  validation.identity.transaction_uuid = EngineNoSqlNativeUuid(
       platform::UuidKind::transaction,
       request.context.transaction_uuid);
   validation.identity.family = family;

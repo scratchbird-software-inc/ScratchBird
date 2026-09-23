@@ -1,3 +1,6 @@
+#include "mga_relation_store/mga_relation_locator.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include "catalog/column_metadata_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -65,16 +68,11 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 namespace wire = scratchbird::wire;
 
-constexpr std::string_view kDatatypeCatalogSnapshotUuid =
-    "019d0000-0000-7000-8000-00000000d701";
-constexpr std::string_view kInt32DescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d716";
-constexpr std::string_view kInt32TypeUuid =
-    "019d0000-0000-7000-8000-00000000d717";
-constexpr std::string_view kTextDescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d718";
-constexpr std::string_view kTextTypeUuid =
-    "019d0000-0000-7000-8000-00000000d719";
+constexpr auto kDatatypeCatalogSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+constexpr auto kInt32DescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716");
+constexpr auto kInt32TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717");
+constexpr auto kTextDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
+constexpr auto kTextTypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719");
 constexpr std::uint64_t kLargeMemoryGrant = 64ull * 1024ull * 1024ull;
 constexpr std::uint64_t kLargeDecodedGrant = 64ull * 1024ull * 1024ull;
 
@@ -113,46 +111,43 @@ std::uint64_t NowMillis() {
           .count());
 }
 
-std::string NewUuid(platform::UuidKind kind) {
+platform::Uuid NewUuid(platform::UuidKind kind) {
   static std::atomic<std::uint64_t> sequence{1};
   const auto generated = uuid::GenerateEngineIdentityV7(
       kind, NowMillis() + sequence.fetch_add(1));
   Require(generated.ok(), "engine UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
-wire::NarrowQueryUuid WireUuid(std::string_view text) {
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  Require(parsed.ok(), "wire UUID parse failed");
-  wire::NarrowQueryUuid result{};
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            result.begin());
-  return result;
+wire::NarrowQueryUuid WireUuid(const platform::Uuid& identity) {
+  return identity.bytes;
 }
 
+std::string FixtureColumnDescriptor(const char* type, const platform::Uuid& descriptor,
+                                    const platform::Uuid& type_uuid, bool nullable) {
+  api::CatalogColumnMetadata fields;
+  fields.text={{"type",type},{"nullable",nullable?"true":"false"}};
+  fields.identities={{"datatype_descriptor_uuid",descriptor},{"type_uuid",type_uuid}};
+  std::string bytes;
+  Require(api::EncodeCatalogColumnMetadata(fields,&bytes),"fixture column metadata encode failed");
+  return bytes;
+}
 std::string Int32Descriptor(bool nullable) {
-  return "type=int32;datatype_descriptor_uuid=" +
-         std::string(kInt32DescriptorUuid) + ";type_uuid=" +
-         std::string(kInt32TypeUuid) + ";nullable=" +
-         (nullable ? "true" : "false");
+  return FixtureColumnDescriptor("int32",kInt32DescriptorUuid,kInt32TypeUuid,nullable);
 }
-
 std::string TextDescriptor(bool nullable) {
-  return "type=text;datatype_descriptor_uuid=" +
-         std::string(kTextDescriptorUuid) + ";type_uuid=" +
-         std::string(kTextTypeUuid) + ";nullable=" +
-         (nullable ? "true" : "false");
+  return FixtureColumnDescriptor("text",kTextDescriptorUuid,kTextTypeUuid,nullable);
 }
 
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string filespace_uuid;
-  std::string schema_uuid;
-  std::string relation_uuid;
-  std::string principal_uuid;
-  std::string session_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid filespace_uuid;
+  platform::Uuid schema_uuid;
+  platform::Uuid relation_uuid;
+  platform::Uuid principal_uuid;
+  platform::Uuid session_uuid;
   api::EngineRequestContext transaction;
   std::shared_ptr<std::atomic_bool> cancelled =
       std::make_shared<std::atomic_bool>(false);
@@ -169,24 +164,24 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "narrow-profile-source";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
+  context.database_uuid = fixture.database_uuid;
   context.database_page_size_bytes = 16384;
-  context.default_root_uuid.canonical = fixture.filespace_uuid;
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
-  context.principal_uuid.canonical = fixture.principal_uuid;
-  context.session_uuid.canonical = fixture.session_uuid;
+  context.default_root_uuid = fixture.filespace_uuid;
+  context.current_schema_uuid = fixture.schema_uuid;
+  context.principal_uuid = fixture.principal_uuid;
+  context.session_uuid = fixture.session_uuid;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      std::string(kDatatypeCatalogSnapshotUuid);
+  context.datatype_catalog_snapshot_uuid =
+      kDatatypeCatalogSnapshotUuid;
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.maximum_mga_relation_decoded_bytes_per_pass =
       kLargeDecodedGrant;
-  context.catalog_epoch_uuid.canonical = NewUuid(platform::UuidKind::object);
+  context.catalog_epoch_uuid = NewUuid(platform::UuidKind::object);
   context.query_cancellation_requested = [flag = fixture.cancelled]() {
     return flag->load();
   };
@@ -240,8 +235,8 @@ Fixture MakeFixture() {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "fixture database creation failed");
 
-  fixture.database_uuid = uuid::UuidToString(database.value.value);
-  fixture.filespace_uuid = uuid::UuidToString(filespace.value.value);
+  fixture.database_uuid = database.value.value;
+  fixture.filespace_uuid = filespace.value.value;
   fixture.schema_uuid = NewUuid(platform::UuidKind::object);
   fixture.relation_uuid = NewUuid(platform::UuidKind::object);
   fixture.principal_uuid = NewUuid(platform::UuidKind::principal);
@@ -300,8 +295,8 @@ Fixture MakeFixture() {
 api::EngineRequestContext QueryContext(Fixture* fixture) {
   Require(fixture != nullptr, "fixture is absent");
   auto context = fixture->transaction;
-  context.statement_uuid.canonical = NewUuid(platform::UuidKind::object);
-  context.statement_receipt_uuid.canonical =
+  context.statement_uuid = NewUuid(platform::UuidKind::object);
+  context.statement_receipt_uuid =
       NewUuid(platform::UuidKind::object);
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = context;
@@ -311,11 +306,11 @@ api::EngineRequestContext QueryContext(Fixture* fixture) {
   context.snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical =
+  context.statement_metadata_snapshot_uuid =
       NewUuid(platform::UuidKind::object);
 
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
+  context.authorization_context.authority_uuid =
       NewUuid(platform::UuidKind::object);
   context.authorization_context.security_context_generation = 1;
   context.authorization_context.principal_uuid = context.principal_uuid;
@@ -328,10 +323,10 @@ api::EngineRequestContext QueryContext(Fixture* fixture) {
   subject.subject_kind = "principal";
   context.authorization_context.effective_subjects.push_back(subject);
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = NewUuid(platform::UuidKind::object);
+  grant.grant_uuid = NewUuid(platform::UuidKind::object);
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = fixture->relation_uuid;
+  grant.target_uuid = fixture->relation_uuid;
   grant.right = "SELECT";
   grant.security_epoch = context.security_epoch;
   context.authorization_context.grants.push_back(std::move(grant));
@@ -425,14 +420,14 @@ OpenedProfile OpenProfile(api::EngineRequestContext binder_context,
   binder_context.maximum_typed_result_transport_bytes_per_packet =
       grant.typed_result_transport_bytes_per_packet;
   demand.statement_receipt_uuid =
-      WireUuid(binder_context.statement_receipt_uuid.canonical);
+      WireUuid(binder_context.statement_receipt_uuid);
   demand.maximum_mga_relation_decoded_bytes_per_pass =
       grant.decoded_bytes_per_pass;
   demand = DecodeDemand(std::move(demand));
   api::EngineNarrowQueryBindingAuthorityIssueRequestV1 issue;
   issue.context = binder_context;
   issue.demand = std::move(demand);
-  issue.policy_snapshot_uuid.canonical = NewUuid(platform::UuidKind::object);
+  issue.policy_snapshot_uuid = NewUuid(platform::UuidKind::object);
   issue.policy_generation = binder_context.authorization_context.policy_epoch;
   issue.maximum_source_rows_per_occurrence =
       grant.source_rows_per_occurrence;
@@ -986,8 +981,8 @@ RelationPostStateObservation ObserveRelationPostState(
   observation.decoded_byte_count = counted.decoded_byte_count;
   observation.memory_receipt_complete = counted.memory_receipt_complete;
   observation.diagnostic = counted.diagnostic;
-  const auto root = fixture->database_path.string() +
-                    ".sb.mga_relation_scope/" + fixture->relation_uuid;
+  const auto root = api::MgaScopedRelationBasePath(read_context, fixture->relation_uuid, false);
+  Require(!root.empty(), "fixture relation locator missing");
   const std::array<std::string, 3> paths{
       root + ".rows", root + ".rows.sbnr", root + ".summary"};
   for (std::size_t index = 0; index < paths.size(); ++index) {

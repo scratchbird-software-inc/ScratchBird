@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -50,6 +51,8 @@ std::filesystem::path MakeTempDir() {
 memory::TempWorkspacePolicy Policy(const std::filesystem::path& root) {
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "MMCH_TEMP_WORKSPACE_CRASH_RECOVERY";
+  policy.database_uuid = scratchbird::tests::FixtureUuid(1458, 101);
+  policy.engine_uuid = scratchbird::tests::FixtureUuid(1458, 102);
   policy.root_path = root;
   policy.filespace_quota_bytes = 8192;
   policy.session_quota_bytes = 8192;
@@ -62,26 +65,28 @@ memory::TempWorkspacePolicy Policy(const std::filesystem::path& root) {
   return policy;
 }
 
-memory::TempWorkspaceOwner Owner(std::string suffix) {
+memory::TempWorkspaceOwner Owner(std::uint32_t ordinal) {
   memory::TempWorkspaceOwner owner;
-  owner.temp_object_uuid = "crash-" + std::move(suffix);
-  owner.database_id = "database-mmch042";
-  owner.engine_id = "engine-mmch042";
-  owner.session_id = "session-mmch042";
-  owner.transaction_id = "txn-mmch042";
-  owner.statement_id = "stmt-mmch042";
-  owner.operation_id = "op-mmch042";
+  owner.temp_object_uuid = scratchbird::tests::FixtureUuid(1458, 1100 + ordinal);
+  owner.database_id = scratchbird::tests::FixtureUuid(1458, 101);
+  owner.engine_id = scratchbird::tests::FixtureUuid(1458, 102);
+  owner.session_id = scratchbird::tests::FixtureUuid(1458, 103);
+  owner.transaction_id = scratchbird::tests::FixtureUuid(1458, 104);
+  owner.statement_id = scratchbird::tests::FixtureUuid(1458, 105);
+  owner.operation_id = scratchbird::tests::FixtureUuid(1458, 106);
+  owner.snapshot_boundary = scratchbird::tests::FixtureUuid(1458, 107);
+  owner.metadata_boundary = scratchbird::tests::FixtureUuid(1458, 108);
   owner.policy_generation = 42;
   owner.security_generation = 420;
-  owner.resource_budget_reference = "crash-recovery-budget";
+  owner.resource_budget_reference = scratchbird::tests::FixtureUuid(1458, 109);
   return owner;
 }
 
 memory::TempWorkspaceAllocationRequest Request(
-    std::string suffix,
+    std::uint32_t ordinal,
     memory::TempWorkspaceLifetime lifetime) {
   memory::TempWorkspaceAllocationRequest request;
-  request.owner = Owner(std::move(suffix));
+  request.owner = Owner(ordinal);
   request.lifetime = lifetime;
   request.bytes = 128;
   request.purpose = "MMCH_TEMP_WORKSPACE_CRASH_RECOVERY focused gate";
@@ -95,12 +100,12 @@ void SeedCrashState(const std::filesystem::path& root,
   memory::TempWorkspaceLifecycleManager manager(Policy(root));
 
   auto ordinary = manager.AllocateSpillFile(
-      Request("ordinary", memory::TempWorkspaceLifetime::statement_lifetime));
+      Request(1, memory::TempWorkspaceLifetime::statement_lifetime));
   Require(ordinary.ok() && ordinary.record.has_value(),
           "MMCH-042 ordinary setup allocation failed");
 
   auto evidence_request =
-      Request("evidence-required", memory::TempWorkspaceLifetime::transaction_lifetime);
+      Request(2, memory::TempWorkspaceLifetime::transaction_lifetime);
   evidence_request.evidence_required_before_discard = true;
   auto evidence_required = manager.AllocateSpillFile(std::move(evidence_request));
   Require(evidence_required.ok() && evidence_required.record.has_value(),
@@ -108,7 +113,7 @@ void SeedCrashState(const std::filesystem::path& root,
   *evidence_required_id = evidence_required.record->allocation_id;
 
   auto durable_request =
-      Request("durable-operation", memory::TempWorkspaceLifetime::operation_lifetime);
+      Request(3, memory::TempWorkspaceLifetime::operation_lifetime);
   durable_request.durable_operation_owned = true;
   durable_request.recovery_resume_supported = true;
   auto durable = manager.AllocateSpillFile(std::move(durable_request));
@@ -117,7 +122,7 @@ void SeedCrashState(const std::filesystem::path& root,
   *durable_id = durable.record->allocation_id;
 
   auto legal_request =
-      Request("legal-hold", memory::TempWorkspaceLifetime::session_lifetime);
+      Request(4, memory::TempWorkspaceLifetime::session_lifetime);
   legal_request.legal_hold = true;
   legal_request.administrator_review_required = true;
   auto legal = manager.AllocateSpillFile(std::move(legal_request));

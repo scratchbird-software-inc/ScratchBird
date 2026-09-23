@@ -15,6 +15,7 @@
 #include "engine/optimizer/optimizer_contract.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -88,18 +89,23 @@ ExecuteCanonicalObjectFreeLiteralValuesQuery(
                   materialized.detail);
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
-  const auto alternative_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.alternative");
-  const auto capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
-  const auto transformation_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.transformation");
-  const auto cost_vector_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.cost-vector");
-  const auto calibration_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.calibration");
+  // Each identity belongs to an immutable planning or execution record below.
+  // Allocate once, retain it for this invocation, and refuse before publication
+  // if the engine issuer cannot supply all identities.
+  std::array<api::EngineUuid, 8> identities{};
+  for (auto& identity : identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live VALUES identity allocation failed");
+    }
+    identity = *issued;
+  }
+  const auto& alternative_uuid = identities[0];
+  const auto& capability_uuid = identities[1];
+  const auto& transformation_uuid = identities[2];
+  const auto& cost_vector_uuid = identities[3];
+  const auto& calibration_uuid = identities[4];
 
   std::uint64_t memory_bytes = 1;
   for (const auto& row : materialized.batch.rows) {
@@ -236,7 +242,7 @@ ExecuteCanonicalObjectFreeLiteralValuesQuery(
 
   opt::CanonicalOptimizerPhysicalPublicationIdentity publication_identity;
   publication_identity.selected_plan_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.selected-plan");
+      identities[5];
   publication_identity.first_causal_counter_id = 1;
   publication_identity.engine_owned = true;
   auto publication = opt::PublishCanonicalPhysicalDag(
@@ -302,16 +308,9 @@ ExecuteCanonicalObjectFreeLiteralValuesQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "values.execution-attempt");
+      identities[6];
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(request.context.local_transaction_id) + ":" +
-              std::to_string(
-                  request.context.snapshot_visible_through_local_transaction_id),
-          "values.transaction-effect-unchanged");
+      identities[7];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =

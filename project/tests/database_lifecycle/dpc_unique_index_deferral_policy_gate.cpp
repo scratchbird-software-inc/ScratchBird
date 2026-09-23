@@ -1,3 +1,5 @@
+#include "dml/mga_relation_read_view.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -76,21 +78,21 @@ idx::UniqueIndexDeferralPolicyDecision Evaluate(
 api::CrudTableRecord Table() {
   api::CrudTableRecord table;
   table.creator_tx = 42;
-  table.table_uuid = "table-dpc-019";
+  table.table_uuid = scratchbird::tests::FixtureUuid(1486, 4);
   table.default_name = "dpc019_table";
   table.columns.push_back({"id", "canonical=int64"});
   table.columns.push_back({"name", "canonical=character"});
   return table;
 }
 
-api::CrudIndexRecord Index(std::string uuid,
+api::CrudIndexRecord Index(scratchbird::core::platform::Uuid uuid,
                            std::string column,
                            std::string family,
                            bool unique) {
   api::CrudIndexRecord index;
   index.creator_tx = 42;
   index.index_uuid = std::move(uuid);
-  index.table_uuid = "table-dpc-019";
+  index.table_uuid = scratchbird::tests::FixtureUuid(1486, 4);
   index.column_name = std::move(column);
   index.family = std::move(family);
   index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
@@ -101,15 +103,15 @@ api::CrudIndexRecord Index(std::string uuid,
   return index;
 }
 
-api::CrudState State() {
-  api::CrudState state;
+api::MgaRelationReadView State() {
+  api::MgaRelationReadView state;
   state.transactions[42] = "active";
   state.tables.push_back(Table());
   api::CrudRowVersionRecord row;
   row.creator_tx = 42;
-  row.table_uuid = "table-dpc-019";
-  row.row_uuid = "row-dpc-019";
-  row.version_uuid = "version-dpc-019";
+  row.table_uuid = scratchbird::tests::FixtureUuid(1486, 4);
+  row.row_uuid = scratchbird::tests::FixtureUuid(1486, 3);
+  row.version_uuid = scratchbird::tests::FixtureUuid(1486, 5);
   row.values.push_back({"id", "1"});
   row.values.push_back({"name", "alpha"});
   state.row_versions.push_back(std::move(row));
@@ -119,20 +121,20 @@ api::CrudState State() {
 api::EngineDeleteRowsRequest DeleteRequest() {
   api::EngineDeleteRowsRequest request;
   request.context.request_id = "dpc-019-delete";
-  request.context.database_uuid.canonical = "database-dpc-019";
-  request.context.principal_uuid.canonical = "principal-dpc-019";
-  request.context.transaction_uuid.canonical = "transaction-dpc-019";
+  request.context.database_uuid = scratchbird::tests::FixtureUuid(1208, 1501);
+  request.context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1502);
+  request.context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 1503);
   request.context.local_transaction_id = 42;
   request.context.snapshot_visible_through_local_transaction_id = 42;
   request.context.security_context_present = true;
-  request.target_table.uuid.canonical = "table-dpc-019";
+  request.target_table.uuid = scratchbird::tests::FixtureUuid(1486, 4);
   request.delete_predicate.predicate_kind = "row_uuid_match";
   request.tombstone_only = true;
   return request;
 }
 
 bool HasDeleteActionForIndex(const api::DeleteIndexMaintenancePlan& plan,
-                             const std::string& index_uuid,
+                             const scratchbird::core::platform::Uuid& index_uuid,
                              api::DeleteIndexMaintenanceAction action) {
   for (const auto& entry : plan.entries) {
     if (entry.index.index_uuid == index_uuid && entry.action == action) {
@@ -341,8 +343,8 @@ void ValidateDeletePlannerCannotDeferUniqueIndexes() {
   const auto table = Table();
   const auto state = State();
   const std::vector<api::CrudIndexRecord> indexes = {
-      Index("index-dpc-019-name", "name", api::kCrudIndexFamilyBtree, false),
-      Index("index-dpc-019-id-unique", "id", api::kCrudIndexFamilyBtree, true)};
+      Index(scratchbird::tests::FixtureUuid(1486, 2), "name", api::kCrudIndexFamilyBtree, false),
+      Index(scratchbird::tests::FixtureUuid(1486, 1), "id", api::kCrudIndexFamilyBtree, true)};
 
   api::DeleteFeatureGates gates;
   gates.secondary_index_delta_ledger = api::DeleteFeatureState::enabled;
@@ -350,15 +352,15 @@ void ValidateDeletePlannerCannotDeferUniqueIndexes() {
       DeleteRequest(), state, table, indexes, gates);
 
   Require(HasDeleteActionForIndex(plan,
-                                  "index-dpc-019-name",
+                                  scratchbird::tests::FixtureUuid(1486, 2),
                                   api::DeleteIndexMaintenanceAction::tombstone_delta_ledger),
           "DPC-019 delete planner did not keep non-unique delta eligibility separate");
   Require(!HasDeleteActionForIndex(plan,
-                                   "index-dpc-019-id-unique",
+                                   scratchbird::tests::FixtureUuid(1486, 1),
                                    api::DeleteIndexMaintenanceAction::tombstone_delta_ledger),
           "DPC-019 delete planner selected delta ledger for unique index");
   Require(HasDeleteActionForIndex(plan,
-                                  "index-dpc-019-id-unique",
+                                  scratchbird::tests::FixtureUuid(1486, 1),
                                   api::DeleteIndexMaintenanceAction::visibility_recheck_only),
           "DPC-019 delete planner did not keep unique index on synchronous-safe recheck path");
 }

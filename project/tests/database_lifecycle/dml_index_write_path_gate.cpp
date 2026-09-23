@@ -48,22 +48,22 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind,
   return typed.value;
 }
 
-std::string UuidText(platform::UuidKind kind,
+platform::Uuid UuidValue(platform::UuidKind kind,
                      platform::u64 millis,
                      platform::byte suffix) {
-  return uuid::UuidToString(GeneratedUuid(kind, millis, suffix).value);
+  return GeneratedUuid(kind, millis, suffix).value;
 }
 
-const std::string& TableUuid() {
-  static const std::string uuid =
-      UuidText(platform::UuidKind::object, 1700000999000ull, 0x30);
+const platform::Uuid& TableUuid() {
+  static const platform::Uuid uuid =
+      UuidValue(platform::UuidKind::object, 1700000999000ull, 0x30);
   return uuid;
 }
 
-std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
+std::vector<platform::byte> EncodedKey(const platform::Uuid& index_uuid,
                                        const std::string& key) {
   const auto descriptor_uuid =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
+      uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::object,
                                            index_uuid);
   Require(descriptor_uuid.ok(), "index uuid parse for key encoding failed");
   idx::IndexKeyEncodingComponent component;
@@ -76,7 +76,7 @@ std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
   return encoded.encoded;
 }
 
-api::CrudIndexRecord Index(std::string uuid,
+api::CrudIndexRecord Index(platform::Uuid uuid,
                            std::string family,
                            std::string column,
                            bool unique = false) {
@@ -94,8 +94,8 @@ api::CrudIndexRecord Index(std::string uuid,
   return index;
 }
 
-api::DmlIndexWriteRowImage Row(std::string row_uuid,
-                               std::string version_uuid,
+api::DmlIndexWriteRowImage Row(platform::Uuid row_uuid,
+                               platform::Uuid version_uuid,
                                std::string id,
                                std::string name,
                                std::string payload = "payload") {
@@ -114,7 +114,7 @@ api::DmlIndexWriteEvent BaseEvent(api::DmlIndexWriteOperation operation,
   event.operation = operation;
   event.index = index;
   event.table_uuid = TableUuid();
-  event.transaction_uuid = UuidText(platform::UuidKind::transaction,
+  event.transaction_uuid = UuidValue(platform::UuidKind::transaction,
                                     1700001000000ull,
                                     0x31);
   event.local_transaction_id = 42;
@@ -130,9 +130,9 @@ api::DmlIndexWriteEvent BaseEvent(api::DmlIndexWriteOperation operation,
   return event;
 }
 
-page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
+page::IndexBtreePhysicalTree MakeTree(const platform::Uuid& index_uuid) {
   const auto parsed =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
+      uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::object,
                                            index_uuid);
   Require(parsed.ok(), "index uuid parse failed");
   auto initialized = page::InitializeIndexBtreePhysicalTree(parsed.value, 4096);
@@ -141,7 +141,7 @@ page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
 }
 
 std::size_t CountKey(const page::IndexBtreePhysicalTree& tree,
-                     const std::string& index_uuid,
+                     const platform::Uuid& index_uuid,
                      const std::string& key) {
   const auto scan =
       page::PointLookupIndexBtreePhysicalTree(tree, EncodedKey(index_uuid, key));
@@ -151,12 +151,23 @@ std::size_t CountKey(const page::IndexBtreePhysicalTree& tree,
 
 bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
+                 const platform::Uuid& id) {
+  return std::any_of(evidence.begin(), evidence.end(), [&](const auto& item) {
+    return item.evidence_kind == kind &&
+           std::holds_alternative<platform::Uuid>(item.evidence_id) &&
+           std::get<platform::Uuid>(item.evidence_id) == id;
+  });
+}
+
+bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
+                 std::string_view kind,
                  std::string_view id) {
   return std::any_of(evidence.begin(),
                      evidence.end(),
                      [&](const auto& item) {
                        return item.evidence_kind == kind &&
-                              item.evidence_id.find(id) != std::string::npos;
+                              std::holds_alternative<std::string>(item.evidence_id) &&
+                              std::get<std::string>(item.evidence_id).find(id) != std::string::npos;
                      });
 }
 
@@ -191,14 +202,14 @@ api::DmlIndexWritePathResult ApplyOneLedger(
 }
 
 void TestInsertUpdateDeleteMaintenance() {
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700002000000ull, 0x41);
+  const platform::Uuid index_uuid =
+      UuidValue(platform::UuidKind::object, 1700002000000ull, 0x41);
   auto tree = MakeTree(index_uuid);
   const auto index = Index(index_uuid, api::kCrudIndexFamilyBtree, "name");
-  const std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1700003000000ull, 0x51);
-  const std::string v1 = UuidText(platform::UuidKind::row, 1700003001000ull, 0x52);
-  const std::string v2 = UuidText(platform::UuidKind::row, 1700003002000ull, 0x53);
+  const platform::Uuid row_uuid =
+      UuidValue(platform::UuidKind::row, 1700003000000ull, 0x51);
+  const platform::Uuid v1 = UuidValue(platform::UuidKind::row, 1700003001000ull, 0x52);
+  const platform::Uuid v2 = UuidValue(platform::UuidKind::row, 1700003002000ull, 0x53);
 
   auto insert = BaseEvent(api::DmlIndexWriteOperation::insert, index);
   insert.has_new_row = true;
@@ -226,7 +237,7 @@ void TestInsertUpdateDeleteMaintenance() {
   unchanged.old_row = Row(row_uuid, v2, "1", "bravo");
   unchanged.has_new_row = true;
   unchanged.new_row = Row(row_uuid,
-                          UuidText(platform::UuidKind::row,
+                          UuidValue(platform::UuidKind::row,
                                    1700003003000ull,
                                    0x54),
                           "1",
@@ -253,14 +264,14 @@ void TestInsertUpdateDeleteMaintenance() {
 }
 
 void TestUniqueDuplicateRefusal() {
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700002100000ull, 0x61);
+  const platform::Uuid index_uuid =
+      UuidValue(platform::UuidKind::object, 1700002100000ull, 0x61);
   auto tree = MakeTree(index_uuid);
   const auto index = Index(index_uuid, "unique_btree", "id", true);
   auto first = BaseEvent(api::DmlIndexWriteOperation::insert, index);
   first.has_new_row = true;
-  first.new_row = Row(UuidText(platform::UuidKind::row, 1700003100000ull, 0x62),
-                      UuidText(platform::UuidKind::row, 1700003101000ull, 0x63),
+  first.new_row = Row(UuidValue(platform::UuidKind::row, 1700003100000ull, 0x62),
+                      UuidValue(platform::UuidKind::row, 1700003101000ull, 0x63),
                       "1",
                       "alpha");
   auto result = ApplyOne(first, &tree);
@@ -268,8 +279,8 @@ void TestUniqueDuplicateRefusal() {
 
   auto duplicate = BaseEvent(api::DmlIndexWriteOperation::insert, index);
   duplicate.has_new_row = true;
-  duplicate.new_row = Row(UuidText(platform::UuidKind::row, 1700003102000ull, 0x64),
-                          UuidText(platform::UuidKind::row, 1700003103000ull, 0x65),
+  duplicate.new_row = Row(UuidValue(platform::UuidKind::row, 1700003102000ull, 0x64),
+                          UuidValue(platform::UuidKind::row, 1700003103000ull, 0x65),
                           "1",
                           "bravo");
   result = ApplyOne(duplicate, &tree);
@@ -281,14 +292,14 @@ void TestUniqueDuplicateRefusal() {
 }
 
 void TestMergeBatchOrder() {
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700002200000ull, 0x71);
+  const platform::Uuid index_uuid =
+      UuidValue(platform::UuidKind::object, 1700002200000ull, 0x71);
   auto tree = MakeTree(index_uuid);
   const auto index = Index(index_uuid, api::kCrudIndexFamilyBtree, "name");
-  const std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1700003200000ull, 0x72);
-  const std::string v1 = UuidText(platform::UuidKind::row, 1700003201000ull, 0x73);
-  const std::string v2 = UuidText(platform::UuidKind::row, 1700003202000ull, 0x74);
+  const platform::Uuid row_uuid =
+      UuidValue(platform::UuidKind::row, 1700003200000ull, 0x72);
+  const platform::Uuid v1 = UuidValue(platform::UuidKind::row, 1700003201000ull, 0x73);
+  const platform::Uuid v2 = UuidValue(platform::UuidKind::row, 1700003202000ull, 0x74);
 
   api::DmlIndexWritePathRequest request;
   auto insert = BaseEvent(api::DmlIndexWriteOperation::merge_insert, index);
@@ -338,14 +349,14 @@ void TestMergeBatchOrder() {
 }
 
 void TestExpressionPartialCoveringProofsAndUnsupportedFamily() {
-  const std::string expr_uuid =
-      UuidText(platform::UuidKind::object, 1700002300000ull, 0x81);
+  const platform::Uuid expr_uuid =
+      UuidValue(platform::UuidKind::object, 1700002300000ull, 0x81);
   auto expr_tree = MakeTree(expr_uuid);
   auto expr = Index(expr_uuid, api::kCrudIndexFamilyExpression, "lower:name");
   auto expr_insert = BaseEvent(api::DmlIndexWriteOperation::insert, expr);
   expr_insert.has_new_row = true;
-  expr_insert.new_row = Row(UuidText(platform::UuidKind::row, 1700003300000ull, 0x82),
-                            UuidText(platform::UuidKind::row, 1700003301000ull, 0x83),
+  expr_insert.new_row = Row(UuidValue(platform::UuidKind::row, 1700003300000ull, 0x82),
+                            UuidValue(platform::UuidKind::row, 1700003301000ull, 0x83),
                             "1",
                             "MiXeD");
   auto result = ApplyOne(expr_insert, &expr_tree);
@@ -353,8 +364,8 @@ void TestExpressionPartialCoveringProofsAndUnsupportedFamily() {
   Require(CountKey(expr_tree, expr_uuid, "mixed") == 1,
           "expression key missing");
 
-  const std::string partial_uuid =
-      UuidText(platform::UuidKind::object, 1700002301000ull, 0x84);
+  const platform::Uuid partial_uuid =
+      UuidValue(platform::UuidKind::object, 1700002301000ull, 0x84);
   auto partial_tree = MakeTree(partial_uuid);
   auto partial = Index(partial_uuid, api::kCrudIndexFamilyPartial, "name");
   partial.predicate_kind = "where_eq";
@@ -362,8 +373,8 @@ void TestExpressionPartialCoveringProofsAndUnsupportedFamily() {
   partial.predicate_value = "visible";
   auto partial_insert = BaseEvent(api::DmlIndexWriteOperation::insert, partial);
   partial_insert.has_new_row = true;
-  partial_insert.new_row = Row(UuidText(platform::UuidKind::row, 1700003302000ull, 0x85),
-                               UuidText(platform::UuidKind::row, 1700003303000ull, 0x86),
+  partial_insert.new_row = Row(UuidValue(platform::UuidKind::row, 1700003302000ull, 0x85),
+                               UuidValue(platform::UuidKind::row, 1700003303000ull, 0x86),
                                "2",
                                "partial",
                                "hidden");
@@ -371,15 +382,15 @@ void TestExpressionPartialCoveringProofsAndUnsupportedFamily() {
   Require(result.ok, "partial excluded insert failed");
   Require(result.physical_inserts == 0, "partial excluded row was indexed");
 
-  const std::string covering_uuid =
-      UuidText(platform::UuidKind::object, 1700002302000ull, 0x87);
+  const platform::Uuid covering_uuid =
+      UuidValue(platform::UuidKind::object, 1700002302000ull, 0x87);
   auto covering_tree = MakeTree(covering_uuid);
   auto covering = Index(covering_uuid, api::kCrudIndexFamilyCovering, "name");
   covering.include_columns.push_back("payload");
   auto covering_insert = BaseEvent(api::DmlIndexWriteOperation::insert, covering);
   covering_insert.has_new_row = true;
-  covering_insert.new_row = Row(UuidText(platform::UuidKind::row, 1700003304000ull, 0x88),
-                                UuidText(platform::UuidKind::row, 1700003305000ull, 0x89),
+  covering_insert.new_row = Row(UuidValue(platform::UuidKind::row, 1700003304000ull, 0x88),
+                                UuidValue(platform::UuidKind::row, 1700003305000ull, 0x89),
                                 "3",
                                 "cover",
                                 "payload");
@@ -388,14 +399,14 @@ void TestExpressionPartialCoveringProofsAndUnsupportedFamily() {
   Require(CountKey(covering_tree, covering_uuid, "cover") == 1,
           "covering key missing");
 
-  const std::string hash_uuid =
-      UuidText(platform::UuidKind::object, 1700002303000ull, 0x8a);
+  const platform::Uuid hash_uuid =
+      UuidValue(platform::UuidKind::object, 1700002303000ull, 0x8a);
   idx::PersistentSecondaryIndexDeltaLedger hash_ledger;
   auto hash = Index(hash_uuid, api::kCrudIndexFamilyHash, "name");
   auto hash_insert = BaseEvent(api::DmlIndexWriteOperation::insert, hash);
   hash_insert.has_new_row = true;
-  hash_insert.new_row = Row(UuidText(platform::UuidKind::row, 1700003306000ull, 0x8b),
-                            UuidText(platform::UuidKind::row, 1700003307000ull, 0x8c),
+  hash_insert.new_row = Row(UuidValue(platform::UuidKind::row, 1700003306000ull, 0x8b),
+                            UuidValue(platform::UuidKind::row, 1700003307000ull, 0x8c),
                             "4",
                             "hash");
   result = ApplyOneLedger(hash_insert, &hash_ledger);
@@ -413,7 +424,7 @@ void TestExpressionPartialCoveringProofsAndUnsupportedFamily() {
   hash_update.old_row = hash_insert.new_row;
   hash_update.has_new_row = true;
   hash_update.new_row = Row(hash_insert.new_row.row_uuid,
-                            UuidText(platform::UuidKind::row,
+                            UuidValue(platform::UuidKind::row,
                                      1700003308000ull,
                                      0x8d),
                             "4",
@@ -439,16 +450,16 @@ void TestExpressionPartialCoveringProofsAndUnsupportedFamily() {
                   idx::SecondaryIndexDeltaKind::delete_row,
           "hash delete ledger record mismatch");
 
-  const std::string reference_uuid =
-      UuidText(platform::UuidKind::object, 1700002304000ull, 0x8e);
+  const platform::Uuid reference_uuid =
+      UuidValue(platform::UuidKind::object, 1700002304000ull, 0x8e);
   auto reference_tree = MakeTree(reference_uuid);
   auto unsupported = Index(reference_uuid, api::kCrudIndexFamilyReferenceEmulated, "name");
   auto reference_insert =
       BaseEvent(api::DmlIndexWriteOperation::insert, unsupported);
   reference_insert.has_new_row = true;
   reference_insert.new_row =
-      Row(UuidText(platform::UuidKind::row, 1700003309000ull, 0x8f),
-          UuidText(platform::UuidKind::row, 1700003310000ull, 0x90),
+      Row(UuidValue(platform::UuidKind::row, 1700003309000ull, 0x8f),
+          UuidValue(platform::UuidKind::row, 1700003310000ull, 0x90),
           "5",
           "reference");
   result = ApplyOne(reference_insert, &reference_tree);
@@ -460,14 +471,14 @@ void TestExpressionPartialCoveringProofsAndUnsupportedFamily() {
 }
 
 void TestRollbackAndNonAuthorityEvidence() {
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700002400000ull, 0x91);
+  const platform::Uuid index_uuid =
+      UuidValue(platform::UuidKind::object, 1700002400000ull, 0x91);
   auto tree = MakeTree(index_uuid);
   const auto index = Index(index_uuid, api::kCrudIndexFamilyBtree, "name");
   auto event = BaseEvent(api::DmlIndexWriteOperation::insert, index);
   event.has_new_row = true;
-  event.new_row = Row(UuidText(platform::UuidKind::row, 1700003400000ull, 0x92),
-                      UuidText(platform::UuidKind::row, 1700003401000ull, 0x93),
+  event.new_row = Row(UuidValue(platform::UuidKind::row, 1700003400000ull, 0x92),
+                      UuidValue(platform::UuidKind::row, 1700003401000ull, 0x93),
                       "1",
                       "evidence");
   auto result = ApplyOne(event, &tree);
@@ -503,10 +514,10 @@ void TestRollbackAndNonAuthorityEvidence() {
 }
 
 void TestBatchFailureDoesNotCommitStagedMutations() {
-  const std::string first_uuid =
-      UuidText(platform::UuidKind::object, 1700002500000ull, 0xa1);
-  const std::string second_uuid =
-      UuidText(platform::UuidKind::object, 1700002501000ull, 0xa2);
+  const platform::Uuid first_uuid =
+      UuidValue(platform::UuidKind::object, 1700002500000ull, 0xa1);
+  const platform::Uuid second_uuid =
+      UuidValue(platform::UuidKind::object, 1700002501000ull, 0xa2);
   auto first_tree = MakeTree(first_uuid);
   auto second_tree = MakeTree(second_uuid);
   const auto first_index = Index(first_uuid, api::kCrudIndexFamilyBtree, "name");
@@ -515,8 +526,8 @@ void TestBatchFailureDoesNotCommitStagedMutations() {
   api::DmlIndexWritePathRequest request;
   auto insert = BaseEvent(api::DmlIndexWriteOperation::insert, first_index);
   insert.has_new_row = true;
-  insert.new_row = Row(UuidText(platform::UuidKind::row, 1700003500000ull, 0xa3),
-                       UuidText(platform::UuidKind::row, 1700003501000ull, 0xa4),
+  insert.new_row = Row(UuidValue(platform::UuidKind::row, 1700003500000ull, 0xa3),
+                       UuidValue(platform::UuidKind::row, 1700003501000ull, 0xa4),
                        "1",
                        "staged");
   request.events.push_back(insert);
@@ -525,8 +536,8 @@ void TestBatchFailureDoesNotCommitStagedMutations() {
       BaseEvent(api::DmlIndexWriteOperation::delete_row, second_index);
   missing_delete.has_old_row = true;
   missing_delete.old_row =
-      Row(UuidText(platform::UuidKind::row, 1700003502000ull, 0xa5),
-          UuidText(platform::UuidKind::row, 1700003503000ull, 0xa6),
+      Row(UuidValue(platform::UuidKind::row, 1700003502000ull, 0xa5),
+          UuidValue(platform::UuidKind::row, 1700003503000ull, 0xa6),
           "2",
           "missing");
   request.events.push_back(missing_delete);

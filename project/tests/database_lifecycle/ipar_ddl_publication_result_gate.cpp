@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/alter_api.hpp"
 #include "ddl/create_api.hpp"
@@ -59,10 +60,10 @@ std::uint64_t NowMillis() {
           .count());
 }
 
-std::string GeneratedUuid(UuidKind kind, std::uint64_t salt) {
+api::EngineUuid GeneratedUuid(UuidKind kind, std::uint64_t salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, NowMillis() + salt);
   Require(generated.ok(), "IPAR DDL publication UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 api::EngineLocalizedName Name(std::string value) {
@@ -99,16 +100,36 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) {
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == value)) {
       return true;
     }
   }
   return false;
 }
 
+std::string IdentityBytes(const api::EngineUuid& identity) {
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
+}
+
+bool HasEvidence(const api::EngineApiResult& result, std::string_view kind,
+                 const api::EngineUuid& identity) {
+  for (const auto& evidence : result.evidence) {
+    const auto* value = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && value && *value == identity) return true;
+  }
+  return false;
+}
+
 std::string FieldValue(const api::EngineRowValue& row, std::string_view field_name) {
   for (const auto& field : row.fields) {
-    if (field.first == field_name) { return field.second.encoded_value; }
+    if (field.first == field_name) {
+      if (field.second.descriptor.canonical_type_name == "uuid") {
+        Require(field.second.encoded_value.empty() && field.second.binary_value.size() == 16,
+                "DDL UUID result must contain binary16 only");
+        return {reinterpret_cast<const char*>(field.second.binary_value.data()), 16};
+      }
+      return field.second.encoded_value;
+    }
   }
   return {};
 }
@@ -116,12 +137,12 @@ std::string FieldValue(const api::EngineRowValue& row, std::string_view field_na
 void ExpectPublicationRow(const api::EngineApiResult& result,
                           std::string_view operation_id,
                           std::string_view object_kind,
-                          std::string_view object_uuid) {
+                          const api::EngineUuid& object_uuid) {
   const std::string expected_packet =
       std::string(operation_id) + ":" + std::string(object_kind) + ":" +
-      std::string(object_uuid);
+      IdentityBytes(object_uuid);
   for (const auto& row : result.result_shape.rows) {
-    if (FieldValue(row, "ddl_result_object_uuid") != object_uuid) { continue; }
+    if (FieldValue(row, "ddl_result_object_uuid") != IdentityBytes(object_uuid)) { continue; }
     Require(FieldValue(row, "ddl_operation_id") == operation_id,
             "DDL publication row operation drifted");
     Require(FieldValue(row, "ddl_result_object_kind") == object_kind,
@@ -148,25 +169,25 @@ void ExpectPublicationRow(const api::EngineApiResult& result,
 void ExpectPublication(const api::EngineApiResult& result,
                        std::string_view operation_id,
                        std::string_view object_kind,
-                       std::string_view object_uuid,
+                       const api::EngineUuid& object_uuid,
                        std::string_view invalidation_scope,
                        bool require_catalog_row = true) {
   RequireOk(result, "DDL publication target failed");
   Require(result.operation_id == operation_id, "DDL operation id drifted");
-  Require(result.primary_object.uuid.canonical == object_uuid,
+  Require(result.primary_object.uuid == object_uuid,
           "DDL result did not return the requested object UUID");
   Require(result.primary_object.object_kind == object_kind,
           "DDL result did not return the requested object kind");
   if (require_catalog_row) {
-    Require(!result.catalog_row_uuid.canonical.empty(),
+    Require(!result.catalog_row_uuid.is_nil(),
             "DDL result did not return a catalog row UUID");
-    Require(HasEvidence(result, "ddl_catalog_row_uuid", result.catalog_row_uuid.canonical),
+    Require(HasEvidence(result, "ddl_catalog_row_uuid", result.catalog_row_uuid),
             "DDL publication did not prove catalog row UUID");
   }
 
   const std::string expected_packet =
       std::string(operation_id) + ":" + std::string(object_kind) + ":" +
-      std::string(object_uuid);
+      IdentityBytes(object_uuid);
   Require(HasEvidence(result, "ddl_publish_packet", expected_packet),
           "DDL publication packet evidence missing");
   Require(HasEvidence(result, "ddl_publish_packet_order", kPublishOrder),
@@ -190,7 +211,7 @@ void ExpectPublication(const api::EngineApiResult& result,
   ExpectPublicationRow(result, operation_id, object_kind, object_uuid);
 }
 
-std::string CreateDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -208,21 +229,21 @@ std::string CreateDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "IPAR DDL publication database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const std::string& database_uuid,
-                                      const std::string& principal_uuid,
-                                      const std::string& schema_uuid) {
+                                      const api::EngineUuid& database_uuid,
+                                      const api::EngineUuid& principal_uuid,
+                                      const api::EngineUuid& schema_uuid) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "ipar-ddl-publication-result-gate";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = principal_uuid;
-  context.session_uuid.canonical = GeneratedUuid(UuidKind::object, 100);
-  context.current_schema_uuid.canonical = schema_uuid;
+  context.database_uuid = database_uuid;
+  context.principal_uuid = principal_uuid;
+  context.session_uuid = GeneratedUuid(UuidKind::object, 100);
+  context.current_schema_uuid = schema_uuid;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -230,8 +251,7 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
@@ -239,9 +259,9 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext Begin(const std::filesystem::path& path,
-                                const std::string& database_uuid,
-                                const std::string& principal_uuid,
-                                const std::string& schema_uuid) {
+                                const api::EngineUuid& database_uuid,
+                                const api::EngineUuid& principal_uuid,
+                                const api::EngineUuid& schema_uuid) {
   api::EngineBeginTransactionRequest request;
   request.context = BaseContext(path, database_uuid, principal_uuid, schema_uuid);
   request.isolation_level = "read_committed";
@@ -270,19 +290,19 @@ int main() {
                     ("sb_ipar_ddl_publication_" +
                      std::to_string(NowMillis()) + "_" +
                      std::to_string(static_cast<long long>(getpid())) + ".sbdb");
-  const std::string database_uuid = CreateDatabase(path);
-  const std::string owner_uuid = GeneratedUuid(UuidKind::object, 10);
-  const std::string schema_uuid = GeneratedUuid(UuidKind::schema, 11);
-  const std::string table_uuid = GeneratedUuid(UuidKind::object, 12);
-  const std::string index_uuid = GeneratedUuid(UuidKind::object, 13);
-  const std::string statistics_uuid = GeneratedUuid(UuidKind::object, 14);
-  const std::string domain_uuid = GeneratedUuid(UuidKind::object, 15);
+  const api::EngineUuid database_uuid = CreateDatabase(path);
+  const api::EngineUuid owner_uuid = GeneratedUuid(UuidKind::object, 10);
+  const api::EngineUuid schema_uuid = GeneratedUuid(UuidKind::schema, 11);
+  const api::EngineUuid table_uuid = GeneratedUuid(UuidKind::object, 12);
+  const api::EngineUuid index_uuid = GeneratedUuid(UuidKind::object, 13);
+  const api::EngineUuid statistics_uuid = GeneratedUuid(UuidKind::object, 14);
+  const api::EngineUuid domain_uuid = GeneratedUuid(UuidKind::object, 15);
 
   auto context = Begin(path, database_uuid, owner_uuid, schema_uuid);
 
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
-  schema.target_object.uuid.canonical = schema_uuid;
+  schema.target_object.uuid = schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("ipar_publication_schema"));
   const auto created_schema = api::EngineCreateSchema(schema);
@@ -294,9 +314,9 @@ int main() {
 
   api::EngineCreateTableRequest table;
   table.context = context;
-  table.target_schema.uuid.canonical = schema_uuid;
+  table.target_schema.uuid = schema_uuid;
   table.target_schema.object_kind = "schema";
-  table.requested_table_uuid.canonical = table_uuid;
+  table.requested_table_uuid = table_uuid;
   table.table_names.push_back(Name("ipar_publication_table"));
   table.table_columns.push_back(Column("id", "int64", 0));
   table.table_columns.push_back(Column("payload", "text", 1));
@@ -309,10 +329,10 @@ int main() {
 
   api::EngineCreateIndexRequest index;
   index.context = context;
-  index.target_object.uuid.canonical = table_uuid;
+  index.target_object.uuid = table_uuid;
   index.target_object.object_kind = "table";
   api::EngineIndexDefinition index_definition;
-  index_definition.requested_index_uuid.canonical = index_uuid;
+  index_definition.requested_index_uuid = index_uuid;
   index_definition.names.push_back(Name("ipar_publication_idx"));
   index_definition.index_kind = "btree";
   index_definition.key_envelopes.push_back("id");
@@ -326,9 +346,9 @@ int main() {
 
   api::EngineCreateStatisticsRequest statistics;
   statistics.context = context;
-  statistics.target_table.uuid.canonical = table_uuid;
+  statistics.target_table.uuid = table_uuid;
   statistics.target_table.object_kind = "table";
-  statistics.requested_statistics_uuid.canonical = statistics_uuid;
+  statistics.requested_statistics_uuid = statistics_uuid;
   statistics.statistics_names.push_back(Name("ipar_publication_stats"));
   statistics.statistics_kinds.push_back("ndistinct");
   statistics.expression_envelopes.push_back("id");
@@ -341,9 +361,9 @@ int main() {
 
   api::EngineCreateDomainRequest domain;
   domain.context = context;
-  domain.target_schema.uuid.canonical = schema_uuid;
+  domain.target_schema.uuid = schema_uuid;
   domain.target_schema.object_kind = "schema";
-  domain.target_object.uuid.canonical = domain_uuid;
+  domain.target_object.uuid = domain_uuid;
   domain.target_object.object_kind = "domain";
   domain.localized_names.push_back(Name("ipar_publication_domain"));
   domain.descriptors.push_back(ScalarDescriptor("int64"));
@@ -356,7 +376,7 @@ int main() {
 
   api::EngineAlterObjectRequest alter_domain;
   alter_domain.context = context;
-  alter_domain.target_object.uuid.canonical = domain_uuid;
+  alter_domain.target_object.uuid = domain_uuid;
   alter_domain.target_object.object_kind = "domain";
   alter_domain.option_envelopes.push_back("comment:publication gate update");
   const auto altered_domain = api::EngineAlterObject(alter_domain);
@@ -368,7 +388,7 @@ int main() {
 
   api::EngineDropObjectRequest drop_domain;
   drop_domain.context = context;
-  drop_domain.target_object.uuid.canonical = domain_uuid;
+  drop_domain.target_object.uuid = domain_uuid;
   drop_domain.target_object.object_kind = "domain";
   const auto dropped_domain = api::EngineDropObject(drop_domain);
   ExpectPublication(dropped_domain,

@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "access_path_full.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include <stdexcept>
 #include "logical_plan.hpp"
 #include "optimizer_catalog_backed_planning.hpp"
 #include "statistics_catalog.hpp"
@@ -45,12 +47,23 @@ bool ContainsText(const std::vector<std::string>& values, std::string_view expec
   });
 }
 
-std::string Id(std::string_view suffix) {
+plan::CanonicalPlannerUuid Id(std::string_view suffix) {
+  if (suffix=="column.customer_id") return scratchbird::tests::FixtureUuid(1202, 6101);
+  if (suffix=="filespace.hot") return scratchbird::tests::FixtureUuid(1202, 6102);
+  if (suffix=="function.redaction") return scratchbird::tests::FixtureUuid(1202, 6103);
+  if (suffix=="index.customer_pk") return scratchbird::tests::FixtureUuid(1202, 6104);
+  if (suffix=="index.customer_pk.stats") return scratchbird::tests::FixtureUuid(1202, 6105);
+  if (suffix=="relation.customer") return scratchbird::tests::FixtureUuid(1202, 6106);
+  if (suffix=="table_stats.customer") return scratchbird::tests::FixtureUuid(1202, 6107);
+  throw std::invalid_argument("unknown_optimizer_fixture_identity");
+}
+
+std::string Label(std::string_view suffix) {
   return "pcr061." + std::string(suffix);
 }
 
-opt::OptimizerStatsIdentity Identity(std::string object_uuid,
-                                     std::string statistic_uuid) {
+opt::OptimizerStatsIdentity Identity(plan::CanonicalPlannerUuid object_uuid,
+                                     plan::CanonicalPlannerUuid statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = std::move(object_uuid);
   identity.statistic_uuid = std::move(statistic_uuid);
@@ -79,7 +92,7 @@ opt::IndexStats IndexStats() {
   index.index_uuid = Id("index.customer_pk");
   index.relation_uuid = Id("relation.customer");
   index.index_family = "btree";
-  index.descriptor_digest = Id("descriptor.customer");
+  index.descriptor_digest = Label("descriptor.customer");
   index.collation_identity = "collation.pcr061.binary";
   index.key_column_uuids = {Id("column.customer_id")};
   index.height = 2;
@@ -118,14 +131,14 @@ plan::OptimizerPolicyMetadata SafePolicy() {
 plan::LogicalPlan LogicalPlan() {
   plan::LogicalPlan logical;
   logical.ok = true;
-  logical.plan_id = Id("logical_plan.customer_lookup");
+  logical.plan_id = Label("logical_plan.customer_lookup");
   logical.optimizer_policy = SafePolicy();
   auto node = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
                                         plan::PhysicalAccessKind::kNone,
-                                        Id("operation.customer_lookup"),
+                                        Label("operation.customer_lookup"),
                                         "customer_lookup");
   node.required_object_uuids.push_back(Id("relation.customer"));
-  node.required_descriptors.push_back(Id("descriptor.customer"));
+  node.required_descriptors.push_back(Label("descriptor.customer"));
   logical.nodes.push_back(std::move(node));
   return logical;
 }
@@ -134,7 +147,7 @@ opt::AccessPathPlanningRequest AccessRequest() {
   opt::AccessPathPlanningRequest request;
   request.relation_uuid = Id("relation.customer");
   request.predicate_kind = "scalar_eq";
-  request.descriptor_digest = Id("descriptor.customer");
+  request.descriptor_digest = Label("descriptor.customer");
   request.collation_identity = "collation.pcr061.binary";
   request.projected_column_uuids = {Id("column.customer_id")};
   request.visibility_proven = true;
@@ -148,10 +161,10 @@ opt::AccessPathPlanningRequest AccessRequest() {
 
 opt::BoundOptimizerRequest BoundRequest() {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = Id("request.customer_lookup");
-  request.context.operation_id = Id("operation.customer_lookup");
+  request.context.request_uuid = Label("request.customer_lookup");
+  request.context.operation_id = Label("operation.customer_lookup");
   request.context.sblr_digest = "sha256:sblr-pcr061-customer-lookup";
-  request.context.descriptor_set_digest = Id("descriptor.customer");
+  request.context.descriptor_set_digest = Label("descriptor.customer");
   request.context.statistics_snapshot_id = "sha256:stats-pcr061-customer";
   request.context.metric_snapshot_id = "sha256:metrics-pcr061-customer";
   request.context.executor_capability_set_id = "executor-capability:pcr061-local-mga";
@@ -174,9 +187,9 @@ opt::BoundOptimizerRequest BoundRequest() {
 
 opt::OptimizerPlanCacheKeyInput CacheKeyInput() {
   opt::OptimizerPlanCacheKeyInput input;
-  input.operation_id = Id("cache.customer_lookup");
+  input.operation_id = Label("cache.customer_lookup");
   input.sblr_digest = "sha256:sblr-pcr061-cache-customer";
-  input.descriptor_set_digest = Id("descriptor.customer");
+  input.descriptor_set_digest = Label("descriptor.customer");
   input.statistics_snapshot_id = "sha256:stats-pcr061-customer";
   input.catalog_stats_digest = "sha256:catalog-stats-pcr061-customer";
   input.cost_profile_id = "cost-profile:pcr061-catalog";

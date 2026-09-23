@@ -21,7 +21,7 @@ namespace {
 Submission BuildCreateIndexSubmission(
     const Fixture& fixture,
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     bool opcode_stream = true,
     bool multi_member = false) {
   auto submission = BuildSubmission(fixture, view, parser_uuid);
@@ -111,7 +111,7 @@ Submission BuildCreateIndexSubmission(
 Submission BuildPlanImportRowsSubmission(
     const Fixture& fixture,
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     bool opcode_stream = true,
     bool multi_member = false) {
   auto submission = BuildCreateIndexSubmission(
@@ -237,7 +237,7 @@ Submission RepackSubmission(Submission submission,
 
 void TestDispatchCommandHelpers(
     const Fixture& fixture, const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid, const server::ServerSblrAdmissionRequest& request) {
+    const platform::Uuid& parser_uuid, const server::ServerSblrAdmissionRequest& request) {
   unsigned checks = 0, failures = 0;
   const auto check = [&](bool ok, std::string_view message) {
     ++checks;
@@ -269,7 +269,7 @@ void TestDispatchCommandHelpers(
   reference.value_body.assign(uuid.begin(), uuid.end()); U64(&reference.value_body, 1);
   map.operands.push_back(reference);
   sblr::SblrTransactionCommitOptionsV1 options;
-  options.transaction_uuid = RawUuid(Text(NewUuid(platform::UuidKind::transaction, 705)));
+  options.transaction_uuid = RawUuid(Identity(NewUuid(platform::UuidKind::transaction, 705)));
   options.local_transaction_id = 19;
   options.admitted_handle_evidence_sha256[0] = 1;
   options.commit_mode = 2; options.authority_scope = 2; options.wait_policy = 2;
@@ -357,7 +357,7 @@ void TestDispatchCommandHelpers(
     } else if (profile.code == 0x1305) {
       sblr::SblrCatalogEpochCheckDescriptorV1 d;
       d.check_uuid = uuid; d.statement_receipt_uuid = receipt; d.requested_catalog_epoch_uuid = RawUuid(view.catalog_epoch_uuid);
-      d.requested_catalog_generation = view.catalog_generation_id; d.database_uuid = RawUuid(Text(fixture.database_uuid));
+      d.requested_catalog_generation = view.catalog_generation_id; d.database_uuid = RawUuid(Identity(fixture.database_uuid));
       d.schema_tree_uuid = uuid; d.schema_tree_generation = 1; d.security_context_uuid = RawUuid(view.security_context_uuid);
       d.policy_snapshot_uuid = uuid; d.policy_generation = 1; d.catalog_snapshot_uuid = snapshot;
       d.security_epoch = view.security_epoch; d.resource_epoch = view.resource_epoch; d.executor_availability_generation = 1;
@@ -461,7 +461,7 @@ void TestDispatchCommandHelpers(
 
 void TestCompanionAdmission(
     const Fixture& fixture, const bridge::StatementContextReceiptView& view,
-    bridge::StatementContextReceiptHandle receipt, std::string_view parser_uuid,
+    bridge::StatementContextReceiptHandle receipt, const platform::Uuid& parser_uuid,
     const server::ServerSblrAdmissionRequest& base_request) {
   unsigned checks = 0, failures = 0;
   const auto check = [&](bool ok, std::string_view label) {
@@ -590,7 +590,7 @@ void TestCompanionAdmission(
               submission.container.size());
           Require(outer.status == wire::SblrCodecStatus::ok, "artifact container decode failed");
           sblr::SblrSourceArtifactMapV1 artifact;
-          artifact.artifact_uuid = RawUuid(Text(NewUuid(platform::UuidKind::object, 703)));
+          artifact.artifact_uuid = RawUuid(Identity(NewUuid(platform::UuidKind::object, 703)));
           artifact.container_request_uuid = RawUuid(view.statement_uuid);
           artifact.parser_package_uuid = RawUuid(parser_uuid);
           std::copy_n(outer.container.canonical_anchor.begin() + 16, 16,
@@ -678,7 +678,7 @@ int main() {
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t acquire_result = nullptr;
@@ -688,7 +688,7 @@ int main() {
           "live statement receipt acquisition failed");
   if (acquire_result) (void)sb_engine_result_release(acquire_result);
 
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 702));
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 702));
   const auto submission = BuildSubmission(fixture, view, parser_uuid);
   bridge::StatementPackageAdmissionReservationRequest reservation_request;
   reservation_request.receipt = receipt;
@@ -711,7 +711,7 @@ int main() {
   request.admitted_parser_package_uuid = parser_uuid;
   request.admitted_parser_package_version_major = 1;
   request.admitted_registry_snapshot_uuid = view.catalog_epoch_uuid;
-  request.authenticated_principal_uuid = Text(fixture.principal_uuid);
+  request.authenticated_principal_uuid = Identity(fixture.principal_uuid);
   request.catalog_snapshot_uuid = view.statement_metadata_snapshot_uuid;
   request.engine_mga_statement_uuid = view.statement_uuid;
   request.engine_mga_snapshot_uuid = view.statement_snapshot_uuid;

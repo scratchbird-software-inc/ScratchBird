@@ -1,3 +1,4 @@
+#include "wire/binary_status_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -9,6 +10,9 @@
 // SEARCH_KEY: SB_SERVER_AUTH_SESSION_ATTACH
 
 #include "session_registry.hpp"
+#include "native_identity_selector.hpp"
+#include "hash_digest.hpp"
+#include <stdexcept>
 #include "statement_receipt_release.hpp"
 
 #include "config_policy_security_lifecycle.hpp"
@@ -826,7 +830,7 @@ bool RequestedDatabaseMatches(const HostedDatabaseSnapshot& database,
   if (selector.starts_with(kDevBootstrapPath)) selector.remove_prefix(kDevBootstrapPath.size());
   return selector.empty() || selector == "default" ||
          selector == database.database_path ||
-         selector == database.database_uuid;
+         NativeIdentitySelectorMatches(selector, database.database_uuid);
 }
 
 bool AuthContextMatchesHostedDatabase(const ServerSessionRecord& session,
@@ -950,19 +954,20 @@ bool IsZeroUuidBytes(const std::array<std::uint8_t, 16>& uuid);
 bool ContainsUuid(const std::vector<std::array<std::uint8_t, 16>>& values,
                   const std::array<std::uint8_t, 16>& target);
 
-void AddMaterializedSessionGrant(engine_api::EngineMaterializedAuthorizationContext* authorization,
+bool AddMaterializedSessionGrant(engine_api::EngineMaterializedAuthorizationContext* authorization,
                                  const engine_api::EngineUuid& principal_uuid,
                                  std::string tag,
                                  bool deny) {
-  if (authorization == nullptr || tag.empty()) return;
+  if (authorization == nullptr || tag.empty()) return false;
   std::string right = std::move(tag);
   engine_api::EngineUuid target_uuid;
   const std::size_t separator = right.find(':');
   if (separator != std::string::npos) {
-    target_uuid = right.substr(separator + 1);
+    if (!ReadNativeIdentitySelector(std::string_view(right).substr(separator + 1),
+                                    &target_uuid)) return false;
     right.resize(separator);
   }
-  if (right.empty()) return;
+  if (right.empty()) return false;
 
   engine_api::EngineMaterializedAuthorizationGrant grant;
   grant.subject_uuid = principal_uuid;
@@ -972,6 +977,7 @@ void AddMaterializedSessionGrant(engine_api::EngineMaterializedAuthorizationCont
   grant.deny = deny;
   grant.security_epoch = authorization->security_epoch;
   authorization->grants.push_back(std::move(grant));
+  return true;
 }
 
 std::string LowerAscii(std::string value) {
@@ -1015,21 +1021,26 @@ void AddUniqueTraceTag(std::vector<std::string>* tags, std::string tag) {
 
 std::string UuidSetHash(std::string_view prefix,
                         const std::vector<std::array<std::uint8_t, 16>>& values) {
-  std::vector<std::string> texts;
-  texts.reserve(values.size());
+  std::vector<std::array<std::uint8_t, 16>> identities;
+  identities.reserve(values.size());
   for (const auto& value : values) {
-    if (!IsZeroUuidBytes(value)) texts.push_back(UuidBytesToText(value));
+    if (!IsZeroUuidBytes(value)) identities.push_back(value);
   }
-  std::sort(texts.begin(), texts.end());
-  std::ostringstream out;
-  out << prefix << '/' << texts.size();
-  for (const auto& text : texts) out << ':' << text;
-  return out.str();
+  std::sort(identities.begin(), identities.end());
+  // Hash the ordered fixed-width binary identities, not display UUIDs.
+  std::vector<scratchbird::core::platform::byte> bytes;
+  bytes.reserve(identities.size() * 16);
+  for (const auto& identity : identities)
+    bytes.insert(bytes.end(), identity.begin(), identity.end());
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(bytes);
+  if (!digest.ok()) throw std::runtime_error("authorization UUID-set digest failed");
+  return std::string(prefix) + "/" + std::to_string(identities.size()) +
+         "/sha256:" + scratchbird::core::hash::HexLower(digest.digest);
 }
 
 std::string InferLifecycleSubjectKind(
     const engine_api::EngineSecurityPrincipalLifecycleState& state,
-    const std::string& uuid) {
+    const engine_api::EngineUuid& uuid) {
   for (const auto& role : state.roles) {
     if (role.role_uuid == uuid) return "role";
   }
@@ -1091,8 +1102,8 @@ engine_api::DurableAuthorizationState DurableAuthorizationStateFromLifecycle(
     state.groups.push_back(std::move(record));
   }
   for (const auto& membership : lifecycle.memberships) {
-    if (membership.revoked || membership.member_principal_uuid.empty() ||
-        membership.container_uuid.empty()) {
+    if (membership.revoked || membership.member_principal_uuid.is_nil() ||
+        membership.container_uuid.is_nil()) {
       continue;
     }
     engine_api::DurableAuthorizationMembershipRecord record;
@@ -1202,7 +1213,7 @@ engine_api::DurableAuthorizationMaterializeResult MaterializeDurableAuthorizatio
 }
 
 bool EffectiveSubjectContains(const engine_api::EngineMaterializedAuthorizationContext& context,
-                              const std::string& subject_uuid,
+                              const engine_api::EngineUuid& subject_uuid,
                               std::string_view subject_kind) {
   for (const auto& subject : context.effective_subjects) {
     if (subject.subject_uuid == subject_uuid &&
@@ -1213,11 +1224,10 @@ bool EffectiveSubjectContains(const engine_api::EngineMaterializedAuthorizationC
   return false;
 }
 
-std::string ResolveRequestedRoleUuid(
+engine_api::EngineUuid ResolveRequestedRoleUuid(
     const engine_api::EngineSecurityPrincipalLifecycleState& lifecycle,
     std::string_view requested_role) {
   if (requested_role.empty()) return {};
-  if (IsUuidTextPresent(requested_role)) return std::string(requested_role);
   const std::string wanted = NormalizeRoleName(std::string(requested_role));
   for (const auto& role : lifecycle.roles) {
     if (role.deleted || role.lifecycle_state != "active") continue;
@@ -1275,10 +1285,10 @@ bool ApplyDurableAuthorizationProjectionToSession(ServerSessionRecord* session,
   session->effective_group_uuids = groups;
 
   if (!session->requested_role_name.empty()) {
-    const std::string requested_uuid =
+    const auto requested_uuid =
         ResolveRequestedRoleUuid(effective_lifecycle,
                                  session->requested_role_name);
-    if (requested_uuid.empty()) {
+    if (requested_uuid.is_nil()) {
       if (rejection_detail != nullptr) *rejection_detail = "requested_role_not_found";
       return false;
     }
@@ -1286,7 +1296,7 @@ bool ApplyDurableAuthorizationProjectionToSession(ServerSessionRecord* session,
       if (rejection_detail != nullptr) *rejection_detail = "requested_role_not_granted";
       return false;
     }
-    session->active_role_uuid = TextToUuid(requested_uuid);
+    session->active_role_uuid = requested_uuid.bytes;
   } else if (roles.size() == 1) {
     session->active_role_uuid = roles.front();
   } else if (!IsZeroUuidBytes(session->active_role_uuid) &&
@@ -1357,15 +1367,15 @@ engine_api::EngineMaterializedAuthorizationContext MaterializeSessionAuthorizati
             context, "security.fixture_trace_authority");
     if (!fixture_authority) continue;
     if (StartsWith(tag, "deny:")) {
-      AddMaterializedSessionGrant(&authorization,
+      if (!AddMaterializedSessionGrant(&authorization,
                                   authorization.principal_uuid,
                                   tag.substr(std::string_view("deny:").size()),
-                                  true);
+                                  true)) return {};
     } else if (StartsWith(tag, "right:")) {
-      AddMaterializedSessionGrant(&authorization,
+      if (!AddMaterializedSessionGrant(&authorization,
                                   authorization.principal_uuid,
                                   tag.substr(std::string_view("right:").size()),
-                                  false);
+                                  false)) return {};
     }
   }
   authorization.present = true;
@@ -3513,8 +3523,8 @@ SessionOperationResult HandleAcquireStatementContext(
   }
   mark_acquire_phase("engine_receipt_acquire");
   if (variable_frame_acquire) {
-    const auto coordination_uuid=UuidBytesToText(GetUuid(request.payload,
-        kRequestBytes+4));
+    const auto coordination_uuid=engine_api::EngineUuid{GetUuid(request.payload,
+        kRequestBytes+4)};
     std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
     const auto found=registry->variable_frames_by_coordination_uuid.find(
         coordination_uuid);
@@ -4651,7 +4661,7 @@ SessionOperationResult HandleBeginVariableFrame(
   // manifest-admitted datatype/type/codec registry snapshot. These are Core
   // registry identities, not parser input or a catalog-name inference.
   context.catalog_epoch_uuid =
-      "019d0000-0000-7000-8000-00000000d701";
+      engine_api::EngineUuid{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,1}};
   context.catalog_generation_id = 1;
   const auto hex = [](const std::array<std::uint8_t,32>& bytes) {
     constexpr char digits[] = "0123456789abcdef";
@@ -4679,19 +4689,18 @@ SessionOperationResult HandleBeginVariableFrame(
     demands.push_back(std::move(demand));
   }
   const auto begun = engine_api::BeginSblrVariableFrame(
-      context, UuidBytesToText(decoded.operation_uuid),
+      context, engine_api::EngineUuid{decoded.operation_uuid},
       decoded.expires_after_ns, demands);
   if (!begun.ok) return refuse(
       begun.diagnostic.code.empty() ? "SBLR.VARIABLE.STALE"
                                     : begun.diagnostic.code,
       begun.diagnostic.message_key);
   scratchbird::engine::sblr::SblrVariableFrameBeginResultV1 encoded;
-  encoded.public_coordination_uuid = TextToUuid(
-      begun.snapshot.public_coordination_uuid);
-  encoded.operation_uuid = TextToUuid(begun.snapshot.operation_uuid);
-  encoded.scope_uuid = TextToUuid(begun.snapshot.scope_uuid);
+  encoded.public_coordination_uuid = begun.snapshot.public_coordination_uuid.bytes;
+  encoded.operation_uuid = begun.snapshot.operation_uuid.bytes;
+  encoded.scope_uuid = begun.snapshot.scope_uuid.bytes;
   encoded.scope_generation = begun.snapshot.scope_generation;
-  encoded.frame_uuid = TextToUuid(begun.snapshot.frame_uuid);
+  encoded.frame_uuid = begun.snapshot.frame_uuid.bytes;
   encoded.frame_generation = begun.snapshot.frame_generation;
   encoded.registry_generation = begun.snapshot.registry_generation;
   encoded.coordinator_generation = begun.snapshot.coordinator_generation;
@@ -4704,15 +4713,13 @@ SessionOperationResult HandleBeginVariableFrame(
             engine_api::SblrVariableMutability::mutable_value ? 1 : 0;
     mapping.value_state = static_cast<std::uint8_t>(
         source.descriptor.value_state);
-    mapping.variable_descriptor_uuid = TextToUuid(
-        source.descriptor.variable_descriptor_uuid);
+    mapping.variable_descriptor_uuid = source.descriptor.variable_descriptor_uuid.bytes;
     mapping.variable_descriptor_generation =
         source.descriptor.variable_descriptor_generation;
-    mapping.datatype_descriptor_uuid = TextToUuid(
-        source.descriptor.datatype_descriptor_uuid);
+    mapping.datatype_descriptor_uuid = source.descriptor.datatype_descriptor_uuid.bytes;
     mapping.datatype_descriptor_generation =
         source.descriptor.datatype_descriptor_generation;
-    mapping.datatype_type_uuid = TextToUuid(source.datatype_type_uuid);
+    mapping.datatype_type_uuid = source.datatype_type_uuid.bytes;
     mapping.value_generation = source.descriptor.value_generation;
     encoded.mappings.push_back(std::move(mapping));
   }
@@ -4721,7 +4728,7 @@ SessionOperationResult HandleBeginVariableFrame(
   if (result.payload.empty())
     return refuse("SBLR.EXECUTION_FAILED", "SBVC_encoding_failed");
   ServerVariableFrameRecord frame_record;
-  frame_record.session_uuid=UuidBytesToText(request.header.session_uuid);
+  frame_record.session_uuid=engine_api::EngineUuid{request.header.session_uuid};
   frame_record.transaction_uuid=begun.snapshot.transaction_uuid;
   frame_record.operation_uuid=begun.snapshot.operation_uuid;
   frame_record.public_coordination_uuid=begun.snapshot.public_coordination_uuid;
@@ -4783,8 +4790,8 @@ SessionOperationResult HandleCloseVariableFrame(
     return refuse("SECURITY.ACCESS_DENIED","session_hidden");
   auto context=EngineContextForSession(session_it->second,engine_state,request);
   const auto closed=engine_api::CloseSblrVariableFrame(
-      context,UuidBytesToText(decoded.public_coordination_uuid),
-      UuidBytesToText(decoded.operation_uuid),decoded.expected_frame_generation,
+      context,engine_api::EngineUuid{decoded.public_coordination_uuid},
+      engine_api::EngineUuid{decoded.operation_uuid},decoded.expected_frame_generation,
       "variable_frame_close_v1");
   if(!closed.ok)return refuse(closed.diagnostic.code.empty()
       ?"SBLR.VARIABLE.STALE":closed.diagnostic.code,
@@ -4821,9 +4828,9 @@ SessionOperationResult HandleNegotiateVariableDescriptors(
     for(auto&[id,r]:registry->statement_contexts_by_statement_uuid)
       if(!r.released&&r.view.receipt_uuid==receipt_uuid){receipt_record=&r;break;}
     for(auto&[id,r]:registry->variable_frames_by_coordination_uuid)
-      if(r.acquired&&!r.revoked&&r.scope_uuid==UuidBytesToText(decoded.scope_uuid)&&
+      if(r.acquired&&!r.revoked&&r.scope_uuid==engine_api::EngineUuid{decoded.scope_uuid}&&
          r.scope_generation==decoded.scope_generation&&
-         r.frame_uuid==UuidBytesToText(decoded.frame_uuid)&&
+         r.frame_uuid==engine_api::EngineUuid{decoded.frame_uuid}&&
          r.frame_generation==decoded.frame_generation){frame=&r;break;}
     if(!receipt_record||!frame||receipt_record->session_uuid!=request.header.session_uuid||
        receipt_record->view.variable_scope_uuid!=frame->scope_uuid||
@@ -4833,7 +4840,7 @@ SessionOperationResult HandleNegotiateVariableDescriptors(
     encoded.preliminary_receipt_uuid=decoded.preliminary_receipt_uuid;
     encoded.scope_uuid=decoded.scope_uuid;encoded.scope_generation=decoded.scope_generation;
     encoded.frame_uuid=decoded.frame_uuid;encoded.frame_generation=decoded.frame_generation;
-    encoded.registry_snapshot_uuid=TextToUuid(frame->registry_snapshot_uuid);
+    encoded.registry_snapshot_uuid=frame->registry_snapshot_uuid.bytes;
     encoded.registry_generation=frame->registry_generation;
     for(const auto& demand:decoded.demands){
       if(demand.variable_ordinal>=frame->mappings.size())
@@ -4843,11 +4850,11 @@ SessionOperationResult HandleNegotiateVariableDescriptors(
       mapping.occurrence_id=demand.occurrence_id;
       mapping.variable_ordinal=source.variable_ordinal;
       mapping.nullable=source.nullable;mapping.mutability=source.mutability;
-      mapping.variable_descriptor_uuid=TextToUuid(source.variable_descriptor_uuid);
+      mapping.variable_descriptor_uuid=source.variable_descriptor_uuid.bytes;
       mapping.variable_descriptor_generation=source.variable_descriptor_generation;
-      mapping.datatype_descriptor_uuid=TextToUuid(source.datatype_descriptor_uuid);
+      mapping.datatype_descriptor_uuid=source.datatype_descriptor_uuid.bytes;
       mapping.datatype_descriptor_generation=source.datatype_descriptor_generation;
-      mapping.datatype_type_uuid=TextToUuid(source.datatype_type_uuid);
+      mapping.datatype_type_uuid=source.datatype_type_uuid.bytes;
       mapping.value_generation=source.value_generation;mapping.value_state=source.value_state;
       encoded.mappings.push_back(std::move(mapping));
     }
@@ -4876,15 +4883,15 @@ SessionOperationResult HandleAssignVariableValues(
   std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
   ServerStatementContextRecord* receipt=nullptr;ServerVariableFrameRecord* frame=nullptr;
   const auto receipt_uuid = engine_api::EngineUuid{decoded.preliminary_receipt_uuid};
-  const auto coordination_uuid=UuidBytesToText(decoded.public_coordination_uuid);
+  const auto coordination_uuid=engine_api::EngineUuid{decoded.public_coordination_uuid};
   for(auto&[id,r]:registry->statement_contexts_by_statement_uuid)
     if(!r.released&&r.view.receipt_uuid==receipt_uuid){receipt=&r;break;}
   const auto fit=registry->variable_frames_by_coordination_uuid.find(coordination_uuid);
   if(fit!=registry->variable_frames_by_coordination_uuid.end())frame=&fit->second;
   if(!receipt||!frame||!frame->acquired||frame->revoked||
      receipt->session_uuid!=request.header.session_uuid||
-     frame->session_uuid!=UuidBytesToText(request.header.session_uuid)||
-     frame->operation_uuid!=UuidBytesToText(decoded.operation_uuid))
+     frame->session_uuid!=engine_api::EngineUuid{request.header.session_uuid}||
+     frame->operation_uuid!=engine_api::EngineUuid{decoded.operation_uuid})
     return refuse("SBLR.VARIABLE.STALE","variable_assignment_binding_stale");
   std::vector<std::uint8_t> response;sb_engine_result_t engine_result=nullptr;
   const auto status=scratchbird::server_engine_bridge::AssignStatementVariableValuesV1(
@@ -4905,7 +4912,7 @@ SessionOperationResult HandleAssignVariableValues(
   for(const auto& row:assigned.results){if(row.variable_ordinal>=frame->mappings.size())
       return refuse("SBLR.EXECUTION_FAILED","SBVW_ordinal_invalid");
     auto& target=frame->mappings[row.variable_ordinal];
-    if(target.variable_descriptor_uuid!=UuidBytesToText(row.variable_descriptor_uuid))
+    if(target.variable_descriptor_uuid!=engine_api::EngineUuid{row.variable_descriptor_uuid})
       return refuse("SBLR.EXECUTION_FAILED","SBVW_descriptor_invalid");
     target.value_generation=row.new_value_generation;
     const auto source=std::find_if(decoded.assignments.begin(),decoded.assignments.end(),
@@ -5064,9 +5071,9 @@ SessionOperationResult HandleReserveSavepoint(
   if(!begun.ok)return refuse(begun.diagnostic.code,begun.diagnostic.message_key);
   scratchbird::engine::sblr::SblrSavepointCoordinationResultV1 wire;
   wire.preliminary_receipt_uuid=decoded.preliminary_receipt_uuid;
-  wire.descriptor_uuid=TextToUuid(begun.snapshot.descriptor_uuid);
+  wire.descriptor_uuid=begun.snapshot.descriptor_uuid.bytes;
   wire.descriptor_generation=begun.snapshot.descriptor_generation;
-  wire.savepoint_uuid=TextToUuid(begun.snapshot.savepoint_uuid);
+  wire.savepoint_uuid=begun.snapshot.savepoint_uuid.bytes;
   wire.savepoint_generation=begun.snapshot.savepoint_generation;
   wire.transaction_ordinal=begun.snapshot.transaction_ordinal;
   wire.symbol_occurrence_id=begun.snapshot.symbol_occurrence_id;
@@ -5126,9 +5133,9 @@ SessionOperationResult HandleReserveAutonomousFrame(
                                   reserved.diagnostic.message_key);
   scratchbird::engine::sblr::SblrAutonomousFrameDescriptorV1 wire;
   wire.receipt = decoded.receipt;
-  wire.frame = TextToUuid(reserved.snapshot.frame_uuid);
+  wire.frame = reserved.snapshot.frame_uuid.bytes;
   wire.frame_generation = reserved.snapshot.frame_generation;
-  wire.child_transaction = TextToUuid(reserved.snapshot.child_transaction_uuid);
+  wire.child_transaction = reserved.snapshot.child_transaction_uuid.bytes;
   wire.child_transaction_number = reserved.snapshot.child_transaction_number;
   const auto& authority = reserved.snapshot.authority;
   wire.parent_transaction = authority.parent_transaction_uuid.bytes;
@@ -5142,7 +5149,7 @@ SessionOperationResult HandleReserveAutonomousFrame(
   wire.catalog_generation = authority.catalog_generation;
   wire.capability_generation = authority.capability_generation;
   wire.body = authority.body_sblr_uuid.bytes;
-  if (!authority.dynamic_statement_sblr_uuid.empty())
+  if (!authority.dynamic_statement_sblr_uuid.is_nil())
     wire.dynamic = authority.dynamic_statement_sblr_uuid.bytes;
   wire.intent = authority.intent; wire.depth = authority.nesting_depth;
   wire.effect_count = authority.effect_count;
@@ -5158,8 +5165,8 @@ SessionOperationResult HandleReserveAutonomousFrame(
   result.accepted = true; return result;
 }
 
-SessionOperationResult HandleCoordinateReservationRelease(ServerSessionRegistry* registry,const HostedEngineState& engine_state,const sbps::Frame& request){SessionOperationResult result;result.response_message_type=73;result.response_schema_id=sbps::kSchemaCoordinateReservationReleaseResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;const auto refuse=[&](std::string c,std::string d){result.accepted=false;result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.reservation_release_coordination_refused","Reservation release coordination was refused.",{{"detail",std::move(d)}}));return result;};if(!registry||request.header.payload_schema_id!=sbps::kSchemaCoordinateReservationReleaseRequestV1)return refuse("SBLR.OPERAND_INVALID","RRCR_schema_invalid");scratchbird::engine::sblr::SblrReservationReleaseRequestV1 q;std::string detail;if(!scratchbird::engine::sblr::DecodeSblrReservationReleaseRequestV1(request.payload.data(),request.payload.size(),&q,&detail))return refuse("SBLR.OPERAND_INVALID",detail);auto session=registry->sessions_by_uuid.find(scratchbird::core::platform::Uuid{request.header.session_uuid});if(session==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");const auto receipt_uuid = engine_api::EngineUuid{q.receipt};ServerStatementContextRecord* receipt=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[_,r]:registry->statement_contexts_by_statement_uuid)if(!r.released&&r.view.receipt_uuid==receipt_uuid){receipt=&r;break;}}if(!receipt||receipt->session_uuid!=request.header.session_uuid||receipt->owning_transaction_uuid!=engine_api::EngineUuid{q.transaction})return refuse("SECURITY.ACCESS_DENIED","reservation_receipt_hidden");auto c=EngineContextForSession(session->second,engine_state,request);c.statement_uuid=receipt_uuid;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_transaction_relation_reservation_compiler");const auto published=engine_api::CompileAndPublishSblrRelationReservation(c,receipt_uuid,q.occurrence);if(!published.ok)return refuse(published.diagnostic.code,published.diagnostic.message_key);c.trace_tags.push_back("private_transaction_relation_reservation");const auto coordinated=engine_api::CoordinateSblrReservationRelease(c,receipt_uuid,published.snapshot.relation_uuid,q.occurrence,receipt->view.transaction_reservation_release_executor_availability_generation);if(!coordinated.ok)return refuse(coordinated.diagnostic.code,coordinated.diagnostic.message_key);scratchbird::engine::sblr::SblrReservationReleaseDescriptorV1 d;d.reservation=TextToUuid(coordinated.snapshot.reservation_uuid);d.reservation_generation=coordinated.snapshot.reservation_generation;d.transaction=q.transaction;d.local_transaction_id=coordinated.snapshot.local_transaction_id;d.relation=TextToUuid(coordinated.snapshot.relation_uuid);d.mode=coordinated.snapshot.mode;d.catalog_generation=coordinated.snapshot.catalog_generation;d.policy_generation=coordinated.snapshot.policy_generation;d.availability_generation=coordinated.snapshot.availability_generation;result.payload=scratchbird::engine::sblr::EncodeSblrReservationReleaseDescriptorV1(d);if(result.payload.empty())return refuse("SBLR.EXECUTION_FAILED","RRCD_encode_failed");result.accepted=true;return result;}
-SessionOperationResult HandleCoordinateTemporaryInstanceCleanup(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult r;r.response_message_type=77;r.response_schema_id=sbps::kSchemaCoordinateTemporaryInstanceCleanupResultV1;r.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;r.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){r.frame_flags|=sbps::kFlagError;r.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.temporary_cleanup_coordination_refused","Temporary instance cleanup coordination was refused.",{{"detail",std::move(d)}}));return r;};scratchbird::engine::sblr::SblrTemporaryInstanceCleanupRequestV1 q;std::string detail;if(!registry||!scratchbird::engine::sblr::DecodeSblrTemporaryInstanceCleanupRequestV1(request.payload.data(),request.payload.size(),&q,&detail))return refuse("SBLR.OPERAND_INVALID",detail);auto session=registry->sessions_by_uuid.find(scratchbird::core::platform::Uuid{request.header.session_uuid});if(session==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");const auto receipt_uuid = engine_api::EngineUuid{q.receipt};ServerStatementContextRecord*receipt=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[_,v]:registry->statement_contexts_by_statement_uuid)if(!v.released&&v.view.receipt_uuid==receipt_uuid){receipt=&v;break;}}if(!receipt||receipt->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","temporary_receipt_hidden");auto c=EngineContextForSession(session->second,engine_state,request);c.statement_uuid=receipt_uuid;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_temporary_instance_compiler");auto published=engine_api::PublishSblrTemporaryInstance(c,receipt_uuid,q.occurrence,1);if(!published.ok)return refuse(published.diagnostic.code,published.diagnostic.message_key);c.trace_tags.push_back("private_temporary_instance_cleanup");auto coordinated=engine_api::CoordinateSblrTemporaryInstanceCleanup(c,receipt_uuid,q.occurrence,q.trigger,receipt->view.temporary_instance_cleanup_executor_availability_generation);if(!coordinated.ok)return refuse(coordinated.diagnostic.code,coordinated.diagnostic.message_key);scratchbird::engine::sblr::SblrTemporaryInstanceCleanupDescriptorV1 d;d.descriptor=TextToUuid(coordinated.snapshot.descriptor_uuid);d.descriptor_generation=coordinated.snapshot.descriptor_generation;d.definition=TextToUuid(coordinated.snapshot.definition_uuid);d.instance=TextToUuid(coordinated.snapshot.instance_uuid);d.instance_generation=coordinated.snapshot.instance_generation;d.owner_session=q.session;d.owner_transaction=q.transaction;d.retention=coordinated.snapshot.retention;d.trigger=q.trigger;d.state=1;d.catalog_generation=coordinated.snapshot.catalog_generation;d.security_generation=coordinated.snapshot.security_generation;d.policy_generation=coordinated.snapshot.policy_generation;d.availability_generation=coordinated.snapshot.availability_generation;r.payload=scratchbird::engine::sblr::EncodeSblrTemporaryInstanceCleanupDescriptorV1(d);if(r.payload.empty())return refuse("TEMP.TABLE.CLEANUP_FAILED","TICD_encode_failed");r.accepted=true;return r;}
+SessionOperationResult HandleCoordinateReservationRelease(ServerSessionRegistry* registry,const HostedEngineState& engine_state,const sbps::Frame& request){SessionOperationResult result;result.response_message_type=73;result.response_schema_id=sbps::kSchemaCoordinateReservationReleaseResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;const auto refuse=[&](std::string c,std::string d){result.accepted=false;result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.reservation_release_coordination_refused","Reservation release coordination was refused.",{{"detail",std::move(d)}}));return result;};if(!registry||request.header.payload_schema_id!=sbps::kSchemaCoordinateReservationReleaseRequestV1)return refuse("SBLR.OPERAND_INVALID","RRCR_schema_invalid");scratchbird::engine::sblr::SblrReservationReleaseRequestV1 q;std::string detail;if(!scratchbird::engine::sblr::DecodeSblrReservationReleaseRequestV1(request.payload.data(),request.payload.size(),&q,&detail))return refuse("SBLR.OPERAND_INVALID",detail);auto session=registry->sessions_by_uuid.find(scratchbird::core::platform::Uuid{request.header.session_uuid});if(session==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");const auto receipt_uuid = engine_api::EngineUuid{q.receipt};ServerStatementContextRecord* receipt=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[_,r]:registry->statement_contexts_by_statement_uuid)if(!r.released&&r.view.receipt_uuid==receipt_uuid){receipt=&r;break;}}if(!receipt||receipt->session_uuid!=request.header.session_uuid||receipt->owning_transaction_uuid!=engine_api::EngineUuid{q.transaction})return refuse("SECURITY.ACCESS_DENIED","reservation_receipt_hidden");auto c=EngineContextForSession(session->second,engine_state,request);c.statement_uuid=receipt_uuid;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_transaction_relation_reservation_compiler");const auto published=engine_api::CompileAndPublishSblrRelationReservation(c,receipt_uuid,q.occurrence);if(!published.ok)return refuse(published.diagnostic.code,published.diagnostic.message_key);c.trace_tags.push_back("private_transaction_relation_reservation");const auto coordinated=engine_api::CoordinateSblrReservationRelease(c,receipt_uuid,published.snapshot.relation_uuid,q.occurrence,receipt->view.transaction_reservation_release_executor_availability_generation);if(!coordinated.ok)return refuse(coordinated.diagnostic.code,coordinated.diagnostic.message_key);scratchbird::engine::sblr::SblrReservationReleaseDescriptorV1 d;d.reservation=coordinated.snapshot.reservation_uuid.bytes;d.reservation_generation=coordinated.snapshot.reservation_generation;d.transaction=q.transaction;d.local_transaction_id=coordinated.snapshot.local_transaction_id;d.relation=coordinated.snapshot.relation_uuid.bytes;d.mode=coordinated.snapshot.mode;d.catalog_generation=coordinated.snapshot.catalog_generation;d.policy_generation=coordinated.snapshot.policy_generation;d.availability_generation=coordinated.snapshot.availability_generation;result.payload=scratchbird::engine::sblr::EncodeSblrReservationReleaseDescriptorV1(d);if(result.payload.empty())return refuse("SBLR.EXECUTION_FAILED","RRCD_encode_failed");result.accepted=true;return result;}
+SessionOperationResult HandleCoordinateTemporaryInstanceCleanup(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult r;r.response_message_type=77;r.response_schema_id=sbps::kSchemaCoordinateTemporaryInstanceCleanupResultV1;r.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;r.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){r.frame_flags|=sbps::kFlagError;r.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.temporary_cleanup_coordination_refused","Temporary instance cleanup coordination was refused.",{{"detail",std::move(d)}}));return r;};scratchbird::engine::sblr::SblrTemporaryInstanceCleanupRequestV1 q;std::string detail;if(!registry||!scratchbird::engine::sblr::DecodeSblrTemporaryInstanceCleanupRequestV1(request.payload.data(),request.payload.size(),&q,&detail))return refuse("SBLR.OPERAND_INVALID",detail);auto session=registry->sessions_by_uuid.find(scratchbird::core::platform::Uuid{request.header.session_uuid});if(session==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");const auto receipt_uuid = engine_api::EngineUuid{q.receipt};ServerStatementContextRecord*receipt=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[_,v]:registry->statement_contexts_by_statement_uuid)if(!v.released&&v.view.receipt_uuid==receipt_uuid){receipt=&v;break;}}if(!receipt||receipt->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","temporary_receipt_hidden");auto c=EngineContextForSession(session->second,engine_state,request);c.statement_uuid=receipt_uuid;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_temporary_instance_compiler");auto published=engine_api::PublishSblrTemporaryInstance(c,receipt_uuid,q.occurrence,1);if(!published.ok)return refuse(published.diagnostic.code,published.diagnostic.message_key);c.trace_tags.push_back("private_temporary_instance_cleanup");auto coordinated=engine_api::CoordinateSblrTemporaryInstanceCleanup(c,receipt_uuid,q.occurrence,q.trigger,receipt->view.temporary_instance_cleanup_executor_availability_generation);if(!coordinated.ok)return refuse(coordinated.diagnostic.code,coordinated.diagnostic.message_key);scratchbird::engine::sblr::SblrTemporaryInstanceCleanupDescriptorV1 d;d.descriptor=coordinated.snapshot.descriptor_uuid.bytes;d.descriptor_generation=coordinated.snapshot.descriptor_generation;d.definition=coordinated.snapshot.definition_uuid.bytes;d.instance=coordinated.snapshot.instance_uuid.bytes;d.instance_generation=coordinated.snapshot.instance_generation;d.owner_session=q.session;d.owner_transaction=q.transaction;d.retention=coordinated.snapshot.retention;d.trigger=q.trigger;d.state=1;d.catalog_generation=coordinated.snapshot.catalog_generation;d.security_generation=coordinated.snapshot.security_generation;d.policy_generation=coordinated.snapshot.policy_generation;d.availability_generation=coordinated.snapshot.availability_generation;r.payload=scratchbird::engine::sblr::EncodeSblrTemporaryInstanceCleanupDescriptorV1(d);if(r.payload.empty())return refuse("TEMP.TABLE.CLEANUP_FAILED","TICD_encode_failed");r.accepted=true;return r;}
 
 SessionOperationResult HandleFinalizeVariableBinding(
     ServerSessionRegistry* registry,const HostedEngineState& engine_state,
@@ -5184,8 +5191,8 @@ SessionOperationResult HandleFinalizeVariableBinding(
   for(auto&[id,r]:registry->statement_contexts_by_statement_uuid)
     if(!r.released&&r.view.receipt_uuid==receipt_uuid){receipt_record=&r;break;}
   for(auto&[id,r]:registry->variable_frames_by_coordination_uuid)
-    if(r.acquired&&!r.revoked&&r.scope_uuid==UuidBytesToText(decoded.scope_uuid)&&
-       r.scope_generation==decoded.scope_generation&&r.frame_uuid==UuidBytesToText(decoded.frame_uuid)&&
+    if(r.acquired&&!r.revoked&&r.scope_uuid==engine_api::EngineUuid{decoded.scope_uuid}&&
+       r.scope_generation==decoded.scope_generation&&r.frame_uuid==engine_api::EngineUuid{decoded.frame_uuid}&&
        r.frame_generation==decoded.frame_generation){frame=&r;break;}
   if(!receipt_record||!frame||decoded.registry_generation!=frame->registry_generation||
      receipt_record->variable_binding_finalized)
@@ -5237,8 +5244,8 @@ SessionOperationResult HandleFinalizeVariableBinding(
   for(const auto& node:table.table.nodes){if(node.parent_operand_ordinal==0||
       node.parent_operand_ordinal>frame->mappings.size())return refuse("SBLR.OPERAND_INVALID","SBVN_ordinal_invalid");
     const auto& mapping=frame->mappings[node.parent_operand_ordinal-1];
-    if(node.scope_uuid!=TextToUuid(frame->scope_uuid)||node.scope_generation!=frame->scope_generation||
-       node.frame_uuid!=TextToUuid(frame->frame_uuid)||node.frame_generation!=frame->frame_generation||
+    if(node.scope_uuid!=frame->scope_uuid.bytes||node.scope_generation!=frame->scope_generation||
+       node.frame_uuid!=frame->frame_uuid.bytes||node.frame_generation!=frame->frame_generation||
        node.variable_descriptor_uuid!=TextToUuid(mapping.variable_descriptor_uuid)||
        node.variable_descriptor_generation!=mapping.variable_descriptor_generation||
        node.datatype_descriptor_uuid!=TextToUuid(mapping.datatype_descriptor_uuid)||
@@ -5261,7 +5268,7 @@ SessionOperationResult HandleFinalizeVariableBinding(
   admission.final_receipt_uuid=TextToUuid(final_uuid);admission.admission_token_uuid=TextToUuid(token_uuid);
   admission.scope_uuid=decoded.scope_uuid;admission.scope_generation=decoded.scope_generation;
   admission.frame_uuid=decoded.frame_uuid;admission.frame_generation=decoded.frame_generation;
-  admission.registry_snapshot_uuid=TextToUuid(frame->registry_snapshot_uuid);
+  admission.registry_snapshot_uuid=frame->registry_snapshot_uuid.bytes;
   admission.registry_generation=frame->registry_generation;
   admission.executor_availability_generation=availability.snapshot.generation;
   admission.expires_at_monotonic_ns=1;
@@ -7276,7 +7283,7 @@ ServerSessionBindingControlResult ApplyServerSessionTakeoverRequest(
 }
 
 std::string SessionRegistryStatusJson(const ServerSessionRegistry& registry) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "{\"session_registry\":{\"channel_state\":\""
       << ServerChannelStateName(registry.channel_state) << "\",\"active_sessions\":"
       << registry.sessions_by_uuid.size() << ",\"auth_contexts\":"
@@ -7290,7 +7297,7 @@ std::string SessionRegistryStatusJson(const ServerSessionRegistry& registry) {
     const auto language = ServerLanguageContextForSession(session);
     if (!first) out << ',';
     first = false;
-    out << "{\"session_uuid\":\"" << UuidBytesToText(session.session_uuid)
+    out << "{\"session_uuid\":\"" << scratchbird::wire::binary_status::Identity(session.session_uuid)
         << "\",\"principal\":\"" << JsonEscape(session.principal_claim)
         << "\",\"database_path\":\"" << JsonEscape(session.database_path)
         << "\",\"attach_mode\":\"" << JsonEscape(session.attach_mode)
@@ -7315,11 +7322,11 @@ std::string SessionRegistryStatusJson(const ServerSessionRegistry& registry) {
         << JsonEscape(language.resource_version_identity)
         << "\",\"session_binding_present\":"
         << (session.session_binding_present ? "true" : "false")
-        << ",\"attachment_id\":\"" << UuidBytesToText(session.attachment_id)
-        << "\",\"catalog_session_id\":\"" << UuidBytesToText(session.catalog_session_id)
-        << "\",\"protocol_session_id\":\"" << UuidBytesToText(session.protocol_session_id)
-        << "\",\"authkey_id\":\"" << UuidBytesToText(session.authkey_id)
-        << "\",\"active_role_id\":\"" << UuidBytesToText(session.active_role_uuid)
+        << ",\"attachment_id\":\"" << scratchbird::wire::binary_status::Identity(session.attachment_id)
+        << "\",\"catalog_session_id\":\"" << scratchbird::wire::binary_status::Identity(session.catalog_session_id)
+        << "\",\"protocol_session_id\":\"" << scratchbird::wire::binary_status::Identity(session.protocol_session_id)
+        << "\",\"authkey_id\":\"" << scratchbird::wire::binary_status::Identity(session.authkey_id)
+        << "\",\"active_role_id\":\"" << scratchbird::wire::binary_status::Identity(session.active_role_uuid)
         << "\",\"effective_role_count\":" << session.effective_role_uuids.size()
         << ",\"effective_group_count\":" << session.effective_group_uuids.size()
         << ",\"session_binding_generation\":" << session.session_binding_generation
@@ -7411,15 +7418,15 @@ SessionOperationResult HandleCoordinateCursorOpen(
     return refuse(coordinated.diagnostic.code,
                   coordinated.diagnostic.message_key);
   scratchbird::engine::sblr::SblrCursorOpenDescriptorV1 descriptor;
-  descriptor.descriptor = TextToUuid(coordinated.snapshot.descriptor_uuid);
+  descriptor.descriptor = coordinated.snapshot.descriptor_uuid.bytes;
   descriptor.descriptor_generation = coordinated.snapshot.descriptor_generation;
-  descriptor.plan = TextToUuid(coordinated.snapshot.plan_uuid);
+  descriptor.plan = coordinated.snapshot.plan_uuid.bytes;
   descriptor.plan_generation = coordinated.snapshot.plan_generation;
-  descriptor.row_shape = TextToUuid(coordinated.snapshot.row_shape_uuid);
+  descriptor.row_shape = coordinated.snapshot.row_shape_uuid.bytes;
   descriptor.row_shape_generation = coordinated.snapshot.row_shape_generation;
-  descriptor.transaction = TextToUuid(coordinated.snapshot.transaction_uuid);
-  descriptor.session = TextToUuid(coordinated.snapshot.session_uuid);
-  descriptor.security = TextToUuid(coordinated.snapshot.security_uuid);
+  descriptor.transaction = coordinated.snapshot.transaction_uuid.bytes;
+  descriptor.session = coordinated.snapshot.session_uuid.bytes;
+  descriptor.security = coordinated.snapshot.security_uuid.bytes;
   const auto decode_sha = [](const std::string& text, auto* output) {
     if (text.size() != 71 || text.substr(0, 7) != "sha256:") return false;
     for (std::size_t index = 0; index < 32; ++index) {
@@ -7532,7 +7539,7 @@ SessionOperationResult HandleCoordinateDmlDeleteRowsBind(
   demand.authenticated_statement_receipt_uuid =
       engine_api::EngineUuid{receipt_bytes};
   demand.structural_occurrence_id = occurrence;
-  demand.target_relation_uuid_hint = UuidBytesToText(relation_bytes);
+  demand.target_relation_uuid_hint = engine_api::EngineUuid{relation_bytes};
   if ((flags & 1U) != 0) {
     if (!read_u16_string(&demand.predicate_kind) ||
         demand.predicate_kind != "column_equals" ||
@@ -7662,7 +7669,7 @@ SessionOperationResult HandleCoordinateDmlUpdateRowsBind(
   demand.authenticated_statement_receipt_uuid =
       engine_api::EngineUuid{receipt_bytes};
   demand.structural_occurrence_id = occurrence;
-  demand.target_relation_uuid_hint = UuidBytesToText(relation_bytes);
+  demand.target_relation_uuid_hint = engine_api::EngineUuid{relation_bytes};
   demand.assignments.reserve(assignment_count);
   for (std::uint32_t expected = 1; expected <= assignment_count; ++expected) {
     if (offset + 4 > request.payload.size()) {

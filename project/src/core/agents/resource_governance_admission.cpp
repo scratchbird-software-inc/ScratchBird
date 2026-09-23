@@ -608,7 +608,11 @@ ResourceGovernanceReservationLedger::Acquire(
     return result;
   }
 
-  if (request.owner_scope.empty()) {
+  const bool native_owner = !request.owner_uuid.is_nil();
+  const bool valid_native_owner = !native_owner ||
+      ((request.owner_uuid.bytes[6] >> 4) == 7 &&
+       (request.owner_uuid.bytes[8] & 0xc0) == 0x80);
+  if ((request.owner_scope.empty() == !native_owner) || !valid_native_owner) {
     result.ok = false;
     result.fail_closed = true;
     result.diagnostic_code =
@@ -656,6 +660,7 @@ ResourceGovernanceReservationLedger::Acquire(
   token.family = request.admission.descriptor.family;
   token.reserved = request.admission.requested;
   token.owner_scope = std::move(request.owner_scope);
+  token.owner_uuid = request.owner_uuid;
   token.lease_deadline_tick = request.lease_deadline_tick;
   AddQuota(&active_usage_, token.reserved);
   active_[token.token_id] = ActiveReservation{token};
@@ -731,8 +736,23 @@ ResourceGovernanceReservationCleanupResult
 ResourceGovernanceReservationLedger::ReleaseOwnerReservations(
     const std::string& owner_scope,
     ResourceGovernanceReservationReleaseReason reason) {
+  return ReleaseOwnerReservationsImpl(owner_scope, {}, reason);
+}
+
+ResourceGovernanceReservationCleanupResult
+ResourceGovernanceReservationLedger::ReleaseOwnerReservations(
+    const core::platform::Uuid& owner_uuid,
+    ResourceGovernanceReservationReleaseReason reason) {
+  return ReleaseOwnerReservationsImpl({}, owner_uuid, reason);
+}
+
+ResourceGovernanceReservationCleanupResult
+ResourceGovernanceReservationLedger::ReleaseOwnerReservationsImpl(
+    const std::string& owner_scope, const core::platform::Uuid& owner_uuid,
+    ResourceGovernanceReservationReleaseReason reason) {
   ResourceGovernanceReservationCleanupResult result;
   result.owner_scope = owner_scope;
+  result.owner_uuid = owner_uuid;
   result.reason = reason;
   Add(&result.evidence, "MMCH_RESOURCE_RESERVATION_LIFECYCLE");
   Add(&result.evidence, "resource_reservation.ledger_id=" + ledger_id_);
@@ -745,7 +765,8 @@ ResourceGovernanceReservationLedger::ReleaseOwnerReservations(
 
   std::lock_guard<std::mutex> lock(mutex_);
   for (auto it = active_.begin(); it != active_.end();) {
-    if (it->second.token.owner_scope != owner_scope) {
+    if (it->second.token.owner_scope != owner_scope ||
+        it->second.token.owner_uuid != owner_uuid) {
       ++it;
       continue;
     }
@@ -914,7 +935,12 @@ HierarchicalMemoryBudgetReserveResult HierarchicalMemoryBudgetLedger::Reserve(
   Add(&result.evidence,
       "hierarchical_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
-  if (request.operation_id.empty() || request.owner_scope.empty() ||
+  const bool native_owner = !request.owner_uuid.is_nil();
+  const bool valid_native_owner = !native_owner ||
+      ((request.owner_uuid.bytes[6] >> 4) == 7 &&
+       (request.owner_uuid.bytes[8] & 0xc0) == 0x80);
+  if (request.operation_id.empty() ||
+      (request.owner_scope.empty() == !native_owner) || !valid_native_owner ||
       request.leaf_scope_id.empty() || request.bytes == 0) {
     result.fail_closed = true;
     result.diagnostic_code =
@@ -986,6 +1012,7 @@ HierarchicalMemoryBudgetReserveResult HierarchicalMemoryBudgetLedger::Reserve(
                    std::to_string(token.created_sequence);
   token.operation_id = std::move(request.operation_id);
   token.owner_scope = std::move(request.owner_scope);
+  token.owner_uuid = request.owner_uuid;
   token.leaf_scope_id = std::move(request.leaf_scope_id);
   token.bytes = request.bytes;
   token.debited_scope_chain = chain;
@@ -1109,6 +1136,18 @@ HierarchicalMemoryBudgetReleaseCode HierarchicalMemoryBudgetLedger::ReleaseNoAll
 HierarchicalMemoryBudgetReleaseResult
 HierarchicalMemoryBudgetLedger::ReleaseOwnerReservations(
     const std::string& owner_scope) {
+  return ReleaseOwnerReservationsImpl(owner_scope, {});
+}
+
+HierarchicalMemoryBudgetReleaseResult
+HierarchicalMemoryBudgetLedger::ReleaseOwnerReservations(
+    const core::platform::Uuid& owner_uuid) {
+  return ReleaseOwnerReservationsImpl({}, owner_uuid);
+}
+
+HierarchicalMemoryBudgetReleaseResult
+HierarchicalMemoryBudgetLedger::ReleaseOwnerReservationsImpl(
+    const std::string& owner_scope, const core::platform::Uuid& owner_uuid) {
   HierarchicalMemoryBudgetReleaseResult combined;
   Add(&combined.evidence, "MMCH_HIERARCHICAL_MEMORY_BUDGETS");
   Add(&combined.evidence, "hierarchical_memory.ledger_id=" + ledger_id_);
@@ -1123,7 +1162,7 @@ HierarchicalMemoryBudgetLedger::ReleaseOwnerReservations(
   std::uint64_t released_count = 0;
   for (const auto& entry : active_) {
     const auto& token = entry.second.token;
-    if (token.owner_scope != owner_scope) continue;
+    if ((token.owner_scope != owner_scope || token.owner_uuid != owner_uuid)) continue;
     ++released_count;
     for (auto& snapshot : combined.snapshots) {
       const auto& chain = token.debited_scope_chain;
@@ -1145,7 +1184,7 @@ HierarchicalMemoryBudgetLedger::ReleaseOwnerReservations(
       "hierarchical_memory.released_count=" + std::to_string(released_count));
   for (auto it = active_.begin(); it != active_.end();) {
     const auto& token = it->second.token;
-    if (token.owner_scope != owner_scope) { ++it; continue; }
+    if ((token.owner_scope != owner_scope || token.owner_uuid != owner_uuid)) { ++it; continue; }
     for (const auto& scope_id : token.debited_scope_chain) {
       auto scope = scopes_.find(scope_id);
       if (scope == scopes_.end()) continue;

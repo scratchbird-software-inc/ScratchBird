@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -94,7 +95,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -110,10 +111,10 @@ std::string DiagnosticField(const Diagnostic& diagnostic,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000024101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000024102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000024103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 41;
   session.security_policy_epoch = 42;
   session.descriptor_epoch = 43;
@@ -124,7 +125,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_cast_value_route";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000024104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024104");
   config.bundle_contract_id = "sbp_sbsql@cast-value-route-test";
   config.build_id = "sbsql-cast-value-route-test";
   return config;
@@ -304,9 +305,9 @@ void RequireSafeTryCastExactRoutes() {
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsql-cast-value-exact-route";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000024201";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000024202";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000024203";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024201");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024202");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000024203");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;

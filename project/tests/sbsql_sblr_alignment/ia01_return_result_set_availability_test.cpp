@@ -3,7 +3,7 @@
 int main() {
   namespace api = scratchbird::engine::internal_api;
   scratchbird::tests::ia01::RequireMissingExecutorEvidence(
-      "return_result_set", "019d0000-0000-7000-8000-000000002559",
+      "return_result_set", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002559"),
       ".return_result_set",
       {api::kSblrReturnResultSetExecutorId,
        api::kSblrReturnResultSetOpcodeCode,

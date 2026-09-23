@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -45,9 +46,9 @@ agents::AgentRuntimeContext ClusterContext() {
   context.security_context_present = true;
   context.cluster_authority_available = true;
   context.standalone_edition = false;
-  context.principal_uuid = "principal:agent-cluster-build-matrix";
-  context.database_uuid = "database:agent-cluster-build-matrix";
-  context.cluster_uuid = "cluster:agent-cluster-build-matrix";
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 401);
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 402);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(1273, 1);
   return context;
 }
 

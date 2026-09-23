@@ -27,20 +27,19 @@ struct Acquired {
   Acquired(PublicSession& session, api::EngineRequestContext& transaction) {
     bridge::StatementContextAcquireRequest request;
     request.engine_context = &transaction;
-    request.exact_transaction_uuid = transaction.transaction_uuid.canonical;
+    request.exact_transaction_uuid = transaction.transaction_uuid;
     Check(bridge::AcquireStatementContextReceipt(
               session.session, &request, &handle, &view, nullptr) ==
               SB_ENGINE_STATUS_OK, "real receipt acquisition failed");
     Check(bridge::CopyStatementContextEngineContextV1(handle, &context, nullptr) ==
               SB_ENGINE_STATUS_OK, "real owner context copy failed");
-    const auto parsed = uuid::ParseUuid(view.statement_snapshot_uuid);
-    Check(parsed.ok(), "published snapshot UUID is invalid");
-    const auto typed = uuid::MakeTypedUuid(platform::UuidKind::object, parsed.value);
+    Check(uuid::IsEngineIdentityUuid(view.statement_snapshot_uuid), "published snapshot UUID is invalid");
+    const auto typed = uuid::MakeTypedUuid(platform::UuidKind::object, view.statement_snapshot_uuid);
     Check(typed.ok(), "snapshot UUID typing failed");
     snapshot = typed.value;
-    owner = RawUuid(context.session_uuid.canonical);
+    owner = RawUuid(context.session_uuid);
     receipt_id = RawUuid(view.receipt_uuid);
-    snapshot_id = parsed.value.bytes;
+    snapshot_id = view.statement_snapshot_uuid.bytes;
     resources = context.dml_update_resource_receipt.lock();
     Check(resources && !resources->IsRevoked(),
           "actual private resource receipt was not live");

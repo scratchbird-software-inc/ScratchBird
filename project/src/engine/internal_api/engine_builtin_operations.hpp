@@ -51,7 +51,7 @@ struct EngineResultRow {
 struct EngineOperationResult {
   Status status;
   EngineOperationCode operation_code = EngineOperationCode::unknown;
-  EngineResultShape result_shape;
+  EngineOperationResultShape result_shape;
   std::vector<EngineResultRow> rows;
   std::vector<DiagnosticRecord> diagnostics;
   DiagnosticRecord diagnostic;

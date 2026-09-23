@@ -10,6 +10,7 @@
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
 
 #include "api_diagnostics.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "agents/index_garbage_cleanup_agent.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -79,6 +80,14 @@
 #endif
 namespace scratchbird::engine::executor {
 namespace {
+
+bool AccountHeapOwnedValueMemory(const std::string& value, std::uint64_t* bytes) {
+  return scratchbird::engine::internal_api::AddHeapReadOwnedStringMemory(value, bytes);
+}
+bool AccountHeapOwnedValueMemory(const PhysicalUuid&, std::uint64_t* bytes) {
+  // Inline identity storage is already charged by the owning structure/vector.
+  return bytes != nullptr;
+}
 
 DescriptorRuntimeDiagnostic HeapAcquisitionRefusal(std::string code,
                                                    std::string detail = {}) {
@@ -152,10 +161,10 @@ struct CurrentHeapMgaResolutionBinding {
   scratchbird::engine::internal_api::EngineTrustMode trust_mode =
       scratchbird::engine::internal_api::EngineTrustMode::server_isolated;
   std::string database_path;
-  std::string transaction_uuid;
-  std::string statement_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
+  PhysicalUuid transaction_uuid;
+  PhysicalUuid statement_uuid;
+  PhysicalUuid statement_snapshot_uuid;
+  PhysicalUuid statement_metadata_snapshot_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t visible_committed_high_watermark{0};
 };
@@ -208,39 +217,8 @@ CanonicalExecutionMgaAuthority BuildCurrentHeapExecutionMgaAuthority(
   return authority;
 }
 
-bool IsCanonicalHeapBindingUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) { continue; }
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) { return false; }
-  }
-  return true;
-}
-
-std::optional<std::string_view> ExactHeapDescriptorField(
-    const std::string_view descriptor,
-    const std::string_view field_name) {
-  std::optional<std::string_view> value;
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto next = descriptor.find(';', offset);
-    const auto end = next == std::string_view::npos ? descriptor.size() : next;
-    const auto field = descriptor.substr(offset, end - offset);
-    if (field.size() > field_name.size() &&
-        field.starts_with(field_name) && field[field_name.size()] == '=') {
-      if (value.has_value() || field.size() == field_name.size() + 1) {
-        return std::nullopt;
-      }
-      value = field.substr(field_name.size() + 1);
-    }
-    if (next == std::string_view::npos) { break; }
-    offset = next + 1;
-  }
-  return value;
+bool IsCanonicalHeapBindingUuid(const PhysicalUuid& value) {
+  return !value.is_nil() && scratchbird::core::uuid::IsValidUuidVariant(value);
 }
 
 bool CheckedHeapBoundToU64(const std::size_t value, std::uint64_t* output) {
@@ -271,27 +249,23 @@ bool ExactOptionalHeapDescriptorFieldMatches(
     const std::string_view descriptor,
     const std::string_view field_name,
     const std::optional<std::string>& expected) {
-  std::size_t matches = 0;
-  std::string_view actual;
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto next = descriptor.find(';', offset);
-    const auto end = next == std::string_view::npos ? descriptor.size() : next;
-    const auto field = descriptor.substr(offset, end - offset);
-    if (field.size() > field_name.size() &&
-        field.starts_with(field_name) && field[field_name.size()] == '=') {
-      ++matches;
-      actual = field.substr(field_name.size() + 1);
-    }
-    if (next == std::string_view::npos) { break; }
-    offset = next + 1;
-  }
-  if (!expected.has_value()) { return matches == 0; }
-  return matches == 1 && !actual.empty() && actual == *expected;
+  scratchbird::engine::internal_api::CatalogColumnMetadata fields;
+  if (!scratchbird::engine::internal_api::AdmitCatalogColumnMetadata(descriptor, &fields)) return false;
+  const auto found = fields.text.find(std::string(field_name));
+  return expected.has_value() ? found != fields.text.end() && found->second == *expected
+                              : found == fields.text.end();
+
 }
 
-bool ExactHeapNullabilityCarrierMatches(const std::string_view descriptor,
+bool ExactHeapNullabilityCarrierMatches(const std::string_view encoded_descriptor,
                                         const bool expected_nullable) {
+  scratchbird::engine::internal_api::CatalogColumnMetadata fields;
+  if (!scratchbird::engine::internal_api::AdmitCatalogColumnMetadata(encoded_descriptor, &fields)) return false;
+  std::string scalar_fields;
+  for (const auto& [key, value] : fields.text) {
+    if (key == "nullability" || key == "nullable") scalar_fields += key + "=" + value + ";";
+  }
+  const std::string_view descriptor = scalar_fields;
   std::optional<bool> admitted;
   std::size_t canonical_count = 0;
   std::size_t storage_count = 0;
@@ -577,7 +551,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
     return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
                    "selected relation source binding is not exact");
   }
-  const std::string& relation_uuid =
+  const PhysicalUuid& relation_uuid =
       relation_node->required_object_uuids.front();
   if (!IsCanonicalHeapBindingUuid(relation_uuid)) {
     return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
@@ -880,7 +854,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
 
   DescriptorBatch batch;
   std::vector<api::EngineDescriptor> output_descriptors;
-  std::vector<std::string> column_uuids;
+  std::vector<PhysicalUuid> column_uuids;
   std::vector<const api::MgaRelationColumnStorageDescriptor*>
       projected_columns;
   for (std::size_t persisted_ordinal = 0;
@@ -941,8 +915,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
                      true);
     }
     const auto& column = *persisted_column;
-    const auto persisted_type_uuid = ExactHeapDescriptorField(
-        column.value_descriptor.encoded_descriptor, "type_uuid");
+    const auto& persisted_type_uuid = column.value_descriptor.type_uuid;
     const bool nullable = relational_descriptor->nullability ==
                           api::RelationalNullability::kNullable;
     if (column.column_uuid != *expression->bound_name_uuid ||
@@ -951,19 +924,17 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
             relational_descriptor->descriptor_uuid ||
         column.value_descriptor.encoded_descriptor.empty() ||
         column.value_descriptor.canonical_type_name.empty() ||
-        !persisted_type_uuid.has_value() ||
-        !IsCanonicalHeapBindingUuid(*persisted_type_uuid) ||
-        *persisted_type_uuid != relational_descriptor->type_uuid ||
+        !IsCanonicalHeapBindingUuid(persisted_type_uuid) ||
+        persisted_type_uuid != relational_descriptor->type_uuid ||
         nullable != column.nullable ||
         !ExactHeapNullabilityCarrierMatches(
             column.value_descriptor.encoded_descriptor, nullable) ||
         (relational_descriptor->collation_uuid.has_value()
              ? column.collation_uuid !=
                    *relational_descriptor->collation_uuid
-             : !column.collation_uuid.empty()) ||
-        !ExactOptionalHeapDescriptorFieldMatches(
-            column.value_descriptor.encoded_descriptor,
-            "collation_uuid", relational_descriptor->collation_uuid) ||
+             : !column.collation_uuid.is_nil()) ||
+        column.value_descriptor.collation_uuid !=
+            relational_descriptor->collation_uuid.value_or(PhysicalUuid{}) ||
         !ExactOptionalHeapDescriptorFieldMatches(
             column.value_descriptor.encoded_descriptor,
             "timezone_profile_id",
@@ -973,13 +944,13 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
                      true);
     }
     std::uint64_t projected_descriptor_bytes = 0;
-    if (!api::AddHeapReadOwnedStringMemory(column.canonical_name_key,
+    if (!AccountHeapOwnedValueMemory(column.canonical_name_key,
                                          &projected_descriptor_bytes) ||
         !api::AccountHeapReadEngineDescriptorMemory(
             column.value_descriptor, &projected_descriptor_bytes) ||
         !api::AccountHeapReadEngineDescriptorMemory(
             column.value_descriptor, &projected_descriptor_bytes) ||
-        !api::AddHeapReadOwnedStringMemory(column.column_uuid,
+        !AccountHeapOwnedValueMemory(column.column_uuid,
                                          &projected_descriptor_bytes) ||
         !account_materialization(projected_descriptor_bytes)) {
       return invalid(
@@ -998,22 +969,18 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
       // persisted carrier and are revalidated through their live authority.
       output_descriptor.descriptor_uuid =
           relational_descriptor->descriptor_uuid;
+      output_descriptor.type_uuid = relational_descriptor->type_uuid;
+      output_descriptor.collation_uuid =
+          relational_descriptor->collation_uuid.value_or(PhysicalUuid{});
       output_descriptor.encoded_descriptor =
-          "type_uuid=" + relational_descriptor->type_uuid +
-          ";nullability=" + (nullable ? "nullable" : "non_null");
-      if (relational_descriptor->collation_uuid.has_value()) {
-        output_descriptor.encoded_descriptor +=
-            ";collation_uuid=" + *relational_descriptor->collation_uuid;
-      }
+          std::string("nullability=") + (nullable ? "nullable" : "non_null");
       if (relational_descriptor->width.has_value()) {
         output_descriptor.encoded_descriptor +=
             ";width=" + std::to_string(*relational_descriptor->width);
       }
     } else if (output_descriptor.canonical_type_name == "text" &&
-               output_descriptor.encoded_descriptor.find(
-                   "datatype_descriptor_uuid=") != std::string::npos &&
-               output_descriptor.encoded_descriptor.find("column_uuid=") !=
-                   std::string::npos) {
+               !output_descriptor.datatype_descriptor_uuid.is_nil() &&
+               !column.column_uuid.is_nil()) {
       output_descriptor.descriptor_uuid = column.column_uuid;
     }
     output_descriptor.descriptor_kind = "scalar";
@@ -1025,8 +992,8 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
     column_uuids.push_back(column.column_uuid);
   }
   batch.rows.reserve(read.visible_rows.size());
-  std::vector<std::string> record_uuids;
-  std::vector<std::string> version_uuids;
+  std::vector<PhysicalUuid> record_uuids;
+  std::vector<PhysicalUuid> version_uuids;
   record_uuids.reserve(read.visible_rows.size());
   version_uuids.reserve(read.visible_rows.size());
   for (std::size_t row_index = 0; row_index < read.visible_rows.size();
@@ -1078,7 +1045,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
         value.state = api::EngineValueState::sql_null;
       } else {
         std::uint64_t encoded_allocation_bytes = 0;
-        if (!api::AddHeapReadOwnedStringMemory(
+        if (!AccountHeapOwnedValueMemory(
                 *encoded_value, &encoded_allocation_bytes) ||
             !account_materialization(encoded_allocation_bytes)) {
           return invalid(
@@ -1092,9 +1059,9 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
       tuple.values.push_back(std::move(value));
     }
     std::uint64_t identity_allocation_bytes = 0;
-    if (!api::AddHeapReadOwnedStringMemory(
+    if (!AccountHeapOwnedValueMemory(
             stored_row.row_uuid, &identity_allocation_bytes) ||
-        !api::AddHeapReadOwnedStringMemory(
+        !AccountHeapOwnedValueMemory(
             stored_row.version_uuid, &identity_allocation_bytes) ||
         !account_materialization(identity_allocation_bytes)) {
       return invalid(
@@ -1162,8 +1129,8 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
   // publishing the final current/peak values.
   std::uint64_t result_metadata_bytes = 0;
   std::uint64_t result_metadata_array_bytes = 0;
-  const auto account_result_string = [&](const std::string& value) {
-    return api::AddHeapReadOwnedStringMemory(value, &result_metadata_bytes);
+  const auto account_result_string = [&](const auto& value) {
+    return AccountHeapOwnedValueMemory(value, &result_metadata_bytes);
   };
   const auto account_result_u64_vector =
       [&](const std::vector<std::uint64_t>& values) {
@@ -1336,9 +1303,9 @@ bool ExactGlobalCountStarHeapConsumer(
              std::vector<std::uint64_t>{heap_node.physical_node_id};
 }
 
-bool AccountHeapRegistrationString(const std::string& value,
+bool AccountHeapRegistrationString(const auto& value,
                                    std::uint64_t* bytes) {
-  return scratchbird::engine::internal_api::AddHeapReadOwnedStringMemory(
+  return AccountHeapOwnedValueMemory(
       value, bytes);
 }
 
@@ -1552,13 +1519,6 @@ std::optional<std::uint64_t> HeapPhysicalRegistrationRetainedMemoryBytes(
       }
     }
     for (const auto* value : {
-             &statement->database_uuid,
-             &statement->statement_uuid,
-             &statement->transaction_uuid,
-             &statement->statement_snapshot_uuid,
-             &statement->statement_metadata_snapshot_uuid,
-             &statement->catalog_epoch_uuid,
-             &statement->authorization_authority_uuid,
              &statement->metadata_path,
              &statement->savepoint_path,
              &statement->descriptor_path}) {
@@ -1587,7 +1547,7 @@ bool HeapRuntimeBatchLiveBytes(const DescriptorBatch& batch,
     return false;
   }
   for (const auto& column : batch.columns) {
-    if (!api::AddHeapReadOwnedStringMemory(column.stable_name, bytes) ||
+    if (!AccountHeapOwnedValueMemory(column.stable_name, bytes) ||
         !api::AccountHeapReadEngineDescriptorMemory(column.descriptor,
                                                     bytes)) {
       return false;
@@ -1603,7 +1563,7 @@ bool HeapRuntimeBatchLiveBytes(const DescriptorBatch& batch,
     for (const auto& value : row.values) {
       if (!api::AccountHeapReadEngineDescriptorMemory(value.descriptor,
                                                       bytes) ||
-          !api::AddHeapReadOwnedStringMemory(value.encoded_value, bytes) ||
+          !AccountHeapOwnedValueMemory(value.encoded_value, bytes) ||
           !api::HeapReadMemoryAdd(
               static_cast<std::uint64_t>(value.binary_value.capacity()),
               bytes)) {
@@ -1615,7 +1575,7 @@ bool HeapRuntimeBatchLiveBytes(const DescriptorBatch& batch,
 }
 
 bool HeapRuntimeStringVectorLiveBytes(
-    const std::vector<std::string>& values,
+    const std::vector<PhysicalUuid>& values,
     std::uint64_t* bytes) {
   namespace api = scratchbird::engine::internal_api;
   if (bytes == nullptr) return false;
@@ -1623,12 +1583,12 @@ bool HeapRuntimeStringVectorLiveBytes(
   std::uint64_t allocation_bytes = 0;
   if (!api::HeapReadMemoryMultiply(
           static_cast<std::uint64_t>(values.capacity()),
-          sizeof(std::string), &allocation_bytes) ||
+          sizeof(PhysicalUuid), &allocation_bytes) ||
       !api::HeapReadMemoryAdd(allocation_bytes, bytes)) {
     return false;
   }
   for (const auto& value : values) {
-    if (!api::AddHeapReadOwnedStringMemory(value, bytes)) {
+    if (!AccountHeapOwnedValueMemory(value, bytes)) {
       return false;
     }
   }
@@ -1641,12 +1601,12 @@ bool HeapRuntimeMgaContextDynamicBytes(
   namespace api = scratchbird::engine::internal_api;
   std::uint64_t allocation_bytes = 0;
   return bytes != nullptr &&
-         api::AddHeapReadOwnedStringMemory(context.statement_uuid, bytes) &&
-         api::AddHeapReadOwnedStringMemory(context.owning_transaction_uuid,
+         AccountHeapOwnedValueMemory(context.statement_uuid, bytes) &&
+         AccountHeapOwnedValueMemory(context.owning_transaction_uuid,
                                          bytes) &&
-         api::AddHeapReadOwnedStringMemory(context.statement_snapshot_uuid,
+         AccountHeapOwnedValueMemory(context.statement_snapshot_uuid,
                                          bytes) &&
-         api::AddHeapReadOwnedStringMemory(
+         AccountHeapOwnedValueMemory(
              context.statement_metadata_snapshot_uuid, bytes) &&
          api::HeapReadMemoryMultiply(
              static_cast<std::uint64_t>(
@@ -1658,8 +1618,8 @@ bool HeapRuntimeMgaContextDynamicBytes(
                  context.in_doubt_excluded_local_transaction_ids.capacity()),
              sizeof(std::uint64_t), &allocation_bytes) &&
          api::HeapReadMemoryAdd(allocation_bytes, bytes) &&
-         api::AddHeapReadOwnedStringMemory(context.snapshot_kind, bytes) &&
-         api::AddHeapReadOwnedStringMemory(context.statement_timestamp, bytes);
+         AccountHeapOwnedValueMemory(context.snapshot_kind, bytes) &&
+         AccountHeapOwnedValueMemory(context.statement_timestamp, bytes);
 }
 
 struct HeapPhysicalRegistrationBuildResult {
@@ -1725,8 +1685,8 @@ std::uint64_t HeapPhysicalResultHandle(const TypedPhysicalNodeDag& dag,
     value ^= byte;
     value *= 1099511628211ULL;
   };
-  for (const unsigned char ch : dag.selected_plan_uuid) { mix_byte(ch); }
-  for (const unsigned char ch : node.executor_capability_uuid) { mix_byte(ch); }
+  for (const unsigned char ch : dag.selected_plan_uuid.bytes) { mix_byte(ch); }
+  for (const unsigned char ch : node.executor_capability_uuid.bytes) { mix_byte(ch); }
   for (std::size_t offset = 0; offset < sizeof(node.physical_node_id);
        ++offset) {
     mix_byte(static_cast<std::uint8_t>(
@@ -1808,7 +1768,7 @@ DescriptorRuntimeDiagnostic ValidateHeapTableSampleProfile(
       api::CanonicalSeededSampleDescriptorUuid(seeded);
   const auto& relational_node = request.relational_dag->nodes.front();
   const auto& physical_node = physical.nodes.front();
-  if (descriptor_uuid.empty() ||
+  if (descriptor_uuid.is_nil() ||
       relational_node.semantic_variant_id !=
           HeapTableSampleSemanticId(profile) ||
       physical_node.implementation_id !=
@@ -1975,7 +1935,7 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
       request.table_sample_profile.has_value()
           ? HeapTableSampleImplementationId(*request.table_sample_profile)
           : std::string_view{"scan.heap.v1"};
-  std::string capability_uuid;
+  PhysicalUuid capability_uuid;
   std::uint32_t capability_abi = 0;
   for (const auto& node : physical.nodes) {
     if (node.implementation_id != expected_implementation) { continue; }
@@ -1984,7 +1944,7 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
         node.output_descriptor_ids.empty() ||
         node.output_descriptor_ids.size() > request.maximum_output_columns ||
         node.output_descriptor_ids.size() > kMaximumHeapOutputColumns ||
-        node.executor_capability_uuid.empty() ||
+        node.executor_capability_uuid.is_nil() ||
         node.executor_capability_abi_version == 0 ||
         !node.engine_capability_validated) {
       return HeapAcquisitionRefusal(
@@ -2064,7 +2024,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
           *state->relational_dag, *state->physical_dag,
           *heap_nodes.front());
 
-  std::vector<std::string> relation_uuids;
+  std::vector<PhysicalUuid> relation_uuids;
   relation_uuids.reserve(heap_nodes.size());
   for (const auto* heap_node : heap_nodes) {
     const auto prepared_relation_node = std::ranges::find_if(
@@ -2436,8 +2396,8 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
             return step;
           }
           decltype(acquisition.output_batch.rows) rows;
-          std::vector<std::string> record_uuids;
-          std::vector<std::string> version_uuids;
+          std::vector<PhysicalUuid> record_uuids;
+          std::vector<PhysicalUuid> version_uuids;
           rows.reserve(sampled.selected_row_indices.size());
           record_uuids.reserve(sampled.selected_row_indices.size());
           version_uuids.reserve(sampled.selected_row_indices.size());
@@ -2483,8 +2443,8 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
         namespace api = scratchbird::engine::internal_api;
         std::uint64_t prospective_step_metadata_bytes = 0;
         std::uint64_t prospective_step_array_bytes = 0;
-        const auto account_prospective_string = [&](const std::string& value) {
-          return api::AddHeapReadOwnedStringMemory(
+        const auto account_prospective_string = [&](const auto& value) {
+          return AccountHeapOwnedValueMemory(
               value, &prospective_step_metadata_bytes);
         };
         bool prospective_step_bounded =
@@ -2557,8 +2517,8 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
         std::uint64_t output_batch_live_bytes = 0;
         std::uint64_t step_metadata_bytes = 0;
         std::uint64_t allocation_bytes = 0;
-        const auto account_step_string = [&](const std::string& value) {
-          return api::AddHeapReadOwnedStringMemory(value,
+        const auto account_step_string = [&](const auto& value) {
+          return AccountHeapOwnedValueMemory(value,
                                                  &step_metadata_bytes);
         };
         bool memory_accounting_ok =
@@ -2960,7 +2920,7 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
   std::unordered_set<std::uint32_t> output_ids;
   std::unordered_set<std::uint32_t> expression_ids;
   std::unordered_set<std::uint32_t> descriptor_ids;
-  std::unordered_set<std::string> bound_column_uuids;
+  std::set<scratchbird::core::platform::Uuid> bound_column_uuids;
   for (std::size_t ordinal = 0; ordinal < ordered_outputs.size(); ++ordinal) {
     const auto& output = *ordered_outputs[ordinal];
     const auto expression = relational.expressions.begin() + ordinal;

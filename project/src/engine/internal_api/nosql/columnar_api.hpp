@@ -43,8 +43,8 @@ struct ColumnarExecutionRequestV1 {
   std::string profile_id{std::string(kColumnarLogicalReconstructionV1)};
   std::vector<std::string> operation_ids;
   std::string operation_id;
-  std::string relation_uuid;
-  std::vector<std::string> row_uuids;
+  EngineUuid relation_uuid;
+  std::vector<EngineUuid> row_uuids;
   executor::DescriptorBatch logical_rows;
   std::vector<std::size_t> projected_columns;
   std::vector<EngineSqlTruthValue> filter_truth_values;
@@ -74,7 +74,7 @@ struct ColumnarExecutionResultV1 {
   bool exact_reconstruction_complete{false};
   bool predicate_recheck_complete{false};
   bool mga_recheck_complete{false};
-  std::vector<std::string> row_uuids;
+  std::vector<EngineUuid> row_uuids;
   executor::DescriptorBatch batch;
   std::string physical_operator_id;
   std::string fallback_reason_id;
@@ -89,8 +89,8 @@ struct ColumnarExecutionRequestV2 {
   std::string profile_id{std::string(kColumnarLogicalReconstructionV2)};
   std::vector<std::string> operation_ids;
   std::string operation_id;
-  std::string relation_uuid;
-  std::vector<std::string> row_uuids;
+  EngineUuid relation_uuid;
+  std::vector<EngineUuid> row_uuids;
   executor::DescriptorBatch logical_rows;
   std::vector<std::size_t> projected_columns;
   std::vector<EngineSqlTruthValue> filter_truth_values;
@@ -130,7 +130,7 @@ struct ColumnarExecutionResultV2 {
   std::uint64_t current_live_memory_bytes{0};
   std::uint64_t peak_live_memory_bytes{0};
   std::uint64_t memory_grant_bytes{0};
-  std::vector<std::string> row_uuids;
+  std::vector<EngineUuid> row_uuids;
   executor::DescriptorBatch batch;
   std::string physical_operator_id;
   std::string fallback_reason_id;

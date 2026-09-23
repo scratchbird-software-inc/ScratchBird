@@ -1197,6 +1197,34 @@ void TestResultInnerEvidence() {
               effect != executor,
           "effect/executor hashes use disjoint exact direct domains");
 
+  TypedUpdateResultEvidenceReference native_identity;
+  native_identity.evidence_kind = "row";
+  native_identity.identity = result.relation_uuid;
+  std::vector<TypedUpdateResultEvidenceReference> binary = {native_identity};
+  Require(EncodeTypedUpdateResultEvidenceMaterial(result, binary, &material, &error),
+          "native UUID result evidence accepts embedded zero bytes");
+  const auto binary_material = material;
+  Require(material.size() == 64 + 2 + 8 + 3 + 8 + 16 + 1 &&
+              std::equal(result.relation_uuid.begin(), result.relation_uuid.end(),
+                         material.end() - 17),
+          "native UUID evidence retains exactly sixteen identity bytes");
+  binary[0].evidence_id = "text";
+  Require(!EncodeTypedUpdateResultEvidenceMaterial(result, binary, &material, &error) &&
+              material == binary_material,
+          "mixed native identity and text refuses without replacing output");
+  binary[0].evidence_id.clear();
+  binary[0].identity = TypedUpdateUuid{};
+  Require(!EncodeTypedUpdateResultEvidenceMaterial(result, binary, &material, &error),
+          "nil native system identity evidence refuses");
+  binary = {native_identity, {"label", "value"}};
+  Require(EncodeTypedUpdateResultEvidenceMaterial(result, binary, &material, &error),
+          "mixed text and native identity evidence encode");
+  const auto sorted_material = material;
+  std::reverse(binary.begin(), binary.end());
+  Require(EncodeTypedUpdateResultEvidenceMaterial(result, binary, &material, &error) &&
+              material == sorted_material,
+          "binary evidence ordering is canonical");
+
   std::vector<TypedUpdateResultEvidenceReference> empty;
   Require(EncodeTypedUpdateResultEvidenceMaterial(result, empty, &material,
                                                    &error) &&

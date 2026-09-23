@@ -234,7 +234,7 @@ bool ValidatePublishedDag() {
       project && project->implementation_id == "project.vector.v1" &&
           project->selected_alternative_uuid == Uuid(207) &&
           project->enforced_property_uuids ==
-              std::vector<std::string>{Uuid(710)} &&
+              std::vector<scratchbird::core::platform::Uuid>{Uuid(710)} &&
           project->publication_ordinal == 3 &&
           project->causal_counter_id == 10'003,
       "published root did not match the selected memo alternative");
@@ -245,7 +245,7 @@ bool ValidatePublishedDag() {
       "published DAG lost ordered MGA/catalog admission evidence");
 
   auto mutated_capability = result.physical_dag;
-  mutated_capability.nodes[0].executor_capability_uuid.clear();
+  mutated_capability.nodes[0].executor_capability_uuid = {};
   passed &= Require016(
       !exec::ValidateTypedPhysicalNodeDag(mutated_capability).accepted,
       "physical ABI accepted a post-publication capability mutation");
@@ -302,7 +302,7 @@ bool ExpectRefusal(
   return Require016(!result.accepted && !result.published &&
                         !result.data_access_allowed &&
                         result.physical_dag.nodes.empty() &&
-                        result.physical_dag.selected_plan_uuid.empty() &&
+                        result.physical_dag.selected_plan_uuid.is_nil() &&
                         result.issues.size() == 1 &&
                         result.issues.front().diagnostic_id == diagnostic_id,
                     detail);
@@ -524,7 +524,7 @@ bool ValidatePropertyCapability() {
                            PhysicalNode(accepted.physical_dag, 4) &&
                            PhysicalNode(accepted.physical_dag, 4)
                                    ->delivered_property_uuids ==
-                               std::vector<std::string>{Uuid(10)},
+                               std::vector<scratchbird::core::platform::Uuid>{Uuid(10)},
                        "supported ordering property was not published");
   inputs.capabilities.capabilities.back().supported_property_kinds.clear();
   passed &= ExpectRefusal(

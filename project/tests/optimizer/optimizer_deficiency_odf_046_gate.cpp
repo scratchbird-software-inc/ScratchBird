@@ -6,6 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include "../../src/engine/internal_api/catalog/column_metadata_codec.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/import_execution_api.hpp"
@@ -77,16 +80,16 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid id_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -119,7 +122,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) { return true; }
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextFields(item.evidence_id) == id) { return true; }
   }
   return false;
 }
@@ -128,7 +131,7 @@ bool AnyEvidenceContains(const std::vector<api::EngineEvidenceReference>& eviden
                          std::string_view token) {
   for (const auto& item : evidence) {
     if (item.evidence_kind.find(token) != std::string::npos ||
-        item.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFields(item.evidence_id).find(token) != std::string::npos) {
       return true;
     }
   }
@@ -141,7 +144,7 @@ void AssertNoRuntimeDocLeaks(const api::EngineApiResult& result) {
   for (const auto& evidence : result.evidence) {
     for (const auto token : forbidden) {
       Require(evidence.evidence_kind.find(token) == std::string::npos &&
-                  evidence.evidence_id.find(token) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFields(evidence.evidence_id).find(token) == std::string::npos,
               "ODF-046 runtime evidence leaked documentation token");
     }
   }
@@ -164,11 +167,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -207,6 +210,17 @@ void Rollback(const api::EngineRequestContext& context) {
   RequireOk(api::EngineRollbackTransaction(request), "ODF-046 rollback failed");
 }
 
+std::string IdentityColumnMetadata(std::string key, const platform::Uuid& identity,
+                                   bool foreign_key) {
+  api::CatalogColumnMetadata fields;
+  fields.text.emplace("canonical", "character");
+  fields.identities.emplace(std::move(key), identity);
+  if (foreign_key) fields.text.emplace("referenced_column", "id");
+  std::string bytes;
+  Require(api::EncodeCatalogColumnMetadata(fields, &bytes), "column metadata encoding failed");
+  return bytes;
+}
+
 api::CrudTableRecord Table(const Fixture& fixture,
                            const api::EngineRequestContext& context) {
   api::CrudTableRecord table;
@@ -215,8 +229,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
   table.default_name = "odf046_bulk_proof";
   table.columns.push_back({"id", "canonical=character;primary_key=true"});
   table.columns.push_back({"parent_id",
-                           "canonical=character;foreign_key=" +
-                               fixture.table_uuid + ":id"});
+                           IdentityColumnMetadata("referenced_table_uuid", fixture.table_uuid, true)});
   table.columns.push_back({"note", "canonical=character;not_null=true"});
   return table;
 }
@@ -256,9 +269,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-046 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
+  fixture.id_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "odf046-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)),
@@ -276,7 +289,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     std::vector<api::EngineRowValue> rows) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";
@@ -301,7 +314,7 @@ api::EngineExecuteNativeBulkIngestRequest NativeRequest(
     std::vector<api::EngineRowValue> rows) {
   api::EngineExecuteNativeBulkIngestRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
   request.estimated_row_count =
@@ -319,7 +332,7 @@ api::EngineApiU64 SelectCount(const Fixture& fixture,
                               const api::EngineRequestContext& context) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
   const auto selected = api::EngineSelectRows(request);
@@ -519,7 +532,7 @@ void HistoricalIndexEntriesAreMGARecheckedBeforeConflict() {
   auto delete_context = Begin(fixture, "odf046-historical-delete");
   api::EngineDeleteRowsRequest delete_request;
   delete_request.context = delete_context;
-  delete_request.target_table.uuid.canonical = fixture.table_uuid;
+  delete_request.target_table.uuid = fixture.table_uuid;
   delete_request.target_table.object_kind = "table";
   delete_request.delete_predicate = EqualsPredicate("id", "reusable");
   const auto deleted = api::EngineDeleteRows(delete_request);

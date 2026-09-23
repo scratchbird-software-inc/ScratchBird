@@ -40,7 +40,7 @@ struct OptimizerMetricSupportBundleAuthority {
 };
 
 struct OptimizerMetricSupportBundleRequest {
-  std::string scope_uuid;
+  scratchbird::core::metrics::MetricUuid scope_uuid;
   std::string support_bundle_id;
   std::string capture_generation;
   std::string evidence_digest;
@@ -59,7 +59,9 @@ struct OptimizerMetricSupportBundleRow {
   std::string retention_class;
   std::string redaction_class;
   std::string support_bundle_class;
-  std::string serialized_redacted_value;
+  scratchbird::core::metrics::MetricDescriptorBinding binding;
+  std::vector<std::string> omitted_sensitive_labels;
+  std::vector<std::uint8_t> encoded_redacted_value;
 };
 
 struct OptimizerMetricSupportBundleResult {
@@ -67,7 +69,9 @@ struct OptimizerMetricSupportBundleResult {
   std::string diagnostic_code;
   std::string detail;
   std::string tamper_digest;
-  std::string support_bundle_json;
+  scratchbird::core::metrics::MetricUuid scope_uuid;
+  // Framed binary metric values. Client presentation owns text rendering.
+  std::vector<std::uint8_t> support_bundle_bytes;
   bool redaction_applied = false;
   std::vector<std::string> evidence;
   std::vector<OptimizerMetricSupportBundleRow> rows;

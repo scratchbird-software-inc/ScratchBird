@@ -88,17 +88,25 @@ bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
 }
 
-std::string GeneratedUuid(platform::UuidKind kind, platform::u64 seed) {
+platform::Uuid GeneratedUuid(platform::UuidKind kind, platform::u64 seed) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, 1915020000000ull + seed);
   Require(generated.ok(), "PFAR-020A generated UUID fixture failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
+}
+
+std::string IdentityBytes(const platform::Uuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
 }
 
 TempDir MakeTempDir(std::string_view prefix, platform::u64 seed) {
   TempDir dir;
-  dir.path = std::filesystem::temp_directory_path() /
-             (std::string(prefix) + "_" + GeneratedUuid(platform::UuidKind::object, seed));
-  std::filesystem::create_directories(dir.path);
+  auto pattern = (std::filesystem::temp_directory_path() /
+      (std::string(prefix) + "_" + std::to_string(seed) + "_XXXXXX")).string();
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  const char* made = ::mkdtemp(writable.data());
+  Require(made != nullptr, "unique temporary fixture directory creation failed");
+  dir.path = made;
   return dir;
 }
 
@@ -130,12 +138,12 @@ api::EngineRequestContext EngineContext(std::string_view required_right,
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.security_context_present = security_context_present;
   context.cluster_authority_available = cluster_provider::ClusterProviderSupportsExecution();
-  context.database_uuid.canonical = GeneratedUuid(platform::UuidKind::database, 201);
-  context.cluster_uuid.canonical = GeneratedUuid(platform::UuidKind::object, 202);
-  context.node_uuid.canonical = GeneratedUuid(platform::UuidKind::object, 203);
-  context.principal_uuid.canonical = GeneratedUuid(platform::UuidKind::principal, 204);
-  context.session_uuid.canonical = GeneratedUuid(platform::UuidKind::object, 205);
-  context.transaction_uuid.canonical = GeneratedUuid(platform::UuidKind::transaction, 206);
+  context.database_uuid = GeneratedUuid(platform::UuidKind::database, 201);
+  context.cluster_uuid = GeneratedUuid(platform::UuidKind::object, 202);
+  context.node_uuid = GeneratedUuid(platform::UuidKind::object, 203);
+  context.principal_uuid = GeneratedUuid(platform::UuidKind::principal, 204);
+  context.session_uuid = GeneratedUuid(platform::UuidKind::object, 205);
+  context.transaction_uuid = GeneratedUuid(platform::UuidKind::transaction, 206);
   context.local_transaction_id = 9201;
   context.catalog_generation_id = 31;
   context.security_epoch = 37;
@@ -205,7 +213,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -237,16 +245,16 @@ std::string FieldValue(const api::EngineApiResult& result, std::string_view name
 std::vector<api::EngineAgentCatalogIdentitySource> CatalogIdentities() {
   return {
       {.agent_type_id = "memory_governor",
-       .agent_uuid = GeneratedUuid(platform::UuidKind::object, 301),
-       .scope_uuid = GeneratedUuid(platform::UuidKind::database, 302),
-       .policy_uuid = GeneratedUuid(platform::UuidKind::object, 303),
+       .agent_uuid = IdentityBytes(GeneratedUuid(platform::UuidKind::object, 301)),
+       .scope_uuid = IdentityBytes(GeneratedUuid(platform::UuidKind::database, 302)),
+       .policy_uuid = IdentityBytes(GeneratedUuid(platform::UuidKind::object, 303)),
        .policy_name = "memory_governor_baseline",
        .component = "engine.runtime",
        .scope_kind = "database"},
       {.agent_type_id = "page_allocation_manager",
-       .agent_uuid = GeneratedUuid(platform::UuidKind::object, 304),
-       .scope_uuid = GeneratedUuid(platform::UuidKind::database, 305),
-       .policy_uuid = GeneratedUuid(platform::UuidKind::object, 306),
+       .agent_uuid = IdentityBytes(GeneratedUuid(platform::UuidKind::object, 304)),
+       .scope_uuid = IdentityBytes(GeneratedUuid(platform::UuidKind::database, 305)),
+       .policy_uuid = IdentityBytes(GeneratedUuid(platform::UuidKind::object, 306)),
        .policy_name = "page_preallocation_baseline",
        .component = "storage.pages",
        .scope_kind = "database"},
@@ -415,7 +423,7 @@ void RequireDeniedActionExample() {
 api::EngineObjectReference FilespaceTarget() {
   api::EngineObjectReference target;
   target.object_kind = "filespace";
-  target.uuid.canonical = GeneratedUuid(platform::UuidKind::filespace, 401);
+  target.uuid = GeneratedUuid(platform::UuidKind::filespace, 401);
   return target;
 }
 
@@ -427,8 +435,8 @@ void RequirePagePreallocationExample() {
   request.context.trace_tags.push_back("right:FILESPACE_LIFECYCLE_CONTROL");
   request.agent_type = "page_allocation_manager";
   request.action_class = "page_preallocation_request";
-  request.agent_uuid.canonical = GeneratedUuid(platform::UuidKind::object, 402);
-  request.policy_snapshot_uuid.canonical = GeneratedUuid(platform::UuidKind::object, 403);
+  request.agent_uuid = GeneratedUuid(platform::UuidKind::object, 402);
+  request.policy_snapshot_uuid = GeneratedUuid(platform::UuidKind::object, 403);
   request.target_filespace = FilespaceTarget();
   request.page_family = "data";
   request.page_type = "relation";
@@ -452,13 +460,13 @@ void RequirePagePreallocationExample() {
   request.option_envelopes.push_back("agent_metric_snapshot_protected_material_present:false");
   request.option_envelopes.push_back("agent_metric_snapshot_provenance_record:pfar020a:provenance");
   request.option_envelopes.push_back("agent_metric_snapshot_scope_uuid:" +
-                                     request.context.database_uuid.canonical);
+                                     IdentityBytes(request.context.database_uuid));
   request.option_envelopes.push_back("agent_metric_snapshot_digest:sha256:pfar020a:page");
   request.option_envelopes.push_back("agent_metric_snapshot_value_digest:sha256:pfar020a:page:value");
   request.option_envelopes.push_back("agent_metric_snapshot_schema_digest:sha256:pfar020a:page:schema");
   request.option_envelopes.push_back("agent_metric_snapshot_id:pfar020a:page");
   request.option_envelopes.push_back("agent_metric_snapshot_evidence_uuid:" +
-                                     GeneratedUuid(platform::UuidKind::object, 404));
+                                     IdentityBytes(GeneratedUuid(platform::UuidKind::object, 404)));
 
   const auto result = api::EngineRequestPagePreallocation(request);
   Require(result.ok, "page preallocation example failed: " +

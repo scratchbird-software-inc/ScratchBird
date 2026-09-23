@@ -6,6 +6,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+using scratchbird::tests::FixtureIdentityForLabel;
 #include "agent_durable_catalog.hpp"
 #include "agent_enterprise_evidence.hpp"
 #include "agent_metric_runtime.hpp"
@@ -48,11 +52,11 @@ agents::u64 EnvU64(const char* name, agents::u64 fallback) {
 }
 
 std::string ObjectId(const std::string& key) {
-  return agents::DeterministicAgentRuntimeObjectUuidFromKey("aeic043|" + key);
+  return FixtureIdentityForLabel("aeic043|" + key);
 }
 
 std::string PrincipalId(const std::string& key) {
-  return agents::DeterministicAgentRuntimePrincipalUuidFromKey("aeic043|" + key);
+  return FixtureIdentityForLabel("aeic043|" + key);
 }
 
 std::vector<agents::AgentTypeDescriptor> NonClusterDescriptors() {
@@ -73,8 +77,8 @@ agents::AgentRuntimeContext RuntimeContext(agents::u64 now_microseconds = 1) {
   context.security_context_present = true;
   context.private_features_available = true;
   context.standalone_edition = true;
-  context.database_uuid = ObjectId("database");
-  context.principal_uuid = PrincipalId("operator");
+  context.database_uuid = NativeFixtureIdentity(ObjectId("database"));
+  context.principal_uuid = NativeFixtureIdentity(PrincipalId("operator"));
   context.rights = {"OBS_AGENT_STATE_READ",
                     "OBS_AGENT_CONTROL",
                     "OBS_AGENT_EVIDENCE_READ",
@@ -98,7 +102,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
                                   : dependency.namespace_prefix + ".observed";
     snapshot.generation = generation;
     snapshot.observed_wall_microseconds = now_microseconds;
-    snapshot.scope_uuid = scope_uuid;
+    snapshot.scope_uuid = NativeFixtureIdentity(scope_uuid);
     snapshot.digest = "sha256:aeic043:" + descriptor.type_id + ":" +
                       dependency.metric_family;
     snapshot.source_quality = agents::AgentMetricSourceQuality::trusted;
@@ -107,8 +111,8 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
     snapshot.schema_compatible = true;
     snapshot.trust_provenance = "aeic043_enterprise_soak_metric_registry";
     snapshot.evidence_uuid =
-        ObjectId("metric-evidence|" + descriptor.type_id + "|" +
-                 dependency.metric_family);
+        NativeFixtureIdentity(ObjectId("metric-evidence|" + descriptor.type_id + "|" +
+                 dependency.metric_family));
     snapshot.snapshot_id = "aeic043:" + descriptor.type_id + ":" +
                            dependency.metric_family;
     snapshot.value_digest = snapshot.digest;
@@ -128,7 +132,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
     source_a.attestation_key_id = "metric-key:" + source_a.source_id;
     source_a.attestation_digest = "attestation:" + source_a.metric_family +
                                   ":" + source_a.source_id;
-    source_a.evidence_uuid += ":source-a";
+    source_a.evidence_uuid = NativeFixtureIdentity(FixtureIdentityForLabel(BinaryFixtureIdentity(snapshot.evidence_uuid) + ":source-a"));
     source_a.snapshot_id += ":source-a";
     snapshots.push_back(std::move(source_a));
 
@@ -139,7 +143,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedSnapshotsFor(
     source_b.attestation_key_id = "metric-key:" + source_b.source_id;
     source_b.attestation_digest = "attestation:" + source_b.metric_family +
                                   ":" + source_b.source_id;
-    source_b.evidence_uuid += ":source-b";
+    source_b.evidence_uuid = NativeFixtureIdentity(FixtureIdentityForLabel(BinaryFixtureIdentity(snapshot.evidence_uuid) + ":source-b"));
     source_b.snapshot_id += ":source-b";
     snapshots.push_back(std::move(source_b));
   }
@@ -211,7 +215,7 @@ void ValidateStrictMetricSweep(
         descriptor,
         context,
         ObservedSnapshotsFor(descriptor,
-                             context.database_uuid,
+                             BinaryFixtureIdentity(context.database_uuid),
                              4300 + i,
                              context.wall_now_microseconds),
         options);
@@ -355,8 +359,8 @@ void RunEnterpriseEvidenceOverhead(
         ObjectId("outcome|" + descriptor.type_id + "|" + std::to_string(i));
     request.created_at_microseconds = 4500000 + i;
     request.metric_context = RuntimeContext(request.created_at_microseconds);
-    request.metric_context.database_uuid = scope_uuid;
-    request.metric_snapshot_options.expected_scope_uuid = scope_uuid;
+    request.metric_context.database_uuid = NativeFixtureIdentity(scope_uuid);
+    request.metric_snapshot_options.expected_scope_uuid = NativeFixtureIdentity(scope_uuid);
     request.observed_metric_snapshots =
         ObservedSnapshotsFor(descriptor,
                              scope_uuid,

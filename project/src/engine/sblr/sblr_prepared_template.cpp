@@ -7,6 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_prepared_template.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
+#include "uuid.hpp"
+#include <map>
+#include <optional>
 
 #include <algorithm>
 #include <cctype>
@@ -25,24 +29,15 @@ bool EmptyUuid(const api::EngineUuid& uuid) {
   return uuid.is_nil();
 }
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return value != "00000000-0000-0000-0000-000000000000";
+bool IsCanonicalUuid(const api::EngineUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
-void AddUuid(std::vector<std::string>* out, const api::EngineUuid& uuid) {
+void AddUuid(std::vector<api::EngineUuid>* out, const api::EngineUuid& uuid) {
   if (out != nullptr && !EmptyUuid(uuid)) out->push_back(uuid);
 }
 
-std::vector<std::string> UniqueSorted(std::vector<std::string> values) {
+std::vector<api::EngineUuid> UniqueSorted(std::vector<api::EngineUuid> values) {
   std::sort(values.begin(), values.end());
   values.erase(std::unique(values.begin(), values.end()), values.end());
   return values;
@@ -70,7 +65,6 @@ std::string ProfileDigest(const api::EngineProfileSet& profile_set) {
 }
 
 std::string DescriptorSlotName(const api::EngineColumnDefinition& column, std::size_t fallback) {
-  if (!column.requested_column_uuid.is_nil()) return column.requested_column_uuid;
   if (!column.names.empty() && !column.names.front().normalized_lookup_key.empty()) {
     return column.names.front().normalized_lookup_key;
   }
@@ -94,9 +88,7 @@ std::vector<exec::PreparedDescriptorSlot> DescriptorSlotsFromRequest(const api::
 
   for (std::size_t i = 0; i < request.descriptors.size(); ++i) {
     exec::PreparedDescriptorSlot slot;
-    slot.stable_name = request.descriptors[i].descriptor_uuid.is_nil()
-                           ? "descriptor:" + std::to_string(i)
-                           : request.descriptors[i].descriptor_uuid;
+    slot.stable_name = "descriptor:" + std::to_string(i);
     slot.descriptor = request.descriptors[i];
     slot.ordinal = static_cast<std::uint32_t>(i);
     slots.push_back(std::move(slot));
@@ -173,27 +165,95 @@ std::vector<exec::PreparedParameterSlot> ParameterSlotsFromRequest(
   return slots;
 }
 
-std::vector<exec::PreparedIndexDescriptor> IndexDescriptorsFromRequest(const api::EngineApiRequest& request) {
+std::optional<std::vector<exec::PreparedIndexDescriptor>> IndexDescriptorsFromRequest(
+    const api::EngineRequestContext& context, const api::EngineApiRequest& request) {
   std::vector<exec::PreparedIndexDescriptor> indexes;
-  indexes.reserve(request.indexes.size());
+  if (request.indexes.empty()) return indexes;
+  std::map<std::string, api::EngineUuid> columns;
+  const auto add_column = [&](const std::string& name, const api::EngineUuid& uuid) {
+    if (name.empty() || !IsCanonicalUuid(uuid)) return false;
+    const auto [found, inserted] = columns.emplace(name, uuid);
+    return inserted || found->second == uuid;
+  };
+  // Existing relations take their UUID/name bindings from the engine descriptor.
+  // New relation declarations already carry bound column identities in request.
+  const auto relation = api::LoadMgaRelationStorageDescriptor(context, request.target_object.uuid);
+  if (relation.ok) {
+    for (const auto& column : relation.descriptor.columns)
+      if (!add_column(column.canonical_name_key, column.column_uuid)) return std::nullopt;
+  }
+  for (const auto& column : request.columns) {
+    for (const auto& name : column.names) {
+      const auto& key = name.normalized_lookup_key.empty() ? name.name : name.normalized_lookup_key;
+      if (!add_column(key, column.requested_column_uuid)) return std::nullopt;
+    }
+  }
+  const auto bind_column = [&](std::string_view name, std::vector<api::EngineUuid>* output) {
+    const auto found = columns.find(std::string(name));
+    if (found == columns.end()) return false;
+    if (std::find(output->begin(), output->end(), found->second) == output->end())
+      output->push_back(found->second);
+    return true;
+  };
   for (const auto& index : request.indexes) {
     exec::PreparedIndexDescriptor prepared;
     prepared.index_uuid = index.requested_index_uuid;
     prepared.relation_uuid = request.target_object.uuid;
     prepared.descriptor_digest = exec::PreparedTemplateStableDigest(
-        {"index_kind:" + index.index_kind,
-         "physical_profile:" + index.physical_profile,
+        {"index_kind:" + index.index_kind, "physical_profile:" + index.physical_profile,
          exec::PreparedTemplateStableDigest(index.key_envelopes)});
-    prepared.key_column_uuids = index.key_envelopes;
-    prepared.covered_column_uuids = index.key_envelopes;
+    for (const auto& encoded : index.key_envelopes) {
+      std::string_view key(encoded);
+      if (key == "unique" || key == "primary_key" || key == "where_true") continue;
+      auto* destination = &prepared.key_column_uuids;
+      if (key.starts_with("include:")) {
+        key.remove_prefix(8);
+        destination = &prepared.covered_column_uuids;
+        while (true) {
+          const auto comma = key.find(',');
+          if (!bind_column(key.substr(0, comma), destination)) return std::nullopt;
+          if (comma == std::string_view::npos) break;
+          key.remove_prefix(comma + 1);
+        }
+        continue;
+      }
+      if (key.starts_with("where_eq:") || key.starts_with("where_mod_eq:")) {
+        key.remove_prefix(key.starts_with("where_eq:") ? 9 : 13);
+        if (!bind_column(key.substr(0, key.find(':')), &prepared.covered_column_uuids)) return std::nullopt;
+        continue;
+      }
+      if (key.starts_with("sum:")) {
+        key.remove_prefix(4);
+        const auto colon = key.find(':');
+        if (colon == std::string_view::npos || !bind_column(key.substr(0, colon), destination) ||
+            !bind_column(key.substr(colon + 1), destination)) return std::nullopt;
+        continue;
+      }
+      if (key.starts_with("cast:")) {
+        key.remove_prefix(5); key = key.substr(0, key.find(':'));
+      } else {
+        for (const std::string_view prefix : {"desc:", "lower:", "upper:", "length:", "identity:"}) {
+          if (key.starts_with(prefix)) { key.remove_prefix(prefix.size()); break; }
+        }
+        for (const std::string_view function : {"lower(", "upper(", "length("}) {
+          if (key.starts_with(function) && key.ends_with(')')) {
+            key.remove_prefix(function.size()); key.remove_suffix(1); break;
+          }
+        }
+      }
+      if (!bind_column(key, destination)) return std::nullopt;
+    }
+    for (const auto& uuid : prepared.key_column_uuids)
+      if (std::find(prepared.covered_column_uuids.begin(), prepared.covered_column_uuids.end(), uuid) == prepared.covered_column_uuids.end())
+        prepared.covered_column_uuids.push_back(uuid);
     prepared.visibility_native = true;
     indexes.push_back(std::move(prepared));
   }
   return indexes;
 }
 
-std::vector<std::string> DependenciesFromRequest(const api::EngineApiRequest& request) {
-  std::vector<std::string> dependencies;
+std::vector<api::EngineUuid> DependenciesFromRequest(const api::EngineApiRequest& request) {
+  std::vector<api::EngineUuid> dependencies;
   AddUuid(&dependencies, request.target_database.uuid);
   AddUuid(&dependencies, request.target_schema.uuid);
   AddUuid(&dependencies, request.target_object.uuid);
@@ -271,19 +331,21 @@ SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperatio
   admission.result_shape = result_shape;
   admission.predicate_slots = PredicateSlotsFromRequest(envelope, request, admission.descriptor_slots);
   admission.parameter_slots = ParameterSlotsFromRequest(envelope, request);
-  admission.index_descriptors = IndexDescriptorsFromRequest(request);
+  auto index_descriptors = IndexDescriptorsFromRequest(context, request);
+  if (!index_descriptors) return BuildFailure("SB_PREPARED_TEMPLATE_DESCRIPTOR_MISMATCH",
+      "index dependency has no unambiguous native column binding");
+  admission.index_descriptors = std::move(*index_descriptors);
   admission.policy_metadata.security_policy_digest = ProfileDigest(request.policy_profile);
   admission.policy_metadata.visibility_policy_digest =
       exec::PreparedTemplateStableDigest(
           {"visibility_recheck:engine_statement_use",
            "isolation:" + context.transaction_isolation_level});
   admission.policy_metadata.authorization_policy_digest =
-      exec::PreparedTemplateStableDigest({"principal:" + context.principal_uuid,
-                                          "role:" + context.current_role_uuid});
+      exec::PreparedAuthorizationDigest(context.principal_uuid, context.current_role_uuid);
   admission.policy_metadata.requires_security_context = envelope.requires_security_context;
   admission.policy_metadata.requires_transaction_context = envelope.requires_transaction_context;
 
-  const std::vector<std::string> dependencies = DependenciesFromRequest(request);
+  const std::vector<api::EngineUuid> dependencies = DependenciesFromRequest(request);
   admission.key.operation_id = envelope.operation_id;
   admission.key.sblr_digest_or_trace_key = envelope.trace_key.empty()
                                                ? exec::PreparedTemplateStableDigest({EncodeSblrEnvelope(envelope)})
@@ -316,9 +378,10 @@ SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperatio
       "sblr_prepared_template_source=operation_envelope",
       "parser_sql_text_authority=false",
       "uuid_bound_descriptors_authority=true",
-      "catalog_epoch_uuid_bound=" + context.catalog_epoch_uuid,
+      "catalog_epoch_uuid_bound=true",
       "shared_template_transaction_visibility_authority=false",
   };
+  result.identity_evidence.push_back({"catalog_epoch_uuid", context.catalog_epoch_uuid});
   return result;
 }
 

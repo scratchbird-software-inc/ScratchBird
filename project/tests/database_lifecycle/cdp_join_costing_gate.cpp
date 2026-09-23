@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -52,10 +53,10 @@ platform::u64 NowMillis() {
           .count());
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, NowMillis() + salt);
   Require(generated.ok(), "CDP-023 UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 api::EngineTypedValue IntValue(std::int64_t value) {
@@ -74,15 +75,15 @@ api::EngineRowValue Row(std::int64_t key, std::int64_t payload) {
   return row;
 }
 
-api::EngineQueryRelation Relation(const std::string& uuid_text,
+api::EngineQueryRelation Relation(const api::EngineUuid& object_uuid,
                                   std::string name,
                                   std::int64_t first_key,
                                   std::int64_t row_count) {
   api::EngineQueryRelation relation;
   relation.relation_name = std::move(name);
-  relation.source_object.uuid.canonical = uuid_text;
+  relation.source_object.uuid = object_uuid;
   relation.source_object.object_kind = "table";
-  relation.descriptor_digest = "descriptor:" + uuid_text;
+  relation.descriptor_digest = "fixture:id:int64,payload:int64";
   for (std::int64_t i = 0; i < row_count; ++i) {
     relation.rows.push_back(Row(first_key + i, 1000 + i));
   }
@@ -93,10 +94,10 @@ api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "cdp023-join-costing";
-  context.database_uuid.canonical = NewUuidText(platform::UuidKind::database, 10);
-  context.principal_uuid.canonical = NewUuidText(platform::UuidKind::principal, 11);
-  context.session_uuid.canonical = NewUuidText(platform::UuidKind::object, 12);
-  context.transaction_uuid.canonical = NewUuidText(platform::UuidKind::transaction, 13);
+  context.database_uuid = NewIdentity(platform::UuidKind::database, 10);
+  context.principal_uuid = NewIdentity(platform::UuidKind::principal, 11);
+  context.session_uuid = NewIdentity(platform::UuidKind::object, 12);
+  context.transaction_uuid = NewIdentity(platform::UuidKind::transaction, 13);
   context.local_transaction_id = 77;
   context.snapshot_visible_through_local_transaction_id = 77;
   context.security_context_present = true;
@@ -110,8 +111,8 @@ api::EngineRequestContext Context() {
 
 api::EnginePlanOperationRequest JoinRequest(std::vector<std::string> options = {},
                                             std::string explicit_algorithm = {}) {
-  const std::string left_uuid = NewUuidText(platform::UuidKind::object, 20);
-  const std::string right_uuid = NewUuidText(platform::UuidKind::object, 21);
+  const api::EngineUuid left_uuid = NewIdentity(platform::UuidKind::object, 20);
+  const api::EngineUuid right_uuid = NewIdentity(platform::UuidKind::object, 21);
   api::EnginePlanOperationRequest request;
   request.context = Context();
   request.execute = true;
@@ -129,7 +130,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) return true;
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) return true;
   }
   return false;
 }
@@ -139,7 +140,7 @@ bool HasEvidencePrefix(const api::EngineApiResult& result,
                        std::string_view prefix) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        evidence.evidence_id.rfind(std::string(prefix), 0) == 0) {
+        scratchbird::tests::EvidenceTextRfind(evidence.evidence_id, std::string(prefix), 0) == 0) {
       return true;
     }
   }
@@ -160,8 +161,8 @@ std::vector<std::string> ResultSignature(const api::EnginePlanOperationResult& r
 }  // namespace
 
 int main() {
-  const auto left_uuid = NewUuidText(platform::UuidKind::object, 30);
-  const auto right_uuid = NewUuidText(platform::UuidKind::object, 31);
+  const auto left_uuid = NewIdentity(platform::UuidKind::object, 30);
+  const auto right_uuid = NewIdentity(platform::UuidKind::object, 31);
   std::vector<opt::JoinRelationNode> relations = {
       {.relation_uuid = left_uuid,
        .estimated_rows = 8,

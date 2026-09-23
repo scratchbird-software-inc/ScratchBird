@@ -16,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -53,13 +54,13 @@ enum class IparCapability : std::uint8_t {
 };
 
 struct IparObjectCapabilitySet {
-  std::string object_uuid;
+  EngineUuid object_uuid;
   IparCompressedEpochVector epoch;
   std::uint64_t bits = 0;
 };
 
 struct IparCapabilityInput {
-  std::string object_uuid;
+  EngineUuid object_uuid;
   IparCompressedEpochVector epoch;
   bool has_triggers = false;
   bool has_defaults = false;
@@ -83,7 +84,7 @@ struct IparNoopBranchDecision {
 };
 
 struct IparRowLayoutColumn {
-  std::string column_uuid;
+  EngineUuid column_uuid;
   EngineDescriptor descriptor;
   std::uint32_t ordinal = 0;
   std::uint32_t fixed_width_bytes = 0;
@@ -96,7 +97,7 @@ struct IparRowLayoutColumn {
 };
 
 struct IparRowLayoutSlot {
-  std::string column_uuid;
+  EngineUuid column_uuid;
   std::uint32_t ordinal = 0;
   std::uint32_t fixed_offset = 0;
   std::uint32_t fixed_width_bytes = 0;
@@ -107,16 +108,22 @@ struct IparRowLayoutSlot {
   bool coercion_required = false;
 };
 
+struct IparParameterBinding {
+  EngineUuid column_uuid;
+  std::uint32_t ordinal = 0;
+  std::uint32_t fixed_offset = 0;
+};
+
 struct IparRowLayoutDescriptor {
-  std::string table_uuid;
-  std::string statement_uuid;
+  EngineUuid table_uuid;
+  EngineUuid statement_uuid;
   IparCompressedEpochVector epoch;
   std::uint32_t fixed_row_bytes = 0;
   std::uint32_t null_bitmap_bytes = 0;
   std::uint32_t variable_column_count = 0;
   std::string encoder_digest;
   std::vector<IparRowLayoutSlot> slots;
-  std::vector<std::string> parameter_bind_map;
+  std::vector<IparParameterBinding> parameter_bind_map;
   bool security_recheck_required = true;
   bool visibility_recheck_required = true;
   bool parser_authority = false;
@@ -138,11 +145,14 @@ struct IparParameterEncoderLookupResult {
   IparRowLayoutDescriptor layout;
 };
 
+using IparRowLayoutKey =
+    std::tuple<EngineUuid, EngineUuid, std::string, std::string>;
+
 class IparParameterEncoderCache {
  public:
   IparParameterEncoderLookupResult Put(IparRowLayoutDescriptor layout);
-  IparParameterEncoderLookupResult Lookup(const std::string& table_uuid,
-                                          const std::string& statement_uuid,
+  IparParameterEncoderLookupResult Lookup(const EngineUuid& table_uuid,
+                                          const EngineUuid& statement_uuid,
                                           const IparCompressedEpochVector& epoch,
                                           const std::string& encoder_digest);
   std::uint64_t InvalidateStale(const IparCompressedEpochVector& current_epoch);
@@ -150,13 +160,13 @@ class IparParameterEncoderCache {
 
  private:
   mutable std::mutex mutex_;
-  std::map<std::string, IparRowLayoutDescriptor> entries_;
+  std::map<IparRowLayoutKey, IparRowLayoutDescriptor> entries_;
 };
 
 struct IparWarmProfileItem {
   std::string item_id;
   std::string item_kind;
-  std::string object_uuid;
+  EngineUuid object_uuid;
   IparCompressedEpochVector epoch;
   std::uint64_t bytes = 0;
   std::uint64_t priority = 0;
@@ -165,7 +175,7 @@ struct IparWarmProfileItem {
 };
 
 struct IparWarmProfileRequest {
-  std::string database_uuid;
+  EngineUuid database_uuid;
   IparCompressedEpochVector open_epoch;
   std::uint64_t budget_bytes = 0;
   std::vector<IparWarmProfileItem> items;
@@ -191,12 +201,12 @@ bool IparObjectCapabilityHas(const IparObjectCapabilitySet& capabilities,
 std::vector<IparNoopBranchDecision> BuildIparNoopBranchTable(
     const IparObjectCapabilitySet& capabilities);
 IparRowLayoutBuildResult BuildIparRowLayoutDescriptor(
-    std::string table_uuid,
-    std::string statement_uuid,
+    EngineUuid table_uuid,
+    EngineUuid statement_uuid,
     IparCompressedEpochVector epoch,
     std::vector<IparRowLayoutColumn> columns);
-std::string IparRowLayoutCacheKey(const std::string& table_uuid,
-                                  const std::string& statement_uuid,
+IparRowLayoutKey IparRowLayoutCacheKey(const EngineUuid& table_uuid,
+                                  const EngineUuid& statement_uuid,
                                   const IparCompressedEpochVector& epoch,
                                   const std::string& encoder_digest);
 IparWarmProfilePlan PlanIparDatabaseOpenWarmProfile(

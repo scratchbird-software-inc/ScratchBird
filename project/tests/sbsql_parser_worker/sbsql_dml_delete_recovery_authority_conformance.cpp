@@ -81,16 +81,13 @@ unsigned checks = 0;
 void Require(bool ok, const char* message) {
   ++checks; if (!ok) { std::cerr << message << '\n'; std::exit(1); }
 }
-std::string NewUuid(Kind kind) {
+api::EngineUuid NewUuid(Kind kind) {
   static std::uint64_t time = 1788210000100;
   const auto id = uuid::GenerateDurableEngineIdentityV7(kind, time++);
-  Require(id.ok(), "UUID generation"); return uuid::UuidToString(id.value.value);
+  Require(id.ok(), "UUID generation"); return id.value.value;
 }
-w::TypedUpdateUuid Binary(const std::string& text) {
-  const auto id = uuid::ParseUuid(text);
-  Require(id.ok(), "UUID parse");
-  w::TypedUpdateUuid out{};
-  std::copy(id.value.bytes.begin(), id.value.bytes.end(), out.begin()); return out;
+w::TypedUpdateUuid Binary(const api::EngineUuid& value) {
+  return value.bytes;
 }
 struct Fixture {
   std::filesystem::path root;
@@ -117,13 +114,13 @@ struct Fixture {
     const auto begin = mga::BeginLocalTransaction(inventory.inventory, transaction.value, 1788210000004);
     Require(begin.ok() && db::PersistLocalTransactionInventoryToDatabase(config.path, begin.inventory).ok(), "active inventory");
     context.database_path = config.path;
-    context.database_uuid.canonical = uuid::UuidToString(database.value.value);
-    context.transaction_uuid.canonical = uuid::UuidToString(transaction.value.value);
+    context.database_uuid = database.value.value;
+    context.transaction_uuid = transaction.value.value;
     context.local_transaction_id = begin.entry.identity.local_id.value;
     context.database_page_size_bytes = 16384;
-    context.statement_receipt_uuid.canonical = NewUuid(Kind::object);
-    context.statement_snapshot_uuid.canonical = NewUuid(Kind::object);
-    context.statement_metadata_snapshot_uuid.canonical = NewUuid(Kind::object);
+    context.statement_receipt_uuid = NewUuid(Kind::object);
+    context.statement_snapshot_uuid = NewUuid(Kind::object);
+    context.statement_metadata_snapshot_uuid = NewUuid(Kind::object);
     context.catalog_generation_id = context.datatype_registry_generation = 1;
   }
   ~Fixture() { std::error_code error; std::filesystem::remove_all(root, error); }
@@ -180,11 +177,11 @@ w::TypedDeleteDescriptorCarrier Descriptor(const api::EngineRequestContext& c) {
   v.row_policy_set_sha256.fill(2);
   v.ordered_constraint_set_sha256.fill(3);
   v.ordered_trigger_set_sha256.fill(4);
-  v.owning_transaction_uuid = Binary(c.transaction_uuid.canonical);
+  v.owning_transaction_uuid = Binary(c.transaction_uuid);
   v.owning_local_transaction_id = c.local_transaction_id;
-  v.authenticated_statement_receipt_uuid = Binary(c.statement_receipt_uuid.canonical);
-  v.statement_snapshot_uuid = Binary(c.statement_snapshot_uuid.canonical);
-  v.catalog_snapshot_uuid = Binary(c.statement_metadata_snapshot_uuid.canonical);
+  v.authenticated_statement_receipt_uuid = Binary(c.statement_receipt_uuid);
+  v.statement_snapshot_uuid = Binary(c.statement_snapshot_uuid);
+  v.catalog_snapshot_uuid = Binary(c.statement_metadata_snapshot_uuid);
   v.predicate_node_count = 1; v.builtin_operator_snapshot_uuid = w::kTypedUpdateOperatorSnapshotUuid;
   return v;
 }
@@ -192,10 +189,11 @@ struct Operation {
   Fixture& f;
   std::vector<std::vector<std::uint8_t>> chain;
   w::TypedDeleteJournalRecord head;
-  std::string marker_uuid, marker_key;
+  api::EngineUuid marker_uuid;
+  std::string marker_key;
   Operation(Fixture& fixture) : f(fixture) {
     head.descriptor = Descriptor(f.context); head.journal_sequence = 1;
-    head.database_uuid = Binary(f.context.database_uuid.canonical);
+    head.database_uuid = Binary(f.context.database_uuid);
     head.authenticated_statement_receipt_uuid = head.descriptor.authenticated_statement_receipt_uuid;
     head.owning_transaction_uuid = head.descriptor.owning_transaction_uuid;
     head.owning_local_transaction_id = head.descriptor.owning_local_transaction_id;
@@ -333,7 +331,7 @@ void DurableStoreCases() {
     Fixture f; Operation operation(f); auto store = OpenStore(operation);
     Persist(*store, operation); operation.Intent(); Persist(*store, operation);
     operation.Prepared(); Persist(*store, operation); Stage(*store); store.reset();
-    auto wrong = f.context; wrong.statement_receipt_uuid.canonical = NewUuid(Kind::object);
+    auto wrong = f.context; wrong.statement_receipt_uuid = NewUuid(Kind::object);
     api::EngineApiDiagnostic diagnostic;
     Require(!api::MgaDmlDeleteDurableStoreV1::Open(wrong, operation.head.descriptor.descriptor_uuid,
         operation.head.descriptor.descriptor_generation, &diagnostic), "durable cross-receipt refusal");
@@ -508,7 +506,7 @@ int main() {
   {
     Fixture f; Operation operation(f);
     operation.Expect(D::abandon_unexecuted);
-    auto wrong = f.context; wrong.statement_receipt_uuid.canonical = NewUuid(Kind::object);
+    auto wrong = f.context; wrong.statement_receipt_uuid = NewUuid(Kind::object);
     Require(!api::ObserveDmlDeleteRecoveryAuthorityV1(wrong, operation.chain).ok, "cross receipt refusal");
     operation.Intent(); operation.Expect(D::rollback_statement);
     operation.Prepared(); operation.Expect(D::rollback_statement);

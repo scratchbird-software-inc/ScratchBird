@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -57,8 +58,8 @@ bool HasSelectedKind(const opt::OptimizedPlan& optimized,
   });
 }
 
-opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
-                                          const std::string& statistic_uuid) {
+opt::OptimizerStatsIdentity FreshIdentity(const plan::CanonicalPlannerUuid& object_uuid,
+                                          const plan::CanonicalPlannerUuid& statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = object_uuid;
   identity.statistic_uuid = statistic_uuid;
@@ -71,9 +72,9 @@ opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
   return identity;
 }
 
-opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
+opt::TableCardinalityStats TableStats(const plan::CanonicalPlannerUuid& relation_uuid) {
   opt::TableCardinalityStats stats;
-  stats.identity = FreshIdentity(relation_uuid, relation_uuid + ":table");
+  stats.identity = FreshIdentity(relation_uuid, scratchbird::tests::FixtureUuid(1529, 101));
   stats.row_count = 20000;
   stats.visible_row_count = 19500;
   stats.page_count = 768;
@@ -81,10 +82,10 @@ opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
   return stats;
 }
 
-opt::IndexStats BtreeIndex(const std::string& relation_uuid,
-                           const std::string& index_uuid) {
+opt::IndexStats BtreeIndex(const plan::CanonicalPlannerUuid& relation_uuid,
+                           const plan::CanonicalPlannerUuid& index_uuid) {
   opt::IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, index_uuid + ":index");
+  stats.identity = FreshIdentity(index_uuid, scratchbird::tests::FixtureUuid(1529, 102));
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = "btree";
@@ -97,18 +98,18 @@ opt::IndexStats BtreeIndex(const std::string& relation_uuid,
   stats.fragmentation_ratio = 0.02;
   stats.visibility_coverage = 1.0;
   stats.predicate_coverage = 1.0;
-  stats.key_column_uuids = {"col.customer_id"};
-  stats.covered_column_uuids = {"col.customer_id", "col.name"};
+  stats.key_column_uuids = {scratchbird::tests::FixtureUuid(1529, 5)};
+  stats.covered_column_uuids = {scratchbird::tests::FixtureUuid(1529, 5), scratchbird::tests::FixtureUuid(1529, 6)};
   return stats;
 }
 
 opt::OptimizerStatisticsCatalog ExactStatisticsCatalog(
-    const std::string& relation_uuid) {
+    const plan::CanonicalPlannerUuid& relation_uuid) {
   opt::OptimizerStatisticsCatalog catalog;
   const auto add_relation = [&](const std::string& name, double value) {
     catalog.Add(opt::MakeStatistic(name,
                                    "relation",
-                                   relation_uuid,
+                                   opt::OptimizerStatisticTarget::Object(relation_uuid),
                                    value,
                                    opt::StatisticSource::kCatalogExact,
                                    17,
@@ -132,7 +133,7 @@ opt::OptimizerStatisticsCatalog ExactStatisticsCatalog(
   return catalog;
 }
 
-plan::LogicalPlan PointLookupPlan(const std::string& relation_uuid) {
+plan::LogicalPlan PointLookupPlan(const plan::CanonicalPlannerUuid& relation_uuid) {
   auto logical = plan::BuildQueryShapePlan({plan::QueryShapeKind::kPointLookup});
   logical.nodes.front().required_object_uuids.push_back(relation_uuid);
   logical.nodes.front().required_descriptors.push_back("projection.covered");
@@ -140,25 +141,25 @@ plan::LogicalPlan PointLookupPlan(const std::string& relation_uuid) {
 }
 
 opt::AccessPathPlanningRequest CatalogAccessRequest(
-    const std::string& relation_uuid) {
+    const plan::CanonicalPlannerUuid& relation_uuid) {
   opt::AccessPathPlanningRequest request;
   request.relation_uuid = relation_uuid;
   request.predicate_kind = "scalar_eq";
   request.predicate_text = "col.customer_id = ?";
   request.descriptor_digest = "desc:customer_lookup";
   request.collation_identity = "binary";
-  request.projected_column_uuids = {"col.customer_id", "col.name"};
+  request.projected_column_uuids = {scratchbird::tests::FixtureUuid(1529, 5), scratchbird::tests::FixtureUuid(1529, 6)};
   request.visibility_proven = true;
   request.grants_proven = true;
   request.base_row_mga_recheck_planned = true;
   request.base_row_security_recheck_planned = true;
   request.index_visibility_native = true;
   request.table_stats = TableStats(relation_uuid);
-  request.candidate_indexes = {BtreeIndex(relation_uuid, "idx.customer_id")};
+  request.candidate_indexes = {BtreeIndex(relation_uuid, scratchbird::tests::FixtureUuid(1529, 4))};
   return request;
 }
 
-opt::BoundOptimizerRequest PublicSqlRequest(const std::string& relation_uuid) {
+opt::BoundOptimizerRequest PublicSqlRequest(const plan::CanonicalPlannerUuid& relation_uuid) {
   opt::BoundOptimizerRequest request;
   request.context.request_uuid = "orh010.request";
   request.context.operation_id = "public_sql.select.point_lookup";
@@ -197,7 +198,7 @@ opt::RuntimeOptimizedPathEvidence RouteEvidenceFromResult(
 }
 
 void CatalogBackedPublicSqlRouteIsBenchmarkCleanEligible() {
-  const std::string relation_uuid = "rel.orh010.catalog";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1529, 1);
   auto request = PublicSqlRequest(relation_uuid);
   request.catalog_access_path_request = CatalogAccessRequest(relation_uuid);
 
@@ -253,7 +254,7 @@ void CatalogBackedPublicSqlRouteIsBenchmarkCleanEligible() {
 }
 
 void StatisticsOnlyOptimizerIsQuarantinedFromBenchmarkCleanClaims() {
-  const std::string relation_uuid = "rel.orh011.stats_only";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1529, 2);
   const auto logical = PointLookupPlan(relation_uuid);
   const auto statistics = ExactStatisticsCatalog(relation_uuid);
 
@@ -277,7 +278,7 @@ void StatisticsOnlyOptimizerIsQuarantinedFromBenchmarkCleanClaims() {
 }
 
 void CatalogBackedRouteWithoutCatalogFactsIsNotBenchmarkClean() {
-  const std::string relation_uuid = "rel.orh010.missing_catalog_facts";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1529, 3);
   auto access_request = CatalogAccessRequest(relation_uuid);
   access_request.table_stats.reset();
 

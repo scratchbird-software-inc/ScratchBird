@@ -6,6 +6,15 @@
 
 #include <thread>
 
+namespace {
+bool ExactUuidValue(const scratchbird::engine::internal_api::EngineTypedValue& value,
+                    const executor::PhysicalUuid& expected) {
+  return !value.is_null && value.state == scratchbird::engine::internal_api::EngineValueState::value && value.encoded_value.empty() &&
+         value.binary_value.size() == expected.bytes.size() &&
+         std::equal(value.binary_value.begin(), value.binary_value.end(), expected.bytes.begin());
+}
+}
+
 int main() {
   struct ProfileSchedule {
     std::string id;
@@ -226,18 +235,12 @@ int main() {
                         lateral_executed.rows_received == 9 &&
                         lateral_executed.rows_published == 9 &&
                         lateral_executed.root_output_batch.rows.size() == 9 &&
-                        lateral_executed.root_output_batch.rows[0].values[0]
-                                .encoded_value == Uuid(2000) &&
-                        lateral_executed.root_output_batch.rows[0].values[1]
-                                .encoded_value == Uuid(2010) &&
-                        lateral_executed.root_output_batch.rows[3].values[0]
-                                .encoded_value == Uuid(2001) &&
-                        lateral_executed.root_output_batch.rows[3].values[1]
-                                .encoded_value == Uuid(2011) &&
-                        lateral_executed.root_output_batch.rows[6].values[0]
-                                .encoded_value == Uuid(2002) &&
-                        lateral_executed.root_output_batch.rows[6].values[1]
-                                .encoded_value == Uuid(2012) &&
+                        ExactUuidValue(lateral_executed.root_output_batch.rows[0].values[0], Uuid(2000)) &&
+                        ExactUuidValue(lateral_executed.root_output_batch.rows[0].values[1], Uuid(2010)) &&
+                        ExactUuidValue(lateral_executed.root_output_batch.rows[3].values[0], Uuid(2001)) &&
+                        ExactUuidValue(lateral_executed.root_output_batch.rows[3].values[1], Uuid(2011)) &&
+                        ExactUuidValue(lateral_executed.root_output_batch.rows[6].values[0], Uuid(2002)) &&
+                        ExactUuidValue(lateral_executed.root_output_batch.rows[6].values[1], Uuid(2012)) &&
                         lateral_executed.cleanup_complete &&
                         lateral_workspace.Snapshot().active_bytes == 0,
                     "lateral right leg did not execute once per visible outer row in order");

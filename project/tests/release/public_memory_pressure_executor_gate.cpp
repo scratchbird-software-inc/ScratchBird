@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -102,15 +103,18 @@ memory::AllocationPolicy AllocatorPolicy(std::uint64_t limit = 1024 * 1024) {
   return policy;
 }
 
-memory::QueryMemoryContext QueryContext(std::string suffix) {
+memory::QueryMemoryContext QueryContext(std::uint32_t ordinal) {
   memory::QueryMemoryContext context;
-  context.engine_id = "public-engine";
-  context.database_id = "public-db";
-  context.session_id = "session-" + suffix;
-  context.transaction_id = "transaction-" + suffix;
-  context.statement_id = "statement-" + suffix;
-  context.query_id = "query-" + suffix;
-  context.operation_id = "operation-" + suffix;
+  context.engine_id = scratchbird::tests::FixtureUuid(1439, 201);
+  context.database_id = scratchbird::tests::FixtureUuid(1439, 202);
+  context.session_id = scratchbird::tests::FixtureUuid(1439, 10000 + ordinal * 8 + 1);
+  context.transaction_id = scratchbird::tests::FixtureUuid(1439, 10000 + ordinal * 8 + 2);
+  context.statement_id = scratchbird::tests::FixtureUuid(1439, 10000 + ordinal * 8 + 3);
+  context.query_id = scratchbird::tests::FixtureUuid(1439, 10000 + ordinal * 8 + 4);
+  context.operation_id = scratchbird::tests::FixtureUuid(1439, 10000 + ordinal * 8 + 5);
+  context.snapshot_boundary = scratchbird::tests::FixtureUuid(1439, 10000 + ordinal * 8 + 6);
+  context.metadata_boundary = scratchbird::tests::FixtureUuid(1439, 10000 + ordinal * 8 + 7);
+  context.resource_budget_reference = scratchbird::tests::FixtureUuid(1439, 10000 + ordinal * 8 + 8);
   return context;
 }
 
@@ -313,17 +317,20 @@ memory::MemoryPressureActionExecutionResult RunSpillGrant(
 
   memory::BoundedAllocator allocator(AllocatorPolicy());
   memory::HierarchicalMemoryBudgetLedger ledger;
-  memory::UnifiedMemorySpillBudgetLedger unified(suffix, 4096);
+  const auto query_context = QueryContext(static_cast<std::uint32_t>(action));
+  memory::UnifiedMemorySpillBudgetLedger unified(query_context.query_id, 4096);
   memory::TempWorkspacePolicy temp_policy;
   temp_policy.policy_name = "public_memory_pressure_executor_spill";
   temp_policy.root_path = root;
+  temp_policy.database_uuid = query_context.database_id;
+  temp_policy.engine_uuid = query_context.engine_id;
   temp_policy.filespace_quota_bytes = 4096;
   temp_policy.session_quota_bytes = 4096;
   temp_policy.transaction_quota_bytes = 4096;
   temp_policy.statement_quota_bytes = 4096;
   temp_policy.operation_quota_bytes = 4096;
   memory::TempWorkspaceLifecycleManager temp_workspace(temp_policy);
-  memory::QueryMemoryArena arena(QueryContext(suffix),
+  memory::QueryMemoryArena arena(query_context,
                                  QueryLimits(true),
                                  &allocator,
                                  &temp_workspace,
@@ -361,8 +368,9 @@ memory::MemoryPressureActionExecutionResult RunQueryCancel(
     memory::MemoryPressureActionKind action) {
   memory::BoundedAllocator allocator(AllocatorPolicy());
   memory::HierarchicalMemoryBudgetLedger ledger;
-  memory::UnifiedMemorySpillBudgetLedger unified("cancel", 4096);
-  memory::QueryMemoryArena arena(QueryContext("cancel"),
+  const auto query_context = QueryContext(1000);
+  memory::UnifiedMemorySpillBudgetLedger unified(query_context.query_id, 4096);
+  memory::QueryMemoryArena arena(query_context,
                                  QueryLimits(false),
                                  &allocator,
                                  nullptr,

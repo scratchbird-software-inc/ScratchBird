@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_dispatch.hpp"
 #include "query/canonical_relational_bridge.hpp"
 
@@ -59,30 +60,23 @@ bool HasApiDiagnostic(const sblr::SblrDispatchResult& result,
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000003001";
-  context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000003004";
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000003005";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000003001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000003004");
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000003005");
   context.catalog_epoch_uuid.canonical = kCatalogEpochUuid;
   context.local_transaction_id = 3001;
   context.snapshot_visible_through_local_transaction_id = 2999;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000003006";
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000003006");
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       kSecurityContextUuid;
   context.catalog_generation_id = 3001;
   context.security_epoch = 3002;
   context.resource_epoch = 3003;
-  context.optimizer_capability_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006001";
-  context.optimizer_resource_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006002";
-  context.optimizer_route_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006003";
+  context.optimizer_capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006001");
+  context.optimizer_resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006002");
+  context.optimizer_route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006003");
   context.optimizer_route_epoch = 3004;
   context.optimizer_route_generation = 3005;
   context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
@@ -228,8 +222,7 @@ bool ValidateEngineScopeAndPropertyRefusal() {
   };
 
   auto stale_context = Context();
-  stale_context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7100-8000-000000003999";
+  stale_context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000003999");
   const auto stale = sblr::DispatchTextualRelationalQueryForContractTest(
       {std::move(stale_context), PropertyEnvelope(), {}});
 
@@ -258,23 +251,19 @@ bool ValidateEngineScopeAndPropertyRefusal() {
                     "stale engine metadata scope reached planning");
 
   auto context = Context();
-  context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000003999";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000003999");
   passed &= Require(refuses_context_before_graph(std::move(context)),
                     "stale statement identity reached property planning");
   context = Context();
-  context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000003999";
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000003999");
   passed &= Require(refuses_context_before_graph(std::move(context)),
                     "stale transaction identity reached property planning");
   context = Context();
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000003999";
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000003999");
   passed &= Require(refuses_context_before_graph(std::move(context)),
                     "stale data snapshot identity reached property planning");
   context = Context();
-  context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7100-8000-000000003999";
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000003999");
   passed &= Require(refuses_context_before_graph(std::move(context)),
                     "stale catalog identity reached property planning");
   context = Context();

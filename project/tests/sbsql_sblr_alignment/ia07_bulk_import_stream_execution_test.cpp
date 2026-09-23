@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/native_catalog_column_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "core/hash/hash_digest.hpp"
 #include "core/uuid/uuid.hpp"
 #include "database_lifecycle.hpp"
@@ -18,6 +20,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -49,8 +53,8 @@ using BulkSha = sblr::BulkImportSha;
 using BulkUuid = sblr::BulkImportUuid;
 
 constexpr std::uint64_t kEpochMillis = 1949000000000ull;
-constexpr std::string_view kConverterUuid =
-    "019d0000-0000-7000-8000-00000000b775";
+constexpr auto kConverterUuid = scratchbird::tests::FixtureUuidLiteral(
+    "019d0000-0000-7000-8000-00000000b775");
 
 [[noreturn]] void Fail(std::string_view detail) {
   std::cerr << "bulk_import_stream_execution: " << detail << '\n';
@@ -81,14 +85,12 @@ platform::TypedUuid NewUuid(platform::UuidKind kind) {
   return generated.value;
 }
 
-std::string Text(const platform::TypedUuid& value) {
-  return uuid::UuidToString(value.value);
+platform::Uuid Identity(const platform::TypedUuid& value) {
+  return value.value;
 }
 
-BulkUuid Bytes(std::string_view text) {
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  Require(parsed.ok(), "canonical UUID parse failed");
-  return parsed.value.bytes;
+BulkUuid Bytes(const platform::Uuid& value) {
+  return value.bytes;
 }
 
 void AppendU16(std::vector<std::uint8_t>* out, std::uint16_t value) {
@@ -108,8 +110,8 @@ void AppendU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
   }
 }
 
-void AppendUuid(std::vector<std::uint8_t>* out, std::string_view text) {
-  const auto value = Bytes(text);
+void AppendUuid(std::vector<std::uint8_t>* out, const platform::Uuid& uuid) {
+  const auto value = Bytes(uuid);
   out->insert(out->end(), value.begin(), value.end());
 }
 
@@ -136,39 +138,24 @@ BulkSha Hash(std::string_view text) {
       reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
 }
 
-std::string Hex(std::span<const std::uint8_t> bytes) {
-  constexpr char digits[] = "0123456789abcdef";
-  std::string encoded;
-  encoded.reserve(bytes.size() * 2);
-  for (const auto value : bytes) {
-    encoded.push_back(digits[value >> 4]);
-    encoded.push_back(digits[value & 0x0f]);
-  }
-  return encoded;
+std::string WriteWorkerBytes(const std::filesystem::path& path,
+                             std::span<const std::uint8_t> bytes) {
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  output.close();
+  Require(!output.fail(), "crash-worker binary file write failed");
+  return path.string();
 }
 
-bool DecodeHex(std::string_view encoded, std::vector<std::uint8_t>* bytes) {
-  if (bytes == nullptr || encoded.empty() || encoded.size() % 2 != 0) {
-    return false;
-  }
-  const auto nibble = [](char value) -> int {
-    if (value >= '0' && value <= '9') return value - '0';
-    if (value >= 'a' && value <= 'f') return 10 + value - 'a';
-    if (value >= 'A' && value <= 'F') return 10 + value - 'A';
-    return -1;
-  };
-  bytes->clear();
-  bytes->reserve(encoded.size() / 2);
-  for (std::size_t index = 0; index < encoded.size(); index += 2) {
-    const auto high = nibble(encoded[index]);
-    const auto low = nibble(encoded[index + 1]);
-    if (high < 0 || low < 0) {
-      bytes->clear();
-      return false;
-    }
-    bytes->push_back(static_cast<std::uint8_t>((high << 4) | low));
-  }
-  return true;
+bool ReadWorkerBytes(const std::filesystem::path& path, std::vector<std::uint8_t>* bytes) {
+  std::error_code error;
+  const auto size = std::filesystem::file_size(path, error);
+  if (bytes == nullptr || error || size > (1u << 20)) return false;
+  std::ifstream input(path, std::ios::binary);
+  if (!input) return false;
+  bytes->resize(size);
+  input.read(reinterpret_cast<char*>(bytes->data()), size);
+  return input.good() && input.peek() == std::char_traits<char>::eof();
 }
 
 BulkSha EmptySetHash(std::string_view domain) {
@@ -228,9 +215,9 @@ BulkSha ConverterEvidence(
   material.insert(material.end(), domain.begin(), domain.end());
   AppendUuid(&material, kConverterUuid);
   AppendU64(&material, 1);
-  AppendUuid(&material, column.column_uuid.canonical);
+  AppendUuid(&material, column.column_uuid);
   AppendU64(&material, column.column_generation);
-  AppendUuid(&material, column.value_descriptor.descriptor_uuid.canonical);
+  AppendUuid(&material, column.value_descriptor.descriptor_uuid);
   AppendLp16(&material, column.value_descriptor.canonical_type_name);
   const std::vector<std::uint8_t> encoded(
       column.value_descriptor.encoded_descriptor.begin(),
@@ -255,16 +242,16 @@ BulkSha PolicyDigest(const api::EngineRequestContext& context,
       "ScratchBird.BulkImportStreamPolicyBundle.V1";
   material.insert(material.end(), domain.begin(), domain.end());
   material.insert(material.end(), syntax_demand.begin(), syntax_demand.end());
-  AppendUuid(&material, descriptor.relation_uuid.canonical);
+  AppendUuid(&material, descriptor.relation_uuid);
   AppendU64(&material, descriptor.relation_generation);
-  AppendUuid(&material, descriptor.descriptor_uuid.canonical);
+  AppendUuid(&material, descriptor.descriptor_uuid);
   AppendU64(&material, descriptor.descriptor_generation);
   material.insert(material.end(), columns_digest.begin(), columns_digest.end());
-  AppendUuid(&material, context.catalog_epoch_uuid.canonical);
+  AppendUuid(&material, context.catalog_epoch_uuid);
   AppendU64(&material, context.catalog_generation_id);
-  AppendUuid(&material, context.authorization_context.authority_uuid.canonical);
+  AppendUuid(&material, context.authorization_context.authority_uuid);
   AppendU64(&material, context.authorization_context.security_epoch);
-  AppendUuid(&material, context.resource_admission_uuid.canonical);
+  AppendUuid(&material, context.resource_admission_uuid);
   AppendU64(&material, context.resource_epoch);
   for (const auto empty_domain : {
            std::string_view("ScratchBird.BulkImportStreamDefaultDescriptorSet.V1"),
@@ -276,10 +263,10 @@ BulkSha PolicyDigest(const api::EngineRequestContext& context,
   }
   AppendU32(&material, static_cast<std::uint32_t>(columns.size()));
   for (const auto* column : columns) {
-    AppendUuid(&material, column->column_uuid.canonical);
+    AppendUuid(&material, column->column_uuid);
     AppendU64(&material, column->column_generation);
     AppendUuid(&material,
-               column->value_descriptor.descriptor_uuid.canonical);
+               column->value_descriptor.descriptor_uuid);
     AppendUuid(&material, kConverterUuid);
     AppendU64(&material, 1);
     const auto converter = ConverterEvidence(*column);
@@ -319,12 +306,12 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = Text(fixture.database);
+  context.database_uuid = Identity(fixture.database);
   context.database_page_size_bytes = 16384;
-  context.default_root_uuid.canonical = Text(fixture.filespace);
-  context.current_schema_uuid.canonical = Text(fixture.schema);
-  context.principal_uuid.canonical = Text(fixture.principal);
-  context.session_uuid.canonical = Text(fixture.session);
+  context.default_root_uuid = Identity(fixture.filespace);
+  context.current_schema_uuid = Identity(fixture.schema);
+  context.principal_uuid = Identity(fixture.principal);
+  context.session_uuid = Identity(fixture.session);
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
@@ -387,19 +374,17 @@ Fixture MakeFixture() {
   auto metadata = Begin(fixture, "bulk-import-execution-metadata");
   api::CrudTableRecord table;
   table.creator_tx = metadata.local_transaction_id;
-  table.table_uuid = Text(fixture.relation);
+  table.table_uuid = Identity(fixture.relation);
   table.default_name = "bulk_import_execution_target";
-  table.columns = {
-      {"id",
-       "type=int32;datatype_descriptor_uuid="
-       "019d0000-0000-7000-8000-00000000d716;type_uuid="
-       "019d0000-0000-7000-8000-00000000d717;nullable=false"},
-      {"payload",
-       "type=character;datatype_descriptor_uuid="
-       "019d0000-0000-7000-8000-00000000d718;type_uuid="
-       "019d0000-0000-7000-8000-00000000d719;codec_uuid="
-       "019d0000-0000-7000-8000-00000000d71a;nullable=true"},
-  };
+  table.columns = {{"id", scratchbird::tests::NativeCatalogColumnFixture({
+      {{"type", "int32"}, {"nullable", "false"}},
+      {{"datatype_descriptor_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716")},
+       {"type_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717")}}})}};
+  table.columns.push_back({"payload", scratchbird::tests::NativeCatalogColumnFixture({
+      {{"type", "character"}, {"nullable", "true"}},
+      {{"datatype_descriptor_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718")},
+       {"type_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719")},
+       {"codec_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71a")}}})});
   Require(!api::AppendMgaTableMetadata(metadata, table).error,
           "table metadata append failed");
   Require(!api::EnsureMgaRelationStorageDescriptor(
@@ -409,10 +394,10 @@ Fixture MakeFixture() {
   Commit(metadata);
 
   fixture.context = Begin(fixture, "bulk-import-execution");
-  fixture.context.statement_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object));
-  fixture.context.statement_receipt_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object));
+  fixture.context.statement_uuid =
+      Identity(NewUuid(platform::UuidKind::object));
+  fixture.context.statement_receipt_uuid =
+      Identity(NewUuid(platform::UuidKind::object));
   api::EnginePublishStatementSnapshotRequest publish_snapshot;
   publish_snapshot.context = fixture.context;
   const auto published_snapshot =
@@ -422,13 +407,13 @@ Fixture MakeFixture() {
       published_snapshot.statement_snapshot_uuid;
   fixture.context.snapshot_visible_through_local_transaction_id =
       published_snapshot.snapshot_vector.visible_committed_high_watermark;
-  fixture.context.catalog_epoch_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object));
-  fixture.context.resource_admission_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object));
+  fixture.context.catalog_epoch_uuid =
+      Identity(NewUuid(platform::UuidKind::object));
+  fixture.context.resource_admission_uuid =
+      Identity(NewUuid(platform::UuidKind::object));
   fixture.context.authorization_context.present = true;
-  fixture.context.authorization_context.authority_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object));
+  fixture.context.authorization_context.authority_uuid =
+      Identity(NewUuid(platform::UuidKind::object));
   fixture.context.authorization_context.security_context_generation = 1;
   fixture.context.authorization_context.principal_uuid =
       fixture.context.principal_uuid;
@@ -438,7 +423,7 @@ Fixture MakeFixture() {
   fixture.context.statement_metadata_snapshot_engine_owned = true;
   fixture.context.trace_tags.push_back("private_bulk_import_stream_compiler");
   const auto loaded = api::LoadMgaRelationStorageDescriptor(
-      fixture.context, Text(fixture.relation));
+      fixture.context, Identity(fixture.relation));
   Require(loaded.ok, "live relation descriptor load failed");
   fixture.descriptor = loaded.descriptor;
   Require(fixture.descriptor.columns.size() == 2,
@@ -451,9 +436,9 @@ api::SblrBulkImportStreamAuthorityInputV1 Authority(
     std::uint32_t occurrence) {
   api::SblrBulkImportStreamAuthorityInputV1 authority;
   authority.authenticated_receipt_uuid =
-      Bytes(fixture.context.statement_receipt_uuid.canonical);
+      Bytes(fixture.context.statement_receipt_uuid);
   authority.admitted_command_surface_id = "SBSQL-465931ED7427";
-  authority.binding_uuid = Bytes(Text(NewUuid(platform::UuidKind::object)));
+  authority.binding_uuid = Bytes(Identity(NewUuid(platform::UuidKind::object)));
   authority.binding_generation = 1;
   authority.structural_occurrence = structural;
   authority.import_occurrence = occurrence;
@@ -461,32 +446,32 @@ api::SblrBulkImportStreamAuthorityInputV1 Authority(
       Hash("bulk-import-syntax-" + std::to_string(structural));
   authority.binding_evidence_sha256 =
       Hash("bulk-import-binding-" + std::to_string(structural));
-  authority.target_relation_uuid = Bytes(fixture.descriptor.relation_uuid.canonical);
+  authority.target_relation_uuid = Bytes(fixture.descriptor.relation_uuid);
   authority.target_relation_generation = fixture.descriptor.relation_generation;
   authority.owning_transaction_uuid =
-      Bytes(fixture.context.transaction_uuid.canonical);
+      Bytes(fixture.context.transaction_uuid);
   authority.owning_local_transaction_id = fixture.context.local_transaction_id;
   authority.statement_snapshot_uuid =
-      Bytes(fixture.context.statement_snapshot_uuid.canonical);
-  authority.catalog_epoch_uuid = Bytes(fixture.context.catalog_epoch_uuid.canonical);
+      Bytes(fixture.context.statement_snapshot_uuid);
+  authority.catalog_epoch_uuid = Bytes(fixture.context.catalog_epoch_uuid);
   authority.catalog_generation = fixture.context.catalog_generation_id;
   authority.security_context_uuid =
-      Bytes(fixture.context.authorization_context.authority_uuid.canonical);
+      Bytes(fixture.context.authorization_context.authority_uuid);
   authority.security_epoch = fixture.context.authorization_context.security_epoch;
   authority.policy_snapshot_uuid =
-      Bytes(Text(NewUuid(platform::UuidKind::object)));
+      Bytes(Identity(NewUuid(platform::UuidKind::object)));
   authority.policy_generation = 1;
   authority.route_snapshot_uuid =
-      Bytes(Text(NewUuid(platform::UuidKind::object)));
+      Bytes(Identity(NewUuid(platform::UuidKind::object)));
   authority.route_generation = 1;
-  authority.row_shape_uuid = Bytes(fixture.descriptor.descriptor_uuid.canonical);
+  authority.row_shape_uuid = Bytes(fixture.descriptor.descriptor_uuid);
   authority.row_shape_generation = fixture.descriptor.descriptor_generation;
   authority.column_descriptor_set_sha256 = ColumnDigest(fixture.descriptor);
   authority.import_policy_bundle_sha256 = PolicyDigest(
       fixture.context, fixture.descriptor, authority.syntax_demand_sha256,
       authority.column_descriptor_set_sha256);
   authority.resource_grant_uuid =
-      Bytes(fixture.context.resource_admission_uuid.canonical);
+      Bytes(fixture.context.resource_admission_uuid);
   authority.resource_grant_generation = fixture.context.resource_epoch;
   authority.executor_availability_generation = 1;
   authority.effective_maximum_stream_bytes = 1U << 20U;
@@ -653,7 +638,7 @@ void SpawnAppendWorker(const Fixture& fixture, const PreparedStream& stream,
   const auto encoded = EncodeChunkForWorker(stream.chunk);
   SpawnWorker({"bulk_import_stream_crash_worker", "--crash-append",
                fixture.stream_root.string(), std::to_string(exit_code),
-               Hex(encoded)},
+               WriteWorkerBytes(fixture.root / "crash-worker-payload.bin", encoded)},
               exit_code, detail);
 }
 
@@ -662,7 +647,7 @@ void SpawnSealWorker(const Fixture& fixture, const PreparedStream& stream,
   const auto encoded = EncodeSealForWorker(stream.seal);
   SpawnWorker({"bulk_import_stream_crash_worker", "--crash-seal",
                fixture.stream_root.string(), std::to_string(exit_code),
-               Hex(encoded)},
+               WriteWorkerBytes(fixture.root / "crash-worker-payload.bin", encoded)},
               exit_code, detail);
 }
 
@@ -671,35 +656,31 @@ void SpawnExecutionWorker(
     api::BulkImportStreamExecutionCheckpointV1 checkpoint, int exit_code,
     std::string_view detail) {
   const auto& context = fixture.context;
+  std::vector<std::uint8_t> identities;
+  AppendUuid(&identities, context.database_uuid);
+  AppendUuid(&identities, context.default_root_uuid);
+  AppendUuid(&identities, context.current_schema_uuid);
+  AppendUuid(&identities, context.principal_uuid);
+  AppendUuid(&identities, context.session_uuid);
+  AppendUuid(&identities, context.transaction_uuid);
+  AppendUuid(&identities, context.statement_uuid);
+  AppendUuid(&identities, context.statement_receipt_uuid);
+  AppendUuid(&identities, context.statement_snapshot_uuid);
+  AppendUuid(&identities, context.catalog_epoch_uuid);
+  AppendUuid(&identities, context.resource_admission_uuid);
+  AppendUuid(&identities, context.authorization_context.authority_uuid);
   SpawnWorker(
-      {"bulk_import_stream_crash_worker",
-       "--crash-execute",
-       fixture.stream_root.string(),
-       context.database_path,
-       context.database_uuid.canonical,
-       context.default_root_uuid.canonical,
-       context.current_schema_uuid.canonical,
-       context.principal_uuid.canonical,
-       context.session_uuid.canonical,
-       context.request_id,
-       std::to_string(context.local_transaction_id),
-       context.transaction_uuid.canonical,
-       std::to_string(
-           context.snapshot_visible_through_local_transaction_id),
+      {"bulk_import_stream_crash_worker", "--crash-execute",
+       fixture.stream_root.string(), context.database_path,
+       WriteWorkerBytes(fixture.root / "crash-worker-identities.bin", identities),
+       context.request_id, std::to_string(context.local_transaction_id),
+       std::to_string(context.snapshot_visible_through_local_transaction_id),
        context.transaction_isolation_level,
-       context.statement_uuid.canonical,
-       context.statement_receipt_uuid.canonical,
-       context.statement_snapshot_uuid.canonical,
-       context.catalog_epoch_uuid.canonical,
-       context.resource_admission_uuid.canonical,
-       context.authorization_context.authority_uuid.canonical,
        std::to_string(context.catalog_generation_id),
        std::to_string(context.authorization_context.security_epoch),
-       std::to_string(context.resource_epoch),
-       std::to_string(context.name_resolution_epoch),
-       std::to_string(static_cast<unsigned>(checkpoint)),
-       std::to_string(exit_code),
-       Hex(stream.biro)},
+       std::to_string(context.resource_epoch), std::to_string(context.name_resolution_epoch),
+       std::to_string(static_cast<unsigned>(checkpoint)), std::to_string(exit_code),
+       WriteWorkerBytes(fixture.root / "crash-worker-biro.bin", stream.biro)},
       exit_code, detail);
 }
 
@@ -708,7 +689,7 @@ int RunCrashWorker(int argc, char** argv) {
     if (argc == 5 && std::string_view(argv[1]) == "--crash-append") {
       std::vector<std::uint8_t> encoded;
       wire::Chunk decoded;
-      if (!DecodeHex(argv[4], &encoded) ||
+      if (!ReadWorkerBytes(argv[4], &encoded) ||
           !wire::DecodeChunk(encoded.data(), encoded.size(), &decoded)) {
         return 99;
       }
@@ -733,7 +714,7 @@ int RunCrashWorker(int argc, char** argv) {
     if (argc == 5 && std::string_view(argv[1]) == "--crash-seal") {
       std::vector<std::uint8_t> encoded;
       wire::Seal decoded;
-      if (!DecodeHex(argv[4], &encoded) ||
+      if (!ReadWorkerBytes(argv[4], &encoded) ||
           !wire::DecodeSeal(encoded.data(), encoded.size(), &decoded)) {
         return 99;
       }
@@ -752,32 +733,33 @@ int RunCrashWorker(int argc, char** argv) {
       if (!registry.healthy() || !result.ok) return 98;
       ::_exit(static_cast<int>(std::stoul(argv[3])));
     }
-    if (argc == 27 && std::string_view(argv[1]) == "--crash-execute") {
+    if (argc == 16 && std::string_view(argv[1]) == "--crash-execute") {
       api::EngineRequestContext context;
       context.trust_mode = api::EngineTrustMode::server_isolated;
       context.database_path = argv[3];
-      context.database_uuid.canonical = argv[4];
-      context.default_root_uuid.canonical = argv[5];
-      context.current_schema_uuid.canonical = argv[6];
-      context.principal_uuid.canonical = argv[7];
-      context.session_uuid.canonical = argv[8];
-      context.request_id = argv[9];
-      context.local_transaction_id = std::stoull(argv[10]);
-      context.transaction_uuid.canonical = argv[11];
-      context.snapshot_visible_through_local_transaction_id =
-          std::stoull(argv[12]);
-      context.transaction_isolation_level = argv[13];
-      context.statement_uuid.canonical = argv[14];
-      context.statement_receipt_uuid.canonical = argv[15];
-      context.statement_snapshot_uuid.canonical = argv[16];
-      context.catalog_epoch_uuid.canonical = argv[17];
-      context.resource_admission_uuid.canonical = argv[18];
-      context.authorization_context.authority_uuid.canonical = argv[19];
-      context.catalog_generation_id = std::stoull(argv[20]);
-      context.security_epoch = std::stoull(argv[21]);
+      std::vector<std::uint8_t> identities;
+      if (!ReadWorkerBytes(argv[4], &identities) || identities.size() != 12 * 16) return 99;
+      std::copy_n(identities.begin() + 0, 16, context.database_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 16, 16, context.default_root_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 32, 16, context.current_schema_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 48, 16, context.principal_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 64, 16, context.session_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 80, 16, context.transaction_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 96, 16, context.statement_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 112, 16, context.statement_receipt_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 128, 16, context.statement_snapshot_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 144, 16, context.catalog_epoch_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 160, 16, context.resource_admission_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 176, 16, context.authorization_context.authority_uuid.bytes.begin());
+      context.request_id = argv[5];
+      context.local_transaction_id = std::stoull(argv[6]);
+      context.snapshot_visible_through_local_transaction_id = std::stoull(argv[7]);
+      context.transaction_isolation_level = argv[8];
+      context.catalog_generation_id = std::stoull(argv[9]);
+      context.security_epoch = std::stoull(argv[10]);
       context.authorization_context.security_epoch = context.security_epoch;
-      context.resource_epoch = std::stoull(argv[22]);
-      context.name_resolution_epoch = std::stoull(argv[23]);
+      context.resource_epoch = std::stoull(argv[11]);
+      context.name_resolution_epoch = std::stoull(argv[12]);
       context.database_page_size_bytes = 16384;
       context.identifier_profile_uuid = "sbsql_v3";
       context.language_context.language_tag = "en";
@@ -793,10 +775,10 @@ int RunCrashWorker(int argc, char** argv) {
       context.trace_tags.push_back("private_bulk_import_stream_compiler");
       const auto checkpoint =
           static_cast<api::BulkImportStreamExecutionCheckpointV1>(
-              std::stoul(argv[24]));
-      const auto exit_code = static_cast<int>(std::stoul(argv[25]));
+              std::stoul(argv[13]));
+      const auto exit_code = static_cast<int>(std::stoul(argv[14]));
       std::vector<std::uint8_t> biro;
-      if (!DecodeHex(argv[26], &biro)) return 99;
+      if (!ReadWorkerBytes(argv[15], &biro)) return 99;
       api::SblrBulkImportStreamRegistry registry(argv[2]);
       if (!registry.healthy()) return 98;
       api::EngineExecuteBulkImportStreamRequestV1 request;
@@ -818,7 +800,7 @@ int RunCrashWorker(int argc, char** argv) {
 
 std::vector<api::CrudRowVersionRecord> VisibleRows(const Fixture& fixture) {
   api::MgaVisibleHeapRelationReadRequest request;
-  request.relation_uuid = Text(fixture.relation);
+  request.relation_uuid = Identity(fixture.relation);
   request.maximum_scanned_row_versions = 128;
   request.maximum_decoded_bytes = 1U << 20U;
   request.maximum_output_rows = 64;

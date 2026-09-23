@@ -38,7 +38,7 @@ struct AgentObservedMetricSnapshot {
   u64 source_sequence = 0;
   u64 previous_source_sequence = 0;
   u64 observed_wall_microseconds = 0;
-  std::string scope_uuid;
+  scratchbird::core::platform::Uuid scope_uuid;
   std::string digest;
   std::string value_digest;
   std::string schema_digest;
@@ -57,14 +57,14 @@ struct AgentObservedMetricSnapshot {
   std::string provenance_record;
   std::string attestation_key_id;
   std::string attestation_digest;
-  std::string evidence_uuid;
+  scratchbird::core::platform::Uuid evidence_uuid;
   std::string snapshot_id;
   std::vector<std::string> authority_claims;
 };
 
 struct AgentMetricSnapshotEvaluationOptions {
   AgentMetricRuntimeMode mode = AgentMetricRuntimeMode::production_strict;
-  std::string expected_scope_uuid;
+  scratchbird::core::platform::Uuid expected_scope_uuid;
   bool allow_optional_missing = true;
   u64 required_source_quorum = 2;
   bool require_schema_digest = true;
@@ -77,7 +77,7 @@ struct AgentMetricSnapshotEvaluationOptions {
 struct AgentMetricSnapshotDiagnostic {
   std::string diagnostic_code;
   std::string metric_family;
-  std::string evidence_uuid;
+  scratchbird::core::platform::Uuid evidence_uuid;
   std::string snapshot_id;
   std::string source_id;
   std::string detail;

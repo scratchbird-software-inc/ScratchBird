@@ -1,3 +1,7 @@
+#include "../agents/agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -78,7 +82,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        evidence.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(evidence.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -113,12 +117,12 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string UuidText(TypedUuid typed_uuid) {
-  return uuid::UuidToString(typed_uuid.value);
+std::string UuidBytes(TypedUuid typed_uuid) {
+  return BinaryFixtureIdentity(typed_uuid.value);
 }
 
-std::string UuidText(UuidKind kind, u64 offset) {
-  return UuidText(MakeUuid(kind, offset));
+std::string UuidBytes(UuidKind kind, u64 offset) {
+  return UuidBytes(MakeUuid(kind, offset));
 }
 
 DatabaseFixture CreateDatabaseFixture(const std::filesystem::path& path,
@@ -150,9 +154,9 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = UuidText(fixture.database_uuid);
-  context.principal_uuid.canonical = UuidText(UuidKind::principal, 20);
-  context.session_uuid.canonical = UuidText(UuidKind::object, 21);
+  context.database_uuid = NativeFixtureIdentity(UuidBytes(fixture.database_uuid));
+  context.principal_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::principal, 20));
+  context.session_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::object, 21));
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -181,8 +185,8 @@ api::EngineRequestContext RestoreContext(const DatabaseFixture& fixture,
   scratchbird::tests::release::GrantMaterializedRight(
       &context, "BACKUP_RESTORE");
   context.local_transaction_id = local_transaction_id;
-  context.transaction_uuid.canonical = UuidText(UuidKind::transaction,
-                                                100 + local_transaction_id);
+  context.transaction_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::transaction,
+                                                100 + local_transaction_id));
   return context;
 }
 
@@ -225,7 +229,7 @@ api::EnginePackageDeltaStreamResult PackageSegment(
   request.context = context;
   request.option_envelopes = {
       "target_uri:" + manifest_path.string(),
-      "source_backup_uuid:" + backup_uuid.canonical,
+      "source_backup_uuid:" + BinaryFixtureIdentity(backup_uuid),
       "filespace_uuid:" + filespace_uuid,
       "start_transaction_id:" + std::to_string(start_transaction_id),
       "end_transaction_id:" + std::to_string(end_transaction_id),
@@ -263,7 +267,7 @@ bool BackupUpdateCoverageProof(const std::filesystem::path& work_dir) {
   const auto target =
       CreateDatabaseFixture(work_dir / "pcr087-target.sbdb", 100);
   const auto source_context = BackupContext(source, "pcr087-source");
-  const std::string filespace_uuid = UuidText(source.filespace_uuid);
+  const std::string filespace_uuid = UuidBytes(source.filespace_uuid);
   const auto base_manifest = work_dir / "base.manifest";
   const auto update_manifest = work_dir / "update.delta";
   const auto gap_manifest = work_dir / "gap.delta";

@@ -26,7 +26,6 @@ using scratchbird::core::platform::Severity;
 using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::UuidKind;
-using scratchbird::core::uuid::UuidToString;
 
 Status FilespaceOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::engine};
@@ -392,7 +391,7 @@ FilespaceCapacityManagerTickResult RefuseRequest(
   result.queue_mutated = queue != nullptr && queue->records.size() == record_count_before &&
                          transition.transitioned;
   (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(
-      request.filespace_uuid.valid() ? UuidToString(request.filespace_uuid.value) : "invalid",
+      request.filespace_uuid.value,
       page::PageFilespaceAgentRequestKindName(request.kind),
       "refused");
   return result;
@@ -458,7 +457,7 @@ FilespaceCapacityManagerTickResult ApproveCapacityWindow(
   result.queue_mutated = queue != nullptr && queue->records.size() == record_count_before &&
                          transition.transitioned;
   (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(
-      UuidToString(request.filespace_uuid.value),
+      request.filespace_uuid.value,
       page::PageFilespaceAgentRequestKindName(request.kind),
       "approved");
   return result;

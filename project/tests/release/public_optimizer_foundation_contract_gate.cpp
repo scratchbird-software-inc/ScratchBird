@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "cost_model.hpp"
 #include "join_planner_full.hpp"
 #include "model_family_profile_factory.hpp"
@@ -47,12 +48,8 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
-std::string Uuid(const std::uint64_t suffix) {
-  std::array<char, 37> value{};
-  std::snprintf(value.data(), value.size(),
-                "019f0000-0000-7500-8000-%012llu",
-                static_cast<unsigned long long>(suffix));
-  return value.data();
+api::EngineUuid Uuid(const std::uint64_t suffix) {
+  return scratchbird::tests::FixtureUuid(1397, suffix);
 }
 
 plan::CanonicalMgaStatementContext MgaContext() {
@@ -331,7 +328,6 @@ opt::RelationalDagPlanningInput PlanningInput() {
   input.publication_identity.selected_plan_uuid = Uuid(300);
   input.publication_identity.first_causal_counter_id = 1;
   input.publication_identity.engine_owned = true;
-  input.identity_scope = "public.optimizer.foundation.release.v1";
   input.calibration_profile_uuid = Uuid(301);
   return input;
 }
@@ -1120,19 +1116,20 @@ bool ValidateModelFamilyOptimizerOwnedProfiles() {
     };
 
     opt::ModelFamilyProfileFactoryRequestV1 request;
-    request.identity_scope = "public.optimizer.model-family." + family.family_id;
     request.logical_request = logical;
     request.capability_snapshots = {
         capability(false, true, 2400 + index * 20),
         capability(true, true, 2410 + index * 20),
     };
     const auto inventory = opt::BuildModelFamilyAlternativeProfilesV1(request);
+    request.identity_owner = inventory.identity_owner;
     const auto native = opt::PlanOptimizerOwnedModelFamilySourceV1(request);
     auto reordered_request = request;
     std::ranges::reverse(reordered_request.capability_snapshots);
     const auto reordered_inventory =
         opt::BuildModelFamilyAlternativeProfilesV1(reordered_request);
     auto changed_metric_request = request;
+    changed_metric_request.identity_owner.reset();
     ++changed_metric_request.capability_snapshots.front()
           .metrics.predicate_evaluations;
     const auto changed_metric_inventory =
@@ -1199,7 +1196,7 @@ bool ValidateModelFamilyOptimizerOwnedProfiles() {
             family.family_id);
 
     auto fallback_request = request;
-    fallback_request.identity_scope += ".fallback-only";
+    fallback_request.identity_owner.reset();
     fallback_request.capability_snapshots.erase(
         fallback_request.capability_snapshots.begin());
     const auto fallback =
@@ -1214,7 +1211,7 @@ bool ValidateModelFamilyOptimizerOwnedProfiles() {
             family.family_id);
 
     auto unavailable_request = request;
-    unavailable_request.identity_scope += ".unavailable";
+    unavailable_request.identity_owner.reset();
     unavailable_request.capability_snapshots.resize(1);
     unavailable_request.capability_snapshots.front().available = false;
     const auto unavailable =
@@ -1397,7 +1394,7 @@ opt::CanonicalPreparePhysicalPlanRequest PreparedRequest(
 
 opt::CanonicalPrepareMetricLegRequest MetricLeg(
     const std::uint64_t identity, std::string family,
-    std::vector<std::string> dependencies,
+    std::vector<api::EngineUuid> dependencies,
     std::atomic<std::uint64_t>* collector_calls,
     std::atomic<std::uint64_t>* planner_calls,
     std::atomic<std::uint64_t>* cleanup_calls,
@@ -1435,7 +1432,7 @@ opt::CanonicalPrepareMetricLegRequest MetricLeg(
           std::ranges::all_of(context.completed_dependency_plans,
                               [](const auto& receipt) {
                                 return receipt.planned &&
-                                       !receipt.planning_receipt_uuid.empty();
+                                       !receipt.planning_receipt_uuid.is_nil();
                               }));
     }
     opt::CanonicalPrepareLegPlanningOutput output;

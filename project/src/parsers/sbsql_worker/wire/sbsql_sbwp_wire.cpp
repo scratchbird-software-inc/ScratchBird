@@ -1,3 +1,4 @@
+#include "wire/public_result_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -39,6 +40,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <variant>
 #include <vector>
 
 #ifdef _WIN32
@@ -268,12 +270,12 @@ struct Frame {
 struct PreparedStatement {
   std::string sql;
   std::vector<std::uint32_t> param_types;
-  std::string parameter_prepared_statement_uuid;
+  platform::Uuid parameter_prepared_statement_uuid;
   std::uint64_t parameter_prepared_generation{0};
   struct InsertRowsetPlan {
     std::string target_name;
-    std::string target_object_uuid;
-    std::string server_prepared_statement_uuid;
+    platform::Uuid target_object_uuid;
+    platform::Uuid server_prepared_statement_uuid;
     std::string server_operation_id;
     std::vector<std::string> column_names;
     std::vector<std::size_t> parameter_indexes;
@@ -287,7 +289,7 @@ struct BoundPortal {
   std::vector<std::optional<std::string>> param_values;
   std::vector<PreparedParameterWireValue> parameter_wire_values;
   std::vector<std::vector<std::optional<std::string>>> param_rows;
-  std::string parameter_prepared_statement_uuid;
+  platform::Uuid parameter_prepared_statement_uuid;
   std::uint64_t parameter_prepared_generation{0};
   std::optional<PreparedStatement::InsertRowsetPlan> insert_rowset_plan;
 };
@@ -328,8 +330,8 @@ struct CopyImportState {
   bool native_bulk_ingest{false};
   bool native_bulk_ingest_enabled{true};
   std::string sql;
-  std::string target_object_uuid;
-  std::string prepared_statement_uuid;
+  platform::Uuid target_object_uuid;
+  platform::Uuid prepared_statement_uuid;
   std::string prepared_operation_id;
   std::uint64_t prepared_catalog_epoch{0};
   std::uint64_t prepared_security_policy_epoch{0};
@@ -370,9 +372,9 @@ bool LooksInteger(std::string_view value);
 bool LooksDecimal(std::string_view value);
 
 struct SimpleInsertRowsetPreparedEntry {
-  std::string prepared_statement_uuid;
+  platform::Uuid prepared_statement_uuid;
   std::string operation_id;
-  std::string target_object_uuid;
+  platform::Uuid target_object_uuid;
   std::uint64_t catalog_epoch{0};
   std::uint64_t security_policy_epoch{0};
   std::uint64_t grant_epoch{0};
@@ -434,7 +436,7 @@ struct SbwpSessionState {
   bool ready_sent_for_current_operation{false};
   std::uint16_t selected_protocol_version{kSbwpVersionCurrent};
   std::uint64_t negotiated_features{0};
-  std::string authenticated_user_uuid;
+  platform::Uuid authenticated_user_uuid;
   std::string auth_provider_family;
   std::string principal_claim;
   std::string language_profile;
@@ -459,8 +461,8 @@ struct SbwpSessionState {
   bool partial_query_active{false};
   std::vector<std::uint8_t> partial_query_payload;
   std::map<std::string, SimpleInsertRowsetPreparedEntry> simple_insert_rowset_cache;
-  std::map<std::string, SbwpTxnFinalityRecord> finality_by_idempotency_key;
-  std::map<std::string, std::string> idempotency_key_by_finality_token;
+  std::map<std::array<std::uint8_t, 16>, SbwpTxnFinalityRecord> finality_by_idempotency_key;
+  std::map<std::array<std::uint8_t, 16>, std::array<std::uint8_t, 16>> idempotency_key_by_finality_token;
 };
 
 std::uint16_t ReadU16(const std::vector<std::uint8_t>& data, std::size_t off) {
@@ -1115,10 +1117,13 @@ std::optional<CopyImportState> AnalyzeSimpleLiteralInsertRowset(std::string_view
 }
 
 std::string SimpleInsertRowsetCacheKey(const CopyImportState& rowset) {
-  std::string key = rowset.target_object_uuid;
+  std::string key(reinterpret_cast<const char*>(rowset.target_object_uuid.bytes.data()),
+                  rowset.target_object_uuid.bytes.size());
   if (!rowset.rows.empty()) {
     for (const auto& [name, _] : rowset.rows.front().fields) {
-      key.push_back('\x1f');
+      const auto size = static_cast<std::uint64_t>(name.size());
+      for (unsigned shift = 0; shift < 64; shift += 8)
+        key.push_back(static_cast<char>((size >> shift) & 0xff));
       key += name;
     }
   }
@@ -1152,8 +1157,8 @@ void RefreshWireAuthorityEpochsFromSession(const SbsqlTestWireSession& session,
 bool SimpleInsertRowsetPreparedEntryCurrent(
     const SimpleInsertRowsetPreparedEntry& entry,
     const SessionContext& context) {
-  return !entry.prepared_statement_uuid.empty() &&
-         !entry.target_object_uuid.empty() &&
+  return !entry.prepared_statement_uuid.is_nil() &&
+         !entry.target_object_uuid.is_nil() &&
          entry.catalog_epoch == context.catalog_epoch &&
          entry.security_policy_epoch == context.security_policy_epoch &&
          entry.grant_epoch == context.grant_epoch &&
@@ -1179,8 +1184,8 @@ void CaptureSimpleInsertRowsetAuthorityEpochs(
 
 bool CopyPreparedHandleCurrent(const CopyImportState& copy,
                                const SessionContext& context) {
-  return !copy.prepared_statement_uuid.empty() &&
-         !copy.target_object_uuid.empty() &&
+  return !copy.prepared_statement_uuid.is_nil() &&
+         !copy.target_object_uuid.is_nil() &&
          copy.prepared_catalog_epoch == context.catalog_epoch &&
          copy.prepared_security_policy_epoch == context.security_policy_epoch &&
          copy.prepared_grant_epoch == context.grant_epoch &&
@@ -1445,11 +1450,11 @@ std::string ReadSizedString(const std::vector<std::uint8_t>& payload, std::size_
 
 std::size_t PreparedStatementBytes(const PreparedStatement& statement) {
   std::size_t bytes = statement.sql.size() + statement.param_types.size() * sizeof(std::uint32_t);
-  bytes += statement.parameter_prepared_statement_uuid.size();
+  bytes += statement.parameter_prepared_statement_uuid.bytes.size();
   if (statement.insert_rowset_plan.has_value()) {
     bytes += statement.insert_rowset_plan->target_name.size();
-    bytes += statement.insert_rowset_plan->target_object_uuid.size();
-    bytes += statement.insert_rowset_plan->server_prepared_statement_uuid.size();
+    bytes += statement.insert_rowset_plan->target_object_uuid.bytes.size();
+    bytes += statement.insert_rowset_plan->server_prepared_statement_uuid.bytes.size();
     bytes += statement.insert_rowset_plan->server_operation_id.size();
     for (const auto& column : statement.insert_rowset_plan->column_names) bytes += column.size();
     bytes += statement.insert_rowset_plan->parameter_indexes.size() * sizeof(std::size_t);
@@ -1459,7 +1464,7 @@ std::size_t PreparedStatementBytes(const PreparedStatement& statement) {
 
 std::size_t BoundPortalBytes(const BoundPortal& portal) {
   std::size_t bytes = portal.sql.size() + portal.param_types.size() * sizeof(std::uint32_t);
-  bytes += portal.parameter_prepared_statement_uuid.size();
+  bytes += portal.parameter_prepared_statement_uuid.bytes.size();
   for (const auto& value : portal.param_values) {
     if (value.has_value()) bytes += value->size();
   }
@@ -1471,8 +1476,8 @@ std::size_t BoundPortalBytes(const BoundPortal& portal) {
   }
   if (portal.insert_rowset_plan.has_value()) {
     bytes += portal.insert_rowset_plan->target_name.size();
-    bytes += portal.insert_rowset_plan->target_object_uuid.size();
-    bytes += portal.insert_rowset_plan->server_prepared_statement_uuid.size();
+    bytes += portal.insert_rowset_plan->target_object_uuid.bytes.size();
+    bytes += portal.insert_rowset_plan->server_prepared_statement_uuid.bytes.size();
     bytes += portal.insert_rowset_plan->server_operation_id.size();
     for (const auto& column : portal.insert_rowset_plan->column_names) bytes += column.size();
     bytes += portal.insert_rowset_plan->parameter_indexes.size() * sizeof(std::size_t);
@@ -1977,29 +1982,6 @@ StartupNegotiation ParseStartupNegotiation(const std::vector<std::uint8_t>& payl
   return negotiated;
 }
 
-std::array<std::uint8_t, 16> TextToUuidBytes(std::string_view text) {
-  std::array<std::uint8_t, 16> out{};
-  auto hex_value = [](char ch) -> int {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-    return -1;
-  };
-  std::size_t nibble = 0;
-  for (const char ch : text) {
-    if (ch == '-') continue;
-    const int value = hex_value(ch);
-    if (value < 0 || nibble >= 32) return {};
-    if ((nibble % 2) == 0) {
-      out[nibble / 2] = static_cast<std::uint8_t>(value << 4);
-    } else {
-      out[nibble / 2] = static_cast<std::uint8_t>(out[nibble / 2] | value);
-    }
-    ++nibble;
-  }
-  return nibble == 32 ? out : std::array<std::uint8_t, 16>{};
-}
-
 bool IsZeroUuid(const std::array<std::uint8_t, 16>& uuid) {
   return std::all_of(uuid.begin(), uuid.end(), [](std::uint8_t value) { return value == 0; });
 }
@@ -2083,38 +2065,11 @@ bool FeatureNegotiated(const SbwpSessionState& state, std::uint64_t feature) {
   return (state.negotiated_features & feature) == feature;
 }
 
-std::array<std::uint8_t, 16> FallbackAttachmentId(std::string_view seed) {
-  std::array<std::uint8_t, 16> out{};
-  std::uint64_t hash = 1469598103934665603ull;
-  for (unsigned char ch : seed) {
-    hash ^= ch;
-    hash *= 1099511628211ull;
-  }
-  for (std::size_t i = 0; i < out.size(); ++i) {
-    out[i] = static_cast<std::uint8_t>((hash >> ((i % 8u) * 8u)) & 0xffu);
-  }
-  out[6] = static_cast<std::uint8_t>((out[6] & 0x0fu) | 0x70u);
-  out[8] = static_cast<std::uint8_t>((out[8] & 0x3fu) | 0x80u);
-  return out;
-}
-
-std::string UuidKey(const std::array<std::uint8_t, 16>& uuid) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(32);
-  for (const auto byte : uuid) {
-    out.push_back(kHex[(byte >> 4u) & 0x0fu]);
-    out.push_back(kHex[byte & 0x0fu]);
-  }
-  return out;
-}
-
-std::array<std::uint8_t, 16> GeneratedFinalityToken(
-    std::uint64_t original_txn_id,
-    std::uint32_t server_sequence,
-    const std::array<std::uint8_t, 16>& idempotency_key) {
-  return FallbackAttachmentId("sbwp-finality:" + std::to_string(original_txn_id) + ":" +
-                              std::to_string(server_sequence) + ":" + UuidKey(idempotency_key));
+// A correlation token identifies a reply. Only engine MGA results establish
+// commit/rollback finality; token bytes and ordering carry no such authority.
+std::array<std::uint8_t, 16> IssueWireCorrelationUuid() {
+  const auto identity = uuid::IssueRuntimeIdentityV7();
+  return identity ? identity->bytes : std::array<std::uint8_t, 16>{};
 }
 
 bool ParseTxnCommitPayload(const std::vector<std::uint8_t>& payload,
@@ -2164,9 +2119,9 @@ std::vector<std::uint8_t> TxnFinalityStatusPayload(const SbwpTxnFinalityRecord& 
 
 void StoreFinalityRecord(SbwpSessionState* state, SbwpTxnFinalityRecord record) {
   if (state == nullptr || IsZeroUuid(record.idempotency_key)) return;
-  const std::string idempotency_key = UuidKey(record.idempotency_key);
+  const auto idempotency_key = record.idempotency_key;
   if (!IsZeroUuid(record.finality_token)) {
-    state->idempotency_key_by_finality_token[UuidKey(record.finality_token)] = idempotency_key;
+    state->idempotency_key_by_finality_token[record.finality_token] = idempotency_key;
   }
   state->finality_by_idempotency_key[idempotency_key] = std::move(record);
 }
@@ -2176,11 +2131,11 @@ const SbwpTxnFinalityRecord* FindFinalityRecord(
     const std::array<std::uint8_t, 16>& idempotency_key,
     const std::array<std::uint8_t, 16>& finality_token) {
   if (!IsZeroUuid(idempotency_key)) {
-    const auto found = state.finality_by_idempotency_key.find(UuidKey(idempotency_key));
+    const auto found = state.finality_by_idempotency_key.find(idempotency_key);
     if (found != state.finality_by_idempotency_key.end()) return &found->second;
   }
   if (!IsZeroUuid(finality_token)) {
-    const auto token = state.idempotency_key_by_finality_token.find(UuidKey(finality_token));
+    const auto token = state.idempotency_key_by_finality_token.find(finality_token);
     if (token != state.idempotency_key_by_finality_token.end()) {
       const auto found = state.finality_by_idempotency_key.find(token->second);
       if (found != state.finality_by_idempotency_key.end()) return &found->second;
@@ -2387,6 +2342,14 @@ std::uint32_t InferTypeOid(std::string_view value) {
 }
 
 std::vector<std::pair<std::string, std::string>> ParseFieldList(std::string_view body) {
+  if (body.starts_with(scratchbird::wire::public_result::kMagic)) {
+    std::vector<scratchbird::wire::public_result::Field> fields;
+    if (!scratchbird::wire::public_result::Decode(body, &fields)) return {};
+    std::vector<std::pair<std::string, std::string>> values;
+    for (auto& field : fields) values.emplace_back(std::move(field.name), std::move(field.value));
+    return values;
+  }
+
   std::vector<std::pair<std::string, std::string>> fields;
   std::size_t start = 0;
   while (start <= body.size()) {
@@ -3060,7 +3023,7 @@ std::optional<std::vector<CopyImportRow>> ParseBinaryCopyRows(
   return rows;
 }
 
-std::string GenerateCopyImportRowUuid() {
+platform::Uuid GenerateCopyImportRowUuid() {
   static std::atomic<std::uint64_t> sequence{0};
   const auto now_millis = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -3069,7 +3032,7 @@ std::string GenerateCopyImportRowUuid() {
   const auto generated = uuid::GenerateEngineIdentityV7(
       platform::UuidKind::row,
       now_millis + sequence.fetch_add(1, std::memory_order_relaxed));
-  return generated.ok() ? uuid::UuidToString(generated.value.value) : std::string{};
+  return generated.ok() ? generated.value.value : platform::Uuid{};
 }
 
 std::string EscapeOperationOperandField(std::string_view value) {
@@ -3090,11 +3053,13 @@ std::string EscapeOperationOperandField(std::string_view value) {
   return out;
 }
 
-std::string BuildCopyExecuteEnvelope(const CopyImportState& copy,
+WireOperationDraft BuildCopyExecuteEnvelope(const CopyImportState& copy,
                                      std::size_t first_row,
                                      std::size_t row_count) {
   const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
-  std::string out;
+  WireOperationDraft draft;
+  draft.target_uuid = copy.target_object_uuid;
+  auto& out = draft.text;
   out += "operation_id=dml.execute_import_rows\n";
   out += "opcode=SBLR_DML_EXECUTE_IMPORT_ROWS\n";
   out += "sblr_operation_family=sblr.dml.operation.v3\n";
@@ -3106,7 +3071,6 @@ std::string BuildCopyExecuteEnvelope(const CopyImportState& copy,
   out += "requires_security_context=true\n";
   out += "requires_transaction_context=true\n";
   out += "requires_cluster_authority=false\n";
-  out += "target_object_uuid=" + copy.target_object_uuid + "\n";
   out += "target_object_kind=table\n";
   out += "dml_surface_variant=copy_import_export\n";
   out += "source_kind=csv_stream\n";
@@ -3148,31 +3112,24 @@ std::string BuildCopyExecuteEnvelope(const CopyImportState& copy,
   }
   for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
     const auto& row = copy.rows[row_index];
-    const std::string row_uuid = GenerateCopyImportRowUuid();
-    for (const auto& [name, value] : row.fields) {
-      out += value.has_value() ? "operand=row_field\t" : "operand=row_null_field\t";
-      out += row_uuid;
-      out += "|";
-      out += EscapeOperationOperandField(name);
-      out += "\t";
-      out += value.has_value() ? EscapeOperationOperandField(*value) : "";
-      out += "\n";
-    }
+    draft.rows.push_back({GenerateCopyImportRowUuid(), row.fields, row.canonical_types});
   }
-  return out;
+  return draft;
 }
 
-std::string BuildCopyExecuteEnvelope(const CopyImportState& copy) {
+WireOperationDraft BuildCopyExecuteEnvelope(const CopyImportState& copy) {
   return BuildCopyExecuteEnvelope(copy, 0, copy.rows.size());
 }
 
-std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
+WireOperationDraft BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
                                                 std::size_t first_row,
                                                 std::size_t row_count,
                                                 bool include_compact_payload = true,
                                                 std::size_t source_row_offset = 0) {
   const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
-  std::string out;
+  WireOperationDraft draft;
+  draft.target_uuid = copy.target_object_uuid;
+  auto& out = draft.text;
   out += "operation_id=dml.execute_native_bulk_ingest\n";
   out += "opcode=SBLR_DML_EXECUTE_NATIVE_BULK_INGEST\n";
   out += "sblr_operation_family=sblr.dml.operation.v3\n";
@@ -3184,7 +3141,6 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   out += "requires_security_context=true\n";
   out += "requires_transaction_context=true\n";
   out += "requires_cluster_authority=false\n";
-  out += "target_object_uuid=" + copy.target_object_uuid + "\n";
   out += "target_object_kind=table\n";
   out += "dml_surface_variant=sb_isql_native_bulk_ingest\n";
   out += "source_kind=binary_typed_rows\n";
@@ -3204,7 +3160,6 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   out += "checkpoint_mode=disabled\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
-  out += "operand=text\ttarget_object_uuid\t" + copy.target_object_uuid + "\n";
   out += "operand=text\ttarget_object_kind\ttable\n";
   out += "operand=text\tnative_bulk_ingest\ttrue\n";
   out += std::string("operand=text\tnative_bulk_ingest_enabled\t") +
@@ -3229,7 +3184,12 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   }
   if (end_row > first_row) {
     const std::size_t column_count = copy.rows[first_row].fields.size();
-    const bool shared_shape = CopyRowsHaveSharedShape(copy, first_row, end_row);
+    const bool shared_shape = CopyRowsHaveSharedShape(copy, first_row, end_row) &&
+        std::none_of(copy.rows.begin() + first_row, copy.rows.begin() + end_row,
+                     [](const auto& row) {
+                       return std::find(row.canonical_types.begin(), row.canonical_types.end(),
+                                        "uuid") != row.canonical_types.end();
+                     });
     if (shared_shape) {
       out += "operand=text\tinsert_values_row_count\t";
       out += std::to_string(end_row - first_row);
@@ -3260,29 +3220,21 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
     } else {
       for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
         const auto& row = copy.rows[row_index];
-        const std::string row_uuid = GenerateCopyImportRowUuid();
-        for (const auto& [name, value] : row.fields) {
-          out += value.has_value() ? "operand=row_field:character\t"
-                                   : "operand=row_null_field:character\t";
-          out += row_uuid;
-          out += "|";
-          out += EscapeOperationOperandField(name);
-          out += "\t";
-          out += value.has_value() ? EscapeOperationOperandField(*value) : "";
-          out += "\n";
-        }
+        draft.rows.push_back({GenerateCopyImportRowUuid(), row.fields, row.canonical_types});
       }
     }
   }
-  return out;
+  return draft;
 }
 
-std::string BuildInsertRowsExecuteEnvelope(const CopyImportState& copy,
+WireOperationDraft BuildInsertRowsExecuteEnvelope(const CopyImportState& copy,
                                            std::size_t first_row,
                                            std::size_t row_count,
                                            bool include_compact_payload = true) {
   const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
-  std::string out;
+  WireOperationDraft draft;
+  draft.target_uuid = copy.target_object_uuid;
+  auto& out = draft.text;
   out += "operation_id=dml.insert_rows\n";
   out += "opcode=SBLR_DML_INSERT_ROWS\n";
   out += "sblr_operation_family=sblr.dml.operation.v3\n";
@@ -3294,7 +3246,6 @@ std::string BuildInsertRowsExecuteEnvelope(const CopyImportState& copy,
   out += "requires_security_context=true\n";
   out += "requires_transaction_context=true\n";
   out += "requires_cluster_authority=false\n";
-  out += "target_object_uuid=" + copy.target_object_uuid + "\n";
   out += "target_object_kind=table\n";
   out += "dml_surface_variant=sbwp_trigger_aware_insert_rowset\n";
   out += "source_kind=sbsql_insert_values_compact_rowset\n";
@@ -3305,14 +3256,18 @@ std::string BuildInsertRowsExecuteEnvelope(const CopyImportState& copy,
   out += "insert_mode=values\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
-  out += "operand=text\ttarget_object_uuid\t" + copy.target_object_uuid + "\n";
   out += "operand=text\ttarget_object_kind\ttable\n";
   out += "operand=text\tphysical_mga_cow\tfalse\n";
   out += "operand=text\tinsert_trace.rows\tfalse\n";
   out += "operand=text\tsblr.rowset_default_markers_absent\ttrue\n";
   if (end_row > first_row) {
     const std::size_t column_count = copy.rows[first_row].fields.size();
-    const bool shared_shape = CopyRowsHaveSharedShape(copy, first_row, end_row);
+    const bool shared_shape = CopyRowsHaveSharedShape(copy, first_row, end_row) &&
+        std::none_of(copy.rows.begin() + first_row, copy.rows.begin() + end_row,
+                     [](const auto& row) {
+                       return std::find(row.canonical_types.begin(), row.canonical_types.end(),
+                                        "uuid") != row.canonical_types.end();
+                     });
     if (shared_shape) {
       out += "operand=text\tinsert_values_row_count\t";
       out += std::to_string(end_row - first_row);
@@ -3340,27 +3295,19 @@ std::string BuildInsertRowsExecuteEnvelope(const CopyImportState& copy,
     } else {
       for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
         const auto& row = copy.rows[row_index];
-        const std::string row_uuid = GenerateCopyImportRowUuid();
-        for (const auto& [name, value] : row.fields) {
-          out += value.has_value() ? "operand=row_field:character\t"
-                                   : "operand=row_null_field:character\t";
-          out += row_uuid;
-          out += "|";
-          out += EscapeOperationOperandField(name);
-          out += "\t";
-          out += value.has_value() ? EscapeOperationOperandField(*value) : "";
-          out += "\n";
-        }
+        draft.rows.push_back({GenerateCopyImportRowUuid(), row.fields, row.canonical_types});
       }
     }
   }
-  return out;
+  return draft;
 }
 
-std::string BuildNativeBulkIngestExecuteEnvelopeForPacket(
+WireOperationDraft BuildNativeBulkIngestExecuteEnvelopeForPacket(
     const CopyImportState& copy,
     const NativeCopyPacket& packet) {
-  std::string out;
+  WireOperationDraft draft;
+  draft.target_uuid = copy.target_object_uuid;
+  auto& out = draft.text;
   out += "operation_id=dml.execute_native_bulk_ingest\n";
   out += "opcode=SBLR_DML_EXECUTE_NATIVE_BULK_INGEST\n";
   out += "sblr_operation_family=sblr.dml.operation.v3\n";
@@ -3372,7 +3319,6 @@ std::string BuildNativeBulkIngestExecuteEnvelopeForPacket(
   out += "requires_security_context=true\n";
   out += "requires_transaction_context=true\n";
   out += "requires_cluster_authority=false\n";
-  out += "target_object_uuid=" + copy.target_object_uuid + "\n";
   out += "target_object_kind=table\n";
   out += "dml_surface_variant=sb_isql_native_bulk_ingest\n";
   out += "source_kind=binary_typed_rows\n";
@@ -3391,7 +3337,6 @@ std::string BuildNativeBulkIngestExecuteEnvelopeForPacket(
   out += "checkpoint_mode=disabled\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
-  out += "operand=text\ttarget_object_uuid\t" + copy.target_object_uuid + "\n";
   out += "operand=text\ttarget_object_kind\ttable\n";
   out += "operand=text\tnative_bulk_ingest\ttrue\n";
   out += std::string("operand=text\tnative_bulk_ingest_enabled\t") +
@@ -3432,7 +3377,7 @@ std::string BuildNativeBulkIngestExecuteEnvelopeForPacket(
   }
   out += "operand=text\tsblr.canonical_rowset_shared_shape\ttrue\n";
   out += "operand=text\tsblr.rowset_default_markers_absent\ttrue\n";
-  return out;
+  return draft;
 }
 
 std::string NativeCopyPacketDescriptorFingerprint(const NativeCopyPacket& packet) {
@@ -3520,7 +3465,7 @@ bool PrepareCopyNativeBulkHandle(SbsqlTestWireSession* session,
   if (!copy->native_bulk_ingest) {
     return true;
   }
-  copy->prepared_statement_uuid.clear();
+  copy->prepared_statement_uuid = {};
   copy->prepared_operation_id.clear();
   copy->prepared_catalog_epoch = 0;
   copy->prepared_security_policy_epoch = 0;
@@ -3686,9 +3631,27 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
   std::map<std::pair<std::string, std::size_t>, std::size_t> column_index;
   std::string previous_row_index;
   std::vector<std::pair<std::string, std::size_t>> previous_fields;
-  std::istringstream in{std::string(payload)};
-  std::string line;
-  while (std::getline(in, line)) {
+  std::vector<std::string> records;
+  if (payload.starts_with(scratchbird::wire::public_result::kMagic)) {
+    std::vector<scratchbird::wire::public_result::Field> fields;
+    if (!scratchbird::wire::public_result::Decode(payload, &fields)) {
+      rowset.malformed = true;
+      rowset.malformed_detail = "The engine result packet framing is invalid.";
+      return rowset;
+    }
+    for (const auto& field : fields) {
+      if (field.name.starts_with("row[") && field.kind != scratchbird::wire::public_result::Kind::row) {
+        rowset.malformed = true; rowset.malformed_detail = "The engine result row type is invalid."; return rowset;
+      }
+      if (field.name.starts_with("row[") || field.name.starts_with("row_meta["))
+        records.push_back(field.name + "=" + field.value);
+    }
+  } else {
+    std::istringstream input{std::string(payload)};
+    std::string line;
+    while (std::getline(input, line)) records.push_back(std::move(line));
+  }
+  for (const auto& line : records) {
     if (line.starts_with("row_meta[")) {
       const auto eq = line.find("]=");
       const auto malformed_metadata = [&]() {
@@ -3732,6 +3695,11 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
     const std::string_view body = std::string_view(line).substr(eq + 2);
     previous_row_index = line.substr(4, eq - 4);
     previous_fields.clear();
+    std::vector<scratchbird::wire::public_result::Field> typed_fields;
+    if (body.starts_with(scratchbird::wire::public_result::kMagic) &&
+        !scratchbird::wire::public_result::Decode(body, &typed_fields)) {
+      rowset.malformed = true; rowset.malformed_detail = "The engine result row framing is invalid."; return rowset;
+    }
     const auto fields = ParseFieldList(body);
     if (fields.empty()) {
       if (!body.empty()) {
@@ -3744,6 +3712,7 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
     }
     std::map<std::string, std::size_t> occurrences;
     std::vector<std::optional<std::string>> row(rowset.columns.size());
+    std::size_t field_ordinal = 0;
     for (const auto& [name, value] : fields) {
       const std::size_t occurrence = occurrences[name]++;
       const auto key = std::make_pair(name, occurrence);
@@ -3761,6 +3730,11 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
         row.resize(rowset.columns.size());
         found = column_index.find(key);
       }
+      if (!typed_fields.empty() && typed_fields[field_ordinal].kind == scratchbird::wire::public_result::Kind::uuid) {
+        auto& column = rowset.columns[found->second];
+        column.type_oid = kOidUuid; column.type_size = 16; column.format = 1;
+      }
+      ++field_ordinal;
       row[found->second] = value;
       previous_fields.emplace_back(name, found->second);
     }
@@ -3967,20 +3941,30 @@ bool SendReady(ClientIo* io,
   return SendFrame(io, state, kReady, ReadyPayload(*state, reason));
 }
 
+using ParameterStatusValue = std::variant<std::string, platform::Uuid>;
+using ParameterStatusValues = std::vector<std::pair<std::string, ParameterStatusValue>>;
+
 void PutParameterStatusKv(std::vector<std::uint8_t>* out,
                           std::string_view key,
-                          std::string_view value,
+                          const ParameterStatusValue& value,
                           bool defaulted = false) {
   PutLpStr(out, key);
-  out->push_back(0x01);
+  const auto* identity = std::get_if<platform::Uuid>(&value);
+  out->push_back(identity ? 0x04 : 0x01);
   out->push_back(0);
   out->push_back(defaulted ? 1 : 0);
-  PutU32(out, static_cast<std::uint32_t>(value.size()));
-  out->insert(out->end(), value.begin(), value.end());
+  if (identity) {
+    PutU32(out, static_cast<std::uint32_t>(identity->bytes.size()));
+    out->insert(out->end(), identity->bytes.begin(), identity->bytes.end());
+  } else {
+    const auto& text = std::get<std::string>(value);
+    PutU32(out, static_cast<std::uint32_t>(text.size()));
+    out->insert(out->end(), text.begin(), text.end());
+  }
 }
 
 std::vector<std::uint8_t> ParameterStatusPayload(
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const ParameterStatusValues& values) {
   std::vector<std::uint8_t> out;
   PutU32(&out, static_cast<std::uint32_t>(values.size()));
   for (const auto& [key, value] : values) PutParameterStatusKv(&out, key, value);
@@ -3989,7 +3973,7 @@ std::vector<std::uint8_t> ParameterStatusPayload(
 
 bool SendParameterStatus(ClientIo* io,
                          SbwpSessionState* state,
-                         const std::vector<std::pair<std::string, std::string>>& values) {
+                         const ParameterStatusValues& values) {
   if (!state->p1_payloads || values.empty()) return true;
   return SendFrame(io, state, kParameterStatus, ParameterStatusPayload(values));
 }
@@ -4014,13 +3998,13 @@ bool SendServerInfo(ClientIo* io, SbwpSessionState* state, const ParserConfig& c
   return SendFrame(io, state, kServerInfo, ServerInfoPayload(*state, config));
 }
 
-std::vector<std::pair<std::string, std::string>> StartupParameterStatuses(
+ParameterStatusValues StartupParameterStatuses(
     const SbwpSessionState& state) {
-  std::vector<std::pair<std::string, std::string>> values;
+  ParameterStatusValues values;
   values.push_back({"protocol.selected_version",
                     state.selected_protocol_version == kSbwpVersionCurrent ? "1.1" : "1.0"});
   values.push_back({"protocol.negotiated_features", std::to_string(state.negotiated_features)});
-  if (!state.authenticated_user_uuid.empty()) {
+  if (!state.authenticated_user_uuid.is_nil()) {
     values.push_back({"session.authenticated_user_uuid", state.authenticated_user_uuid});
   }
   if (!state.auth_provider_family.empty()) {
@@ -4227,7 +4211,7 @@ std::array<std::uint8_t, 16> PayloadUuidOrGenerated(const std::vector<std::uint8
     std::copy(payload.begin(), payload.begin() + static_cast<std::ptrdiff_t>(uuid.size()), uuid.begin());
     if (!IsZeroUuid(uuid)) return uuid;
   }
-  return FallbackAttachmentId("cancel-request");
+  return IssueWireCorrelationUuid();
 }
 
 std::vector<std::uint8_t> CancelAckPayload(const std::array<std::uint8_t, 16>& cancel_uuid) {
@@ -4262,6 +4246,7 @@ bool HandleCancel(ClientIo* io, SbwpSessionState* state, const Frame& frame) {
                      "cancel requires an authenticated owner session");
   }
   const auto cancel_uuid = PayloadUuidOrGenerated(frame.payload);
+  if (IsZeroUuid(cancel_uuid)) return false;
   if (!SendFrame(io, state, kCancelAck, CancelAckPayload(cancel_uuid))) return false;
   const bool target_supplied = frame.payload.size() >= 32 &&
                                !std::all_of(frame.payload.begin() + 16,
@@ -4297,7 +4282,7 @@ bool RollbackForReset(SbsqlTestWireSession* session, SbwpSessionState* state, st
     return false;
   }
   state->txn_id = *replacement;
-  state->transaction_uuid = TextToUuidBytes(session->session().transaction_uuid);
+  state->transaction_uuid = session->session().transaction_uuid.bytes;
   return true;
 }
 
@@ -4694,7 +4679,7 @@ void RefreshWireTransactionStateFromSession(const SbsqlTestWireSession& session,
   RefreshWireAuthorityEpochsFromSession(session, state);
   const auto& context = session.session();
   state->txn_id = context.local_transaction_id;
-  state->transaction_uuid = TextToUuidBytes(context.transaction_uuid);
+  state->transaction_uuid = context.transaction_uuid.bytes;
   state->snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
 }
@@ -4799,22 +4784,12 @@ ParseNativeBulkIngestWireCommand(std::string_view sql) {
   return command;
 }
 
-bool IsZeroUuidText(std::string_view value) {
-  bool saw_hex_digit = false;
-  for (char ch : value) {
-    if (ch == '-') continue;
-    if (ch != '0') return false;
-    saw_hex_digit = true;
-  }
-  return saw_hex_digit;
-}
-
 bool SendPipelineResult(ClientIo* io,
                         SbsqlTestWireSession* session,
                         SbwpSessionState* state,
                         std::string_view sql,
                         const PipelineResult& result) {
-  if (!result.server_cursor_uuid.empty() && !IsZeroUuidText(result.server_cursor_uuid) &&
+  if (!result.server_cursor_uuid.is_nil() &&
       session != nullptr) {
     bool row_description_sent = false;
     std::uint64_t emitted_rows = 0;
@@ -4980,7 +4955,7 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                                    1,
                                    row_count,
                                    resolved.resolved ? "resolved" : "not_resolved");
-    if (!resolved.resolved || resolved.object_uuid.empty()) {
+    if (!resolved.resolved || resolved.object_uuid.is_nil()) {
       write_total_trace("not_applicable_unresolved_target");
       return std::nullopt;
     }
@@ -5028,7 +5003,7 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
     }
     const std::size_t chunk_rows = end_row - first_row;
     const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
-    const std::string envelope =
+    const auto envelope =
         BuildInsertRowsExecuteEnvelope(rowset, first_row, chunk_rows, true);
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "simple_insert_rowset_fast_path",
@@ -5083,7 +5058,7 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
         RefreshWireTransactionStateFromSession(*session, state);
         const std::int64_t fallback_started =
             phase_trace ? ParserPhaseNowNs() : 0;
-        const std::string trigger_aware_envelope =
+        const auto trigger_aware_envelope =
             BuildInsertRowsExecuteEnvelope(rowset, first_row, chunk_rows, false);
         chunk_result = session->RunCanonicalRouteTextEnvelopeForWire(
             trigger_aware_envelope, {}, false);
@@ -5198,16 +5173,6 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                                              success_result);
 }
 
-std::string SqlQuote(std::string_view value) {
-  std::string out = "'";
-  for (char ch : value) {
-    if (ch == '\'') out.push_back('\'');
-    out.push_back(ch);
-  }
-  out.push_back('\'');
-  return out;
-}
-
 std::string StripLengthPrefixText(const std::vector<std::uint8_t>& data) {
   if (data.size() >= 4) {
     const std::uint32_t length = ReadU32(data, 0);
@@ -5216,68 +5181,6 @@ std::string StripLengthPrefixText(const std::vector<std::uint8_t>& data) {
     }
   }
   return std::string(reinterpret_cast<const char*>(data.data()), data.size());
-}
-
-std::string UuidLiteralFromBytes(const std::vector<std::uint8_t>& data) {
-  if (data.size() != 16) return "NULL";
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string text;
-  text.reserve(36);
-  for (std::size_t i = 0; i < data.size(); ++i) {
-    if (i == 4 || i == 6 || i == 8 || i == 10) text.push_back('-');
-    text.push_back(kHex[(data[i] >> 4u) & 0x0fu]);
-    text.push_back(kHex[data[i] & 0x0fu]);
-  }
-  return SqlQuote(text);
-}
-
-std::string DecodeParamLiteral(std::uint32_t oid,
-                               std::uint16_t format,
-                               const std::optional<std::vector<std::uint8_t>>& data) {
-  if (!data.has_value()) return "NULL";
-  if (format == 0) {
-    const std::string text(reinterpret_cast<const char*>(data->data()), data->size());
-    if (oid == kOidInt2 || oid == kOidInt4 || oid == kOidInt8 ||
-        oid == kOidFloat4 || oid == kOidFloat8 || oid == kOidNumeric ||
-        oid == kOidBool) {
-      return text;
-    }
-    return SqlQuote(text);
-  }
-  if (oid == kOidBool && !data->empty()) return (*data)[0] == 0 ? "FALSE" : "TRUE";
-  if (oid == kOidInt2 && data->size() >= 2) {
-    return std::to_string(static_cast<std::int16_t>(ReadU16(*data, 0)));
-  }
-  if (oid == kOidInt4 && data->size() >= 4) {
-    return std::to_string(static_cast<std::int32_t>(ReadU32(*data, 0)));
-  }
-  if (oid == kOidInt8 && data->size() >= 8) {
-    return std::to_string(static_cast<std::int64_t>(ReadU64(*data, 0)));
-  }
-  if (oid == kOidFloat4 && data->size() >= 4) {
-    float value = 0.0f;
-    std::memcpy(&value, data->data(), sizeof(value));
-    std::ostringstream out;
-    out << value;
-    return out.str();
-  }
-  if (oid == kOidFloat8 && data->size() >= 8) {
-    double value = 0.0;
-    std::memcpy(&value, data->data(), sizeof(value));
-    std::ostringstream out;
-    out << value;
-    return out.str();
-  }
-  if (oid == kOidUuid && data->size() == 16) return UuidLiteralFromBytes(*data);
-  const auto text = StripLengthPrefixText(*data);
-  if (oid == kOidNumeric) return text;
-  if (oid == kOidText || oid == kOidVarchar ||
-      oid == kOidDate || oid == kOidTime ||
-      oid == kOidTimestamp || oid == kOidTimestamptz) {
-    return SqlQuote(text);
-  }
-  if (oid == 0 && (LooksInteger(text) || LooksDecimal(text))) return text;
-  return SqlQuote(text);
 }
 
 std::optional<std::string> DecodeParamValue(std::uint32_t oid,
@@ -5311,110 +5214,12 @@ std::optional<std::string> DecodeParamValue(std::uint32_t oid,
     out << value;
     return out.str();
   }
-  if (oid == kOidUuid && data->size() == 16) {
-    std::string literal = UuidLiteralFromBytes(*data);
-    if (literal.size() >= 2 && literal.front() == '\'' && literal.back() == '\'') {
-      literal = literal.substr(1, literal.size() - 2);
-    }
-    return literal;
+  if (oid == kOidUuid) {
+    return std::string(reinterpret_cast<const char*>(data->data()), data->size());
   }
   return StripLengthPrefixText(*data);
 }
 
-std::string SubstituteParams(std::string sql, const std::vector<std::string>& literals) {
-  std::string out;
-  out.reserve(sql.size() + literals.size() * 8);
-  bool in_single = false;
-  bool in_double = false;
-  bool in_line_comment = false;
-  bool in_block_comment = false;
-  std::size_t question_index = 0;
-  for (std::size_t i = 0; i < sql.size();) {
-    const char ch = sql[i];
-    const char next = i + 1 < sql.size() ? sql[i + 1] : '\0';
-    if (in_line_comment) {
-      out.push_back(ch);
-      in_line_comment = ch != '\n';
-      ++i;
-      continue;
-    }
-    if (in_block_comment) {
-      out.push_back(ch);
-      if (ch == '*' && next == '/') {
-        out.push_back(next);
-        in_block_comment = false;
-        i += 2;
-      } else {
-        ++i;
-      }
-      continue;
-    }
-    if (!in_single && !in_double && ch == '-' && next == '-') {
-      out.push_back(ch);
-      out.push_back(next);
-      in_line_comment = true;
-      i += 2;
-      continue;
-    }
-    if (!in_single && !in_double && ch == '/' && next == '*') {
-      out.push_back(ch);
-      out.push_back(next);
-      in_block_comment = true;
-      i += 2;
-      continue;
-    }
-    if (ch == '\'' && !in_double) {
-      if (in_single && next == '\'') {
-        out.push_back(ch);
-        out.push_back(next);
-        i += 2;
-        continue;
-      }
-      in_single = !in_single;
-      out.push_back(ch);
-      ++i;
-      continue;
-    }
-    if (ch == '"' && !in_single) {
-      if (in_double && next == '"') {
-        out.push_back(ch);
-        out.push_back(next);
-        i += 2;
-        continue;
-      }
-      in_double = !in_double;
-      out.push_back(ch);
-      ++i;
-      continue;
-    }
-    if (!in_single && !in_double && ch == '$' && i + 1 < sql.size() &&
-        std::isdigit(static_cast<unsigned char>(sql[i + 1]))) {
-      std::size_t j = i + 1;
-      std::uint64_t index = 0;
-      while (j < sql.size() && std::isdigit(static_cast<unsigned char>(sql[j]))) {
-        index = index * 10u + static_cast<std::uint64_t>(sql[j] - '0');
-        ++j;
-      }
-      if (index > 0 && index <= literals.size()) {
-        out += literals[static_cast<std::size_t>(index - 1)];
-        i = j;
-        continue;
-      }
-    }
-    if (!in_single && !in_double && ch == '?') {
-      if (question_index < literals.size()) {
-        out += literals[question_index++];
-      } else {
-        out.push_back(ch);
-      }
-      ++i;
-      continue;
-    }
-    out.push_back(ch);
-    ++i;
-  }
-  return out;
-}
 
 std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& payload,
                                             const std::map<std::string, PreparedStatement>& statements,
@@ -5470,6 +5275,8 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
                                      ? 1
                                      : formats[std::min<std::size_t>(i, formats.size() - 1)];
     const std::uint32_t oid = i < statement.param_types.size() ? statement.param_types[i] : 0;
+    if (oid == kOidUuid && data && (format != 1 || data->size() != 16))
+      return std::nullopt;
     values.push_back(DecodeParamValue(oid, format, data));
     PreparedParameterWireValue wire_value;
     wire_value.is_null = !data.has_value();
@@ -5531,6 +5338,10 @@ std::optional<std::optional<std::string>> DecodeParameterPacketCell(
   const std::optional<std::vector<std::uint8_t>> payload = cell.payload;
   const std::uint16_t format =
       cell.payload_encoding == datatypes::WirePayloadEncoding::utf8_text ? 0 : 1;
+  if (oid == kOidUuid && (format != 1 || cell.payload.size() != 16)) {
+    if (diagnostic_code) *diagnostic_code = "SBWP.ARRAY_BIND.UUID_BINARY16_REQUIRED";
+    return std::nullopt;
+  }
   return DecodeParamValue(oid, format, payload);
 }
 
@@ -5604,9 +5415,9 @@ std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
   state->ready_sent_for_current_operation = false;
   if (!portal.insert_rowset_plan.has_value()) return std::nullopt;
   auto plan = *portal.insert_rowset_plan;
-  if (plan.target_object_uuid.empty()) {
+  if (plan.target_object_uuid.is_nil()) {
     auto resolved = session->ResolvePublicNameForWire(plan.target_name, false, "relation");
-    if (!resolved.resolved || resolved.object_uuid.empty()) {
+    if (!resolved.resolved || resolved.object_uuid.is_nil()) {
       if (!SendError(io,
                      state,
                      "42000",
@@ -5640,6 +5451,9 @@ std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
         return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
       }
       row.fields.emplace_back(plan.column_names[i], values[parameter_index]);
+      row.canonical_types.push_back(
+          parameter_index < portal.param_types.size() &&
+          portal.param_types[parameter_index] == kOidUuid ? "uuid" : "text");
     }
     rowset.rows.push_back(std::move(row));
     return true;
@@ -5652,7 +5466,7 @@ std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
       if (!append_parameter_row(values)) return false;
     }
   }
-  const std::string envelope =
+  const auto envelope =
       BuildInsertRowsExecuteEnvelope(rowset, 0, rowset.rows.size());
   auto result = session->RunCanonicalRouteTextEnvelopeForWire(
       envelope, {}, false);
@@ -5665,7 +5479,7 @@ std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
                                              diagnostic_detail,
                                              diagnostic_text)) {
       RefreshWireTransactionStateFromSession(*session, state);
-      const std::string trigger_aware_envelope =
+      const auto trigger_aware_envelope =
           BuildInsertRowsExecuteEnvelope(rowset, 0, rowset.rows.size());
       result = session->RunCanonicalRouteTextEnvelopeForWire(
           trigger_aware_envelope, {}, false);
@@ -5770,7 +5584,7 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                 PipelineResult* success_result = nullptr,
                 const std::vector<PreparedParameterWireValue>*
                     parameter_values = nullptr,
-                std::string_view parameter_prepared_statement_uuid = {},
+                const platform::Uuid& parameter_prepared_statement_uuid = {},
                 std::uint64_t parameter_prepared_generation = 0) {
   const bool phase_trace = ParserPhaseTraceEnabled();
   const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
@@ -5839,7 +5653,7 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     }
     auto resolved = session->ResolvePublicNameForWire(
         native_bulk->target_name, native_bulk->target_quoted, "relation");
-    if (!resolved.resolved || resolved.object_uuid.empty()) {
+    if (!resolved.resolved || resolved.object_uuid.is_nil()) {
       if (command_accepted != nullptr) *command_accepted = false;
       return SendError(
                  io, state, "42000",
@@ -5897,10 +5711,20 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                                    *fast_insert ? "fast_insert_handled" : "fast_insert_failed");
     return *fast_insert;
   }
+  std::array<std::uint8_t, 16> pending_finality_token{};
+  if (commit_request != nullptr) {
+    pending_finality_token = IssueWireCorrelationUuid();
+    if (IsZeroUuid(pending_finality_token)) {
+      if (command_accepted) *command_accepted = false;
+      return SendError(io, state, "58000", "SBWP.IDENTITY.ISSUANCE_FAILED",
+                       "commit correlation identity could not be issued") &&
+             (!send_ready || SendReady(io, state, ReadyReason::kErrorRecovered));
+    }
+  }
   const std::uint64_t original_txn_id = state->txn_id;
   const bool auto_cursor = ShouldAutoCursor(sql);
   const std::int64_t pipeline_started = phase_trace ? ParserPhaseNowNs() : 0;
-  const auto result = parameter_prepared_statement_uuid.empty()
+  const auto result = parameter_prepared_statement_uuid.is_nil()
       ? session->RunPipeline(
             sql, true, auto_cursor, 0,
             autocommit_emulation && !auto_cursor,
@@ -5932,7 +5756,7 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                      kTxnFinalityFlagPostInventorySecondaryFailure;
       record.idempotency_key = commit_request->idempotency_key;
       record.finality_token =
-          GeneratedFinalityToken(original_txn_id, state->server_sequence, record.idempotency_key);
+          pending_finality_token;
       record.request_fingerprint = commit_request->request_fingerprint;
       record.original_txn_id = original_txn_id;
       record.replacement_txn_id = TransactionIdFromResultPayload(result.server_result_payload)
@@ -5993,7 +5817,7 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     record.flags = kTxnFinalityFlagEngineKnown | kTxnFinalityFlagSameIdempotencyKeyReplayable;
     record.idempotency_key = commit_request->idempotency_key;
     record.finality_token =
-        GeneratedFinalityToken(original_txn_id, state->server_sequence, record.idempotency_key);
+        pending_finality_token;
     record.request_fingerprint = commit_request->request_fingerprint;
     record.original_txn_id = original_txn_id;
     record.replacement_txn_id = state->txn_id;
@@ -6434,7 +6258,7 @@ PipelineResult RunCopyTriggerAwareInsertRowsFallback(
     std::size_t chunk_index) {
   RefreshWireTransactionStateFromSession(*session, state);
   const std::int64_t fallback_started = phase_trace ? ParserPhaseNowNs() : 0;
-  const std::string trigger_aware_envelope =
+  const auto trigger_aware_envelope =
       BuildInsertRowsExecuteEnvelope(copy, first_row, row_count);
   auto result = session->RunCanonicalRouteTextEnvelopeForWire(
       trigger_aware_envelope, {}, false);
@@ -6510,7 +6334,7 @@ bool ExecutePreparedNativeCopyPacket(SbsqlTestWireSession* session,
   }
   RefreshWireAuthorityEpochsFromSession(*session, state);
   const bool use_prepared = CopyPreparedHandleCurrent(*copy, session->session());
-  if (!copy->prepared_statement_uuid.empty() && !use_prepared) {
+  if (!copy->prepared_statement_uuid.is_nil() && !use_prepared) {
     if (diagnostic_code != nullptr) {
       *diagnostic_code = "SBSQL.COPY.PREPARED_HANDLE_STALE";
     }
@@ -6550,8 +6374,8 @@ bool ExecutePreparedNativeCopyPacket(SbsqlTestWireSession* session,
                                  descriptor_already_bound ? "descriptor_current"
                                                           : "descriptor_bound");
   const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
-  const std::string envelope =
-      use_prepared ? std::string{} : BuildNativeBulkIngestExecuteEnvelopeForPacket(*copy, packet);
+  const auto envelope =
+      use_prepared ? WireOperationDraft{} : BuildNativeBulkIngestExecuteEnvelopeForPacket(*copy, packet);
   auto chunk_result =
       use_prepared
           ? session->RunPreparedSblrEnvelopeForWire(copy->prepared_statement_uuid,
@@ -6838,7 +6662,7 @@ bool HandleCopyDone(SbsqlTestWireSession* session,
   }
   RefreshWireAuthorityEpochsFromSession(*session, state);
   if (copy.native_bulk_ingest &&
-      !copy.prepared_statement_uuid.empty() &&
+      !copy.prepared_statement_uuid.is_nil() &&
       !CopyPreparedHandleCurrent(copy, session->session())) {
     return SendError(io,
                      state,
@@ -6918,7 +6742,7 @@ bool HandleCopyDone(SbsqlTestWireSession* session,
     }
     const bool use_prepared =
         CopyPreparedHandleCurrent(copy, session->session());
-    if (!copy.prepared_statement_uuid.empty() && !use_prepared) {
+    if (!copy.prepared_statement_uuid.is_nil() && !use_prepared) {
       return SendError(io,
                        state,
                        "42000",
@@ -6926,9 +6750,9 @@ bool HandleCopyDone(SbsqlTestWireSession* session,
                        "COPY prepared bulk handle is missing or stale for the current session epochs") &&
              SendReady(io, state, ReadyReason::kErrorRecovered);
     }
-    const std::string envelope =
+    const auto envelope =
         use_prepared
-            ? std::string{}
+            ? WireOperationDraft{}
             : BuildNativeBulkIngestExecuteEnvelopeForPacket(copy, *packet);
     const std::int64_t execute_started =
         phase_trace ? ParserPhaseNowNs() : 0;
@@ -7018,7 +6842,7 @@ bool HandleCopyDone(SbsqlTestWireSession* session,
                SendReady(io, state, ReadyReason::kErrorRecovered);
       }
       const std::size_t row_count = end_row - first_row;
-      const std::string envelope = BuildNativeBulkIngestExecuteEnvelope(
+      const auto envelope = BuildNativeBulkIngestExecuteEnvelope(
           canonical_copy, first_row, row_count, true,
           native_packet_row_offset);
       const std::int64_t execute_started =
@@ -7118,7 +6942,7 @@ bool HandleCopyDone(SbsqlTestWireSession* session,
     const std::size_t row_count = end_row - first_row;
     const bool use_native_row_packet = false;
     const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
-    const std::string envelope = copy.native_bulk_ingest
+    const auto envelope = copy.native_bulk_ingest
         ? BuildNativeBulkIngestExecuteEnvelope(copy, first_row, row_count, true)
         : BuildInsertRowsExecuteEnvelope(copy, first_row, row_count, true);
     WriteParserPhaseTraceIfEnabled(phase_trace,
@@ -7314,16 +7138,16 @@ bool HandleStartup(SbsqlTestWireSession* session,
     return false;
   }
 
-  state->attachment_id = TextToUuidBytes(session->session().session_uuid);
-  if (IsZeroUuid(state->attachment_id)) {
-    state->attachment_id = TextToUuidBytes(session->session().connection_uuid);
-  }
-  if (IsZeroUuid(state->attachment_id)) {
-    state->attachment_id = FallbackAttachmentId(credentials.principal);
-  }
+  state->attachment_id = session->session().session_uuid.bytes;
   state->session_uuid = state->attachment_id;
   state->txn_id = session->session().local_transaction_id;
-  state->transaction_uuid = TextToUuidBytes(session->session().transaction_uuid);
+  state->transaction_uuid = session->session().transaction_uuid.bytes;
+  if (IsZeroUuid(state->session_uuid) || state->txn_id == 0 ||
+      IsZeroUuid(state->transaction_uuid)) {
+    (void)SendError(io, state, "08006", "SBWP.AUTH.AUTHORITY_IDENTITY_MISSING",
+                    "engine authentication did not publish a complete live session identity");
+    return false;
+  }
   state->snapshot_visible_through_local_transaction_id =
       session->session().snapshot_visible_through_local_transaction_id;
   state->catalog_epoch = session->session().catalog_epoch;

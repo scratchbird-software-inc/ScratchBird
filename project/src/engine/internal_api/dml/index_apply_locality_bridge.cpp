@@ -88,8 +88,10 @@ void AddLocalityAwareIndexApplyEvidence(
     evidence->push_back({"index_apply_family_profile_key", family});
   }
   for (const auto& locality : core_plan.target_leaf_page_locality_keys) {
+    evidence->push_back({"index_apply_target_index_uuid", locality.index_uuid});
     evidence->push_back({"index_apply_target_leaf_page_locality_key",
-                         locality});
+                         locality.unique_order ? "unique_order" :
+                             "leaf_bucket:" + std::to_string(locality.bucket)});
   }
 }
 

@@ -13,7 +13,7 @@
     }
   }
   if (exact_recovery_identity) {
-    if (mutation_audit_recovery_uuid !=
+    if (BinaryCatalogUuid(schema_extensions,"catalog_ddl_mutation_audit") !=
         request.recovery_operation_uuid) {
       return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
           request.context,
@@ -22,23 +22,13 @@
               "ddl.create_schema",
               "recovery_operation_does_not_match_mutation_audit"));
     }
-    schema_extension_payload.push_back(
-        "catalog_ddl_recovery_operation=" +
-        request.recovery_operation_uuid);
-    schema_extension_payload.push_back(
-        "catalog_ddl_result_row_uuid=" +
-        request.requested_catalog_row_uuid);
-    schema_extension_payload.push_back(
-        "catalog_ddl_mutation_uuid=" + request.mutation_uuid);
-    schema_extension_payload.push_back(
-        "catalog_ddl_statement_publication_barrier=" +
-        request.statement_publication_barrier_uuid);
+    schema_extensions.identities["catalog_ddl_recovery_operation"]=request.recovery_operation_uuid;
+    schema_extensions.identities["catalog_ddl_result_row_uuid"]=request.requested_catalog_row_uuid;
+    schema_extensions.identities["catalog_ddl_mutation_uuid"]=request.mutation_uuid;
+    schema_extensions.identities["catalog_ddl_statement_publication_barrier"]=request.statement_publication_barrier_uuid;
   }
-  record.payload = SchemaTreePayload(record.parent_schema_uuid, record.localized_names, record.localized_comments);
-  for (const auto& extension : schema_extension_payload) {
-    if (!record.payload.empty()) { record.payload.push_back(';'); }
-    record.payload.append(extension);
-  }
+  record.payload = SchemaTreePayload(record.parent_schema_uuid, record.localized_names,
+      record.localized_comments,schema_extensions);
   const auto existing_schema = FindVisibleSchemaTreeRecord(
       request.context, schema_uuid, request.context.local_transaction_id, schema_diagnostic);
   if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
@@ -145,11 +135,8 @@
           : GenerateCrudEngineUuid("row");
   AddApiBehaviorEvidence(&result, "api_behavior_event", "ddl.create_schema");
   AddApiBehaviorEvidence(&result, "schema", record.schema_uuid);
-  for (const auto& extension : schema_extension_payload) {
-    const auto pos = extension.find('=');
-    if (pos == std::string::npos) { continue; }
-    AddApiBehaviorEvidence(&result, extension.substr(0, pos), extension.substr(pos + 1));
-  }
+  for (const auto& [key,value]:schema_extensions.text) AddApiBehaviorEvidence(&result,key,value);
+  for (const auto& [key,value]:schema_extensions.identities) AddApiBehaviorEvidence(&result,key,value);
   AddApiBehaviorRow(&result, {{"object_uuid", record.schema_uuid},
                               {"object_kind", "schema"},
                               {"name", record.default_name},
@@ -212,11 +199,11 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
         "ddl.create_table",
         MakeInvalidRequestDiagnostic("ddl.create_table", "parent_schema_not_visible"));
   }
-  std::string target_schema_uuid = request.target_schema.uuid;
-  if (target_schema_uuid.empty()) {
+  EngineUuid target_schema_uuid = request.target_schema.uuid;
+  if (target_schema_uuid.is_nil()) {
     target_schema_uuid = request.context.current_schema_uuid;
   }
-  if (target_schema_uuid.empty()) {
+  if (target_schema_uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(
         request.context,
         "ddl.create_table",
@@ -292,33 +279,34 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     std::string column_descriptor = column.descriptor.encoded_descriptor.empty()
                                         ? column.descriptor.canonical_type_name
                                         : column.descriptor.encoded_descriptor;
-    auto descriptor_has_field = [&column_descriptor](const std::string& field) {
-      const std::string prefix = field + "=";
-      return StartsWithLocal(column_descriptor, prefix) ||
-             column_descriptor.find(";" + prefix) != std::string::npos;
-    };
-    auto append_descriptor_field = [&column_descriptor, &descriptor_has_field](
-                                       const std::string& field,
-                                       const std::string& value) {
-      if (value.empty() || descriptor_has_field(field)) return;
-      if (!column_descriptor.empty()) column_descriptor.push_back(';');
-      column_descriptor += field;
-      column_descriptor.push_back('=');
-      column_descriptor += value;
-    };
-    if (column_descriptor.empty()) {
-      column_descriptor = "type=unknown";
-    } else if (!descriptor_has_field("type") && !descriptor_has_field("canonical") &&
-               !column.descriptor.canonical_type_name.empty()) {
-      column_descriptor = "type=" + column.descriptor.canonical_type_name + ";" +
-                          column_descriptor;
+    CatalogColumnMetadata admitted_column;
+    if (!AdmitCatalogColumnMetadata(column_descriptor, &admitted_column)) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context, "ddl.create_table", MakeInvalidRequestDiagnostic(
+              "ddl.create_table", "column_metadata_invalid:" + column_name));
     }
+    if (!admitted_column.text.contains("type") && !admitted_column.text.contains("canonical")) {
+      admitted_column.text["type"] = column.descriptor.canonical_type_name.empty()
+          ? "unknown" : column.descriptor.canonical_type_name;
+      // A bare scalar spelling is replaced by its explicit type attribute.
+      admitted_column.text.erase(column.descriptor.canonical_type_name);
+    }
+    if (!EncodeCatalogColumnMetadata(admitted_column, &column_descriptor)) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context, "ddl.create_table", MakeInvalidRequestDiagnostic(
+              "ddl.create_table", "column_metadata_encoding_failed:" + column_name));
+    }
+    auto append_descriptor_field = [&column_descriptor](const std::string& field,
+                                                        const std::string& value) {
+      if (!value.empty() && !DescriptorHasFieldLocal(column_descriptor, field))
+        column_descriptor = SetDescriptorFieldLocal(column_descriptor, field, value);
+    };
     append_descriptor_field("nullable", column.nullable ? "true" : "false");
     append_descriptor_field("default", column.default_expression_envelope);
     bool qualified_domain_lookup_required = false;
     std::string requested_domain_type_name;
-    std::string domain_uuid = DomainUuidFromDescriptor(column.descriptor);
-    if (domain_uuid.empty()) {
+    EngineUuid domain_uuid = DomainUuidFromDescriptor(column.descriptor);
+    if (domain_uuid.is_nil()) {
       domain_uuid = ResolveDomainTypeUuidFromColumnDescriptor(request,
                                                              column_descriptor,
                                                              &qualified_domain_lookup_required,
@@ -326,7 +314,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
       if (schema_diagnostic.error) return MakeCrudDiagnosticResult<EngineCreateTableResult>(
           request.context, "ddl.create_table", schema_diagnostic);
     }
-    if (domain_uuid.empty() && qualified_domain_lookup_required) {
+    if (domain_uuid.is_nil() && qualified_domain_lookup_required) {
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(
           request.context,
           "ddl.create_table",
@@ -334,7 +322,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
                                        "domain_column_descriptor_not_visible:" +
                                            requested_domain_type_name));
     }
-    if (!domain_uuid.empty()) {
+    if (!domain_uuid.is_nil()) {
       const auto visible_domain = FindVisibleDomain(
           request.context, domain_uuid, request.context.local_transaction_id);
       if (!visible_domain) {
@@ -345,12 +333,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
       }
       engine_canonical_type_name =
           visible_domain->base_canonical_type_name;
-      column_descriptor = column.descriptor.encoded_descriptor.empty()
-                              ? std::string("domain_uuid=") + domain_uuid
-                              : column.descriptor.encoded_descriptor;
-      if (DomainUuidFromColumnDescriptor(column_descriptor).empty()) {
-        column_descriptor += (column_descriptor.empty() ? "" : ";") + std::string("domain_uuid=") + domain_uuid;
-      }
+      column_descriptor = SetDescriptorFieldLocal(column_descriptor, "domain_uuid", domain_uuid);
     }
     std::string pre_resource_type_name = engine_canonical_type_name;
     if (pre_resource_type_name.empty()) {
@@ -415,6 +398,18 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
                 "column_text_semantics_duplicate_or_malformed:" +
                     column_name));
       }
+      CatalogColumnMetadata typed_text_fields;
+      if (!DecodeCatalogColumnMetadata(column_descriptor, &typed_text_fields)) {
+        return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context,
+            "ddl.create_table", MakeInvalidRequestDiagnostic("ddl.create_table", "column_metadata_invalid"));
+      }
+      for (const auto& [key, value] : typed_text_fields.identities) {
+        if (!kAllowedCanonicalTextFields.contains(key)) {
+          return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context,
+              "ddl.create_table", MakeInvalidRequestDiagnostic("ddl.create_table",
+                  "column_text_semantics_field_not_authoritative:" + column_name + ":" + key));
+        }
+      }
       for (const auto& [key, value] : *text_fields) {
         (void)value;
         if (!kAllowedCanonicalTextFields.contains(key)) {
@@ -465,12 +460,9 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
               "ddl.create_table",
               "column_type_catalog_row_invalid:" + column_name));
     }
-    std::string engine_type_uuid =
-        scratchbird::core::uuid::UuidToString(
-            type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
-    const std::string engine_datatype_descriptor_uuid =
-        scratchbird::core::uuid::UuidToString(
-            type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    EngineUuid engine_type_uuid =
+        type_row.manifest.descriptor_rows.front().descriptor_uuid.value;
+    const EngineUuid engine_datatype_descriptor_uuid = engine_type_uuid;
     const bool persist_full_registry_tuple =
         canonical_type_id ==
             scratchbird::core::datatypes::CanonicalTypeId::boolean ||
@@ -504,7 +496,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
               request.context.datatype_registry_generation ||
           identity.row.descriptor_uuid != engine_datatype_descriptor_uuid ||
           identity.row.descriptor_generation != 1 ||
-          identity.row.type_uuid.empty()) {
+          identity.row.type_uuid.is_nil()) {
         return MakeCrudDiagnosticResult<EngineCreateTableResult>(
             request.context,
             "ddl.create_table",
@@ -514,181 +506,37 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
       }
       engine_type_uuid = identity.row.type_uuid;
     }
-    std::optional<std::string> carried_type_uuid;
-    bool type_uuid_carrier_invalid = false;
-    std::size_t descriptor_offset = 0;
-    while (descriptor_offset <= column_descriptor.size()) {
-      const auto delimiter = column_descriptor.find(';', descriptor_offset);
-      const auto end = delimiter == std::string::npos
-                           ? column_descriptor.size()
-                           : delimiter;
-      const std::string_view field(
-          column_descriptor.data() + descriptor_offset,
-          end - descriptor_offset);
-      constexpr std::string_view kTypeUuidPrefix = "type_uuid=";
-      if (field.starts_with(kTypeUuidPrefix)) {
-        if (carried_type_uuid.has_value() ||
-            field.size() == kTypeUuidPrefix.size()) {
-          type_uuid_carrier_invalid = true;
-          break;
-        }
-        carried_type_uuid =
-            std::string(field.substr(kTypeUuidPrefix.size()));
-      }
-      if (delimiter == std::string::npos) break;
-      descriptor_offset = delimiter + 1;
-    }
-    if (carried_type_uuid.has_value()) {
-      const auto parsed_type_uuid =
-          scratchbird::core::uuid::ParseUuid(*carried_type_uuid);
-      if (!parsed_type_uuid.ok() ||
-          scratchbird::core::uuid::IsNilUuid(parsed_type_uuid.value) ||
-          scratchbird::core::uuid::UuidToString(parsed_type_uuid.value) !=
-              *carried_type_uuid ||
-          *carried_type_uuid != engine_type_uuid) {
-        type_uuid_carrier_invalid = true;
-      }
-    }
-    if (type_uuid_carrier_invalid) {
+    CatalogColumnMetadata registry_fields;
+    if (!DecodeCatalogColumnMetadata(column_descriptor, &registry_fields)) {
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(
-          request.context,
-          "ddl.create_table",
-          MakeInvalidRequestDiagnostic(
-              "ddl.create_table",
-              "column_type_uuid_catalog_mismatch:" + column_name));
+          request.context, "ddl.create_table", MakeInvalidRequestDiagnostic(
+              "ddl.create_table", "column_metadata_invalid:" + column_name));
     }
-    if (persist_full_registry_tuple) {
-      std::optional<std::string> carried_datatype_descriptor_uuid;
-      bool datatype_descriptor_uuid_carrier_invalid = false;
-      descriptor_offset = 0;
-      while (descriptor_offset <= column_descriptor.size()) {
-        const auto delimiter = column_descriptor.find(';', descriptor_offset);
-        const auto end = delimiter == std::string::npos
-                             ? column_descriptor.size()
-                             : delimiter;
-        const std::string_view field(
-            column_descriptor.data() + descriptor_offset,
-            end - descriptor_offset);
-        constexpr std::string_view kDatatypeDescriptorUuidPrefix =
-            "datatype_descriptor_uuid=";
-        if (field.starts_with(kDatatypeDescriptorUuidPrefix)) {
-          if (carried_datatype_descriptor_uuid.has_value() ||
-              field.size() == kDatatypeDescriptorUuidPrefix.size()) {
-            datatype_descriptor_uuid_carrier_invalid = true;
-            break;
-          }
-          carried_datatype_descriptor_uuid = std::string(
-              field.substr(kDatatypeDescriptorUuidPrefix.size()));
-        }
-        if (delimiter == std::string::npos) break;
-        descriptor_offset = delimiter + 1;
-      }
-      if (carried_datatype_descriptor_uuid.has_value()) {
-        const auto parsed_descriptor_uuid = scratchbird::core::uuid::ParseUuid(
-            *carried_datatype_descriptor_uuid);
-        if (!parsed_descriptor_uuid.ok() ||
-            scratchbird::core::uuid::IsNilUuid(parsed_descriptor_uuid.value) ||
-            scratchbird::core::uuid::UuidToString(parsed_descriptor_uuid.value) !=
-                *carried_datatype_descriptor_uuid ||
-            *carried_datatype_descriptor_uuid !=
-                engine_datatype_descriptor_uuid) {
-          datatype_descriptor_uuid_carrier_invalid = true;
-        }
-      }
-      if (datatype_descriptor_uuid_carrier_invalid) {
-        return MakeCrudDiagnosticResult<EngineCreateTableResult>(
-            request.context,
-            "ddl.create_table",
-            MakeInvalidRequestDiagnostic(
-                "ddl.create_table",
-                "column_datatype_descriptor_uuid_catalog_mismatch:" +
-                    column_name));
-      }
-      if (!carried_datatype_descriptor_uuid.has_value()) {
-        append_descriptor_field("datatype_descriptor_uuid",
-                                engine_datatype_descriptor_uuid);
-      }
-      // Registry-backed descriptor/type/codec authority is persisted as one
-      // exact tuple.  A caller may repeat an already-resolved field only when
-      // its bytes equal the live registry row; duplicate or contradictory
-      // fields refuse instead of being overwritten or inferred.
-      const auto validate_or_append_identity_field =
-          [&](const std::string_view key,
-              const std::string& expected) -> bool {
-        std::optional<std::string> carried;
-        std::size_t offset = 0;
-        const std::string prefix = std::string(key) + "=";
-        while (offset <= column_descriptor.size()) {
-          const auto delimiter = column_descriptor.find(';', offset);
-          const auto end = delimiter == std::string::npos
-                               ? column_descriptor.size()
-                               : delimiter;
-          const std::string_view field(
-              column_descriptor.data() + offset, end - offset);
-          if (field.starts_with(prefix)) {
-            if (carried.has_value() || field.size() == prefix.size()) {
-              return false;
-            }
-            carried = std::string(field.substr(prefix.size()));
-          }
-          if (delimiter == std::string::npos) break;
-          offset = delimiter + 1;
-        }
-        if (carried.has_value()) return *carried == expected;
-        append_descriptor_field(std::string(key), expected);
-        return true;
-      };
-      const auto identity_field_absent =
-          [&](const std::string_view key) -> bool {
-        std::size_t offset = 0;
-        const std::string prefix = std::string(key) + "=";
-        while (offset <= column_descriptor.size()) {
-          const auto delimiter = column_descriptor.find(';', offset);
-          const auto end = delimiter == std::string::npos
-                               ? column_descriptor.size()
-                               : delimiter;
-          const std::string_view field(
-              column_descriptor.data() + offset, end - offset);
-          if (field.starts_with(prefix)) return false;
-          if (delimiter == std::string::npos) break;
-          offset = delimiter + 1;
-        }
-        return true;
-      };
-      const bool exact_registry_tuple =
-          validate_or_append_identity_field(
-              "datatype_descriptor_generation",
-              std::to_string(identity.row.descriptor_generation)) &&
-          validate_or_append_identity_field("type_uuid",
-                                            identity.row.type_uuid) &&
-          validate_or_append_identity_field(
-              "type_generation",
-              std::to_string(identity.row.type_generation)) &&
-          (identity.row.codec_uuid.empty()
-               ? identity_field_absent("codec_uuid")
-               : validate_or_append_identity_field("codec_uuid",
-                                                   identity.row.codec_uuid)) &&
-          validate_or_append_identity_field("codec_id",
-                                            identity.row.codec_id) &&
-          validate_or_append_identity_field(
-              "codec_version", std::to_string(identity.row.codec_version)) &&
-          validate_or_append_identity_field(
-              "codec_generation",
-              std::to_string(identity.row.codec_generation)) &&
-          validate_or_append_identity_field(
-              "null_encoding",
-              std::to_string(identity.row.null_encoding_code));
-      if (!exact_registry_tuple) {
-        return MakeCrudDiagnosticResult<EngineCreateTableResult>(
-            request.context,
-            "ddl.create_table",
-            MakeInvalidRequestDiagnostic(
-                "ddl.create_table",
-                "column_datatype_codec_registry_tuple_mismatch:" +
-                    column_name));
-      }
-    } else if (!carried_type_uuid.has_value()) {
-      append_descriptor_field("type_uuid", engine_type_uuid);
+    auto match_uuid = [&](const std::string& key, const EngineUuid& expected) {
+      const auto it = registry_fields.identities.find(key);
+      if (expected.is_nil()) return it == registry_fields.identities.end();
+      if (it != registry_fields.identities.end()) return it->second == expected;
+      registry_fields.identities.emplace(key, expected);
+      return true;
+    };
+    auto match_text = [&](const std::string& key, const std::string& expected) {
+      const auto [it, inserted] = registry_fields.text.emplace(key, expected);
+      return inserted || it->second == expected;
+    };
+    const bool exact_registry_tuple = match_uuid("type_uuid", engine_type_uuid) &&
+        (!persist_full_registry_tuple ||
+         (match_uuid("datatype_descriptor_uuid", engine_datatype_descriptor_uuid) &&
+          match_text("datatype_descriptor_generation", std::to_string(identity.row.descriptor_generation)) &&
+          match_text("type_generation", std::to_string(identity.row.type_generation)) &&
+          match_uuid("codec_uuid", identity.row.codec_uuid) &&
+          match_text("codec_id", identity.row.codec_id) &&
+          match_text("codec_version", std::to_string(identity.row.codec_version)) &&
+          match_text("codec_generation", std::to_string(identity.row.codec_generation)) &&
+          match_text("null_encoding", std::to_string(identity.row.null_encoding_code))));
+    if (!exact_registry_tuple || !EncodeCatalogColumnMetadata(registry_fields, &column_descriptor)) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context, "ddl.create_table", MakeInvalidRequestDiagnostic(
+              "ddl.create_table", "column_datatype_codec_registry_tuple_mismatch:" + column_name));
     }
     columns.push_back({column_name, column_descriptor});
   }
@@ -735,7 +583,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
           "ddl.create_table",
           UnsupportedCrudFeatureDiagnostic("ddl.create_table", "opaque_column_index_denied"));
     }
-    const CrudIndexRecord inline_record = BuildCrudIndexRecord(inline_index, table_uuid, "", "");
+    const CrudIndexRecord inline_record = BuildCrudIndexRecord(inline_index, table_uuid, {}, "");
     if (inline_record.family == kCrudIndexFamilyPartial && inline_record.predicate_kind.empty()) {
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(
           request.context,
@@ -855,7 +703,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
         "index_uuid"};
     bool supplied_reserved_identity = false;
     for (const char* field : kReservedCandidateIdentityFields) {
-      if (descriptor_fields.find(field) != descriptor_fields.end()) {
+      if (DescriptorHasFieldLocal(column_descriptor, field)) {
         supplied_reserved_identity = true;
         break;
       }
@@ -868,14 +716,14 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
               "ddl.create_table",
               "reserved_candidate_key_identity_supplied:" + column_name));
     }
-    const std::string candidate_constraint_uuid =
+    const EngineUuid candidate_constraint_uuid =
         GenerateCrudEngineUuid("object");
-    const std::string candidate_key_descriptor_uuid =
+    const EngineUuid candidate_key_descriptor_uuid =
         GenerateCrudEngineUuid("object");
-    const std::string support_uuid = GenerateCrudEngineUuid("object");
-    const auto valid_object_identity = [](const std::string& value) {
-      return !value.empty() &&
-          scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
+    const EngineUuid support_uuid = GenerateCrudEngineUuid("object");
+    const auto valid_object_identity = [](const EngineUuid& value) {
+      return !value.is_nil() &&
+          scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
               scratchbird::core::platform::UuidKind::object, value)
               .ok();
     };
@@ -918,7 +766,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   created_table.temporary_session_uuid =
       temporary_options.temporary && temporary_options.scope != "global"
           ? request.context.session_uuid
-          : "";
+          : EngineUuid{};
   created_table.on_commit_action = temporary_options.temporary ? temporary_options.on_commit_action : "";
   std::vector<EngineLocalizedName> table_names = request.table_names.empty() ? request.localized_names : request.table_names;
   if (table_names.empty()) { table_names.push_back({"en", "primary", "", table_name, true}); }
@@ -963,10 +811,10 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     if (!unique_key) { continue; }
     CrudIndexRecord support_index;
     support_index.creator_tx = request.context.local_transaction_id;
-    support_index.index_uuid = DescriptorFieldLocal(
-        descriptor_fields,
+    support_index.index_uuid = DescriptorUuidLocal(
+        column_descriptor,
         {"support_uuid", "support_index_uuid", "index_uuid"});
-    if (support_index.index_uuid.empty()) {
+    if (support_index.index_uuid.is_nil()) {
       support_index.index_uuid = GenerateCrudEngineUuid("object");
     }
     support_index.table_uuid = table_uuid;

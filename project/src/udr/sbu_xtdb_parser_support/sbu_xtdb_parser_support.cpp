@@ -321,8 +321,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus XtdbLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuXtdbPackageUuid) {
+scratchbird::udr::runtime::UdrStatus XtdbLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuXtdbPackageIdentity) {
     return {false, "UDR.XTDB.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -535,7 +535,7 @@ UdrResult sbu_xtdb_debug_capabilities(std::string_view render_policy) {
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_xtdb_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuXtdbPackageUuid);
+  descriptor.package_uuid = kSbuXtdbPackageIdentity;
   descriptor.package_name = std::string(kSbuXtdbPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "xtdb-parser-support-beta-closure";

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -98,7 +99,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -180,10 +181,10 @@ PipelineResult RunEnginePipelineForConformance(
 void RequireStaticScalarProjectionLowering(const WindowCase& test_case) {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000063101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000063102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000063103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 363;
   session.security_policy_epoch = 364;
   session.descriptor_epoch = 365;
@@ -191,7 +192,7 @@ void RequireStaticScalarProjectionLowering(const WindowCase& test_case) {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_063_window_grammar_route";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000063104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063104");
   config.bundle_contract_id =
       "sbp_sbsql@sbsfc-063-window-grammar-route-test";
   config.build_id = "sbsql-sbsfc-063-window-grammar-route-test";
@@ -310,14 +311,14 @@ api::EngineRequestContext EngineContext() {
   context.database_path =
       (std::filesystem::temp_directory_path() /
        "sbsql_sbsfc_063_window_grammar_exact_route.sbdb").string();
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000063201";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000063202";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000063203";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000063204";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000063205";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000063206";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000063207";
-  context.current_role_uuid.canonical = "019f0000-0000-7000-8000-000000063208";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063201");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063202");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063203");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063204");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063205");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063206");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063207");
+  context.current_role_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063208");
   context.local_transaction_id = 63;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
@@ -349,9 +350,9 @@ api::EngineTypedValue Int64Value(std::string value) {
   return typed;
 }
 
-api::EngineRowValue Row(std::string row_uuid, std::string id) {
+api::EngineRowValue Row(api::EngineUuid row_uuid, std::string id) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", Int64Value(std::move(id))});
   return row;
 }
@@ -386,9 +387,9 @@ void RequireWindowPlanDispatch() {
       std::move(envelope));
 
   api::EngineApiRequest api_request;
-  api_request.rows.push_back(Row("relation-0-row-019f0000-0000-7000-8000-000000063301", "2"));
-  api_request.rows.push_back(Row("relation-0-row-019f0000-0000-7000-8000-000000063302", "1"));
-  api_request.rows.push_back(Row("relation-0-row-019f0000-0000-7000-8000-000000063303", "3"));
+  api_request.rows.push_back(Row(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063301"), "2"));
+  api_request.rows.push_back(Row(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063302"), "1"));
+  api_request.rows.push_back(Row(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000063303"), "3"));
 
   const sblr::SblrDispatchRequest request{EngineContext(), envelope, std::move(api_request)};
   const auto result = sblr::DispatchSblrOperation(request);

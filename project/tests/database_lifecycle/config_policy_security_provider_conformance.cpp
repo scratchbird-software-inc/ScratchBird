@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -106,13 +107,13 @@ void WriteAuthStore(const std::filesystem::path& database_path,
       verifier,
       bootstrap.local_transaction_id,
       "DBLC-013J",
-      bootstrap.transaction_uuid.canonical);
+      bootstrap.transaction_uuid);
   for (const std::string_view right : {"CONNECT", "OBS_RUNTIME_ALL"}) {
     scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
         database_path, kDatabaseUuid, kAlicePrincipalUuid, kDatabaseUuid,
         "database", right, bootstrap.local_transaction_id,
         std::string("DBLC-013J:") + std::string(right),
-        bootstrap.transaction_uuid.canonical);
+        bootstrap.transaction_uuid);
   }
   scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
       bootstrap);
@@ -196,7 +197,7 @@ server::HostedEngineState MakeEngineState(const std::filesystem::path& database_
   database.state = server::HostedDatabaseState::kOpen;
   database.database_open = true;
   database.database_path = database_path.string();
-  database.database_uuid = std::string(kDatabaseUuid);
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e0ef1-7b00-7000-8000-000000000011");
   database.policy_generation = policy_generation;
   database.security_epoch = security_epoch;
   database.security_provider_generation = provider_generation;
@@ -274,15 +275,15 @@ engine_api::EngineAuthenticateRequest AuthRequest(const std::filesystem::path& d
   engine_api::EngineAuthenticateRequest request;
   request.context.trust_mode = engine_api::EngineTrustMode::server_isolated;
   request.context.database_path = database_path.string();
-  request.context.database_uuid.canonical = std::string(kDatabaseUuid);
+  request.context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e0ef1-7b00-7000-8000-000000000011");
   request.context.catalog_generation_id = 2;
   request.context.security_epoch = 2;
   request.provider_family = "local_password";
   request.principal_claim = "alice";
   request.credential_evidence = Evidence(verifier);
   request.credential_evidence_present = true;
-  request.target_database.uuid.canonical = std::string(kDatabaseUuid);
-  request.target_object.uuid.canonical = std::string(kDatabaseUuid);
+  request.target_database.uuid = scratchbird::tests::FixtureUuidLiteral("019e0ef1-7b00-7000-8000-000000000011");
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e0ef1-7b00-7000-8000-000000000011");
   request.option_envelopes.push_back("auth_authority:engine");
   request.option_envelopes.push_back("policy_generation_current:2");
   request.option_envelopes.push_back("policy_generation_observed:2");
@@ -355,7 +356,7 @@ void TestLifecycleStartReloadAndAdmission(const std::filesystem::path& database_
   auto start = server::StartConfigPolicySecurityLifecycle(
       server::BuildConfigPolicySecurityLifecycleInput(config,
                                                       database_path.string(),
-                                                      std::string(kDatabaseUuid),
+                                                      scratchbird::tests::FixtureUuidLiteral("019e0ef1-7b00-7000-8000-000000000011"),
                                                       true,
                                                       false));
   Require(start.ok(), "config/policy/security lifecycle failed to start");
@@ -382,7 +383,7 @@ void TestLifecycleStartReloadAndAdmission(const std::filesystem::path& database_
   auto disabled = server::StartConfigPolicySecurityLifecycle(
       server::BuildConfigPolicySecurityLifecycleInput(config,
                                                       database_path.string(),
-                                                      std::string(kDatabaseUuid),
+                                                      scratchbird::tests::FixtureUuidLiteral("019e0ef1-7b00-7000-8000-000000000011"),
                                                       true,
                                                       false));
   Require(!disabled.ok() &&

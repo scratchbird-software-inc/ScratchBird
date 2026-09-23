@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
@@ -79,8 +80,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -118,10 +119,10 @@ std::vector<std::string> ProofOnlyOptions() {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string non_unique_index_uuid;
-  std::string unique_index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid non_unique_index_uuid;
+  api::EngineUuid unique_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -137,9 +138,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture, std::string reques
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical = NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -192,7 +193,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
 
 api::CrudIndexRecord Index(const Fixture& fixture,
                            const api::EngineRequestContext& context,
-                           std::string index_uuid,
+                           api::EngineUuid index_uuid,
                            std::string column,
                            bool unique,
                            std::string family = api::kCrudIndexFamilyBtree) {
@@ -239,10 +240,10 @@ Fixture MakeFixture(
   }
   Require(created.ok(), "DPC-022 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.non_unique_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
-  fixture.unique_index_uuid = NewUuidText(platform::UuidKind::object, salt + 12);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.non_unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
+  fixture.unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
 
   auto context = Begin(fixture, "dpc022-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
@@ -298,7 +299,7 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
                                       std::vector<std::string> options = {}) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), std::move(name)));
   request.estimated_row_count = 1;
@@ -313,7 +314,7 @@ api::EngineUpdateRowsResult UpdateName(const Fixture& fixture,
                                        std::vector<std::string> options = {}) {
   api::EngineUpdateRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate.predicate_kind = "column_equals";
   request.update_predicate.canonical_predicate_envelope = "id";
@@ -325,14 +326,14 @@ api::EngineUpdateRowsResult UpdateName(const Fixture& fixture,
 
 api::EngineDeleteRowsResult DeleteRow(const Fixture& fixture,
                                       const api::EngineRequestContext& context,
-                                      std::string row_uuid,
+                                      api::EngineUuid row_uuid,
                                       std::vector<std::string> options = {}) {
   api::EngineDeleteRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate.predicate_kind = "row_uuid_match";
-  request.delete_predicate.canonical_predicate_envelope = std::move(row_uuid);
+  request.delete_predicate.row_uuid = row_uuid;
   request.tombstone_only = true;
   request.option_envelopes = std::move(options);
   return api::EngineDeleteRows(request);
@@ -359,8 +360,8 @@ std::vector<idx::SecondaryIndexDeltaLedgerRecord> RecordsForTx(
   return records;
 }
 
-std::string RecordIndexUuid(const idx::SecondaryIndexDeltaLedgerRecord& record) {
-  return uuid::UuidToString(record.delta.index_uuid.value);
+api::EngineUuid RecordIndexUuid(const idx::SecondaryIndexDeltaLedgerRecord& record) {
+  return record.delta.index_uuid.value;
 }
 
 std::string PayloadField(const idx::SecondaryIndexDeltaLedgerRecord& record,
@@ -375,7 +376,7 @@ std::string PayloadField(const idx::SecondaryIndexDeltaLedgerRecord& record,
 
 std::size_t CountIndexEntries(const Fixture& fixture,
                               const api::EngineRequestContext& context,
-                              const std::string& index_uuid) {
+                              const api::EngineUuid& index_uuid) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   if (!loaded.ok) {
     std::cerr << loaded.diagnostic.code << ':' << loaded.diagnostic.detail << '\n';
@@ -400,7 +401,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
   return false;
 }
 
-std::string SeedCommittedRow(Fixture& fixture,
+api::EngineUuid SeedCommittedRow(Fixture& fixture,
                              std::string id,
                              std::string name,
                              std::vector<std::string> options = {}) {
@@ -413,7 +414,7 @@ std::string SeedCommittedRow(Fixture& fixture,
   RequireOk(inserted, "DPC-022 seed insert failed");
   Require(inserted.inserted_count == 1 && inserted.row_uuids.size() == 1,
           "DPC-022 seed insert result shape changed");
-  const std::string row_uuid = inserted.row_uuids.front().canonical;
+  const api::EngineUuid row_uuid = inserted.row_uuids.front();
   Commit(context);
   return row_uuid;
 }
@@ -535,7 +536,7 @@ void ValidateDeferredUpdateAndRollbackCleanup() {
 
 void ValidateDeferredDeleteWritesTombstoneDelta() {
   auto fixture = MakeFixture("delete", 5000, api::kCrudIndexFamilyHash);
-  const std::string row_uuid = SeedCommittedRow(fixture,
+  const api::EngineUuid row_uuid = SeedCommittedRow(fixture,
                                                 "id-delete",
                                                 "alpha",
                                                 DeferredOptions());

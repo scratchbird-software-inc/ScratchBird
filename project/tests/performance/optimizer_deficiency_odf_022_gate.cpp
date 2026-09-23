@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include <map>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -32,15 +34,23 @@ bool Has(const std::vector<std::string>& values, const std::string& expected) {
 }
 
 const opt::PlanCandidate* FindCandidate(const std::vector<opt::PlanCandidate>& candidates,
-                                        const std::string& id) {
+                                        const std::string& id, const scratchbird::core::platform::Uuid& index_uuid) {
   const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const opt::PlanCandidate& candidate) {
-    return candidate.candidate_id == id;
+    return candidate.candidate_id == id && candidate.index_uuid == index_uuid;
   });
   return found == candidates.end() ? nullptr : &*found;
 }
 
-opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
-                                          const std::string& statistic_uuid) {
+scratchbird::core::platform::Uuid StatisticIdentityFor(
+    const scratchbird::core::platform::Uuid& object_uuid) {
+  static std::map<scratchbird::core::platform::Uuid, scratchbird::core::platform::Uuid> identities;
+  auto [entry, inserted] = identities.try_emplace(object_uuid);
+  if (inserted) entry->second = scratchbird::tests::FixtureUuid(1482, 100 + identities.size());
+  return entry->second;
+}
+
+opt::OptimizerStatsIdentity FreshIdentity(const scratchbird::core::platform::Uuid& object_uuid,
+                                          const scratchbird::core::platform::Uuid& statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = object_uuid;
   identity.statistic_uuid = statistic_uuid;
@@ -53,9 +63,9 @@ opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
   return identity;
 }
 
-opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
+opt::TableCardinalityStats TableStats(const scratchbird::core::platform::Uuid& relation_uuid) {
   opt::TableCardinalityStats stats;
-  stats.identity = FreshIdentity(relation_uuid, relation_uuid + ":table");
+  stats.identity = FreshIdentity(relation_uuid, StatisticIdentityFor(relation_uuid));
   stats.row_count = 64000;
   stats.visible_row_count = 60000;
   stats.page_count = 1500;
@@ -63,17 +73,17 @@ opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
   return stats;
 }
 
-opt::IndexStats BaseIndex(const std::string& relation_uuid,
-                          const std::string& index_uuid) {
+opt::IndexStats BaseIndex(const scratchbird::core::platform::Uuid& relation_uuid,
+                          const scratchbird::core::platform::Uuid& index_uuid) {
   opt::IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, index_uuid + ":index");
+  stats.identity = FreshIdentity(index_uuid, StatisticIdentityFor(index_uuid));
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = "btree";
   stats.descriptor_digest = "desc:customer:v1";
   stats.collation_identity = "unicode.casefold.det";
-  stats.key_column_uuids = {"expr.customer_name"};
-  stats.covered_column_uuids = {"expr.customer_name", "col.active"};
+  stats.key_column_uuids = {scratchbird::tests::FixtureUuid(1482, 10)};
+  stats.covered_column_uuids = {scratchbird::tests::FixtureUuid(1482, 10), scratchbird::tests::FixtureUuid(1482, 11)};
   stats.unique = false;
   stats.covering = true;
   stats.height = 3;
@@ -86,14 +96,14 @@ opt::IndexStats BaseIndex(const std::string& relation_uuid,
   return stats;
 }
 
-opt::AccessPathPlanningRequest BaseRequest(const std::string& relation_uuid) {
+opt::AccessPathPlanningRequest BaseRequest(const scratchbird::core::platform::Uuid& relation_uuid) {
   opt::AccessPathPlanningRequest request;
   request.relation_uuid = relation_uuid;
   request.predicate_kind = "scalar_eq";
   request.predicate_text = "lower(customer_name) = 'ada' and active";
   request.descriptor_digest = "desc:customer:v1";
   request.collation_identity = "unicode.casefold.det";
-  request.projected_column_uuids = {"expr.customer_name"};
+  request.projected_column_uuids = {scratchbird::tests::FixtureUuid(1482, 10)};
   request.visibility_proven = true;
   request.grants_proven = true;
   request.base_row_mga_recheck_planned = true;
@@ -134,9 +144,9 @@ bool CanonicalFormsAreStableAndBooleanEquivalent() {
 }
 
 bool ExpressionPartialAndAccessCandidateMatch() {
-  const std::string relation_uuid = "rel.odf022.expression";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1482, 1);
   const auto lower_name = opt::CanonicalizeExpressionText("lower(customer_name)");
-  auto index = BaseIndex(relation_uuid, "idx.odf022.functional.lower_name.active");
+  auto index = BaseIndex(relation_uuid, scratchbird::tests::FixtureUuid(1482, 5));
   index.expression_index = true;
   index.key_expression_digests = {lower_name.digest};
   index.partial = true;
@@ -165,7 +175,7 @@ bool ExpressionPartialAndAccessCandidateMatch() {
   }
 
   const auto candidates = opt::GenerateFullAccessPathCandidates(request);
-  const auto* candidate = FindCandidate(candidates, "CAND-OPT-INDEX:idx.odf022.functional.lower_name.active");
+  const auto* candidate = FindCandidate(candidates, "CAND-OPT-INDEX", index.index_uuid);
   return Require(candidate != nullptr, "canonical expression index candidate missing") &&
          Require(candidate->cost.selectable, "canonical expression index candidate was refused") &&
          Require(candidate->access_kind == plan::PhysicalAccessKind::kScalarBtreeLookup,
@@ -179,12 +189,12 @@ bool ExpressionPartialAndAccessCandidateMatch() {
 }
 
 bool GeneratedComputedAndPartialRefusalsAreExact() {
-  const std::string relation_uuid = "rel.odf022.generated";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1482, 2);
   const auto lower_name = opt::CanonicalizeExpressionText("lower(customer_name)");
   const auto net_price = opt::CanonicalizeExpressionText("net_price");
-  auto generated = BaseIndex(relation_uuid, "idx.odf022.generated.lower_name");
+  auto generated = BaseIndex(relation_uuid, scratchbird::tests::FixtureUuid(1482, 6));
   generated.generated_column_expression_digest = lower_name.digest;
-  auto computed = BaseIndex(relation_uuid, "idx.odf022.computed.net_price");
+  auto computed = BaseIndex(relation_uuid, scratchbird::tests::FixtureUuid(1482, 7));
   computed.computed_expression_digest = net_price.digest;
 
   auto generated_request = BaseRequest(relation_uuid);
@@ -217,7 +227,7 @@ bool GeneratedComputedAndPartialRefusalsAreExact() {
   }
 
   auto partial = generated;
-  partial.index_uuid = "idx.odf022.partial.refused";
+  partial.index_uuid = scratchbird::tests::FixtureUuid(1274, 901);
   partial.partial = true;
   partial.partial_predicate_text = "active = true";
   auto refused_request = BaseRequest(relation_uuid);
@@ -248,8 +258,8 @@ bool GeneratedComputedAndPartialRefusalsAreExact() {
 }
 
 bool LikePrefixAcceptanceAndRefusalsAreExact() {
-  const std::string relation_uuid = "rel.odf022.like";
-  auto index = BaseIndex(relation_uuid, "idx.odf022.like.customer_name");
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1482, 3);
+  auto index = BaseIndex(relation_uuid, scratchbird::tests::FixtureUuid(1482, 8));
   index.like_prefix_capable = true;
   index.key_expression_digests = {opt::CanonicalizeExpressionText("customer_name").digest};
 
@@ -324,9 +334,9 @@ bool LikePrefixAcceptanceAndRefusalsAreExact() {
 }
 
 bool DescriptorCollationAndVolatilityRefusalsAreExact() {
-  const std::string relation_uuid = "rel.odf022.refusal";
+  const auto relation_uuid = scratchbird::tests::FixtureUuid(1482, 4);
   const auto lower_name = opt::CanonicalizeExpressionText("lower(customer_name)");
-  auto index = BaseIndex(relation_uuid, "idx.odf022.refusal");
+  auto index = BaseIndex(relation_uuid, scratchbird::tests::FixtureUuid(1482, 9));
   index.expression_index = true;
   index.key_expression_digests = {lower_name.digest};
   index.descriptor_digest = "desc:customer:v2";

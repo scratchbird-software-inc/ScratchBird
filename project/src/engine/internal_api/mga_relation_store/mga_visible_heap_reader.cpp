@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/mga_relation_locator.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
@@ -84,20 +85,12 @@ std::string ScopedRelationStoreRoot(const EngineRequestContext& context) {
 
 std::string ScopedRowStorePath(const EngineRequestContext& context,
                                const EngineUuid& table_uuid) {
-  const auto component = scratchbird::core::uuid::EngineIdentityPathComponent(table_uuid);
-  if (!component) return {};
-  auto path = std::filesystem::path(ScopedRelationStoreRoot(context)) / *component;
-  path += ".rows";
-  return path.string();
+  return MgaScopedRelationPath(context, table_uuid, ".rows", false);
 }
 
 std::string ScopedRowBinaryStorePath(const EngineRequestContext& context,
-                                     const EngineUuid& table_uuid) {
-  const auto component = scratchbird::core::uuid::EngineIdentityPathComponent(table_uuid);
-  if (!component) return {};
-  auto path = std::filesystem::path(ScopedRelationStoreRoot(context)) / *component;
-  path += ".rows.sbnr";
-  return path.string();
+                               const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".rows.sbnr", false);
 }
 
 bool FileExistsAndNotEmpty(const std::string& path) {
@@ -961,8 +954,6 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
 
 namespace {
 
-constexpr std::uint32_t kStreamingCountNoFallback =
-    std::numeric_limits<std::uint32_t>::max();
 constexpr std::uint64_t kStreamingCountScratchBytes = 128 * 1024;
 constexpr std::uint32_t kStreamingCountMaximumMetadataStringBytes =
     64 * 1024;
@@ -975,10 +966,7 @@ struct StreamingVisibleSelection {
   std::uint64_t binary_bytes = 0;
 };
 
-struct StreamingCountIdentity {
-  std::array<std::uint8_t, 16> canonical_bytes{};
-  std::uint32_t fallback_ordinal = kStreamingCountNoFallback;
-};
+using StreamingCountIdentity = EngineUuid;
 
 struct StreamingCountRowVersion {
   StreamingCountIdentity row_uuid;
@@ -998,22 +986,8 @@ bool StreamingCountIdentityLess(
     const StreamingCountIdentity& left,
     const StreamingCountIdentity& right,
     const std::vector<std::string>& fallbacks) {
-  const bool left_canonical =
-      left.fallback_ordinal == kStreamingCountNoFallback;
-  const bool right_canonical =
-      right.fallback_ordinal == kStreamingCountNoFallback;
-  if (left_canonical != right_canonical) return left_canonical;
-  if (left_canonical) {
-    return std::lexicographical_compare(
-        left.canonical_bytes.begin(), left.canonical_bytes.end(),
-        right.canonical_bytes.begin(), right.canonical_bytes.end());
-  }
-  if (left.fallback_ordinal >= fallbacks.size() ||
-      right.fallback_ordinal >= fallbacks.size()) {
-    return left.fallback_ordinal < right.fallback_ordinal;
-  }
-  return fallbacks[left.fallback_ordinal] <
-         fallbacks[right.fallback_ordinal];
+  (void)fallbacks;
+  return left.bytes < right.bytes;
 }
 
 bool StreamingCountIdentityEqual(
@@ -1144,53 +1118,6 @@ bool ReserveStreamingCountRows(
       maximum_memory_bytes, peak_memory_bytes, detail);
 }
 
-bool ParseStreamingCountIdentity(
-    const std::string_view text,
-    std::vector<std::string>* fallback_identities,
-    StreamingCountIdentity* identity,
-    const bool allow_empty,
-    const SavepointParsedState& savepoints,
-    const MgaRelationStorageDescriptor& descriptor,
-    const std::vector<StreamingCountRowVersion>& rows,
-    const std::uint64_t maximum_memory_bytes,
-    std::uint64_t* peak_memory_bytes,
-    std::string* detail) {
-  if (fallback_identities == nullptr || identity == nullptr ||
-      (!allow_empty && text.empty())) {
-    if (detail != nullptr) *detail = "heap_count_row_identity_invalid";
-    return false;
-  }
-  if (text.empty()) {
-    *identity = {};
-    return true;
-  }
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (parsed.ok()) {
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-              identity->canonical_bytes.begin());
-    identity->fallback_ordinal = kStreamingCountNoFallback;
-    return true;
-  }
-  if (fallback_identities->size() >= kStreamingCountNoFallback ||
-      text.size() > kStreamingCountMaximumMetadataStringBytes) {
-    if (detail != nullptr) *detail = "heap_count_row_identity_invalid";
-    return false;
-  }
-  const std::uint64_t transient =
-      static_cast<std::uint64_t>(text.size()) + 1 + sizeof(std::string);
-  if (!ObserveStreamingCountMemory(
-          rows, *fallback_identities, savepoints, descriptor,
-          maximum_memory_bytes, peak_memory_bytes, detail, transient)) {
-    return false;
-  }
-  fallback_identities->emplace_back(text);
-  identity->fallback_ordinal = static_cast<std::uint32_t>(
-      fallback_identities->size() - 1);
-  return ObserveStreamingCountMemory(
-      rows, *fallback_identities, savepoints, descriptor,
-      maximum_memory_bytes, peak_memory_bytes, detail);
-}
-
 class StreamingCountBinaryReader {
  public:
   StreamingCountBinaryReader(
@@ -1255,23 +1182,14 @@ class StreamingCountBinaryReader {
     return true;
   }
 
-  bool ReadUuid(StreamingCountIdentity* identity) {
-    if (identity == nullptr) return Fail("heap_count_row_identity_invalid");
-    EngineUuid candidate;
-    if (!ReadUuid(&candidate)) return false;
-    identity->canonical_bytes = candidate.bytes;
-    identity->fallback_ordinal = kStreamingCountNoFallback;
-    return true;
-  }
-
-  bool ReadUuid(EngineUuid* value) {
+  bool ReadUuid(EngineUuid* value, bool optional = false) {
     if (value == nullptr) return Fail("heap_stream_row_identity_invalid");
     scratchbird::core::platform::Uuid uuid;
     if (!ReadExact(reinterpret_cast<char*>(uuid.bytes.data()),
                    uuid.bytes.size())) {
       return false;
     }
-    if (!scratchbird::core::uuid::IsEngineIdentityUuid(uuid)) {
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(uuid) && !(optional && uuid.is_nil())) {
       return Fail("heap_stream_row_identity_invalid");
     }
     *value = uuid;
@@ -1482,8 +1400,8 @@ bool StreamingCountCreatorVisible(
 
 bool AppendStreamingCountRow(
     StreamingCountRowVersion row,
-    const std::string_view table_uuid,
-    const std::string_view required_relation_uuid,
+    const EngineUuid& table_uuid,
+    const EngineUuid& required_relation_uuid,
     const SavepointParsedState& savepoints,
     const MgaRelationStorageDescriptor& descriptor,
     std::vector<StreamingCountRowVersion>* rows,
@@ -1532,8 +1450,8 @@ bool AppendStreamingCountRow(
 bool DecodeStreamingCountBinaryFile(
     const std::string& path,
     const std::uint64_t authorized_file_bytes,
-    const std::string& relation_uuid,
-    const std::string& session_uuid,
+    const EngineUuid& relation_uuid,
+    const EngineUuid& session_uuid,
     const scratchbird::transaction::mga::SnapshotVectorDescriptor& snapshot,
     const std::map<std::uint64_t, std::string>& transaction_states,
     const SavepointParsedState& savepoints,
@@ -1574,10 +1492,10 @@ bool DecodeStreamingCountBinaryFile(
             kScopedRowBinaryBatchMagic ||
         !reader.ReadU16(&version) || !reader.ReadU16(&flags) ||
         !reader.ReadU32(&column_count) || !reader.ReadU64(&row_count) ||
-        (version != 1 && version != kScopedRowBinaryLegacyTypedVersion &&
+        (version != kScopedRowBinaryGeneralVersion &&
          version != kScopedRowBinaryVersion &&
          version != kScopedRowBinaryNativePacketVersion) ||
-        flags != 0 || column_count == 0 || column_count > 4096) {
+        flags != 0 || (column_count == 0 && version != kScopedRowBinaryGeneralVersion) || column_count > 4096) {
       if (detail->empty()) *detail = "heap_count_scoped_binary_header_invalid";
       return false;
     }
@@ -1598,7 +1516,7 @@ bool DecodeStreamingCountBinaryFile(
         }
         native_tags.push_back(tag);
       }
-    } else if (version >= kScopedRowBinaryLegacyTypedVersion) {
+    } else if (version >= kScopedRowBinaryGeneralVersion) {
       for (std::uint32_t column = 0; column < column_count; ++column) {
         if (!reader.SkipString(false)) return false;
       }
@@ -1607,14 +1525,14 @@ bool DecodeStreamingCountBinaryFile(
     const bool compact_batch = version >= kScopedRowBinaryVersion;
     std::uint64_t compact_first_event_sequence = 0;
     std::uint64_t compact_creator_tx = 0;
-    std::string compact_table_uuid;
-    std::string compact_temporary_session_uuid;
+    EngineUuid compact_table_uuid;
+    EngineUuid compact_temporary_session_uuid;
     std::uint8_t compact_flags = 0;
     if (compact_batch &&
         (!reader.ReadU64(&compact_first_event_sequence) ||
          !reader.ReadU64(&compact_creator_tx) ||
-         !reader.ReadString(&compact_table_uuid, false) ||
-         !reader.ReadString(&compact_temporary_session_uuid, true) ||
+         !reader.ReadUuid(&compact_table_uuid, false) ||
+         !reader.ReadUuid(&compact_temporary_session_uuid, true) ||
          !reader.ReadU8(&compact_flags) || compact_flags != 0 ||
          compact_table_uuid != relation_uuid ||
          (row_count != 0 &&
@@ -1628,7 +1546,7 @@ bool DecodeStreamingCountBinaryFile(
     const std::uint64_t null_bitmap_bytes =
         (static_cast<std::uint64_t>(column_count) + 7U) / 8U;
     const std::uint64_t minimum_row_bytes =
-        (compact_batch ? 32U : 45U) + null_bitmap_bytes;
+        (compact_batch ? 32U : 105U) + null_bitmap_bytes;
     if (minimum_row_bytes == 0 ||
         row_count > reader.remaining() / minimum_row_bytes ||
         !ReserveStreamingCountRows(
@@ -1641,18 +1559,15 @@ bool DecodeStreamingCountBinaryFile(
         static_cast<std::size_t>(null_bitmap_bytes));
     for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
       StreamingCountRowVersion row;
-      std::string row_table_uuid;
-      std::string row_uuid;
-      std::string version_uuid;
-      std::string previous_version_uuid;
-      std::string temporary_session_uuid;
+      EngineUuid row_table_uuid;
+      EngineUuid temporary_session_uuid;
       std::uint8_t deleted = 0;
       if (compact_batch) {
         row.creator_tx = compact_creator_tx;
         row.event_sequence = compact_first_event_sequence + row_index;
         row_table_uuid = compact_table_uuid;
         row.temporary_session_visible =
-            compact_temporary_session_uuid.empty() ||
+            compact_temporary_session_uuid.is_nil() ||
             compact_temporary_session_uuid == session_uuid;
         if (!reader.ReadUuid(&row.row_uuid) ||
             !reader.ReadUuid(&row.version_uuid)) {
@@ -1663,31 +1578,17 @@ bool DecodeStreamingCountBinaryFile(
             !reader.ReadU64(&row.event_sequence) ||
             !reader.ReadU64(&row.previous_sequence) ||
             !reader.ReadU8(&deleted) ||
-            !reader.ReadString(&row_table_uuid, false) ||
-            !reader.ReadString(&row_uuid, false) ||
-            !reader.ReadString(&version_uuid, false) ||
-            !reader.ReadString(&previous_version_uuid, true) ||
-            !reader.ReadString(&temporary_session_uuid, true) ||
-            !ParseStreamingCountIdentity(
-                row_uuid, fallback_identities, &row.row_uuid, false,
-                savepoints, descriptor, *rows, maximum_memory_bytes,
-                peak_memory_bytes, detail) ||
-            !ParseStreamingCountIdentity(
-                version_uuid, fallback_identities, &row.version_uuid, false,
-                savepoints, descriptor, *rows, maximum_memory_bytes,
-                peak_memory_bytes, detail)) {
+            !reader.ReadUuid(&row_table_uuid, false) ||
+            !reader.ReadUuid(&row.row_uuid) ||
+            !reader.ReadUuid(&row.version_uuid) ||
+            !reader.ReadUuid(&row.previous_version_uuid, true) ||
+            !reader.ReadUuid(&temporary_session_uuid, true) || deleted > 1) {
           return false;
         }
+        if (column_count == 0 && deleted == 0) return false;
         row.deleted = deleted != 0;
-        row.has_previous_version = !previous_version_uuid.empty();
-        if (row.has_previous_version &&
-            !ParseStreamingCountIdentity(
-                previous_version_uuid, fallback_identities,
-                &row.previous_version_uuid, false, savepoints, descriptor,
-                *rows, maximum_memory_bytes, peak_memory_bytes, detail)) {
-          return false;
-        }
-        row.temporary_session_visible = temporary_session_uuid.empty() ||
+        row.has_previous_version = !row.previous_version_uuid.is_nil();
+        row.temporary_session_visible = temporary_session_uuid.is_nil() ||
                                         temporary_session_uuid == session_uuid;
       }
       row.creator_visible = StreamingCountCreatorVisible(
@@ -1741,172 +1642,6 @@ std::vector<std::string_view> StreamingCountTextFields(
     begin = end + 1;
   }
   return fields;
-}
-
-bool DecodeStreamingCountTextFile(
-    const std::string& path,
-    const std::uint64_t authorized_file_bytes,
-    const std::string& relation_uuid,
-    const std::string& session_uuid,
-    const scratchbird::transaction::mga::SnapshotVectorDescriptor& snapshot,
-    const std::map<std::uint64_t, std::string>& transaction_states,
-    const SavepointParsedState& savepoints,
-    const MgaRelationStorageDescriptor& descriptor,
-    const std::uint64_t maximum_decoded_bytes,
-    const std::uint64_t maximum_memory_bytes,
-    const std::function<bool()>* cancellation_requested,
-    std::vector<StreamingCountRowVersion>* rows,
-    std::vector<std::string>* fallback_identities,
-    std::uint64_t* peak_memory_bytes,
-    MgaVisibleHeapRelationCountResult* result,
-    HeapReadRuntimeObservation* runtime_observation,
-    std::string* detail) {
-  if (rows == nullptr || fallback_identities == nullptr || result == nullptr ||
-      detail == nullptr) {
-    return false;
-  }
-  const auto open_started = std::chrono::steady_clock::now();
-  std::ifstream input(path, std::ios::binary);
-  const auto observe_wait = [&](const auto started) {
-    if (runtime_observation == nullptr) return;
-    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now() - started).count();
-    if (elapsed < 0 ||
-        static_cast<std::uintmax_t>(elapsed) >
-            std::numeric_limits<std::uint64_t>::max() ||
-        runtime_observation->operator_wait_ns >
-            std::numeric_limits<std::uint64_t>::max() -
-                static_cast<std::uint64_t>(elapsed)) {
-      runtime_observation->complete = false;
-      return;
-    }
-    runtime_observation->operator_wait_ns +=
-        static_cast<std::uint64_t>(elapsed);
-  };
-  observe_wait(open_started);
-  if (!input) {
-    *detail = "heap_count_scoped_text_open_failed";
-    return false;
-  }
-  // Retain only fields 0..9 and the optional temporary-session field. Field
-  // 10 is the encoded value payload and can be arbitrarily large; COUNT(*)
-  // must validate and count row-version metadata without materializing it.
-  std::string line_metadata;
-  std::uint32_t line_tab_count = 0;
-  std::array<char, 64 * 1024> chunk{};
-  std::uint64_t remaining = authorized_file_bytes;
-  const auto consume_line = [&](const std::string& current) {
-    const auto fields = StreamingCountTextFields(current);
-    if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
-        fields[1] != "ROW_VERSION") {
-      return true;
-    }
-    StreamingCountRowVersion row;
-    row.creator_tx = ParseU64(std::string(fields[2]));
-    row.event_sequence = ParseU64(std::string(fields[3]));
-    row.deleted = fields[7] == "1";
-    row.previous_sequence = ParseU64(std::string(fields[9]));
-    row.has_previous_version = !fields[8].empty();
-    row.temporary_session_visible =
-        fields.size() < 12 || fields[11].empty() ||
-        fields[11] == session_uuid;
-    row.creator_visible = StreamingCountCreatorVisible(
-        row.creator_tx, snapshot, transaction_states);
-    if (!ParseStreamingCountIdentity(
-            fields[5], fallback_identities, &row.row_uuid, false,
-            savepoints, descriptor, *rows, maximum_memory_bytes,
-            peak_memory_bytes, detail) ||
-        !ParseStreamingCountIdentity(
-            fields[6], fallback_identities, &row.version_uuid, false,
-            savepoints, descriptor, *rows, maximum_memory_bytes,
-            peak_memory_bytes, detail) ||
-        (row.has_previous_version &&
-         !ParseStreamingCountIdentity(
-             fields[8], fallback_identities, &row.previous_version_uuid,
-             false, savepoints, descriptor, *rows, maximum_memory_bytes,
-             peak_memory_bytes, detail))) {
-      return false;
-    }
-    return AppendStreamingCountRow(
-        std::move(row), fields[4], relation_uuid, savepoints, descriptor,
-        rows, *fallback_identities, maximum_memory_bytes,
-        peak_memory_bytes, result, detail);
-  };
-  while (remaining != 0) {
-    if (cancellation_requested != nullptr && *cancellation_requested &&
-        (*cancellation_requested)()) {
-      result->cancellation_observed = true;
-      *detail = "heap_count_cancelled_during_physical_read";
-      return false;
-    }
-    const auto requested = static_cast<std::size_t>(
-        std::min<std::uint64_t>(remaining, chunk.size()));
-    const auto read_started = std::chrono::steady_clock::now();
-    input.read(chunk.data(), static_cast<std::streamsize>(requested));
-    observe_wait(read_started);
-    if (input.gcount() != static_cast<std::streamsize>(requested) ||
-        input.bad()) {
-      *detail = "heap_count_scoped_text_read_failed";
-      return false;
-    }
-    remaining -= requested;
-    if (result->storage_bytes_read >
-            std::numeric_limits<std::uint64_t>::max() - requested ||
-        result->decoded_byte_count >
-            std::numeric_limits<std::uint64_t>::max() - requested) {
-      *detail = "heap_count_byte_counter_overflow";
-      return false;
-    }
-    result->storage_bytes_read += requested;
-    result->decoded_byte_count += requested;
-    if (result->decoded_byte_count > maximum_decoded_bytes) {
-      *detail = "heap_count_maximum_decoded_bytes_exceeded";
-      return false;
-    }
-    for (std::size_t index = 0; index < requested; ++index) {
-      const char value = chunk[index];
-      if (value == '\n') {
-        if (!ObserveStreamingCountMemory(
-                *rows, *fallback_identities, savepoints, descriptor,
-                maximum_memory_bytes, peak_memory_bytes, detail,
-                static_cast<std::uint64_t>(line_metadata.capacity()) + 1) ||
-            !consume_line(line_metadata)) {
-          return false;
-        }
-        line_metadata.clear();
-        line_tab_count = 0;
-        continue;
-      }
-      const bool payload_byte = line_tab_count == 10 && value != '\t';
-      if (payload_byte) continue;
-      if (line_metadata.size() >=
-          kStreamingCountMaximumMetadataStringBytes) {
-        *detail = "heap_count_text_record_exceeds_metadata_bound";
-        return false;
-      }
-      line_metadata.push_back(value);
-      if (value == '\t' &&
-          line_tab_count != std::numeric_limits<std::uint32_t>::max()) {
-        ++line_tab_count;
-      }
-      if ((index & 4095U) == 0 &&
-          !ObserveStreamingCountMemory(
-              *rows, *fallback_identities, savepoints, descriptor,
-              maximum_memory_bytes, peak_memory_bytes, detail,
-              static_cast<std::uint64_t>(line_metadata.capacity()) + 1)) {
-        return false;
-      }
-    }
-  }
-  if (!line_metadata.empty() && !consume_line(line_metadata)) return false;
-  const auto peek_started = std::chrono::steady_clock::now();
-  const auto next = input.peek();
-  observe_wait(peek_started);
-  if (next != std::char_traits<char>::eof()) {
-    *detail = "heap_count_scoped_text_grew_during_read";
-    return false;
-  }
-  return !input.bad();
 }
 
 bool ValidateAndCountStreamingRows(
@@ -2222,107 +1957,21 @@ bool DeliverVisibleStreamRow(
   return true;
 }
 
-bool DecodeVisibleStreamTextFile(
-    const MgaVisibleHeapRelationStreamRequest& request,
-    const std::string& relation_uuid,
-    const StreamingVisibleSelection& selection,
-    std::uint64_t* source_ordinal,
-    MgaVisibleHeapRelationStreamResult* result,
-    std::string* detail) {
-  if (source_ordinal == nullptr || result == nullptr || detail == nullptr ||
-      selection.text_bytes == 0) {
-    return selection.text_bytes == 0;
-  }
-  MgaVisibleHeapRelationCountResult phase;
-  StreamingCountBinaryReader reader(
-      selection.text_path, selection.text_bytes,
-      request.maximum_decoded_bytes_per_pass,
-      request.borrowed_cancellation_requested == nullptr
-          ? &request.cancellation_requested
-          : request.borrowed_cancellation_requested,
-      &phase, nullptr, detail);
-  if (!reader.Open()) return false;
-  std::string line;
-  const auto consume_line = [&]() {
-    const auto fields = StreamingCountTextFields(line);
-    if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
-        fields[1] != "ROW_VERSION") {
-      return true;
-    }
-    if (*source_ordinal == std::numeric_limits<std::uint64_t>::max()) {
-      *detail = "heap_stream_source_ordinal_overflow";
-      return false;
-    }
-    ++*source_ordinal;
-    if (*source_ordinal >= selection.visible_source_ordinals.size()) {
-      *detail = "heap_stream_source_ordinal_out_of_range";
-      return false;
-    }
-    if (fields[4] != relation_uuid) {
-      *detail = "heap_stream_relation_identity_mismatch";
-      return false;
-    }
-    if (selection.visible_source_ordinals[*source_ordinal] == 0) return true;
-    CrudRowVersionRecord row;
-    row.creator_tx = ParseU64(std::string(fields[2]));
-    row.event_sequence = ParseU64(std::string(fields[3]));
-    row.sequence = row.event_sequence;
-    row.table_uuid.assign(fields[4]);
-    row.row_uuid.assign(fields[5]);
-    row.version_uuid.assign(fields[6]);
-    row.deleted = fields[7] == "1";
-    row.previous_version_uuid.assign(fields[8]);
-    row.previous_sequence = ParseU64(std::string(fields[9]));
-    row.values = DecodeCrudPairsForHeapRead(std::string(fields[10]));
-    if (fields.size() >= 12) row.temporary_session_uuid.assign(fields[11]);
-    return DeliverVisibleStreamRow(request, result->descriptor, selection,
-                                   *source_ordinal, row, result, detail);
-  };
-  while (reader.remaining() != 0) {
-    std::uint8_t byte = 0;
-    if (!reader.ReadU8(&byte)) return false;
-    if (byte == '\n') {
-      if (!consume_line()) return false;
-      line.clear();
-      if (VisibleStreamDeliveryBoundReached(request, *result)) {
-        return PublishVisibleStreamSecondPassCounters(phase, result, detail);
-      }
-      continue;
-    }
-    std::uint64_t consumer_bytes = 0;
-    if (!StreamConsumerMemory(request, &consumer_bytes, detail) ||
-        line.size() >= request.maximum_memory_bytes ||
-        !ObserveVisibleStreamMemory(
-            request, result->descriptor, selection, nullptr,
-            consumer_bytes + static_cast<std::uint64_t>(line.size()) + 2,
-            0, &result->peak_live_memory_bytes, detail)) {
-      if (detail->empty()) *detail = "heap_stream_text_record_exceeds_memory_grant";
-      return false;
-    }
-    line.push_back(static_cast<char>(byte));
-  }
-  if (!line.empty() && !consume_line()) return false;
-  if (!reader.Finish()) {
-    result->cancellation_observed = reader.cancellation_observed();
-    return false;
-  }
-  return PublishVisibleStreamSecondPassCounters(phase, result, detail);
-}
-
 bool DecodeVisibleStreamBinaryFile(
     const MgaVisibleHeapRelationStreamRequest& request,
-    const std::string& relation_uuid,
+    const EngineUuid& relation_uuid,
     const StreamingVisibleSelection& selection,
     std::uint64_t* source_ordinal,
     MgaVisibleHeapRelationStreamResult* result,
-    std::string* detail) {
+    std::string* detail, bool general_segment = false) {
   if (source_ordinal == nullptr || result == nullptr || detail == nullptr ||
-      selection.binary_bytes == 0) {
-    return selection.binary_bytes == 0;
+      (general_segment ? selection.text_bytes : selection.binary_bytes) == 0) {
+    return (general_segment ? selection.text_bytes : selection.binary_bytes) == 0;
   }
   MgaVisibleHeapRelationCountResult phase;
   StreamingCountBinaryReader reader(
-      selection.binary_path, selection.binary_bytes,
+      general_segment ? selection.text_path : selection.binary_path,
+      general_segment ? selection.text_bytes : selection.binary_bytes,
       request.maximum_decoded_bytes_per_pass,
       request.borrowed_cancellation_requested == nullptr
           ? &request.cancellation_requested
@@ -2342,10 +1991,10 @@ bool DecodeVisibleStreamBinaryFile(
             kScopedRowBinaryBatchMagic ||
         !reader.ReadU16(&version) || !reader.ReadU16(&flags) ||
         !reader.ReadU32(&column_count) || !reader.ReadU64(&row_count) ||
-        (version != 1 && version != kScopedRowBinaryLegacyTypedVersion &&
+        (version != kScopedRowBinaryGeneralVersion &&
          version != kScopedRowBinaryVersion &&
          version != kScopedRowBinaryNativePacketVersion) ||
-        flags != 0 || column_count == 0 || column_count > 4096) {
+        flags != 0 || (column_count == 0 && version != kScopedRowBinaryGeneralVersion) || column_count > 4096) {
       *detail = "heap_stream_scoped_binary_header_invalid";
       return false;
     }
@@ -2373,7 +2022,7 @@ bool DecodeVisibleStreamBinaryFile(
         native_tags.push_back(tag);
         field_types.emplace_back(name);
       }
-    } else if (version >= kScopedRowBinaryLegacyTypedVersion) {
+    } else if (version >= kScopedRowBinaryGeneralVersion) {
       for (std::uint32_t column = 0; column < column_count; ++column) {
         std::string type;
         if (!reader.ReadString(&type, false)) return false;
@@ -2385,14 +2034,14 @@ bool DecodeVisibleStreamBinaryFile(
     const bool compact = version >= kScopedRowBinaryVersion;
     std::uint64_t compact_first_sequence = 0;
     std::uint64_t compact_creator_tx = 0;
-    std::string compact_table_uuid;
-    std::string compact_session_uuid;
+    EngineUuid compact_table_uuid;
+    EngineUuid compact_session_uuid;
     std::uint8_t compact_flags = 0;
     if (compact &&
         (!reader.ReadU64(&compact_first_sequence) ||
          !reader.ReadU64(&compact_creator_tx) ||
-         !reader.ReadString(&compact_table_uuid, false) ||
-         !reader.ReadString(&compact_session_uuid, true) ||
+         !reader.ReadUuid(&compact_table_uuid, false) ||
+         !reader.ReadUuid(&compact_session_uuid, true) ||
          !reader.ReadU8(&compact_flags) || compact_flags != 0 ||
          compact_table_uuid != relation_uuid ||
          (row_count != 0 &&
@@ -2438,25 +2087,26 @@ bool DecodeVisibleStreamBinaryFile(
           return false;
         }
       } else {
-        std::string table_uuid;
-        std::string row_uuid;
-        std::string version_uuid;
-        std::string previous_uuid;
-        std::string session_uuid;
+        EngineUuid table_uuid;
+        EngineUuid row_uuid;
+        EngineUuid version_uuid;
+        EngineUuid previous_uuid;
+        EngineUuid session_uuid;
         if (!reader.ReadU64(&row.creator_tx) ||
             !reader.ReadU64(&row.event_sequence) ||
             !reader.ReadU64(&row.previous_sequence) ||
             !reader.ReadU8(&deleted) ||
-            !reader.ReadString(&table_uuid, false) ||
-            !reader.ReadString(&row_uuid, false) ||
-            !reader.ReadString(&version_uuid, false) ||
-            !reader.ReadString(&previous_uuid, true) ||
-            !reader.ReadString(&session_uuid, true) ||
+            !reader.ReadUuid(&table_uuid, false) ||
+            !reader.ReadUuid(&row_uuid, false) ||
+            !reader.ReadUuid(&version_uuid, false) ||
+            !reader.ReadUuid(&previous_uuid, true) ||
+            !reader.ReadUuid(&session_uuid, true) ||
             table_uuid != relation_uuid) {
           *detail = "heap_stream_scoped_binary_row_header_invalid";
           return false;
         }
         row.sequence = row.event_sequence;
+        if (column_count == 0 && deleted == 0) return false;
         row.deleted = deleted != 0;
         if (selected) {
           row.table_uuid = std::move(table_uuid);
@@ -2844,7 +2494,7 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
     visible_selection->binary_bytes = binary_bytes;
   }
   if (text_exists &&
-      !DecodeStreamingCountTextFile(
+      !DecodeStreamingCountBinaryFile(
           text_path, text_bytes, relation_uuid,
           context.session_uuid, prepared_statement->snapshot_vector,
           *prepared_statement->transaction_states, savepoints,
@@ -3086,9 +2736,9 @@ static MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelationImpl(
   std::uint64_t source_ordinal = 0;
   bool value_pass_ok = true;
   if (delivery_target != 0) {
-    value_pass_ok = DecodeVisibleStreamTextFile(
+    value_pass_ok = DecodeVisibleStreamBinaryFile(
         prepared_request, relation_uuid, selection, &source_ordinal, &result,
-        &detail);
+        &detail, true);
     if (value_pass_ok &&
         !VisibleStreamDeliveryBoundReached(prepared_request, result)) {
       value_pass_ok = DecodeVisibleStreamBinaryFile(

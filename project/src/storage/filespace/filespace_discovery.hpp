@@ -93,8 +93,8 @@ struct FilespaceDiscoveryExecutionRequest {
   bool physical_delete_legal_hold_clear = false;
   bool physical_delete_cleanup_horizon_authoritative = false;
   std::string operation_uuid;
-  std::string inspector_uuid;
-  std::string release_authority_uuid;
+  scratchbird::core::platform::Uuid inspector_uuid;
+  scratchbird::core::platform::Uuid release_authority_uuid;
 };
 
 struct FilespaceDiscoveryExecutionResult {

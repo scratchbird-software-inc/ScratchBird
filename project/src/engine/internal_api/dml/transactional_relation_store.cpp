@@ -54,15 +54,22 @@ MgaRelationStoreResult WithRouteEvidence(
     MgaRelationStoreResult result,
     TransactionalRelationStoreRoute route,
     std::string operation_family,
-    std::string target_relation_uuid,
+    const std::vector<EngineUuid>& target_relation_uuids,
     std::string reason) {
   TransactionalRelationStore::AppendRouteEvidence(route, &result.evidence);
   const std::string load_scope = result.full_state_load ? "full" : "scoped";
   result.evidence.push_back(
       {"mga_relation_state_operation_family", operation_family});
-  result.evidence.push_back(
-      {"mga_relation_state_target_relation_uuid",
-       target_relation_uuid.empty() ? "none" : target_relation_uuid});
+  if (target_relation_uuids.empty()) {
+    result.evidence.push_back({"mga_relation_state_target_relation_uuid", "none"});
+  } else {
+    for (const auto& identity : target_relation_uuids)
+      result.evidence.push_back({"mga_relation_state_target_relation_uuid", identity});
+  }
+  // A multi-relation load is one aggregate observation, not a fabricated
+  // UUID obtained by joining identities and not one repeated load per table.
+  const EngineUuid target_relation_uuid = target_relation_uuids.size() == 1
+      ? target_relation_uuids.front() : EngineUuid{};
   result.evidence.push_back({"mga_relation_state_load_reason", reason});
   (void)scratchbird::core::metrics::RecordMgaRelationStateLoad(
       target_relation_uuid, operation_family, load_scope, reason,
@@ -70,6 +77,16 @@ MgaRelationStoreResult WithRouteEvidence(
       static_cast<double>(result.bytes_materialized),
       static_cast<double>(result.allocation_units_materialized));
   return result;
+}
+
+MgaRelationStoreResult WithRouteEvidence(
+    MgaRelationStoreResult result, TransactionalRelationStoreRoute route,
+    std::string operation_family, const EngineUuid& target_relation_uuid,
+    std::string reason) {
+  const std::vector<EngineUuid> targets = target_relation_uuid.is_nil()
+      ? std::vector<EngineUuid>{} : std::vector<EngineUuid>{target_relation_uuid};
+  return WithRouteEvidence(std::move(result), route, std::move(operation_family),
+                           targets, std::move(reason));
 }
 
 MgaRelationStoreResult ApplyFullStatePolicy(
@@ -102,14 +119,6 @@ MgaRelationStoreResult ApplyFullStatePolicy(
   return result;
 }
 
-std::string JoinedRelationUuids(const std::vector<std::string>& relation_uuids) {
-  std::string joined;
-  for (const auto& relation_uuid : relation_uuids) {
-    if (!joined.empty()) { joined.push_back(','); }
-    joined += relation_uuid;
-  }
-  return joined;
-}
 
 }  // namespace
 
@@ -265,7 +274,7 @@ MgaRelationStoreResult TransactionalRelationStore::LoadDiagnosticFullState()
   return WithRouteEvidence(
       ApplyFullStatePolicy(LoadMgaRelationStoreState(context_),
                            kDiagnosticFullStatePolicy),
-      TransactionalRelationStoreRoute::diagnostic_full_state, "diagnostic", "",
+      TransactionalRelationStoreRoute::diagnostic_full_state, "diagnostic", EngineUuid{},
       std::string(kDiagnosticFullStatePolicy.reason));
 }
 
@@ -276,12 +285,12 @@ TransactionalRelationStore::LoadDeferredConstraintValidationFullState() const {
                            kDeferredConstraintFullStatePolicy),
       TransactionalRelationStoreRoute::
           deferred_constraint_validation_full_state,
-      "transaction_finalization", "",
+      "transaction_finalization", EngineUuid{},
       std::string(kDeferredConstraintFullStatePolicy.reason));
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadInsertTarget(
-    const std::string& table_uuid) const {
+    const EngineUuid& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreStateForInsertTarget(context_, table_uuid),
       TransactionalRelationStoreRoute::insert_target, "insert", table_uuid,
@@ -289,7 +298,7 @@ MgaRelationStoreResult TransactionalRelationStore::LoadInsertTarget(
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadInsertTargetMetadata(
-    const std::string& table_uuid) const {
+    const EngineUuid& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreMetadataOnlyForInsertTarget(context_, table_uuid),
       TransactionalRelationStoreRoute::insert_target_metadata, "insert",
@@ -297,7 +306,7 @@ MgaRelationStoreResult TransactionalRelationStore::LoadInsertTargetMetadata(
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadInsertTargetIndexes(
-    const std::string& table_uuid) const {
+    const EngineUuid& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreIndexesOnlyForInsertTarget(context_, table_uuid),
       TransactionalRelationStoreRoute::insert_target_indexes, "insert",
@@ -305,7 +314,7 @@ MgaRelationStoreResult TransactionalRelationStore::LoadInsertTargetIndexes(
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadMutationTarget(
-    const std::string& table_uuid) const {
+    const EngineUuid& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreStateForMutationTarget(context_, table_uuid),
       TransactionalRelationStoreRoute::mutation_target, "mutation", table_uuid,
@@ -313,15 +322,15 @@ MgaRelationStoreResult TransactionalRelationStore::LoadMutationTarget(
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadMutationTargets(
-    const std::vector<std::string>& table_uuids) const {
+    const std::vector<EngineUuid>& table_uuids) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreStateForMutationTargets(context_, table_uuids),
       TransactionalRelationStoreRoute::mutation_targets, "mutation",
-      JoinedRelationUuids(table_uuids), "target_relation_scopes");
+      table_uuids, "target_relation_scopes");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadMutationTargetRows(
-    const std::string& table_uuid) const {
+    const EngineUuid& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreRowsOnlyForMutationTarget(context_, table_uuid),
       TransactionalRelationStoreRoute::mutation_target_rows, "mutation",
@@ -329,42 +338,42 @@ MgaRelationStoreResult TransactionalRelationStore::LoadMutationTargetRows(
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadMutationTargetRows(
-    const std::vector<std::string>& table_uuids) const {
+    const std::vector<EngineUuid>& table_uuids) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreRowsOnlyForMutationTargets(context_, table_uuids),
       TransactionalRelationStoreRoute::mutation_targets_rows, "mutation",
-      JoinedRelationUuids(table_uuids), "target_relation_rows_only_scopes");
+      table_uuids, "target_relation_rows_only_scopes");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::OpenRelationScan(
-    const std::string& table_uuid) const {
+    const EngineUuid& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreStateForRelationScans(
-          context_, std::vector<std::string>{table_uuid}),
+          context_, std::vector<EngineUuid>{table_uuid}),
       TransactionalRelationStoreRoute::relation_scan, "select", table_uuid,
       "transaction_visible_relation_scan");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::OpenRelationScans(
-    const std::vector<std::string>& table_uuids) const {
+    const std::vector<EngineUuid>& table_uuids) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreStateForRelationScans(context_, table_uuids),
       TransactionalRelationStoreRoute::relation_scans, "select",
-      JoinedRelationUuids(table_uuids), "transaction_visible_relation_scans");
+      table_uuids, "transaction_visible_relation_scans");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::OpenRelationPointCursor(
-    const std::string& table_uuid,
-    const std::string& row_uuid) const {
+    const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreRowsForPointLookup(context_, table_uuid, row_uuid),
       TransactionalRelationStoreRoute::relation_point_cursor, "point_lookup",
       table_uuid,
-      row_uuid.empty() ? "row_uuid_required" : "transaction_visible_row_uuid");
+      row_uuid.is_nil() ? "row_uuid_required" : "transaction_visible_row_uuid");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::OpenRelationIndexCursor(
-    const std::string& table_uuid) const {
+    const EngineUuid& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreIndexesForRelation(context_, table_uuid),
       TransactionalRelationStoreRoute::relation_index_cursor, "index_lookup",
@@ -372,7 +381,7 @@ MgaRelationStoreResult TransactionalRelationStore::OpenRelationIndexCursor(
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadConstraintScope(
-    const std::string& table_uuid) const {
+    const EngineUuid& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreStateForMutationTarget(context_, table_uuid),
       TransactionalRelationStoreRoute::constraint_scope, "constraint",
@@ -380,16 +389,16 @@ MgaRelationStoreResult TransactionalRelationStore::LoadConstraintScope(
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadConstraintScopes(
-    const std::vector<std::string>& table_uuids) const {
+    const std::vector<EngineUuid>& table_uuids) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreStateForMutationTargets(context_, table_uuids),
       TransactionalRelationStoreRoute::constraint_scopes, "constraint",
-      JoinedRelationUuids(table_uuids),
+      table_uuids,
       "target_parent_child_constraint_scopes");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadTriggerMetadataScope(
-    const std::string& table_uuid) const {
+    const EngineUuid& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreMetadataForRelation(context_, table_uuid),
       TransactionalRelationStoreRoute::trigger_metadata_scope, "trigger",
@@ -426,7 +435,7 @@ EngineApiDiagnostic TransactionalRelationStore::AppendRowVersion(
 EngineApiDiagnostic
 TransactionalRelationStore::AppendIndexEntriesForRowsWithIndexes(
     const std::vector<CrudIndexRecord>& indexes,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<MgaIndexEntryRowInput>& rows) const {
   return AppendMgaIndexEntriesForRowsWithIndexes(
       context_, indexes, table_uuid, rows);

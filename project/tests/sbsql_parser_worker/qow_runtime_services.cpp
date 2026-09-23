@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -73,15 +74,17 @@ int main() {
           opt::ModelFamilyCoordinatorRequestV1 planning;
           planning.family_id = family;
           planning.operation_id = operation;
-          planning.statistics_snapshot_uuid = "statistics-test-identity";
+          planning.statistics_snapshot_uuid = scratchbird::tests::FixtureUuid(1083, 1);
+          const auto provider = scratchbird::tests::FixtureUuid(1083, 2);
+          const auto capability = scratchbird::tests::FixtureUuid(1083, 3);
           planning.statistics_generation = 13;
           const auto snapshot = sblr::MakeModelFamilyCapabilitySnapshotForCompositionV1(
-              planning, "runtime-services-test", route, "provider", "capability",
+              planning, route, provider, capability,
               11, units != 0, units, 3, units);
           const auto& metrics = snapshot.metrics;
           const auto bounded = std::max<std::uint64_t>(1, units);
-          check(snapshot.route_class == route && snapshot.provider_uuid == "provider" &&
-                    snapshot.capability_uuid == "capability" &&
+          check(snapshot.route_class == route && snapshot.provider_uuid == provider &&
+                    snapshot.capability_uuid == capability &&
                     snapshot.provider_generation == 11 && snapshot.available == (units != 0),
                 "capability identity and availability preserved");
           check(metrics.statistics_snapshot_uuid == planning.statistics_snapshot_uuid &&
@@ -96,14 +99,18 @@ int main() {
                     metrics.text_score_evaluations == (family == "search" ? bounded : 0) &&
                     metrics.spatial_evaluations == (family == "spatial" ? bounded : 0),
                 "family and operation cost counters stay isolated");
+          const auto retained = snapshot;
+          check(retained.metrics.property_snapshot_uuid == metrics.property_snapshot_uuid &&
+                    retained.metrics.calibration_profile_uuid == metrics.calibration_profile_uuid,
+                "retained optimizer receipts preserve native identity");
           const auto repeated = sblr::MakeModelFamilyCapabilitySnapshotForCompositionV1(
-              planning, "runtime-services-test", route, "provider", "capability",
+              planning, route, provider, capability,
               11, units != 0, units, 3, units);
-          check(!metrics.property_snapshot_uuid.empty() &&
-                    !metrics.calibration_profile_uuid.empty() &&
-                    metrics.property_snapshot_uuid == repeated.metrics.property_snapshot_uuid &&
-                    metrics.calibration_profile_uuid == repeated.metrics.calibration_profile_uuid,
-                "derived optimizer receipt identities are deterministic");
+          check(!metrics.property_snapshot_uuid.is_nil() &&
+                    !metrics.calibration_profile_uuid.is_nil() &&
+                    metrics.property_snapshot_uuid != repeated.metrics.property_snapshot_uuid &&
+                    metrics.calibration_profile_uuid != repeated.metrics.calibration_profile_uuid,
+                "separate optimizer receipt objects have independently issued identities");
         }
       }
     }

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_opcode_registry.hpp"
 
@@ -60,31 +61,22 @@ bool HasApiDiagnostic(const sblr::SblrDispatchResult& result,
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000000303";
-  context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000000313";
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000000314";
-  context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7100-8000-000000000303";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000000303");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000000313");
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000000314");
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000000303");
   context.local_transaction_id = 37;
   context.snapshot_visible_through_local_transaction_id = 35;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000000315";
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000000315");
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f0000-0000-7110-8000-000000000304";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7110-8000-000000000304");
   context.catalog_generation_id = 303;
   context.security_epoch = 304;
   context.resource_epoch = 305;
-  context.optimizer_capability_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006001";
-  context.optimizer_resource_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006002";
-  context.optimizer_route_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006003";
+  context.optimizer_capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006001");
+  context.optimizer_resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006002");
+  context.optimizer_route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006003");
   context.optimizer_route_epoch = 306;
   context.optimizer_route_generation = 307;
   context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
@@ -647,8 +639,7 @@ bool ValidateStatementContextDecoderMatrix() {
   const auto nil_result = dispatch(std::move(nil_statement));
 
   auto stale_statement_context = Context();
-  stale_statement_context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000000399";
+  stale_statement_context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000000399");
   const auto stale_statement_result =
       dispatch(QueryEnvelope(), std::move(stale_statement_context));
 
@@ -675,32 +666,28 @@ bool ValidateStatementContextDecoderMatrix() {
                     "stale carried statement identity reached typed planning");
 
   auto stale_transaction_context = Context();
-  stale_transaction_context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000000399";
+  stale_transaction_context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000000399");
   passed &= Require(
       refuses_before_logical_graph(
           dispatch(QueryEnvelope(), std::move(stale_transaction_context))),
       "stale owning transaction identity reached typed planning");
 
   auto stale_snapshot_context = Context();
-  stale_snapshot_context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000000399";
+  stale_snapshot_context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000000399");
   passed &= Require(
       refuses_before_logical_graph(
           dispatch(QueryEnvelope(), std::move(stale_snapshot_context))),
       "stale data snapshot identity reached typed planning");
 
   auto stale_metadata_context = Context();
-  stale_metadata_context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000000399";
+  stale_metadata_context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000000399");
   passed &= Require(
       refuses_before_logical_graph(
           dispatch(QueryEnvelope(), std::move(stale_metadata_context))),
       "stale metadata snapshot identity reached typed planning");
 
   auto stale_catalog_context = Context();
-  stale_catalog_context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7100-8000-000000000399";
+  stale_catalog_context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000000399");
   passed &= Require(
       refuses_before_logical_graph(
           dispatch(QueryEnvelope(), std::move(stale_catalog_context))),

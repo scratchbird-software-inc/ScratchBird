@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -53,16 +55,14 @@ TypedUuid TestTypedUuid(UuidKind kind) {
   return uuid;
 }
 
-api::EngineUuid TestEngineUuid(std::string_view suffix) {
-  api::EngineUuid uuid;
-  uuid.canonical = "019e0f70-0000-7000-8000-" + std::string(suffix);
-  return uuid;
+api::EngineUuid TestEngineUuid(std::uint32_t ordinal) {
+  return scratchbird::tests::FixtureUuid(1517, ordinal);
 }
 
-api::EngineObjectReference TestObject(std::string_view suffix,
+api::EngineObjectReference TestObject(std::uint32_t ordinal,
                                       std::string_view kind = "object") {
   api::EngineObjectReference object;
-  object.uuid = TestEngineUuid(suffix);
+  object.uuid = TestEngineUuid(ordinal);
   object.object_kind = std::string(kind);
   return object;
 }
@@ -70,8 +70,8 @@ api::EngineObjectReference TestObject(std::string_view suffix,
 api::EngineRequestContext StandaloneContext() {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
-  context.database_uuid = TestEngineUuid("000000000013");
-  context.transaction_uuid = TestEngineUuid("000000000014");
+  context.database_uuid = TestEngineUuid(13);
+  context.transaction_uuid = TestEngineUuid(14);
   context.local_transaction_id = 0;
   context.security_context_present = true;
   context.cluster_authority_available = false;
@@ -82,22 +82,22 @@ api::EngineRequestContext ClusterAuthorityContext() {
   api::EngineRequestContext context = StandaloneContext();
   context.cluster_authority_available = true;
   context.local_transaction_id = 77;
-  context.transaction_uuid = TestEngineUuid("000000000077");
+  context.transaction_uuid = TestEngineUuid(77);
   return context;
 }
 
 api::EngineClusterInsertRouteFenceRequest ValidRouteFenceRequest() {
   api::EngineClusterInsertRouteFenceRequest route;
   route.context = ClusterAuthorityContext();
-  route.target_table = TestObject("000000000015", "table");
-  route.target_shard = TestObject("000000000016", "shard");
-  route.target_range = TestObject("000000000017", "range");
-  route.owner_node_uuid = TestEngineUuid("000000000018");
-  route.participant_node_uuid = TestEngineUuid("000000000019");
-  route.route_epoch_uuid = TestEngineUuid("000000000020");
-  route.participant_uuid = TestEngineUuid("000000000021");
-  route.policy_snapshot_uuid = TestEngineUuid("000000000022");
-  route.finality_service_uuid = TestEngineUuid("000000000023");
+  route.target_table = TestObject(15, "table");
+  route.target_shard = TestObject(16, "shard");
+  route.target_range = TestObject(17, "range");
+  route.owner_node_uuid = TestEngineUuid(18);
+  route.participant_node_uuid = TestEngineUuid(19);
+  route.route_epoch_uuid = TestEngineUuid(20);
+  route.participant_uuid = TestEngineUuid(21);
+  route.policy_snapshot_uuid = TestEngineUuid(22);
+  route.finality_service_uuid = TestEngineUuid(23);
   route.route_epoch = 9;
   route.route_generation = 2;
   route.idempotency_key = "cluster-boundary-provider-route";
@@ -108,17 +108,17 @@ api::EngineClusterInsertRouteFenceRequest ValidRouteFenceRequest() {
 api::EngineRemoteParticipantInsertRequest ValidRemoteParticipantRequest() {
   api::EngineRemoteParticipantInsertRequest participant;
   participant.context = ClusterAuthorityContext();
-  participant.remote_request_uuid = TestEngineUuid("000000000024");
-  participant.target_database = TestObject("000000000025", "database");
-  participant.target_table = TestObject("000000000026", "table");
-  participant.target_shard = TestObject("000000000027", "shard");
-  participant.target_range = TestObject("000000000028", "range");
-  participant.owner_node_uuid = TestEngineUuid("000000000029");
-  participant.participant_node_uuid = TestEngineUuid("000000000030");
-  participant.route_epoch_uuid = TestEngineUuid("000000000031");
-  participant.participant_uuid = TestEngineUuid("000000000032");
-  participant.policy_snapshot_uuid = TestEngineUuid("000000000033");
-  participant.finality_service_uuid = TestEngineUuid("000000000034");
+  participant.remote_request_uuid = TestEngineUuid(24);
+  participant.target_database = TestObject(25, "database");
+  participant.target_table = TestObject(26, "table");
+  participant.target_shard = TestObject(27, "shard");
+  participant.target_range = TestObject(28, "range");
+  participant.owner_node_uuid = TestEngineUuid(29);
+  participant.participant_node_uuid = TestEngineUuid(30);
+  participant.route_epoch_uuid = TestEngineUuid(31);
+  participant.participant_uuid = TestEngineUuid(32);
+  participant.policy_snapshot_uuid = TestEngineUuid(33);
+  participant.finality_service_uuid = TestEngineUuid(34);
   participant.route_epoch = 9;
   participant.route_generation = 2;
   participant.idempotency_key = "cluster-boundary-provider-participant";
@@ -143,7 +143,7 @@ bool HasDiagnostic(const api::EngineApiResult& result, std::string_view code) {
 
 bool HasEvidence(const api::EngineApiResult& result, std::string_view kind, std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) return true;
   }
   return false;
 }
@@ -286,9 +286,9 @@ void TestClusterInspectionControlAndReplicationFailClosed() {
 
 api::EngineShardPlacementDescriptor ShardPlacementDescriptor() {
   api::EngineShardPlacementDescriptor descriptor;
-  descriptor.shard_uuid = TestEngineUuid("000000000041").canonical;
-  descriptor.source_filespace_uuid = TestEngineUuid("000000000042").canonical;
-  descriptor.target_filespace_uuid = TestEngineUuid("000000000043").canonical;
+  descriptor.shard_uuid = TestEngineUuid(41);
+  descriptor.source_filespace_uuid = TestEngineUuid(42);
+  descriptor.target_filespace_uuid = TestEngineUuid(43);
   descriptor.range_begin = "00000000";
   descriptor.range_end = "ffffffff";
   descriptor.placement_epoch = 9;
@@ -308,15 +308,22 @@ void TestShardPlacementDescriptorWorkflow() {
     request.operator_authorized = true;
     if (operation == "merge") {
       auto left = ShardPlacementDescriptor();
-      left.shard_uuid = TestEngineUuid("000000000044").canonical;
+      left.shard_uuid = TestEngineUuid(44);
       auto right = ShardPlacementDescriptor();
-      right.shard_uuid = TestEngineUuid("000000000045").canonical;
+      right.shard_uuid = TestEngineUuid(45);
       request.merge_inputs = {left, right};
     }
 
     const auto planned = api::EnginePlanShardPlacementOperation(request);
     Require(planned.ok, "shard placement descriptor operation failed");
     Require(planned.descriptor_validated, "shard placement descriptor was not validated");
+    bool saw_shard = false;
+    for (const auto& row : planned.result_shape.rows) for (const auto& [name, value] : row.fields) {
+      if (name != "shard_uuid") continue;
+      saw_shard = value.encoded_value.empty() && value.binary_value.size() == 16 &&
+          std::equal(value.binary_value.begin(), value.binary_value.end(), request.descriptor.shard_uuid.bytes.begin());
+    }
+    Require(saw_shard, "shard result did not preserve binary16 identity");
     Require(!planned.durable_state_changed,
             "shard placement descriptor planner mutated durable state");
     Require(!planned.private_cluster_execution && !planned.cluster_provider_dispatch,
@@ -336,6 +343,18 @@ void TestShardPlacementDescriptorWorkflow() {
               "physical shard placement operation did not expose movement requirement");
     }
   }
+
+  api::EngineShardPlacementOperationRequest invalid;
+  invalid.context = StandaloneContext();
+  invalid.placement_operation = "verify";
+  invalid.descriptor = ShardPlacementDescriptor();
+  invalid.descriptor.shard_uuid.bytes[6] = 0x40;
+  Require(!api::EnginePlanShardPlacementOperation(invalid).ok,
+          "non-engine shard UUID was accepted");
+  invalid.descriptor = ShardPlacementDescriptor();
+  invalid.descriptor.target_filespace_uuid = {};
+  Require(!api::EnginePlanShardPlacementOperation(invalid).ok,
+          "nil target filespace UUID was accepted");
 
   api::EngineShardPlacementOperationRequest physical;
   physical.context = ClusterAuthorityContext();

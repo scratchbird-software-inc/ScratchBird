@@ -15,6 +15,7 @@
 #include "uuid.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <initializer_list>
@@ -46,22 +47,33 @@ platform::u64 NowMillis() {
           std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
-std::string Id(platform::UuidKind kind, platform::u64 salt) {
+platform::Uuid Id(platform::UuidKind kind, platform::u64 salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, NowMillis() + salt);
   Require(generated.ok(), "PFAR-016C UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
+}
+
+std::string IdentityBytes(const platform::Uuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+platform::Uuid NativeIdentity(std::string_view bytes) {
+  Require(bytes.size() == 16, "binary UUID must have exactly 16 bytes");
+  platform::Uuid id;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), 16, id.bytes.begin());
+  Require(uuid::IsEngineIdentityUuid(id), "binary UUID must have engine identity version");
+  return id;
 }
 
 api::EngineRequestContext Context(std::initializer_list<std::string_view> rights) {
   api::EngineRequestContext context;
   context.request_id = "pfar-016c-zero-grey";
   context.database_path = "/tmp/pfar-016c.sbdb";
-  context.database_uuid.canonical = Id(platform::UuidKind::database, 1);
-  context.node_uuid.canonical = Id(platform::UuidKind::object, 2);
-  context.cluster_uuid.canonical = Id(platform::UuidKind::object, 3);
-  context.session_uuid.canonical = Id(platform::UuidKind::object, 4);
-  context.principal_uuid.canonical = Id(platform::UuidKind::principal, 5);
-  context.transaction_uuid.canonical = Id(platform::UuidKind::transaction, 6);
+  context.database_uuid = Id(platform::UuidKind::database, 1);
+  context.node_uuid = Id(platform::UuidKind::object, 2);
+  context.cluster_uuid = Id(platform::UuidKind::object, 3);
+  context.session_uuid = Id(platform::UuidKind::object, 4);
+  context.principal_uuid = Id(platform::UuidKind::principal, 5);
+  context.transaction_uuid = Id(platform::UuidKind::transaction, 6);
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.cluster_authority_available = cluster_provider::ClusterProviderSupportsExecution();
@@ -77,9 +89,9 @@ api::EngineRequestContext Context(std::initializer_list<std::string_view> rights
 api::EngineAgentCatalogIdentitySource AgentIdentity() {
   api::EngineAgentCatalogIdentitySource source;
   source.agent_type_id = "page_allocation_manager";
-  source.agent_uuid = Id(platform::UuidKind::object, 20);
-  source.scope_uuid = Id(platform::UuidKind::database, 21);
-  source.policy_uuid = Id(platform::UuidKind::object, 22);
+  source.agent_uuid = IdentityBytes(Id(platform::UuidKind::object, 20));
+  source.scope_uuid = IdentityBytes(Id(platform::UuidKind::database, 21));
+  source.policy_uuid = IdentityBytes(Id(platform::UuidKind::object, 22));
   source.policy_name = "page_allocation_baseline";
   source.component = "storage.pages";
   source.scope_kind = "database";
@@ -88,14 +100,24 @@ api::EngineAgentCatalogIdentitySource AgentIdentity() {
 
 std::string Field(const api::EngineRowValue& row, std::string_view name) {
   for (const auto& field : row.fields) {
-    if (field.first == name) { return field.second.encoded_value; }
+    if (field.first == name) {
+      if (field.second.descriptor.canonical_type_name == "uuid") {
+        Require(field.second.encoded_value.empty() && field.second.binary_value.size() == 16,
+                "UUID result must be binary16 only");
+        return {reinterpret_cast<const char*>(field.second.binary_value.data()), 16};
+      }
+      return field.second.encoded_value;
+    }
   }
   return {};
 }
 
 std::string Field(const api::SysInformationProjectionRow& row, std::string_view name) {
   for (const auto& field : row.fields) {
-    if (field.first == name) { return field.second; }
+    if (field.first == name) {
+      if (const auto* identity = std::get_if<platform::Uuid>(&field.second)) return IdentityBytes(*identity);
+      return std::get<std::string>(field.second);
+    }
   }
   return {};
 }
@@ -145,12 +167,9 @@ void RequireUuidAuthority(std::string_view field_name, std::string_view value) {
   if (!IsUuidField(field_name) || value.empty() || value.rfind("<redacted", 0) == 0) {
     return;
   }
-  Require(value.rfind("agent.", 0) != 0 &&
-              value.rfind("policy.", 0) != 0 &&
-              value.rfind("scope.", 0) != 0,
-          std::string(field_name) + " used label-prefixed identity: " + std::string(value));
-  Require(uuid::ParseDurableEngineIdentityUuid(KindForField(field_name), std::string(value)).ok(),
-          std::string(field_name) + " is not a typed durable engine UUID: " + std::string(value));
+  const auto identity = NativeIdentity(value);
+  Require(uuid::MakeTypedUuid(KindForField(field_name), identity).ok(),
+          std::string(field_name) + " is not a typed binary engine UUID");
 }
 
 void RequireZeroGreyRows(const api::EngineApiResult& result,
@@ -172,7 +191,7 @@ void RequireZeroGreyRows(const api::EngineApiResult& result,
               "zero-grey row used vague diagnostic_code");
     }
     for (const auto& field : row.fields) {
-      RequireUuidAuthority(field.first, field.second.encoded_value);
+      RequireUuidAuthority(field.first, Field(row, field.first));
       Require(field.second.encoded_value.find("best_effort") == std::string::npos,
               "zero-grey row leaked best_effort");
       Require(field.second.encoded_value.find("implementation-defined") == std::string::npos,
@@ -279,8 +298,8 @@ api::EngineThirdPartyAgentManagementRequest ThirdPartyRequest(std::string operat
   request.operation_id = "agents.third_party.request";
   request.agent_catalog_identity_sources.push_back(AgentIdentity());
   const auto& source = request.agent_catalog_identity_sources.front();
-  request.management_request.request_uuid = Id(platform::UuidKind::object, 40);
-  request.management_request.requester_principal_uuid = request.context.principal_uuid.canonical;
+  request.management_request.request_uuid = IdentityBytes(Id(platform::UuidKind::object, 40));
+  request.management_request.requester_principal_uuid = IdentityBytes(request.context.principal_uuid);
   request.management_request.external_system_id = "ticketing";
   request.management_request.agent_ref = source.agent_uuid;
   request.management_request.operation = std::move(operation);
@@ -337,10 +356,10 @@ api::EngineAgentRuntimeEvidenceRecord RuntimeEvidence(std::string result_state) 
   api::EngineAgentRuntimeEvidenceRecord record;
   record.source_surface = "engine_api";
   record.agent_type_id = "page_allocation_manager";
-  record.agent_uuid = Id(platform::UuidKind::object, 50);
-  record.filespace_uuid = Id(platform::UuidKind::filespace, 51);
-  record.policy_uuid = Id(platform::UuidKind::object, 52);
-  record.evidence_uuid = Id(platform::UuidKind::object, 53);
+  record.agent_uuid = IdentityBytes(Id(platform::UuidKind::object, 50));
+  record.filespace_uuid = IdentityBytes(Id(platform::UuidKind::filespace, 51));
+  record.policy_uuid = IdentityBytes(Id(platform::UuidKind::object, 52));
+  record.evidence_uuid = IdentityBytes(Id(platform::UuidKind::object, 53));
   record.action_id = "request_page_preallocation";
   record.evidence_kind = "agent_action_evidence";
   record.result_state = std::move(result_state);
@@ -374,10 +393,10 @@ api::EngineSupportBundleAgentEvidenceSource SupportBundleEvidence(std::string re
   api::EngineSupportBundleAgentEvidenceSource source;
   const auto evidence = RuntimeEvidence(std::move(result_state));
   source.agent_type_id = evidence.agent_type_id;
-  source.agent_uuid = evidence.agent_uuid;
-  source.filespace_uuid = evidence.filespace_uuid;
-  source.policy_uuid = evidence.policy_uuid;
-  source.evidence_uuid = evidence.evidence_uuid;
+  source.agent_uuid = NativeIdentity(evidence.agent_uuid);
+  source.filespace_uuid = NativeIdentity(evidence.filespace_uuid);
+  source.policy_uuid = NativeIdentity(evidence.policy_uuid);
+  source.evidence_uuid = NativeIdentity(evidence.evidence_uuid);
   source.evidence_kind = evidence.evidence_kind;
   source.result_state = evidence.result_state;
   source.diagnostic_code = evidence.diagnostic_code;
@@ -420,12 +439,12 @@ api::EngineAgentEvidenceAuditRetentionRecord RetentionEvidence(std::string resul
   api::EngineAgentEvidenceAuditRetentionRecord record;
   record.source_surface = "engine_api";
   record.agent_type_id = "page_allocation_manager";
-  record.agent_uuid = Id(platform::UuidKind::object, 60);
-  record.filespace_uuid = Id(platform::UuidKind::filespace, 61);
-  record.policy_uuid = Id(platform::UuidKind::object, 62);
-  record.evidence_uuid = Id(platform::UuidKind::object, 63);
-  record.action_uuid = Id(platform::UuidKind::object, 64);
-  record.actor_uuid = Id(platform::UuidKind::principal, 65);
+  record.agent_uuid = IdentityBytes(Id(platform::UuidKind::object, 60));
+  record.filespace_uuid = IdentityBytes(Id(platform::UuidKind::filespace, 61));
+  record.policy_uuid = IdentityBytes(Id(platform::UuidKind::object, 62));
+  record.evidence_uuid = IdentityBytes(Id(platform::UuidKind::object, 63));
+  record.action_uuid = IdentityBytes(Id(platform::UuidKind::object, 64));
+  record.actor_uuid = IdentityBytes(Id(platform::UuidKind::principal, 65));
   record.evidence_kind = "agent_action_evidence";
   record.result_state = std::move(result_state);
   record.diagnostic_code = "AGENT.PAGE_PREALLOCATION.COMPLETED";
@@ -505,7 +524,7 @@ void TestSysAuditProjection() {
   Require(api::EngineAgentZeroGreyResultStateAllowed(state),
           "sys.agent_audit rendered disallowed state");
   for (const auto& field : projection.rows.front().fields) {
-    RequireUuidAuthority(field.first, field.second);
+    RequireUuidAuthority(field.first, Field(projection.rows.front(), field.first));
   }
 }
 

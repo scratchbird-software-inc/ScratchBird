@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -44,7 +45,7 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
-constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000e300ff";
+constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e300ff");
 constexpr std::string_view kCursorProcedureSql =
     "CREATE PROCEDURE replay_cursor_procedure(route_cursor cursor);";
 
@@ -57,7 +58,7 @@ struct Case {
   std::string_view opcode;
   std::string_view object_kind;
   std::string_view catalog_authority;
-  std::string_view object_uuid;
+  api::EngineUuid object_uuid;
   std::string_view object_name;
   std::string_view signature_surface_id;
   std::string_view signature_surface_name;
@@ -69,25 +70,25 @@ const std::vector<Case>& Cases() {
       {"CREATE FUNCTION replay_function;", "SBSQL-4A5F97F6CC4E",
        "create_function_stmt", "SBSQL-SURFACE-F4AD1748A90B",
        "engine.op.ddl_create_function", "SBLR_DDL_CREATE_FUNCTION", "function",
-       "sys.catalog.function", "019f0000-0000-7000-8000-000000e30001",
+       "sys.catalog.function", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30001"),
        "replay_function", "SBSQL-52EF59CC2556", "function_signature",
        "SBSQL-SURFACE-2B16A6B8917F"},
       {"CREATE PROCEDURE replay_procedure;", "SBSQL-13F5A8364A50",
        "create_procedure_stmt", "SBSQL-SURFACE-515475BB02FD",
        "engine.op.ddl_create_procedure", "SBLR_DDL_CREATE_PROCEDURE", "procedure",
-       "sys.catalog.procedure", "019f0000-0000-7000-8000-000000e30002",
+       "sys.catalog.procedure", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30002"),
        "replay_procedure", "SBSQL-B5E9C0943E63", "procedure_signature",
        "SBSQL-SURFACE-1C3307CC7B4E"},
       {"CREATE TRIGGER replay_trigger;", "SBSQL-5127560F8031",
        "create_trigger_stmt", "SBSQL-SURFACE-B1C95C652651",
        "engine.op.ddl_create_trigger", "SBLR_DDL_CREATE_TRIGGER", "trigger",
-       "sys.catalog.trigger", "019f0000-0000-7000-8000-000000e30003",
+       "sys.catalog.trigger", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30003"),
        "replay_trigger", "", "", ""},
       {"CREATE TRIGGER trig_items_ai AFTER INSERT ON TABLE trig_items FOR EACH ROW AS BEGIN INSERT INTO trig_audit (audit_id, event_kind, item_id, old_price, new_price, audit_note) VALUES (NEXT VALUE FOR trig_audit_seq, 'INSERT', new.item_id, NULL, new.item_price, 'item inserted'); END",
        "SBSQL-5127560F8031",
        "create_trigger_stmt", "SBSQL-SURFACE-B1C95C652651",
        "engine.op.ddl_create_trigger", "SBLR_DDL_CREATE_TRIGGER", "trigger",
-       "sys.catalog.trigger", "019f0000-0000-7000-8000-000000e30004",
+       "sys.catalog.trigger", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30004"),
        "trig_items_ai", "", "", ""},
   };
   return cases;
@@ -120,7 +121,16 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
+  }
+  return false;
+}
+
+bool HasEvidence(const api::EngineApiResult& result,
+                 std::string_view kind, const api::EngineUuid& identity) {
+  for (const auto& evidence : result.evidence) {
+    const auto* uuid = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && uuid && *uuid == identity) return true;
   }
   return false;
 }
@@ -137,10 +147,10 @@ void PrintMessages(const MessageVectorSet& messages) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000e30101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000e30102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000e30103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 71;
   session.security_policy_epoch = 72;
   session.descriptor_epoch = 73;
@@ -151,7 +161,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000e30104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30104");
   config.bundle_contract_id = "sbp_sbsql@create-executable-route-test";
   config.build_id = "sbsql-create-executable-route-test";
   return config;
@@ -166,7 +176,7 @@ struct PipelineArtifacts {
 };
 
 PipelineArtifacts RunPipeline(std::string_view sql,
-                              std::vector<std::string> resolved_object_uuids = {}) {
+                              std::vector<api::EngineUuid> resolved_object_uuids = {}) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
@@ -182,7 +192,7 @@ PipelineArtifacts RunPipeline(std::string_view sql,
 }
 
 PipelineArtifacts RunPipeline(const Case& route) {
-  return RunPipeline(route.sql, {std::string(route.object_uuid)});
+  return RunPipeline(route.sql, {route.object_uuid});
 }
 
 void RequireRegistryEvidence(const Case& route) {
@@ -318,7 +328,7 @@ void RequireCursorRoutineArgumentRoute() {
                    "SBLR_DDL_CREATE_PROCEDURE",
                    "procedure",
                    "sys.catalog.procedure",
-                   "019f0000-0000-7000-8000-000000e30022",
+                   scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30022"),
                    "replay_cursor_procedure",
                    "SBSQL-B5E9C0943E63",
                    "procedure_signature",
@@ -347,11 +357,11 @@ void RequireCursorRoutineArgumentRoute() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "cursor routine parser no-SQL-execution authority step missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.routine.parameter_descriptor"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.routine.parameter_descriptor"),
           "cursor routine parameter descriptor ref missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.server.cursor_descriptor"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.server.cursor_descriptor"),
           "cursor routine cursor descriptor ref missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.routine.cursor_parameter_descriptor"),
           "cursor routine cursor parameter descriptor ref missing");
   Require(!artifacts.envelope.parser_executes_sql,
@@ -397,11 +407,11 @@ void RequireCursorRoutineArgumentRoute() {
 }
 
 void RequireRoutineInvocationRoute() {
-  constexpr std::string_view kProcedureUuid = "019f0000-0000-7000-8000-000000e30042";
-  constexpr std::string_view kProcedureSchemaUuid = "019f0000-0000-7000-8000-000000e300ff";
+  constexpr auto kProcedureUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30042");
+  constexpr auto kProcedureSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e300ff");
   const auto artifacts = RunPipeline(
       "EXECUTE PROCEDURE replay_procedure(1);",
-      {std::string(kProcedureUuid), std::string(kProcedureSchemaUuid)});
+      {kProcedureUuid, kProcedureSchemaUuid});
   PrintMessages(artifacts.cst.messages);
   PrintMessages(artifacts.ast.messages);
   PrintMessages(artifacts.bound.messages);
@@ -434,9 +444,9 @@ void RequireRoutineInvocationRoute() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "routine invocation parser no-SQL-execution authority step missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.catalog.procedure"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.catalog.procedure"),
           "routine invocation procedure catalog descriptor ref missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.routine_descriptor"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.routine_descriptor"),
           "routine invocation routine descriptor ref missing");
   Require(!artifacts.envelope.parser_executes_sql,
           "routine invocation lowering allowed parser SQL execution");
@@ -520,10 +530,10 @@ void RequireCompiledProcedureBodyRoute() {
       "END";
   const auto artifacts = RunPipeline(
       sql,
-      {"019f0000-0000-7000-8000-000000e33001",
-       "019f0000-0000-7000-8000-000000e33002",
-       "019f0000-0000-7000-8000-000000e33003",
-       "019f0000-0000-7000-8000-000000e33004"});
+      {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33001"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33002"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33003"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33004")});
   PrintMessages(artifacts.cst.messages);
   PrintMessages(artifacts.ast.messages);
   PrintMessages(artifacts.bound.messages);
@@ -547,7 +557,7 @@ void RequireCompiledProcedureBodyRoute() {
 void RequireCompiledScalarFunctionBodyRoute(std::string sql,
                                             std::string_view expected_descriptor,
                                             std::string_view failure_label,
-                                            std::vector<std::string> resolved_object_uuids) {
+                                            std::vector<api::EngineUuid> resolved_object_uuids) {
   const auto artifacts = RunPipeline(
       sql,
       std::move(resolved_object_uuids));
@@ -610,7 +620,7 @@ void RequireCompiledScalarFunctionBodyRoutes() {
       "END",
       "sbsql.compiled.procedural.classify_amount.v1",
       "compiled classify function",
-      {"019f0000-0000-7000-8000-000000e33201"});
+      {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33201")});
   RequireCompiledScalarFunctionBodyRoute(
       "CREATE FUNCTION users.public.fsce_exact_probe.fn_factorial(\n"
       "    p_n INTEGER\n"
@@ -639,7 +649,7 @@ void RequireCompiledScalarFunctionBodyRoutes() {
       "END",
       "sbsql.compiled.procedural.factorial.v1",
       "compiled factorial function",
-      {"019f0000-0000-7000-8000-000000e33202"});
+      {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33202")});
   RequireCompiledScalarFunctionBodyRoute(
       "CREATE FUNCTION users.public.fsce_exact_probe.fn_safe_divide(\n"
       "    p_numerator   DECIMAL(18,6),\n"
@@ -664,7 +674,7 @@ void RequireCompiledScalarFunctionBodyRoutes() {
       "END",
       "sbsql.compiled.procedural.safe_divide.v1",
       "compiled safe_divide function",
-      {"019f0000-0000-7000-8000-000000e33203"});
+      {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33203")});
 }
 
 void RequireCompiledTriggerBodyRoute() {
@@ -687,10 +697,10 @@ void RequireCompiledTriggerBodyRoute() {
       "END";
   const auto artifacts = RunPipeline(
       sql,
-      {"019f0000-0000-7000-8000-000000e33101",
-       "019f0000-0000-7000-8000-000000e33102",
-       "019f0000-0000-7000-8000-000000e33103",
-       "019f0000-0000-7000-8000-000000e33104"});
+      {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33101"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33102"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33103"),
+       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e33104")});
   PrintMessages(artifacts.cst.messages);
   PrintMessages(artifacts.ast.messages);
   PrintMessages(artifacts.bound.messages);
@@ -740,7 +750,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -758,18 +768,18 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "CREATE executable engine dispatch test database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-create-executable-exact-route";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000e30201";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000e30202";
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30201");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e30202");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e300ff");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -783,7 +793,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid) {
+                                                 const api::EngineUuid& database_uuid) {
   auto context = EngineContext(path, database_uuid);
   auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
                                          "SBLR_TXN_BEGIN",
@@ -847,6 +857,16 @@ void AddTextOperand(sblr::SblrOperationEnvelope* envelope,
   envelope->operands.push_back({"text", std::move(name), std::move(value)});
 }
 
+void AddUuidOperand(sblr::SblrOperationEnvelope* envelope,
+                    std::string name, const api::EngineUuid& identity) {
+  sblr::SblrOperand operand;
+  operand.type = "uuid";
+  operand.name = std::move(name);
+  operand.value_kind = sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
+  envelope->operands.push_back(std::move(operand));
+}
+
 sblr::SblrOperationEnvelope EngineEnvelope(const Case& route) {
   auto envelope = sblr::MakeSblrEnvelope(std::string(route.operation_id),
                                          std::string(route.opcode),
@@ -856,13 +876,13 @@ sblr::SblrOperationEnvelope EngineEnvelope(const Case& route) {
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  AddTextOperand(&envelope, "target_object_uuid", std::string(route.object_uuid));
+  AddUuidOperand(&envelope, "target_object_uuid", route.object_uuid);
   AddTextOperand(&envelope, "target_object_kind", std::string(route.object_kind));
-  AddTextOperand(&envelope, std::string(route.object_kind) + "_object_uuid",
-                 std::string(route.object_uuid));
+  AddUuidOperand(&envelope, std::string(route.object_kind) + "_object_uuid",
+                 route.object_uuid);
   AddTextOperand(&envelope, std::string(route.object_kind) + "_name",
                  std::string(route.object_name));
-  AddTextOperand(&envelope, "target_schema_uuid", std::string(kSchemaUuid));
+  AddUuidOperand(&envelope, "target_schema_uuid", kSchemaUuid);
   AddTextOperand(&envelope, "executable_object_kind", std::string(route.object_kind));
   AddTextOperand(&envelope, "signature_descriptor_kind", "deferred_signature_descriptor");
   AddTextOperand(&envelope, "permission", "manage_executable");
@@ -882,7 +902,7 @@ void RequireDirectEngineRuntime() {
   schema_name.default_name = true;
   api::EngineCreateSchemaRequest create_schema;
   create_schema.context = context;
-  create_schema.target_object.uuid.canonical = std::string(kSchemaUuid);
+  create_schema.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e300ff");
   create_schema.target_object.object_kind = "schema";
   create_schema.localized_names.push_back(schema_name);
   const auto schema_result = api::EngineCreateSchema(create_schema);
@@ -892,9 +912,9 @@ void RequireDirectEngineRuntime() {
   for (const auto& route : Cases()) {
     api::EngineApiRequest common;
     common.context = context;
-    common.target_schema.uuid.canonical = std::string(kSchemaUuid);
+    common.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000e300ff");
     common.target_schema.object_kind = "schema";
-    common.target_object.uuid.canonical = std::string(route.object_uuid);
+    common.target_object.uuid = route.object_uuid;
     common.target_object.object_kind = std::string(route.object_kind);
     api::EngineLocalizedName object_name;
     object_name.language_tag = "en";
@@ -928,7 +948,7 @@ void RequireDirectEngineRuntime() {
             "direct EngineCreate executable returned wrong operation id");
     Require(result.primary_object.object_kind == route.object_kind,
             "EngineCreate executable returned wrong primary object kind");
-    Require(result.primary_object.uuid.canonical == route.object_uuid,
+    Require(result.primary_object.uuid == route.object_uuid,
             "EngineCreate executable returned wrong object UUID");
     Require(HasEvidence(result, "api_behavior_event", api_operation),
             "EngineCreate executable missing API behavior event evidence");
@@ -936,7 +956,7 @@ void RequireDirectEngineRuntime() {
             "EngineCreate executable missing descriptor evidence");
     Require(HasEvidence(result, "name_registry", route.object_uuid),
             "EngineCreate executable missing name registry evidence");
-    Require(!result.catalog_row_uuid.canonical.empty(),
+    Require(!result.catalog_row_uuid.is_nil(),
             "EngineCreate executable missing catalog row UUID evidence");
   }
   RemoveDatabaseArtifacts(path);

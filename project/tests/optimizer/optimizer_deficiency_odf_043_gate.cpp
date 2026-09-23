@@ -10,6 +10,7 @@
 #include "dml/import_execution_api.hpp"
 #include "dml/update_api.hpp"
 #include "index_apply_planner.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -78,18 +79,18 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewUuidValue(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
-  std::string city_index_uuid;
-  std::string note_hash_index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid id_index_uuid;
+  platform::Uuid city_index_uuid;
+  platform::Uuid note_hash_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -120,7 +121,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && std::holds_alternative<std::string>(item.evidence_id) && std::get<std::string>(item.evidence_id) == id) {
       return true;
     }
   }
@@ -132,7 +133,8 @@ bool EvidenceKindContains(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view token) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind &&
-        item.evidence_id.find(token) != std::string::npos) {
+        std::holds_alternative<std::string>(item.evidence_id) &&
+        std::get<std::string>(item.evidence_id).find(token) != std::string::npos) {
       return true;
     }
   }
@@ -155,7 +157,8 @@ void AssertNoRuntimeDocLeaks(const std::vector<api::EngineEvidenceReference>& ev
   for (const auto& item : evidence) {
     for (const auto token : forbidden) {
       Require(item.evidence_kind.find(token) == std::string::npos &&
-                  item.evidence_id.find(token) == std::string::npos,
+                  (!std::holds_alternative<std::string>(item.evidence_id) ||
+                   std::get<std::string>(item.evidence_id).find(token) == std::string::npos),
               "ODF-043 runtime evidence leaked documentation token");
     }
   }
@@ -167,11 +170,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewUuidValue(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewUuidValue(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -218,7 +221,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
 
 api::CrudIndexRecord Index(const Fixture& fixture,
                            const api::EngineRequestContext& context,
-                           std::string index_uuid,
+                           platform::Uuid index_uuid,
                            std::string column,
                            std::string family,
                            bool unique) {
@@ -259,12 +262,12 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-043 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
-  fixture.city_index_uuid = NewUuidText(platform::UuidKind::object, salt + 12);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewUuidValue(platform::UuidKind::object, salt + 10);
+  fixture.id_index_uuid = NewUuidValue(platform::UuidKind::object, salt + 11);
+  fixture.city_index_uuid = NewUuidValue(platform::UuidKind::object, salt + 12);
   fixture.note_hash_index_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 13);
+      NewUuidValue(platform::UuidKind::object, salt + 13);
 
   auto metadata = Begin(fixture, "odf043-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)),
@@ -313,7 +316,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     std::vector<api::EngineRowValue> rows) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";
@@ -334,7 +337,7 @@ api::EngineUpdateRowsRequest UpdateRequest(
     const api::EngineRequestContext& context) {
   api::EngineUpdateRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate.predicate_kind = "column_equals";
   request.update_predicate.canonical_predicate_envelope = "city";
@@ -350,7 +353,13 @@ void AssertLocalityEvidence(const std::vector<api::EngineEvidenceReference>& evi
                    "commit_group_locality_aware_v1")) {
     std::cerr << "ODF-043 " << phase << " evidence:\n";
     for (const auto& item : evidence) {
-      std::cerr << item.evidence_kind << '=' << item.evidence_id << '\n';
+      std::cerr << item.evidence_kind << '=';
+      if (const auto* id = std::get_if<api::EngineUuid>(&item.evidence_id)) {
+        std::cerr << uuid::UuidToString(*id);
+      } else {
+        std::cerr << std::get<std::string>(item.evidence_id);
+      }
+      std::cerr << '\n';
     }
     Fail("ODF-043 planner evidence missing");
   }
@@ -390,7 +399,7 @@ void CorePlannerGroupsByFamilyAndLocality() {
   idx::CommitGroupLocalityIndexApplyItem unique_a;
   unique_a.source_batch_ordinal = 2;
   unique_a.source_row_ordinal = 1;
-  unique_a.index_uuid = "idx-unique";
+  unique_a.index_uuid = scratchbird::tests::FixtureUuid(6043, 1);
   unique_a.family = "btree";
   unique_a.profile = "rowstore_scalar_btree_v1";
   unique_a.unique = true;
@@ -403,7 +412,7 @@ void CorePlannerGroupsByFamilyAndLocality() {
   idx::CommitGroupLocalityIndexApplyItem btree;
   btree.source_batch_ordinal = 0;
   btree.source_row_ordinal = 0;
-  btree.index_uuid = "idx-city";
+  btree.index_uuid = scratchbird::tests::FixtureUuid(6043, 2);
   btree.family = "btree";
   btree.profile = "rowstore_scalar_btree_v1";
   btree.target_keys.push_back("city=oslo");
@@ -411,7 +420,7 @@ void CorePlannerGroupsByFamilyAndLocality() {
   idx::CommitGroupLocalityIndexApplyItem hash;
   hash.source_batch_ordinal = 1;
   hash.source_row_ordinal = 0;
-  hash.index_uuid = "idx-note";
+  hash.index_uuid = scratchbird::tests::FixtureUuid(6043, 3);
   hash.family = "hash";
   hash.profile = "hash";
   hash.target_keys.push_back("note=alpha");

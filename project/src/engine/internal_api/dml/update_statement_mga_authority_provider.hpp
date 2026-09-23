@@ -35,15 +35,15 @@ inline constexpr const char* kDmlUpdateStatementMgaDiagnosticAccessDenied =
 
 struct EngineDmlUpdateStatementMgaAuthorityOpenRequestV1 {
   EngineRequestContext context;
-  std::string authenticated_statement_receipt_uuid;
-  std::string operation_uuid;
-  std::string descriptor_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
+  EngineUuid operation_uuid;
+  EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation = 0;
-  std::string recovery_token_uuid;
+  EngineUuid recovery_token_uuid;
   std::uint64_t recovery_generation = 0;
   // Exact identity reserved durably by the MGA operation provider before the
   // bound DUJR is published.  Open consumes it; it never issues a replacement.
-  std::string reserved_publication_barrier_uuid;
+  EngineUuid reserved_publication_barrier_uuid;
   std::uint64_t reserved_publication_barrier_generation = 0;
 };
 
@@ -55,7 +55,7 @@ struct EngineDmlUpdateStatementMgaAuthorityResultV1 {
 
 struct EngineDmlUpdateStatementMgaAuthorityRecoverRequestV1 {
   EngineDmlUpdateStatementMgaAuthorityOpenRequestV1 current;
-  std::string savepoint_uuid;
+  EngineUuid savepoint_uuid;
   std::uint64_t savepoint_generation = 0;
 };
 

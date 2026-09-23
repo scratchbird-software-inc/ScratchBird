@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "dml/update_immutable_authority_provider.hpp"
 #include "dml/delete_security_authority_provider.hpp"
 #include "dml/update_policy_catalog_authority_provider.hpp"
@@ -39,62 +40,62 @@ namespace mga = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kDatabaseUuid =
-    "019d5100-0000-7000-8000-000000000001";
-constexpr std::string_view kPrincipalUuid =
-    "019d5100-0000-7000-8000-000000000002";
-constexpr std::string_view kSecurityContextUuid =
-    "019d5100-0000-7000-8000-000000000003";
-constexpr std::string_view kRelationUuid =
-    "019d5100-0000-7000-8000-000000000010";
-constexpr std::string_view kRelationOccurrenceUuid =
-    "019d5100-0000-7000-8000-000000000011";
-constexpr std::string_view kEmptyRelationUuid =
-    "019d5100-0000-7000-8000-000000000012";
-constexpr std::string_view kEmptyRelationOccurrenceUuid =
-    "019d5100-0000-7000-8000-000000000013";
-constexpr std::string_view kOtherRelationUuid =
-    "019d5100-0000-7000-8000-000000000014";
-constexpr std::string_view kPolicyUsingA =
-    "019d5100-0000-7000-8000-000000000020";
-constexpr std::string_view kPolicyUsingB =
-    "019d5100-0000-7000-8000-000000000021";
-constexpr std::string_view kPolicyCheck =
-    "019d5100-0000-7000-8000-000000000022";
-constexpr std::string_view kPolicyOther =
-    "019d5100-0000-7000-8000-000000000023";
-constexpr std::string_view kEffectiveUsing =
-    "019d5100-0000-7000-8000-000000000030";
-constexpr std::string_view kEffectiveCheck =
-    "019d5100-0000-7000-8000-000000000031";
-constexpr std::string_view kExpressionUsing =
-    "019d5100-0000-7000-8000-000000000040";
-constexpr std::string_view kExpressionCheck =
-    "019d5100-0000-7000-8000-000000000041";
-constexpr std::string_view kConstraintA =
-    "019d5100-0000-7000-8000-000000000050";
-constexpr std::string_view kConstraintB =
-    "019d5100-0000-7000-8000-000000000051";
-constexpr std::string_view kConstraintC =
-    "019d5100-0000-7000-8000-000000000052";
-constexpr std::string_view kConstraintExpressionA =
-    "019d5100-0000-7000-8000-000000000060";
-constexpr std::string_view kConstraintExpressionB =
-    "019d5100-0000-7000-8000-000000000061";
-constexpr std::string_view kConstraintExpressionC =
-    "019d5100-0000-7000-8000-000000000062";
-constexpr std::string_view kReservationA =
-    "019d5100-0000-7000-8000-000000000070";
-constexpr std::string_view kReservationB =
-    "019d5100-0000-7000-8000-000000000071";
-constexpr std::string_view kReservationC =
-    "019d5100-0000-7000-8000-000000000072";
-constexpr std::string_view kTriggerA =
-    "019d5100-0000-7000-8000-000000000080";
-constexpr std::string_view kTriggerB =
-    "019d5100-0000-7000-8000-000000000081";
-constexpr std::string_view kTriggerC =
-    "019d5100-0000-7000-8000-000000000082";
+constexpr auto kDatabaseUuid =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000001");
+constexpr auto kPrincipalUuid =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000002");
+constexpr auto kSecurityContextUuid =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000003");
+constexpr auto kRelationUuid =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000010");
+constexpr auto kRelationOccurrenceUuid =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000011");
+constexpr auto kEmptyRelationUuid =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000012");
+constexpr auto kEmptyRelationOccurrenceUuid =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000013");
+constexpr auto kOtherRelationUuid =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000014");
+constexpr auto kPolicyUsingA =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000020");
+constexpr auto kPolicyUsingB =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000021");
+constexpr auto kPolicyCheck =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000022");
+constexpr auto kPolicyOther =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000023");
+constexpr auto kEffectiveUsing =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000030");
+constexpr auto kEffectiveCheck =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000031");
+constexpr auto kExpressionUsing =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000040");
+constexpr auto kExpressionCheck =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000041");
+constexpr auto kConstraintA =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000050");
+constexpr auto kConstraintB =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000051");
+constexpr auto kConstraintC =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000052");
+constexpr auto kConstraintExpressionA =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000060");
+constexpr auto kConstraintExpressionB =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000061");
+constexpr auto kConstraintExpressionC =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000062");
+constexpr auto kReservationA =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000070");
+constexpr auto kReservationB =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000071");
+constexpr auto kReservationC =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000072");
+constexpr auto kTriggerA =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000080");
+constexpr auto kTriggerB =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000081");
+constexpr auto kTriggerC =
+    scratchbird::tests::FixtureUuidLiteral("019d5100-0000-7000-8000-000000000082");
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -112,13 +113,13 @@ bool Nonzero(const engine_api::EngineDmlUpdateSha256V1& value) {
   return false;
 }
 
-std::string CanonicalUuid(std::uint64_t suffix) {
-  std::ostringstream out;
-  out << "019d5100-0000-7000-8000-" << std::hex;
-  out.width(12);
-  out.fill('0');
-  out << suffix;
-  return out.str();
+engine_api::EngineUuid CanonicalUuid(std::uint64_t suffix) {
+  Require(suffix <= 0xffffffffffffull, "fixture UUID suffix exceeds 48 bits");
+  auto value = scratchbird::tests::FixtureUuidLiteral(
+      "019d5100-0000-7000-8000-000000000000");
+  for (std::size_t i = 0; i < 6; ++i)
+    value.bytes[15 - i] = static_cast<std::uint8_t>(suffix >> (8 * i));
+  return value;
 }
 
 engine_api::EngineDmlUpdateSha256V1 FilledSha(std::uint8_t value) {
@@ -168,15 +169,15 @@ class TemporaryDirectory final {
 
 struct DurableDatabaseFixture {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string principal_uuid;
+  engine_api::EngineUuid database_uuid;
+  engine_api::EngineUuid principal_uuid;
   std::uint32_t page_size = 16384;
 };
 
 DurableDatabaseFixture CreateDurableDatabase(
     const std::filesystem::path& path) {
-  const auto database_uuid = uuid::ParseDurableEngineIdentityUuid(
-      UuidKind::database, std::string(kDatabaseUuid));
+  const auto database_uuid = uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::database, kDatabaseUuid);
   const auto filespace_uuid = uuid::GenerateDurableEngineIdentityV7(
       UuidKind::filespace, 1788200000001ull);
   Require(database_uuid.ok() && filespace_uuid.ok(),
@@ -216,9 +217,8 @@ DurableDatabaseFixture CreateDurableDatabase(
 
   DurableDatabaseFixture fixture;
   fixture.path = path;
-  fixture.database_uuid = std::string(kDatabaseUuid);
-  fixture.principal_uuid = uuid::UuidToString(
-      bootstrap.state.principal_uuid.value);
+  fixture.database_uuid = kDatabaseUuid;
+  fixture.principal_uuid = bootstrap.state.principal_uuid.value;
   fixture.page_size = create.page_size;
   return fixture;
 }
@@ -243,12 +243,11 @@ engine_api::EngineRequestContext BeginTransaction(
   engine_api::EngineRequestContext context;
   context.trust_mode = engine_api::EngineTrustMode::embedded_in_process;
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
+  context.database_uuid = fixture.database_uuid;
   context.database_page_size_bytes = fixture.page_size;
   context.local_transaction_id = begun.entry.identity.local_id.value;
-  context.transaction_uuid.canonical =
-      uuid::UuidToString(begun.entry.identity.transaction_uuid.value);
-  context.principal_uuid.canonical = fixture.principal_uuid;
+  context.transaction_uuid = begun.entry.identity.transaction_uuid.value;
+  context.principal_uuid = fixture.principal_uuid;
   context.security_context_present = true;
   context.snapshot_visible_through_local_transaction_id =
       begun.entry.begin_visible_through_local_transaction_id;
@@ -273,11 +272,11 @@ engine_api::EngineRequestContext SecurityContext(
     const engine_api::EngineRequestContext& transaction,
     std::uint64_t receipt_suffix) {
   engine_api::EngineRequestContext context = transaction;
-  context.statement_snapshot_uuid.canonical =
+  context.statement_snapshot_uuid =
       CanonicalUuid(0x1800 + receipt_suffix);
-  context.statement_receipt_uuid.canonical = CanonicalUuid(receipt_suffix);
+  context.statement_receipt_uuid = CanonicalUuid(receipt_suffix);
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical = CanonicalUuid(0x2004);
+  context.statement_metadata_snapshot_uuid = CanonicalUuid(0x2004);
   context.catalog_generation_id = 41;
   context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("right:POLICY_ADMIN");
@@ -286,17 +285,17 @@ engine_api::EngineRequestContext SecurityContext(
 
 engine_api::EngineSecurityRowPolicyNativeAuthorityV1 NativePolicyAuthority(
     std::uint64_t identity_suffix, std::uint8_t phase,
-    std::string_view effective_policy_uuid,
-    std::string_view effective_expression_uuid) {
+    const engine_api::EngineUuid& effective_policy_uuid,
+    const engine_api::EngineUuid& effective_expression_uuid) {
   engine_api::EngineSecurityRowPolicyNativeAuthorityV1 authority;
   authority.present = true;
   authority.policy_version_uuid = CanonicalUuid(0x6000 + identity_suffix);
   authority.target_relation_generation = 7;
   authority.phase = phase;
-  authority.effective_policy_uuid = std::string(effective_policy_uuid);
+  authority.effective_policy_uuid = effective_policy_uuid;
   authority.effective_policy_generation = 1;
   authority.effective_expression_uuid =
-      std::string(effective_expression_uuid);
+      effective_expression_uuid;
   authority.effective_expression_generation = 3;
   authority.effective_expression_evidence_sha256 =
       FilledSha(phase == 1 ? 0xb1 : 0xb2);
@@ -311,14 +310,14 @@ engine_api::EngineSecurityRowPolicyNativeAuthorityV1 NativePolicyAuthority(
 std::uint64_t PutPolicy(
                         const engine_api::EngineRequestContext& transaction,
                         std::uint64_t receipt_suffix,
-                        std::string_view policy_uuid,
-                        std::string_view target_relation_uuid,
+                        const engine_api::EngineUuid& policy_uuid,
+                        const engine_api::EngineUuid& target_relation_uuid,
                         engine_api::EngineSecurityRowPolicyNativeAuthorityV1
                             native_authority) {
   engine_api::EngineSecurityPutRowPolicyRequest request;
   request.context = SecurityContext(transaction, receipt_suffix);
-  request.policy_uuid = std::string(policy_uuid);
-  request.target_object_uuid = std::string(target_relation_uuid);
+  request.policy_uuid = policy_uuid;
+  request.target_object_uuid = target_relation_uuid;
   request.target_object_kind = "relation";
   request.policy_effect = "engine_effective_expression";
   request.predicate_envelope = "redacted_fixture_policy";
@@ -348,22 +347,22 @@ engine_api::EngineSecurityPrincipalLifecycleState LoadSecurityState(
 
 engine_api::EngineMaterializedAuthorizationPolicy MaterializedPolicy(
     const engine_api::EngineSecurityRowPolicyRecord& durable,
-    std::string_view principal_uuid,
+    const engine_api::EngineUuid& principal_uuid,
     std::uint64_t global_policy_epoch) {
   engine_api::EngineMaterializedAuthorizationPolicy policy;
-  policy.policy_uuid.canonical = durable.policy_uuid;
-  policy.subject_uuid.canonical = std::string(principal_uuid);
+  policy.policy_uuid = durable.policy_uuid;
+  policy.subject_uuid = principal_uuid;
   policy.subject_kind = "principal";
-  policy.target_uuid.canonical = durable.target_object_uuid;
+  policy.target_uuid = durable.target_object_uuid;
   policy.right = "UPDATE";
   policy.policy_kind = "row_policy";
   policy.source_policy_generation = durable.policy_generation;
   policy.policy_epoch = global_policy_epoch;
   policy.update_policy_phase = durable.update_policy_phase;
-  policy.effective_policy_uuid.canonical = durable.effective_policy_uuid;
+  policy.effective_policy_uuid = durable.effective_policy_uuid;
   policy.effective_policy_generation =
       durable.effective_policy_generation;
-  policy.effective_expression_uuid.canonical =
+  policy.effective_expression_uuid =
       durable.effective_expression_uuid;
   policy.effective_expression_generation =
       durable.effective_expression_generation;
@@ -380,10 +379,10 @@ engine_api::EngineRequestContext ProviderContext(
     std::uint64_t receipt_suffix = 0x2000) {
   engine_api::EngineRequestContext context = transaction;
   context.trust_mode = engine_api::EngineTrustMode::server_isolated;
-  context.statement_snapshot_uuid.canonical = CanonicalUuid(0x2002);
-  context.statement_receipt_uuid.canonical = CanonicalUuid(receipt_suffix);
+  context.statement_snapshot_uuid = CanonicalUuid(0x2002);
+  context.statement_receipt_uuid = CanonicalUuid(receipt_suffix);
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical = CanonicalUuid(0x2004);
+  context.statement_metadata_snapshot_uuid = CanonicalUuid(0x2004);
   context.snapshot_visible_through_local_transaction_id = 1000;
   context.statement_metadata_snapshot_visible_through_local_transaction_id =
       1000;
@@ -392,10 +391,9 @@ engine_api::EngineRequestContext ProviderContext(
   context.security_context_present = true;
   context.trace_tags.push_back("private_dml_update_rows_binder");
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      std::string(kSecurityContextUuid);
-  context.authorization_context.principal_uuid.canonical =
-      transaction.principal_uuid.canonical;
+  context.authorization_context.authority_uuid =
+      kSecurityContextUuid;
+  context.authorization_context.principal_uuid = transaction.principal_uuid;
   context.authorization_context.security_context_generation =
       state.security_context_generation;
   context.authorization_context.security_epoch = state.security_generation;
@@ -408,7 +406,7 @@ engine_api::EngineRequestContext ProviderContext(
 
 const engine_api::EngineSecurityRowPolicyRecord& FindPolicy(
     const engine_api::EngineSecurityPrincipalLifecycleState& state,
-    std::string_view policy_uuid) {
+    const engine_api::EngineUuid& policy_uuid) {
   const auto found = std::find_if(
       state.row_policies.begin(), state.row_policies.end(),
       [&](const auto& row) { return row.policy_uuid == policy_uuid; });
@@ -420,23 +418,23 @@ const engine_api::EngineSecurityRowPolicyRecord& FindPolicy(
 engine_api::EngineDmlUpdatePolicyCatalogCaptureResultV1
 CapturePolicyAuthority(
     const engine_api::EngineRequestContext& context,
-    std::string_view relation_uuid,
-    std::string_view relation_occurrence_uuid,
+    const engine_api::EngineUuid& relation_uuid,
+    const engine_api::EngineUuid& relation_occurrence_uuid,
     std::uint64_t structural_occurrence_id,
     std::uint64_t descriptor_suffix) {
   engine_api::EngineDmlUpdatePolicyCatalogCaptureRequestV1 capture;
   capture.context = context;
   capture.authenticated_statement_receipt_uuid =
-      context.statement_receipt_uuid.canonical;
+      context.statement_receipt_uuid;
   capture.structural_occurrence_id = structural_occurrence_id;
-  capture.relation_occurrence.relation_uuid = std::string(relation_uuid);
+  capture.relation_occurrence.relation_uuid = relation_uuid;
   capture.relation_occurrence.relation_generation =
       relation_uuid == kRelationUuid ? 7 : 1;
   capture.relation_occurrence.relation_occurrence_uuid =
-      std::string(relation_occurrence_uuid);
+      relation_occurrence_uuid;
   capture.relation_occurrence.relation_occurrence_generation = 1;
   capture.catalog_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   capture.catalog_generation = context.catalog_generation_id;
   capture.descriptor_uuid = CanonicalUuid(descriptor_suffix);
   capture.descriptor_generation = 1;
@@ -453,14 +451,14 @@ CapturePolicyAuthority(
 }
 
 engine_api::EngineDmlUpdateConstraintAuthoritySourceV1 ConstraintSource(
-    std::string_view constraint_uuid, std::string_view expression_uuid,
-    std::string_view reservation_uuid, std::uint64_t execution_order,
+    const engine_api::EngineUuid& constraint_uuid, const engine_api::EngineUuid& expression_uuid,
+    const engine_api::EngineUuid& reservation_uuid, std::uint64_t execution_order,
     engine_api::EngineDmlUpdateConstraintClassV1 constraint_class,
     std::uint8_t hash_byte) {
   engine_api::EngineDmlUpdateConstraintAuthoritySourceV1 source;
   source.catalog_snapshot_uuid = CanonicalUuid(0x2004);
   source.catalog_generation = 41;
-  source.target_relation_uuid = std::string(kRelationUuid);
+  source.target_relation_uuid = kRelationUuid;
   source.target_relation_generation = 7;
   source.manager_execution_order_present = true;
   source.manager_execution_order = execution_order;
@@ -469,25 +467,25 @@ engine_api::EngineDmlUpdateConstraintAuthoritySourceV1 ConstraintSource(
       engine_api::EngineDmlUpdateConstraintTimingV1::immediate_row;
   source.reservation_mode =
       engine_api::EngineDmlUpdateReservationModeV1::row_reservation;
-  source.constraint_uuid = std::string(constraint_uuid);
+  source.constraint_uuid = constraint_uuid;
   source.constraint_generation = 4;
-  source.expression_uuid = std::string(expression_uuid);
+  source.expression_uuid = expression_uuid;
   source.expression_generation = 5;
-  source.reservation_profile_uuid = std::string(reservation_uuid);
+  source.reservation_profile_uuid = reservation_uuid;
   source.reservation_profile_generation = 6;
   source.dependency_set_sha256 = FilledSha(hash_byte);
   return source;
 }
 
 engine_api::EngineDmlUpdateTriggerAuthoritySourceV1 TriggerSource(
-    std::string_view trigger_uuid,
+    const engine_api::EngineUuid& trigger_uuid,
     engine_api::EngineDmlUpdateTriggerTimingV1 timing,
     std::uint64_t firing_order, std::uint64_t identity_suffix,
     std::uint64_t security_generation) {
   engine_api::EngineDmlUpdateTriggerAuthoritySourceV1 source;
   source.catalog_snapshot_uuid = CanonicalUuid(0x2004);
   source.catalog_generation = 41;
-  source.target_relation_uuid = std::string(kRelationUuid);
+  source.target_relation_uuid = kRelationUuid;
   source.target_relation_generation = 7;
   source.security_generation = security_generation;
   source.firing_order_present = true;
@@ -495,7 +493,7 @@ engine_api::EngineDmlUpdateTriggerAuthoritySourceV1 TriggerSource(
   source.timing = timing;
   source.security_mode =
       engine_api::EngineDmlUpdateTriggerSecurityModeV1::definer;
-  source.trigger_uuid = std::string(trigger_uuid);
+  source.trigger_uuid = trigger_uuid;
   source.trigger_generation = 8;
   source.body_sblr_uuid = CanonicalUuid(0x3000 + identity_suffix);
   source.body_sblr_generation = 9;
@@ -517,15 +515,15 @@ engine_api::EngineDmlUpdateImmutableAuthorityFreezeRequestV1 PopulatedRequest(
   engine_api::EngineDmlUpdateImmutableAuthorityFreezeRequestV1 request;
   request.context = context;
   request.authenticated_statement_receipt_uuid =
-      request.context.statement_receipt_uuid.canonical;
+      request.context.statement_receipt_uuid;
   request.structural_occurrence_id = 17;
-  request.relation_occurrence.relation_uuid = std::string(kRelationUuid);
+  request.relation_occurrence.relation_uuid = kRelationUuid;
   request.relation_occurrence.relation_generation = 7;
   request.relation_occurrence.relation_occurrence_uuid =
-      std::string(kRelationOccurrenceUuid);
+      kRelationOccurrenceUuid;
   request.relation_occurrence.relation_occurrence_generation = 1;
   request.catalog_snapshot_uuid =
-      request.context.statement_metadata_snapshot_uuid.canonical;
+      request.context.statement_metadata_snapshot_uuid;
   request.catalog_generation = request.context.catalog_generation_id;
   request.security_policy_snapshot_authority =
       captured.security_policy_snapshot;
@@ -588,16 +586,16 @@ void TestEmptyAuthoritySets(
   engine_api::EngineDmlUpdateImmutableAuthorityFreezeRequestV1 request;
   request.context = context;
   request.authenticated_statement_receipt_uuid =
-      request.context.statement_receipt_uuid.canonical;
+      request.context.statement_receipt_uuid;
   request.structural_occurrence_id = 18;
   request.relation_occurrence.relation_uuid =
-      std::string(kEmptyRelationUuid);
+      kEmptyRelationUuid;
   request.relation_occurrence.relation_generation = 1;
   request.relation_occurrence.relation_occurrence_uuid =
-      std::string(kEmptyRelationOccurrenceUuid);
+      kEmptyRelationOccurrenceUuid;
   request.relation_occurrence.relation_occurrence_generation = 1;
   request.catalog_snapshot_uuid =
-      request.context.statement_metadata_snapshot_uuid.canonical;
+      request.context.statement_metadata_snapshot_uuid;
   request.catalog_generation = request.context.catalog_generation_id;
   request.security_policy_snapshot_authority =
       captured.security_policy_snapshot;
@@ -756,7 +754,7 @@ void TestOrderingCollapseAndRevalidation(
   auto cross_receipt = revalidate;
   cross_receipt.current.authenticated_statement_receipt_uuid =
       CanonicalUuid(0x2100);
-  cross_receipt.current.context.statement_receipt_uuid.canonical =
+  cross_receipt.current.context.statement_receipt_uuid =
       cross_receipt.current.authenticated_statement_receipt_uuid;
   const auto receipt_refused =
       engine_api::RevalidateDmlUpdateImmutableAuthorityV1(cross_receipt);
@@ -775,9 +773,9 @@ void TestOrderingCollapseAndRevalidation(
 
   auto cross_relation = revalidate;
   cross_relation.current.relation_occurrence.relation_uuid =
-      std::string(kEmptyRelationUuid);
+      kEmptyRelationUuid;
   cross_relation.current.relation_occurrence.relation_occurrence_uuid =
-      std::string(kEmptyRelationOccurrenceUuid);
+      kEmptyRelationOccurrenceUuid;
   const auto relation_refused =
       engine_api::RevalidateDmlUpdateImmutableAuthorityV1(cross_relation);
   RequireDiagnostic(relation_refused.diagnostic,
@@ -801,7 +799,7 @@ void TestRefusalCases(
   const auto request = PopulatedRequest(context, state, captured);
 
   auto missing_typed_authority = request;
-  missing_typed_authority.constraints[0].reservation_profile_uuid.clear();
+  missing_typed_authority.constraints[0].reservation_profile_uuid = {};
   const auto missing_refused = engine_api::FreezeDmlUpdateImmutableAuthorityV1(
       missing_typed_authority);
   RequireDiagnostic(missing_refused.diagnostic,
@@ -850,7 +848,7 @@ void TestRefusalCases(
 
   auto conflicting_identity = request;
   conflicting_identity.context.authorization_context.policies[0]
-      .effective_policy_uuid.canonical = CanonicalUuid(0x9f01);
+      .effective_policy_uuid = CanonicalUuid(0x9f01);
   const auto identity_refused =
       engine_api::FreezeDmlUpdateImmutableAuthorityV1(conflicting_identity);
   Require(!identity_refused.ok && identity_refused.diagnostic.error,
@@ -891,7 +889,7 @@ void TestResourceNoAllocationCompletion(const engine_api::EngineRequestContext& 
   const auto b = governor.Capture(retained_context);
   Require(a.ok && b.ok, "scalar release fixture failed capture");
   auto foreign = retained_context;
-  foreign.statement_receipt_uuid.canonical = CanonicalUuid(0xa005);
+  foreign.statement_receipt_uuid = CanonicalUuid(0xa005);
   Require(ReleaseWithAllocationDenied(governor, foreign, a.handle, Reason::abandoned_before_publication) == Code::owner_mismatch &&
               ReleaseWithAllocationDenied(other, retained_context, a.handle, Reason::abandoned_before_publication) == Code::owner_mismatch &&
               ReleaseWithAllocationDenied(governor, retained_context, {}, Reason::abandoned_before_publication) == Code::owner_mismatch &&
@@ -1097,9 +1095,9 @@ void TestResourceGovernorLifecycle(engine_api::EngineRequestContext context) {
   using Governor = engine_api::EngineDmlUpdateResourceGovernorV1;
   using Release = engine_api::EngineDmlUpdateResourceReleaseV1;
   namespace wire = scratchbird::wire;
-  context.statement_uuid.canonical = CanonicalUuid(0xa001);
-  context.session_uuid.canonical = CanonicalUuid(0xa002);
-  context.resource_admission_uuid.canonical = CanonicalUuid(0xa003);
+  context.statement_uuid = CanonicalUuid(0xa001);
+  context.session_uuid = CanonicalUuid(0xa002);
+  context.resource_admission_uuid = CanonicalUuid(0xa003);
   context.resource_epoch = 77;
   TestResourceNoAllocationCompletion(context);
   TestResourcePreparedPublication(context);
@@ -1123,8 +1121,8 @@ void TestResourceGovernorLifecycle(engine_api::EngineRequestContext context) {
               second.handle.carrier()->cancellation_token_uuid != carrier.cancellation_token_uuid &&
               second.handle.carrier()->grant_receipt_uuid != carrier.grant_receipt_uuid,
           "DUBR identities/generations did not come from live governor issuance");
-  const auto txn = uuid::ParseUuid(context.transaction_uuid.canonical);
-  Require(std::equal(txn.value.bytes.begin(), txn.value.bytes.end(), carrier.exact_bytes.begin() + 56),
+  const auto& txn = context.transaction_uuid;
+  Require(std::equal(txn.bytes.begin(), txn.bytes.end(), carrier.exact_bytes.begin() + 56),
           "DUBR transaction UUID was not binary16");
   Require(governor.Observe().active_grants == 2 && governor.Observe().reserved_canonical_bytes == 128 &&
               !governor.Capture(context).ok && governor.Observe().active_grants == 2,
@@ -1149,7 +1147,7 @@ void TestResourceGovernorLifecycle(engine_api::EngineRequestContext context) {
             "modified DUBR substituted for retained resource authority");
   }
   auto changed = context;
-  changed.statement_receipt_uuid.canonical = CanonicalUuid(0xa004);
+  changed.statement_receipt_uuid = CanonicalUuid(0xa004);
   Require(governor.Revalidate(changed, first.handle, carrier).error &&
               governor.Cancel(changed, first.handle).error &&
               governor.Release(changed, first.handle, Release::abandoned_before_publication).error,
@@ -1249,7 +1247,7 @@ void TestIndependentDeleteSecurityAuthority() {
     grant.context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
     grant.grant_uuid = CanonicalUuid(right == std::string_view("DELETE") ? 0x5020 : 0x5021);
     grant.grantee_uuid = database.principal_uuid;
-    grant.target_object_uuid = std::string(kEmptyRelationUuid);
+    grant.target_object_uuid = kEmptyRelationUuid;
     grant.target_object_kind = "table";
     grant.privilege = right;
     const auto granted = engine_api::EngineSecurityGrantPrivilege(grant);
@@ -1261,7 +1259,7 @@ void TestIndependentDeleteSecurityAuthority() {
     update_only.context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
     update_only.grant_uuid = CanonicalUuid(0x5022);
     update_only.grantee_uuid = database.principal_uuid;
-    update_only.target_object_uuid = std::string(kOtherRelationUuid);
+    update_only.target_object_uuid = kOtherRelationUuid;
     update_only.target_object_kind = "table";
     update_only.privilege = "UPDATE";
     Require(engine_api::EngineSecurityGrantPrivilege(update_only).ok,
@@ -1271,24 +1269,24 @@ void TestIndependentDeleteSecurityAuthority() {
   auto transaction = BeginTransaction(database, 1788205002000ull);
   const auto state = LoadSecurityState(transaction);
   auto context = ProviderContext(transaction, state, {}, 0x5030);
-  context.session_uuid.canonical = CanonicalUuid(0x5031);
+  context.session_uuid = CanonicalUuid(0x5031);
   context.trace_tags = {"private_dml_delete_rows_binder"};
   context.authorization_context.effective_subjects.push_back({context.principal_uuid, "principal"});
   for (const auto& source : state.grants) {
     if (source.revoked || source.grantee_uuid != database.principal_uuid ||
         source.target_object_uuid != kEmptyRelationUuid) continue;
     engine_api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid.canonical = source.grant_uuid;
-    grant.subject_uuid.canonical = source.grantee_uuid;
+    grant.grant_uuid = source.grant_uuid;
+    grant.subject_uuid = source.grantee_uuid;
     grant.subject_kind = source.grantee_kind;
-    grant.target_uuid.canonical = source.target_object_uuid;
+    grant.target_uuid = source.target_object_uuid;
     grant.right = source.privilege;
     grant.security_epoch = context.security_epoch;
     grant.deny = source.grant_effect == "deny";
     context.authorization_context.grants.push_back(std::move(grant));
   }
   const auto capture = [&](const auto& owner) {
-    return engine_api::CaptureDmlDeleteSecurityAuthorityV1(owner, std::string(kEmptyRelationUuid));
+    return engine_api::CaptureDmlDeleteSecurityAuthorityV1(owner, kEmptyRelationUuid);
   };
   auto captured = capture(context);
   if (!captured.ok) std::cerr << captured.diagnostic.code << ':' << captured.diagnostic.detail << '\n';
@@ -1316,9 +1314,9 @@ void TestIndependentDeleteSecurityAuthority() {
           "recovered security accepted missing actual DELETE grants");
   auto changed = context;
   for (auto& grant : changed.authorization_context.grants)
-    grant.target_uuid.canonical = std::string(kOtherRelationUuid);
+    grant.target_uuid = kOtherRelationUuid;
   Require(!engine_api::CaptureDmlDeleteSecurityAuthorityV1(changed,
-              std::string(kOtherRelationUuid)).ok,
+              kOtherRelationUuid).ok,
           "materialized DELETE grant substituted for durable UPDATE-only privilege");
   changed = context;
   std::erase_if(changed.authorization_context.grants, [](const auto& grant) { return grant.right == "DELETE"; });
@@ -1336,8 +1334,8 @@ void TestIndependentDeleteSecurityAuthority() {
     changed = consumer;
     switch (mutation) {
       case 0: changed.database_path += ".other"; break;
-      case 1: changed.session_uuid.canonical = CanonicalUuid(0x5090); break;
-      case 2: changed.statement_receipt_uuid.canonical = CanonicalUuid(0x5090); break;
+      case 1: changed.session_uuid = CanonicalUuid(0x5090); break;
+      case 2: changed.statement_receipt_uuid = CanonicalUuid(0x5090); break;
       case 3: ++changed.local_transaction_id; break;
       case 4: ++changed.authorization_context.security_context_generation; break;
       case 5: ++changed.authorization_context.policy_epoch; break;
@@ -1356,7 +1354,7 @@ void TestIndependentDeleteSecurityAuthority() {
           "modified DELETE snapshot projection was admitted");
   changed = context;
   engine_api::EngineMaterializedAuthorizationPolicy policy;
-  policy.target_uuid.canonical = std::string(kEmptyRelationUuid);
+  policy.target_uuid = kEmptyRelationUuid;
   policy.right = "UPDATE";
   changed.authorization_context.policies.push_back(policy);
   Require(!capture(changed).ok, "UPDATE policy substituted for absent DELETE USING authority");
@@ -1476,7 +1474,7 @@ int main() {
   }
   const auto independent_snapshot =
       engine_api::IssueEngineSecurityPolicySnapshotAuthorityV1(
-          independent_epochs, std::string(kRelationUuid));
+          independent_epochs, kRelationUuid);
   Require(independent_snapshot.ok &&
               independent_snapshot.snapshot.security_generation ==
                   restarted_state.security_generation &&
@@ -1504,12 +1502,12 @@ int main() {
   auto inconsistent_epochs = independent_epochs;
   ++inconsistent_epochs.authorization_context.security_epoch;
   Require(!engine_api::IssueEngineSecurityPolicySnapshotAuthorityV1(
-              inconsistent_epochs, std::string(kRelationUuid)).ok,
+              inconsistent_epochs, kRelationUuid).ok,
           "mismatched runtime context epoch was admitted");
   inconsistent_epochs = independent_epochs;
   ++inconsistent_epochs.authorization_context.policies.front().policy_epoch;
   Require(!engine_api::IssueEngineSecurityPolicySnapshotAuthorityV1(
-              inconsistent_epochs, std::string(kRelationUuid)).ok,
+              inconsistent_epochs, kRelationUuid).ok,
           "mismatched materialized policy epoch was admitted");
 
   auto stale_context = independent_epochs;
@@ -1517,16 +1515,16 @@ int main() {
   engine_api::EngineDmlUpdatePolicyCatalogCaptureRequestV1 stale_request;
   stale_request.context = stale_context;
   stale_request.authenticated_statement_receipt_uuid =
-      stale_context.statement_receipt_uuid.canonical;
+      stale_context.statement_receipt_uuid;
   stale_request.structural_occurrence_id = 17;
   stale_request.relation_occurrence.relation_uuid =
-      std::string(kRelationUuid);
+      kRelationUuid;
   stale_request.relation_occurrence.relation_generation = 7;
   stale_request.relation_occurrence.relation_occurrence_uuid =
-      std::string(kRelationOccurrenceUuid);
+      kRelationOccurrenceUuid;
   stale_request.relation_occurrence.relation_occurrence_generation = 1;
   stale_request.catalog_snapshot_uuid =
-      stale_context.statement_metadata_snapshot_uuid.canonical;
+      stale_context.statement_metadata_snapshot_uuid;
   stale_request.catalog_generation = stale_context.catalog_generation_id;
   stale_request.descriptor_uuid = CanonicalUuid(0x9011);
   stale_request.descriptor_generation = 1;

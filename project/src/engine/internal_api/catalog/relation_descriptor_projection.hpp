@@ -22,7 +22,7 @@ struct EngineCatalogRelationProjectionViewDescriptor {
   bool present = false;
   std::string semantic_variant;
   std::string source_relation_name;
-  std::string function_uuid;
+  EngineUuid function_uuid;
   EngineApiDiagnostic diagnostic;
 };
 
@@ -60,7 +60,7 @@ std::vector<std::string> CanonicalRelationDescriptorProjectionViewOptions(
 EngineCatalogRelationProjectionViewDescriptor
 DescribeEngineCatalogRelationProjectionView(
     const EngineRequestContext& context,
-    const std::string& view_uuid);
+    const EngineUuid& view_uuid);
 
 bool IsRelationDescriptorProjectionSelectRequest(
     const EngineSelectRowsRequest& request);

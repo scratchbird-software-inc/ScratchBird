@@ -1,3 +1,8 @@
+#include "../agents/agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+using scratchbird::tests::FixtureIdentityForLabel;
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -124,7 +129,7 @@ void WriteMatrix(const std::filesystem::path& output_path) {
 
 struct TestDatabase {
   std::filesystem::path path;
-  std::string database_uuid;
+  api::EngineUuid database_uuid;
 };
 
 void CleanupDatabase(const std::filesystem::path& path) {
@@ -174,7 +179,7 @@ TestDatabase CreateDatabase(const char* basename, std::uint64_t timestamp_base) 
 
   TestDatabase result;
   result.path = path;
-  result.database_uuid = uuid::UuidToString(database_uuid.value.value);
+  result.database_uuid = database_uuid.value.value;
   return result;
 }
 
@@ -199,17 +204,16 @@ api::EngineRequestContext BootstrapContext(const TestDatabase& database,
   api::EngineRequestContext context;
   context.request_id = "eler042-bootstrap";
   context.database_path = database.path.string();
-  context.database_uuid.canonical = database.database_uuid;
-  context.transaction_uuid.canonical =
-      uuid::UuidToString(transaction_uuid.value.value);
+  context.database_uuid = database.database_uuid;
+  context.transaction_uuid = transaction_uuid.value.value;
   context.local_transaction_id = begun.entry.identity.local_id.value;
   context.snapshot_visible_through_local_transaction_id =
       context.local_transaction_id;
   context.security_context_present = true;
-  context.principal_uuid.canonical =
-      agents::DeterministicAgentRuntimePrincipalUuidFromKey("eler042-principal");
-  context.session_uuid.canonical =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-session");
+  context.principal_uuid =
+      NativeFixtureIdentity(FixtureIdentityForLabel("eler042-principal"));
+  context.session_uuid =
+      NativeFixtureIdentity(FixtureIdentityForLabel("eler042-session"));
   context.catalog_generation_id = 1;
   context.security_epoch = 42;
   context.resource_epoch = 1;
@@ -221,13 +225,13 @@ api::EngineRequestContext BeginTransaction(const TestDatabase& database,
                                            std::string request_id) {
   api::EngineBeginTransactionRequest begin;
   begin.context.database_path = database.path.string();
-  begin.context.database_uuid.canonical = database.database_uuid;
+  begin.context.database_uuid = database.database_uuid;
   begin.context.request_id = std::move(request_id);
   begin.context.security_context_present = true;
-  begin.context.principal_uuid.canonical =
-      agents::DeterministicAgentRuntimePrincipalUuidFromKey("eler042-principal");
-  begin.context.session_uuid.canonical =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-session");
+  begin.context.principal_uuid =
+      NativeFixtureIdentity(FixtureIdentityForLabel("eler042-principal"));
+  begin.context.session_uuid =
+      NativeFixtureIdentity(FixtureIdentityForLabel("eler042-session"));
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 42;
   begin.context.resource_epoch = 1;
@@ -294,7 +298,7 @@ agents::AgentPackageProvenanceBundle PageProviderPackage() {
     record.subject_kind = kind;
     record.subject_id = subject_id;
     record.package_uuid =
-        agents::DeterministicAgentRuntimeObjectUuidFromKey(
+        FixtureIdentityForLabel(
             "eler042-package-" + std::to_string(index));
     record.package_version = "1.0." + std::to_string(index);
     record.package_version_ordinal = 100;
@@ -303,7 +307,7 @@ agents::AgentPackageProvenanceBundle PageProviderPackage() {
     record.signature_digest = DigestHex(static_cast<char>('4' + index));
     record.signature_verified = true;
     record.signature_evidence_uuid =
-        agents::DeterministicAgentRuntimeObjectUuidFromKey(
+        FixtureIdentityForLabel(
             "eler042-signature-" + std::to_string(index));
     record.signer_identity = "scratchbird-release-signing";
     record.signer_key_id = "release-key-v1";
@@ -313,23 +317,23 @@ agents::AgentPackageProvenanceBundle PageProviderPackage() {
     record.sbom_format = "spdx-2.3";
     record.sbom_digest = DigestHex(static_cast<char>('7' + index));
     record.sbom_evidence_uuid =
-        agents::DeterministicAgentRuntimeObjectUuidFromKey(
+        FixtureIdentityForLabel(
             "eler042-sbom-" + std::to_string(index));
     record.sandbox_profile_id = "agent-bounded-local";
     record.sandbox_profile_digest = DigestHex(static_cast<char>('a' + index));
     record.sandbox_evidence_uuid =
-        agents::DeterministicAgentRuntimeObjectUuidFromKey(
+        FixtureIdentityForLabel(
             "eler042-sandbox-" + std::to_string(index));
     record.revocation_status =
         agents::AgentPackageRevocationStatus::not_revoked;
     record.revocation_checked = true;
     record.revocation_generation = 10 + index;
     record.revocation_evidence_uuid =
-        agents::DeterministicAgentRuntimeObjectUuidFromKey(
+        FixtureIdentityForLabel(
             "eler042-revocation-" + std::to_string(index));
     record.production_package = true;
     record.provenance_evidence_uuid =
-        agents::DeterministicAgentRuntimeObjectUuidFromKey(
+        FixtureIdentityForLabel(
             "eler042-provenance-" + std::to_string(index));
     agents::FinalizeAgentPackageProvenanceDigest(&record);
     bundle.records.push_back(std::move(record));
@@ -342,11 +346,11 @@ agents::AgentActionAuthorityProvenance SealedAuthority() {
   agents::AgentActionAuthorityProvenance authority;
   authority.source = agents::AgentActionAuthoritySource::sealed_internal_bootstrap;
   authority.principal_uuid =
-      agents::DeterministicAgentRuntimePrincipalUuidFromKey("eler042-agent");
+      FixtureIdentityForLabel("eler042-agent");
   authority.scope_uuid =
-      agents::DeterministicAgentRuntimeDatabaseUuidFromKey("eler042-scope");
+      FixtureIdentityForLabel("eler042-scope");
   authority.provenance_evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-authority-evidence");
   authority.rights = {"OBS_AGENT_CONTROL"};
   authority.sealed_bootstrap_authority = true;
@@ -359,8 +363,8 @@ agents::AgentRuntimeContext MetricContext(
   context.security_context_present = true;
   context.private_features_available = true;
   context.standalone_edition = true;
-  context.database_uuid = authority.scope_uuid;
-  context.principal_uuid = authority.principal_uuid;
+  context.database_uuid = NativeFixtureIdentity(authority.scope_uuid);
+  context.principal_uuid = NativeFixtureIdentity(authority.principal_uuid);
   context.wall_now_microseconds = 1761000000001000ull;
   return context;
 }
@@ -377,7 +381,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedMetricSnapshots(
     snapshot.namespace_path = dependency.namespace_prefix + ".observed";
     snapshot.generation = 420 + ordinal;
     snapshot.observed_wall_microseconds = 1761000000000000ull;
-    snapshot.scope_uuid = authority.scope_uuid;
+    snapshot.scope_uuid = NativeFixtureIdentity(authority.scope_uuid);
     snapshot.digest = "sha256:eler042-" + dependency.metric_family;
     snapshot.source_quality = agents::AgentMetricSourceQuality::trusted;
     snapshot.present = true;
@@ -385,8 +389,8 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedMetricSnapshots(
     snapshot.schema_compatible = true;
     snapshot.trust_provenance = "engine_metric_registry";
     snapshot.evidence_uuid =
-        agents::DeterministicAgentRuntimeObjectUuidFromKey(
-            "eler042-metric-evidence-" + std::to_string(ordinal));
+        NativeFixtureIdentity(FixtureIdentityForLabel(
+            "eler042-metric-evidence-" + std::to_string(ordinal)));
     snapshot.snapshot_id = "eler042-metric-snapshot-" + std::to_string(ordinal);
     snapshot.value_digest = snapshot.digest;
     snapshot.schema_digest = "schema:" + snapshot.metric_family + ":" +
@@ -405,7 +409,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedMetricSnapshots(
     source_a.attestation_key_id = "metric-key:" + source_a.source_id;
     source_a.attestation_digest =
         "attestation:" + source_a.metric_family + ":" + source_a.source_id;
-    source_a.evidence_uuid += ":source-a";
+    source_a.evidence_uuid = NativeFixtureIdentity(FixtureIdentityForLabel(BinaryFixtureIdentity(snapshot.evidence_uuid) + ":source-a"));
     source_a.snapshot_id += ":source-a";
     snapshots.push_back(std::move(source_a));
 
@@ -416,7 +420,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedMetricSnapshots(
     source_b.attestation_key_id = "metric-key:" + source_b.source_id;
     source_b.attestation_digest =
         "attestation:" + source_b.metric_family + ":" + source_b.source_id;
-    source_b.evidence_uuid += ":source-b";
+    source_b.evidence_uuid = NativeFixtureIdentity(FixtureIdentityForLabel(BinaryFixtureIdentity(snapshot.evidence_uuid) + ":source-b"));
     source_b.snapshot_id += ":source-b";
     snapshots.push_back(std::move(source_b));
     ++ordinal;
@@ -429,7 +433,7 @@ std::string ObservedMetricDigestForAction(
   const auto descriptor = agents::FindAgentType("page_allocation_manager");
   Require(descriptor.has_value(), "ELER-042 page allocation descriptor missing");
   agents::AgentMetricSnapshotEvaluationOptions options;
-  options.expected_scope_uuid = authority.scope_uuid;
+  options.expected_scope_uuid = NativeFixtureIdentity(authority.scope_uuid);
   const auto evaluation = agents::EvaluateAgentObservedMetricSnapshots(
       *descriptor,
       MetricContext(authority),
@@ -448,25 +452,25 @@ agents::AgentActionRequest PageAction(std::string uuid,
   action.action_uuid = std::move(uuid);
   action.agent_type_id = "page_allocation_manager";
   action.instance_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-page-agent-instance");
   action.actuator_id = "page_manager";
   action.operation_id = "preallocate_page_family";
   action.idempotency_key = std::move(idempotency_key);
   action.dry_run = false;
   action.inputs["evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-action-input-evidence");
   action.inputs["metric_digest"] = ObservedMetricDigestForAction(authority);
   action.inputs["safety_envelope_version"] = "1";
   action.inputs["safety_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-safety");
+      FixtureIdentityForLabel("eler042-safety");
   action.inputs["policy_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-policy");
+      FixtureIdentityForLabel("eler042-policy");
   action.inputs["rollout_mode"] = "live";
   action.inputs["rollout_state"] = "active";
   action.inputs["rollout_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-rollout");
+      FixtureIdentityForLabel("eler042-rollout");
   action.inputs["failure_threshold"] = "3";
   action.inputs["observed_failures"] = "0";
   action.inputs["retry_limit"] = "2";
@@ -475,29 +479,29 @@ agents::AgentActionRequest PageAction(std::string uuid,
   action.inputs["rate_limit_per_window"] = "4";
   action.inputs["action_count_in_window"] = "1";
   action.inputs["rate_limit_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-rate-limit");
+      FixtureIdentityForLabel("eler042-rate-limit");
   action.inputs["blast_radius_units"] = "1";
   action.inputs["max_blast_radius_units"] = "3";
   action.inputs["blast_radius_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-blast-radius");
+      FixtureIdentityForLabel("eler042-blast-radius");
   action.inputs["backup_check_required"] = "true";
   action.inputs["checkpoint_check_required"] = "true";
   action.inputs["storage_check_required"] = "true";
   action.inputs["transaction_check_required"] = "true";
   action.inputs["backup_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-backup");
+      FixtureIdentityForLabel("eler042-backup");
   action.inputs["checkpoint_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-checkpoint");
+      FixtureIdentityForLabel("eler042-checkpoint");
   action.inputs["storage_check_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-storage-check");
+      FixtureIdentityForLabel("eler042-storage-check");
   action.inputs["transaction_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-transaction");
+      FixtureIdentityForLabel("eler042-transaction");
   action.inputs["compensation_required"] = "true";
   action.inputs["rollback_required"] = "true";
   action.inputs["compensation_plan_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-comp-plan");
+      FixtureIdentityForLabel("eler042-comp-plan");
   action.inputs["rollback_plan_evidence_uuid"] =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-rollback-plan");
+      FixtureIdentityForLabel("eler042-rollback-plan");
   action.inputs["authority_claims"] = "agent_evidence";
   return action;
 }
@@ -509,11 +513,11 @@ agents::DurableAgentCatalogImage CatalogImage() {
   agents::DurableAgentCatalogImage image;
   agents::AgentInstanceRecord instance;
   instance.instance_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-page-agent-instance");
   instance.agent_type_id = "page_allocation_manager";
   instance.policy_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-page-policy");
+      FixtureIdentityForLabel("eler042-page-policy");
   instance.scope = "database/filespace/page_family/page_type";
   instance.state = agents::AgentLifecycleState::registered;
   instance.run_generation = 1;
@@ -535,7 +539,7 @@ agents::DurableAgentCatalogImage CatalogImage() {
 
   agents::AgentPolicyAttachmentRecord attachment;
   attachment.attachment_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-page-policy-attachment");
   attachment.agent_type_id = instance.agent_type_id;
   attachment.policy_family = policy.policy_family;
@@ -548,7 +552,7 @@ agents::DurableAgentCatalogImage CatalogImage() {
   attachment.valid = true;
   attachment.diagnostic_code = "SB_AGENT_POLICY_ATTACHMENT.ELER042";
   attachment.evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-policy-attachment-evidence");
   image.attachments.push_back(std::move(attachment));
   return image;
@@ -579,7 +583,7 @@ agents::AgentProductionRouteProofInputs PageRouteProofs() {
   proof.subsystem_handler_id = "storage.page.preallocate_page_family";
   proof.handler_provenance = "eler042_storage_page_preallocation_route";
   proof.handler_evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "ELER-042|page_allocation_manager|preallocate_page_family");
   proof.live_route_available = true;
   proof.real_subsystem_handler = true;
@@ -605,7 +609,7 @@ agents::AgentActuatorProviderRegistry RealRegistry(int* dispatch_count) {
   provider.subsystem_handler_id = "storage.page.preallocate_page_family";
   provider.handler_provenance = "eler042_storage_page_preallocation_route";
   provider.handler_evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "ELER-042|page_allocation_manager|preallocate_page_family");
   provider.idempotent = true;
   provider.supports_retry = true;
@@ -640,13 +644,13 @@ agents::AgentActuatorProviderRegistry RealRegistry(int* dispatch_count) {
         result.compensation_required = !result.outcome_verified;
         result.compensation_attempted = !result.outcome_verified;
         result.verification_evidence_uuid =
-            agents::DeterministicAgentRuntimeObjectUuidFromKey(
+            FixtureIdentityForLabel(
                 "eler042-provider-verification|" + request.action.action_uuid);
         if (!result.outcome_verified) {
           result.compensation_executor_id =
               "storage.page.preallocate_page_family.compensator";
           result.compensation_evidence_uuid =
-              agents::DeterministicAgentRuntimeObjectUuidFromKey(
+              FixtureIdentityForLabel(
                   "eler042-provider-compensation|" + request.action.action_uuid);
           result.status = agents::AgentError(
               "SB_AGENT_ACTION.OUTCOME_UNVERIFIED_COMPENSATION_REQUIRED",
@@ -683,7 +687,7 @@ api::AgentActionDispatchStoreRequest StoreDispatchRequest(
   request.authority = authority;
   request.engine_registry = registry;
   request.metric_context = MetricContext(authority);
-  request.metric_snapshot_options.expected_scope_uuid = authority.scope_uuid;
+  request.metric_snapshot_options.expected_scope_uuid = NativeFixtureIdentity(authority.scope_uuid);
   request.observed_metric_snapshots = ObservedMetricSnapshots(authority);
   request.production_live_path = true;
   request.fsync_or_checkpoint_evidence = true;
@@ -782,7 +786,7 @@ void TestProductionExposureMatrix() {
   cluster_proof.subsystem_handler_id = "cluster.scheduler.route_cluster_job";
   cluster_proof.handler_provenance = "external_cluster_provider";
   cluster_proof.handler_evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-cluster-proof");
   cluster_proof.live_route_available = true;
   cluster_proof.real_subsystem_handler = true;
@@ -807,7 +811,7 @@ void TestStoreBackedDispatchReplayAndRecovery() {
   auto seed_context = BootstrapContext(database, 1761000000000ull);
   PersistCatalog(seed_context,
                  CatalogImage(),
-                 agents::DeterministicAgentRuntimeObjectUuidFromKey(
+                 FixtureIdentityForLabel(
                      "eler042-seed-catalog"));
   Commit(seed_context);
 
@@ -816,7 +820,7 @@ void TestStoreBackedDispatchReplayAndRecovery() {
   auto registry = SealRegistry(dispatch_context, RealRegistry(&dispatch_count));
 
   const auto live_action = PageAction(
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-live-action"),
+      FixtureIdentityForLabel("eler042-live-action"),
       "eler042-live-idempotency");
   const auto live = api::DispatchAgentActionWithDurableCatalogStore(
       StoreDispatchRequest(dispatch_context, &registry, live_action));
@@ -837,7 +841,7 @@ void TestStoreBackedDispatchReplayAndRecovery() {
           "ELER-042 live dispatch did not prove provider/evidence/outcome");
 
   auto failed_action = PageAction(
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-failed-action"),
+      FixtureIdentityForLabel("eler042-failed-action"),
       "eler042-failed-idempotency");
   auto failed_request =
       StoreDispatchRequest(dispatch_context, &registry, failed_action);
@@ -893,9 +897,9 @@ void TestStoreBackedDispatchReplayAndRecovery() {
   replay.capture = CaptureReplay(loaded.image, failed_action.action_uuid, package);
   replay.package_provenance = package;
   replay.evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-replay");
+      FixtureIdentityForLabel("eler042-replay");
   replay.compensation_evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-replay-compensation");
   replay.now_microseconds = 1761000000005000ull;
   replay.max_retry_count = 3;
@@ -915,7 +919,7 @@ void TestStoreBackedDispatchReplayAndRecovery() {
       StoreDispatchRequest(
           duplicate_context,
           &duplicate_registry,
-          PageAction(agents::DeterministicAgentRuntimeObjectUuidFromKey(
+          PageAction(FixtureIdentityForLabel(
                          "eler042-live-duplicate"),
                      live_action.idempotency_key)));
   Require(duplicate.dispatch.status.ok &&
@@ -931,7 +935,7 @@ void TestStoreBackedDispatchReplayAndRecovery() {
   Require(recovery_loaded.ok,
           "ELER-042 catalog load before crash recovery failed");
   const auto pending_action = PageAction(
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-pending"),
+      FixtureIdentityForLabel("eler042-pending"),
       "eler042-pending-idempotency");
   agents::DurableAgentActionRecord pending;
   pending.action_uuid = pending_action.action_uuid;
@@ -945,7 +949,7 @@ void TestStoreBackedDispatchReplayAndRecovery() {
   pending.input_evidence_digest =
       agents::AgentActionInputEvidenceDigest(pending_action);
   pending.evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-pending-intent");
   pending.diagnostic_code = "SB_AGENT_ACTION_DISPATCH.PENDING_INTENT";
   pending.generation = 1;
@@ -953,14 +957,14 @@ void TestStoreBackedDispatchReplayAndRecovery() {
   const auto pending_refresh =
       agents::RefreshDurableAgentCatalogAuthorityDigest(
           &recovery_loaded.image,
-          agents::DeterministicAgentRuntimeObjectUuidFromKey(
+          FixtureIdentityForLabel(
               "eler042-pending-refresh"));
   Require(pending_refresh.ok,
           "ELER-042 pending action refresh failed: " +
               pending_refresh.diagnostic_code);
   PersistCatalog(recovery_context,
                  recovery_loaded.image,
-                 agents::DeterministicAgentRuntimeObjectUuidFromKey(
+                 FixtureIdentityForLabel(
                      "eler042-pending-persisted"));
 
   auto lease_loaded =
@@ -970,13 +974,13 @@ void TestStoreBackedDispatchReplayAndRecovery() {
               lease_loaded.diagnostic.detail);
   agents::DurableLeaseRequest lease;
   lease.lease_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-lease");
+      FixtureIdentityForLabel("eler042-lease");
   lease.instance_uuid = pending_action.instance_uuid;
   lease.owner_uuid = SealedAuthority().principal_uuid;
   lease.now_microseconds = 1761000000007000ull;
   lease.lease_duration_microseconds = 1000000;
   lease.evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-lease-evidence");
   const auto leased =
       agents::AcquireDurableAgentLease(&lease_loaded.image, lease);
@@ -984,7 +988,7 @@ void TestStoreBackedDispatchReplayAndRecovery() {
                          leased.diagnostic_code);
   PersistCatalog(recovery_context,
                  lease_loaded.image,
-                 agents::DeterministicAgentRuntimeObjectUuidFromKey(
+                 FixtureIdentityForLabel(
                      "eler042-lease-persisted"));
 
   auto recovery_ready =
@@ -996,13 +1000,13 @@ void TestStoreBackedDispatchReplayAndRecovery() {
   const auto recovery = agents::RecoverDurableAgentCatalogAfterCrash(
       &recovered,
       1761000000008000ull,
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      FixtureIdentityForLabel(
           "eler042-crash-recovery"));
   Require(recovery.ok, "ELER-042 crash recovery failed: " +
                            recovery.diagnostic_code);
   PersistCatalog(recovery_context,
                  recovered,
-                 agents::DeterministicAgentRuntimeObjectUuidFromKey(
+                 FixtureIdentityForLabel(
                      "eler042-recovery-persisted"));
   const auto recovered_load =
       api::LoadAgentDurableCatalogImage(recovery_context, true);
@@ -1043,7 +1047,7 @@ void TestUnsafeAuthorityFailsBeforeMutation() {
   auto seed_context = BootstrapContext(database, 1761000001000ull);
   PersistCatalog(seed_context,
                  CatalogImage(),
-                 agents::DeterministicAgentRuntimeObjectUuidFromKey(
+                 FixtureIdentityForLabel(
                      "eler042-authority-seed"));
   Commit(seed_context);
 
@@ -1053,7 +1057,7 @@ void TestUnsafeAuthorityFailsBeforeMutation() {
   auto request = StoreDispatchRequest(
       context,
       &registry,
-      PageAction(agents::DeterministicAgentRuntimeObjectUuidFromKey(
+      PageAction(FixtureIdentityForLabel(
                      "eler042-parser-authority-action"),
                  "eler042-parser-authority"));
   request.authority.parser_authority = true;
@@ -1097,10 +1101,10 @@ api::EnginePrepareSupportBundleRequest SupportRequest(
   api::EnginePrepareSupportBundleRequest request;
   request.context.trust_mode = api::EngineTrustMode::server_isolated;
   request.context.security_context_present = true;
-  request.context.database_uuid.canonical = database.database_uuid;
-  request.context.principal_uuid.canonical =
-      agents::DeterministicAgentRuntimePrincipalUuidFromKey(
-          "eler042-support-principal");
+  request.context.database_uuid = database.database_uuid;
+  request.context.principal_uuid =
+      NativeFixtureIdentity(FixtureIdentityForLabel(
+          "eler042-support-principal"));
   request.context.database_path = database.path.string();
   request.option_envelopes.push_back("engine_authorized_support_export:true");
   return request;
@@ -1129,10 +1133,9 @@ void TestSupportBundleRoute() {
   route.triage_result = triage;
   route.support_request = SupportRequest(database);
   route.agent_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey("eler042-support-agent");
+      scratchbird::tests::FixtureUuid(1469, 11);
   route.evidence_uuid =
-      agents::DeterministicAgentRuntimeObjectUuidFromKey(
-          "eler042-support-evidence");
+      scratchbird::tests::FixtureUuid(1469, 12);
   route.durable_evidence_store_authority = true;
   route.tamper_chain_verified = true;
   route.redaction_profile_authoritative = true;

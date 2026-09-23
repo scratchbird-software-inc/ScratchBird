@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -402,9 +403,9 @@ void RequireRejectionPathsPreserved() {
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.database_uuid.canonical = "family-admission-database";
-  context.session_uuid.canonical = "family-admission-session";
-  context.principal_uuid.canonical = "family-admission-principal";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 4301);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 4302);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 4303);
   return context;
 }
 

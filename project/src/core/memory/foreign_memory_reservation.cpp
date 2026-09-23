@@ -60,6 +60,10 @@ void AddBaseEvidence(std::vector<std::string>* evidence,
   evidence->push_back("foreign_memory.memory_class=" + request.memory_class);
   evidence->push_back("foreign_memory.owner_id=" + request.owner_id);
   evidence->push_back("foreign_memory.owning_scope=" + request.owning_scope);
+  evidence->push_back("foreign_memory.binary_owner_present=" +
+                      BoolText(MemoryUuidPresent(request.binary_owner_uuid)));
+  evidence->push_back("foreign_memory.binary_scope_present=" +
+                      BoolText(MemoryUuidPresent(request.binary_owning_scope_uuid)));
   evidence->push_back("foreign_memory.operation_id=" + request.operation_id);
   evidence->push_back("foreign_memory.native_callsite=" + request.native_callsite);
   evidence->push_back("foreign_memory.estimated_bytes=" +
@@ -158,7 +162,14 @@ bool ValidateRequestShape(const ForeignMemoryReservationRequest& request,
     *reason = "scope_chain_required";
     return false;
   }
-  if (Blank(request.owner_id) || Blank(request.owning_scope) ||
+  const auto valid_identity = [](const std::string& label,
+                                 const MemoryBinaryUuid& identity) {
+    return MemoryUuidPresent(identity)
+               ? label.empty() && MemorySystemUuidValid(identity)
+               : !Blank(label);
+  };
+  if (!valid_identity(request.owner_id, request.binary_owner_uuid) ||
+      !valid_identity(request.owning_scope, request.binary_owning_scope_uuid) ||
       Blank(request.operation_id) || Blank(request.native_callsite)) {
     *reason = "owner_scope_operation_and_callsite_required";
     return false;
@@ -496,6 +507,8 @@ ForeignMemoryActiveReservationSnapshot ForeignMemoryReservation::Snapshot() cons
   snapshot.category = request_.category;
   snapshot.owner_id = request_.owner_id;
   snapshot.owning_scope = request_.owning_scope;
+  snapshot.binary_owner_uuid = request_.binary_owner_uuid;
+  snapshot.binary_owning_scope_uuid = request_.binary_owning_scope_uuid;
   snapshot.operation_id = request_.operation_id;
   snapshot.memory_class = request_.memory_class;
   snapshot.estimated_bytes = request_.estimated_bytes;
@@ -551,6 +564,7 @@ ForeignMemoryReservationAcquireResult ForeignMemoryReservationLedger::Reserve(
   reservation.memory_class = request.memory_class;
   reservation.requested_bytes = request.estimated_bytes;
   reservation.owner_id = request.owner_id;
+  reservation.binary_owner_uuid = request.binary_owner_uuid;
   reservation.spillable = Spillable(request.over_limit_action);
   reservation.cancelable = Cancelable(request.over_limit_action);
   reservation.weight = 1;
@@ -562,7 +576,7 @@ ForeignMemoryReservationAcquireResult ForeignMemoryReservationLedger::Reserve(
     if (reserved.status.code == StatusCode::memory_limit_exceeded) {
       ++over_limit_refusal_count_;
       ++source_accounting_[request.source].over_limit_refusal_count;
-      ++owning_scope_accounting_[request.owning_scope].over_limit_refusal_count;
+      ++owning_scope_accounting_[{request.owning_scope, request.binary_owning_scope_uuid}].over_limit_refusal_count;
     } else {
       ++fail_closed_refusal_count_;
     }
@@ -744,7 +758,7 @@ ForeignMemoryReservationLedger::UpdateObservedBytes(
   if (observed_bytes > it->second.request.estimated_bytes) {
     ++over_limit_refusal_count_;
     ++source_accounting_[it->second.request.source].over_limit_refusal_count;
-    ++owning_scope_accounting_[it->second.request.owning_scope].over_limit_refusal_count;
+    ++owning_scope_accounting_[{it->second.request.owning_scope, it->second.request.binary_owning_scope_uuid}].over_limit_refusal_count;
     return RefuseObservation(
         token,
         "SB_CEIC_016_FOREIGN_MEMORY_OBSERVED_BYTES_EXCEED_RESERVATION",
@@ -772,12 +786,24 @@ ForeignMemoryReservationLedger::UpdateObservedBytes(
 
 ForeignMemoryReservationCleanupResult
 ForeignMemoryReservationLedger::CleanupOwner(std::string owner_id) {
+  return CleanupOwnerImpl(owner_id, {});
+}
+
+ForeignMemoryReservationCleanupResult
+ForeignMemoryReservationLedger::CleanupOwner(const MemoryBinaryUuid& owner_uuid) {
+  return CleanupOwnerImpl({}, owner_uuid);
+}
+
+ForeignMemoryReservationCleanupResult
+ForeignMemoryReservationLedger::CleanupOwnerImpl(
+    std::string_view owner_id, const MemoryBinaryUuid& owner_uuid) {
   ForeignMemoryReservationCleanupResult cleanup;
   cleanup.status = OkStatus();
   cleanup.evidence.push_back(kEvidenceAnchor);
   cleanup.evidence.push_back(kAuthorityScope);
-  cleanup.evidence.push_back("foreign_memory.owner_cleanup.owner_id=" + owner_id);
-  if (Blank(owner_id)) {
+  cleanup.evidence.push_back("foreign_memory.owner_cleanup.owner_id=" + std::string(owner_id));
+  if (MemoryUuidPresent(owner_uuid) ? !MemorySystemUuidValid(owner_uuid)
+                                    : Blank(std::string(owner_id))) {
     cleanup.status = ErrorStatus();
     cleanup.diagnostic = MakeForeignMemoryDiagnostic(
         cleanup.status,
@@ -791,7 +817,8 @@ ForeignMemoryReservationLedger::CleanupOwner(std::string owner_id) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& entry : records_) {
-      if (entry.second.request.owner_id == owner_id) {
+      if (entry.second.request.owner_id == owner_id &&
+          entry.second.request.binary_owner_uuid == owner_uuid) {
         tokens.push_back(entry.second.token);
       }
     }
@@ -872,7 +899,8 @@ ForeignMemoryReservationSnapshot ForeignMemoryReservationLedger::Snapshot() cons
   snapshot.owning_scopes.reserve(owning_scope_accounting_.size());
   for (const auto& entry : owning_scope_accounting_) {
     ForeignMemoryOwningScopeSnapshot scope;
-    scope.owning_scope = entry.first;
+    scope.owning_scope = entry.first.first;
+    scope.binary_owning_scope_uuid = entry.first.second;
     scope.active_reservation_count = entry.second.active_reservation_count;
     scope.current_estimated_bytes = entry.second.current_estimated_bytes;
     scope.peak_estimated_bytes = entry.second.peak_estimated_bytes;
@@ -911,7 +939,7 @@ void ForeignMemoryReservationLedger::ApplyReservationLocked(
   UpdatePeak(source.current_observed_bytes, &source.peak_observed_bytes);
   ++source.reservation_count;
 
-  auto& scope = owning_scope_accounting_[record.request.owning_scope];
+  auto& scope = owning_scope_accounting_[{record.request.owning_scope, record.request.binary_owning_scope_uuid}];
   ++scope.active_reservation_count;
   scope.current_estimated_bytes += estimated;
   scope.current_observed_bytes += observed;
@@ -929,7 +957,7 @@ void ForeignMemoryReservationLedger::ApplyObservedDeltaLocked(
     const u64 delta = observed_bytes - previous;
     current_observed_bytes_ += delta;
     source_accounting_[record->request.source].current_observed_bytes += delta;
-    owning_scope_accounting_[record->request.owning_scope].current_observed_bytes += delta;
+    owning_scope_accounting_[{record->request.owning_scope, record->request.binary_owning_scope_uuid}].current_observed_bytes += delta;
   } else {
     const u64 delta = previous - observed_bytes;
     current_observed_bytes_ =
@@ -939,7 +967,7 @@ void ForeignMemoryReservationLedger::ApplyObservedDeltaLocked(
         source.current_observed_bytes >= delta
             ? source.current_observed_bytes - delta
             : 0;
-    auto& scope = owning_scope_accounting_[record->request.owning_scope];
+    auto& scope = owning_scope_accounting_[{record->request.owning_scope, record->request.binary_owning_scope_uuid}];
     scope.current_observed_bytes =
         scope.current_observed_bytes >= delta
             ? scope.current_observed_bytes - delta
@@ -948,7 +976,7 @@ void ForeignMemoryReservationLedger::ApplyObservedDeltaLocked(
   UpdatePeak(current_observed_bytes_, &peak_observed_bytes_);
   auto& source = source_accounting_[record->request.source];
   UpdatePeak(source.current_observed_bytes, &source.peak_observed_bytes);
-  auto& scope = owning_scope_accounting_[record->request.owning_scope];
+  auto& scope = owning_scope_accounting_[{record->request.owning_scope, record->request.binary_owning_scope_uuid}];
   UpdatePeak(scope.current_observed_bytes, &scope.peak_observed_bytes);
   record->observed_bytes = observed_bytes;
   record->confidence = confidence;
@@ -991,7 +1019,7 @@ void ForeignMemoryReservationLedger::ApplyReleaseLocked(
     ++source.owner_cleanup_count;
   }
 
-  auto& scope = owning_scope_accounting_[record.request.owning_scope];
+  auto& scope = owning_scope_accounting_[{record.request.owning_scope, record.request.binary_owning_scope_uuid}];
   if (scope.active_reservation_count != 0) {
     --scope.active_reservation_count;
   }
@@ -1020,6 +1048,8 @@ ForeignMemoryReservationLedger::SnapshotForRecordLocked(
   snapshot.category = record.request.category;
   snapshot.owner_id = record.request.owner_id;
   snapshot.owning_scope = record.request.owning_scope;
+  snapshot.binary_owner_uuid = record.request.binary_owner_uuid;
+  snapshot.binary_owning_scope_uuid = record.request.binary_owning_scope_uuid;
   snapshot.operation_id = record.request.operation_id;
   snapshot.memory_class = record.request.memory_class;
   snapshot.estimated_bytes = record.request.estimated_bytes;

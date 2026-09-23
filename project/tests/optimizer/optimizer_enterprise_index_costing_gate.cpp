@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -33,8 +34,8 @@ bool HasStatus(const std::vector<opt::StatisticsContractStatus>& statuses,
   });
 }
 
-opt::OptimizerStatsIdentity Identity(const std::string& object,
-                                     const std::string& statistic) {
+opt::OptimizerStatsIdentity Identity(const scratchbird::core::platform::Uuid& object,
+                                     const scratchbird::core::platform::Uuid& statistic) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = object;
   identity.statistic_uuid = statistic;
@@ -49,7 +50,7 @@ opt::OptimizerStatsIdentity Identity(const std::string& object,
 
 opt::TableCardinalityStats Table() {
   opt::TableCardinalityStats table;
-  table.identity = Identity("rel.index.cost", "rel.index.cost:table_stats");
+  table.identity = Identity(scratchbird::tests::FixtureUuid(1264, 10), scratchbird::tests::FixtureUuid(1264, 11));
   table.row_count = 100000;
   table.visible_row_count = 98000;
   table.page_count = 1200;
@@ -57,13 +58,13 @@ opt::TableCardinalityStats Table() {
   return table;
 }
 
-opt::IndexStats Index(std::string family, std::string uuid) {
+opt::IndexStats Index(std::string family, std::uint64_t fixture_ordinal) {
   opt::IndexStats index;
-  index.identity = Identity("rel.index.cost", uuid + ":stats");
-  index.index_uuid = std::move(uuid);
-  index.relation_uuid = "rel.index.cost";
+  index.identity = Identity(scratchbird::tests::FixtureUuid(1264, 10), scratchbird::tests::FixtureUuid(1264, 100 + fixture_ordinal));
+  index.index_uuid = scratchbird::tests::FixtureUuid(1264, 200 + fixture_ordinal);
+  index.relation_uuid = scratchbird::tests::FixtureUuid(1264, 10);
   index.index_family = std::move(family);
-  index.descriptor_digest = "descriptor:" + index.index_uuid;
+  index.descriptor_digest = "descriptor-fixture:" + std::to_string(fixture_ordinal);
   index.height = 3;
   index.leaf_pages = 96;
   index.distinct_keys = 10000;
@@ -114,7 +115,7 @@ opt::EnterpriseIndexCostRequest Request(opt::IndexStats index,
 
 bool EnterpriseIndexCostingCoversBtreeAndHashRoutes() {
   // SEARCH_KEY: OEIC_INDEX_COSTING_ENTERPRISE_CLOSURE
-  auto btree = Index("btree", "idx.cost.btree");
+  auto btree = Index("btree", 1);
   btree.equality_lookup_supported = true;
   btree.ordered_range_supported = true;
   auto btree_eq =
@@ -125,7 +126,7 @@ bool EnterpriseIndexCostingCoversBtreeAndHashRoutes() {
   btree_range_req.requested_range_fraction = 0.10;
   auto btree_range = opt::EstimateEnterpriseIndexAccessCost(btree_range_req);
 
-  auto hash = Index("hash", "idx.cost.hash");
+  auto hash = Index("hash", 2);
   hash.equality_lookup_supported = true;
   hash.predicate_coverage = 1.0;
   auto hash_eq =
@@ -145,7 +146,7 @@ bool EnterpriseIndexCostingCoversBtreeAndHashRoutes() {
 }
 
 bool EnterpriseIndexCostingBlocksUnsafeFamilyClaims() {
-  auto bloom = Index("bloom", "idx.cost.bloom");
+  auto bloom = Index("bloom", 3);
   bloom.negative_prune_supported = true;
   bloom.candidate_set_producer = true;
   auto bloom_eq =
@@ -155,7 +156,7 @@ bool EnterpriseIndexCostingBlocksUnsafeFamilyClaims() {
       opt::EstimateEnterpriseIndexAccessCost(
           Request(bloom, opt::EnterpriseIndexAccessIntent::kNegativePrune));
 
-  auto vector = Index("vector_hnsw", "idx.cost.vector");
+  auto vector = Index("vector_hnsw", 4);
   vector.candidate_set_producer = true;
   auto vector_req = Request(vector, opt::EnterpriseIndexAccessIntent::kVectorSearch);
   vector_req.authority.exact_rerank_proven = false;
@@ -163,7 +164,7 @@ bool EnterpriseIndexCostingBlocksUnsafeFamilyClaims() {
   vector_req.authority.exact_rerank_proven = true;
   auto vector_ok = opt::EstimateEnterpriseIndexAccessCost(vector_req);
 
-  auto reference = Index("reference_emulated", "idx.cost.reference");
+  auto reference = Index("reference_emulated", 5);
   reference.candidate_set_producer = true;
   auto reference_result =
       opt::EstimateEnterpriseIndexAccessCost(
@@ -188,7 +189,7 @@ bool EnterpriseIndexCostingBlocksUnsafeFamilyClaims() {
 }
 
 bool EnterpriseIndexCostingRejectsAuthorityDriftAndMissingBenchmarkProof() {
-  auto btree = Index("btree", "idx.cost.authority");
+  auto btree = Index("btree", 6);
   btree.equality_lookup_supported = true;
   auto unsafe = Request(btree, opt::EnterpriseIndexAccessIntent::kEqualityLookup);
   unsafe.authority.parser_or_reference_authority = true;

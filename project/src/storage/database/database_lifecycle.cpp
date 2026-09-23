@@ -7,9 +7,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "native_drop_evidence.hpp"
 
 #include "bootstrap_schema_roots.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_metric_retention_policy.hpp"
+#include "catalog_metric_descriptor.hpp"
+#include "catalog_metric_current_value.hpp"
 #include "catalog_database_record_codec.hpp"
 #include "catalog_schema_record_codec.hpp"
 #include "catalog_filespace_record_codec.hpp"
@@ -112,9 +116,8 @@ using scratchbird::core::datatypes::BuiltinDatatypeDescriptors;
 using scratchbird::core::datatypes::CanonicalTypeName;
 using scratchbird::core::datatypes::TypeFamilyName;
 using scratchbird::core::datatypes::TypeWidthClassName;
-using scratchbird::core::metrics::BaselineMetricRetentionPolicies;
+using scratchbird::core::metrics::MetricRetentionPolicyDefinitions;
 using scratchbird::core::metrics::DefaultMetricRegistry;
-using scratchbird::core::metrics::DefaultMetricRetentionPolicyForDescriptor;
 using scratchbird::core::metrics::MetricDescriptor;
 using scratchbird::core::metrics::MetricReadinessName;
 using scratchbird::core::metrics::MetricRetentionModeName;
@@ -215,7 +218,7 @@ using scratchbird::storage::page::MakeAdaptivePageCachePolicyFromMemoryPolicy;
 using scratchbird::storage::page::PageManagerContext;
 using scratchbird::storage::page::CheckedPageBodyOffset;
 using scratchbird::storage::page::CheckedPageOffset;
-using scratchbird::storage::page::SerializePageCacheCheckpointJson;
+using scratchbird::storage::page::SerializePageCacheCheckpoint;
 using scratchbird::storage::page::ShutdownFlushPageCacheLifecycle;
 using scratchbird::storage::page::StartPageCacheLifecycle;
 using scratchbird::storage::page::BuildTransactionInventoryPageBody;
@@ -1086,26 +1089,6 @@ std::vector<std::string> SplitHexEncodedCatalogStrings(const std::string& value)
     decoded.push_back(HexDecodeCatalogText(item));
   }
   return decoded;
-}
-
-std::string JoinMetricLabelKeys(const MetricDescriptor& descriptor, bool sensitive) {
-  std::vector<std::string> keys;
-  for (const auto& label : descriptor.labels) {
-    if (label.sensitive == sensitive) {
-      keys.push_back(label.required ? label.key + ":required" : label.key);
-    }
-  }
-  return JoinStrings(keys);
-}
-
-std::string JoinMetricBuckets(const MetricDescriptor& descriptor) {
-  std::vector<std::string> buckets;
-  for (const double bucket : descriptor.histogram_buckets) {
-    std::ostringstream stream;
-    stream << bucket;
-    buckets.push_back(stream.str());
-  }
-  return JoinStrings(buckets);
 }
 
 struct CatalogRowsBuildResult {
@@ -2289,7 +2272,10 @@ CatalogRowsBuildResult AddTypedCatalogRecord(std::vector<CatalogPageRow>* rows,
           "catalog.record_codec.fields_missing", {}, "filespace_binary_payload_invalid");
       return CatalogRowsBuildError(refused.status, refused.diagnostic);
     }
-  } else if (kind != CatalogRecordKind::schema &&
+  } else if (!scratchbird::core::catalog::IsCatalogMetricRetentionPolicyPayload(payload) &&
+             kind != CatalogRecordKind::metric_current_value &&
+             kind != CatalogRecordKind::metric_descriptor &&
+             kind != CatalogRecordKind::schema &&
              kind != CatalogRecordKind::localized_name &&
              kind != CatalogRecordKind::localized_comment &&
              kind != CatalogRecordKind::charset &&
@@ -3043,7 +3029,8 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
 
 CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config,
                                               const ResourceSeedCatalogImage& image,
-                                              const LoadedPolicySeedPack& policy_seed_pack) {
+                                              const LoadedPolicySeedPack& policy_seed_pack,
+                                              const TypedUuid& bootstrap_transaction_uuid) {
   CatalogRowsBuildResult result;
   result.status = DatabaseLifecycleOkStatus();
   u32 ordinal = 1;
@@ -3401,119 +3388,87 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
     bootstrap_seed += 4;
   }
 
-  for (const auto& policy : BaselineMetricRetentionPolicies()) {
-    if (policy.scope == "cluster") {
-      continue;
+  for (const auto& definition : MetricRetentionPolicyDefinitions()) {
+    if (definition.scope == "cluster") continue;
+    const auto policy_identity = GenerateEngineIdentityV7(UuidKind::object, bootstrap_seed + 1);
+    if (!policy_identity.ok())
+      return CatalogRowsBuildError(policy_identity.status, policy_identity.diagnostic);
+    scratchbird::core::catalog::CatalogMetricRetentionPolicy record;
+    static_cast<scratchbird::core::metrics::MetricRetentionPolicyDefinition&>(record.policy) = definition;
+    record.policy.policy_uuid = policy_identity.value.value;
+    record.policy.generation = 1;
+    record.origin_transaction_uuid = bootstrap_transaction_uuid;
+    record.origin_local_transaction_id = kBootstrapCatalogTransactionId;
+    const auto encoded = scratchbird::core::catalog::EncodeCatalogMetricRetentionPolicy(record);
+    if (!encoded.ok()) {
+      const auto refused = LifecycleError("CATALOG.INVALID_INPUT",
+          "catalog.metric_retention.invalid", config.path, "bootstrap_policy_binary_payload_invalid");
+      return CatalogRowsBuildError(refused.status, refused.diagnostic);
     }
-    std::string grains;
-    bool first_grain = true;
-    for (const auto grain : policy.rollup_grains) {
-      if (!first_grain) {
-        grains += ",";
-      }
-      grains += MetricRollupGrainName(grain);
-      first_grain = false;
-    }
-    const std::string policy_payload = KeyValuePayload({{"policy_name", policy.policy_name},
-                                                        {"policy_uuid", policy.policy_uuid},
-                                                        {"policy_class", "metric_retention"},
-                                                        {"scope", policy.scope},
-                                                        {"mode", MetricRetentionModeName(policy.mode)},
-                                                        {"raw_retention_seconds", std::to_string(policy.raw_retention_seconds)},
-                                                        {"rollup_retention_seconds", std::to_string(policy.rollup_retention_seconds)},
-                                                        {"rollup_grains", grains},
-                                                        {"purge_batch_limit", std::to_string(policy.purge_batch_limit)},
-                                                        {"max_cardinality", std::to_string(policy.max_cardinality)},
-                                                        {"overflow_behavior", policy.overflow_behavior},
-                                                        {"edit_right", policy.edit_right},
-                                                        {"default_admin_group", policy.default_admin_group},
-                                                        {"evidence_required", policy.evidence_required ? "1" : "0"},
-                                                        {"editable_seed_policy", "1"}});
-    typed = AddTypedCatalogRecord(&result.rows,
-                                  CatalogRecordKind::policy,
-                                  &ordinal,
-                                  bootstrap_seed,
-                                  policy_payload,
-                                  sys_metrics_object.value);
-    if (!typed.ok()) { return typed; }
+    typed = AddTypedCatalogRecord(&result.rows, CatalogRecordKind::policy, &ordinal,
+        bootstrap_seed, {encoded.bytes.begin(), encoded.bytes.end()},
+        sys_metrics_object.value, policy_identity.value);
+    if (!typed.ok()) return typed;
     bootstrap_seed += 4;
   }
 
   const auto metric_descriptors = DefaultMetricRegistry().Descriptors(false);
   for (const auto& descriptor : metric_descriptors) {
-    const auto& retention_policy = DefaultMetricRetentionPolicyForDescriptor(descriptor);
-    const std::string descriptor_payload =
-        KeyValuePayload({{"metric_family", descriptor.family},
-                         {"metric_type", MetricTypeName(descriptor.type)},
-                         {"metric_unit", MetricUnitName(descriptor.unit)},
-                         {"namespace_path", descriptor.namespace_path},
-                         {"producer_owner", descriptor.producer_owner},
-                         {"security_family", descriptor.security_family},
-                         {"visibility_scope", MetricVisibilityScopeName(descriptor.visibility)},
-                         {"readiness", MetricReadinessName(descriptor.readiness)},
-                         {"cluster_only", descriptor.cluster_only ? "1" : "0"},
-                         {"label_keys", JoinMetricLabelKeys(descriptor, false)},
-                         {"sensitive_label_keys", JoinMetricLabelKeys(descriptor, true)},
-                         {"aliases", JoinStrings(descriptor.aliases)},
-                         {"histogram_buckets", JoinMetricBuckets(descriptor)},
-                         {"retention_policy_name", retention_policy.policy_name},
-                         {"retention_policy_uuid", retention_policy.policy_uuid},
-                         {"seeded_at_database_create", "1"},
-                         {"engine_owned", "1"}});
-    typed = AddTypedCatalogRecord(&result.rows,
-                                  CatalogRecordKind::metric_descriptor,
-                                  &ordinal,
-                                  bootstrap_seed,
-                                  descriptor_payload,
-                                  sys_metrics_object.value);
-    if (!typed.ok()) { return typed; }
+    scratchbird::core::catalog::CatalogMetricDescriptor record;
+    record.definition = descriptor;
+    record.binding = descriptor;
+    record.origin_transaction_uuid = bootstrap_transaction_uuid;
+    record.origin_local_transaction_id = kBootstrapCatalogTransactionId;
+    const auto encoded = scratchbird::core::catalog::EncodeCatalogMetricDescriptor(record);
+    if (!encoded.ok()) {
+      const auto refused = LifecycleError("CATALOG.INVALID_INPUT",
+          "catalog.metric_descriptor.invalid", config.path, "bootstrap_descriptor_binary_payload_invalid");
+      return CatalogRowsBuildError(refused.status, refused.diagnostic);
+    }
+    typed = AddTypedCatalogRecord(&result.rows, CatalogRecordKind::metric_descriptor,
+        &ordinal, bootstrap_seed, {encoded.bytes.begin(), encoded.bytes.end()},
+        sys_metrics_object.value, TypedUuid{UuidKind::object, descriptor.metric_uuid});
+    if (!typed.ok()) return typed;
     bootstrap_seed += 4;
   }
 
-  struct MetricCurrentSeed {
-    std::string family;
-    std::string value;
-    std::string state_text;
-    std::string label_set;
-  };
-  const std::string lifecycle_labels =
-      std::string("database_uuid:") + scratchbird::core::uuid::UuidToString(config.database_uuid.value) +
-      ",filespace_uuid:" + scratchbird::core::uuid::UuidToString(config.filespace_uuid.value) +
-      ",component:database_lifecycle,operation:create,result:committed";
+  struct MetricCurrentSeed { const char* family; u64 value; };
+  const scratchbird::core::metrics::MetricLabelSet lifecycle_labels = {
+      {"database_uuid", config.database_uuid.value},
+      {"filespace_uuid", config.filespace_uuid.value},
+      {"component", "database_lifecycle"}, {"operation", "create"}, {"result", "committed"}};
   const std::array<MetricCurrentSeed, 6> initial_metric_values = {{
-      {"sb_tx_begin_total", "1", "", lifecycle_labels},
-      {"sb_tx_commit_total", "1", "", lifecycle_labels},
-      {"sb_tx_active_transactions", "0", "", lifecycle_labels},
-      {"sb_mga_cleanup_horizon_local_transaction_id", std::to_string(kBootstrapCatalogTransactionId), "", lifecycle_labels},
-      {"sb_metric_samples_rejected_total", "0", "", lifecycle_labels},
-      {"sb_filespace_used_bytes", "0", "", lifecycle_labels},
+      {"sb_tx_begin_total", 1}, {"sb_tx_commit_total", 1},
+      {"sb_tx_active_transactions", 0},
+      {"sb_mga_cleanup_horizon_local_transaction_id", kBootstrapCatalogTransactionId},
+      {"sb_metric_samples_rejected_total", 0}, {"sb_filespace_used_bytes", 0},
   }};
   for (const auto& seed : initial_metric_values) {
     const auto* descriptor = DefaultMetricRegistry().FindDescriptor(seed.family);
-    if (descriptor == nullptr || descriptor->cluster_only) {
-      continue;
+    if (descriptor == nullptr || descriptor->cluster_only) continue;
+    const auto identity = GenerateEngineIdentityV7(UuidKind::object, bootstrap_seed + 1);
+    if (!identity.ok()) return CatalogRowsBuildError(identity.status, identity.diagnostic);
+    scratchbird::core::catalog::CatalogMetricCurrentValue record;
+    record.object_uuid = identity.value;
+    record.database_uuid = config.database_uuid;
+    record.descriptor.definition = *descriptor;
+    record.descriptor.binding = *descriptor;
+    record.descriptor.origin_transaction_uuid = bootstrap_transaction_uuid;
+    record.descriptor.origin_local_transaction_id = kBootstrapCatalogTransactionId;
+    record.value.family = descriptor->family;
+    record.value.type = descriptor->type;
+    record.value.labels = lifecycle_labels;
+    record.value.value = seed.value;
+    const auto encoded = scratchbird::core::catalog::EncodeCatalogMetricCurrentValue(record);
+    if (!encoded.ok()) {
+      const auto refused = LifecycleError("CATALOG.INVALID_INPUT",
+          "catalog.metric_current_value.invalid", config.path, "bootstrap_current_value_binary_payload_invalid");
+      return CatalogRowsBuildError(refused.status, refused.diagnostic);
     }
-    const std::string current_payload =
-        KeyValuePayload({{"metric_family", seed.family},
-                         {"metric_type", MetricTypeName(descriptor->type)},
-                         {"metric_unit", MetricUnitName(descriptor->unit)},
-                         {"namespace_path", descriptor->namespace_path},
-                         {"value", seed.value},
-                         {"count", "0"},
-                         {"sum", "0"},
-                         {"state_text", seed.state_text},
-                         {"label_set", seed.label_set},
-                         {"sample_class", "database_create_bootstrap"},
-                         {"creator_local_transaction_id", std::to_string(kBootstrapCatalogTransactionId)},
-                         {"seeded_at_database_create", "1"},
-                         {"engine_owned", "1"}});
-    typed = AddTypedCatalogRecord(&result.rows,
-                                  CatalogRecordKind::metric_current_value,
-                                  &ordinal,
-                                  bootstrap_seed,
-                                  current_payload,
-                                  sys_metrics_object.value);
-    if (!typed.ok()) { return typed; }
+    typed = AddTypedCatalogRecord(&result.rows, CatalogRecordKind::metric_current_value,
+        &ordinal, bootstrap_seed, {encoded.bytes.begin(), encoded.bytes.end()},
+        sys_metrics_object.value, identity.value);
+    if (!typed.ok()) return typed;
     bootstrap_seed += 4;
   }
 
@@ -4871,7 +4826,7 @@ DatabaseEngineAgentInput MakeDatabaseEngineAgentInput(TypedUuid database_uuid,
                                                       const StartupStateRecord& startup_state,
                                                       AgentLifecycleMode mode) {
   DatabaseEngineAgentInput input;
-  input.database_uuid = scratchbird::core::uuid::UuidToString(database_uuid.value);
+  input.database_uuid.assign(reinterpret_cast<const char*>(database_uuid.value.bytes.data()), database_uuid.value.bytes.size());
   input.engine_instance_uuid =
       DeterministicAgentRuntimeObjectUuidFromKey("database_engine_agent|" + input.database_uuid);
   input.database_lifecycle_state = DatabaseLifecyclePhaseName(phase);
@@ -5220,9 +5175,8 @@ PageCacheCheckpointPublication BuildPageCachePublication(TypedUuid database_uuid
                                                          DatabaseLifecyclePhase phase,
                                                          const StartupStateRecord& startup_state) {
   PageCacheCheckpointPublication publication;
-  publication.database_uuid = scratchbird::core::uuid::UuidToString(database_uuid.value);
-  publication.filespace_uuid =
-      scratchbird::core::uuid::UuidToString(startup_state.first_filespace_uuid.value);
+  publication.database_uuid = database_uuid.value;
+  publication.filespace_uuid = startup_state.first_filespace_uuid.value;
   publication.database_lifecycle_state = DatabaseLifecyclePhaseName(phase);
   publication.policy_generation = startup_state.lifecycle_generation == 0 ? 1 : startup_state.lifecycle_generation;
   publication.checkpoint_generation = startup_state.checkpoint_generation == 0
@@ -6090,7 +6044,7 @@ DatabaseLifecycleState MakeState(const std::string& path,
         SerializeDatabaseEngineAgentHealthJson(state.engine_agent_health, false);
     state.cache_checkpoint_present = true;
     state.cache_checkpoint = BuildPageCachePublication(state.database_uuid, phase, state.startup_state);
-    state.cache_checkpoint_json = SerializePageCacheCheckpointJson(state.cache_checkpoint, false);
+    state.cache_checkpoint_binary = SerializePageCacheCheckpoint(state.cache_checkpoint, false);
   }
   return state;
 }
@@ -6183,8 +6137,8 @@ DatabaseLifecycleResult ClassifyReadOnlyLifecycle(const DatabaseOpenConfig& open
   return opened;
 }
 
-std::string TypedUuidText(const TypedUuid& uuid) {
-  return scratchbird::core::uuid::UuidToString(uuid.value);
+std::string TypedUuidBytes(const TypedUuid& uuid) {
+  return {reinterpret_cast<const char*>(uuid.value.bytes.data()), uuid.value.bytes.size()};
 }
 
 bool ExpectedIdentityMatches(const DatabaseLifecycleState& state,
@@ -6192,8 +6146,8 @@ bool ExpectedIdentityMatches(const DatabaseLifecycleState& state,
                              const std::string& expected_filespace_uuid) {
   return !expected_database_uuid.empty() &&
          !expected_filespace_uuid.empty() &&
-         expected_database_uuid == TypedUuidText(state.database_uuid) &&
-         expected_filespace_uuid == TypedUuidText(state.filespace_uuid);
+         expected_database_uuid == TypedUuidBytes(state.database_uuid) &&
+         expected_filespace_uuid == TypedUuidBytes(state.filespace_uuid);
 }
 
 DatabaseLifecycleResult DblcLifecycleError(std::string code,
@@ -6865,9 +6819,14 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
   TypedUuid bootstrap_sysarch_role_uuid;
   TypedUuid bootstrap_membership_uuid;
   {
+    const auto bootstrap_transaction = scratchbird::transaction::mga::LookupLocalTransaction(
+        bootstrap_evidence.inventory, MakeLocalTransactionId(kBootstrapCatalogTransactionId));
+    if (!bootstrap_transaction.ok())
+      return PropagateDiagnostic(bootstrap_transaction.status, bootstrap_transaction.diagnostic);
     const auto catalog_rows = BuildCreateCatalogRows(config,
                                                      resource_seed_catalog,
-                                                     policy_seed_pack);
+                                                     policy_seed_pack,
+                                                     bootstrap_transaction.entry.identity.transaction_uuid);
     if (!catalog_rows.ok()) {
       return PropagateDiagnostic(catalog_rows.status, catalog_rows.diagnostic);
     }
@@ -8286,11 +8245,11 @@ DatabaseLifecycleResult DropDatabaseLifecycle(const DatabaseDropConfig& config) 
     return unsafe("drop_requires_clean_shutdown_final_transaction");
   }
   if (!config.expected_database_uuid.empty() &&
-      config.expected_database_uuid != scratchbird::core::uuid::UuidToString(startup_state.state.database_uuid.value)) {
+      config.expected_database_uuid != TypedUuidBytes(startup_state.state.database_uuid)) {
     return unsafe("drop_database_uuid_proof_mismatch");
   }
   if (!config.expected_filespace_uuid.empty() &&
-      config.expected_filespace_uuid != scratchbird::core::uuid::UuidToString(startup_state.state.first_filespace_uuid.value)) {
+      config.expected_filespace_uuid != TypedUuidBytes(startup_state.state.first_filespace_uuid)) {
     return unsafe("drop_filespace_uuid_proof_mismatch");
   }
 
@@ -8394,32 +8353,24 @@ DatabaseLifecycleResult DropDatabaseLifecycle(const DatabaseDropConfig& config) 
 
   const auto evidence_path = std::filesystem::path(config.path + ".sb.drop_evidence");
   {
-    std::ofstream evidence(evidence_path, std::ios::trunc);
+    std::ofstream evidence(evidence_path, std::ios::binary | std::ios::trunc);
     if (!evidence) {
       return unsafe("drop_evidence_sidecar_write_failed");
     }
-    evidence << "format=SB_DATABASE_DROP_EVIDENCE_V1\n";
-    evidence << "database_uuid=" << scratchbird::core::uuid::UuidToString(database_uuid.value) << "\n";
-    evidence << "filespace_uuid="
-             << scratchbird::core::uuid::UuidToString(startup_state.state.first_filespace_uuid.value)
-             << "\n";
-    evidence << "drop_mode=" << config.drop_mode << "\n";
-    evidence << "drop_local_transaction_id=" << committed_local_transaction_id << "\n";
-    evidence << "operation_uuid=" << config.operation_uuid << "\n";
-    evidence << "actor_uuid=" << config.actor_uuid << "\n";
+    const auto bytes = EncodeNativeDropEvidence({
+        database_uuid.value, startup_state.state.first_filespace_uuid.value,
+        config.operation_uuid, config.actor_uuid, committed_local_transaction_id,
+        static_cast<std::uint8_t>(logical ? 1 : quarantine ? 2 : 3)});
+    evidence.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     evidence.flush();
     if (!evidence) {
       return unsafe("drop_evidence_sidecar_flush_failed");
     }
   }
 
-  auto token = config.operation_uuid.empty() ? std::to_string(drop_unix_epoch_millis)
-                                             : config.operation_uuid;
-  for (char& ch : token) {
-    const bool keep = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                      (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
-    if (!keep) ch = '_';
-  }
+  // A local filename component, not an identity representation. The drop
+  // transaction was allocated durably by this database's MGA inventory.
+  const auto token = std::to_string(committed_local_transaction_id);
   auto move_sidecar = [&](const std::string& suffix, const std::filesystem::path& destination_base) -> bool {
     const auto source = std::filesystem::path(config.path + suffix);
     if (!std::filesystem::exists(source)) return true;
@@ -8456,6 +8407,9 @@ DatabaseLifecycleResult DropDatabaseLifecycle(const DatabaseDropConfig& config) 
   if (quarantine) {
     const auto quarantine_path = std::filesystem::path(config.path + ".sb.quarantine." + token);
     std::error_code ec;
+    if (std::filesystem::exists(quarantine_path, ec) || ec) {
+      return unsafe("drop_quarantine_destination_exists_or_unavailable");
+    }
     std::filesystem::rename(config.path, quarantine_path, ec);
     if (ec) {
       return unsafe("drop_quarantine_rename_failed");

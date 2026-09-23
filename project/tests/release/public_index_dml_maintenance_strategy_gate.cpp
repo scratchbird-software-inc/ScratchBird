@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -142,7 +143,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view value = {}) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == key &&
-        (value.empty() || item.evidence_id == value)) {
+        (value.empty() || scratchbird::tests::EvidenceTextEquals(item.evidence_id, value))) {
       return true;
     }
   }

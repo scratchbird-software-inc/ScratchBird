@@ -4,6 +4,7 @@
 #include "columnar_api.hpp"
 
 #include <algorithm>
+#include "uuid.hpp"
 #include <array>
 #include <limits>
 #include <new>
@@ -14,20 +15,8 @@
 namespace scratchbird::engine::internal_api::nosql {
 namespace {
 
-bool CanonicalUuid(std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (i == 8 || i == 13 || i == 18 || i == 23) continue;
-    if (!((value[i] >= '0' && value[i] <= '9') ||
-          (value[i] >= 'a' && value[i] <= 'f'))) {
-      return false;
-    }
-  }
-  return true;
+bool CanonicalUuid(const EngineUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool ZoneProofUsable(const ColumnarZoneProofV1& proof) {
@@ -91,6 +80,10 @@ bool AccountArray(const std::size_t count, const std::size_t element_bytes,
          CheckedAdd(*bytes, allocation, bytes);
 }
 
+// UUID storage is inline and already included in the owning carrier/array.
+bool AccountString(const EngineUuid&, std::uint64_t* bytes) {
+  return bytes != nullptr;
+}
 bool AccountString(const std::string& value, std::uint64_t* bytes) {
   return CheckedAdd(*bytes, value.capacity(), bytes) &&
          CheckedAdd(*bytes, 1, bytes);
@@ -98,8 +91,8 @@ bool AccountString(const std::string& value, std::uint64_t* bytes) {
 
 bool AccountDescriptor(const EngineDescriptor& descriptor,
                        std::uint64_t* bytes) {
-  return AccountString(descriptor.descriptor_uuid, bytes) &&
-         AccountString(descriptor.descriptor_kind, bytes) &&
+  // The descriptor UUID occupies inline storage, already counted by its owner.
+  return AccountString(descriptor.descriptor_kind, bytes) &&
          AccountString(descriptor.canonical_type_name, bytes) &&
          AccountString(descriptor.encoded_descriptor, bytes);
 }
@@ -139,11 +132,8 @@ std::optional<std::uint64_t> DescriptorBatchMemoryBytes(
 
 bool AccountMgaContext(const executor::PhysicalMgaStatementContext& context,
                        std::uint64_t* bytes) {
-  return AccountString(context.statement_uuid, bytes) &&
-         AccountString(context.owning_transaction_uuid, bytes) &&
-         AccountString(context.statement_snapshot_uuid, bytes) &&
-         AccountString(context.statement_metadata_snapshot_uuid, bytes) &&
-         AccountArray(context.active_excluded_local_transaction_ids.capacity(),
+  // Native UUID arrays are already included in the carrier sizeof.
+  return AccountArray(context.active_excluded_local_transaction_ids.capacity(),
                       sizeof(std::uint64_t), bytes) &&
          AccountArray(context.in_doubt_excluded_local_transaction_ids.capacity(),
                       sizeof(std::uint64_t), bytes) &&
@@ -163,7 +153,7 @@ std::optional<std::uint64_t> RequestCarrierMemoryBytes(
       !AccountMgaContext(request.current_statement_context, &bytes) ||
       !AccountArray(request.operation_ids.capacity(), sizeof(std::string),
                     &bytes) ||
-      !AccountArray(request.row_uuids.capacity(), sizeof(std::string),
+      !AccountArray(request.row_uuids.capacity(), sizeof(EngineUuid),
                     &bytes) ||
       !AccountArray(request.projected_columns.capacity(), sizeof(std::size_t),
                     &bytes) ||
@@ -278,10 +268,10 @@ static ColumnarExecutionResultV2 ExecuteColumnarLogicalV2Impl(
   const auto maximum_set_ordinals = std::max(
       request.logical_rows.rows.size(), request.logical_rows.columns.size());
   const auto row_set_node_bytes =
-      sizeof(std::string_view) + 6 * sizeof(void*);
+      sizeof(EngineUuid) + 6 * sizeof(void*);
   const auto ordinal_set_node_bytes =
       sizeof(std::size_t) + 6 * sizeof(void*);
-  if (!AccountArray(request.row_uuids.size(), sizeof(std::string),
+  if (!AccountArray(request.row_uuids.size(), sizeof(EngineUuid),
                     &output_row_identity_memory) ||
       !CheckedMultiply(request.row_uuids.size(), row_set_node_bytes,
                        &row_set_memory) ||
@@ -321,7 +311,7 @@ static ColumnarExecutionResultV2 ExecuteColumnarLogicalV2Impl(
   result.current_live_memory_bytes = *request_memory;
   result.peak_live_memory_bytes = projected_peak_memory;
   {
-    std::set<std::string_view> unique_rows;
+    std::set<EngineUuid> unique_rows;
     for (const auto& row_uuid : request.row_uuids) {
       if (cancelled()) return cancellation_refusal();
       if (!CanonicalUuid(row_uuid) || !unique_rows.insert(row_uuid).second) {
@@ -496,7 +486,7 @@ static ColumnarExecutionResultV2 ExecuteColumnarLogicalV2Impl(
   if (!retained_batch_memory.has_value() ||
       !CheckedAdd(retained_memory, *retained_batch_memory,
                   &retained_memory) ||
-      !AccountArray(result.row_uuids.capacity(), sizeof(std::string),
+      !AccountArray(result.row_uuids.capacity(), sizeof(EngineUuid),
                     &retained_memory) ||
       !AccountString(result.physical_operator_id, &retained_memory) ||
       !AccountString(result.fallback_reason_id, &retained_memory) ||

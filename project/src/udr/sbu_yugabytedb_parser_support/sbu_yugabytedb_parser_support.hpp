@@ -17,6 +17,7 @@ namespace scratchbird::udr::yugabytedb_parser_support {
 
 inline constexpr std::string_view kSbuYugabytedbPackageUuid =
     "019e13c0-0000-7000-8000-00000000030c";
+inline constexpr scratchbird::udr::runtime::UdrUuid kSbuYugabytedbPackageIdentity{{0x01, 0x9e, 0x13, 0xc0, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0c}};
 inline constexpr std::string_view kSbuYugabytedbPackageName = "sbup_yugabytedb";
 
 struct UdrResult {

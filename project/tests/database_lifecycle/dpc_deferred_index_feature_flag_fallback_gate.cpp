@@ -1,3 +1,6 @@
+#include "dml/mga_relation_read_view.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -43,9 +46,9 @@ void Require(bool condition, std::string_view message) {
 api::EngineRequestContext Context(std::string request_id) {
   api::EngineRequestContext context;
   context.request_id = std::move(request_id);
-  context.database_uuid.canonical = "database-dpc-020";
-  context.principal_uuid.canonical = "principal-dpc-020";
-  context.transaction_uuid.canonical = "transaction-dpc-020";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 1301);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1302);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 1303);
   context.local_transaction_id = 42;
   context.snapshot_visible_through_local_transaction_id = 42;
   context.security_context_present = true;
@@ -55,7 +58,7 @@ api::EngineRequestContext Context(std::string request_id) {
 api::CrudTableRecord Table() {
   api::CrudTableRecord table;
   table.creator_tx = 42;
-  table.table_uuid = "table-dpc-020";
+  table.table_uuid = scratchbird::tests::FixtureUuid(1486, 105);
   table.default_name = "dpc020_table";
   table.columns.push_back({"id", "canonical=int64"});
   table.columns.push_back({"name", "canonical=character"});
@@ -63,14 +66,14 @@ api::CrudTableRecord Table() {
   return table;
 }
 
-api::CrudIndexRecord Index(std::string uuid,
+api::CrudIndexRecord Index(scratchbird::core::platform::Uuid uuid,
                            std::string column,
                            std::string family,
                            bool unique) {
   api::CrudIndexRecord index;
   index.creator_tx = 42;
   index.index_uuid = std::move(uuid);
-  index.table_uuid = "table-dpc-020";
+  index.table_uuid = scratchbird::tests::FixtureUuid(1486, 105);
   index.column_name = std::move(column);
   index.family = std::move(family);
   index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
@@ -83,19 +86,19 @@ api::CrudIndexRecord Index(std::string uuid,
 
 std::vector<api::CrudIndexRecord> Indexes() {
   return {
-      Index("index-dpc-020-name", "name", api::kCrudIndexFamilyBtree, false),
-      Index("index-dpc-020-id-unique", "id", api::kCrudIndexFamilyBtree, true)};
+      Index(scratchbird::tests::FixtureUuid(1486, 102), "name", api::kCrudIndexFamilyBtree, false),
+      Index(scratchbird::tests::FixtureUuid(1486, 101), "id", api::kCrudIndexFamilyBtree, true)};
 }
 
-api::CrudState State() {
-  api::CrudState state;
+api::MgaRelationReadView State() {
+  api::MgaRelationReadView state;
   state.transactions[42] = "active";
   state.tables.push_back(Table());
   api::CrudRowVersionRecord row;
   row.creator_tx = 42;
-  row.table_uuid = "table-dpc-020";
-  row.row_uuid = "row-dpc-020";
-  row.version_uuid = "version-dpc-020";
+  row.table_uuid = scratchbird::tests::FixtureUuid(1486, 105);
+  row.row_uuid = scratchbird::tests::FixtureUuid(1486, 103);
+  row.version_uuid = scratchbird::tests::FixtureUuid(1486, 106);
   row.values.push_back({"id", "1"});
   row.values.push_back({"name", "alpha"});
   row.values.push_back({"payload", "payload-1"});
@@ -121,9 +124,9 @@ api::EngineRowValue InputRow() {
 api::EngineInsertRowsRequest InsertRequest(std::vector<std::string> options = {}) {
   api::EngineInsertRowsRequest request;
   request.context = Context("dpc-020-insert");
-  request.target_table.uuid.canonical = "table-dpc-020";
-  request.target_schema.uuid.canonical = "schema-dpc-020";
-  request.target_object.uuid.canonical = "table-dpc-020";
+  request.target_table.uuid = scratchbird::tests::FixtureUuid(1486, 105);
+  request.target_schema.uuid = scratchbird::tests::FixtureUuid(1486, 104);
+  request.target_object.uuid = scratchbird::tests::FixtureUuid(1486, 105);
   request.estimated_row_count = 1;
   request.input_rows.push_back(InputRow());
   request.option_envelopes = std::move(options);
@@ -134,7 +137,7 @@ api::EngineUpdateRowsRequest UpdateRequest(std::vector<std::string> options = {}
                                            std::string column = "name") {
   api::EngineUpdateRowsRequest request;
   request.context = Context("dpc-020-update");
-  request.target_table.uuid.canonical = "table-dpc-020";
+  request.target_table.uuid = scratchbird::tests::FixtureUuid(1486, 105);
   request.update_predicate.predicate_kind = "column_eq";
   request.update_predicate.canonical_predicate_envelope = "name";
   request.assignments.push_back({std::move(column), Value("character", "charlie")});
@@ -145,7 +148,7 @@ api::EngineUpdateRowsRequest UpdateRequest(std::vector<std::string> options = {}
 api::EngineDeleteRowsRequest DeleteRequest(std::vector<std::string> options = {}) {
   api::EngineDeleteRowsRequest request;
   request.context = Context("dpc-020-delete");
-  request.target_table.uuid.canonical = "table-dpc-020";
+  request.target_table.uuid = scratchbird::tests::FixtureUuid(1486, 105);
   request.delete_predicate.predicate_kind = "row_uuid_match";
   request.tombstone_only = true;
   request.option_envelopes = std::move(options);
@@ -167,7 +170,7 @@ std::vector<std::string> RuntimeProofOptions() {
 }
 
 bool HasInsertAction(const api::IndexMaintenancePlan& plan,
-                     const std::string& index_uuid,
+                     const scratchbird::core::platform::Uuid& index_uuid,
                      api::InsertIndexMaintenanceAction action) {
   for (const auto& entry : plan.entries) {
     if (entry.index.index_uuid == index_uuid && entry.action == action) {
@@ -178,7 +181,7 @@ bool HasInsertAction(const api::IndexMaintenancePlan& plan,
 }
 
 bool HasUpdateAction(const api::UpdateIndexMaintenancePlan& plan,
-                     const std::string& index_uuid,
+                     const scratchbird::core::platform::Uuid& index_uuid,
                      api::UpdateIndexMaintenanceAction action) {
   for (const auto& entry : plan.entries) {
     if (entry.index.index_uuid == index_uuid && entry.action == action) {
@@ -189,7 +192,7 @@ bool HasUpdateAction(const api::UpdateIndexMaintenancePlan& plan,
 }
 
 bool HasDeleteAction(const api::DeleteIndexMaintenancePlan& plan,
-                     const std::string& index_uuid,
+                     const scratchbird::core::platform::Uuid& index_uuid,
                      api::DeleteIndexMaintenanceAction action) {
   for (const auto& entry : plan.entries) {
     if (entry.index.index_uuid == index_uuid && entry.action == action) {
@@ -203,7 +206,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& entry : evidence) {
-    if (entry.evidence_kind == kind && entry.evidence_id == id) {
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(entry.evidence_id, id)) {
       return true;
     }
   }
@@ -220,15 +223,15 @@ void RequireInsertSynchronous(const api::InsertBatchContext& context,
   Require(context.delta_ledger_policy.fallback_reason == reason,
           "DPC-020 insert fallback reason mismatch");
   Require(!HasInsertAction(context.index_plan,
-                           "index-dpc-020-name",
+                           scratchbird::tests::FixtureUuid(1486, 102),
                            api::InsertIndexMaintenanceAction::committed_delta_ledger),
           "DPC-020 insert selected committed delta ledger while runtime gate was closed");
   Require(HasInsertAction(context.index_plan,
-                          "index-dpc-020-name",
+                          scratchbird::tests::FixtureUuid(1486, 102),
                           api::InsertIndexMaintenanceAction::synchronous_exact_insert),
           "DPC-020 insert did not use synchronous non-unique maintenance");
   Require(HasInsertAction(context.index_plan,
-                          "index-dpc-020-id-unique",
+                          scratchbird::tests::FixtureUuid(1486, 101),
                           api::InsertIndexMaintenanceAction::synchronous_exact_probe_then_insert),
           "DPC-020 insert did not preserve unique preflight");
 
@@ -250,11 +253,11 @@ void RequireUpdateSynchronous(const api::UpdateBatchContext& context,
   Require(context.delta_ledger_policy.fallback_reason == reason,
           "DPC-020 update fallback reason mismatch");
   Require(!HasUpdateAction(context.index_plan,
-                           "index-dpc-020-name",
+                           scratchbird::tests::FixtureUuid(1486, 102),
                            api::UpdateIndexMaintenanceAction::committed_delta_ledger),
           "DPC-020 update selected committed delta ledger while runtime gate was closed");
   Require(HasUpdateAction(context.index_plan,
-                          "index-dpc-020-name",
+                          scratchbird::tests::FixtureUuid(1486, 102),
                           api::UpdateIndexMaintenanceAction::synchronous_exact_rewrite),
           "DPC-020 update did not use synchronous non-unique rewrite");
 
@@ -276,15 +279,15 @@ void RequireDeleteSynchronous(const api::DeleteBatchContext& context,
   Require(context.delta_ledger_policy.fallback_reason == reason,
           "DPC-020 delete fallback reason mismatch");
   Require(!HasDeleteAction(context.index_plan,
-                           "index-dpc-020-name",
+                           scratchbird::tests::FixtureUuid(1486, 102),
                            api::DeleteIndexMaintenanceAction::tombstone_delta_ledger),
           "DPC-020 delete selected tombstone delta ledger while runtime gate was closed");
   Require(HasDeleteAction(context.index_plan,
-                          "index-dpc-020-name",
+                          scratchbird::tests::FixtureUuid(1486, 102),
                           api::DeleteIndexMaintenanceAction::visibility_recheck_only),
           "DPC-020 delete did not use visibility recheck fallback");
   Require(HasDeleteAction(context.index_plan,
-                          "index-dpc-020-id-unique",
+                          scratchbird::tests::FixtureUuid(1486, 101),
                           api::DeleteIndexMaintenanceAction::visibility_recheck_only),
           "DPC-020 delete did not keep unique index synchronous-safe");
 
@@ -355,11 +358,11 @@ void ValidateRuntimeOnWithProofsAdmitsNonUniqueOnly() {
   Require(insert.accepted, "DPC-020 insert runtime-on context was refused");
   Require(insert.delta_ledger_policy.enabled, "DPC-020 insert did not admit runtime-on proofs");
   Require(HasInsertAction(insert.index_plan,
-                          "index-dpc-020-name",
+                          scratchbird::tests::FixtureUuid(1486, 102),
                           api::InsertIndexMaintenanceAction::committed_delta_ledger),
           "DPC-020 insert did not select non-unique committed delta ledger");
   Require(HasInsertAction(insert.index_plan,
-                          "index-dpc-020-id-unique",
+                          scratchbird::tests::FixtureUuid(1486, 101),
                           api::InsertIndexMaintenanceAction::synchronous_exact_probe_then_insert),
           "DPC-020 insert bypassed DPC-019 unique preflight");
 
@@ -367,11 +370,11 @@ void ValidateRuntimeOnWithProofsAdmitsNonUniqueOnly() {
   Require(update.accepted, "DPC-020 update runtime-on context was refused");
   Require(update.delta_ledger_policy.enabled, "DPC-020 update did not admit runtime-on proofs");
   Require(HasUpdateAction(update.index_plan,
-                          "index-dpc-020-name",
+                          scratchbird::tests::FixtureUuid(1486, 102),
                           api::UpdateIndexMaintenanceAction::committed_delta_ledger),
           "DPC-020 update did not select non-unique committed delta ledger");
   Require(HasUpdateAction(update.index_plan,
-                          "index-dpc-020-id-unique",
+                          scratchbird::tests::FixtureUuid(1486, 101),
                           api::UpdateIndexMaintenanceAction::unaffected),
           "DPC-020 update incorrectly touched the unique index");
 
@@ -381,11 +384,11 @@ void ValidateRuntimeOnWithProofsAdmitsNonUniqueOnly() {
                                                          indexes);
   Require(unique_update.accepted, "DPC-020 unique-key update context was refused");
   Require(!HasUpdateAction(unique_update.index_plan,
-                           "index-dpc-020-id-unique",
+                           scratchbird::tests::FixtureUuid(1486, 101),
                            api::UpdateIndexMaintenanceAction::committed_delta_ledger),
           "DPC-020 update selected delta ledger for unique index");
   Require(HasUpdateAction(unique_update.index_plan,
-                          "index-dpc-020-id-unique",
+                          scratchbird::tests::FixtureUuid(1486, 101),
                           api::UpdateIndexMaintenanceAction::synchronous_exact_probe_then_rewrite),
           "DPC-020 update bypassed DPC-019 unique rewrite preflight");
 
@@ -393,15 +396,15 @@ void ValidateRuntimeOnWithProofsAdmitsNonUniqueOnly() {
   Require(delete_context.accepted, "DPC-020 delete runtime-on context was refused");
   Require(delete_context.delta_ledger_policy.enabled, "DPC-020 delete did not admit runtime-on proofs");
   Require(HasDeleteAction(delete_context.index_plan,
-                          "index-dpc-020-name",
+                          scratchbird::tests::FixtureUuid(1486, 102),
                           api::DeleteIndexMaintenanceAction::tombstone_delta_ledger),
           "DPC-020 delete did not select non-unique tombstone delta ledger");
   Require(!HasDeleteAction(delete_context.index_plan,
-                           "index-dpc-020-id-unique",
+                           scratchbird::tests::FixtureUuid(1486, 101),
                            api::DeleteIndexMaintenanceAction::tombstone_delta_ledger),
           "DPC-020 delete selected tombstone delta ledger for unique index");
   Require(HasDeleteAction(delete_context.index_plan,
-                          "index-dpc-020-id-unique",
+                          scratchbird::tests::FixtureUuid(1486, 101),
                           api::DeleteIndexMaintenanceAction::visibility_recheck_only),
           "DPC-020 delete did not preserve unique visibility recheck");
 }

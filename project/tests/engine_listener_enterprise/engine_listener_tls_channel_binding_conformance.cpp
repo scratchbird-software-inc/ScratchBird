@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -63,7 +64,7 @@ scratchbird::server::HostedEngineState EngineState() {
   scratchbird::server::HostedDatabaseSnapshot database;
   database.state = scratchbird::server::HostedDatabaseState::kOpen;
   database.database_path = "default";
-  database.database_uuid = "018f0000-0000-7000-8000-000000000066";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000000066");
   database.database_open = true;
   database.write_admission_fenced = false;
   database.config_policy_security_lifecycle_present = true;

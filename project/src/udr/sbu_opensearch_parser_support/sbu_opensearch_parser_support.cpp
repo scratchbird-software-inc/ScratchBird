@@ -319,8 +319,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus OpensearchLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuOpensearchPackageUuid) {
+scratchbird::udr::runtime::UdrStatus OpensearchLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuOpensearchPackageIdentity) {
     return {false, "UDR.OPENSEARCH.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -533,7 +533,7 @@ UdrResult sbu_opensearch_debug_capabilities(std::string_view render_policy) {
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_opensearch_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuOpensearchPackageUuid);
+  descriptor.package_uuid = kSbuOpensearchPackageIdentity;
   descriptor.package_name = std::string(kSbuOpensearchPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "opensearch-parser-support-beta-closure";

@@ -119,7 +119,7 @@ void RefusedSourceMap(const Fixture& fixture,
 bridge::StatementSourceArtifactRetentionV1 RetainArtifact(
     bridge::StatementContextReceiptHandle receipt,
     const bridge::StatementContextReceiptView& view,
-    const std::string& parser, const sm::SblrSourceMapEntryV1& entry,
+    const platform::Uuid& parser, const sm::SblrSourceMapEntryV1& entry,
     sm::SblrSourceArtifactRedactionClassV1 redaction) {
   sm::SblrSourceArtifactMapV1 artifact;
   artifact.artifact_uuid=entry.source_artifact_uuid;
@@ -164,19 +164,19 @@ int main(){auto fixture=CreateFixture();PublicSession session(fixture);std::atom
   bool premature_evidence = false;
   sb_engine_result_t* observed_public_slot = nullptr;
   bool premature_result = false;
-  const auto parser_uuid=Text(NewUuid(platform::UuidKind::object,9402));
-  auto context=BeginTransaction(fixture,&probes);context.current_package_uuid.canonical=parser_uuid;
+  const auto parser_uuid=Identity(NewUuid(platform::UuidKind::object,9402));
+  auto context=BeginTransaction(fixture,&probes);context.current_package_uuid=parser_uuid;
   context.query_cancellation_requested=[&] {
     if (probes.fetch_add(1) + 1 != cancel_at.load()) return false;
     premature_evidence = ReadTrace(trace_path).size() != trace_bytes_before_dispatch;
     premature_result = observed_public_slot && *observed_public_slot != nullptr;
     return true;
   };
-  bridge::StatementContextAcquireRequest acquire;acquire.engine_context=&context;acquire.exact_transaction_uuid=context.transaction_uuid.canonical;
+  bridge::StatementContextAcquireRequest acquire;acquire.engine_context=&context;acquire.exact_transaction_uuid=context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;bridge::StatementContextReceiptView view;sb_engine_result_t result=nullptr;
   Require(bridge::AcquireStatementContextReceipt(session.session,&acquire,&receipt,&view,&result)==SB_ENGINE_STATUS_OK,"002340 receipt acquire failed");if(result)(void)sb_engine_result_release(result);
   sm::SblrSourceMapBoundAstV1 ast;ast.statement_receipt_uuid=RawUuid(view.receipt_uuid);ast.nodes.push_back({7,0,1});const auto smba=sm::EncodeSblrSourceMapBoundAstV1(&ast);
-  sm::SblrSourceMapEntryV1 entry;entry.node_id=7;entry.source_artifact_uuid=RawUuid(Text(NewUuid(platform::UuidKind::object,9401)));entry.source_artifact_generation=1;entry.byte_length=1;entry.line=1;entry.column=1;
+  sm::SblrSourceMapEntryV1 entry;entry.node_id=7;entry.source_artifact_uuid=RawUuid(Identity(NewUuid(platform::UuidKind::object,9401)));entry.source_artifact_generation=1;entry.byte_length=1;entry.line=1;entry.column=1;
   sm::SblrSourceMapIssueRequestV1 issue;issue.statement_receipt_uuid=ast.statement_receipt_uuid;issue.registry_snapshot_uuid=RawUuid(view.catalog_epoch_uuid);issue.registry_generation=view.literal_catalog_generation;issue.canonical_bound_ast=smba;issue.entries={entry};auto smrq=sm::EncodeSblrSourceMapIssueRequestV1(&issue);Bytes smrs;
 
   RefusedSourceMap(fixture,receipt,issue,SB_ENGINE_STATUS_SECURITY_DENIED,"sblr.source_map.hidden");
@@ -189,7 +189,7 @@ int main(){auto fixture=CreateFixture();PublicSession session(fixture);std::atom
   auto mixed=stale;auto mixed_ast=ast;mixed_ast.nodes.push_back({8,7,1});
   mixed.canonical_bound_ast=sm::EncodeSblrSourceMapBoundAstV1(&mixed_ast);
   auto hidden_entry=entry;hidden_entry.node_id=8;hidden_entry.parent_node_id=7;
-  hidden_entry.source_artifact_uuid=RawUuid(Text(NewUuid(platform::UuidKind::object,9404)));
+  hidden_entry.source_artifact_uuid=RawUuid(Identity(NewUuid(platform::UuidKind::object,9404)));
   mixed.entries.push_back(hidden_entry);
   RefusedSourceMap(fixture,receipt,mixed,SB_ENGINE_STATUS_SECURITY_DENIED,"sblr.source_map.hidden");
   for(unsigned field=0;field!=5;++field){
@@ -204,7 +204,7 @@ int main(){auto fixture=CreateFixture();PublicSession session(fixture);std::atom
   auto unmapped=issue;auto other_ast=ast;other_ast.nodes[0].node_id=8;
   unmapped.entries[0].node_id=8;unmapped.canonical_bound_ast=sm::EncodeSblrSourceMapBoundAstV1(&other_ast);
   RefusedSourceMap(fixture,receipt,unmapped,SB_ENGINE_STATUS_INVALID_ARGUMENT,"sblr.source_map.artifact_span_invalid");
-  auto protected_entry=entry;protected_entry.source_artifact_uuid=RawUuid(Text(NewUuid(platform::UuidKind::object,9403)));
+  auto protected_entry=entry;protected_entry.source_artifact_uuid=RawUuid(Identity(NewUuid(platform::UuidKind::object,9403)));
   RetainArtifact(receipt,view,parser_uuid,protected_entry,sm::SblrSourceArtifactRedactionClassV1::security_redacted);
   auto downgrade=issue;downgrade.entries={protected_entry};
   RefusedSourceMap(fixture,receipt,downgrade,SB_ENGINE_STATUS_SECURITY_DENIED,"sblr.source_map.hidden");
@@ -238,7 +238,7 @@ int main(){auto fixture=CreateFixture();PublicSession session(fixture);std::atom
   sb_engine_session_t second_session=nullptr;
   Require(sb_engine_session_begin(session.engine,&session_params,&second_session,nullptr)==SB_ENGINE_STATUS_OK,"second public session");
   api::EngineBeginTransactionRequest second_begin;second_begin.context=context;
-  second_begin.context.session_uuid.canonical=Text(other_session_uuid);
+  second_begin.context.session_uuid=Identity(other_session_uuid);
   second_begin.context.local_transaction_id=0;second_begin.context.transaction_uuid={};
   second_begin.isolation_level="read_committed";
   const auto second_begun=api::EngineBeginTransaction(second_begin);
@@ -249,7 +249,7 @@ int main(){auto fixture=CreateFixture();PublicSession session(fixture);std::atom
   second_context.snapshot_visible_through_local_transaction_id=second_begun.snapshot_visible_through_local_transaction_id;
   bridge::StatementContextAcquireRequest second_acquire;
   second_acquire.engine_context=&second_context;
-  second_acquire.exact_transaction_uuid=second_context.transaction_uuid.canonical;
+  second_acquire.exact_transaction_uuid=second_context.transaction_uuid;
   Require(bridge::AcquireStatementContextReceipt(second_session,&second_acquire,&other_receipt,&other_view,&result)==SB_ENGINE_STATUS_OK,"cross-session receipt");
   if(result)(void)sb_engine_result_release(result);
   other_issue.statement_receipt_uuid=RawUuid(other_view.receipt_uuid);
@@ -270,7 +270,7 @@ int main(){auto fixture=CreateFixture();PublicSession session(fixture);std::atom
   auto member=sblr::MakeSblrEnvelope("engine.op.source_map","SBLR_SOURCE_MAP","ia01.source_map.cancel");member.opcode_code=6;member.result_shape="void";member.diagnostic_shape="diagnostic_vector";member.parser_package_uuid=parser_uuid;member.registry_snapshot_uuid=view.catalog_epoch_uuid;member.parser_resolved_names_to_uuids=true;sblr::SblrOperand operand;operand.ordinal=1;operand.type="source_map.vector";operand.name="source_map";operand.value_kind=sblr::SblrValueKind::descriptor_ref;operand.value_body.assign(issued.descriptor_uuid.begin(),issued.descriptor_uuid.end());U64(&operand.value_body,issued.descriptor_generation);member.operands.push_back(std::move(operand));const auto member_validation=sblr::ValidateSblrEnvelope(member);if(!member_validation.ok)for(const auto&d:member_validation.diagnostics)std::cerr<<d.code<<':'<<d.message<<'\n';Require(member_validation.ok,"002340 source map member invalid");
   const auto package=RawUuid(view.bound_ast_uuid);sblr::SblrOpcodeStream package_stream;package_stream.package_descriptor_uuid=view.bound_ast_uuid;package_stream.registry_snapshot_uuid=view.catalog_epoch_uuid;package_stream.operations={Frame(true,parser_uuid,view.catalog_epoch_uuid,package),std::move(member),Frame(false,parser_uuid,view.catalog_epoch_uuid,package)};const auto stream=sblr::EncodeSblrOpcodeStream(package_stream);Require(!stream.empty(),"002340 SBOS invalid");auto submission=BuildSubmission(fixture,view,parser_uuid);auto dc=wire::DecodeSblrContainerBytes(reinterpret_cast<const std::uint8_t*>(submission.container.data()),submission.container.size());dc.container.operation_payload=stream;const auto outer=wire::EncodeSblrContainer(dc.container);auto de=wire::DecodeSblrExecutionEnvelopeV1Bytes(reinterpret_cast<const std::uint8_t*>(submission.ingress.data()),submission.ingress.size());de.envelope.fields[5]={1};U64(&de.envelope.fields[5],stream.size());de.envelope.fields[5].insert(de.envelope.fields[5].end(),stream.begin(),stream.end());de.envelope.fields[7]={1};U32(&de.envelope.fields[7],wire::SblrCrc32c(stream.data(),stream.size()));de.envelope.fields[8]=V64(stream.size());const auto ingress=wire::EncodeSblrExecutionEnvelopeV1(de.envelope);submission={{outer.begin(),outer.end()},{ingress.begin(),ingress.end()},stream};
   bridge::StatementPackageAdmissionReservationRequest rr;rr.receipt=receipt;rr.canonical_payload_bytes=stream.data();rr.canonical_payload_size=stream.size();rr.payload_kind=bridge::StatementSblrPayloadKind::kOpcodeStream;bridge::StatementPackageAdmissionReservationHandle reservation;bridge::StatementPackageAdmissionReservationView rv;Require(bridge::AcquireStatementPackageAdmissionReservation(&rr,&reservation,&rv,&result)==SB_ENGINE_STATUS_OK,"002340 reservation failed");if(result)(void)sb_engine_result_release(result);
-  server::ServerSblrAdmissionRequest a;a.encoded_sblr_container=submission.container;a.encoded_execution_envelope=submission.ingress;a.admitted_parser_package_uuid=parser_uuid;a.admitted_parser_package_version_major=1;a.admitted_registry_snapshot_uuid=view.catalog_epoch_uuid;a.authenticated_principal_uuid=Text(fixture.principal_uuid);a.catalog_snapshot_uuid=view.statement_metadata_snapshot_uuid;a.engine_mga_statement_uuid=view.statement_uuid;a.engine_mga_snapshot_uuid=view.statement_snapshot_uuid;a.catalog_epoch=view.catalog_generation_id;a.security_epoch=view.security_epoch;a.resource_epoch=view.resource_epoch;a.route_snapshot_uuid=view.optimizer_route_snapshot_uuid;a.route_epoch=view.optimizer_route_epoch;a.route_generation=view.optimizer_route_generation;a.security_snapshot_uuid=view.security_context_uuid;a.security_observation_generation=view.security_epoch;a.route_snapshot_engine_owned=true;a.security_snapshot_engine_owned=true;a.package_reservation_handle=reservation.opaque_id;a.reserved_payload_kind=server::ServerSblrPayloadKind::opcode_stream;a.reserved_payload_size=rv.payload_size;a.reserved_record_count=rv.record_count;a.reserved_resource_policy_generation=rv.resource_policy_generation;a.reserved_payload_sha256=rv.payload_sha256;const auto admitted=server::AdmitServerSblrEnvelope(a);Require(admitted.admitted&&admitted.admission_token,"002340 admission failed");auto dispatch=DispatchRequest(receipt,session.session,reservation,admitted.admission_token);result=nullptr;const auto status=bridge::DispatchStatementContextReceipt(&dispatch,&result);Require(status==SB_ENGINE_STATUS_TIMEOUT&&result,"002340 cancellation status drifted");sb_engine_diagnostic_set_view_t ds{};Require(sb_engine_result_diagnostics(result,&ds)==SB_ENGINE_STATUS_OK&&ds.diagnostic_count==1,"002340 diagnostic missing");Require(std::string(ds.diagnostics[0].message_key.data,ds.diagnostics[0].message_key.size_bytes)=="sblr.source_map.cancelled_before_entry","002340 cancellation boundary drifted");Require(probes.load()==2,"002340 callback sequence drifted");(void)sb_engine_result_release(result);result=nullptr;Require(bridge::DispatchStatementContextReceipt(&dispatch,&result)==SB_ENGINE_STATUS_INVALID_HANDLE,"002340 token replay admitted");if(result)(void)sb_engine_result_release(result);
+  server::ServerSblrAdmissionRequest a;a.encoded_sblr_container=submission.container;a.encoded_execution_envelope=submission.ingress;a.admitted_parser_package_uuid=parser_uuid;a.admitted_parser_package_version_major=1;a.admitted_registry_snapshot_uuid=view.catalog_epoch_uuid;a.authenticated_principal_uuid=Identity(fixture.principal_uuid);a.catalog_snapshot_uuid=view.statement_metadata_snapshot_uuid;a.engine_mga_statement_uuid=view.statement_uuid;a.engine_mga_snapshot_uuid=view.statement_snapshot_uuid;a.catalog_epoch=view.catalog_generation_id;a.security_epoch=view.security_epoch;a.resource_epoch=view.resource_epoch;a.route_snapshot_uuid=view.optimizer_route_snapshot_uuid;a.route_epoch=view.optimizer_route_epoch;a.route_generation=view.optimizer_route_generation;a.security_snapshot_uuid=view.security_context_uuid;a.security_observation_generation=view.security_epoch;a.route_snapshot_engine_owned=true;a.security_snapshot_engine_owned=true;a.package_reservation_handle=reservation.opaque_id;a.reserved_payload_kind=server::ServerSblrPayloadKind::opcode_stream;a.reserved_payload_size=rv.payload_size;a.reserved_record_count=rv.record_count;a.reserved_resource_policy_generation=rv.resource_policy_generation;a.reserved_payload_sha256=rv.payload_sha256;const auto admitted=server::AdmitServerSblrEnvelope(a);Require(admitted.admitted&&admitted.admission_token,"002340 admission failed");auto dispatch=DispatchRequest(receipt,session.session,reservation,admitted.admission_token);result=nullptr;const auto status=bridge::DispatchStatementContextReceipt(&dispatch,&result);Require(status==SB_ENGINE_STATUS_TIMEOUT&&result,"002340 cancellation status drifted");sb_engine_diagnostic_set_view_t ds{};Require(sb_engine_result_diagnostics(result,&ds)==SB_ENGINE_STATUS_OK&&ds.diagnostic_count==1,"002340 diagnostic missing");Require(std::string(ds.diagnostics[0].message_key.data,ds.diagnostics[0].message_key.size_bytes)=="sblr.source_map.cancelled_before_entry","002340 cancellation boundary drifted");Require(probes.load()==2,"002340 callback sequence drifted");(void)sb_engine_result_release(result);result=nullptr;Require(bridge::DispatchStatementContextReceipt(&dispatch,&result)==SB_ENGINE_STATUS_INVALID_HANDLE,"002340 token replay admitted");if(result)(void)sb_engine_result_release(result);
   bool observed_final_cancellation = false;
   unsigned publication_cases = 0;
   ScopedSourceMapTrace trace_scope(trace_path);

@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -19,6 +20,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "relational_descriptor_codec.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
 #include "sblr_transaction_commit_runtime.hpp"
 #include "transaction/transaction_api.hpp"
@@ -88,7 +91,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
   }
@@ -157,7 +160,7 @@ std::string UuidText(const TypedUuid& typed_uuid) {
 api::EngineDescriptor Descriptor(std::string canonical_type_name,
                                  const TypedUuid& descriptor_uuid = {}) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = UuidText(descriptor_uuid);
+  descriptor.descriptor_uuid = descriptor_uuid.value;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::move(canonical_type_name);
   descriptor.encoded_descriptor = "canonical=" + descriptor.canonical_type_name;
@@ -177,10 +180,10 @@ void AddGrant(api::EngineRequestContext* context,
               std::string right,
               u64 offset) {
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = UuidText(MakeUuid(UuidKind::object, offset));
+  grant.grant_uuid = MakeUuid(UuidKind::object, offset).value;
   grant.subject_uuid = context->principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = UuidText(target_uuid);
+  grant.target_uuid = target_uuid.value;
   grant.right = std::move(right);
   grant.security_epoch = context->security_epoch;
   context->authorization_context.grants.push_back(std::move(grant));
@@ -192,15 +195,15 @@ api::EngineRequestContext Context(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = UuidText(fixture.database_uuid);
-  context.node_uuid.canonical = UuidText(MakeUuid(UuidKind::object, 10));
-  context.principal_uuid.canonical = UuidText(fixture.principal_uuid);
-  context.session_uuid.canonical = UuidText(fixture.session_uuid);
-  context.statement_uuid.canonical = UuidText(MakeUuid(UuidKind::object, 11));
-  context.statement_metadata_snapshot_uuid.canonical =
-      UuidText(MakeUuid(UuidKind::object, 13));
-  context.catalog_epoch_uuid.canonical =
-      UuidText(MakeUuid(UuidKind::object, 14));
+  context.database_uuid = fixture.database_uuid.value;
+  context.node_uuid = MakeUuid(UuidKind::object, 10).value;
+  context.principal_uuid = fixture.principal_uuid.value;
+  context.session_uuid = fixture.session_uuid.value;
+  context.statement_uuid = MakeUuid(UuidKind::object, 11).value;
+  context.statement_metadata_snapshot_uuid =
+      MakeUuid(UuidKind::object, 13).value;
+  context.catalog_epoch_uuid =
+      MakeUuid(UuidKind::object, 14).value;
   context.statement_metadata_snapshot_engine_owned = true;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
@@ -211,8 +214,8 @@ api::EngineRequestContext Context(const Fixture& fixture,
   context.resource_epoch = 13;
   context.name_resolution_epoch = 17;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      UuidText(MakeUuid(UuidKind::object, 12));
+  context.authorization_context.authority_uuid =
+      MakeUuid(UuidKind::object, 12).value;
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
   context.authorization_context.policy_epoch = 19;
@@ -222,12 +225,12 @@ api::EngineRequestContext Context(const Fixture& fixture,
       {context.principal_uuid, "principal"});
   context.authorization_context.evidence_tags.push_back(
       "public_sblr_uuid_mga_route_integration_gate");
-  context.optimizer_capability_snapshot_uuid.canonical =
-      UuidText(MakeUuid(UuidKind::object, 15));
-  context.optimizer_resource_snapshot_uuid.canonical =
-      UuidText(MakeUuid(UuidKind::object, 16));
-  context.optimizer_route_snapshot_uuid.canonical =
-      UuidText(MakeUuid(UuidKind::object, 17));
+  context.optimizer_capability_snapshot_uuid =
+      MakeUuid(UuidKind::object, 15).value;
+  context.optimizer_resource_snapshot_uuid =
+      MakeUuid(UuidKind::object, 16).value;
+  context.optimizer_route_snapshot_uuid =
+      MakeUuid(UuidKind::object, 17).value;
   context.optimizer_route_epoch = 23;
   context.optimizer_route_generation = 29;
   context.optimizer_memory_budget_bytes = 8 * 1024 * 1024;
@@ -264,9 +267,9 @@ sblr::SblrOperationEnvelope Envelope(std::string operation_id,
   envelope.result_shape = registry_entry->result_contract;
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
-      UuidText(MakeUuid(UuidKind::object, 40));
+      MakeUuid(UuidKind::object, 40).value;
   envelope.registry_snapshot_uuid =
-      UuidText(MakeUuid(UuidKind::object, 41));
+      MakeUuid(UuidKind::object, 41).value;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
@@ -355,9 +358,78 @@ void AppendLittleEndianU64(std::vector<std::uint8_t>* output,
   }
 }
 
+void RequireEncoding(bool ok, std::string_view detail) {
+  if (!Expect(ok, detail)) std::abort();
+}
+
+sblr::SblrOperand IdentityOperand(std::string name, const scratchbird::core::platform::Uuid& id) {
+  sblr::SblrOperand out;
+  out.type = "uuid";
+  out.name = std::move(name);
+  out.value_kind = sblr::SblrValueKind::uuid_ref;
+  out.value_body.assign(id.bytes.begin(), id.bytes.end());
+  return out;
+}
+
+sblr::SblrOperand DescriptorOperand(std::uint32_t id, const scratchbird::core::platform::Uuid& identity,
+                                   const scratchbird::core::platform::Uuid& type) {
+  api::RelationalTypeDescriptor value;
+  value.descriptor_id = id;
+  value.descriptor_uuid = identity;
+  value.type_uuid = type;
+  value.nullability = api::RelationalNullability::kNonNull;
+  sblr::SblrOperand out;
+  out.type = "relational_descriptor_v1";
+  out.name = "slot_" + std::to_string(id);
+  out.value_kind = sblr::SblrValueKind::relational_type_descriptor;
+  RequireEncoding(sblr::EncodeRelationalTypeDescriptorV1(value, &out.value_body), "PCR-006 descriptor encoding failed");
+  return out;
+}
+
+sblr::SblrOperand ExpressionOperand(std::uint32_t id, std::uint32_t descriptor,
+    api::RelationalExpressionKind kind, std::vector<std::uint32_t> children = {},
+    std::optional<scratchbird::core::platform::Uuid> name = {}, std::optional<std::string> literal = {},
+    std::optional<std::string> op = {}) {
+  api::RelationalExpressionRecord value;
+  value.expression_id = id;
+  value.result_descriptor_id = descriptor;
+  value.expression_kind = kind;
+  value.child_expression_ids = std::move(children);
+  value.bound_name_uuid = name;
+  value.literal_or_parameter_ref = std::move(literal);
+  value.operator_name = std::move(op);
+  if (kind == api::RelationalExpressionKind::kLiteral)
+    value.literal_kind = api::RelationalLiteralKind::kNumeric;
+  sblr::SblrOperand out;
+  out.type = "relational_expression_v1";
+  out.name = "slot_" + std::to_string(id);
+  out.value_kind = sblr::SblrValueKind::relational_expression;
+  RequireEncoding(sblr::EncodeRelationalExpressionV1(value, &out.value_body), "PCR-006 expression encoding failed");
+  return out;
+}
+
+sblr::SblrOperand BindingOperand(std::uint32_t node, std::string variant,
+    std::vector<std::uint32_t> expressions, std::optional<scratchbird::core::platform::Uuid> property = {}) {
+  sblr::RelationalNodeBindingRecord value;
+  value.node_id = node;
+  value.semantic_variant_id = std::move(variant);
+  value.bound_expression_ids = std::move(expressions);
+  if (property) {
+    value.required_property_uuids = {*property};
+    value.delivered_property_uuids = {*property};
+  }
+  sblr::SblrOperand out;
+  out.type = "relational_node_binding_v1";
+  out.name = "slot_" + std::to_string(node);
+  out.value_kind = sblr::SblrValueKind::relational_node_binding;
+  RequireEncoding(sblr::EncodeRelationalNodeBindingV1(value, &out.value_body), "PCR-006 binding encoding failed");
+  return out;
+}
+
 void FinalizeProductionOperands(sblr::SblrOperationEnvelope* envelope) {
   std::uint32_t ordinal = 1;
   for (auto& operand : envelope->operands) {
+    if (!operand.value_body.empty()) { operand.ordinal = ordinal++; continue; }
     if (!operand.name.empty() &&
         std::all_of(operand.name.begin(), operand.name.end(),
                     [](const unsigned char ch) {
@@ -379,44 +451,34 @@ void FinalizeProductionOperands(sblr::SblrOperationEnvelope* envelope) {
 
 sblr::SblrOperationEnvelope QueryExecuteEnvelope(
     const api::EngineRequestContext& context) {
-  constexpr std::string_view kInt64TypeUuid =
-      "019d0000-0000-7000-8000-00000000d711";
+  constexpr auto kInt64TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
   auto envelope =
       Envelope("query.execute", "SBLR_QUERY_EXECUTE", "pcr006.query");
   envelope.requires_transaction_context = true;
 
-  const std::string descriptor_uuid =
-      UuidText(MakeUuid(UuidKind::object, 50));
+  const auto descriptor_uuid =
+      MakeUuid(UuidKind::object, 50).value;
   envelope.operands = {
       {"uint16", "relational_wire_version", "2"},
-      {"uuid", "relational_bound_sblr_tree_uuid",
-       UuidText(MakeUuid(UuidKind::object, 51))},
-      {"uuid", "relational_catalog_epoch_uuid",
-       context.catalog_epoch_uuid.canonical},
-      {"uuid", "relational_security_context_uuid",
-       context.authorization_context.authority_uuid.canonical},
-      {"uuid", "relational_statement_uuid", context.statement_uuid.canonical},
-      {"uuid", "relational_owning_transaction_uuid",
-       context.transaction_uuid.canonical},
-      {"uuid", "relational_statement_snapshot_uuid",
-       context.statement_snapshot_uuid.canonical},
-      {"uuid", "relational_statement_metadata_snapshot_uuid",
-       context.statement_metadata_snapshot_uuid.canonical},
+      IdentityOperand("relational_bound_sblr_tree_uuid", MakeUuid(UuidKind::object, 51).value),
+      IdentityOperand("relational_catalog_epoch_uuid", context.catalog_epoch_uuid),
+      IdentityOperand("relational_security_context_uuid", context.authorization_context.authority_uuid),
+      IdentityOperand("relational_statement_uuid", context.statement_uuid),
+      IdentityOperand("relational_owning_transaction_uuid", context.transaction_uuid),
+      IdentityOperand("relational_statement_snapshot_uuid", context.statement_snapshot_uuid),
+      IdentityOperand("relational_statement_metadata_snapshot_uuid", context.statement_metadata_snapshot_uuid),
       {"uint64", "relational_local_transaction_id",
        std::to_string(context.local_transaction_id)},
       {"uint64", "relational_snapshot_visible_through_local_transaction_id",
        std::to_string(
            context.snapshot_visible_through_local_transaction_id)},
       {"uint32", "relational_root_node_id", "1"},
-      {"relational_descriptor_v1", "1",
-       descriptor_uuid + "|" + std::string(kInt64TypeUuid) +
-           "|1|-|-|-|-|-"},
-      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|3432"},
+      DescriptorOperand(1, descriptor_uuid, kInt64TypeUuid),
+      ExpressionOperand(1, 1, api::RelationalExpressionKind::kLiteral, {}, {}, "42"),
       {"relational_values_row_v1", "1", "1"},
       {"relational_output_v1", "1", "1|1|1|1|0|" + EncodeHex("id")},
       {"relational_node_v1", "1", "13|0|-|1|1"},
-      {"relational_node_binding_v1", "1",
-       EncodeHex("values.literal-table.v1") + "|1|-|-|-"},
+      BindingOperand(1, "values.literal-table.v1", {1}),
   };
   FinalizeProductionOperands(&envelope);
   return envelope;
@@ -521,7 +583,7 @@ bool BeginRouteTransaction(Fixture const& fixture,
   if (!ExpectDispatchOk(admitted,
                         "canonical SBLR transaction-begin admission failed") ||
       !Expect(admitted.api_result.local_transaction_id == 0 &&
-                  admitted.api_result.transaction_uuid.canonical.empty(),
+                  admitted.api_result.transaction_uuid.is_nil(),
               "transaction-begin admission published engine MGA state")) {
     return false;
   }
@@ -533,7 +595,7 @@ bool BeginRouteTransaction(Fixture const& fixture,
   const auto begun = api::EngineBeginTransaction(begin);
   if (!ExpectApiOk(begun,
                    "engine-owned transaction begin failed after admission") ||
-      !Expect(!begun.transaction_uuid.canonical.empty() &&
+      !Expect(!begun.transaction_uuid.is_nil() &&
                   begun.local_transaction_id != 0,
               "engine-owned begin did not publish an MGA identity") ||
       !Expect(HasEvidence(begun, "mga_authority",
@@ -580,7 +642,7 @@ bool ProveRoutePlanning(const Fixture& fixture,
   auto transaction_authority = QueryExecuteEnvelope(context);
   transaction_authority.requires_transaction_context = true;
   auto transactionless = context;
-  transactionless.transaction_uuid.canonical.clear();
+  transactionless.transaction_uuid = {};
   transactionless.local_transaction_id = 0;
   const auto transaction_refused =
       Dispatch(transactionless, std::move(transaction_authority));
@@ -623,7 +685,7 @@ bool ProveSecurityAuthorization(const Fixture& fixture,
   api::EngineAuthorizeRequest request;
   request.context = context;
   request.operation_id = "security.authorize";
-  request.target_object.uuid.canonical = UuidText(fixture.relation_uuid);
+  request.target_object.uuid = fixture.relation_uuid.value;
   request.target_object.object_kind = "table";
   request.required_right = "OBS_INDEX_PROFILE_READ";
   const auto authorized = api::EngineAuthorize(request);
@@ -637,7 +699,7 @@ bool ProveSecurityAuthorization(const Fixture& fixture,
   api::EngineAuthorizeRequest cluster_request;
   cluster_request.context = context;
   cluster_request.operation_id = "security.authorize";
-  cluster_request.target_object.uuid.canonical = UuidText(fixture.relation_uuid);
+  cluster_request.target_object.uuid = fixture.relation_uuid.value;
   cluster_request.target_object.object_kind = "cluster_route";
   cluster_request.required_right = "OBS_CLUSTER_HEALTH_INSPECT";
   cluster_request.require_cluster_authority = true;
@@ -711,16 +773,11 @@ bool CommitRouteTransaction(api::EngineRequestContext* context,
                            "pcr006.commit");
   envelope.requires_transaction_context = true;
 
-  const auto parsed_transaction =
-      uuid::ParseUuid(context->transaction_uuid.canonical);
-  if (!Expect(parsed_transaction.ok(),
-              "transaction UUID is not canonical before commit")) {
-    return false;
-  }
+  if (!Expect(uuid::IsEngineIdentityUuid(context->transaction_uuid),
+              "transaction UUID invalid before commit")) return false;
   sblr::SblrTransactionCommitOptionsV1 options;
-  std::copy(parsed_transaction.value.bytes.begin(),
-            parsed_transaction.value.bytes.end(),
-            options.transaction_uuid.begin());
+  std::copy(context->transaction_uuid.bytes.begin(),
+            context->transaction_uuid.bytes.end(), options.transaction_uuid.begin());
   options.local_transaction_id = context->local_transaction_id;
   options.admitted_handle_evidence_sha256 = evidence.begin_admission_sha256;
   options.commit_mode = 1;
@@ -759,8 +816,8 @@ bool CommitRouteTransaction(api::EngineRequestContext* context,
                              "durable_transaction_inventory"),
              "engine-owned commit did not publish durable MGA finality");
   context->local_transaction_id = 0;
-  context->transaction_uuid.canonical.clear();
-  context->statement_snapshot_uuid.canonical.clear();
+  context->transaction_uuid = {};
+  context->statement_snapshot_uuid = {};
   return ok;
 }
 

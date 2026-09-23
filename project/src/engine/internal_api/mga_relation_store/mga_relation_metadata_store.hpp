@@ -34,6 +34,8 @@ using DescriptorFieldsByRelation =
 // records confer authority. Missing optional files are empty; I/O failures or
 // partial records return false and clear output. This is not the required
 // binary metadata migration and does not validate each record's semantics.
+bool ReadCompleteMgaMetadataRecords(const std::string& path,
+                                   std::vector<std::string>* records);
 bool ReadCompleteMgaTextRecords(const std::string& path,
                                std::vector<std::string>* records);
 
@@ -93,7 +95,7 @@ DescriptorFieldsByRelation LoadDescriptorFieldsByRelation(
     const EngineUuid& required_relation_uuid = {});
 EngineApiDiagnostic PersistDescriptorFields(
     const EngineRequestContext& context,
-    const std::string& relation_uuid,
+    const EngineUuid& relation_uuid,
     const std::vector<std::pair<std::string, std::string>>& fields);
 EngineApiDiagnostic LoadMgaMetadata(
     RelationReadSnapshot* state,
@@ -112,32 +114,32 @@ std::string CanonicalBigintMigrationPayload(
     const MgaBigintIdentityMigrationRequest& request,
     std::uint64_t creator_tx,
     std::uint64_t event_sequence,
-    std::string_view transaction_uuid,
+    const EngineUuid& transaction_uuid,
     const std::vector<CrudTableRecord>& tables,
     const std::vector<std::string>& decision_hashes);
 std::string BigintMigrationDecisionHash(
     const MgaBigintIdentityMigrationRequest& request,
     const MgaBigintIdentityMigrationRow& row,
     std::uint64_t new_row_generation,
-    std::string_view transaction_uuid);
+    const EngineUuid& transaction_uuid);
 std::string CanonicalInt32MigrationPayload(
     const MgaInt32IdentityMigrationRequest& request,
     std::uint64_t creator_tx,
     std::uint64_t event_sequence,
-    std::string_view transaction_uuid,
+    const EngineUuid& transaction_uuid,
     const std::vector<CrudTableRecord>& tables,
     const std::vector<std::string>& decision_hashes);
 std::string Int32MigrationDecisionHash(
     const MgaInt32IdentityMigrationRequest& request,
     const MgaInt32IdentityMigrationRow& row,
     std::uint64_t new_row_generation,
-    std::string_view transaction_uuid);
+    const EngineUuid& transaction_uuid);
 std::string CanonicalTextMigrationPayload(
     const MgaTextIdentityMigrationRequest& request,
     std::uint64_t creator_tx,
     std::uint64_t event_sequence,
-    std::string_view transaction_uuid,
-    std::string_view datatype_catalog_snapshot_uuid,
+    const EngineUuid& transaction_uuid,
+    const EngineUuid& datatype_catalog_snapshot_uuid,
     std::uint64_t datatype_catalog_generation,
     std::uint64_t datatype_registry_generation,
     const std::vector<CrudTableRecord>& tables,
@@ -148,14 +150,16 @@ std::string TextMigrationDecisionHash(
     const MgaTextIdentityMigrationRequest& request,
     const MgaTextIdentityMigrationRow& row,
     std::uint64_t new_row_generation,
-    std::string_view transaction_uuid,
-    std::string_view datatype_catalog_snapshot_uuid,
+    const EngineUuid& transaction_uuid,
+    const EngineUuid& datatype_catalog_snapshot_uuid,
     std::uint64_t datatype_catalog_generation,
     std::uint64_t datatype_registry_generation,
     const CrudSealedRelationDescriptorSnapshot& relation_snapshot);
 std::string Sha256Tagged(std::string_view payload);
 bool ValidConstraintBatchUuid(
-    std::string_view value,
+    const EngineUuid& value,
+    scratchbird::core::platform::UuidKind kind);
+bool ValidConstraintBatchUuid(std::string_view bytes,
     scratchbird::core::platform::UuidKind kind);
 std::vector<std::string> ConstraintMutationBatchLineFields(
     const MgaConstraintMutationBatch& batch,

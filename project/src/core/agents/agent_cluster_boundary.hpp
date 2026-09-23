@@ -17,6 +17,7 @@
 
 #include <string>
 #include <vector>
+#include <variant>
 
 namespace scratchbird::core::agents {
 
@@ -55,7 +56,7 @@ enum class AgentClusterLeaseSurface {
 
 struct AgentClusterEvidence {
   std::string evidence_kind;
-  std::string evidence_id;
+  std::variant<std::string, scratchbird::core::platform::Uuid> evidence_id;
 };
 
 struct AgentClusterBoundaryResult {
@@ -78,7 +79,7 @@ struct AgentClusterBoundaryResult {
 
 struct AgentClusterLeaseState {
   AgentClusterLeadershipState state = AgentClusterLeadershipState::follower;
-  std::string owner_instance_uuid;
+  scratchbird::core::platform::Uuid owner_instance_uuid;
   std::string fence_token;
   u64 epoch = 0;
   u64 lease_until_microseconds = 0;
@@ -87,7 +88,7 @@ struct AgentClusterLeaseState {
 struct AgentClusterLeaseRequest {
   AgentClusterLeaseSurface surface = AgentClusterLeaseSurface::inspect;
   std::string agent_type_id;
-  std::string instance_uuid;
+  scratchbird::core::platform::Uuid instance_uuid;
   std::string fence_token;
   u64 epoch = 0;
   u64 now_microseconds = 0;

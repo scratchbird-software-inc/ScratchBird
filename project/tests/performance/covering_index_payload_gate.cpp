@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -377,8 +378,8 @@ void AssemblyRefusalsAreExact() {
           "unsafe authority assembly refusal code mismatch");
 }
 
-opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
-                                          const std::string& statistic_uuid) {
+opt::OptimizerStatsIdentity FreshIdentity(const scratchbird::core::platform::Uuid& object_uuid,
+                                          const scratchbird::core::platform::Uuid& statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = object_uuid;
   identity.statistic_uuid = statistic_uuid;
@@ -396,34 +397,35 @@ const opt::PlanCandidate* FindCandidate(
     const std::string& id) {
   const auto found = std::find_if(candidates.begin(), candidates.end(),
                                   [&](const opt::PlanCandidate& candidate) {
-                                    return candidate.candidate_id == id;
+                                    return candidate.candidate_id == id &&
+                                           candidate.index_uuid == scratchbird::tests::FixtureUuid(1274, 701);
                                   });
   return found == candidates.end() ? nullptr : &*found;
 }
 
 void OptimizerCarriesPayloadProofWithoutRuntimeAdmission() {
   opt::AccessPathPlanningRequest request;
-  request.relation_uuid = "rel.covering.payload";
+  request.relation_uuid = scratchbird::tests::FixtureUuid(1527, 1);
   request.predicate_kind = "scalar_eq";
   request.descriptor_digest = "desc:covering";
-  request.projected_column_uuids = {"col.covered"};
+  request.projected_column_uuids = {scratchbird::tests::FixtureUuid(1527, 2)};
   request.visibility_proven = true;
   request.grants_proven = true;
   request.index_visibility_native = true;
   opt::TableCardinalityStats table;
-  table.identity = FreshIdentity(request.relation_uuid, "table.stats");
+  table.identity = FreshIdentity(request.relation_uuid, scratchbird::tests::FixtureUuid(1527, 3));
   table.row_count = 100;
   table.visible_row_count = 100;
   table.page_count = 4;
   table.average_row_bytes = 32;
   request.table_stats = table;
   opt::IndexStats index;
-  index.identity = FreshIdentity("idx.covering.payload", "index.stats");
-  index.index_uuid = "idx.covering.payload";
+  index.identity = FreshIdentity(scratchbird::tests::FixtureUuid(1527, 4), scratchbird::tests::FixtureUuid(1527, 5));
+  index.index_uuid = scratchbird::tests::FixtureUuid(1274, 701);
   index.relation_uuid = request.relation_uuid;
   index.index_family = "btree";
-  index.key_column_uuids = {"col.covered"};
-  index.covered_column_uuids = {"col.covered"};
+  index.key_column_uuids = {scratchbird::tests::FixtureUuid(1527, 2)};
+  index.covered_column_uuids = {scratchbird::tests::FixtureUuid(1527, 2)};
   index.covering = true;
   index.height = 2;
   index.leaf_pages = 8;
@@ -435,7 +437,7 @@ void OptimizerCarriesPayloadProofWithoutRuntimeAdmission() {
       opt::GenerateFullAccessPathCandidates(request);
   const auto* missing_proof =
       FindCandidate(missing_proof_candidates,
-                    "CAND-OPT-COVERING:idx.covering.payload");
+                    "CAND-OPT-COVERING");
   Require(missing_proof != nullptr,
           "covering optimizer candidate missing without payload proof");
   Require(!missing_proof->cost.selectable,
@@ -456,7 +458,7 @@ void OptimizerCarriesPayloadProofWithoutRuntimeAdmission() {
 
   const auto candidates = opt::GenerateFullAccessPathCandidates(request);
   const auto* covering =
-      FindCandidate(candidates, "CAND-OPT-COVERING:idx.covering.payload");
+      FindCandidate(candidates, "CAND-OPT-COVERING");
   Require(covering != nullptr, "covering optimizer candidate missing");
   Require(!covering->cost.selectable,
           "covering candidate advertised runtime route consumption");

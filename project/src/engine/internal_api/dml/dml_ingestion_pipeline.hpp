@@ -31,7 +31,7 @@ struct DmlIngestionPipelineConfig {
   const MgaRelationReadView* state = nullptr;
   std::string operation_id = "dml.ingestion";
   std::string lane_operation = "insert_rows";
-  std::string target_table_uuid;
+  EngineUuid target_table_uuid;
   EngineApiU64 input_row_count = 0;
   EngineApiU64 source_size_bytes = 0;
   EngineApiU64 source_preallocation_bytes = 0;

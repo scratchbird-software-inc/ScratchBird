@@ -7,8 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "observability/optimizer_metric_support_bundle.hpp"
+#include "metric_support_projection.hpp"
 
 #include "optimizer_metric_manifest.hpp"
+#include "metric_value_codec.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 
 #include <openssl/sha.h>
 
@@ -45,24 +48,12 @@ std::string Sha256Hex(const std::string& payload) {
   return "sha256:" + HexBytes(digest, SHA256_DIGEST_LENGTH);
 }
 
-std::string JsonEscape(std::string_view input) {
-  std::ostringstream out;
-  for (const unsigned char ch : input) {
-    switch (ch) {
-      case '\\': out << "\\\\"; break;
-      case '"': out << "\\\""; break;
-      case '\n': out << "\\n"; break;
-      default: out << ch;
-    }
-  }
-  return out.str();
-}
-
 std::string FindLabel(const metrics::MetricValue& value,
                       std::string_view key) {
   for (const auto& label : value.labels) {
     if (label.key == key) {
-      return label.value;
+      const auto* text = std::get_if<std::string>(&label.value);
+      return text ? *text : std::string{};
     }
   }
   return {};
@@ -80,31 +71,19 @@ std::uint64_t SourceGeneration(const metrics::MetricValue& value) {
   }
 }
 
-std::string SerializeLabels(metrics::MetricLabelSet labels) {
-  std::sort(labels.begin(), labels.end(), [](const auto& lhs, const auto& rhs) {
-    return lhs.key < rhs.key;
-  });
-  std::ostringstream out;
-  bool first = true;
-  for (const auto& label : labels) {
-    if (!first) {
-      out << ',';
-    }
-    first = false;
-    out << label.key << '=' << label.value;
-  }
-  return out.str();
-}
-
-std::string SerializeValue(const metrics::MetricValue& value) {
-  std::ostringstream out;
-  out << "family=" << value.family
-      << "|labels=" << SerializeLabels(value.labels)
-      << "|value=" << value.value
-      << "|count=" << value.count
-      << "|sum=" << value.sum
-      << "|state=" << value.state_text;
-  return out.str();
+bool EncodeRedactedMetric(const metrics::MetricDescriptor& descriptor,
+                          const metrics::MetricValue& value, bool allow_sensitive,
+                          OptimizerMetricSupportBundleRow* output) {
+  if (!output) return false;
+  metrics::MetricSupportProjection projection;
+  if (!metrics::ProjectMetricForSupport(descriptor, value, allow_sensitive, &projection))
+    return false;
+  auto row = *output;
+  row.binding = projection.binding;
+  row.omitted_sensitive_labels = std::move(projection.omitted_sensitive_labels);
+  row.encoded_redacted_value = std::move(projection.encoded_value);
+  *output = std::move(row);
+  return true;
 }
 
 bool UnsafeAuthority(const OptimizerMetricSupportBundleAuthority& authority) {
@@ -134,8 +113,7 @@ OptimizerMetricSupportBundleResult Refuse(
   result.detail = std::move(detail);
   AddEvidence(&result, "OEIC_OPTIMIZER_METRIC_RETENTION_REDACTION");
   AddEvidence(&result, "optimizer.metric_bundle.fail_closed=true");
-  AddEvidence(&result, "optimizer.metric_bundle.scope_uuid=" +
-                           request.scope_uuid);
+  result.scope_uuid = request.scope_uuid;
   AddEvidence(&result, "optimizer.metric_bundle.refused=" +
                            result.diagnostic_code);
   return result;
@@ -150,41 +128,38 @@ ManifestByRegistryFamily() {
   return entries;
 }
 
-std::string RenderBundleJson(const OptimizerMetricSupportBundleRequest& request,
-                             const OptimizerMetricSupportBundleResult& result) {
-  std::ostringstream out;
-  out << "{\"support_bundle\":{\"section\":\"optimizer_metrics\","
-      << "\"support_bundle_id\":\"" << JsonEscape(request.support_bundle_id)
-      << "\",\"capture_generation\":\""
-      << JsonEscape(request.capture_generation)
-      << "\",\"redaction_state\":\"sensitive_labels_redacted\","
-      << "\"tamper_digest\":\"" << JsonEscape(result.tamper_digest)
-      << "\",\"row_count\":" << result.rows.size()
-      << ",\"rows\":[";
-  for (std::size_t i = 0; i < result.rows.size(); ++i) {
-    const auto& row = result.rows[i];
-    if (i != 0) {
-      out << ',';
-    }
-    out << "{\"family\":\"" << JsonEscape(row.registry_family)
-        << "\",\"metric_family\":\"" << JsonEscape(row.metric_family)
-        << "\",\"producer_owner\":\"" << JsonEscape(row.producer_owner)
-        << "\",\"retention\":\"" << JsonEscape(row.retention_class)
-        << "\",\"redaction\":\"" << JsonEscape(row.redaction_class)
-        << "\",\"support_bundle_class\":\""
-        << JsonEscape(row.support_bundle_class)
-        << "\",\"value\":\"" << JsonEscape(row.serialized_redacted_value)
-        << "\"}";
+std::string EncodeBundle(const OptimizerMetricSupportBundleRequest& request,
+                         const OptimizerMetricSupportBundleResult& result) {
+  std::vector<std::string> fields{"optimizer.metrics.bundle.v2",
+      MetadataUuidBytes(request.scope_uuid), request.support_bundle_id,
+      request.capture_generation, request.evidence_digest,
+      result.redaction_applied ? "sensitive_labels_omitted" : "authorized_labels",
+      result.tamper_digest};
+  for (const auto& row : result.rows) {
+    auto omitted = row.omitted_sensitive_labels;
+    omitted.insert(omitted.begin(), "omitted.labels.v2");
+    const auto& binding = row.binding;
+    const auto encoded = EncodeMgaMetadataFields({"optimizer.metric.row.v2",
+        row.registry_family, row.metric_family, row.producer_owner,
+        row.retention_class, row.redaction_class, row.support_bundle_class,
+        MetadataUuidBytes(binding.metric_uuid), std::to_string(binding.descriptor_generation),
+        MetadataUuidBytes(binding.label_schema_uuid), std::to_string(binding.label_schema_generation),
+        MetadataUuidBytes(binding.retention_policy_uuid), std::to_string(binding.retention_policy_generation),
+        MetadataUuidBytes(binding.visibility_policy_uuid), std::to_string(binding.visibility_policy_generation),
+        MetadataUuidBytes(binding.rate_source_counter_uuid), std::to_string(binding.rate_source_counter_generation),
+        EncodeMgaMetadataFields(omitted),
+        std::string(row.encoded_redacted_value.begin(), row.encoded_redacted_value.end())});
+    if (encoded.empty()) return {};
+    fields.push_back(encoded);
   }
-  out << "]}}";
-  return out.str();
+  return EncodeMgaMetadataFields(fields);
 }
 
 }  // namespace
 
 OptimizerMetricSupportBundleResult BuildOptimizerMetricSupportBundle(
     const OptimizerMetricSupportBundleRequest& request) {
-  if (request.scope_uuid.empty() || request.support_bundle_id.empty() ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.scope_uuid) || request.support_bundle_id.empty() ||
       request.capture_generation.empty() || request.evidence_digest.empty()) {
     return Refuse(request,
                   "SB_OPTIMIZER_METRIC_BUNDLE.MISSING_SCOPE",
@@ -221,6 +196,7 @@ OptimizerMetricSupportBundleResult BuildOptimizerMetricSupportBundle(
 
   OptimizerMetricSupportBundleResult result;
   result.ok = true;
+  result.scope_uuid = request.scope_uuid;
   result.diagnostic_code = "SB_OPTIMIZER_METRIC_BUNDLE.OK";
   result.redaction_applied = !request.allow_sensitive_labels;
   AddEvidence(&result, "OEIC_OPTIMIZER_METRIC_RETENTION_REDACTION");
@@ -232,11 +208,6 @@ OptimizerMetricSupportBundleResult BuildOptimizerMetricSupportBundle(
   AddEvidence(&result, "optimizer.metric_bundle.recovery_authority=false");
   AddEvidence(&result, "optimizer.metric_bundle.wal_redo_authority=false");
   AddEvidence(&result, "optimizer.metric_bundle.cluster_authority=false");
-
-  std::ostringstream tamper_payload;
-  tamper_payload << "support_bundle_id=" << request.support_bundle_id
-                 << "|capture_generation=" << request.capture_generation
-                 << "|evidence_digest=" << request.evidence_digest;
 
   for (const auto& value : snapshot) {
     if (!StartsWith(value.family, "sb_optimizer_")) {
@@ -273,8 +244,6 @@ OptimizerMetricSupportBundleResult BuildOptimizerMetricSupportBundle(
                     "optimizer.metric_bundle.descriptor_missing:" +
                         value.family);
     }
-    const auto redacted = metrics::RedactSensitiveMetricValue(
-        *descriptor, value, request.allow_sensitive_labels);
     OptimizerMetricSupportBundleRow row;
     row.registry_family = value.family;
     row.metric_family = entry.metric_family;
@@ -285,8 +254,9 @@ OptimizerMetricSupportBundleResult BuildOptimizerMetricSupportBundle(
         opt::OptimizerMetricRedactionClassName(entry.redaction_class);
     row.support_bundle_class =
         opt::OptimizerMetricSupportBundleClassName(entry.support_bundle_class);
-    row.serialized_redacted_value = SerializeValue(redacted);
-    tamper_payload << "|row=" << row.serialized_redacted_value;
+    if (!EncodeRedactedMetric(*descriptor, value, request.allow_sensitive_labels, &row))
+      return Refuse(request, "SB_OPTIMIZER_METRIC_BUNDLE.INVALID_VALUE",
+                    "optimizer.metric_bundle.native_value_invalid");
     result.rows.push_back(std::move(row));
     if (result.rows.size() > request.max_metric_values) {
       return Refuse(request,
@@ -300,8 +270,14 @@ OptimizerMetricSupportBundleResult BuildOptimizerMetricSupportBundle(
                   "SB_OPTIMIZER_METRIC_BUNDLE.NO_OPTIMIZER_METRICS",
                   "optimizer.metric_bundle.no_optimizer_metrics");
   }
-  result.tamper_digest = Sha256Hex(tamper_payload.str());
-  result.support_bundle_json = RenderBundleJson(request, result);
+  const auto unsigned_bundle = EncodeBundle(request, result);
+  if (unsigned_bundle.empty()) return Refuse(request,
+      "SB_OPTIMIZER_METRIC_BUNDLE.LIMIT_EXCEEDED", "optimizer.metric_bundle.extent_invalid");
+  result.tamper_digest = Sha256Hex(unsigned_bundle);
+  const auto encoded = EncodeBundle(request, result);
+  if (encoded.empty()) return Refuse(request,
+      "SB_OPTIMIZER_METRIC_BUNDLE.LIMIT_EXCEEDED", "optimizer.metric_bundle.extent_invalid");
+  result.support_bundle_bytes.assign(encoded.begin(), encoded.end());
   return result;
 }
 

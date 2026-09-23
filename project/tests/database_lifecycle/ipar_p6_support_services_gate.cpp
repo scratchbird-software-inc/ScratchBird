@@ -12,6 +12,7 @@
 #include "memory.hpp"
 #include "query_memory_arena.hpp"
 #include "resource_residency_cache.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -44,12 +45,12 @@ IparCompressedEpochVector FastEpoch(std::uint64_t value) {
       {value, value, value, value, value, value, value});
 }
 
-EngineDescriptor Descriptor(std::string uuid,
+EngineDescriptor Descriptor(EngineUuid uuid,
                             std::string kind,
                             std::string type,
                             std::string encoded) {
   EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = std::move(uuid);
+  descriptor.descriptor_uuid = uuid;
   descriptor.descriptor_kind = std::move(kind);
   descriptor.canonical_type_name = std::move(type);
   descriptor.encoded_descriptor = std::move(encoded);
@@ -58,13 +59,13 @@ EngineDescriptor Descriptor(std::string uuid,
 
 void ProveHotResidency() {
   std::vector<IparResidencyEntry> entries = {
-      {"table-desc", "table-uuid", IparResidencyKind::table_descriptor,
+      {"table-desc", scratchbird::tests::FixtureUuid(6006, 1), IparResidencyKind::table_descriptor,
        ResidencyEpoch(1), 4096, 100, 80, 20, 8, true, true},
-      {"index-root", "index-uuid", IparResidencyKind::index_root,
+      {"index-root", scratchbird::tests::FixtureUuid(6006, 2), IparResidencyKind::index_root,
        ResidencyEpoch(1), 4096, 90, 60, 15, 7, false, true},
-      {"row-encoder", "table-uuid", IparResidencyKind::row_encoder,
+      {"row-encoder", scratchbird::tests::FixtureUuid(6006, 1), IparResidencyKind::row_encoder,
        ResidencyEpoch(1), 4096, 88, 50, 30, 7, false, true},
-      {"cold-page", "page-uuid", IparResidencyKind::page_buffer,
+      {"cold-page", scratchbird::tests::FixtureUuid(6006, 3), IparResidencyKind::page_buffer,
        ResidencyEpoch(1), 32768, 1, 0, 1, 1, false, true}};
   IparHotResidencyPolicy policy;
   policy.max_resident_bytes = 49152;
@@ -138,15 +139,15 @@ void ProvePrewarm() {
   request.database_id = "db";
   request.session_id = "session";
   request.budget_bytes = 12288;
-  request.candidates.push_back({"descriptor", "table",
+  request.candidates.push_back({"descriptor", scratchbird::tests::FixtureUuid(6006, 1),
                                 IparResidencyKind::table_descriptor,
                                 ResidencyEpoch(1), ResidencyEpoch(1),
                                 4096, 100, 10, 80, true, true, true});
-  request.candidates.push_back({"index-root", "index",
+  request.candidates.push_back({"index-root", scratchbird::tests::FixtureUuid(6006, 2),
                                 IparResidencyKind::index_root,
                                 ResidencyEpoch(1), ResidencyEpoch(1),
                                 4096, 90, 9, 60, true, true, true});
-  request.candidates.push_back({"security", "mask",
+  request.candidates.push_back({"security", scratchbird::tests::FixtureUuid(6006, 4),
                                 IparResidencyKind::security_mask,
                                 ResidencyEpoch(1), ResidencyEpoch(2),
                                 4096, 80, 8, 70, true, true, true});
@@ -168,7 +169,9 @@ void ProveFastPathDescriptors() {
           "compressed epoch should reject changed vector");
 
   IparCapabilityInput input;
-  input.object_uuid = "table";
+  const auto table = scratchbird::tests::FixtureUuid(6017, 1);
+  const auto statement = scratchbird::tests::FixtureUuid(6017, 2);
+  input.object_uuid = table;
   input.epoch = epoch;
   input.has_unique_indexes = true;
   input.has_defaults = true;
@@ -192,13 +195,13 @@ void ProveFastPathDescriptors() {
   Require(defaults_required, "no-op branch table should retain defaults");
 
   std::vector<IparRowLayoutColumn> columns;
-  columns.push_back({"col-id", Descriptor("desc-i64", "scalar", "int64", "i64"),
+  columns.push_back({scratchbird::tests::FixtureUuid(6017, 3), Descriptor(scratchbird::tests::FixtureUuid(6017, 4), "scalar", "int64", "i64"),
                      0, 8, 0, false, false, false, false, false});
-  columns.push_back({"col-name", Descriptor("desc-text", "scalar", "text", "text"),
+  columns.push_back({scratchbird::tests::FixtureUuid(6017, 5), Descriptor(scratchbird::tests::FixtureUuid(6017, 6), "scalar", "text", "text"),
                      1, 0, 128, true, true, true, false, true});
-  columns.push_back({"col-gen", Descriptor("desc-i64-gen", "scalar", "int64", "i64"),
+  columns.push_back({scratchbird::tests::FixtureUuid(6017, 7), Descriptor(scratchbird::tests::FixtureUuid(6017, 8), "scalar", "int64", "i64"),
                      2, 8, 0, false, false, false, true, false});
-  auto layout = BuildIparRowLayoutDescriptor("table", "stmt", epoch, columns);
+  auto layout = BuildIparRowLayoutDescriptor(table, statement, epoch, columns);
   Require(layout.ok, "row layout should build");
   Require(layout.layout.null_bitmap_bytes == 1, "null bitmap should cover columns");
   Require(layout.layout.variable_column_count == 1,
@@ -207,7 +210,7 @@ void ProveFastPathDescriptors() {
           "layout should produce encoder digest");
   IparParameterEncoderCache cache;
   Require(cache.Put(layout.layout).ok, "encoder cache put should pass");
-  auto hit = cache.Lookup("table", "stmt", epoch, layout.layout.encoder_digest);
+  auto hit = cache.Lookup(table, statement, epoch, layout.layout.encoder_digest);
   Require(hit.ok && hit.cache_hit, "encoder cache should hit");
   Require(cache.InvalidateStale(changed) == 1,
           "encoder cache should invalidate changed epoch");
@@ -215,13 +218,13 @@ void ProveFastPathDescriptors() {
 
 void ProveStatementPools() {
   IparStatementPoolRequest request;
-  request.context.query_id = "query";
-  request.context.statement_id = "statement";
-  request.context.session_id = "session";
-  request.context.transaction_id = "transaction";
-  request.context.database_id = "database";
-  request.context.engine_id = "engine";
-  request.context.operation_id = "insert";
+  request.context.query_id = scratchbird::tests::FixtureUuid(6018, 1);
+  request.context.statement_id = scratchbird::tests::FixtureUuid(6018, 2);
+  request.context.session_id = scratchbird::tests::FixtureUuid(6018, 3);
+  request.context.transaction_id = scratchbird::tests::FixtureUuid(6018, 4);
+  request.context.database_id = scratchbird::tests::FixtureUuid(6018, 5);
+  request.context.engine_id = scratchbird::tests::FixtureUuid(6018, 6);
+  request.context.operation_id = scratchbird::tests::FixtureUuid(6018, 7);
   request.statement_limit_bytes = 65536;
   request.batch_limit_bytes = 32768;
   request.row_version_bytes = 96;
@@ -280,13 +283,13 @@ void ProveDiagnosticTemplateCache() {
 void ProveWarmOpenProfile() {
   const auto epoch = FastEpoch(9);
   IparWarmProfileRequest request;
-  request.database_uuid = "database";
+  request.database_uuid = scratchbird::tests::FixtureUuid(6031, 1);
   request.open_epoch = epoch;
   request.budget_bytes = 16384;
-  request.items.push_back({"policy", "default_policy", "policy", epoch, 2048, 100, true, true});
-  request.items.push_back({"sys-desc", "sys_descriptor", "sys", epoch, 4096, 90, true, true});
-  request.items.push_back({"resource", "resource_pack", "resource", epoch, 4096, 80, true, true});
-  request.items.push_back({"page-map", "page_map", "page", FastEpoch(10), 4096, 70, true, true});
+  request.items.push_back({"policy", "default_policy", scratchbird::tests::FixtureUuid(6031, 2), epoch, 2048, 100, true, true});
+  request.items.push_back({"sys-desc", "sys_descriptor", scratchbird::tests::FixtureUuid(6031, 3), epoch, 4096, 90, true, true});
+  request.items.push_back({"resource", "resource_pack", scratchbird::tests::FixtureUuid(6031, 4), epoch, 4096, 80, true, true});
+  request.items.push_back({"page-map", "page_map", scratchbird::tests::FixtureUuid(6031, 5), FastEpoch(10), 4096, 70, true, true});
   auto plan = PlanIparDatabaseOpenWarmProfile(request);
   Require(plan.ok, "warm open profile should pass");
   Require(plan.selected.size() == 3, "warm open should select authorized current-epoch items");

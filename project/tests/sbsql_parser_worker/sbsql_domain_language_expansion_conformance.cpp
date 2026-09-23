@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -124,10 +126,10 @@ void PrintMessages(const MessageVectorSet& messages) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000360101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000360102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000360103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000360101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000360102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000360103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 360;
   session.security_policy_epoch = 361;
   session.descriptor_epoch = 362;
@@ -138,7 +140,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_domain_language_expansion";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000360104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000360104");
   config.bundle_contract_id = "sbp_sbsql@edr-036-domain-language-expansion";
   config.build_id = "sbsql-domain-language-expansion";
   return config;
@@ -522,7 +524,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -536,18 +538,18 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "EDR-036 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-domain-language-expansion";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000360201";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000360202";
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000360201");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000360202");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000360001");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -558,7 +560,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid) {
+                                                 const api::EngineUuid& database_uuid) {
   auto context = EngineContext(path, database_uuid);
   auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
                                          "SBLR_TRANSACTION_BEGIN",
@@ -581,17 +583,13 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) return true;
   }
   return false;
 }
 
-std::string TargetUuidFor(std::size_t index) {
-  char buffer[64];
-  std::snprintf(buffer, sizeof(buffer),
-                "019f0000-0000-7000-8000-%012zu",
-                static_cast<std::size_t>(360000 + index));
-  return buffer;
+api::EngineUuid TargetUuidFor(std::size_t index) {
+  return scratchbird::tests::FixtureUuid(1310, index + 1);
 }
 
 sblr::SblrOperationEnvelope EngineEnvelope(const MutationCase& row) {
@@ -608,9 +606,9 @@ sblr::SblrOperationEnvelope EngineEnvelope(const MutationCase& row) {
 api::EngineApiRequest EngineMutationRequest(const MutationCase& row,
                                             std::size_t index) {
   api::EngineApiRequest request;
-  request.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000360001");
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = TargetUuidFor(index);
+  request.target_object.uuid = TargetUuidFor(index);
   request.target_object.object_kind = std::string(row.object_kind);
   request.localized_names.push_back(
       {"en", "primary", "", "domain_language_descriptor_target", true});
@@ -625,7 +623,7 @@ api::EngineApiRequest EngineMutationRequest(const MutationCase& row,
 }
 
 void RequireEngineDispatch(const std::filesystem::path& path,
-                           const std::string& database_uuid) {
+                           const api::EngineUuid& database_uuid) {
   auto context = BeginEngineTransaction(path, database_uuid);
   for (std::size_t index = 0; index < kMutations.size(); ++index) {
     const auto& row = kMutations[index];

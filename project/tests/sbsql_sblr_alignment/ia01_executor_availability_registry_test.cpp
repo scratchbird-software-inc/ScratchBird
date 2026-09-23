@@ -19,15 +19,15 @@ using scratchbird::core::platform::UuidKind;
 }
 void Require(bool value, const char* message) { if (!value) Fail(message); }
 
-std::string Id(UuidKind kind, std::uint64_t salt) {
+api::EngineUuid Id(UuidKind kind, std::uint64_t salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, 1786831000000ull + salt);
   Require(generated.ok(), "uuid generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 struct Fixture {
   std::string database_path;
-  std::string database_uuid;
+  api::EngineUuid database_uuid;
   ~Fixture() {
     std::error_code ignored;
     std::filesystem::remove(
@@ -56,7 +56,7 @@ Fixture MakeFixture(std::uint64_t salt) {
 api::EngineRequestContext Context(const Fixture& fixture, bool admin) {
   api::EngineRequestContext context;
   context.database_path = fixture.database_path;
-  context.database_uuid.canonical = fixture.database_uuid;
+  context.database_uuid = fixture.database_uuid;
   context.security_context_present = true;
   if (admin) context.trace_tags.push_back(
       "right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");

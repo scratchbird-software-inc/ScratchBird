@@ -761,7 +761,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                 });
   if ((bucket_operation || downsample_operation) &&
       (interval_descriptor == dag.descriptors.end() ||
-       !CanonicalUuidText(interval_descriptor->descriptor_uuid) ||
+       !core::uuid::IsEngineIdentityUuid(interval_descriptor->descriptor_uuid) ||
        interval_descriptor->descriptor_uuid ==
            interval_descriptor->type_uuid ||
        interval_descriptor->type_uuid != core_type_uuid("interval") ||
@@ -780,7 +780,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           : dag.descriptors.end();
   if (downsample_operation &&
       (sample_count_descriptor == dag.descriptors.end() ||
-       !CanonicalUuidText(sample_count_descriptor->descriptor_uuid) ||
+       !core::uuid::IsEngineIdentityUuid(sample_count_descriptor->descriptor_uuid) ||
        sample_count_descriptor->descriptor_uuid ==
            sample_count_descriptor->type_uuid ||
        sample_count_descriptor->type_uuid != core_type_uuid("int64") ||
@@ -809,10 +809,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                     "time-series aggregate ID descriptor was substituted");
     }
   }
-  using TimeSeriesDescriptorIdentity = std::pair<std::string, std::string>;
+  using TimeSeriesDescriptorIdentity = std::pair<api::EngineUuid, api::EngineUuid>;
   std::vector<TimeSeriesDescriptorIdentity> expected_source_descriptors;
   const auto append_source_descriptor =
-      [&](const std::string& descriptor_uuid,
+      [&](const api::EngineUuid& descriptor_uuid,
           const std::string_view stable_type_name) {
         expected_source_descriptors.emplace_back(
             descriptor_uuid, core_type_uuid(stable_type_name));
@@ -822,7 +822,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         return descriptor.descriptor_id == range->result_descriptor_id;
       });
   if (range_result_descriptor == dag.descriptors.end() ||
-      !CanonicalUuidText(range_result_descriptor->descriptor_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(range_result_descriptor->descriptor_uuid) ||
       range_result_descriptor->type_uuid != core_type_uuid("boolean")) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "time-series range truth descriptor is not exact");
@@ -923,7 +923,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "time-series exact source descriptor cohort differs from storage");
   }
-  std::vector<std::string> expected_public_descriptor_uuids;
+  std::vector<api::EngineUuid> expected_public_descriptor_uuids;
   std::vector<std::string_view> expected_public_core_types;
   if (downsample_operation) {
     expected_public_descriptor_uuids = {
@@ -983,7 +983,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "time-series public descriptor cohort differs from storage");
   }
   if (!downsample_operation && !bucket_operation) {
-    const std::array<std::string, 6> expected_bound_names{
+    const std::array<api::EngineUuid, 6> expected_bound_names{
         persisted.descriptor_uuid,
         persisted.schema_uuid,
         persisted.columns[0].column_uuid,
@@ -1026,7 +1026,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     }
   }
   if (downsample_operation) {
-    const std::array<std::string, 7> expected_bound_names{
+    const std::array<api::EngineUuid, 7> expected_bound_names{
         persisted.schema_uuid,
         persisted.columns[0].column_uuid,
         persisted.columns[1].column_uuid,
@@ -1070,7 +1070,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                     "TIME_DOWNSAMPLE value binding was substituted");
     }
   }
-  std::vector<std::string> admitted_object_uuids{object_uuid};
+  std::vector<api::EngineUuid> admitted_object_uuids{object_uuid};
   if (mixed_join != nullptr || asof_join != nullptr) {
     const auto relational_object_uuid =
         relational_scan->required_object_uuids.front();
@@ -1134,8 +1134,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                                          : logical.issues.front().field_id);
   }
 
-  const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
+  // Admitted consumer kinds are unique. Retain issued identities for the
+  // invocation across planning, execution, and publication.
+  std::array<api::EngineUuid, 29> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                               "time-series execution identity allocation failed");
+    identity = *issued;
+  }
   const auto provider_generations =
       api::ListNoSqlProviderGenerations(input.context);
   std::vector<const api::EngineNoSqlProviderGenerationMetadata*>
@@ -1167,20 +1174,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
 
     const bool default_rollup_carrier =
         !metadata.time_series_rollup_candidate_present &&
-        metadata.time_series_rollup_capability_uuid.empty() &&
+        metadata.time_series_rollup_capability_uuid.is_nil() &&
         metadata.time_series_rollup_generation == 0 &&
         metadata.time_series_visible_late_arrival_generation == 0 &&
         metadata.time_series_rollup_interval_ns == 0 &&
         metadata.time_series_rollup_exactness_attestation_state.empty() &&
-        metadata.time_series_rollup_statement_snapshot_uuid.empty() &&
-        metadata.time_series_rollup_statement_metadata_snapshot_uuid.empty() &&
-        metadata.time_series_rollup_owning_transaction_uuid.empty() &&
+        metadata.time_series_rollup_statement_snapshot_uuid.is_nil() &&
+        metadata.time_series_rollup_statement_metadata_snapshot_uuid.is_nil() &&
+        metadata.time_series_rollup_owning_transaction_uuid.is_nil() &&
         metadata.time_series_rollup_local_transaction_id == 0 &&
         metadata
                 .time_series_rollup_snapshot_visible_through_local_transaction_id ==
             0 &&
-        metadata.time_series_rollup_security_context_uuid.empty() &&
-        metadata.time_series_rollup_catalog_epoch_uuid.empty() &&
+        metadata.time_series_rollup_security_context_uuid.is_nil() &&
+        metadata.time_series_rollup_catalog_epoch_uuid.is_nil() &&
         !metadata.time_series_rollup_exact_residual_recheck_required &&
         !metadata.time_series_rollup_base_row_mga_recheck_required &&
         !metadata.time_series_rollup_security_recheck_required;
@@ -1190,7 +1197,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                     "time-series rollup carrier was partially activated");
     }
     if (metadata.time_series_rollup_candidate_present) {
-      if (!CanonicalUuidText(metadata.time_series_rollup_capability_uuid) ||
+      if (!core::uuid::IsEngineIdentityUuid(metadata.time_series_rollup_capability_uuid) ||
           metadata.time_series_rollup_capability_uuid ==
               metadata.generation_uuid ||
           metadata.time_series_rollup_generation == 0 ||
@@ -1248,8 +1255,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                       "time-series persisted rollup binding was substituted");
       }
     }
-    if (CanonicalUuidText(metadata.provider_id) &&
-        CanonicalUuidText(metadata.generation_uuid) &&
+    if (core::uuid::IsEngineIdentityUuid(metadata.provider_uuid) &&
+        core::uuid::IsEngineIdentityUuid(metadata.generation_uuid) &&
         metadata.generation_id != 0 &&
         metadata.descriptor_epoch ==
             std::max<std::uint64_t>(1, input.context.resource_epoch) &&
@@ -1280,18 +1287,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           rollup_candidate->time_series_visible_late_arrival_generation;
   const auto provider_uuid =
       preferred_generation_current
-          ? current_preferred_generations.front()->provider_id
-          : DerivedCanonicalUuid(identity_scope,
-                                 "time-series.unavailable-provider");
+          ? current_preferred_generations.front()->provider_uuid
+          : owned_identities[0];
   const auto capability_uuid =
       preferred_generation_current
-          ? current_preferred_generations.front()->generation_uuid
-          : DerivedCanonicalUuid(identity_scope,
-                                 "time-series.unavailable-capability");
+          ? current_preferred_generations.front()->time_series_rollup_capability_uuid
+          : owned_identities[1];
   const auto fallback_provider_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.fallback-provider");
+      owned_identities[2];
   const auto fallback_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.fallback-capability");
+      owned_identities[3];
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
   opt::ModelFamilyCoordinatorRequestV1 planning;
@@ -1312,7 +1317,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   planning.resource_snapshot_uuid =
       input.context.optimizer_resource_snapshot_uuid;
   planning.statistics_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.statistics-snapshot");
+      owned_identities[4];
   planning.route_snapshot_uuid =
       input.context.optimizer_route_snapshot_uuid;
   planning.catalog_generation = generation;
@@ -1345,18 +1350,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       std::max<std::uint64_t>(1, planning.route_generation);
   std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
   alternatives.push_back(MakeModelFamilyCapabilitySnapshotForCompositionV1(
-      planning, identity_scope + ".time-series.native",
+      planning,
       opt::ModelFamilyAlternativeRouteClassV1::kNative, provider_uuid,
       capability_uuid, preferred_provider_generation, preferred_available, 1,
       1, std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2)));
   alternatives.push_back(MakeModelFamilyCapabilitySnapshotForCompositionV1(
-      planning, identity_scope + ".time-series.fallback",
+      planning,
       opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
       fallback_provider_uuid, fallback_capability_uuid,
       fallback_provider_generation, true, 2, 2,
       std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2)));
   const auto planned = PlanCanonicalModelFamilySourceForCompositionV1(
-      planning, identity_scope + ".time-series.inventory",
+      planning,
       std::move(alternatives));
   if (!planned.accepted || !planned.selected || !planned.data_access_allowed ||
       !planned.optimizer_owned_enumeration ||
@@ -1489,7 +1494,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       planned.selected_candidate.provider_generation;
   source_input.exact_fallback_selected = planned.exact_fallback_selected;
   source_input.result_handle_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.result-handle");
+      owned_identities[5];
   source_input.causal_counter_id =
       planned.physical_dag.nodes.front().causal_counter_id;
   source_input.output_descriptor_ids = source->output_descriptor_ids;
@@ -1498,9 +1503,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   source_input.security_context_uuid =
       input.context.authorization_context.authority_uuid;
   source_input.policy_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.policy-snapshot");
+      owned_identities[6];
   source_input.resource_contract_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.resource-contract");
+      owned_identities[7];
   source_input.catalog_generation = generation;
   source_input.descriptor_generation = persisted.descriptor_generation;
   source_input.security_generation = planning.security_epoch;
@@ -1554,28 +1559,28 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   std::optional<PreparedRecursiveCteRoot> composition_recursive_cte;
   bool composition_nonrecursive_cte = false;
   MaterializedValues composition_state;
-  std::string composition_filter_capability_uuid;
-  std::string composition_project_capability_uuid;
-  std::string composition_sort_capability_uuid;
-  std::string composition_window_capability_uuid;
-  std::string composition_window_order_evidence_uuid;
-  std::string composition_aggregate_capability_uuid;
-  std::string composition_cte_capability_uuid;
+  api::EngineUuid composition_filter_capability_uuid;
+  api::EngineUuid composition_project_capability_uuid;
+  api::EngineUuid composition_sort_capability_uuid;
+  api::EngineUuid composition_window_capability_uuid;
+  api::EngineUuid composition_window_order_evidence_uuid;
+  api::EngineUuid composition_aggregate_capability_uuid;
+  api::EngineUuid composition_cte_capability_uuid;
   std::string composition_cte_implementation_id;
-  std::string composition_limit_capability_uuid;
+  api::EngineUuid composition_limit_capability_uuid;
   std::string composition_limit_implementation_id;
-  std::string composition_set_values_capability_uuid;
-  std::string composition_set_root_capability_uuid;
-  std::string composition_recursive_term_capability_uuid;
-  std::string composition_recursive_root_capability_uuid;
+  api::EngineUuid composition_set_values_capability_uuid;
+  api::EngineUuid composition_set_root_capability_uuid;
+  api::EngineUuid composition_recursive_term_capability_uuid;
+  api::EngineUuid composition_recursive_root_capability_uuid;
   std::optional<exec::CanonicalAcceptedJoinKind> composition_mixed_join_kind;
   std::string composition_mixed_join_component;
   std::string composition_mixed_join_operation;
-  std::string composition_relational_scan_capability_uuid;
-  std::string composition_mixed_join_capability_uuid;
+  api::EngineUuid composition_relational_scan_capability_uuid;
+  api::EngineUuid composition_mixed_join_capability_uuid;
   CanonicalRelationalExpressionRowBinding
       composition_mixed_join_predicate_binding;
-  std::string composition_asof_join_capability_uuid;
+  api::EngineUuid composition_asof_join_capability_uuid;
   std::string composition_asof_join_implementation_id;
   std::string composition_asof_transformation_receipt;
   exec::CanonicalTimeSeriesAsofInputBindingV1 composition_asof_left_binding;
@@ -1855,8 +1860,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                         prepared.detail);
         }
         composition_filter = std::move(prepared);
-        composition_filter_capability_uuid = DerivedCanonicalUuid(
-            identity_scope, "time-series.filter.capability");
+        composition_filter_capability_uuid = owned_identities[8];
         profile.implementation_id = "filter.3vl.row.v1";
         profile.capability_uuid = composition_filter_capability_uuid;
         profile.physical_node_kind = exec::PhysicalNodeKind::kFilter;
@@ -1912,8 +1916,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         composition_state.batch = prepared.expression_output_batch;
         composition_state.result_bindings = prepared.result_bindings;
         composition_project = std::move(prepared);
-        composition_project_capability_uuid = DerivedCanonicalUuid(
-            identity_scope, "time-series.project.capability");
+        composition_project_capability_uuid = owned_identities[9];
         profile.implementation_id = "project.descriptor-direct.v1";
         profile.capability_uuid = composition_project_capability_uuid;
         profile.physical_node_kind = exec::PhysicalNodeKind::kProject;
@@ -1942,8 +1945,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                         prepared.detail);
         }
         composition_sort = std::move(prepared);
-        composition_sort_capability_uuid = DerivedCanonicalUuid(
-            identity_scope, "time-series.sort.capability");
+        composition_sort_capability_uuid = owned_identities[10];
         profile.implementation_id = "sort.typed.terms.v1";
         profile.capability_uuid = composition_sort_capability_uuid;
         profile.physical_node_kind = exec::PhysicalNodeKind::kSort;
@@ -2003,12 +2005,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         composition_state.result_bindings.push_back(
             std::move(row_number_binding));
         composition_row_number = std::move(row_number_column);
-        composition_window_capability_uuid = DerivedCanonicalUuid(
-            identity_scope, "time-series.window.row-number.capability");
-        composition_window_order_evidence_uuid = DerivedCanonicalUuid(
-            identity_scope + ":" +
-                composition_sort->ordering_property_uuid,
-            "time-series.window.deterministic-order");
+        composition_window_capability_uuid = owned_identities[11];
+        composition_window_order_evidence_uuid = owned_identities[12];
         profile.implementation_id = "window.row-number.v1";
         profile.capability_uuid = composition_window_capability_uuid;
         profile.physical_node_kind = exec::PhysicalNodeKind::kWindow;
@@ -2042,7 +2040,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         const auto int64_type_uuid = type_uuid_for("int64");
         if (consumer->output_descriptor_ids.size() != 1 ||
             count_descriptor == dag.descriptors.end() ||
-            int64_type_uuid.empty() ||
+            int64_type_uuid.is_nil() ||
             count_descriptor->type_uuid != int64_type_uuid ||
             count_descriptor->nullability !=
                 api::RelationalNullability::kNonNull ||
@@ -2065,8 +2063,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         composition_state.batch.columns = {prepared.result_column};
         composition_state.result_bindings = prepared.result_bindings;
         composition_count_star = std::move(prepared);
-        composition_aggregate_capability_uuid = DerivedCanonicalUuid(
-            identity_scope, "time-series.count-star.capability");
+        composition_aggregate_capability_uuid = owned_identities[13];
         profile.implementation_id = "aggregate.count-star.v1";
         profile.capability_uuid = composition_aggregate_capability_uuid;
         profile.physical_node_kind = exec::PhysicalNodeKind::kAggregate;
@@ -2102,11 +2099,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         composition_cte_implementation_id =
             consumer->shareable ? "cte.bound.materialize.typed.v1"
                                 : "cte.bound.inline.typed.v1";
-        composition_cte_capability_uuid = DerivedCanonicalUuid(
-            identity_scope,
-            consumer->shareable
-                ? "time-series.cte.materialize.capability"
-                : "time-series.cte.inline.capability");
+        composition_cte_capability_uuid = owned_identities[14];
         profile.implementation_id = composition_cte_implementation_id;
         profile.capability_uuid = composition_cte_capability_uuid;
         profile.physical_node_kind = exec::PhysicalNodeKind::kCte;
@@ -2159,8 +2152,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             composition_fetch_first_rows_only
                 ? "fetch.native.rows-only.v1"
                 : "limit.typed.v1";
-        composition_limit_capability_uuid = DerivedCanonicalUuid(
-            identity_scope, "time-series.limit.capability");
+        composition_limit_capability_uuid = owned_identities[15];
         profile.implementation_id = composition_limit_implementation_id;
         profile.capability_uuid = composition_limit_capability_uuid;
         profile.physical_node_kind = exec::PhysicalNodeKind::kLimit;
@@ -2235,10 +2227,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                       "time-series UNION ALL VALUES memory bound was exceeded");
       }
-      composition_set_values_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "time-series.set-values.capability");
-      composition_set_root_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "time-series.set-union-all.capability");
+      composition_set_values_capability_uuid = owned_identities[16];
+      composition_set_root_capability_uuid = owned_identities[17];
 
       LivePhysicalNodeProfile values_profile;
       values_profile.logical_node_id = logical_values->logical_node_id;
@@ -2334,10 +2324,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             "time-series recursive payload peak exceeds its admitted memory budget");
       }
       composition_recursive_cte = prepared;
-      composition_recursive_term_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "time-series.recursive-term.capability");
-      composition_recursive_root_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "time-series.recursive-root.capability");
+      composition_recursive_term_capability_uuid = owned_identities[18];
+      composition_recursive_root_capability_uuid = owned_identities[19];
 
       LivePhysicalNodeProfile term_profile;
       term_profile.logical_node_id = recursive_term->node_id;
@@ -2467,10 +2455,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   : detail);
         }
       }
-      composition_relational_scan_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "time-series.mixed-join.heap-scan.capability");
-      composition_mixed_join_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "time-series.mixed-join.capability");
+      composition_relational_scan_capability_uuid = owned_identities[20];
+      composition_mixed_join_capability_uuid = owned_identities[21];
       LivePhysicalNodeProfile heap_profile;
       heap_profile.logical_node_id = relational_scan->node_id;
       heap_profile.implementation_id = "scan.heap.v1";
@@ -2748,10 +2734,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       }
       composition_asof_maximum_output_rows =
           static_cast<std::size_t>(left_bound);
-      composition_relational_scan_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "time-series.asof-join.heap-scan.capability");
-      composition_asof_join_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "time-series.asof-join.capability");
+      composition_relational_scan_capability_uuid = owned_identities[22];
+      composition_asof_join_capability_uuid = owned_identities[23];
       composition_asof_join_implementation_id =
           composition_asof_left_outer ? "join.asof.left.typed.v1"
                                       : "join.asof.inner.typed.v1";
@@ -2937,9 +2921,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       source_input.provider_generation;
   execution_request.current_mga_statement_context = mga;
   const auto property_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.property");
+      owned_identities[24];
   const auto security_receipt_uuid =
-      DerivedCanonicalUuid(identity_scope, "time-series.security-receipt");
+      owned_identities[25];
   const auto time_series_runtime_memory_receipt =
       std::make_shared<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>();
   execution_request.execute_provider =
@@ -3113,10 +3097,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                  (bridge_bytes += bytes) <=
                      runtime_input.maximum_memory_bytes;
         };
-        const auto account_string = [&](const std::string_view value) {
+        const auto account_string = [&](const auto& item) {
+          if constexpr (std::is_same_v<std::remove_cvref_t<decltype(item)>, api::EngineUuid>) {
+            return true; // Inline UUID already counted in its carrier.
+          } else {
+          const std::string_view value(item);
           return value.size() != std::numeric_limits<std::size_t>::max() &&
                  account_bridge(static_cast<std::uint64_t>(value.size()) + 1);
-        };
+        }};
         const auto account_descriptor =
             [&](const api::EngineDescriptor& descriptor) {
               return account_string(descriptor.descriptor_uuid) &&
@@ -3251,7 +3239,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           for (std::size_t ordinal = 0; ordinal < encoded.size(); ++ordinal) {
             api::EngineTypedValue value;
             value.descriptor = public_columns[ordinal].descriptor;
-            value.encoded_value = encoded[ordinal];
+            if (const auto* uuid = std::get_if<api::EngineUuid>(&encoded[ordinal])) {
+              value.binary_value.assign(uuid->bytes.begin(), uuid->bytes.end());
+            } else {
+              value.encoded_value = std::get<std::string_view>(encoded[ordinal]);
+            }
             value.setState(api::EngineValueState::value);
             tuple.values.push_back(std::move(value));
           }
@@ -3276,7 +3268,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
               return provider;
             }
             append_tuple(
-                std::array<std::string_view, 1>{bucket_start});
+                std::array<std::variant<std::string_view, api::EngineUuid>, 1>{std::string_view(bucket_start)});
           } else {
             raw_payload = real_text(row.value);
             if (raw_payload.empty()) {
@@ -3286,7 +3278,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "time-series raw REAL64 publication encoding failed";
               return provider;
             }
-            append_tuple(std::array<std::string_view, 6>{
+            append_tuple(std::array<std::variant<std::string_view, api::EngineUuid>, 6>{
                 row.row_uuid, row.series_uuid, row.metric_uuid,
                 row.point_timestamp, row.tags, raw_payload});
           }
@@ -3321,7 +3313,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                 "time-series aggregate publication encoding failed";
             return provider;
           }
-          append_tuple(std::array<std::string_view, 7>{
+          append_tuple(std::array<std::variant<std::string_view, api::EngineUuid>, 7>{
               row.series_uuid, row.metric_uuid, row.bucket_start,
               row.bucket_end, row.tags, sample_count, aggregate_value});
           exec::ModelProviderRowIdentityV1 identity;
@@ -3382,7 +3374,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             std::uint64_t node_memory = kSetNodeOverhead;
             exchange_memory_complete =
                 exchange_memory_complete &&
-                CheckedAdd(node_memory, identity.row_uuid.size(),
+                CheckedAdd(node_memory, identity.row_uuid.bytes.size(),
                            &node_memory) &&
                 CheckedAdd(uniqueness_memory, node_memory,
                            &uniqueness_memory);
@@ -3579,7 +3571,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                 executed.cleanup_complete && executed.cleanup_count == 1;
             step.cancellation_evidence_uuid =
                 cancellation_policy == nullptr
-                    ? std::string{}
+                    ? api::EngineUuid{}
                     : cancellation_policy->evidence_uuid;
             return step;
           }
@@ -4129,11 +4121,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                      (bridge_peak_bytes += bytes) <=
                          callback_memory_bound;
             };
-            const auto account_string = [&](const std::string_view value) {
+            const auto account_string = [&](const auto& item) {
+          if constexpr (std::is_same_v<std::remove_cvref_t<decltype(item)>, api::EngineUuid>) {
+            return true; // Inline UUID already counted in its carrier.
+          } else {
+          const std::string_view value(item);
               return value.size() <
                          std::numeric_limits<std::uint64_t>::max() &&
                      account(static_cast<std::uint64_t>(value.size()) + 1);
-            };
+            }};
             const auto account_descriptor =
                 [&](const api::EngineDescriptor& descriptor) {
                   return account_string(
@@ -4227,8 +4223,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                 };
             std::uint64_t dag_vector_bytes = 0;
             const auto account_string_vector =
-                [&](const std::vector<std::string>& values) {
-                  bool ok = CheckedMultiply(values.size(), sizeof(std::string),
+                [&](const auto& values) {
+                  bool ok = CheckedMultiply(values.size(), sizeof(typename std::remove_cvref_t<decltype(values)>::value_type),
                                             &dag_vector_bytes) &&
                             account(dag_vector_bytes);
                   for (const auto& value : values) {
@@ -4338,14 +4334,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                      account_descriptor(column.descriptor) &&
                      (!left_outer || account(32));
               }
-              const auto measured_string = [](const std::string_view value,
+              const auto measured_string = [](const auto& item,
                                               std::uint64_t* measured) {
+                if constexpr (std::is_same_v<std::remove_cvref_t<decltype(item)>, api::EngineUuid>) {
+                  return measured != nullptr;
+                } else {
+                const std::string_view value(item);
                 return measured != nullptr &&
                        value.size() <
                            std::numeric_limits<std::uint64_t>::max() &&
                        CheckedAdd(*measured,
                                   static_cast<std::uint64_t>(value.size()) + 1,
                                   measured);
+                }
               };
               const auto measured_descriptor =
                   [&](const api::EngineDescriptor& descriptor,
@@ -4470,7 +4471,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                     const exec::CanonicalTimeSeriesAsofInputBindingV1& binding,
                     const bool right_input,
                     std::vector<exec::CanonicalTimeSeriesAsofKeyV1>* keys,
-                    std::vector<std::string>* right_ties) {
+                    std::vector<api::EngineUuid>* right_ties) {
                   if (keys == nullptr || right_ties == nullptr) return false;
                   keys->reserve(batch.rows.size());
                   if (right_input && binding.raw_time_series) {
@@ -4497,16 +4498,25 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                             &timestamp)) {
                       return false;
                     }
-                    keys->push_back(
-                        {row.values[binding.metric_column_ordinal]
-                             .encoded_value,
-                         row.values[binding.tags_column_ordinal]
-                             .encoded_value,
+                    const auto native_cell = [](const api::EngineTypedValue& value,
+                                                api::EngineUuid* uuid) {
+                      if (!value.encoded_value.empty() || value.binary_value.size() != 16)
+                        return false;
+                      std::copy(value.binary_value.begin(), value.binary_value.end(),
+                                uuid->bytes.begin());
+                      return core::uuid::IsEngineIdentityUuid(*uuid);
+                    };
+                    api::EngineUuid metric_uuid{};
+                    if (!native_cell(row.values[binding.metric_column_ordinal], &metric_uuid))
+                      return false;
+                    keys->push_back({metric_uuid,
+                         row.values[binding.tags_column_ordinal].encoded_value,
                          timestamp});
                     if (right_input && binding.raw_time_series) {
-                      right_ties->push_back(
-                          row.values[binding.row_uuid_column_ordinal]
-                              .encoded_value);
+                      api::EngineUuid row_uuid{};
+                      if (!native_cell(row.values[binding.row_uuid_column_ordinal], &row_uuid))
+                        return false;
+                      right_ties->push_back(row_uuid);
                     }
                   }
                   return true;
@@ -4605,9 +4615,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                       "time-series SORT comparison bound overflowed");
       }
-      const auto tie_uuid = DerivedCanonicalUuid(
-          identity_scope + ":" + composition_sort->ordering_property_uuid,
-          "time-series.sort.deterministic-tie");
+      const auto tie_uuid = owned_identities[26];
       selected.available_executors.push_back(MakeLiveSortRegistration(
           composition_sort->order_terms, tie_uuid,
           composition_sort_capability_uuid, source_input.maximum_rows,
@@ -4658,18 +4666,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     selected.result_publication_request.invocation_mode =
         exec::CanonicalResultInvocationMode::kDirect;
     selected.result_publication_request.execution_attempt_uuid =
-        DerivedCanonicalUuid(identity_scope + ":" +
-                                 input.context.current_monotonic_ns,
-                             "time-series-composition.execution-attempt");
+        owned_identities[27];
     selected.result_publication_request.result_kind =
         exec::CanonicalResultKind::kRows;
     selected.result_publication_request.transaction_effect_evidence_uuid =
-        DerivedCanonicalUuid(
-            identity_scope + ":" +
-                std::to_string(input.context.local_transaction_id) + ":" +
-                std::to_string(input.context
-                                   .snapshot_visible_through_local_transaction_id),
-            "time-series-composition.transaction-effect-unchanged");
+        owned_identities[28];
     selected.result_publication_request.maximum_row_count =
         source_input.maximum_rows;
     selected.result_publication_request.column_bindings =

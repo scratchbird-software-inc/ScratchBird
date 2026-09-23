@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "scratchbird/engine/sblr/lowering.hpp"
 
 #include "ast/ast.hpp"
@@ -313,10 +314,10 @@ std::string BinaryOperationEnvelopeFromText(const std::string& text) {
 sbsql::SessionContext ParserSessionForClusterProviderCommand() {
   sbsql::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000cf0101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000cf0102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000cf0103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000cf0101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000cf0102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000cf0103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 47;
   session.security_policy_epoch = 48;
   session.descriptor_epoch = 49;
@@ -327,7 +328,7 @@ sbsql::ParserConfig ParserConfigForClusterProviderCommand() {
   sbsql::ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_cluster_provider_command";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000cf0104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000cf0104");
   config.bundle_contract_id = "sbp_sbsql@cluster-provider-command-test";
   config.build_id = "sbsql-cluster-provider-command-test";
   return config;
@@ -451,7 +452,7 @@ ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = "/tmp/sb_server_sbsql_admission_conformance.sbdb";
-  session.database_uuid = "019e05bf-f010-7000-8000-000000000001";
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e05bf-f010-7000-8000-000000000001");
   *session_uuid = session.session_uuid;
   registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return registry;
@@ -464,7 +465,7 @@ HostedEngineState MakeEngineState() {
   database.state = HostedDatabaseState::kOpen;
   database.database_open = true;
   database.database_path = "/tmp/sb_server_sbsql_admission_conformance.sbdb";
-  database.database_uuid = "019e05bf-f010-7000-8000-000000000001";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e05bf-f010-7000-8000-000000000001");
   state.databases.push_back(database);
   return state;
 }

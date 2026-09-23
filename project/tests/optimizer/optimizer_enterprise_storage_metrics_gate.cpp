@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -39,10 +40,10 @@ page::OptimizerStorageMetricAuthority GoodAuthority() {
 
 page::OptimizerStorageMetricSample GoodSample() {
   page::OptimizerStorageMetricSample sample;
-  sample.scope_uuid = "database-scope-1";
-  sample.database_uuid = "database-uuid-1";
-  sample.filespace_uuid = "filespace-uuid-1";
-  sample.node_uuid = "local-node";
+  sample.scope_uuid = scratchbird::tests::FixtureUuid(1266, 1);
+  sample.database_uuid = scratchbird::tests::FixtureUuid(1266, 2);
+  sample.filespace_uuid = scratchbird::tests::FixtureUuid(1266, 3);
+  sample.node_uuid = scratchbird::tests::FixtureUuid(1266, 4);
   sample.route_label = "embedded";
   sample.page_family = "data";
   sample.page_class = "heap";

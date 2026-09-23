@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_dml_counter_add_coordinator.hpp"
 
 #include <cassert>
@@ -10,10 +11,10 @@ int main()
     EngineRequestContext context;
     context.security_context_present = true;
     context.statement_metadata_snapshot_engine_owned = true;
-    context.statement_uuid.canonical = "counter-receipt";
+    context.statement_uuid=scratchbird::tests::FixtureUuid(0xc008, 1);
 
     const auto coordinated = CompileSblrDmlCounterAddDescriptor(
-        context, "counter-receipt", 1, 2, 1);
+        context, context.statement_uuid, 1, 2, 1);
     assert(coordinated.ok);
 
     const auto descriptor_wire =

@@ -9,6 +9,7 @@
 #include "query/canonical_heap_optimizer_admission.hpp"
 
 #include "datatype_catalog_manifest.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "engine/executor/canonical_aggregate_registry.hpp"
 #include "hash_digest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -23,6 +24,7 @@
 #include <cctype>
 #include <functional>
 #include <optional>
+#include <set>
 #include <ranges>
 #include <string_view>
 #include <unordered_map>
@@ -35,20 +37,11 @@ namespace {
 namespace opt = scratchbird::engine::optimizer;
 namespace plan = scratchbird::engine::planner;
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
+bool IsCanonicalUuid(const EngineUuid& value) {
+  return !value.is_nil() && scratchbird::core::uuid::IsValidUuidVariant(value);
 }
 
-std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -57,32 +50,31 @@ std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
         return row.stable_name == stable_name;
       });
   return found == manifest.manifest.descriptor_rows.end()
-             ? std::string{}
-             : scratchbird::core::uuid::UuidToString(
-                   found->descriptor_uuid.value);
+             ? EngineUuid{}
+             : found->descriptor_uuid.value;
 }
 
-std::string CanonicalInt64TypeUuid() {
+EngineUuid CanonicalInt64TypeUuid() {
   const auto descriptor_uuid = CanonicalCoreDatatypeUuid("int64");
   const auto identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          "019d0000-0000-7000-8000-00000000d701", 1, 1,
+          EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}}, 1, 1,
           descriptor_uuid, 1);
-  return identity.ok ? identity.row.type_uuid : std::string{};
+  return identity.ok ? identity.row.type_uuid : EngineUuid{};
 }
 
-unsigned BoundedSignedIntegerTypeRank(const std::string_view type_uuid) {
+unsigned BoundedSignedIntegerTypeRank(const EngineUuid& type_uuid) {
   constexpr std::array<std::string_view, 4> kTypes{
       "int8", "int16", "int32", "int64"};
   for (std::size_t ordinal = 0; ordinal < kTypes.size(); ++ordinal) {
     const auto descriptor_uuid = CanonicalCoreDatatypeUuid(kTypes[ordinal]);
     const auto identity =
         scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-            "019d0000-0000-7000-8000-00000000d701", 1, 1,
+            EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}}, 1, 1,
             descriptor_uuid, 1);
     const auto exact_type_uuid =
         identity.ok ? identity.row.type_uuid : descriptor_uuid;
-    if (!exact_type_uuid.empty() && type_uuid == exact_type_uuid) {
+    if (!exact_type_uuid.is_nil() && type_uuid == exact_type_uuid) {
       return static_cast<unsigned>(ordinal + 1);
     }
   }
@@ -102,53 +94,26 @@ bool ParsePositiveU64(const std::string_view text, std::uint64_t* value) {
   return true;
 }
 
-std::optional<std::string> ExactDescriptorField(
-    const std::string_view descriptor,
-    const std::string_view field_name) {
-  const std::string prefix = std::string(field_name) + "=";
-  std::optional<std::string> value;
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto next = descriptor.find(';', offset);
-    const auto end = next == std::string_view::npos ? descriptor.size() : next;
-    const auto field = descriptor.substr(offset, end - offset);
-    if (field.rfind(prefix, 0) == 0) {
-      if (value.has_value() || field.size() == prefix.size()) {
-        return std::nullopt;
-      }
-      value = std::string(field.substr(prefix.size()));
-    }
-    if (next == std::string_view::npos) break;
-    offset = next + 1;
-  }
-  return value;
-}
-
 bool ExactOptionalDescriptorFieldMatches(
     const std::string_view descriptor,
     const std::string_view field_name,
     const std::optional<std::string>& expected) {
-  const std::string prefix = std::string(field_name) + "=";
-  std::size_t matches = 0;
-  std::string_view actual;
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto next = descriptor.find(';', offset);
-    const auto end = next == std::string_view::npos ? descriptor.size() : next;
-    const auto field = descriptor.substr(offset, end - offset);
-    if (field.rfind(prefix, 0) == 0) {
-      ++matches;
-      actual = field.substr(prefix.size());
-    }
-    if (next == std::string_view::npos) break;
-    offset = next + 1;
-  }
-  if (!expected.has_value()) return matches == 0;
-  return matches == 1 && !actual.empty() && actual == *expected;
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor, &fields)) return false;
+  const auto found = fields.text.find(std::string(field_name));
+  return expected.has_value() ? found != fields.text.end() && found->second == *expected
+                              : found == fields.text.end();
 }
 
-bool ExactNullabilityCarrierMatches(const std::string_view descriptor,
+bool ExactNullabilityCarrierMatches(const std::string_view encoded_descriptor,
                                     const bool expected_nullable) {
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(encoded_descriptor, &fields)) return false;
+  std::string scalar_fields;
+  for (const auto& [key, value] : fields.text) {
+    if (key == "nullability" || key == "nullable") scalar_fields += key + "=" + value + ";";
+  }
+  const std::string_view descriptor = scalar_fields;
   std::optional<bool> admitted;
   std::size_t canonical_count = 0;
   std::size_t storage_count = 0;
@@ -1396,7 +1361,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
     }
   }
 
-  std::vector<std::string> relation_uuids;
+  std::vector<EngineUuid> relation_uuids;
   relation_uuids.reserve(scans.size());
   for (const auto* scan : scans) {
     const auto& relation_uuid = scan->required_object_uuids.front();
@@ -1456,7 +1421,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
                     "complete_visible_scan_width");
     }
     std::unordered_set<std::uint32_t> output_ids;
-    std::unordered_set<std::string> column_uuids;
+    std::set<EngineUuid> column_uuids;
     for (std::size_t ordinal = 0; ordinal < width; ++ordinal) {
       const auto& output = *outputs[ordinal];
       const auto expression_it =
@@ -1480,8 +1445,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
                       "scan_projected_column_resolution");
       }
       const auto& column = *persisted_column;
-      const auto persisted_type_uuid = ExactDescriptorField(
-          column.value_descriptor.encoded_descriptor, "type_uuid");
+      const auto& persisted_type_uuid = column.value_descriptor.type_uuid;
       const bool nullable =
           descriptor.nullability == RelationalNullability::kNullable;
       if (!output.visible || output.ordinal != ordinal || output.output_id == 0 ||
@@ -1507,17 +1471,15 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
           output.output_name_utf8 != column.canonical_name_key ||
           column.value_descriptor.descriptor_uuid !=
               descriptor.descriptor_uuid ||
-          !persisted_type_uuid.has_value() ||
-          *persisted_type_uuid != descriptor.type_uuid ||
+          persisted_type_uuid.is_nil() ||
+          persisted_type_uuid != descriptor.type_uuid ||
           column.nullable != nullable ||
           !ExactNullabilityCarrierMatches(
               column.value_descriptor.encoded_descriptor, nullable) ||
           (descriptor.collation_uuid.has_value()
                ? column.collation_uuid != *descriptor.collation_uuid
-               : !column.collation_uuid.empty()) ||
-          !ExactOptionalDescriptorFieldMatches(
-              column.value_descriptor.encoded_descriptor, "collation_uuid",
-              descriptor.collation_uuid) ||
+               : !column.collation_uuid.is_nil()) ||
+          column.value_descriptor.collation_uuid != descriptor.collation_uuid.value_or(EngineUuid{}) ||
           !ExactOptionalDescriptorFieldMatches(
               column.value_descriptor.encoded_descriptor,
               "timezone_profile_id", descriptor.timezone_profile_id)) {
@@ -1605,8 +1567,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
     const CanonicalHeapOptimizerAdmissionRequest& request,
     const plan::CanonicalMgaStatementContext& canonical_mga,
     const std::uint64_t admitted_at_monotonic_ns) {
-  constexpr std::string_view kFunctionUuid =
-      "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+  constexpr EngineUuid kFunctionUuid{{0x01,0x9d,0xff,0xbb,0xf0,0x00,0x7e,0x2c,0xb4,0x37,0xeb,0xbb,0xc2,0xd4,0xf3,0x5b}};
   const auto& context = request.context;
   const auto& relational = request.relational_dag;
   if (relational.nodes.size() != 1 || relational.root_node_id == 0 ||
@@ -1614,7 +1575,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
       relational.nodes.front().node_kind !=
           RelationalDagNodeKind::kTableFunctionInvoke ||
       relational.nodes.front().required_object_uuids !=
-          std::vector<std::string>{std::string(kFunctionUuid)} ||
+          std::vector<EngineUuid>{kFunctionUuid} ||
       relational.nodes.front().semantic_variant_id !=
           "table-function.generate-series.v1" ||
       !relational.properties.empty()) {
@@ -1663,7 +1624,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
 
   const auto authorization = EvaluateMaterializedAuthorization(
       context, context.authorization_context, "EXECUTE",
-      std::string(kFunctionUuid));
+      kFunctionUuid);
   if (!authorization.authorized || authorization.denied ||
       authorization.policy_recheck_required ||
       !authorization.diagnostics.empty()) {
@@ -1709,8 +1670,8 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
   admission_context.admitted_at_monotonic_ns = admitted_at_monotonic_ns;
   admission_context.metadata_snapshot_engine_owned = true;
   admission_context.authorization_context_engine_owned = true;
-  admission_context.catalog_object_uuids = {std::string(kFunctionUuid)};
-  admission_context.authorized_object_uuids = {std::string(kFunctionUuid)};
+  admission_context.catalog_object_uuids = {kFunctionUuid};
+  admission_context.authorized_object_uuids = {kFunctionUuid};
   admission_context.catalog_object_evidence_engine_owned = true;
   admission_context.authorization_object_evidence_engine_owned = true;
   auto built = opt::BuildCanonicalObjectAwareNativeOptimizerAdmissionRequest(
@@ -1743,8 +1704,8 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
   projected.descriptor_uuid = output_descriptor->descriptor_uuid;
   projected.descriptor_kind = "scalar";
   projected.canonical_type_name = "int64";
-  projected.encoded_descriptor =
-      "type_uuid=" + output_descriptor->type_uuid + ";nullability=non_null";
+  projected.type_uuid = output_descriptor->type_uuid;
+  projected.encoded_descriptor = "nullability=non_null";
   CanonicalHeapOptimizerAdmissionResult result;
   result.built = true;
   result.request = std::move(built.request);
@@ -1758,8 +1719,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
     const CanonicalHeapOptimizerAdmissionRequest& request,
     const plan::CanonicalMgaStatementContext& canonical_mga,
     const std::uint64_t admitted_at_monotonic_ns) {
-  constexpr std::string_view kFunctionUuid =
-      "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+  constexpr EngineUuid kFunctionUuid{{0x01,0x9d,0xff,0xbb,0xf0,0x00,0x7e,0x2c,0xb4,0x37,0xeb,0xbb,0xc2,0xd4,0xf3,0x5b}};
   const auto& context = request.context;
   const auto& relational = request.relational_dag;
   const auto source = std::ranges::find_if(
@@ -1774,7 +1734,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
       match == relational.nodes.end() ||
       relational.root_node_id != match->node_id ||
       source->required_object_uuids !=
-          std::vector<std::string>{std::string(kFunctionUuid)} ||
+          std::vector<EngineUuid>{kFunctionUuid} ||
       source->semantic_variant_id != "table-function.generate-series.v1" ||
       !source->input_node_ids.empty() ||
       match->input_node_ids != std::vector<std::uint32_t>{source->node_id} ||
@@ -1830,7 +1790,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
 
   const auto authorization = EvaluateMaterializedAuthorization(
       context, context.authorization_context, "EXECUTE",
-      std::string(kFunctionUuid));
+      kFunctionUuid);
   if (!authorization.authorized || authorization.denied ||
       authorization.policy_recheck_required ||
       !authorization.diagnostics.empty()) {
@@ -1876,8 +1836,8 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
   admission_context.admitted_at_monotonic_ns = admitted_at_monotonic_ns;
   admission_context.metadata_snapshot_engine_owned = true;
   admission_context.authorization_context_engine_owned = true;
-  admission_context.catalog_object_uuids = {std::string(kFunctionUuid)};
-  admission_context.authorized_object_uuids = {std::string(kFunctionUuid)};
+  admission_context.catalog_object_uuids = {kFunctionUuid};
+  admission_context.authorized_object_uuids = {kFunctionUuid};
   admission_context.catalog_object_evidence_engine_owned = true;
   admission_context.authorization_object_evidence_engine_owned = true;
   auto built = opt::BuildCanonicalObjectAwareNativeOptimizerAdmissionRequest(
@@ -1908,9 +1868,8 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
   projected.descriptor_uuid = output_descriptor->descriptor_uuid;
   projected.descriptor_kind = "scalar";
   projected.canonical_type_name = "int64";
-  projected.encoded_descriptor =
-      "type_uuid=" + output_descriptor->type_uuid +
-      ";nullability=non_null";
+  projected.type_uuid = output_descriptor->type_uuid;
+  projected.encoded_descriptor = "nullability=non_null";
   CanonicalHeapOptimizerAdmissionResult result;
   result.built = true;
   result.request = std::move(built.request);
@@ -2504,34 +2463,23 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             sort_node->bound_expression_ids.size() ||
         !property->expression_ids.empty() ||
         !property->dependency_property_uuids.empty() ||
-        !property->window_frame_descriptor_uuid.empty()) {
+        !property->window_frame_descriptor_uuid.is_nil()) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                     "heap_sort_ordering_property");
     }
   }
   if (window_node != nullptr) {
-    constexpr std::string_view kRowNumberFunctionUuid =
-        "019de5fc-2400-7539-bcce-00eef3ae7220";
-    constexpr std::string_view kRankFunctionUuid =
-        "019de5fc-2400-7b94-870d-0dd789ca70ab";
-    constexpr std::string_view kDenseRankFunctionUuid =
-        "019de5fc-2400-741d-bef0-f079fd3ba494";
-    constexpr std::string_view kPercentRankFunctionUuid =
-        "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
-    constexpr std::string_view kCumeDistFunctionUuid =
-        "019de5fc-2400-721c-be64-2568b64a02b9";
-    constexpr std::string_view kNtileFunctionUuid =
-        "019de5fc-2400-7047-9474-232ca488c094";
-    constexpr std::string_view kLagFunctionUuid =
-        "019de5fc-2400-782c-8436-9ac310301738";
-    constexpr std::string_view kLeadFunctionUuid =
-        "019de5fc-2400-7a06-bc3c-6747cf5be66f";
-    constexpr std::string_view kFirstValueFunctionUuid =
-        "019de5fc-2400-7264-90fb-d25bd0f806f2";
-    constexpr std::string_view kLastValueFunctionUuid =
-        "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
-    constexpr std::string_view kNthValueFunctionUuid =
-        "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
+    constexpr EngineUuid kRowNumberFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x75,0x39,0xbc,0xce,0x00,0xee,0xf3,0xae,0x72,0x20}};
+    constexpr EngineUuid kRankFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7b,0x94,0x87,0x0d,0x0d,0xd7,0x89,0xca,0x70,0xab}};
+    constexpr EngineUuid kDenseRankFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x74,0x1d,0xbe,0xf0,0xf0,0x79,0xfd,0x3b,0xa4,0x94}};
+    constexpr EngineUuid kPercentRankFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7d,0x86,0x86,0xfe,0x96,0xf3,0xf2,0x7b,0x5d,0xd6}};
+    constexpr EngineUuid kCumeDistFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x72,0x1c,0xbe,0x64,0x25,0x68,0xb6,0x4a,0x02,0xb9}};
+    constexpr EngineUuid kNtileFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x70,0x47,0x94,0x74,0x23,0x2c,0xa4,0x88,0xc0,0x94}};
+    constexpr EngineUuid kLagFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x78,0x2c,0x84,0x36,0x9a,0xc3,0x10,0x30,0x17,0x38}};
+    constexpr EngineUuid kLeadFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7a,0x06,0xbc,0x3c,0x67,0x47,0xcf,0x5b,0xe6,0x6f}};
+    constexpr EngineUuid kFirstValueFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x72,0x64,0x90,0xfb,0xd2,0x5b,0xd0,0xf8,0x06,0xf2}};
+    constexpr EngineUuid kLastValueFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7d,0x23,0xa5,0xbe,0x7e,0xd3,0xf1,0xa5,0xc3,0xec}};
+    constexpr EngineUuid kNthValueFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7d,0xc9,0x80,0xe6,0x9f,0x2c,0xcf,0x08,0x07,0x6f}};
     const bool rank_window =
         window_node->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
@@ -2603,16 +2551,16 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     const bool value_operand_window =
         value_window && !aggregate_count_star_window;
     const auto canonical_int64_type_uuid =
-        value_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
+        value_window ? CanonicalCoreDatatypeUuid("int64") : EngineUuid{};
     const auto canonical_boolean_type_uuid =
         (aggregate_boolean_window || navigation_value_window)
             ? CanonicalCoreDatatypeUuid("boolean")
-            : std::string{};
-    const std::array<std::string, 4> canonical_bounded_signed_type_uuids = {
-        aggregate_window ? CanonicalCoreDatatypeUuid("int8") : std::string{},
-        aggregate_window ? CanonicalCoreDatatypeUuid("int16") : std::string{},
-        aggregate_window ? CanonicalCoreDatatypeUuid("int32") : std::string{},
-        aggregate_window ? canonical_int64_type_uuid : std::string{}};
+            : EngineUuid{};
+    const std::array<EngineUuid, 4> canonical_bounded_signed_type_uuids = {
+        aggregate_window ? CanonicalCoreDatatypeUuid("int8") : EngineUuid{},
+        aggregate_window ? CanonicalCoreDatatypeUuid("int16") : EngineUuid{},
+        aggregate_window ? CanonicalCoreDatatypeUuid("int32") : EngineUuid{},
+        aggregate_window ? canonical_int64_type_uuid : EngineUuid{}};
     const std::string_view expected_builtin_id =
         aggregate_window
             ? (aggregate_window_row == nullptr
@@ -2637,11 +2585,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number")))));
-    const std::string_view expected_function_uuid =
+    const EngineUuid expected_function_uuid =
         aggregate_window
             ? (aggregate_window_row == nullptr
-                   ? std::string_view{}
-                   : std::string_view{aggregate_window_row->function_uuid})
+                   ? EngineUuid{}
+                   : aggregate_window_row->function_uuid)
             : value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
@@ -2824,8 +2772,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         !window_property->expression_ids.empty() ||
         !window_property->ordering_terms.empty() ||
         window_property->dependency_property_uuids !=
-            std::vector<std::string>{ordering_property_uuid} ||
-        window_property->window_frame_descriptor_uuid.empty() ||
+            std::vector<EngineUuid>{ordering_property_uuid} ||
+        window_property->window_frame_descriptor_uuid.is_nil() ||
         sort_node->bound_expression_ids.size() != 1 ||
         relational.window_definitions.size() != 1 ||
         relational.window_invocations.size() != 1 || !passthrough_outputs ||
@@ -2862,7 +2810,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         function == relational.expressions.end() ||
         function->expression_kind != RelationalExpressionKind::kFunctionCall ||
         function->function_uuid !=
-            std::optional<std::string>(expected_function_uuid) ||
+            std::optional<EngineUuid>(expected_function_uuid) ||
         function->bound_name_uuid.has_value() ||
         function->operator_name.has_value() ||
         function->literal_kind.has_value() ||
@@ -2873,8 +2821,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             relational.window_invocations.front().result_descriptor_id ||
         result_descriptor == relational.descriptors.end() ||
         (aggregate_window &&
-         (canonical_int64_type_uuid.empty() ||
-          (aggregate_boolean_window && canonical_boolean_type_uuid.empty()) ||
+         (canonical_int64_type_uuid.is_nil() ||
+          (aggregate_boolean_window && canonical_boolean_type_uuid.is_nil()) ||
           result_descriptor->type_uuid !=
               (aggregate_boolean_window ? canonical_boolean_type_uuid
                                         : canonical_int64_type_uuid))) ||
@@ -2936,11 +2884,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                        ntile_argument_descriptor->type_uuid ==
                            canonical_boolean_type_uuid)) ||
           (!aggregate_window &&
-           (canonical_int64_type_uuid.empty() ||
+           (canonical_int64_type_uuid.is_nil() ||
             (ntile_argument_descriptor->type_uuid !=
                  canonical_int64_type_uuid &&
              (!navigation_value_window ||
-              canonical_boolean_type_uuid.empty() ||
+              canonical_boolean_type_uuid.is_nil() ||
               ntile_argument_descriptor->type_uuid !=
                   canonical_boolean_type_uuid)) ||
             ntile_argument_descriptor->type_uuid !=
@@ -2989,7 +2937,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           aggregate_order_argument->literal_or_parameter_ref.has_value() ||
           aggregate_order_argument->operator_name.has_value() ||
           aggregate_order_descriptor == relational.descriptors.end() ||
-          canonical_int64_type_uuid.empty() ||
+          canonical_int64_type_uuid.is_nil() ||
           std::ranges::find(canonical_bounded_signed_type_uuids,
                             aggregate_order_descriptor->type_uuid) ==
               canonical_bounded_signed_type_uuids.end() ||
@@ -3012,7 +2960,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           nth_order_argument->literal_or_parameter_ref.has_value() ||
           nth_order_argument->operator_name.has_value() ||
           nth_order_descriptor == relational.descriptors.end() ||
-          canonical_int64_type_uuid.empty() ||
+          canonical_int64_type_uuid.is_nil() ||
           nth_order_descriptor->type_uuid != canonical_int64_type_uuid ||
           nth_order_descriptor->collation_uuid.has_value() ||
           nth_order_descriptor->timezone_profile_id.has_value() ||
@@ -3159,10 +3107,10 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   logical.logical_graph.mga_statement_context = canonical_mga;
   logical.property_catalog.mga_statement_context = canonical_mga;
 
-  const std::string& relation_uuid = node.required_object_uuids.front();
+  const EngineUuid& relation_uuid = node.required_object_uuids.front();
   auto authority_cohort = request.authority_cohort;
   if (authority_cohort == nullptr) {
-    const std::array<std::string, 1> relation_uuids{relation_uuid};
+    const std::array<EngineUuid, 1> relation_uuids{relation_uuid};
     auto prepared = PrepareMgaHeapReadAuthorities(
         context, relation_uuids, snapshot.snapshot_vector);
     if (!prepared.ok || prepared.cohort == nullptr) {
@@ -3197,7 +3145,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   std::unordered_set<std::uint32_t> output_ids;
   std::unordered_set<std::uint32_t> expression_ids;
   std::unordered_set<std::uint32_t> descriptor_ids;
-  std::unordered_set<std::string> column_uuids;
+  std::set<EngineUuid> column_uuids;
   std::unordered_set<std::string> column_names;
   std::vector<const RelationalOutputRecord*> scan_outputs;
   std::vector<std::string> projection_type_names;
@@ -3248,8 +3196,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                     "scan_projected_column_resolution");
     }
     const auto& column = *persisted_column;
-    const auto persisted_type_uuid = ExactDescriptorField(
-        column.value_descriptor.encoded_descriptor, "type_uuid");
+    const auto& persisted_type_uuid = column.value_descriptor.type_uuid;
     const bool nullable =
         descriptor.nullability == RelationalNullability::kNullable;
     if (output.relation_node_id != node.node_id || !output.visible ||
@@ -3284,18 +3231,16 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             descriptor.descriptor_uuid ||
         column.value_descriptor.encoded_descriptor.empty() ||
         column.value_descriptor.canonical_type_name.empty() ||
-        !persisted_type_uuid.has_value() ||
-        !IsCanonicalUuid(*persisted_type_uuid) ||
-        *persisted_type_uuid != descriptor.type_uuid ||
+        persisted_type_uuid.is_nil() ||
+        !IsCanonicalUuid(persisted_type_uuid) ||
+        persisted_type_uuid != descriptor.type_uuid ||
         column.nullable != nullable ||
         !ExactNullabilityCarrierMatches(
             column.value_descriptor.encoded_descriptor, nullable) ||
         (descriptor.collation_uuid.has_value()
              ? column.collation_uuid != *descriptor.collation_uuid
-             : !column.collation_uuid.empty()) ||
-        !ExactOptionalDescriptorFieldMatches(
-            column.value_descriptor.encoded_descriptor, "collation_uuid",
-            descriptor.collation_uuid) ||
+             : !column.collation_uuid.is_nil()) ||
+        column.value_descriptor.collation_uuid != descriptor.collation_uuid.value_or(EngineUuid{}) ||
         !ExactOptionalDescriptorFieldMatches(
             column.value_descriptor.encoded_descriptor,
             "timezone_profile_id", descriptor.timezone_profile_id)) {

@@ -1,3 +1,7 @@
+#include "../agents/agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -72,7 +76,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                      evidence.end(),
                      [&](const auto& item) {
                        return item.evidence_kind == kind &&
-                              item.evidence_id.find(value) !=
+                              scratchbird::tests::EvidenceTextFind(item.evidence_id, value) !=
                                   std::string::npos;
                      });
 }
@@ -89,10 +93,10 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind,
   return typed.value;
 }
 
-std::string UuidText(platform::UuidKind kind,
+std::string UuidBytes(platform::UuidKind kind,
                      platform::u64 millis,
                      platform::byte suffix) {
-  return uuid::UuidToString(GeneratedUuid(kind, millis, suffix).value);
+  return BinaryFixtureIdentity(GeneratedUuid(kind, millis, suffix).value);
 }
 
 std::string Sha(std::string_view label) {
@@ -101,21 +105,21 @@ std::string Sha(std::string_view label) {
 
 struct FixtureIds {
   std::string database_uuid =
-      UuidText(platform::UuidKind::database, 1771400000000ull, 0x41);
+      UuidBytes(platform::UuidKind::database, 1771400000000ull, 0x41);
   std::string relation_uuid =
-      UuidText(platform::UuidKind::object, 1771400001000ull, 0x42);
+      UuidBytes(platform::UuidKind::object, 1771400001000ull, 0x42);
   std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1771400002000ull, 0x43);
+      UuidBytes(platform::UuidKind::object, 1771400002000ull, 0x43);
   std::string function_uuid =
-      UuidText(platform::UuidKind::object, 1771400003000ull, 0x44);
+      UuidBytes(platform::UuidKind::object, 1771400003000ull, 0x44);
   std::string filespace_uuid =
-      UuidText(platform::UuidKind::object, 1771400004000ull, 0x45);
+      UuidBytes(platform::UuidKind::object, 1771400004000ull, 0x45);
   std::string column_uuid =
-      UuidText(platform::UuidKind::object, 1771400005000ull, 0x46);
+      UuidBytes(platform::UuidKind::object, 1771400005000ull, 0x46);
   std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1771400006000ull, 0x47);
+      UuidBytes(platform::UuidKind::row, 1771400006000ull, 0x47);
   std::string version_uuid =
-      UuidText(platform::UuidKind::row, 1771400007000ull, 0x48);
+      UuidBytes(platform::UuidKind::row, 1771400007000ull, 0x48);
   std::string descriptor_digest = Sha("descriptor-customer");
   std::string sblr_digest = Sha("sblr-customer-lookup");
   std::string operation_id = "engine.operation.eler041.customer_lookup";
@@ -124,8 +128,8 @@ struct FixtureIds {
 opt::OptimizerStatsIdentity Identity(const FixtureIds& ids,
                                      std::string statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
-  identity.object_uuid = ids.relation_uuid;
-  identity.statistic_uuid = std::move(statistic_uuid);
+  identity.object_uuid = NativeFixtureIdentity(ids.relation_uuid);
+  identity.statistic_uuid = NativeFixtureIdentity(statistic_uuid);
   identity.stats_epoch = 4101;
   identity.catalog_epoch = 4100;
   identity.transaction_visibility_epoch = 4099;
@@ -137,7 +141,7 @@ opt::OptimizerStatsIdentity Identity(const FixtureIds& ids,
 
 opt::TableCardinalityStats TableStats(const FixtureIds& ids) {
   opt::TableCardinalityStats stats;
-  stats.identity = Identity(ids, UuidText(platform::UuidKind::object,
+  stats.identity = Identity(ids, UuidBytes(platform::UuidKind::object,
                                           1771400010000ull,
                                           0x51));
   stats.row_count = 10000;
@@ -149,15 +153,15 @@ opt::TableCardinalityStats TableStats(const FixtureIds& ids) {
 
 opt::IndexStats IndexStats(const FixtureIds& ids) {
   opt::IndexStats index;
-  index.identity = Identity(ids, UuidText(platform::UuidKind::object,
+  index.identity = Identity(ids, UuidBytes(platform::UuidKind::object,
                                           1771400011000ull,
                                           0x52));
-  index.index_uuid = ids.index_uuid;
-  index.relation_uuid = ids.relation_uuid;
+  index.index_uuid = NativeFixtureIdentity(ids.index_uuid);
+  index.relation_uuid = NativeFixtureIdentity(ids.relation_uuid);
   index.index_family = "btree";
   index.descriptor_digest = ids.descriptor_digest;
   index.collation_identity = Sha("collation-binary");
-  index.key_column_uuids = {ids.column_uuid};
+  index.key_column_uuids = {NativeFixtureIdentity(ids.column_uuid)};
   index.height = 2;
   index.leaf_pages = 24;
   index.distinct_keys = 9000;
@@ -203,7 +207,7 @@ plan::LogicalPlan LogicalPlan(const FixtureIds& ids) {
                                         plan::PhysicalAccessKind::kNone,
                                         ids.operation_id,
                                         "engine.customer_lookup");
-  node.required_object_uuids.push_back(ids.relation_uuid);
+  node.required_object_uuids.push_back(NativeFixtureIdentity(ids.relation_uuid));
   node.required_descriptors.push_back(ids.descriptor_digest);
   logical.nodes.push_back(std::move(node));
   return logical;
@@ -211,11 +215,11 @@ plan::LogicalPlan LogicalPlan(const FixtureIds& ids) {
 
 opt::AccessPathPlanningRequest AccessRequest(const FixtureIds& ids) {
   opt::AccessPathPlanningRequest request;
-  request.relation_uuid = ids.relation_uuid;
+  request.relation_uuid = NativeFixtureIdentity(ids.relation_uuid);
   request.predicate_kind = "scalar_eq";
   request.descriptor_digest = ids.descriptor_digest;
   request.collation_identity = Sha("collation-binary");
-  request.projected_column_uuids = {ids.column_uuid};
+  request.projected_column_uuids = {NativeFixtureIdentity(ids.column_uuid)};
   request.visibility_proven = true;
   request.grants_proven = true;
   request.base_row_mga_recheck_planned = true;
@@ -228,7 +232,7 @@ opt::AccessPathPlanningRequest AccessRequest(const FixtureIds& ids) {
 opt::BoundOptimizerRequest BoundRequest(const FixtureIds& ids) {
   opt::BoundOptimizerRequest request;
   request.context.request_uuid =
-      UuidText(platform::UuidKind::object, 1771400012000ull, 0x53);
+      UuidBytes(platform::UuidKind::object, 1771400012000ull, 0x53);
   request.context.operation_id = ids.operation_id;
   request.context.sblr_digest = ids.sblr_digest;
   request.context.descriptor_set_digest = ids.descriptor_digest;
@@ -268,10 +272,10 @@ opt::OptimizerProductionPlanCacheKeyRequest ProductionKeyRequest(
   request.memory_grant_digest = Sha("memory-grant-small");
   request.compatibility_epoch = 4110;
   request.format_compatibility_epoch = 4111;
-  request.object_uuids = {ids.relation_uuid};
-  request.function_uuids = {ids.function_uuid};
-  request.index_uuids = {ids.index_uuid};
-  request.filespace_uuids = {ids.filespace_uuid};
+  request.object_uuids = {NativeFixtureIdentity(ids.relation_uuid)};
+  request.function_uuids = {NativeFixtureIdentity(ids.function_uuid)};
+  request.index_uuids = {NativeFixtureIdentity(ids.index_uuid)};
+  request.filespace_uuids = {NativeFixtureIdentity(ids.filespace_uuid)};
   request.dependency_digests = {
       Sha("dep-relation"),
       Sha("dep-index"),
@@ -285,8 +289,7 @@ opt::OptimizerProductionPlanCacheKeyRequest ProductionKeyRequest(
 std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
                                        std::string_view key) {
   const auto descriptor_uuid =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           index_uuid);
+      uuid::MakeTypedUuid(platform::UuidKind::object, NativeFixtureIdentity(index_uuid));
   Require(descriptor_uuid.ok(), "index UUID parse failed");
   idx::IndexKeyEncodingComponent component;
   component.kind = idx::IndexKeyComponentKind::scalar;
@@ -303,11 +306,9 @@ page::IndexBtreeCell Cell(const FixtureIds& ids, std::string_view key) {
   cell.key_ordinal = 0;
   cell.encoded_key = EncodedKey(ids.index_uuid, key);
   const auto parsed_row =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::row,
-                                           ids.row_uuid);
+      uuid::MakeTypedUuid(platform::UuidKind::row, NativeFixtureIdentity(ids.row_uuid));
   const auto parsed_version =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::row,
-                                           ids.version_uuid);
+      uuid::MakeTypedUuid(platform::UuidKind::row, NativeFixtureIdentity(ids.version_uuid));
   Require(parsed_row.ok() && parsed_version.ok(),
           "row/version UUID parse failed");
   cell.row_uuid = parsed_row.value;
@@ -318,8 +319,7 @@ page::IndexBtreeCell Cell(const FixtureIds& ids, std::string_view key) {
 page::IndexBtreePhysicalTree PhysicalTreeWithRow(const FixtureIds& ids,
                                                  std::string_view key) {
   const auto parsed_index =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           ids.index_uuid);
+      uuid::MakeTypedUuid(platform::UuidKind::object, NativeFixtureIdentity(ids.index_uuid));
   Require(parsed_index.ok(), "physical index UUID parse failed");
   auto initialized = page::InitializeIndexBtreePhysicalTree(parsed_index.value,
                                                            4096);
@@ -336,11 +336,11 @@ api::DmlTargetAccessPlanRequest DmlAccessRequest(const FixtureIds& ids,
                                                  const opt::PhysicalPlanNode& physical) {
   api::DmlTargetAccessPlanRequest request;
   request.mutation_kind = "dml.target_rows.update";
-  request.database_uuid = ids.database_uuid;
-  request.relation_uuid = ids.relation_uuid;
+  request.database_uuid = NativeFixtureIdentity(ids.database_uuid);
+  request.relation_uuid = NativeFixtureIdentity(ids.relation_uuid);
   request.predicate_kind = "scalar_eq";
   request.predicate_descriptor_digest = ids.descriptor_digest;
-  request.index_uuid = ids.index_uuid;
+  request.index_uuid = NativeFixtureIdentity(ids.index_uuid);
   request.index_family = "btree";
   request.security_policy_digest = Sha("security-policy-reader");
   request.redaction_policy_digest = Sha("redaction-route-customer");
@@ -633,7 +633,7 @@ int main(int argc, char** argv) {
                   api::DmlRowLocatorStreamSource::physical_btree_point,
           "executor row-locator stream did not consume physical B-tree route");
   Require(stream.locators.size() == 1 &&
-              stream.locators.front().row_uuid == ids.row_uuid,
+              stream.locators.front().row_uuid == NativeFixtureIdentity(ids.row_uuid),
           "executor row-locator stream returned wrong row");
   Require(HasEvidence(stream.evidence,
                       "mga_finality_authority",

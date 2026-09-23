@@ -7,6 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "metric_history.hpp"
+#include "metric_history_store_codec.hpp"
+#include "metric_label_key.hpp"
+#include "uuid.hpp"
+#include <cmath>
+#include <filesystem>
 
 #include <algorithm>
 #include <chrono>
@@ -21,8 +26,6 @@
 
 namespace scratchbird::core::metrics {
 namespace {
-
-constexpr const char* kMagic = "SBMTRH1";
 
 struct MetricHistoryConfig {
   bool enabled = false;
@@ -41,248 +44,56 @@ MetricHistoryConfig& Config() {
   return config;
 }
 
-std::string HexEncode(const std::string& value) {
-  std::ostringstream out;
-  out << std::hex << std::setfill('0');
-  for (unsigned char c : value) {
-    out << std::setw(2) << static_cast<unsigned int>(c);
-  }
-  return out.str();
-}
-
-int HexValue(char c) {
-  if (c >= '0' && c <= '9') {
-    return c - '0';
-  }
-  if (c >= 'a' && c <= 'f') {
-    return c - 'a' + 10;
-  }
-  if (c >= 'A' && c <= 'F') {
-    return c - 'A' + 10;
-  }
-  return 0;
-}
-
-std::string HexDecode(const std::string& value) {
-  std::string out;
-  for (std::size_t i = 0; i + 1 < value.size(); i += 2) {
-    out.push_back(static_cast<char>((HexValue(value[i]) << 4) | HexValue(value[i + 1])));
-  }
-  return out;
-}
-
-std::vector<std::string> Split(const std::string& value, char delimiter) {
-  std::vector<std::string> out;
-  std::string current;
-  std::istringstream input(value);
-  while (std::getline(input, current, delimiter)) {
-    out.push_back(current);
-  }
-  return out;
-}
-
-u64 ParseU64(const std::string& value) {
-  if (value.empty()) {
-    return 0;
-  }
-  try {
-    return static_cast<u64>(std::stoull(value));
-  } catch (...) {
-    return 0;
-  }
-}
-
-double ParseDouble(const std::string& value) {
-  if (value.empty()) {
-    return 0.0;
-  }
-  try {
-    return std::stod(value);
-  } catch (...) {
-    return 0.0;
-  }
-}
-
-std::string JoinRollupGrains(const std::vector<MetricRollupGrain>& grains) {
-  std::ostringstream out;
-  bool first = true;
-  for (const auto grain : grains) {
-    if (!first) {
-      out << ',';
-    }
-    out << MetricRollupGrainName(grain);
-    first = false;
-  }
-  return out.str();
-}
-
-std::vector<MetricRollupGrain> ParseRollupGrains(const std::string& value) {
-  std::vector<MetricRollupGrain> grains;
-  if (value.empty()) {
-    return grains;
-  }
-  for (const auto& grain : Split(value, ',')) {
-    if (!grain.empty()) {
-      grains.push_back(MetricRollupGrainFromName(grain));
-    }
-  }
-  return grains;
-}
-
-MetricLabelSet ParseLabels(const std::string& encoded) {
-  MetricLabelSet labels;
-  const auto decoded = HexDecode(encoded);
-  for (const auto& item : Split(decoded, ';')) {
-    if (item.empty()) {
-      continue;
-    }
-    const auto pos = item.find('=');
-    if (pos == std::string::npos) {
-      continue;
-    }
-    labels.push_back({item.substr(0, pos), item.substr(pos + 1)});
-  }
-  return labels;
-}
-
-std::string EncodeLabels(const MetricLabelSet& labels) {
-  return HexEncode(CanonicalMetricLabels(labels));
-}
-
-std::string EncodeBuckets(const std::map<double, u64>& buckets) {
-  std::ostringstream out;
-  bool first = true;
-  for (const auto& [bucket, count] : buckets) {
-    if (!first) {
-      out << ',';
-    }
-    out << bucket << ':' << count;
-    first = false;
-  }
-  return out.str();
-}
-
-std::map<double, u64> DecodeBuckets(const std::string& encoded) {
-  std::map<double, u64> buckets;
-  for (const auto& item : Split(encoded, ',')) {
-    const auto pos = item.find(':');
-    if (pos == std::string::npos) {
-      continue;
-    }
-    buckets[ParseDouble(item.substr(0, pos))] = ParseU64(item.substr(pos + 1));
-  }
-  return buckets;
-}
-
-const MetricRetentionPolicy& EffectivePolicyForDescriptor(const MetricDescriptor& descriptor,
-                                                          const std::vector<MetricRetentionPolicy>& configured) {
-  const auto& fallback = DefaultMetricRetentionPolicyForDescriptor(descriptor);
+const MetricRetentionPolicy* EffectivePolicyForDescriptor(const MetricDescriptorBinding& binding,
+    const std::vector<MetricRetentionPolicy>& configured) {
+  const MetricRetentionPolicy* found = nullptr;
   for (const auto& policy : configured) {
-    if (policy.policy_name == fallback.policy_name || policy.policy_uuid == fallback.policy_uuid) {
-      return policy;
-    }
+    if (policy.policy_uuid != binding.retention_policy_uuid ||
+        policy.generation != binding.retention_policy_generation) continue;
+    if (found || !ValidateMetricRetentionPolicy(policy).ok) return nullptr;
+    found = &policy;
   }
-  return fallback;
+  return found;
+}
+MetricValidationResult AddEvidence(MetricHistoryStore& store, std::string operation,
+    const MetricUuid& policy, const MetricUuid& series, std::string family,
+    u64 cutoff, u64 affected, const MetricUuid& actor, const MetricUuid& transaction,
+    std::string detail) {
+  MetricRetentionEvidenceRecord request;
+  request.operation = std::move(operation); request.policy_uuid = policy;
+  request.series_uuid = series; request.metric_family = std::move(family);
+  request.cutoff_time_microseconds = cutoff; request.rows_affected = affected;
+  request.actor_uuid = actor; request.transaction_uuid = transaction;
+  request.decision = "allowed"; request.detail = std::move(detail);
+  auto evidence = MakeMetricRetentionEvidenceRecord(std::move(request));
+  if (!evidence.ok()) return MetricError("SB-METRICS-HISTORY-EVIDENCE-BINDING-INVALID", "native policy, actor and transaction bindings required");
+  store.evidence.push_back(std::move(*evidence.record)); return MetricOk();
+}
+// Existing rollup fields are binary64 summaries. Reject values that cannot be
+// represented exactly instead of silently narrowing an exact observation.
+std::optional<double> ExactRollupScalar(const MetricScalar& value) {
+  if (const auto* v = std::get_if<double>(&value))
+    return std::isfinite(*v) ? std::optional<double>(*v) : std::nullopt;
+  if (const auto* v = std::get_if<std::uint64_t>(&value)) {
+    if (*v <= (UINT64_C(1) << 53)) return static_cast<double>(*v);
+  }
+  if (const auto* v = std::get_if<std::int64_t>(&value)) {
+    if (*v >= -(INT64_C(1) << 53) && *v <= (INT64_C(1) << 53)) return static_cast<double>(*v);
+  }
+  if (const auto* v = std::get_if<bool>(&value)) return *v ? 1.0 : 0.0;
+  if (const auto* v = std::get_if<MetricEnumValue>(&value)) {
+    if (v->code <= (UINT64_C(1) << 53)) return static_cast<double>(v->code);
+  }
+  return std::nullopt;
 }
 
 MetricHistoryStore LoadOrSeedStore(const std::string& path, const std::vector<MetricRetentionPolicy>& policies) {
   MetricHistoryStore store = LoadMetricHistoryStore(path);
+  if (!store.load_status.ok) return store;
   if (store.policies.empty()) {
-    store.policies = policies.empty() ? BaselineMetricRetentionPolicies() : policies;
+    store.policies = policies;
   }
   return store;
-}
-
-void WritePolicy(std::ostream& out, const MetricRetentionPolicy& policy) {
-  out << kMagic << "\tPOLICY\t"
-      << HexEncode(policy.policy_uuid) << '\t'
-      << HexEncode(policy.policy_name) << '\t'
-      << HexEncode(policy.scope) << '\t'
-      << MetricRetentionModeName(policy.mode) << '\t'
-      << policy.raw_retention_seconds << '\t'
-      << policy.rollup_retention_seconds << '\t'
-      << HexEncode(JoinRollupGrains(policy.rollup_grains)) << '\t'
-      << policy.purge_batch_limit << '\t'
-      << policy.max_cardinality << '\t'
-      << HexEncode(policy.overflow_behavior) << '\t'
-      << HexEncode(policy.edit_right) << '\t'
-      << HexEncode(policy.default_admin_group) << '\t'
-      << (policy.evidence_required ? "1" : "0") << '\n';
-}
-
-void WriteSeries(std::ostream& out, const MetricSeriesIdentity& series) {
-  out << kMagic << "\tSERIES\t"
-      << HexEncode(series.series_uuid) << '\t'
-      << HexEncode(series.series_key) << '\t'
-      << HexEncode(series.metric_family) << '\t'
-      << HexEncode(series.namespace_path) << '\t'
-      << HexEncode(series.producer_owner) << '\t'
-      << HexEncode(series.scope_class) << '\t'
-      << HexEncode(series.database_uuid) << '\t'
-      << HexEncode(series.node_uuid) << '\t'
-      << HexEncode(series.cluster_uuid) << '\t'
-      << EncodeLabels(series.labels) << '\t'
-      << HexEncode(series.label_hash) << '\t'
-      << HexEncode(series.redaction_class) << '\t'
-      << HexEncode(series.retention_policy_uuid) << '\n';
-}
-
-void WriteSample(std::ostream& out, const MetricRawSampleRecord& sample) {
-  out << kMagic << "\tSAMPLE\t"
-      << HexEncode(sample.sample_uuid) << '\t'
-      << HexEncode(sample.series_uuid) << '\t'
-      << HexEncode(sample.metric_family) << '\t'
-      << EncodeLabels(sample.labels) << '\t'
-      << sample.observation_time_microseconds << '\t'
-      << sample.collection_time_microseconds << '\t'
-      << sample.publish_time_microseconds << '\t'
-      << sample.source_sequence << '\t'
-      << HexEncode(sample.clock_quality) << '\t'
-      << HexEncode(sample.freshness_class) << '\t'
-      << MetricTypeName(sample.value.type) << '\t'
-      << std::setprecision(17) << sample.value.value << '\t'
-      << sample.value.count << '\t'
-      << std::setprecision(17) << sample.value.sum << '\t'
-      << HexEncode(EncodeBuckets(sample.value.buckets)) << '\t'
-      << HexEncode(sample.value.state_text) << '\t'
-      << HexEncode(sample.evidence_uuid) << '\n';
-}
-
-void WriteRollup(std::ostream& out, const MetricRollupRecord& rollup) {
-  out << kMagic << "\tROLLUP\t"
-      << HexEncode(rollup.rollup_uuid) << '\t'
-      << HexEncode(rollup.series_uuid) << '\t'
-      << HexEncode(rollup.metric_family) << '\t'
-      << MetricRollupGrainName(rollup.grain) << '\t'
-      << rollup.window_start_microseconds << '\t'
-      << rollup.window_end_microseconds << '\t'
-      << rollup.sample_count << '\t'
-      << std::setprecision(17) << rollup.min_value << '\t'
-      << std::setprecision(17) << rollup.max_value << '\t'
-      << std::setprecision(17) << rollup.avg_value << '\t'
-      << std::setprecision(17) << rollup.last_value << '\t'
-      << std::setprecision(17) << rollup.sum_value << '\t'
-      << rollup.histogram_count << '\t'
-      << std::setprecision(17) << rollup.histogram_sum << '\t'
-      << HexEncode(rollup.histogram_buckets) << '\t'
-      << rollup.state_transition_count << '\t'
-      << HexEncode(rollup.last_state_text) << '\t'
-      << HexEncode(rollup.evidence_uuid) << '\n';
-}
-
-void WriteEvidence(std::ostream& out, const MetricRetentionEvidenceRecord& evidence) {
-  out << kMagic << "\tEVIDENCE\t"
-      << HexEncode(evidence.evidence_uuid) << '\t'
-      << HexEncode(evidence.operation) << '\t'
-      << HexEncode(evidence.policy_uuid) << '\t'
-      << HexEncode(evidence.series_uuid) << '\t'
-      << HexEncode(evidence.metric_family) << '\t'
-      << evidence.cutoff_time_microseconds << '\t'
-      << evidence.rows_affected << '\t'
-      << HexEncode(evidence.actor_uuid) << '\t'
-      << HexEncode(evidence.transaction_uuid) << '\t'
-      << HexEncode(evidence.decision) << '\t'
-      << HexEncode(evidence.detail) << '\n';
 }
 
 }  // namespace
@@ -297,9 +108,6 @@ MetricValidationResult ConfigureMetricHistoryPersistence(std::string history_pat
   if (history_path.empty()) {
     return MetricError("SB-METRICS-HISTORY-PERSISTENCE-DISABLED", "empty history path");
   }
-  if (policies.empty()) {
-    policies = BaselineMetricRetentionPolicies();
-  }
   for (const auto& policy : policies) {
     const auto valid = ValidateMetricRetentionPolicy(policy);
     if (!valid.ok) {
@@ -307,9 +115,8 @@ MetricValidationResult ConfigureMetricHistoryPersistence(std::string history_pat
     }
   }
   MetricHistoryStore store = LoadOrSeedStore(history_path, policies);
-  if (store.policies.empty()) {
-    store.policies = policies;
-  }
+  if (!store.load_status.ok) return store.load_status;
+  if (store.policies.empty()) return MetricError("SB-METRICS-HISTORY-POLICY-BINDING-REQUIRED", history_path);
   const auto written = WriteMetricHistoryStore(history_path, store);
   if (!written.ok) {
     return written;
@@ -349,200 +156,110 @@ MetricValidationResult PersistMetricValueForHistory(const MetricDescriptor& desc
   return AppendMetricRawSample(path, descriptor, value, 0);
 }
 
+MetricValidationResult RegisterMetricHistorySeries(const std::string& path,
+    const MetricDescriptor& descriptor, const MetricSeriesIdentity& series,
+    const MetricRetentionPolicy& policy) {
+  const auto checked = MakeMetricSeriesIdentity(descriptor, series.labels, policy, series,
+      series.series_uuid, series.series_definition_generation);
+  if (!checked.ok()) return MetricError("SB-METRICS-HISTORY-SERIES-BINDING-INVALID", descriptor.family);
+  std::lock_guard<std::mutex> lock(ConfigMutex());
+  auto store = LoadMetricHistoryStore(path);
+  if (!store.load_status.ok) return store.load_status;
+  if (!EffectivePolicyForDescriptor(descriptor, store.policies))
+    return MetricError("SB-METRICS-HISTORY-POLICY-BINDING-REQUIRED", descriptor.family);
+  std::size_t family_count = 0;
+  for (const auto& existing : store.series) {
+    if (existing.database_uuid != series.database_uuid)
+      return MetricError("SB-METRICS-HISTORY-DATABASE-MISMATCH", descriptor.family);
+    if (existing.series_uuid == series.series_uuid || existing.series_key == checked.record->series_key) {
+      if (existing.series_uuid == series.series_uuid &&
+          existing.series_key == checked.record->series_key &&
+          existing.series_definition_generation == series.series_definition_generation &&
+          static_cast<const MetricHistoryBinding&>(existing) == static_cast<const MetricHistoryBinding&>(series))
+        return MetricOk();
+      return MetricError("SB-METRICS-HISTORY-SERIES-BINDING-CONFLICT", descriptor.family);
+    }
+    if (existing.metric_uuid == series.metric_uuid) ++family_count;
+  }
+  if (family_count >= policy.max_cardinality)
+    return MetricError("SB-METRICS-HISTORY-SERIES-CARDINALITY-EXCEEDED", descriptor.family);
+  store.series.push_back(*checked.record);
+  return WriteMetricHistoryStore(path, store);
+}
+
 MetricValidationResult AppendMetricRawSample(const std::string& path,
-                                             const MetricDescriptor& descriptor,
-                                             const MetricValue& value,
-                                             u64 observation_time_microseconds) {
-  if (descriptor.readiness == MetricReadiness::contract_ready_unwired) {
+    const MetricDescriptor& descriptor, const MetricValue& value,
+    u64 observation_time_microseconds) {
+  if (descriptor.readiness != MetricReadiness::implemented && descriptor.readiness != MetricReadiness::derived)
     return MetricError("SB-METRICS-HISTORY-NO-FAKE-SAMPLES", descriptor.family);
-  }
-  if (path.empty()) {
-    return MetricError("SB-METRICS-HISTORY-PERSISTENCE-DISABLED", descriptor.family);
-  }
-  MetricHistoryStore store = LoadOrSeedStore(path, BaselineMetricRetentionPolicies());
-  const auto& policy = EffectivePolicyForDescriptor(descriptor, store.policies);
-  const auto policy_valid = ValidateMetricRetentionPolicy(policy);
-  if (!policy_valid.ok) {
-    return policy_valid;
-  }
-  if (policy.mode == MetricRetentionMode::current_only || policy.mode == MetricRetentionMode::rollup_only) {
+  if (path.empty()) return MetricError("SB-METRICS-HISTORY-PERSISTENCE-DISABLED", descriptor.family);
+  std::lock_guard<std::mutex> lock(ConfigMutex());
+  auto store = LoadMetricHistoryStore(path);
+  if (!store.load_status.ok) return store.load_status;
+  const auto* policy = EffectivePolicyForDescriptor(descriptor, store.policies);
+  if (!policy) return MetricError("SB-METRICS-HISTORY-POLICY-BINDING-REQUIRED", descriptor.family);
+  if (policy->mode == MetricRetentionMode::current_only || policy->mode == MetricRetentionMode::rollup_only)
     return MetricOk();
+  const MetricSeriesIdentity* selected = nullptr;
+  for (const auto& series : store.series) {
+    if (static_cast<const MetricDescriptorBinding&>(series) != static_cast<const MetricDescriptorBinding&>(descriptor) ||
+        MakeMetricSeriesKey(series.metric_family, series.labels) != MakeMetricSeriesKey(value.family, value.labels)) continue;
+    if (selected) return MetricError("SB-METRICS-HISTORY-SERIES-BINDING-AMBIGUOUS", descriptor.family);
+    selected = &series;
   }
-  MetricSeriesIdentity series = MakeMetricSeriesIdentity(descriptor, value.labels, policy);
-  auto existing = std::find_if(store.series.begin(), store.series.end(), [&](const MetricSeriesIdentity& item) {
-    return item.series_uuid == series.series_uuid;
-  });
-  if (existing == store.series.end()) {
-    u64 family_count = 0;
-    for (const auto& item : store.series) {
-      if (item.metric_family == descriptor.family) {
-        ++family_count;
-      }
-    }
-    if (family_count >= policy.max_cardinality) {
-      store.evidence.push_back(MakeMetricRetentionEvidenceRecord("series_overflow",
-                                                                 policy.policy_uuid,
-                                                                 {},
-                                                                 descriptor.family,
-                                                                 0,
-                                                                 0,
-                                                                 "system.metrics_runtime",
-                                                                 {},
-                                                                 "rejected",
-                                                                 "series cardinality exceeded"));
-      (void)WriteMetricHistoryStore(path, store);
-      return MetricError("SB-METRICS-HISTORY-SERIES-CARDINALITY-EXCEEDED", descriptor.family);
-    }
-    store.series.push_back(series);
-  } else {
-    series = *existing;
-  }
-  MetricRawSampleRecord sample = MakeMetricRawSampleRecord(series, value, observation_time_microseconds);
-  {
-    std::lock_guard<std::mutex> lock(ConfigMutex());
-    sample.source_sequence = ++Config().source_sequence;
-    sample.sample_uuid = StableV7LikeMetricUuid(sample.series_uuid + ":" + std::to_string(sample.observation_time_microseconds) + ":" + std::to_string(sample.source_sequence));
-  }
-  store.raw_samples.push_back(sample);
+  if (!selected) return MetricError("SB-METRICS-HISTORY-SERIES-BINDING-REQUIRED", descriptor.family);
+  u64 sequence = 0;
+  for (const auto& sample : store.raw_samples) sequence = std::max(sequence, sample.source_sequence);
+  if (sequence == UINT64_MAX) return MetricError("SB-METRICS-HISTORY-SEQUENCE-EXHAUSTED", descriptor.family);
+  const auto collected = MetricHistoryNowMicroseconds();
+  const auto observed = observation_time_microseconds ? observation_time_microseconds : collected;
+  if (observed > UINT64_MAX / 1000 || collected > UINT64_MAX / 1000)
+    return MetricError("SB-METRICS-HISTORY-TIME-OVERFLOW", descriptor.family);
+  auto sample = MakeMetricRawSampleRecord(descriptor, *selected, value,
+      observed * 1000, collected * 1000, sequence + 1);
+  if (!sample.ok()) return MetricError("SB-METRICS-HISTORY-OBSERVATION-INVALID", descriptor.family);
+  store.raw_samples.push_back(std::move(*sample.record));
   return WriteMetricHistoryStore(path, store);
 }
 
 MetricHistoryStore LoadMetricHistoryStore(const std::string& path) {
   MetricHistoryStore store;
-  if (path.empty()) {
+  const auto invalid = [&] {
+    store = {};
+    store.load_status = MetricError("SB-METRICS-HISTORY-READ-FAILED", path);
     return store;
-  }
-  std::ifstream input(path);
-  if (!input.good()) {
+  };
+  if (path.empty()) return invalid();
+  std::error_code error;
+  const bool exists = std::filesystem::exists(path, error);
+  if (error) return invalid();
+  if (!exists) return store;
+  try {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) return invalid();
+    const auto size = input.tellg();
+    if (size < 0 || static_cast<std::uint64_t>(size) > history_codec::kMaximumBytes)
+      return invalid();
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+    input.seekg(0);
+    if (!bytes.empty()) input.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
+    if (!input || input.peek() != std::char_traits<char>::eof() ||
+        !DecodeMetricHistoryStoreBinary(bytes, &store)) return invalid();
     return store;
-  }
-  std::string line;
-  while (std::getline(input, line)) {
-    const auto fields = Split(line, '\t');
-    if (fields.size() < 2 || fields[0] != kMagic) {
-      continue;
-    }
-    if (fields[1] == "POLICY" && fields.size() >= 15) {
-      MetricRetentionPolicy policy;
-      policy.policy_uuid = HexDecode(fields[2]);
-      policy.policy_name = HexDecode(fields[3]);
-      policy.scope = HexDecode(fields[4]);
-      policy.mode = MetricRetentionModeFromName(fields[5]);
-      policy.raw_retention_seconds = ParseU64(fields[6]);
-      policy.rollup_retention_seconds = ParseU64(fields[7]);
-      policy.rollup_grains = ParseRollupGrains(HexDecode(fields[8]));
-      policy.purge_batch_limit = ParseU64(fields[9]);
-      policy.max_cardinality = ParseU64(fields[10]);
-      policy.overflow_behavior = HexDecode(fields[11]);
-      policy.edit_right = HexDecode(fields[12]);
-      policy.default_admin_group = HexDecode(fields[13]);
-      policy.evidence_required = fields[14] == "1";
-      store.policies.push_back(policy);
-    } else if (fields[1] == "SERIES" && fields.size() >= 15) {
-      MetricSeriesIdentity series;
-      series.series_uuid = HexDecode(fields[2]);
-      series.series_key = HexDecode(fields[3]);
-      series.metric_family = HexDecode(fields[4]);
-      series.namespace_path = HexDecode(fields[5]);
-      series.producer_owner = HexDecode(fields[6]);
-      series.scope_class = HexDecode(fields[7]);
-      series.database_uuid = HexDecode(fields[8]);
-      series.node_uuid = HexDecode(fields[9]);
-      series.cluster_uuid = HexDecode(fields[10]);
-      series.labels = ParseLabels(fields[11]);
-      series.label_hash = HexDecode(fields[12]);
-      series.redaction_class = HexDecode(fields[13]);
-      series.retention_policy_uuid = HexDecode(fields[14]);
-      store.series.push_back(series);
-    } else if (fields[1] == "SAMPLE" && fields.size() >= 18) {
-      MetricRawSampleRecord sample;
-      sample.sample_uuid = HexDecode(fields[2]);
-      sample.series_uuid = HexDecode(fields[3]);
-      sample.metric_family = HexDecode(fields[4]);
-      sample.labels = ParseLabels(fields[5]);
-      sample.observation_time_microseconds = ParseU64(fields[6]);
-      sample.collection_time_microseconds = ParseU64(fields[7]);
-      sample.publish_time_microseconds = ParseU64(fields[8]);
-      sample.source_sequence = ParseU64(fields[9]);
-      sample.clock_quality = HexDecode(fields[10]);
-      sample.freshness_class = HexDecode(fields[11]);
-      sample.value.family = sample.metric_family;
-      sample.value.labels = sample.labels;
-      sample.value.type = fields[12] == std::string("histogram") ? MetricType::histogram :
-                          fields[12] == std::string("gauge") ? MetricType::gauge :
-                          fields[12] == std::string("state") ? MetricType::state :
-                          fields[12] == std::string("derived") ? MetricType::derived : MetricType::counter;
-      sample.value.value = ParseDouble(fields[13]);
-      sample.value.count = ParseU64(fields[14]);
-      sample.value.sum = ParseDouble(fields[15]);
-      sample.value.buckets = DecodeBuckets(HexDecode(fields[16]));
-      sample.value.state_text = HexDecode(fields[17]);
-      sample.evidence_uuid = fields.size() > 18 ? HexDecode(fields[18]) : "";
-      store.raw_samples.push_back(sample);
-    } else if (fields[1] == "ROLLUP" && fields.size() >= 20) {
-      MetricRollupRecord rollup;
-      rollup.rollup_uuid = HexDecode(fields[2]);
-      rollup.series_uuid = HexDecode(fields[3]);
-      rollup.metric_family = HexDecode(fields[4]);
-      rollup.grain = MetricRollupGrainFromName(fields[5]);
-      rollup.window_start_microseconds = ParseU64(fields[6]);
-      rollup.window_end_microseconds = ParseU64(fields[7]);
-      rollup.sample_count = ParseU64(fields[8]);
-      rollup.min_value = ParseDouble(fields[9]);
-      rollup.max_value = ParseDouble(fields[10]);
-      rollup.avg_value = ParseDouble(fields[11]);
-      rollup.last_value = ParseDouble(fields[12]);
-      rollup.sum_value = ParseDouble(fields[13]);
-      rollup.histogram_count = ParseU64(fields[14]);
-      rollup.histogram_sum = ParseDouble(fields[15]);
-      rollup.histogram_buckets = HexDecode(fields[16]);
-      rollup.state_transition_count = ParseU64(fields[17]);
-      rollup.last_state_text = HexDecode(fields[18]);
-      rollup.evidence_uuid = HexDecode(fields[19]);
-      store.rollups.push_back(rollup);
-    } else if (fields[1] == "EVIDENCE" && fields.size() >= 13) {
-      MetricRetentionEvidenceRecord evidence;
-      evidence.evidence_uuid = HexDecode(fields[2]);
-      evidence.operation = HexDecode(fields[3]);
-      evidence.policy_uuid = HexDecode(fields[4]);
-      evidence.series_uuid = HexDecode(fields[5]);
-      evidence.metric_family = HexDecode(fields[6]);
-      evidence.cutoff_time_microseconds = ParseU64(fields[7]);
-      evidence.rows_affected = ParseU64(fields[8]);
-      evidence.actor_uuid = HexDecode(fields[9]);
-      evidence.transaction_uuid = HexDecode(fields[10]);
-      evidence.decision = HexDecode(fields[11]);
-      evidence.detail = HexDecode(fields[12]);
-      store.evidence.push_back(evidence);
-    }
-  }
-  return store;
+  } catch (...) { return invalid(); }
 }
 
 MetricValidationResult WriteMetricHistoryStore(const std::string& path, const MetricHistoryStore& store) {
   if (path.empty()) {
     return MetricError("SB-METRICS-HISTORY-PERSISTENCE-DISABLED", "empty history path");
   }
+  if (!store.load_status.ok) return store.load_status;
+  const auto encoded = EncodeMetricHistoryStoreBinary(store);
+  if (!encoded) return MetricError("SB-METRICS-HISTORY-ENCODE-FAILED", path);
   const std::string tmp = path + ".tmp";
-  std::ofstream output(tmp, std::ios::trunc);
-  if (!output.good()) {
-    return MetricError("SB-METRICS-HISTORY-WRITE-FAILED", path);
-  }
-  for (const auto& policy : store.policies) {
-    WritePolicy(output, policy);
-  }
-  for (const auto& series : store.series) {
-    WriteSeries(output, series);
-  }
-  for (const auto& sample : store.raw_samples) {
-    WriteSample(output, sample);
-  }
-  for (const auto& rollup : store.rollups) {
-    WriteRollup(output, rollup);
-  }
-  for (const auto& evidence : store.evidence) {
-    WriteEvidence(output, evidence);
-  }
+  std::ofstream output(tmp, std::ios::binary | std::ios::trunc);
+  if (!output.good()) return MetricError("SB-METRICS-HISTORY-WRITE-FAILED", path);
+  output.write(reinterpret_cast<const char*>(encoded->data()), encoded->size());
   output.close();
   if (!output.good()) {
     return MetricError("SB-METRICS-HISTORY-WRITE-FAILED", path);
@@ -556,139 +273,116 @@ MetricValidationResult WriteMetricHistoryStore(const std::string& path, const Me
   return MetricOk();
 }
 
-MetricValidationResult GenerateMetricRollups(const std::string& path, MetricRollupGrain grain) {
-  const u64 window_seconds = MetricRollupGrainWindowSeconds(grain);
-  if (window_seconds == 0) {
-    return MetricError("METRIC.RETENTION_POLICY_INVALID", "invalid_rollup_grain");
-  }
-  MetricHistoryStore store = LoadOrSeedStore(path, BaselineMetricRetentionPolicies());
-  const u64 window_microseconds = window_seconds * 1000000ull;
-  std::map<std::pair<std::string, u64>, std::vector<MetricRawSampleRecord>> groups;
+MetricValidationResult GenerateMetricRollups(const std::string& path, MetricRollupGrain grain,
+    const MetricUuid& actor, const MetricUuid& transaction) {
+  const u64 seconds = MetricRollupGrainWindowSeconds(grain);
+  if (!seconds || seconds > UINT64_MAX / 1000000 ||
+      !MetricSystemUuidValid(actor) || !MetricSystemUuidValid(transaction))
+    return MetricError("METRIC.RETENTION_POLICY_INVALID", "rollup grain and native actor/transaction bindings required");
+  std::lock_guard<std::mutex> lock(ConfigMutex());
+  auto store = LoadMetricHistoryStore(path);
+  if (!store.load_status.ok) return store.load_status;
+  const u64 width = seconds * 1000000;
+  std::map<std::pair<MetricUuid, u64>, std::vector<const MetricRawSampleRecord*>> groups;
   for (const auto& sample : store.raw_samples) {
-    const u64 window = (sample.observation_time_microseconds / window_microseconds) * window_microseconds;
-    groups[{sample.series_uuid, window}].push_back(sample);
+    const auto observed = sample.sample_time_utc_ns / 1000;
+    groups[{sample.series_uuid, (observed / width) * width}].push_back(&sample);
   }
-  u64 created = 0;
-  for (const auto& [key, samples] : groups) {
-    const bool exists = std::any_of(store.rollups.begin(), store.rollups.end(), [&](const MetricRollupRecord& rollup) {
-      return rollup.series_uuid == key.first && rollup.grain == grain && rollup.window_start_microseconds == key.second;
+  for (auto& [key, samples] : groups) {
+    if (samples.empty() || std::any_of(store.rollups.begin(), store.rollups.end(), [&](const auto& r) {
+          return r.series_uuid == key.first && r.grain == grain && r.window_start_microseconds == key.second;
+        })) continue;
+    const auto* policy = EffectivePolicyForDescriptor(*samples.front(), store.policies);
+    if (!policy) return MetricError("SB-METRICS-HISTORY-POLICY-BINDING-REQUIRED", path);
+    if (policy->mode == MetricRetentionMode::current_only ||
+        std::find(policy->rollup_grains.begin(), policy->rollup_grains.end(), grain) == policy->rollup_grains.end()) continue;
+    std::sort(samples.begin(), samples.end(), [](const auto* l, const auto* r) {
+      return std::pair{l->sample_time_utc_ns, l->source_sequence} < std::pair{r->sample_time_utc_ns, r->source_sequence};
     });
-    if (exists || samples.empty()) {
-      continue;
-    }
     MetricRollupRecord rollup;
-    rollup.series_uuid = key.first;
-    rollup.metric_family = samples.front().metric_family;
-    rollup.grain = grain;
-    rollup.window_start_microseconds = key.second;
-    rollup.window_end_microseconds = key.second + window_microseconds;
-    rollup.sample_count = static_cast<u64>(samples.size());
+    rollup.series_uuid = key.first; rollup.metric_family = samples.front()->metric_family;
+    rollup.grain = grain; rollup.window_start_microseconds = key.second;
+    if (key.second > UINT64_MAX - width) return MetricError("SB-METRICS-HISTORY-TIME-OVERFLOW", path);
+    rollup.window_end_microseconds = key.second + width; rollup.sample_count = samples.size();
     rollup.min_value = std::numeric_limits<double>::max();
     rollup.max_value = std::numeric_limits<double>::lowest();
-    for (const auto& sample : samples) {
-      rollup.min_value = std::min(rollup.min_value, sample.value.value);
-      rollup.max_value = std::max(rollup.max_value, sample.value.value);
-      rollup.sum_value += sample.value.value;
-      rollup.last_value = sample.value.value;
-      rollup.histogram_count += sample.value.count;
-      rollup.histogram_sum += sample.value.sum;
-      if (!sample.value.state_text.empty() && sample.value.state_text != rollup.last_state_text) {
-        ++rollup.state_transition_count;
-        rollup.last_state_text = sample.value.state_text;
+    for (const auto* sample : samples) {
+      if (static_cast<const MetricHistoryBinding&>(*sample) != static_cast<const MetricHistoryBinding&>(*samples.front()))
+        return MetricError("SB-METRICS-HISTORY-ROLLUP-BINDING-MISMATCH", path);
+      const auto number = ExactRollupScalar(sample->value.value);
+      if (!number) return MetricError("SB-METRICS-HISTORY-ROLLUP-SCALAR-NOT-REPRESENTABLE", sample->metric_family);
+      rollup.min_value = std::min(rollup.min_value, *number); rollup.max_value = std::max(rollup.max_value, *number);
+      rollup.sum_value += *number; rollup.last_value = *number;
+      if (!std::isfinite(rollup.sum_value) || sample->value.count > UINT64_MAX - rollup.histogram_count)
+        return MetricError("SB-METRICS-HISTORY-ROLLUP-OVERFLOW", path);
+      rollup.histogram_count += sample->value.count;
+      if (sample->value.type == MetricType::histogram) {
+        const auto sum = ExactRollupScalar(sample->value.sum);
+        if (!sum) return MetricError("SB-METRICS-HISTORY-ROLLUP-SCALAR-NOT-REPRESENTABLE", sample->metric_family);
+        rollup.histogram_sum += *sum;
+        if (!std::isfinite(rollup.histogram_sum)) return MetricError("SB-METRICS-HISTORY-ROLLUP-OVERFLOW", path);
+      }
+      if (!sample->value.state_text.empty() && sample->value.state_text != rollup.last_state_text) {
+        ++rollup.state_transition_count; rollup.last_state_text = sample->value.state_text;
       }
     }
-    rollup.avg_value = rollup.sample_count == 0 ? 0.0 : rollup.sum_value / static_cast<double>(rollup.sample_count);
-    rollup.evidence_uuid = StableV7LikeMetricUuid("rollup-evidence:" + rollup.series_uuid + ":" + std::to_string(rollup.window_start_microseconds));
-    rollup.rollup_uuid = StableV7LikeMetricUuid("rollup:" + rollup.series_uuid + ":" + MetricRollupGrainName(grain) + ":" + std::to_string(rollup.window_start_microseconds));
-    store.rollups.push_back(rollup);
-    ++created;
+    rollup.avg_value = rollup.sum_value / static_cast<double>(rollup.sample_count);
+    const auto identity = uuid::IssueRuntimeIdentityV7();
+    if (!identity) return MetricError("SB-METRICS-HISTORY-IDENTITY-ISSUANCE-FAILED", path);
+    rollup.rollup_uuid = *identity;
+    const auto evidence = AddEvidence(store, "rollup_generate", policy->policy_uuid,
+        rollup.series_uuid, rollup.metric_family, key.second, samples.size(), actor, transaction,
+        std::string("grain=") + MetricRollupGrainName(grain));
+    if (!evidence.ok) return evidence;
+    rollup.evidence_uuid = store.evidence.back().evidence_uuid;
+    store.rollups.push_back(std::move(rollup));
   }
-  store.evidence.push_back(MakeMetricRetentionEvidenceRecord("rollup_generate",
-                                                             {},
-                                                             {},
-                                                             {},
-                                                             0,
-                                                             created,
-                                                             "system.metrics_rollup",
-                                                             {},
-                                                             "allowed",
-                                                             std::string("grain=") + MetricRollupGrainName(grain)));
   return WriteMetricHistoryStore(path, store);
 }
 
-MetricValidationResult ApplyMetricRetentionCleanup(const std::string& path,
-                                                   u64 now_microseconds,
-                                                   std::string actor_uuid,
-                                                   std::string transaction_uuid) {
-  MetricHistoryStore store = LoadOrSeedStore(path, BaselineMetricRetentionPolicies());
-  if (now_microseconds == 0) {
-    now_microseconds = MetricHistoryNowMicroseconds();
-  }
-  u64 removed = 0;
-  std::vector<MetricRawSampleRecord> kept_samples;
-  kept_samples.reserve(store.raw_samples.size());
+MetricValidationResult ApplyMetricRetentionCleanup(const std::string& path, u64 now,
+    MetricUuid actor, MetricUuid transaction) {
+  if (!MetricSystemUuidValid(actor) || !MetricSystemUuidValid(transaction))
+    return MetricError("SB-METRICS-HISTORY-EVIDENCE-BINDING-INVALID", path);
+  std::lock_guard<std::mutex> lock(ConfigMutex());
+  auto store = LoadMetricHistoryStore(path);
+  if (!store.load_status.ok) return store.load_status;
+  if (!now) now = MetricHistoryNowMicroseconds();
+  std::map<MetricUuid, u64> removed;
+  std::vector<MetricRawSampleRecord> kept;
   for (const auto& sample : store.raw_samples) {
-    const MetricDescriptor* descriptor = DefaultMetricRegistry().FindDescriptorOrAlias(sample.metric_family);
-    if (descriptor == nullptr) {
-      kept_samples.push_back(sample);
-      continue;
-    }
-    const auto& policy = EffectivePolicyForDescriptor(*descriptor, store.policies);
-    if (policy.raw_retention_seconds == 0) {
-      kept_samples.push_back(sample);
-      continue;
-    }
-    if (MetricRetentionTimeExpired(sample.observation_time_microseconds,
-                                   now_microseconds, policy.raw_retention_seconds) &&
-        removed < policy.purge_batch_limit) {
-      ++removed;
-      continue;
-    }
-    kept_samples.push_back(sample);
+    const auto* policy = EffectivePolicyForDescriptor(sample, store.policies);
+    if (!policy) return MetricError("SB-METRICS-HISTORY-POLICY-BINDING-REQUIRED", sample.metric_family);
+    if (policy->raw_retention_seconds &&
+        MetricRetentionTimeExpired(sample.sample_time_utc_ns / 1000, now, policy->raw_retention_seconds) &&
+        removed[policy->policy_uuid] < policy->purge_batch_limit) ++removed[policy->policy_uuid];
+    else kept.push_back(sample);
   }
-  store.evidence.push_back(MakeMetricRetentionEvidenceRecord("raw_cleanup",
-                                                             {},
-                                                             {},
-                                                             {},
-                                                             now_microseconds,
-                                                             removed,
-                                                             std::move(actor_uuid),
-                                                             std::move(transaction_uuid),
-                                                             "allowed",
-                                                             "policy retention cleanup"));
-  store.raw_samples = std::move(kept_samples);
+  for (const auto& [policy, count] : removed) {
+    const auto result = AddEvidence(store, "raw_cleanup", policy, {}, {}, now, count,
+        actor, transaction, "policy retention cleanup");
+    if (!result.ok) return result;
+  }
+  store.raw_samples = std::move(kept);
   return WriteMetricHistoryStore(path, store);
 }
 
 MetricValidationResult UpsertMetricRetentionPolicy(const std::string& path,
-                                                   MetricRetentionPolicy policy,
-                                                   std::string actor_uuid,
-                                                   std::string transaction_uuid) {
+    MetricRetentionPolicy policy, MetricUuid actor, MetricUuid transaction) {
   const auto valid = ValidateMetricRetentionPolicy(policy);
-  if (!valid.ok) {
-    return valid;
-  }
-  MetricHistoryStore store = LoadOrSeedStore(path, BaselineMetricRetentionPolicies());
-  auto existing = std::find_if(store.policies.begin(), store.policies.end(), [&](const MetricRetentionPolicy& item) {
-    return item.policy_uuid == policy.policy_uuid || item.policy_name == policy.policy_name;
-  });
-  const std::string operation = existing == store.policies.end() ? "policy_create" : "policy_alter";
-  if (existing == store.policies.end()) {
-    store.policies.push_back(policy);
-  } else {
-    *existing = policy;
-  }
-  store.evidence.push_back(MakeMetricRetentionEvidenceRecord(operation,
-                                                             policy.policy_uuid,
-                                                             {},
-                                                             {},
-                                                             0,
-                                                             1,
-                                                             std::move(actor_uuid),
-                                                             std::move(transaction_uuid),
-                                                             "allowed",
-                                                             policy.policy_name));
+  if (!valid.ok) return valid;
+  std::lock_guard<std::mutex> lock(ConfigMutex());
+  auto store = LoadMetricHistoryStore(path);
+  if (!store.load_status.ok) return store.load_status;
+  auto existing = std::find_if(store.policies.begin(), store.policies.end(),
+      [&](const auto& item) { return item.policy_uuid == policy.policy_uuid; });
+  const auto operation = existing == store.policies.end() ? "policy_create" : "policy_alter";
+  const auto evidence = AddEvidence(store, operation, policy.policy_uuid, {}, {}, 0, 1,
+      actor, transaction, policy.policy_name);
+  if (!evidence.ok) return evidence;
+  if (existing == store.policies.end()) store.policies.push_back(std::move(policy));
+  else *existing = std::move(policy);
   return WriteMetricHistoryStore(path, store);
 }
 
-}  // namespace scratchbird::core::metrics
+} // namespace scratchbird::core::metrics

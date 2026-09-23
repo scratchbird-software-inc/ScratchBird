@@ -215,13 +215,13 @@ std::string CreateTable(const api::EngineRequestContext& context,
                         std::vector<api::EngineColumnDefinition> columns) {
   api::EngineCreateTableRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = context.current_schema_uuid.canonical;
+  request.target_schema.uuid = context.current_schema_uuid;
   request.target_schema.object_kind = "schema";
   request.table_names.push_back(Name(std::move(name)));
   request.table_columns = std::move(columns);
   const auto created = api::EngineCreateTable(request);
   RequireOk(created, "Firebird FK table create failed");
-  Require(!created.table_object.uuid.canonical.empty(),
+  Require(!created.table_object.uuid.is_nil(),
           "table create omitted engine UUID");
   return created.table_object.uuid.canonical;
 }

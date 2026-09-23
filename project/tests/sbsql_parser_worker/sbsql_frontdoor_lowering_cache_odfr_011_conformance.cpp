@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "cache/sblr_template_cache.hpp"
 #include "metrics/parser_metrics.hpp"
 #include "wire/sbsql_test_wire.hpp"
@@ -48,7 +49,7 @@ sbsql::ParserConfig Config(std::string profile = "default",
                            std::uint32_t registry_version =
                                sbsql::kSbsqlWorkerRegistryCurrentVersion) {
   sbsql::ParserConfig config;
-  config.parser_uuid = "odfr011-parser";
+  config.parser_uuid = scratchbird::tests::FixtureUuid(1365, 2);
   config.dialect = "sbsql";
   config.profile_id = std::move(profile);
   config.registry_version = registry_version;
@@ -61,14 +62,14 @@ sbsql::ParserConfig Config(std::string profile = "default",
 void SeedEngineAuthenticatedContext(sbsql::SbsqlTestWireSession* session) {
   auto& context = const_cast<sbsql::SessionContext&>(session->session());
   context.authenticated = true;
-  context.session_uuid = "00000000-0000-7000-8000-000000000011";
-  context.connection_uuid = "00000000-0000-7000-8000-000000000012";
-  context.database_uuid = "00000000-0000-7000-8000-000000000013";
-  context.authenticated_user_uuid = "00000000-0000-7000-8000-000000000014";
-  context.effective_role_uuids = {"00000000-0000-7000-8000-000000000015"};
-  context.effective_group_uuids = {"00000000-0000-7000-8000-000000000016"};
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000011");
+  context.connection_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000012");
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000013");
+  context.authenticated_user_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000014");
+  context.effective_role_uuids = {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000015")};
+  context.effective_group_uuids = {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000016")};
   context.search_path = {"public"};
-  context.dialect_profile_uuid = "sbsql/default";
+  context.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1270, 1);
   context.language_profile = "sbsql.builtin.recovery.en";
   context.language_tag = "en";
   context.input_syntax_profile = "sbsql.syntax.standard";
@@ -76,7 +77,7 @@ void SeedEngineAuthenticatedContext(sbsql::SbsqlTestWireSession* session) {
   context.common_resource_hash = "builtin.common.sbsql.v1";
   context.resource_compatibility_identity = "sbsql.resource.compat.v1";
   context.resource_version_identity = "sbsql.resource-pack.v1";
-  context.policy_profile_uuid = "policy/default";
+  context.policy_profile_uuid = scratchbird::tests::FixtureUuid(1270, 2);
   context.transaction_context = "read_only_prepare";
   context.catalog_epoch = 7;
   context.security_policy_epoch = 11;

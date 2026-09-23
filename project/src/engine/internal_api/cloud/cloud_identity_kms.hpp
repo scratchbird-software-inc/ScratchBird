@@ -24,20 +24,20 @@ namespace scratchbird::engine::internal_api {
 struct CloudProtectedReference {
   EngineUuid reference_uuid;
   std::string reference_kind;
-  std::string provider_profile_uuid;
-  std::string protected_material_uuid;
-  std::string protected_material_version_uuid;
+  EngineUuid provider_profile_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid protected_material_version_uuid;
   std::string redacted_external_reference;
 };
 
 struct CloudKmsEnvelopeMetadata {
   EngineUuid envelope_uuid;
   EngineUuid wrapping_reference_uuid;
-  std::string kms_profile_uuid;
+  EngineUuid kms_profile_uuid;
   std::string kms_mode;
   std::string envelope_version;
-  std::string rotation_policy_uuid;
-  std::string audit_policy_uuid;
+  EngineUuid rotation_policy_uuid;
+  EngineUuid audit_policy_uuid;
   bool plaintext_material_persisted = false;
   bool plaintext_material_returned = false;
 };
@@ -51,7 +51,7 @@ struct CloudIdentityKmsValidation {
   CloudKmsEnvelopeMetadata envelope;
   EngineApiDiagnostic diagnostic;
   std::vector<EngineEvidenceReference> evidence;
-  std::vector<std::pair<std::string, std::string>> rows;
+  std::vector<std::pair<std::string, EngineEvidenceValue>> rows;
 };
 
 std::string CanonicalCloudIdentityMode(std::string mode);

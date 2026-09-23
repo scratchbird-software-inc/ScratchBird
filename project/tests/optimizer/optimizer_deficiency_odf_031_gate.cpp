@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "dml/update_api.hpp"
@@ -73,8 +74,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -97,11 +98,11 @@ api::EngineRowValue Row(std::string id, std::string name, std::string note) {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
-  std::string name_index_uuid;
-  std::string note_bitmap_index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid id_index_uuid;
+  platform::Uuid name_index_uuid;
+  platform::Uuid note_bitmap_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -119,11 +120,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = security_context_present;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -173,7 +174,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
 
 api::CrudIndexRecord Index(const Fixture& fixture,
                            const api::EngineRequestContext& context,
-                           std::string index_uuid,
+                           platform::Uuid index_uuid,
                            std::string column,
                            std::string family,
                            bool unique) {
@@ -212,12 +213,12 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-031 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
-  fixture.name_index_uuid = NewUuidText(platform::UuidKind::object, salt + 12);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
+  fixture.id_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
+  fixture.name_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 12);
   fixture.note_bitmap_index_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 13);
+      NewNativeUuid(platform::UuidKind::object, salt + 13);
 
   auto context = Begin(fixture, "odf031-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
@@ -260,7 +261,7 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
                                       std::string note) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(
       Row(std::move(id), std::move(name), std::move(note)));
@@ -268,7 +269,7 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
   return api::EngineInsertRows(request);
 }
 
-std::string SeedRow(Fixture& fixture,
+platform::Uuid SeedRow(Fixture& fixture,
                     std::string id,
                     std::string name,
                     std::string note) {
@@ -278,7 +279,7 @@ std::string SeedRow(Fixture& fixture,
   RequireOk(inserted, "ODF-031 seed insert failed");
   Require(inserted.row_uuids.size() == 1, "ODF-031 seed row UUID missing");
   Commit(context);
-  return inserted.row_uuids.front().canonical;
+  return inserted.row_uuids.front();
 }
 
 api::EngineUpdateRowsResult Update(const Fixture& fixture,
@@ -288,7 +289,7 @@ api::EngineUpdateRowsResult Update(const Fixture& fixture,
                                    std::vector<std::string> options = {}) {
   api::EngineUpdateRowsRequest request;
   request.context = std::move(context);
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = std::move(predicate);
   request.assignments.push_back({"note", TextValue(std::move(note))});
@@ -296,10 +297,10 @@ api::EngineUpdateRowsResult Update(const Fixture& fixture,
   return api::EngineUpdateRows(request);
 }
 
-api::EnginePredicateEnvelope RowUuidPredicate(std::string row_uuid) {
+api::EnginePredicateEnvelope RowUuidPredicate(platform::Uuid row_uuid) {
   api::EnginePredicateEnvelope predicate;
   predicate.predicate_kind = "row_uuid_match";
-  predicate.canonical_predicate_envelope = std::move(row_uuid);
+  predicate.row_uuid = row_uuid;
   return predicate;
 }
 
@@ -327,10 +328,17 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& entry : evidence) {
-    if (entry.evidence_kind == kind && entry.evidence_id == value) {
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceTextFields(entry.evidence_id) == value) {
       return true;
     }
   }
+  return false;
+}
+
+bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
+                      std::string_view kind, const platform::Uuid& identity) {
+  for (const auto& entry : evidence)
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceIdentityEquals(entry.evidence_id, identity)) return true;
   return false;
 }
 
@@ -339,7 +347,7 @@ bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
                       std::string_view token) {
   for (const auto& entry : evidence) {
     if (entry.evidence_kind == kind &&
-        entry.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFields(entry.evidence_id).find(token) != std::string::npos) {
       return true;
     }
   }
@@ -476,7 +484,7 @@ void FallbacksAreExplicit() {
     request.bound_object_identity.catalog_generation_id = 9;
     request.bound_object_identity.security_epoch = 19;
     request.bound_object_identity.resource_epoch = 29;
-    request.target_table.uuid.canonical = fixture.table_uuid;
+    request.target_table.uuid = fixture.table_uuid;
     request.target_table.object_kind = "table";
     request.update_predicate = EqualsPredicate("id", "1");
     request.assignments.push_back({"note", TextValue("stale-fallback")});
@@ -535,7 +543,7 @@ void EvidenceHasNoRuntimeDocDependency() {
                                  "docs" "/contracts", "docs" "\\contracts",
                                  "docs" "/references", "docs" "\\references"}) {
       Require(evidence.evidence_kind.find(forbidden) == std::string::npos &&
-                  evidence.evidence_id.find(forbidden) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFields(evidence.evidence_id).find(forbidden) == std::string::npos,
               "ODF-031 runtime evidence leaked forbidden documentation token");
     }
   }

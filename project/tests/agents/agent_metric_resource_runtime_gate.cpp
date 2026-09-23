@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "agent_metric_runtime.hpp"
 
 #include <cstdlib>
@@ -34,8 +35,8 @@ agents::AgentRuntimeContext Context() {
   context.private_features_available = true;
   context.standalone_edition = true;
   context.cluster_authority_available = false;
-  context.database_uuid = "019f0501-0000-7000-8000-000000000001";
-  context.principal_uuid = "019f0501-0000-7000-8000-000000000002";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0501-0000-7000-8000-000000000001");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0501-0000-7000-8000-000000000002");
   context.rights = {
       "OBS_AGENT_STATE_READ",
       "OBS_AGENT_CONTROL",
@@ -91,8 +92,8 @@ agents::AgentObservedMetricSnapshot SnapshotFor(
   snapshot.attestation_key_id = "metric-key:" + source_id;
   snapshot.attestation_digest = "attestation:" + dependency.metric_family +
                                 ":" + source_id;
-  snapshot.evidence_uuid = "evidence:" + dependency.metric_family + ":" +
-                           source_id;
+  static unsigned evidence_ordinal = 0;
+  snapshot.evidence_uuid = scratchbird::tests::FixtureUuid(1238, ++evidence_ordinal);
   snapshot.snapshot_id = "snapshot:" + dependency.metric_family + ":" +
                          source_id;
   snapshot.authority_claims = {"metric_evidence"};
@@ -172,7 +173,7 @@ void TestStrictMetricSnapshots() {
 
   auto scope_mismatch = snapshots;
   scope_mismatch.front().scope_uuid =
-      "019f0501-ffff-7000-8000-000000000099";
+      scratchbird::tests::FixtureUuidLiteral("019f0501-ffff-7000-8000-000000000099");
   RequireMetricRefusal(
       agents::EvaluateAgentObservedMetricSnapshots(descriptor, context,
                                                    scope_mismatch),

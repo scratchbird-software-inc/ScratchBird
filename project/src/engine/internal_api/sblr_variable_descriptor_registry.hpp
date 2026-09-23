@@ -20,18 +20,18 @@ enum class SblrVariableMutability : std::uint8_t { immutable = 0, mutable_value 
 enum class SblrVariableLifecycle : std::uint8_t { active = 1, revoked = 2 };
 
 struct SblrVariableDescriptorRow {
-  std::string variable_descriptor_uuid;
+  EngineUuid variable_descriptor_uuid;
   std::uint64_t variable_descriptor_generation{0};
-  std::string statement_receipt_uuid;
-  std::string database_uuid;
-  std::string session_uuid;
-  std::string transaction_uuid;
-  std::string scope_uuid;
+  EngineUuid statement_receipt_uuid;
+  EngineUuid database_uuid;
+  EngineUuid session_uuid;
+  EngineUuid transaction_uuid;
+  EngineUuid scope_uuid;
   std::uint64_t scope_generation{0};
-  std::string frame_uuid;
+  EngineUuid frame_uuid;
   std::uint64_t frame_generation{0};
   std::uint32_t variable_ordinal{0};
-  std::string datatype_descriptor_uuid;
+  EngineUuid datatype_descriptor_uuid;
   std::uint64_t datatype_descriptor_generation{0};
   bool nullable{false};
   SblrVariableMutability mutability{SblrVariableMutability::immutable};
@@ -46,7 +46,7 @@ struct SblrVariableDescriptorRow {
 };
 
 struct SblrVariableDemand {
-  std::string datatype_descriptor_uuid;
+  EngineUuid datatype_descriptor_uuid;
   std::uint64_t datatype_descriptor_generation{0};
   bool nullable{false};
   SblrVariableMutability mutability{SblrVariableMutability::immutable};
@@ -63,7 +63,7 @@ struct SblrVariableRegistryResult {
 };
 
 struct SblrVariableAssignment {
-  std::string variable_descriptor_uuid;
+  EngineUuid variable_descriptor_uuid;
   std::uint64_t variable_descriptor_generation{0};
   std::uint64_t expected_value_generation{0};
   SblrVariableValueState value_state{SblrVariableValueState::uninitialized};
@@ -72,26 +72,26 @@ struct SblrVariableAssignment {
 
 SblrVariableRegistryResult PublishSblrVariableFrame(
     const EngineRequestContext& context,
-    const std::string& statement_receipt_uuid,
-    const std::string& scope_uuid, std::uint64_t scope_generation,
-    const std::string& frame_uuid, std::uint64_t frame_generation,
+    const EngineUuid& statement_receipt_uuid,
+    const EngineUuid& scope_uuid, std::uint64_t scope_generation,
+    const EngineUuid& frame_uuid, std::uint64_t frame_generation,
     const std::vector<SblrVariableDemand>& demands);
 
 SblrVariableRegistryResult LookupSblrVariable(
     const EngineRequestContext& context,
-    const std::string& statement_receipt_uuid,
-    const std::string& scope_uuid, std::uint64_t scope_generation,
-    const std::string& frame_uuid, std::uint64_t frame_generation,
-    const std::string& variable_descriptor_uuid,
+    const EngineUuid& statement_receipt_uuid,
+    const EngineUuid& scope_uuid, std::uint64_t scope_generation,
+    const EngineUuid& frame_uuid, std::uint64_t frame_generation,
+    const EngineUuid& variable_descriptor_uuid,
     std::uint64_t variable_descriptor_generation,
     std::uint64_t expected_value_generation);
 
 SblrVariableRegistryResult AssignSblrVariable(
     const EngineRequestContext& context,
-    const std::string& statement_receipt_uuid,
-    const std::string& scope_uuid, std::uint64_t scope_generation,
-    const std::string& frame_uuid, std::uint64_t frame_generation,
-    const std::string& variable_descriptor_uuid,
+    const EngineUuid& statement_receipt_uuid,
+    const EngineUuid& scope_uuid, std::uint64_t scope_generation,
+    const EngineUuid& frame_uuid, std::uint64_t frame_generation,
+    const EngineUuid& variable_descriptor_uuid,
     std::uint64_t variable_descriptor_generation,
     std::uint64_t expected_value_generation,
     SblrVariableValueState value_state,
@@ -101,16 +101,16 @@ SblrVariableRegistryResult AssignSblrVariable(
 // changed unless the complete batch reaches the durable journal.
 SblrVariableRegistryResult AssignSblrVariableBatch(
     const EngineRequestContext& context,
-    const std::string& statement_receipt_uuid,
-    const std::string& scope_uuid, std::uint64_t scope_generation,
-    const std::string& frame_uuid, std::uint64_t frame_generation,
+    const EngineUuid& statement_receipt_uuid,
+    const EngineUuid& scope_uuid, std::uint64_t scope_generation,
+    const EngineUuid& frame_uuid, std::uint64_t frame_generation,
     const std::vector<SblrVariableAssignment>& assignments);
 
 EngineApiDiagnostic RevokeSblrVariableFrame(
     const EngineRequestContext& context,
-    const std::string& statement_receipt_uuid,
-    const std::string& scope_uuid, std::uint64_t scope_generation,
-    const std::string& frame_uuid, std::uint64_t frame_generation,
+    const EngineUuid& statement_receipt_uuid,
+    const EngineUuid& scope_uuid, std::uint64_t scope_generation,
+    const EngineUuid& frame_uuid, std::uint64_t frame_generation,
     const std::string& reason_code);
 
 EngineApiDiagnostic RecoverSblrVariableDescriptorRegistry(

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -57,10 +58,10 @@ bool HasValue(const std::vector<std::string>& values, std::string_view expected)
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f7100-0000-7000-8000-000000000301";
-  session.connection_uuid = "019f7100-0000-7000-8000-000000000302";
-  session.database_uuid = "019f7100-0000-7000-8000-000000000303";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f7100-0000-7000-8000-000000000301");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f7100-0000-7000-8000-000000000302");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f7100-0000-7000-8000-000000000303");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 71;
   session.security_policy_epoch = 72;
   session.descriptor_epoch = 73;
@@ -71,7 +72,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_071_jobs_scheduler";
-  config.parser_uuid = "019f7100-0000-7000-8000-000000000304";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f7100-0000-7000-8000-000000000304");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-071-jobs-scheduler";
   config.build_id = "sbsql-sbsfc-071-jobs-scheduler";
   return config;

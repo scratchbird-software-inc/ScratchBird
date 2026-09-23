@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -69,8 +70,8 @@ SblrResult Run(const FunctionRegistry& registry,
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
-  request.context.sblr_context.database_uuid = "SBSFC-035-range-scalar-helper-runtime-db";
-  request.context.sblr_context.transaction_uuid = "SBSFC-035-range-scalar-helper-runtime-tx";
+  request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuid(1156, 31);
+  request.context.sblr_context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 32);
   request.context.sblr_context.transaction_context_present = true;
   request.context.sblr_context.local_transaction_id = 35035;
   for (std::size_t i = 0; i < values.size(); ++i) {

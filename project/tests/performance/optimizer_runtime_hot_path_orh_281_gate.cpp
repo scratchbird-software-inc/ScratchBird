@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "allocator_lifetime_hot_path.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include "memory.hpp"
 
@@ -116,13 +117,18 @@ memory::AllocationPolicy Policy() {
 
 memory::QueryMemoryContext ArenaContext(bool unsafe_authority = false) {
   memory::QueryMemoryContext context;
-  context.query_id = "orh281.query";
-  context.statement_id = "orh281.statement";
-  context.session_id = "orh281.session";
-  context.transaction_id = "orh281.transaction";
-  context.database_id = "orh281.database";
-  context.engine_id = "orh281.engine";
-  context.operation_id = "orh281.allocator.hot_path";
+  context.query_id = scratchbird::tests::FixtureUuid(1483, 1);
+  context.statement_id = scratchbird::tests::FixtureUuid(1483, 2);
+  context.session_id = scratchbird::tests::FixtureUuid(1483, 3);
+  context.transaction_id = scratchbird::tests::FixtureUuid(1483, 4);
+  context.database_id = scratchbird::tests::FixtureUuid(1483, 5);
+  context.engine_id = scratchbird::tests::FixtureUuid(1483, 6);
+  context.operation_id = scratchbird::tests::FixtureUuid(1483, 7);
+  context.snapshot_boundary = scratchbird::tests::FixtureUuid(1483, 8);
+  context.metadata_boundary = scratchbird::tests::FixtureUuid(1483, 9);
+  context.resource_budget_reference = scratchbird::tests::FixtureUuid(1483, 10);
+  context.policy_generation = 1;
+  context.security_generation = 1;
   context.engine_mga_authoritative = true;
   context.parser_or_reference_finality_or_visibility_authority = unsafe_authority;
   return context;

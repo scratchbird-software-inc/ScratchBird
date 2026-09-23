@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
@@ -70,37 +72,37 @@ platform::TypedUuid GeneratedUuid(UuidKind kind, std::uint64_t salt) {
   return generated.value;
 }
 
-std::string GeneratedUuidText(UuidKind kind, std::uint64_t salt) {
-  return uuid::UuidToString(GeneratedUuid(kind, salt).value);
+platform::Uuid GeneratedIdentity(UuidKind kind, std::uint64_t salt) {
+  return GeneratedUuid(kind, salt).value;
 }
 
-const std::string& SchemaUuid() {
-  static const std::string value = GeneratedUuidText(UuidKind::object, 101);
+const platform::Uuid& SchemaUuid() {
+  static const platform::Uuid value = GeneratedIdentity(UuidKind::object, 101);
   return value;
 }
 
-const std::string& TableUuid() {
-  static const std::string value = GeneratedUuidText(UuidKind::object, 102);
+const platform::Uuid& TableUuid() {
+  static const platform::Uuid value = GeneratedIdentity(UuidKind::object, 102);
   return value;
 }
 
-const std::string& BtreeIndexUuid() {
-  static const std::string value = GeneratedUuidText(UuidKind::object, 201);
+const platform::Uuid& BtreeIndexUuid() {
+  static const platform::Uuid value = GeneratedIdentity(UuidKind::object, 201);
   return value;
 }
 
-const std::string& BitmapIndexUuid() {
-  static const std::string value = GeneratedUuidText(UuidKind::object, 202);
+const platform::Uuid& BitmapIndexUuid() {
+  static const platform::Uuid value = GeneratedIdentity(UuidKind::object, 202);
   return value;
 }
 
-const std::string& ExpressionIndexUuid() {
-  static const std::string value = GeneratedUuidText(UuidKind::object, 203);
+const platform::Uuid& ExpressionIndexUuid() {
+  static const platform::Uuid value = GeneratedIdentity(UuidKind::object, 203);
   return value;
 }
 
-const std::string& PartialIndexUuid() {
-  static const std::string value = GeneratedUuidText(UuidKind::object, 204);
+const platform::Uuid& PartialIndexUuid() {
+  static const platform::Uuid value = GeneratedIdentity(UuidKind::object, 204);
   return value;
 }
 
@@ -131,7 +133,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+platform::Uuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = GeneratedUuid(UuidKind::database, 1);
@@ -147,24 +149,23 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "index family runtime database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const platform::Uuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-index-family-runtime-closure";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = GeneratedUuidText(UuidKind::object, 11);
-  context.principal_uuid.canonical = GeneratedUuidText(UuidKind::principal, 12);
-  context.current_schema_uuid.canonical = SchemaUuid();
+  context.database_uuid = database_uuid;
+  context.session_uuid = GeneratedIdentity(UuidKind::object, 11);
+  context.principal_uuid = GeneratedIdentity(UuidKind::principal, 12);
+  context.current_schema_uuid = SchemaUuid();
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
@@ -205,8 +206,8 @@ api::EngineTypedValue TypedValue(std::string type, std::string value) {
 
 api::EngineColumnDefinition Column(std::string name, std::string type, std::uint32_t ordinal) {
   api::EngineColumnDefinition column;
-  column.requested_column_uuid.canonical =
-      GeneratedUuidText(UuidKind::object, 300 + ordinal);
+  column.requested_column_uuid =
+      GeneratedIdentity(UuidKind::object, 300 + ordinal);
   column.names.push_back(Name(std::move(name)));
   column.descriptor = Descriptor(std::move(type));
   if (column.descriptor.canonical_type_name == "text") {
@@ -217,24 +218,24 @@ api::EngineColumnDefinition Column(std::string name, std::string type, std::uint
   return column;
 }
 
-api::EngineRowValue Row(std::string row_uuid,
+api::EngineRowValue Row(platform::Uuid row_uuid,
                         std::string id,
                         std::string name,
                         std::string status) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", TypedValue("int64", std::move(id))});
   row.fields.push_back({"name", TypedValue("text", std::move(name))});
   row.fields.push_back({"status", TypedValue("text", std::move(status))});
   return row;
 }
 
-api::EngineIndexDefinition Index(std::string uuid_text,
+api::EngineIndexDefinition Index(platform::Uuid uuid_text,
                                  std::string name,
                                  std::string index_kind,
                                  std::vector<std::string> keys) {
   api::EngineIndexDefinition index;
-  index.requested_index_uuid.canonical = std::move(uuid_text);
+  index.requested_index_uuid = std::move(uuid_text);
   index.names.push_back(Name(std::move(name)));
   index.index_kind = std::move(index_kind);
   index.key_envelopes = std::move(keys);
@@ -253,7 +254,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
                       std::string_view fragment) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        evidence.evidence_id.find(fragment) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(evidence.evidence_id, fragment) != std::string::npos) {
       return true;
     }
   }
@@ -274,7 +275,7 @@ void RequireOk(const api::EngineApiResult& result, std::string_view message) {
 void CreateSchema(const api::EngineRequestContext& context) {
   api::EngineCreateSchemaRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = SchemaUuid();
+  request.target_object.uuid = SchemaUuid();
   request.target_object.object_kind = "schema";
   request.localized_names.push_back(Name("cbq005_index_family_schema"));
   auto result = api::EngineCreateSchema(request);
@@ -284,9 +285,9 @@ void CreateSchema(const api::EngineRequestContext& context) {
 void CreateTable(const api::EngineRequestContext& context) {
   api::EngineCreateTableRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = SchemaUuid();
+  request.target_schema.uuid = SchemaUuid();
   request.target_schema.object_kind = "schema";
-  request.requested_table_uuid.canonical = TableUuid();
+  request.requested_table_uuid = TableUuid();
   request.table_names.push_back(Name("cbq005_index_family_table"));
   request.table_columns.push_back(Column("id", "int64", 0));
   request.table_columns.push_back(Column("name", "text", 1));
@@ -299,7 +300,7 @@ void InsertRows(const api::EngineRequestContext& context,
                 std::vector<api::EngineRowValue> rows) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = TableUuid();
+  request.target_table.uuid = TableUuid();
   request.target_table.object_kind = "table";
   request.require_generated_row_uuid = false;
   request.estimated_row_count = rows.size();
@@ -314,7 +315,7 @@ api::EngineCreateIndexResult CreateIndex(const api::EngineRequestContext& contex
                                          api::EngineIndexDefinition index) {
   api::EngineCreateIndexRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = TableUuid();
+  request.target_object.uuid = TableUuid();
   request.target_object.object_kind = "table";
   request.indexes.push_back(std::move(index));
   return api::EngineCreateIndex(request);
@@ -324,7 +325,7 @@ api::EngineSelectRowsResult SelectRows(const api::EngineRequestContext& context,
                                        api::EnginePredicateEnvelope predicate) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = TableUuid();
+  request.source_object.uuid = TableUuid();
   request.source_object.object_kind = "table";
   request.select_predicate = std::move(predicate);
   return api::EngineSelectRows(request);
@@ -350,7 +351,7 @@ api::MgaRelationReadView LoadMgaCrudState(const api::EngineRequestContext& conte
 }
 
 std::size_t CountIndexEntries(const api::MgaRelationReadView& state,
-                              std::string_view index_uuid,
+                              const platform::Uuid& index_uuid,
                               std::string_view key = {},
                               std::string_view entry_kind = {}) {
   return static_cast<std::size_t>(std::count_if(
@@ -364,7 +365,7 @@ std::size_t CountIndexEntries(const api::MgaRelationReadView& state,
 }
 
 const api::CrudIndexRecord& RequireIndexRecord(const api::MgaRelationReadView& state,
-                                               std::string_view index_uuid,
+                                               const platform::Uuid& index_uuid,
                                                std::string_view family) {
   for (const auto& index : state.indexes) {
     if (index.index_uuid == index_uuid) {
@@ -417,6 +418,17 @@ index_api::IndexPostingEntry Posting(unsigned char salt, std::uint64_t visible_f
   entry.locator.local_transaction_id = visible_from;
   entry.visible_from_transaction_id = visible_from;
   return entry;
+}
+
+void AddOptionOperand(sblr::SblrOperationEnvelope* envelope,
+                      std::string name, const platform::Uuid& value) {
+  sblr::SblrOperand operand;
+  operand.ordinal = envelope->operands.size() + 1;
+  operand.type = "option";
+  operand.name = std::move(name);
+  operand.value_kind = sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(value.bytes.begin(), value.bytes.end());
+  envelope->operands.push_back(std::move(operand));
 }
 
 void AddOptionOperand(sblr::SblrOperationEnvelope* envelope,
@@ -705,8 +717,8 @@ void RequireCreateIndexAuthorityBoundaryAndDirectRuntime(
 }
 
 void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context) {
-  InsertRows(context, {Row(GeneratedUuidText(UuidKind::row, 1501), "1", "Alpha", "active"),
-                       Row(GeneratedUuidText(UuidKind::row, 1502), "2", "Beta", "inactive")});
+  InsertRows(context, {Row(GeneratedIdentity(UuidKind::row, 1501), "1", "Alpha", "active"),
+                       Row(GeneratedIdentity(UuidKind::row, 1502), "2", "Beta", "inactive")});
 
   auto result = CreateIndex(context, Index(BtreeIndexUuid(),
                                            "id_btree_idx",
@@ -735,11 +747,11 @@ void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context
                                       {"id", "where_eq:status=active"}));
   RequireOk(result, "partial create index failed");
 
-  InsertRows(context, {Row(GeneratedUuidText(UuidKind::row, 1503), "3", "Gamma", "active")});
+  InsertRows(context, {Row(GeneratedIdentity(UuidKind::row, 1503), "3", "Gamma", "active")});
 
   api::EngineUpdateRowsRequest update;
   update.context = context;
-  update.target_table.uuid.canonical = TableUuid();
+  update.target_table.uuid = TableUuid();
   update.target_table.object_kind = "table";
   update.update_predicate = Predicate("column_equals", "id", {TypedValue("int64", "2")});
   update.assignments.push_back({"name", TypedValue("text", "Bravo")});
@@ -750,7 +762,7 @@ void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context
 
   api::EngineDeleteRowsRequest delete_request;
   delete_request.context = context;
-  delete_request.target_table.uuid.canonical = TableUuid();
+  delete_request.target_table.uuid = TableUuid();
   delete_request.target_table.object_kind = "table";
   delete_request.delete_predicate = Predicate("column_equals", "id", {TypedValue("int64", "1")});
   const auto deleted = api::EngineDeleteRows(delete_request);

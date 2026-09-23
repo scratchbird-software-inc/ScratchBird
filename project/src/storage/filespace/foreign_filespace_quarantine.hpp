@@ -21,8 +21,8 @@ struct ForeignFilespaceQuarantineRequest {
   std::string path;
   u32 page_size = static_cast<u32>(scratchbird::storage::disk::PageSizeProfile::profile_16k);
   std::string operation_uuid;
-  std::string inspector_uuid;
-  std::string release_authority_uuid;
+  scratchbird::core::platform::Uuid inspector_uuid;
+  scratchbird::core::platform::Uuid release_authority_uuid;
   bool physical_header_required = true;
   bool header_inspection_passed = false;
   bool release_authorized = false;

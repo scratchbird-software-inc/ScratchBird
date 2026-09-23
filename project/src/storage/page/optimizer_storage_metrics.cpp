@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_storage_metrics.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -38,7 +39,7 @@ MetricDescriptor Descriptor(std::string family,
   descriptor.producer_owner = std::move(producer_owner);
   descriptor.security_family = "OPTIMIZER_METRICS";
   descriptor.readiness = MetricReadiness::implemented;
-  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false},
+  descriptor.labels = {MetricLabelDescriptor{"scope_uuid", true, false, metrics::MetricLabelType::system_uuid},
                        MetricLabelDescriptor{"route_label", true, false},
                        MetricLabelDescriptor{"plan_node_id", false, false},
                        MetricLabelDescriptor{"metric_family", true, false},
@@ -85,8 +86,7 @@ OptimizerStorageMetricPublishResult Refuse(const OptimizerStorageMetricSample& s
   result.detail = std::move(detail);
   AddEvidence(&result, "OEIC_STORAGE_IO_OPTIMIZER_METRICS");
   AddEvidence(&result, "optimizer.storage_metrics.fail_closed=true");
-  AddEvidence(&result, "optimizer.storage_metrics.filespace_uuid=" +
-                           sample.filespace_uuid);
+  result.filespace_uuid = sample.filespace_uuid;
   AddEvidence(&result, "optimizer.storage_metrics.refused=" +
                            result.diagnostic_code);
   return result;
@@ -94,15 +94,15 @@ OptimizerStorageMetricPublishResult Refuse(const OptimizerStorageMetricSample& s
 
 bool EmptyRequiredField(const OptimizerStorageMetricSample& sample,
                         std::string* field) {
-  if (sample.scope_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.scope_uuid)) {
     if (field != nullptr) *field = "scope_uuid";
     return true;
   }
-  if (sample.database_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.database_uuid)) {
     if (field != nullptr) *field = "database_uuid";
     return true;
   }
-  if (sample.filespace_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(sample.filespace_uuid)) {
     if (field != nullptr) *field = "filespace_uuid";
     return true;
   }

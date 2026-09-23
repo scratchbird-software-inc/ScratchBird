@@ -6,6 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <chrono>
+#include <stdexcept>
 #include "dml/page_allocation_runtime_bridge.hpp"
 
 #include "agent_runtime.hpp"
@@ -207,37 +210,22 @@ bool DemandHintsEnabled(const std::vector<std::string>& option_envelopes) {
 }
 
 std::string LedgerKey(const EngineRequestContext& context) {
-  const std::string identity = context.database_uuid.is_nil()
-                                   ? std::string("database_uuid_absent")
-                                   : context.database_uuid;
-  if (!context.database_path.empty()) {
-    return context.database_path + "|" + identity;
-  }
-  return identity;
+  return EncodeMgaMetadataFields({"page.allocation.ledger.v2",context.database_path,MetadataUuidBytes(context.database_uuid)});
 }
-
-platform::u64 StableSeed(const std::string& value, platform::u64 salt) {
-  platform::u64 hash = 1469598103934665603ull ^ salt;
-  for (const unsigned char c : value) {
-    hash ^= static_cast<platform::u64>(c);
-    hash *= 1099511628211ull;
-  }
-  return 1800000000000ull + (hash % 1000000000ull);
-}
-
-platform::TypedUuid GeneratedIdentity(platform::UuidKind kind,
-                                      const std::string& key,
-                                      platform::u64 salt) {
-  const auto generated = uuid::GenerateEngineIdentityV7(kind, StableSeed(key, salt));
-  return generated.ok() ? generated.value : platform::TypedUuid{};
+platform::TypedUuid GeneratedIdentity(platform::UuidKind kind) {
+  const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  if(now<0)throw std::runtime_error("page_allocation_clock_invalid");
+  const auto generated=uuid::GenerateDurableEngineIdentityV7(kind,static_cast<platform::u64>(now));
+  if(!generated.ok())throw std::runtime_error("page_allocation_identity_generation_failed");
+  return generated.value;
 }
 
 bool IsEngineIdentity(const platform::TypedUuid& typed, platform::UuidKind kind) {
   return typed.kind == kind && typed.valid() && uuid::IsEngineIdentityUuid(typed.value);
 }
 
-platform::TypedUuid ParseEngineIdentity(platform::UuidKind kind, const std::string& text) {
-  const auto parsed = uuid::ParseTypedUuid(kind, text);
+platform::TypedUuid ParseEngineIdentity(platform::UuidKind kind, const EngineUuid& identity) {
+  const auto parsed = uuid::MakeTypedUuid(kind, identity);
   if (!parsed.ok() || !IsEngineIdentity(parsed.value, kind)) {
     return {};
   }
@@ -246,7 +234,7 @@ platform::TypedUuid ParseEngineIdentity(platform::UuidKind kind, const std::stri
 
 bool RuntimeCanActivate(const EngineRequestContext& context,
                         const std::vector<std::string>& option_envelopes,
-                        const std::string& owner_object_uuid,
+                        const EngineUuid& owner_object_uuid,
                         platform::TypedUuid* database_uuid,
                         platform::TypedUuid* transaction_uuid,
                         platform::TypedUuid* owner_uuid) {
@@ -268,13 +256,13 @@ bool RuntimeCanActivate(const EngineRequestContext& context,
          IsEngineIdentity(*owner_uuid, platform::UuidKind::object);
 }
 
-std::string UuidText(const platform::TypedUuid& typed) {
-  return typed.valid() ? uuid::UuidToString(typed.value) : std::string{};
+EngineUuid NativeUuid(const platform::TypedUuid& typed) {
+  return typed.value;
 }
 
 void AddEvidence(std::vector<EngineEvidenceReference>* evidence,
                  std::string kind,
-                 std::string id) {
+                 EngineEvidenceValue id) {
   if (evidence != nullptr) {
     evidence->push_back({std::move(kind), std::move(id)});
   }
@@ -284,7 +272,7 @@ bool HasEvidence(const std::vector<EngineEvidenceReference>& evidence,
                  const std::string& kind,
                  const std::string& id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && item.evidence_id == EngineEvidenceValue{id}) {
       return true;
     }
   }
@@ -690,9 +678,9 @@ RuntimeLedger& EnsureRuntimeLedger(const EngineRequestContext& context,
   auto& runtime = RuntimeLedgers()[LedgerKey(context)];
   if (!runtime.filespace_uuid.valid()) {
     const auto key = LedgerKey(context);
-    runtime.filespace_uuid = GeneratedIdentity(platform::UuidKind::filespace, key, 11);
-    runtime.policy_uuid = GeneratedIdentity(platform::UuidKind::object, key, 17);
-    runtime.capacity_evidence_uuid = GeneratedIdentity(platform::UuidKind::object, key, 23);
+    runtime.filespace_uuid = GeneratedIdentity(platform::UuidKind::filespace);
+    runtime.policy_uuid = GeneratedIdentity(platform::UuidKind::object);
+    runtime.capacity_evidence_uuid = GeneratedIdentity(platform::UuidKind::object);
     runtime.ledger.database_uuid = database_uuid;
     runtime.ledger.filespace_uuid = runtime.filespace_uuid;
   }
@@ -899,7 +887,7 @@ void AddPageAgentTickEvidence(const agents::PageAllocationManagerTickResult& tic
   if (tick.capacity_request_enqueued) {
     AddEvidence(evidence,
                 "filespace_agent_demand_request",
-                UuidText(tick.handoff.request_uuid.valid()
+                NativeUuid(tick.handoff.request_uuid.valid()
                              ? tick.handoff.request_uuid
                              : tick.handoff.evidence.request_uuid));
     AddEvidence(evidence,
@@ -910,7 +898,7 @@ void AddPageAgentTickEvidence(const agents::PageAllocationManagerTickResult& tic
   if (tick.preallocation_uuid.valid()) {
     AddEvidence(evidence,
                 "page_agent_preallocation",
-                UuidText(tick.preallocation_uuid));
+                NativeUuid(tick.preallocation_uuid));
     AddEvidence(evidence,
                 "page_agent_preallocated_pages",
                 std::to_string(tick.preallocated_pages));
@@ -938,7 +926,7 @@ void AddFilespaceAgentTickEvidence(
   if (tick.evidence.evidence_uuid.valid()) {
     AddEvidence(evidence,
                 "filespace_agent_capacity_evidence",
-                UuidText(tick.evidence.evidence_uuid));
+                NativeUuid(tick.evidence.evidence_uuid));
   }
   if (!tick.diagnostic.diagnostic_code.empty()) {
     AddEvidence(evidence, "filespace_agent_demand_diagnostic", tick.diagnostic.diagnostic_code);
@@ -1221,11 +1209,11 @@ DmlPageAllocationRuntimeResult ReserveRuntimeLocked(
   result.evidence.push_back({"page_allocation_action", reserved.evidence.action});
   result.evidence.push_back({"page_allocation_source", reserved.evidence.diagnostic_code});
   result.evidence.push_back({"page_allocation_diagnostic", reserved.evidence.diagnostic_code});
-  result.evidence.push_back({"page_allocation", UuidText(reserved.allocation.allocation_uuid)});
+  result.evidence.push_back({"page_allocation", NativeUuid(reserved.allocation.allocation_uuid)});
   result.evidence.push_back({family == DmlPageAllocationRuntimeFamily::index
                                  ? "index_page_allocation"
                                  : "row_page_allocation",
-                             UuidText(reserved.allocation.allocation_uuid)});
+                             NativeUuid(reserved.allocation.allocation_uuid)});
   result.evidence.push_back({family == DmlPageAllocationRuntimeFamily::index
                                  ? "index_page_allocation_source"
                                  : "row_page_allocation_source",
@@ -1257,15 +1245,15 @@ DmlPageAllocationRuntimeResult ReserveRuntimeLocked(
 
 std::uint64_t IndexPagesForValues(const MgaRelationReadView& state,
                                   const EngineRequestContext& context,
-                                  const std::string& table_uuid,
+                                  const EngineUuid& table_uuid,
                                   const std::vector<std::pair<std::string, std::string>>& values,
-                                  std::string* first_index_uuid) {
+                                  EngineUuid* first_index_uuid) {
   std::uint64_t pages = 0;
   for (const auto& index : VisibleMgaIndexesForTable(state, table_uuid, context.local_transaction_id)) {
     if (CrudIndexKeysForValues(index, values).empty()) {
       continue;
     }
-    if (first_index_uuid != nullptr && first_index_uuid->empty()) {
+    if (first_index_uuid != nullptr && first_index_uuid->is_nil()) {
       *first_index_uuid = index.index_uuid;
     }
     ++pages;
@@ -1276,9 +1264,9 @@ std::uint64_t IndexPagesForValues(const MgaRelationReadView& state,
 std::uint64_t IndexPagesForValueBatch(
     const MgaRelationReadView& state,
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& row_values,
-    std::string* first_index_uuid) {
+    EngineUuid* first_index_uuid) {
   std::uint64_t pages = 0;
   for (const auto& values : row_values) {
     pages += IndexPagesForValues(state, context, table_uuid, values, first_index_uuid);
@@ -1289,9 +1277,9 @@ std::uint64_t IndexPagesForValueBatch(
 std::uint64_t IndexPagesForValueRefs(
     const MgaRelationReadView& state,
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
-    std::string* first_index_uuid) {
+    EngineUuid* first_index_uuid) {
   std::uint64_t pages = 0;
   for (const auto* values : row_values) {
     if (values == nullptr) {
@@ -1305,9 +1293,9 @@ std::uint64_t IndexPagesForValueRefs(
 std::uint64_t IndexPagesForRowCount(
     const MgaRelationReadView& state,
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_count,
-    std::string* first_index_uuid) {
+    EngineUuid* first_index_uuid) {
   if (row_count == 0) {
     return 0;
   }
@@ -1315,10 +1303,10 @@ std::uint64_t IndexPagesForRowCount(
       VisibleMgaIndexesForTable(state, table_uuid, context.local_transaction_id);
   std::uint64_t index_count = 0;
   for (const auto& index : indexes) {
-    if (index.index_uuid.empty()) {
+    if (index.index_uuid.is_nil()) {
       continue;
     }
-    if (first_index_uuid != nullptr && first_index_uuid->empty()) {
+    if (first_index_uuid != nullptr && first_index_uuid->is_nil()) {
       *first_index_uuid = index.index_uuid;
     }
     ++index_count;
@@ -1335,7 +1323,7 @@ std::uint64_t IndexPagesForRowCount(
 DmlPageAllocationRuntimeResult ReserveDmlPageAllocationRuntime(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
-    const std::string& owner_object_uuid,
+    const EngineUuid& owner_object_uuid,
     DmlPageAllocationRuntimeFamily family,
     std::uint64_t requested_pages,
     std::string mutation_phase) {
@@ -1449,12 +1437,12 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntime(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     std::string mutation_phase) {
-  std::string index_uuid;
+  EngineUuid index_uuid;
   const auto pages = IndexPagesForValues(state, context, table_uuid, values, &index_uuid);
-  if (pages == 0 || index_uuid.empty()) {
+  if (pages == 0 || index_uuid.is_nil()) {
     return {};
   }
   return ReserveDmlPageAllocationRuntime(context,
@@ -1469,12 +1457,12 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& row_values,
     std::string mutation_phase) {
-  std::string index_uuid;
+  EngineUuid index_uuid;
   const auto pages = IndexPagesForValueBatch(state, context, table_uuid, row_values, &index_uuid);
-  if (pages == 0 || index_uuid.empty()) {
+  if (pages == 0 || index_uuid.is_nil()) {
     return {};
   }
   return ReserveDmlPageAllocationRuntime(context,
@@ -1489,12 +1477,12 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
     std::string mutation_phase) {
-  std::string index_uuid;
+  EngineUuid index_uuid;
   const auto pages = IndexPagesForValueRefs(state, context, table_uuid, row_values, &index_uuid);
-  if (pages == 0 || index_uuid.empty()) {
+  if (pages == 0 || index_uuid.is_nil()) {
     return {};
   }
   return ReserveDmlPageAllocationRuntime(context,
@@ -1509,13 +1497,13 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowCount(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_count,
     std::string mutation_phase) {
-  std::string index_uuid;
+  EngineUuid index_uuid;
   const auto pages =
       IndexPagesForRowCount(state, context, table_uuid, row_count, &index_uuid);
-  if (pages == 0 || index_uuid.empty()) {
+  if (pages == 0 || index_uuid.is_nil()) {
     return {};
   }
   return ReserveDmlPageAllocationRuntime(context,

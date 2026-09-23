@@ -29,7 +29,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
     CanonicalRelationalExpressionRowBinding predicate_row_binding,
     api::TypedRelationalDag relational_dag,
     CanonicalRelationalExpressionRuntimeServices expression_services,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t expected_input_row_count,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
@@ -132,7 +132,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
     CanonicalRelationalExpressionRowBinding predicate_row_binding,
     api::TypedRelationalDag relational_dag,
     CanonicalRelationalExpressionRuntimeServices expression_services,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t maximum_input_row_count,
     api::EngineRequestContext mga_context,
     const api::EngineCanonicalExpressionConsumer expression_consumer,

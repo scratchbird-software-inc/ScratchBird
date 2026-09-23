@@ -621,14 +621,14 @@ struct ServerParameterExecutionCoordinationRecord {
 struct ServerVariableFrameMappingRecord {
   std::uint64_t occurrence_id = 0;
   std::uint32_t variable_ordinal = 0;
-  std::string variable_descriptor_uuid, datatype_descriptor_uuid,
+  scratchbird::core::platform::Uuid variable_descriptor_uuid, datatype_descriptor_uuid,
       datatype_type_uuid;
   std::uint64_t variable_descriptor_generation = 0,
       datatype_descriptor_generation = 0, value_generation = 0;
   std::uint8_t nullable = 0, mutability = 0, value_state = 0;
 };
 struct ServerVariableFrameRecord {
-  std::string session_uuid, transaction_uuid, operation_uuid,
+  scratchbird::core::platform::Uuid session_uuid, transaction_uuid, operation_uuid,
       public_coordination_uuid, scope_uuid, frame_uuid,
       registry_snapshot_uuid;
   std::uint64_t scope_generation = 0, frame_generation = 0,
@@ -675,7 +675,7 @@ struct ServerSessionRegistry {
       statement_contexts_by_statement_uuid;
   std::map<scratchbird::core::platform::Uuid, ServerParameterExecutionCoordinationRecord>
       parameter_coordinations_by_uuid;
-  std::map<std::string, ServerVariableFrameRecord>
+  std::map<scratchbird::core::platform::Uuid, ServerVariableFrameRecord>
       variable_frames_by_coordination_uuid;
   std::shared_ptr<std::mutex> statement_context_mutex =
       std::make_shared<std::mutex>();

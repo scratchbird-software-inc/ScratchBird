@@ -12,6 +12,8 @@
 #include <cctype>
 #include <iomanip>
 #include <map>
+#include <limits>
+#include "uuid.hpp"
 #include <sstream>
 #include <string_view>
 #include <tuple>
@@ -23,21 +25,24 @@ using scratchbird::core::metrics::DefaultMetricRegistry;
 using scratchbird::core::metrics::MetricDescriptor;
 using scratchbird::core::metrics::MetricLabelDescriptor;
 using scratchbird::core::metrics::MetricLabelSet;
+using scratchbird::core::metrics::MetricLabelType;
+using scratchbird::core::metrics::MetricUuid;
 using scratchbird::core::metrics::MetricReadiness;
 using scratchbird::core::metrics::MetricType;
 using scratchbird::core::metrics::MetricUnit;
 using scratchbird::core::metrics::MetricValidationResult;
 
 MetricLabelSet Labels(const IndexMetricIdentity& identity) {
-  return {{"index_uuid", identity.index_uuid},
+  MetricLabelSet labels = {{"index_uuid", identity.index_uuid},
           {"index_family", identity.index_family},
           {"semantic_profile", identity.semantic_profile_id},
           {"operation", identity.operation},
           {"result", identity.result},
           {"reason", identity.reason},
           {"page_family", identity.page_family},
-          {"filespace_uuid", identity.filespace_uuid},
           {"agent_class", identity.agent_class}};
+  if (!identity.filespace_uuid.is_nil()) labels.push_back({"filespace_uuid", identity.filespace_uuid});
+  return labels;
 }
 
 MetricDescriptor Descriptor(std::string family, MetricType type, MetricUnit unit, std::string help) {
@@ -50,14 +55,14 @@ MetricDescriptor Descriptor(std::string family, MetricType type, MetricUnit unit
   descriptor.producer_owner = "index_runtime";
   descriptor.security_family = "INDEX_METRICS";
   descriptor.readiness = MetricReadiness::implemented;
-  descriptor.labels = {MetricLabelDescriptor{"index_uuid", true, false},
+  descriptor.labels = {MetricLabelDescriptor{"index_uuid", true, false, MetricLabelType::system_uuid},
                        MetricLabelDescriptor{"index_family", true, false},
                        MetricLabelDescriptor{"semantic_profile", true, false},
                        MetricLabelDescriptor{"operation", true, false},
                        MetricLabelDescriptor{"result", true, false},
                        MetricLabelDescriptor{"reason", true, false},
                        MetricLabelDescriptor{"page_family", true, false},
-                       MetricLabelDescriptor{"filespace_uuid", true, false},
+                       MetricLabelDescriptor{"filespace_uuid", false, false, MetricLabelType::system_uuid},
                        MetricLabelDescriptor{"agent_class", true, false}};
   if (type == MetricType::histogram) {
     descriptor.histogram_buckets = {1, 10, 100, 1000, 10000, 100000, 1000000};
@@ -219,6 +224,7 @@ MetricDescriptor OperationDescriptor(std::string family, std::string help) {
   MetricDescriptor descriptor;
   descriptor.family = std::move(family);
   descriptor.type = MetricType::counter;
+  descriptor.value_type = scratchbird::core::metrics::MetricScalarType::uint64;
   descriptor.unit = MetricUnit::count;
   descriptor.namespace_path = "sys.metrics.indexes.operations";
   descriptor.help = std::move(help);
@@ -226,7 +232,7 @@ MetricDescriptor OperationDescriptor(std::string family, std::string help) {
   descriptor.security_family = "INDEX_OPERATION_METRICS";
   descriptor.readiness = MetricReadiness::implemented;
   descriptor.labels = {
-      MetricLabelDescriptor{"index_uuid", true, false},
+      MetricLabelDescriptor{"index_uuid", true, false, MetricLabelType::system_uuid},
       MetricLabelDescriptor{"index_family", true, false},
       MetricLabelDescriptor{"route_kind", true, false},
       MetricLabelDescriptor{"operation", true, false},
@@ -313,8 +319,7 @@ IndexOperationMetricPublishResult RefuseOperationMetric(
   result.evidence.push_back(kCEIC040SearchKey);
   result.evidence.push_back(kCEIC040AuthorityScope);
   result.evidence.push_back("index_operation_metrics.fail_closed=true");
-  result.evidence.push_back("index_operation_metrics.index_uuid=" +
-                            sample.identity.index_uuid);
+  result.index_uuid = sample.identity.index_uuid;
   result.evidence.push_back("index_operation_metrics.index_family=" +
                             sample.identity.index_family);
   result.evidence.push_back("index_operation_metrics.refused=" +
@@ -325,8 +330,17 @@ IndexOperationMetricPublishResult RefuseOperationMetric(
 std::string LabelValue(const MetricLabelSet& labels, const std::string& key) {
   for (const auto& label : labels) {
     if (label.key == key) {
-      return label.value;
+      const auto* text = std::get_if<std::string>(&label.value);
+      return text ? *text : std::string{};
     }
+  }
+  return {};
+}
+
+MetricUuid UuidLabelValue(const MetricLabelSet& labels, const std::string& key) {
+  for (const auto& label : labels) if (label.key == key) {
+    const auto* id = std::get_if<MetricUuid>(&label.value);
+    return id ? *id : MetricUuid{};
   }
   return {};
 }
@@ -352,7 +366,9 @@ u64 ParseU64(std::string value, bool* ok) {
     if (ch < '0' || ch > '9') {
       return 0;
     }
-    output = output * 10 + static_cast<u64>(ch - '0');
+    const auto digit = static_cast<u64>(ch - '0');
+    if (output > (std::numeric_limits<u64>::max() - digit) / 10) return 0;
+    output = output * 10 + digit;
   }
   if (ok != nullptr) {
     *ok = true;
@@ -360,27 +376,27 @@ u64 ParseU64(std::string value, bool* ok) {
   return output;
 }
 
-std::string RedactedLabelString(const MetricLabelSet& labels,
-                                bool* redacted,
-                                u64 max_label_bytes) {
-  std::vector<std::pair<std::string, std::string>> sorted;
-  for (const auto& label : labels) {
-    sorted.push_back({label.key, RedactForBundle(label.value, redacted)});
-  }
-  std::sort(sorted.begin(), sorted.end());
-  std::ostringstream out;
-  for (std::size_t i = 0; i < sorted.size(); ++i) {
-    if (i != 0) {
-      out << ';';
-    }
-    out << sorted[i].first << '=' << sorted[i].second;
-  }
-  return TruncateForBundle(out.str(), max_label_bytes);
+scratchbird::core::metrics::MetricSeriesKey LabelSortKey(const MetricValue& metric) {
+  scratchbird::core::metrics::MetricSeriesKey key{metric.family, {}};
+  for (const auto& label : metric.labels) key.second.emplace_back(label.key, label.value);
+  std::sort(key.second.begin(), key.second.end());
+  return key;
 }
 
 u64 RowSizeEstimate(const IndexOperationMetricSupportBundleRow& row) {
-  return static_cast<u64>(row.key.size() + row.value.size() +
-                          row.labels.size() + 128);
+  u64 bytes = sizeof(row) + row.metric.encoded_value.size();
+  for (const auto* text : {&row.key, &row.metric_family, &row.index_family,
+       &row.route_kind, &row.operation, &row.result, &row.reason,
+       &row.index_generation, &row.route_generation, &row.source_generation,
+       &row.source_kind, &row.provenance, &row.evidence_digest,
+       &row.redaction_class, &row.tamper_evidence_digest}) bytes += text->size();
+  for (const auto& label : row.labels) {
+    bytes += sizeof(label) + label.key.size();
+    if (const auto* text = std::get_if<std::string>(&label.value)) bytes += text->size();
+  }
+  for (const auto& label : row.metric.omitted_sensitive_labels)
+    bytes += sizeof(label) + label.size();
+  return bytes;
 }
 
 bool BoundedAppend(IndexOperationMetricSupportBundleResult* result,
@@ -650,7 +666,7 @@ MetricValidationResult EnsureIndexOperationMetricDescriptors(
 IndexOperationMetricPublishResult PublishIndexOperationMetrics(
     const IndexOperationMetricSample& sample) {
   const auto& id = sample.identity;
-  if (id.index_uuid.empty() || id.index_family.empty() ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(id.index_uuid) || id.index_family.empty() ||
       id.route_kind.empty() || id.result.empty() || id.reason.empty() ||
       id.source_kind.empty() || id.provenance.empty() ||
       id.evidence_digest.empty()) {
@@ -714,6 +730,7 @@ IndexOperationMetricPublishResult PublishIndexOperationMetrics(
   IndexOperationMetricPublishResult result;
   result.ok = true;
   result.diagnostic_code = "SB_INDEX_OPERATION_METRICS.OK";
+  result.index_uuid = id.index_uuid;
   result.evidence.push_back(kCEIC040SearchKey);
   result.evidence.push_back(kCEIC040AuthorityScope);
   result.evidence.push_back("index_operation_metrics.fail_closed=false");
@@ -740,7 +757,7 @@ IndexOperationMetricPublishResult PublishIndexOperationMetrics(
     auto metric_result = DefaultMetricRegistry().IncrementCounter(
         family,
         OperationLabels(sample, kind),
-        static_cast<double>(value),
+        scratchbird::core::metrics::MetricScalar{value},
         "index_operation_runtime");
     if (!metric_result.ok) {
       result.ok = false;
@@ -809,10 +826,7 @@ IndexOperationMetricSupportBundleResult BuildIndexOperationMetricSupportBundle(
   std::sort(request.metrics.begin(),
             request.metrics.end(),
             [](const MetricValue& left, const MetricValue& right) {
-              const auto left_labels = RedactedLabelString(left.labels, nullptr, 4096);
-              const auto right_labels = RedactedLabelString(right.labels, nullptr, 4096);
-              return std::tie(left.family, left_labels) <
-                     std::tie(right.family, right_labels);
+              return LabelSortKey(left) < LabelSortKey(right);
             });
 
   IndexOperationMetricSupportBundleResult result;
@@ -840,8 +854,8 @@ IndexOperationMetricSupportBundleResult BuildIndexOperationMetricSupportBundle(
     if (!OperationCounterFamily(metric.family)) {
       continue;
     }
-    const std::string raw_index_uuid = LabelValue(metric.labels, "index_uuid");
-    if (!request.filter_index_uuid.empty() &&
+    const auto raw_index_uuid = UuidLabelValue(metric.labels, "index_uuid");
+    if (!request.filter_index_uuid.is_nil() &&
         raw_index_uuid != request.filter_index_uuid) {
       continue;
     }
@@ -863,7 +877,7 @@ IndexOperationMetricSupportBundleResult BuildIndexOperationMetricSupportBundle(
 
     bool parsed_freshness = false;
     const u64 freshness_value = ParseU64(freshness, &parsed_freshness);
-    if (raw_index_uuid.empty() || index_family.empty() || route_kind.empty() ||
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(raw_index_uuid) || index_family.empty() || route_kind.empty() ||
         operation.empty() || PlaceholderGeneration(index_generation) ||
         PlaceholderGeneration(route_generation) ||
         PlaceholderGeneration(source_generation) || source_kind.empty() ||
@@ -885,26 +899,43 @@ IndexOperationMetricSupportBundleResult BuildIndexOperationMetricSupportBundle(
     }
 
     bool redacted = false;
-    const std::string labels =
-        RedactedLabelString(metric.labels, &redacted, request.limits.max_label_bytes);
-    std::ostringstream value;
-    value << "metric_value=" << metric.value
-          << ";metric_type=counter"
-          << ";operation=" << operation
-          << ";result=" << RedactForBundle(LabelValue(metric.labels, "result"), &redacted)
-          << ";reason=" << RedactForBundle(LabelValue(metric.labels, "reason"), &redacted)
-          << ";freshness_microseconds=" << freshness_value
-          << ";source_kind=" << RedactForBundle(source_kind, &redacted)
-          << ";provenance=" << RedactForBundle(provenance, &redacted)
-          << ";authority_scope=evidence_only";
+    const auto* descriptor = DefaultMetricRegistry().FindDescriptor(metric.family);
+    scratchbird::core::metrics::MetricSupportProjection projection;
+    MetricValue visible;
+    if (!descriptor || !scratchbird::core::metrics::ProjectMetricForSupport(
+          *descriptor, metric, false, &projection, &visible))
+      return RefuseSupportBundle("SB_INDEX_OPERATION_SUPPORT_BUNDLE.INVALID_METRIC",
+                                "index.operation_support_bundle.invalid_metric");
+    redacted = !projection.omitted_sensitive_labels.empty();
+    u64 label_bytes = 0;
+    for (auto& label : visible.labels) {
+      label_bytes += label.key.size();
+      if (auto* text = std::get_if<std::string>(&label.value)) {
+        *text = RedactForBundle(*text, &redacted);
+        label_bytes += text->size();
+      } else label_bytes += 16;
+    }
+    auto definition = static_cast<const scratchbird::core::metrics::MetricDescriptorDefinition&>(*descriptor);
+    std::erase_if(definition.labels, [](const auto& label) { return label.sensitive; });
+    auto encoded = scratchbird::core::metrics::EncodeMetricValue(definition, visible);
+    if (!encoded.ok())
+      return RefuseSupportBundle("SB_INDEX_OPERATION_SUPPORT_BUNDLE.INVALID_METRIC",
+                                "index.operation_support_bundle.invalid_redacted_metric");
+    if (label_bytes > request.limits.max_label_bytes ||
+        encoded.bytes.size() > request.limits.max_value_bytes) {
+      ++result.dropped_row_count;
+      continue;
+    }
+    projection.encoded_value = std::move(encoded.bytes);
 
     IndexOperationMetricSupportBundleRow row;
     row.key = TruncateForBundle("index.operation_metric." + metric.family,
                                 request.limits.max_key_bytes);
-    row.value = TruncateForBundle(value.str(), request.limits.max_value_bytes);
+    row.value = visible.value;
+    row.metric = std::move(projection);
     row.metric_family = metric.family;
-    row.labels = labels;
-    row.index_uuid = RedactForBundle(raw_index_uuid, &redacted);
+    row.labels = std::move(visible.labels);
+    row.index_uuid = raw_index_uuid;
     row.index_family = index_family;
     row.route_kind = route_kind;
     row.operation = operation;
@@ -920,7 +951,9 @@ IndexOperationMetricSupportBundleResult BuildIndexOperationMetricSupportBundle(
     row.redacted = redacted;
     row.redaction_class = redacted ? "protected_material" : "public";
     row.tamper_evidence_digest =
-        EvidenceDigest(row.key, row.value, row.labels);
+        EvidenceDigest(row.key, std::string_view(
+            reinterpret_cast<const char*>(row.metric.encoded_value.data()),
+            row.metric.encoded_value.size()), row.metric_family);
 
     const bool appended = BoundedAppend(&result, std::move(row), request.limits);
     if (appended) {

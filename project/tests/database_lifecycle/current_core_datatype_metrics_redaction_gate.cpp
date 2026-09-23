@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_metrics_redaction.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -43,21 +44,12 @@ bool SawMetric(const dt::DatatypeMetricsManagementResult& result,
   return false;
 }
 
-std::string BundleText(const dt::DatatypeMetricsManagementResult& result) {
-  std::string out;
-  for (const auto& line : result.support_bundle_lines) {
-    out += line;
-    out += '\n';
-  }
-  return out;
-}
-
 dt::DatatypeMetricsManagementRequest AuthorizedRequest() {
   dt::DatatypeMetricsManagementRequest request;
   request.metrics_read_authorized = true;
   request.support_bundle_requested = true;
   request.allow_sensitive_labels = false;
-  request.principal_uuid = "principal-secret-0001";
+  request.principal_uuid = scratchbird::tests::FixtureUuid(1034, 1);
   request.canonical_type = dt::CanonicalTypeId::decimal;
   request.source_type = dt::CanonicalTypeId::character;
   request.target_type = dt::CanonicalTypeId::decimal;
@@ -103,17 +95,30 @@ void TestSupportBundleRedactionAndVisibilityRefusal() {
   const auto result =
       dt::PublishDatatypeMetricsManagementSurface(AuthorizedRequest());
   Require(result.redaction_applied, "MDF-016 support bundle redaction flag missing");
-  const std::string bundle = BundleText(result);
-  Require(Contains(bundle, "namespace=sys.metrics.datatypes"),
-          "MDF-016 support bundle namespace missing");
-  Require(Contains(bundle, "principal_uuid=[redacted]"),
-          "MDF-016 principal UUID was not redacted");
-  Require(Contains(bundle, "protected_payload=[redacted]"),
-          "MDF-016 protected payload marker missing");
-  Require(!Contains(bundle, "RAW_PROTECTED_DATATYPE_PAYLOAD"),
-          "MDF-016 support bundle leaked raw protected payload");
-  Require(!Contains(bundle, "principal-secret-0001"),
-          "MDF-016 support bundle leaked principal UUID");
+  Require(result.ok && !result.support_bundle_records.empty(),
+          "MDF-016 binary support records missing");
+  for (const auto& record : result.support_bundle_records) {
+    Require(record.principal_redacted && record.principal_uuid.is_nil(),
+            "MDF-016 principal UUID was not redacted");
+    Require(record.protected_payload_redacted,
+            "MDF-016 protected payload redaction metadata missing");
+    const auto& bytes = record.metric.encoded_value;
+    Require(bytes.size() >= metrics::kMetricValueHeaderBytes,
+            "MDF-016 binary metric frame missing");
+    Require(!Contains(std::string(bytes.begin(), bytes.end()), "RAW_PROTECTED_DATATYPE_PAYLOAD"),
+            "MDF-016 support bundle leaked raw protected payload");
+  }
+  auto permitted = AuthorizedRequest();
+  permitted.allow_sensitive_labels = true;
+  const auto native = dt::PublishDatatypeMetricsManagementSurface(permitted);
+  Require(native.ok && !native.support_bundle_records.empty(),
+          "MDF-016 native support records missing");
+  for (const auto& record : native.support_bundle_records) {
+    Require(!record.principal_redacted && record.principal_uuid == permitted.principal_uuid,
+            "MDF-016 principal identity was not preserved as binary16");
+    Require(record.protected_payload_redacted,
+            "MDF-016 protected payload must remain omitted");
+  }
 
   auto unauthorized = AuthorizedRequest();
   unauthorized.metrics_read_authorized = false;

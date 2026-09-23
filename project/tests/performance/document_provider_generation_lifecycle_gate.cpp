@@ -1,3 +1,8 @@
+#include "database_lifecycle.hpp"
+#include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
+#include <cstdlib>
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -33,10 +38,13 @@ struct TempDatabase {
   std::filesystem::path path;
 
   explicit TempDatabase(const std::string& name) {
-    dir = std::filesystem::temp_directory_path() /
-          ("scratchbird_document_provider_generation_" + name + "_" +
-           api::GenerateCrudEngineUuid("database"));
-    std::filesystem::create_directories(dir);
+    auto pattern = (std::filesystem::temp_directory_path() /
+        ("scratchbird_document_provider_generation_" + name + "_XXXXXX")).string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    const auto* created = ::mkdtemp(writable.data());
+    Require(created != nullptr, "could not create isolated fixture directory");
+    dir = created;
     path = dir / "database.sbdb";
   }
 
@@ -85,10 +93,10 @@ bool EvidenceTextContains(const api::EngineApiResult& result,
                      result.evidence.end(),
                      [&](const auto& evidence) {
                        const std::string structured =
-                           evidence.evidence_kind + "=" + evidence.evidence_id;
+                           evidence.evidence_kind + "=" + scratchbird::tests::EvidenceTextFields(evidence.evidence_id);
                        return evidence.evidence_kind.find(value) !=
                                   std::string::npos ||
-                              evidence.evidence_id.find(value) !=
+                              scratchbird::tests::EvidenceTextFind(evidence.evidence_id, value) !=
                                   std::string::npos ||
                               structured.find(value) !=
                                   std::string::npos;
@@ -103,42 +111,61 @@ api::EngineTypedValue Value(std::string value) {
 }
 
 api::EngineRequestContext Context(const std::filesystem::path& path,
-                                  std::uint64_t tx,
-                                  std::string database_uuid = {},
-                                  std::string schema_uuid = {}) {
+                                  std::uint64_t request_ordinal,
+                                  api::EngineUuid database_uuid = {},
+                                  api::EngineUuid schema_uuid = {}) {
+  namespace db = scratchbird::storage::database;
+  namespace uuid = scratchbird::core::uuid;
+  using scratchbird::core::platform::UuidKind;
   api::EngineRequestContext context;
+  context.request_id = "document-generation-fixture-" + std::to_string(request_ordinal);
   context.database_path = path.string();
-  context.database_uuid.canonical =
-      database_uuid.empty() ? api::GenerateCrudEngineUuid("database")
-                            : std::move(database_uuid);
-  context.current_schema_uuid.canonical =
-      schema_uuid.empty() ? api::GenerateCrudEngineUuid("schema")
-                          : std::move(schema_uuid);
-  context.local_transaction_id = tx;
-  context.transaction_uuid.canonical = api::GenerateCrudEngineUuid("transaction");
+  context.database_uuid = database_uuid.is_nil()
+      ? api::GenerateCrudEngineUuid("database") : database_uuid;
+  context.current_schema_uuid = schema_uuid.is_nil()
+      ? api::GenerateCrudEngineUuid("schema") : schema_uuid;
+  if (!std::filesystem::exists(path)) {
+    db::DatabaseCreateConfig create;
+    create.path = context.database_path;
+    const auto database_id = uuid::MakeTypedUuid(UuidKind::database, context.database_uuid);
+    const auto filespace_id = uuid::MakeTypedUuid(
+        UuidKind::filespace, api::GenerateCrudEngineUuid("filespace"));
+    Require(database_id.ok() && filespace_id.ok(), "fixture database identity invalid");
+    create.database_uuid = database_id.value;
+    create.filespace_uuid = filespace_id.value;
+    create.page_size = 16384;
+    create.creation_unix_epoch_millis = 1790000000203;
+    create.allow_minimal_resource_bootstrap = true;
+    create.require_resource_seed_pack = false;
+    Require(db::CreateDatabaseFile(create).ok(), "fixture database creation failed");
+  }
   context.catalog_generation_id = 101;
   context.security_epoch = 102;
   context.resource_epoch = 103;
   context.cluster_authority_available = true;
   context.security_context_present = true;
+  context.principal_uuid = api::GenerateCrudEngineUuid("principal");
+  context.session_uuid = api::GenerateCrudEngineUuid("object");
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "read_committed";
+  begin.transaction_policy_profile.encoded_profiles = {
+      "fail_closed:true", "transaction_read_only:false", "transaction_read_mode:read_write"};
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok && begun.local_transaction_id != 0,
+          "document fixture engine transaction begin failed");
+  context.transaction_uuid = begun.transaction_uuid;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
   return context;
 }
 
-void SeedTransaction(const api::EngineRequestContext& context) {
-  std::ofstream crud(context.database_path, std::ios::binary | std::ios::trunc);
-  crud << "SBCRUD1\tTX_BEGIN\t" << context.local_transaction_id << '\t'
-       << context.transaction_uuid.canonical << '\n';
-  crud << "SBCRUD1\tTX_BEGIN\t" << (context.local_transaction_id + 1) << '\t'
-       << api::GenerateCrudEngineUuid("transaction") << '\n';
-  crud.flush();
-  Require(static_cast<bool>(crud), "could not seed transaction inventory");
-}
-
 void CommitTransaction(const api::EngineRequestContext& context) {
-  std::ofstream crud(context.database_path, std::ios::binary | std::ios::app);
-  crud << "SBCRUD1\tTX_COMMIT\t" << context.local_transaction_id << '\n';
-  crud.flush();
-  Require(static_cast<bool>(crud), "could not commit transaction inventory");
+  api::EngineCommitTransactionRequest commit;
+  commit.context = context;
+  Require(api::EngineCommitTransaction(commit).ok,
+          "document fixture engine transaction commit failed");
 }
 
 void InsertDocument(
@@ -146,7 +173,7 @@ void InsertDocument(
     const std::vector<std::pair<std::string, std::string>>& values) {
   api::EngineDocumentInsertRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = api::GenerateCrudEngineUuid("row");
+  request.target_object.uuid = api::GenerateCrudEngineUuid("row");
   for (const auto& [path, value] : values) {
     request.assignments.push_back({path, Value(value)});
   }
@@ -208,7 +235,7 @@ api::EngineDocumentPhysicalProof Proof(
   contract.provider_generation.catalog_epoch = context.catalog_generation_id;
   contract.provider_generation.generation_uuid = generation.generation_uuid;
   contract.provider_generation.provider_id = generation.provider_id;
-  contract.provider_generation.database_uuid = context.database_uuid.canonical;
+  contract.provider_generation.database_uuid = context.database_uuid;
   contract.provider_generation.collection_uuid = generation.collection_uuid;
   contract.provider_generation.publish_state = "published";
   contract.provider_generation.validation_state = "validated";
@@ -272,22 +299,20 @@ void CopyIfPresent(const std::filesystem::path& from,
 void ProveCloseReopenBackupRestoreAndProofRefusals() {
   TempDatabase database("persist_restore");
   auto writer = Context(database.path, 200);
-  SeedTransaction(writer);
   api::EngineDocumentProviderCleanup(writer, true);
-  SeedTransaction(writer);
 
   InsertDocument(writer, {{"tenant.id", "T1"}, {"status", "open"}});
   const auto generation = CurrentGeneration(writer);
   CommitTransaction(writer);
   Require(generation.database_identity == writer.database_path,
           "provider generation did not bind current database identity");
-  Require(generation.database_uuid == writer.database_uuid.canonical,
+  Require(generation.database_uuid == writer.database_uuid,
           "provider generation did not bind database UUID");
   Require(generation.provider_id == api::kDocumentPathPhysicalProviderId,
           "provider id was not persisted");
-  Require(generation.collection_uuid == writer.current_schema_uuid.canonical,
+  Require(generation.collection_uuid == writer.current_schema_uuid,
           "collection UUID was not persisted");
-  Require(generation.generation_id != 0 && !generation.generation_uuid.empty(),
+  Require(generation.generation_id != 0 && !generation.generation_uuid.is_nil(),
           "generation identity was not persisted");
   Require(generation.descriptor_epoch == writer.resource_epoch &&
               generation.security_epoch == writer.security_epoch &&
@@ -320,8 +345,8 @@ void ProveCloseReopenBackupRestoreAndProofRefusals() {
   CopyIfPresent(ArtifactPath(database.path), ArtifactPath(restored_path));
   auto restored = Context(restored_path,
                           250,
-                          writer.database_uuid.canonical,
-                          writer.current_schema_uuid.canonical);
+                          writer.database_uuid,
+                          writer.current_schema_uuid);
   const auto restored_generation = api::LoadNoSqlProviderGeneration(
       restored,
       api::EngineNoSqlProviderFamily::kDocument,
@@ -436,7 +461,7 @@ void ProveProviderAndGenerationRepairLifecycle() {
   const auto metadata = api::MakeDocumentProviderGenerationMetadata(
       context,
       api::kDocumentPathPhysicalProviderId,
-      context.current_schema_uuid.canonical,
+      context.current_schema_uuid,
       7);
   const auto published = api::PublishNoSqlProviderGeneration(context, metadata);
   Require(published.ok, "generation publish failed before repair tests");
@@ -482,7 +507,6 @@ void ProveProviderAndGenerationRepairLifecycle() {
 void ProveDropCleanupAndConcurrentLifecycle() {
   TempDatabase database("drop");
   auto context = Context(database.path, 400);
-  SeedTransaction(context);
   InsertDocument(context, {{"tenant.id", "T1"}, {"status", "active"}});
   const auto generation = CurrentGeneration(context);
 
@@ -504,7 +528,7 @@ void ProveDropCleanupAndConcurrentLifecycle() {
 
   TempDatabase concurrent_db("concurrent");
   auto concurrent = Context(concurrent_db.path, 500);
-  const auto collection_uuid = concurrent.current_schema_uuid.canonical;
+  const auto collection_uuid = concurrent.current_schema_uuid;
   std::vector<std::thread> threads;
   threads.emplace_back([&]() {
     for (std::uint64_t i = 1; i <= 12; ++i) {
@@ -549,13 +573,12 @@ void ProveDropCleanupAndConcurrentLifecycle() {
 void ProveNoProviderIndexParserOrLogFinalityAuthority() {
   TempDatabase database("authority");
   auto context = Context(database.path, 600);
-  SeedTransaction(context);
   InsertDocument(context, {{"tenant.id", "T1"}, {"status", "active"}});
   const auto generation = CurrentGeneration(context);
   const auto result = FindByTenant(context, Proof(context, generation));
   Require(result.ok, "authority evidence find failed");
   for (const auto& evidence : result.evidence) {
-    const std::string text = evidence.evidence_kind + "=" + evidence.evidence_id;
+    const std::string text = evidence.evidence_kind + "=" + scratchbird::tests::EvidenceTextFields(evidence.evidence_id);
     for (const auto* forbidden :
          {"provider_finality_authority=true",
           "provider_visibility_authority=true",

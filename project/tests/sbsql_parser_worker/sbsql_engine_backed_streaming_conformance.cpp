@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
@@ -131,7 +132,7 @@ void VerifyEngineBackedResult(sbsql::SbsqlTestWireSession* parser,
   if (!execute.accepted) PrintMessages(execute.messages);
   Require(execute.accepted && execute.server_operation_id == fixture.operation_id,
           "engine-backed canonical result execute was rejected");
-  Require(execute.server_cursor_uuid.empty(),
+  Require(execute.server_cursor_uuid.is_nil(),
           "non-streaming engine result unexpectedly returned a cursor UUID");
   Require(Contains(execute.server_result_payload, fixture.expected_field),
           "engine-backed result did not expose the engine payload");
@@ -146,7 +147,7 @@ void VerifyEngineBackedCursor(sbsql::SbsqlTestWireSession* parser) {
   if (!execute.accepted) PrintMessages(execute.messages);
   Require(execute.accepted && execute.server_operation_id == "query.execute",
           "engine-backed canonical query cursor execute was rejected");
-  Require(!execute.server_cursor_uuid.empty(),
+  Require(!execute.server_cursor_uuid.is_nil(),
           "engine-backed query did not return a cursor UUID");
 
   const auto fetch = parser->FetchCursorOnRoute(execute.server_cursor_uuid, 1);
@@ -169,7 +170,7 @@ int main() {
 
   auto fixture = CreateFixtureDatabase();
   sbsql::ParserConfig config;
-  config.parser_uuid = "019f08a0-5200-7000-8000-000000000001";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f08a0-5200-7000-8000-000000000001");
   config.probe_mode = true;
   config.embedded_engine_direct = true;
   config.allow_uncredentialed_fixture_database = true;

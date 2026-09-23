@@ -103,28 +103,18 @@ bool NonzeroBytes(const std::array<std::uint8_t, N>& value) {
                      [](std::uint8_t byte) { return byte != 0; });
 }
 
-bool CanonicalUuidBytes(std::string_view text,
-                        codec::PlanImportRowsUuidV1* out) {
-  if (out == nullptr || text.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
-      scratchbird::core::uuid::UuidToString(parsed.value) != text) {
-    return false;
-  }
-  *out = parsed.value.bytes;
+bool CanonicalUuidBytes(const EngineUuid& value, codec::PlanImportRowsUuidV1* out) {
+  if (!out || !core::uuid::IsEngineIdentityUuid(value)) return false;
+  *out = value.bytes;
   return true;
 }
 
-bool UuidTextEquals(std::string_view text,
-                    const codec::PlanImportRowsUuidV1& expected) {
-  codec::PlanImportRowsUuidV1 actual{};
-  return CanonicalUuidBytes(text, &actual) && actual == expected;
+bool UuidEquals(const EngineUuid& value, const codec::PlanImportRowsUuidV1& expected) {
+  return core::uuid::IsEngineIdentityUuid(value) && value.bytes == expected;
 }
 
-std::string UuidText(const codec::PlanImportRowsUuidV1& value) {
-  scratchbird::core::platform::Uuid uuid;
-  uuid.bytes = value;
-  return scratchbird::core::uuid::UuidToString(uuid);
+EngineUuid NativeUuid(const codec::PlanImportRowsUuidV1& value) {
+  return EngineUuid{value};
 }
 
 std::string Hex(const codec::PlanImportRowsSha256V1& value) {
@@ -235,7 +225,7 @@ bool HasInsertAuthorization(
   }
   const auto decision = EvaluateMaterializedAuthorization(
       context, context.authorization_context, "INSERT",
-      UuidText(target_table_uuid));
+      NativeUuid(target_table_uuid));
   return decision.authorized;
 }
 
@@ -248,7 +238,7 @@ bool ActiveTransactionIdentity(const EngineRequestContext& context) {
       context.transaction_uuid.is_nil()) {
     return false;
   }
-  const auto transaction_uuid = scratchbird::core::uuid::ParseTypedUuid(
+  const auto transaction_uuid = scratchbird::core::uuid::MakeTypedUuid(
       UuidKind::transaction, context.transaction_uuid);
   if (!transaction_uuid.ok()) return false;
   const auto loaded = scratchbird::storage::database::
@@ -304,7 +294,7 @@ struct LiveAuthorityResolutionV1 {
 LiveAuthorityResolutionV1 ResolveLiveImportRowsAuthority(
     const EngineRequestContext& context,
     std::uint64_t structural_occurrence_id,
-    std::string_view target_table_uuid,
+    const EngineUuid& target_table_uuid,
     std::uint64_t expected_executor_availability_generation) {
   LiveAuthorityResolutionV1 result;
   auto& live = result.live;
@@ -353,10 +343,10 @@ LiveAuthorityResolutionV1 ResolveLiveImportRowsAuthority(
   }
 
   const auto relation = TransactionalRelationStore(context).LoadRelationDescriptor(
-      std::string(target_table_uuid));
+      target_table_uuid);
   if (!relation.ok ||
       ValidateMgaRelationStorageDescriptor(relation.descriptor).error ||
-      !UuidTextEquals(relation.descriptor.relation_uuid,
+      !UuidEquals(relation.descriptor.relation_uuid,
                       live.target_table_uuid) ||
       !CanonicalUuidBytes(relation.descriptor.descriptor_uuid,
                           &live.target_relation_descriptor_uuid) ||
@@ -725,7 +715,7 @@ PublishEngineBoundImportRowsPlanDescriptorV1(
   }
   const auto derived = ResolveLiveImportRowsAuthority(
       request.context, request.structural_occurrence_id,
-      UuidText(request.row.carriers.descriptor.target_table_uuid),
+      NativeUuid(request.row.carriers.descriptor.target_table_uuid),
       request.live_authority.executor_availability_generation);
   if (!derived.ok ||
       !LiveAuthorityEqual(request.live_authority, derived.live)) {
@@ -1178,7 +1168,7 @@ EnginePlanImportRowsResult EnginePlanImportRows(
 
   auto derived = ResolveLiveImportRowsAuthority(
       request.context, structural_occurrence_id,
-      UuidText(carriers.descriptor.target_table_uuid),
+      NativeUuid(carriers.descriptor.target_table_uuid),
       carriers.descriptor.executor_availability_generation);
   if (!derived.ok) {
     return ImportFailure(kAuthorityMismatch,
@@ -1307,21 +1297,18 @@ EnginePlanImportRowsResult EnginePlanImportRows(
   result.mapped_column_count =
       static_cast<EngineApiU64>(carriers.mapping.mappings.size());
   result.validated_request_descriptor_uuid =
-      UuidText(carriers.descriptor.descriptor_uuid);
+      NativeUuid(carriers.descriptor.descriptor_uuid);
   result.validated_request_descriptor_generation =
       carriers.descriptor.descriptor_generation;
   result.validated_request_projection_sha256 =
       carriers.descriptor.descriptor_evidence_sha256;
   result.accepted_executor_evidence = std::move(accepted_evidence);
   result.transaction_uuid =
-      UuidText(carriers.descriptor.transaction_uuid);
+      NativeUuid(carriers.descriptor.transaction_uuid);
   result.local_transaction_id = carriers.descriptor.local_transaction_id;
   result.evidence.push_back(
       {"accepted_executor_evidence",
-       UuidText(result.accepted_executor_evidence.evidence_uuid) + "@" +
-           std::to_string(result.accepted_executor_evidence.evidence_generation) +
-           "#sha256:" +
-           Hex(result.accepted_executor_evidence.evidence_sha256)});
+       NativeUuid(result.accepted_executor_evidence.evidence_uuid)});
   return result;
 }
 

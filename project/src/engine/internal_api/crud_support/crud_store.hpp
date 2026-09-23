@@ -295,9 +295,9 @@ std::vector<std::pair<std::string, std::string>> RowValuePairs(const EngineRowVa
 std::size_t EncodedValueBytes(const std::vector<std::pair<std::string, std::string>>& values);
 bool CrudValueIsLargeValueLocator(const std::string& value);
 EngineApiDiagnostic PersistCrudLargeValuesForRow(const EngineRequestContext& context,
-                                                 const std::string& table_uuid,
-                                                 const std::string& row_uuid,
-                                                 const std::string& version_uuid,
+                                                 const EngineUuid& table_uuid,
+                                                 const EngineUuid& row_uuid,
+                                                 const EngineUuid& version_uuid,
                                                  bool force_large_value,
                                                  std::vector<std::pair<std::string, std::string>>* values,
                                                  std::vector<EngineEvidenceReference>* evidence);
@@ -364,11 +364,11 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
                                                                         std::uint64_t limit,
                                                                         std::string* index_evidence_id);
 std::string MakeCrudRowVersionEvent(std::uint64_t creator_tx,
-                                    const std::string& table_uuid,
-                                    const std::string& row_uuid,
-                                    const std::string& version_uuid,
+                                    const EngineUuid& table_uuid,
+                                    const EngineUuid& row_uuid,
+                                    const EngineUuid& version_uuid,
                                     bool deleted,
-                                    const std::string& previous_version_uuid,
+                                    const EngineUuid& previous_version_uuid,
                                     std::uint64_t previous_sequence,
                                     const std::vector<std::pair<std::string, std::string>>& values);
 std::string CrudIndexEvidenceId(const CrudIndexRecord& index,
@@ -376,25 +376,25 @@ std::string CrudIndexEvidenceId(const CrudIndexRecord& index,
                                 std::size_t candidate_count,
                                 std::size_t visible_count);
 std::string MakeCrudIndexCreateEvent(std::uint64_t creator_tx,
-                                     const std::string& index_uuid,
-                                     const std::string& table_uuid,
+                                     const EngineUuid& index_uuid,
+                                     const EngineUuid& table_uuid,
                                      const std::string& column_name,
                                      const std::string& profile,
                                      const std::string& default_name);
 std::string MakeCrudIndexCreateEventV2(std::uint64_t creator_tx, const CrudIndexRecord& index);
 std::string MakeCrudIndexEntryEvent(std::uint64_t creator_tx,
-                                    const std::string& index_uuid,
-                                    const std::string& table_uuid,
+                                    const EngineUuid& index_uuid,
+                                    const EngineUuid& table_uuid,
                                     const std::string& column_name,
                                     const std::string& key_value,
-                                    const std::string& row_uuid,
-                                    const std::string& version_uuid);
+                                    const EngineUuid& row_uuid,
+                                    const EngineUuid& version_uuid);
 std::string MakeCrudIndexEntryEventV2(std::uint64_t creator_tx,
                                       const CrudIndexRecord& index,
                                       const std::string& key_value,
                                       const std::string& payload_value,
-                                      const std::string& row_uuid,
-                                      const std::string& version_uuid);
+                                      const EngineUuid& row_uuid,
+                                      const EngineUuid& version_uuid);
 EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const RelationReadSnapshot& state,
                                                     const EngineUuid& table_uuid,
                                                     const EngineUuid& row_uuid,
@@ -415,7 +415,12 @@ EngineApiDiagnostic ApplyCrudTemporaryOnCommitActions(const EngineRequestContext
                                                       std::uint64_t local_transaction_id,
                                                       std::uint64_t* deleted_row_count);
 EngineResultShape CrudRowsToResultShape(const std::vector<CrudRowVersionRecord>& rows);
-void AddEmbeddedTrustModeEvidence(const EngineRequestContext& context, EngineApiResult* result);
+inline void AddEmbeddedTrustModeEvidence(const EngineRequestContext& context, EngineApiResult* result) {
+  if (context.trust_mode == EngineTrustMode::embedded_in_process) {
+    result->embedded_trust_mode_observed = true;
+    result->diagnostics.push_back(MakeEmbeddedTrustModeDiagnostic(result->operation_id));
+  }
+}
 
 template <typename TResult>
 TResult MakeCrudSuccessResult(const EngineRequestContext& context, std::string operation_id) {

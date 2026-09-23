@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -112,7 +113,7 @@ std::array<std::uint8_t, 16> InstallCopyStreamCursor(
   cursor.row_descriptor_uuid = sbps::MakeUuidV7Bytes();
   cursor.snapshot_uuid = sbps::MakeUuidV7Bytes();
   cursor.statement_context_statement_uuid =
-      scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
+      scratchbird::core::platform::Uuid{sbps::MakeUuidV7Bytes()};
 
   scratchbird::server::ServerStatementContextRecord statement_context;
   statement_context.session_uuid = route.session_uuid;

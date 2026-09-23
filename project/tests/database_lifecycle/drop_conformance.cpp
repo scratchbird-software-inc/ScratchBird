@@ -6,6 +6,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../agents/agent_binary_identity_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
@@ -103,8 +108,8 @@ Fixture CreateDatabase(const std::filesystem::path& path, std::uint64_t now_mill
 
   Fixture fixture;
   fixture.path = path;
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.filespace_uuid = uuid::UuidToString(create.filespace_uuid.value);
+  fixture.database_uuid = BinaryFixtureIdentity(create.database_uuid.value);
+  fixture.filespace_uuid = BinaryFixtureIdentity(create.filespace_uuid.value);
   fixture.page_size = created.state.header.page_size;
   return fixture;
 }
@@ -132,8 +137,8 @@ bool HasDropEvidenceFlag(const db::StartupStateRecord& startup) {
 db::DatabaseDropConfig DropConfig(const Fixture& fixture, std::string_view mode = "logical") {
   db::DatabaseDropConfig config;
   config.path = fixture.path.string();
-  config.operation_uuid = "dblc012-drop-operation";
-  config.actor_uuid = "dblc012-actor";
+  config.operation_uuid = scratchbird::tests::FixtureUuid(1259, 1);
+  config.actor_uuid = scratchbird::tests::FixtureUuid(1259, 2);
   config.drop_mode = std::string(mode);
   config.expected_database_uuid = fixture.database_uuid;
   config.expected_filespace_uuid = fixture.filespace_uuid;
@@ -151,9 +156,9 @@ api::EngineRequestContext EngineContext(const Fixture& fixture) {
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "dblc012-engine-drop";
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = "019e1200-a100-7000-8000-000000000101";
-  context.session_uuid.canonical = "019e1200-a100-7000-8000-000000000102";
+  context.database_uuid = NativeFixtureIdentity(fixture.database_uuid);
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e1200-a100-7000-8000-000000000101");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e1200-a100-7000-8000-000000000102");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -265,7 +270,7 @@ HostedEngineState EngineState(const Fixture& fixture) {
   HostedDatabaseSnapshot database;
   database.state = HostedDatabaseState::kOpen;
   database.database_path = fixture.path.string();
-  database.database_uuid = fixture.database_uuid;
+  database.database_uuid = NativeFixtureIdentity(fixture.database_uuid);
   database.database_open = true;
   database.write_admission_fenced = false;
   state.databases.push_back(std::move(database));
@@ -290,7 +295,7 @@ std::array<std::uint8_t, 16> AddSession(ServerSessionRegistry* registry,
   session.principal_claim = std::string(principal);
   session.embedded_in_process = true;
   session.database_path = fixture.path.string();
-  session.database_uuid = fixture.database_uuid;
+  session.database_uuid = NativeFixtureIdentity(fixture.database_uuid);
   session.effective_user_uuid = sbps::MakeUuidV7Bytes();
   session.local_transaction_id = local_transaction_id;
   if (principal == "admin") {

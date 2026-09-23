@@ -20,6 +20,11 @@
 
 namespace scratchbird::engine::internal_api {
 namespace {
+std::string LifecycleIdentityBytes(const EngineUuid& identity) {
+  if (identity.is_nil()) return {};
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
+}
+
 
 bool Contains(const std::string& value, const std::string& token) { return value.find(token) != std::string::npos; }
 bool StartsWith(const std::string& value, const std::string& prefix) { return value.rfind(prefix, 0) == 0; }
@@ -139,7 +144,8 @@ scratchbird::storage::database::DatabaseLifecycleOperationConfig LifecycleOperat
   config.path = request.context.database_path;
   config.cluster_authority_available = request.context.cluster_authority_available;
   config.decryption_available = OptionBool(request, "decryption_available:", false);
-  config.operation_uuid = request.context.request_id;
+  // Retain the engine-issued statement identity; request_id is a label.
+  config.operation_uuid = request.context.statement_uuid;
   config.actor_uuid = request.context.principal_uuid;
   config.write_evidence = write_evidence;
   return config;
@@ -151,12 +157,13 @@ scratchbird::storage::database::DatabaseLifecycleRepairConfig LifecycleRepairCon
   config.path = request.context.database_path;
   config.cluster_authority_available = request.context.cluster_authority_available;
   config.decryption_available = OptionBool(request, "decryption_available:", false);
-  config.operation_uuid = request.context.request_id;
+  // Retain the engine-issued statement identity; request_id is a label.
+  config.operation_uuid = request.context.statement_uuid;
   config.actor_uuid = request.context.principal_uuid;
   config.repair_plan_id = OptionValue(request, "repair_plan_id:");
   if (config.repair_plan_id.empty()) { config.repair_plan_id = OptionValue(request, "repair_plan:"); }
   config.expected_database_uuid = OptionValue(request, "expected_database_uuid:");
-  if (config.expected_database_uuid.empty()) { config.expected_database_uuid = request.context.database_uuid; }
+  if (config.expected_database_uuid.empty()) { config.expected_database_uuid = LifecycleIdentityBytes(request.context.database_uuid); }
   config.expected_filespace_uuid = OptionValue(request, "expected_filespace_uuid:");
   config.repair_admission_proven = OptionBool(request, "repair_admission_proven:", false) ||
                                    OptionBool(request, "restricted_or_maintenance_admission:", false);
@@ -174,13 +181,14 @@ scratchbird::storage::database::DatabaseDropConfig LifecycleDropConfig(
   config.path = request.context.database_path;
   config.cluster_authority_available = request.context.cluster_authority_available;
   config.decryption_available = OptionBool(request, "decryption_available:", false);
-  config.operation_uuid = request.context.request_id;
+  // Retain the engine-issued statement identity; request_id is a label.
+  config.operation_uuid = request.context.statement_uuid;
   config.actor_uuid = request.context.principal_uuid;
   config.drop_mode = OptionValue(request, "drop_mode:");
   if (config.drop_mode.empty()) config.drop_mode = "logical";
   config.expected_database_uuid = OptionValue(request, "expected_database_uuid:");
   if (config.expected_database_uuid.empty() && OptionValue(request, "database_path:").empty()) {
-    config.expected_database_uuid = request.context.database_uuid;
+    config.expected_database_uuid = LifecycleIdentityBytes(request.context.database_uuid);
   }
   config.expected_filespace_uuid = OptionValue(request, "expected_filespace_uuid:");
   config.drop_safety_preconditions = OptionBool(request, "drop_safety_preconditions:", false);
@@ -414,21 +422,17 @@ EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleReq
         request, operation, created, "DATABASE.CREATE_FAILED");
   }
 
-  const auto database_uuid_text = scratchbird::core::uuid::UuidToString(
-      created.state.database_uuid.value);
-  const auto filespace_uuid_text = scratchbird::core::uuid::UuidToString(
-      created.state.filespace_uuid.value);
   auto result = MakeApiBehaviorSuccess<EngineCreateLifecycleResult>(
       request.context, operation);
-  result.primary_object.uuid = database_uuid_text;
+  result.primary_object.uuid = created.state.database_uuid.value;
   result.primary_object.object_kind = "database";
   AddApiBehaviorRow(&result,
-                    {{"operation_uuid", request.context.request_id},
-                     {"database_uuid", database_uuid_text},
-                     {"filespace_uuid", filespace_uuid_text},
+                    {{"operation_uuid", request.context.statement_uuid},
+                     {"database_uuid", created.state.database_uuid.value},
+                     {"filespace_uuid", created.state.filespace_uuid.value},
                      {"lifecycle_state", "ready"},
                      {"publication_barrier", "durable"},
-                     {"creation_evidence_uuid", request.context.request_id}});
+                     {"creation_request_id", request.context.request_id}});
   AddApiBehaviorEvidence(&result, "engine_lifecycle", "database_created");
   AddApiBehaviorEvidence(&result, "identity_authority", "engine");
   AddApiBehaviorEvidence(&result, "mga_lifecycle_evidence", "tx1_committed");

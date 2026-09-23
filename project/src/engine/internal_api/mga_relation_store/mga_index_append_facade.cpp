@@ -83,9 +83,9 @@ EngineApiDiagnostic OkDiagnostic() {
 
 EngineApiDiagnostic AppendMgaIndexEntriesForRow(const EngineRequestContext& context,
                                                 const RelationReadSnapshot& state,
-                                                const std::string& table_uuid,
-                                                const std::string& row_uuid,
-                                                const std::string& version_uuid,
+                                                const EngineUuid& table_uuid,
+                                                const EngineUuid& row_uuid,
+                                                const EngineUuid& version_uuid,
                                                 const std::vector<std::pair<std::string, std::string>>& values) {
   return AppendMgaIndexEntriesForRows(context,
                                       state,
@@ -95,7 +95,7 @@ EngineApiDiagnostic AppendMgaIndexEntriesForRow(const EngineRequestContext& cont
 
 EngineApiDiagnostic AppendMgaIndexEntriesForRows(const EngineRequestContext& context,
                                                  const RelationReadSnapshot& state,
-                                                 const std::string& table_uuid,
+                                                 const EngineUuid& table_uuid,
                                                  const std::vector<MgaIndexEntryRowInput>& rows) {
   if (rows.empty()) {
     return OkDiagnostic();
@@ -109,7 +109,7 @@ EngineApiDiagnostic AppendMgaIndexEntriesForRows(const EngineRequestContext& con
 
 EngineApiDiagnostic AppendMgaIndexEntriesForRowsWithIndexes(const EngineRequestContext& context,
                                                             const std::vector<CrudIndexRecord>& indexes,
-                                                            const std::string& table_uuid,
+                                                            const EngineUuid& table_uuid,
                                                             const std::vector<MgaIndexEntryRowInput>& rows) {
   if (rows.empty() || indexes.empty()) {
     return OkDiagnostic();
@@ -150,8 +150,8 @@ EngineApiDiagnostic AppendMgaExactIndexEntryBatches(
 
 EngineApiDiagnostic AppendMgaIndexEntriesForIndex(const EngineRequestContext& context,
                                                   const CrudIndexRecord& index,
-                                                  const std::string& row_uuid,
-                                                  const std::string& version_uuid,
+                                                  const EngineUuid& row_uuid,
+                                                  const EngineUuid& version_uuid,
                                                   const std::vector<std::pair<std::string, std::string>>& values) {
   MgaIndexEntryAppendBatch batch;
   batch.index = index;

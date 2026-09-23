@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "dml/dml_operation_path_proof.hpp"
 
 #include <algorithm>
@@ -35,7 +37,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view id) {
   return std::any_of(evidence.begin(), evidence.end(), [&](const auto& item) {
     return item.evidence_kind == kind &&
-           item.evidence_id.find(id) != std::string::npos;
+           scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos;
   });
 }
 
@@ -75,8 +77,8 @@ api::DmlTargetAccessPlan AcceptedAccessPlan(api::DmlTargetAccessKind kind) {
   plan.access_kind = kind;
   plan.physical_access_kind = "scalar_btree_lookup";
   plan.executor_capability = "executor.index_point_lookup";
-  plan.relation_uuid = "018f0000-0000-7000-8000-000000000001";
-  plan.index_uuid = "018f0000-0000-7000-8000-000000000002";
+  plan.relation_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000000001");
+  plan.index_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000000002");
   plan.estimated_rows = kind == api::DmlTargetAccessKind::unique_index_lookup ? 1 : 8;
   plan.evidence.push_back("mga_finality_authority=engine_transaction_inventory");
   return plan;
@@ -88,9 +90,9 @@ api::DmlRowLocatorStreamResult AcceptedLocator(api::DmlRowLocatorStreamSource so
   result.source = source;
   result.runtime_route_capability = true;
   result.benchmark_clean = true;
-  result.locators.push_back({"018f0000-0000-7000-8000-000000000010",
-                             "018f0000-0000-7000-8000-000000000011",
-                             "018f0000-0000-7000-8000-000000000002",
+  result.locators.push_back({scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000000010"),
+                             scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000000011"),
+                             scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000000002"),
                              1,
                              0,
                              true,

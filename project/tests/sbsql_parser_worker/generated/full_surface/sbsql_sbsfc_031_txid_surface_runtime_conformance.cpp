@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -67,9 +68,9 @@ SblrResult Run(const FunctionRegistry& registry,
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
-  request.context.sblr_context.database_uuid = "SBSFC-031-txid-runtime-db";
+  request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuid(1156, 25);
   if (transaction_context_present) {
-    request.context.sblr_context.transaction_uuid = "SBSFC-031-txid-runtime-tx";
+    request.context.sblr_context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 26);
     request.context.sblr_context.transaction_context_present = true;
     request.context.sblr_context.local_transaction_id = kCurrentTxid;
     request.context.sblr_context.snapshot_visible_through_local_transaction_id =
@@ -143,7 +144,7 @@ api::EngineRequestContext EngineContext(const std::string& database_path) {
   context.security_context_present = true;
   context.local_transaction_id = kCurrentTxid;
   context.snapshot_visible_through_local_transaction_id = kSnapshotVisibleThrough;
-  context.transaction_uuid.canonical = "SBSFC-031-txid-runtime-tx";
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 26);
   context.transaction_isolation_level = "read_committed";
   return context;
 }

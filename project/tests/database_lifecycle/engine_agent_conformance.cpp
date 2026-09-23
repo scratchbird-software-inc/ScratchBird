@@ -257,13 +257,13 @@ void WriteAuthStore(const std::filesystem::path& database_path,
       kVerifier,
       bootstrap.local_transaction_id,
       "DBLC-013H",
-      bootstrap.transaction_uuid.canonical);
+      bootstrap.transaction_uuid);
   for (const std::string_view right : {"CONNECT", "OBS_RUNTIME_ALL"}) {
     scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
         database_path, database_uuid, kAlicePrincipalUuid, database_uuid,
         "database", right, bootstrap.local_transaction_id,
         std::string("DBLC-013H:") + std::string(right),
-        bootstrap.transaction_uuid.canonical);
+        bootstrap.transaction_uuid);
   }
   scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
       bootstrap);

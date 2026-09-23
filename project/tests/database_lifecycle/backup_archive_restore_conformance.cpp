@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -147,8 +148,8 @@ engine_api::EngineRequestContext Context(const std::filesystem::path& database_p
   engine_api::EngineRequestContext context;
   context.trust_mode = engine_api::EngineTrustMode::server_isolated;
   context.database_path = database_path.string();
-  context.database_uuid.canonical = std::string(kDatabaseUuid);
-  context.principal_uuid.canonical = std::string(kAdminPrincipalUuid);
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e0f62-0000-7000-8000-000000000013");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e0f62-0001-7000-8000-000000000013");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;

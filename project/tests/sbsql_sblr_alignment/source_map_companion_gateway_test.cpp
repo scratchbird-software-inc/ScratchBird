@@ -16,16 +16,15 @@ unsigned checks=0, failures=0;
 void Check(bool condition,const char* message) {
   ++checks;if(!condition){++failures;if(failures<20)std::cerr<<message<<'\n';}
 }
-s::SblrOperationEnvelope Frame(bool begin,const std::string& package) {
+s::SblrOperationEnvelope Frame(bool begin,const scratchbird::core::platform::Uuid& package) {
   auto frame=fixture::BuildCanonicalEngineSblrEnvelopeForTest(
       begin?"engine.op.package_begin":"engine.op.package_end",
       begin?"SBLR_PACKAGE_BEGIN":"SBLR_PACKAGE_END","source_map.gateway");
   frame.result_shape="void";
-  const auto id=scratchbird::core::uuid::ParseUuid(package);
   s::SblrOperand operand;operand.ordinal=1;
   operand.type=begin?"package.header":"package.footer";operand.name="package_descriptor";
   operand.value_kind=s::SblrValueKind::descriptor_ref;
-  operand.value_body.assign(id.value.bytes.begin(),id.value.bytes.end());
+  operand.value_body.assign(package.bytes.begin(),package.bytes.end());
   frame.operands={operand};return frame;
 }
 s::SblrOperationEnvelope SourceMap() {

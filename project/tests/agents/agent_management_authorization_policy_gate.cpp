@@ -1,3 +1,5 @@
+#include "../support/engine_evidence_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -46,21 +48,25 @@ platform::u64 NowMillis() {
           std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
-std::string MakeUuidText(platform::UuidKind kind, platform::u64 salt) {
+platform::Uuid MakeIdentity(platform::UuidKind kind, platform::u64 salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, NowMillis() + salt);
   Require(generated.ok(), "PFAR-014 UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
+}
+
+std::string IdentityBytes(const platform::Uuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string filespace_uuid;
-  std::string transaction_uuid;
-  std::string principal_uuid;
-  std::string agent_uuid;
-  std::string policy_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid filespace_uuid;
+  platform::Uuid transaction_uuid;
+  platform::Uuid principal_uuid;
+  platform::Uuid agent_uuid;
+  platform::Uuid policy_uuid;
 
   ~Fixture() {
     std::error_code ignored;
@@ -74,12 +80,12 @@ Fixture MakeFixture() {
                 ("scratchbird_pfar014_" + std::to_string(NowMillis()));
   std::filesystem::create_directories(fixture.dir);
   fixture.database_path = fixture.dir / "pfar014.sbdb";
-  fixture.database_uuid = MakeUuidText(platform::UuidKind::database, 14);
-  fixture.filespace_uuid = MakeUuidText(platform::UuidKind::filespace, 15);
-  fixture.transaction_uuid = MakeUuidText(platform::UuidKind::transaction, 16);
-  fixture.principal_uuid = MakeUuidText(platform::UuidKind::principal, 17);
-  fixture.agent_uuid = MakeUuidText(platform::UuidKind::object, 18);
-  fixture.policy_uuid = MakeUuidText(platform::UuidKind::object, 19);
+  fixture.database_uuid = MakeIdentity(platform::UuidKind::database, 14);
+  fixture.filespace_uuid = MakeIdentity(platform::UuidKind::filespace, 15);
+  fixture.transaction_uuid = MakeIdentity(platform::UuidKind::transaction, 16);
+  fixture.principal_uuid = MakeIdentity(platform::UuidKind::principal, 17);
+  fixture.agent_uuid = MakeIdentity(platform::UuidKind::object, 18);
+  fixture.policy_uuid = MakeIdentity(platform::UuidKind::object, 19);
   return fixture;
 }
 
@@ -88,12 +94,12 @@ api::EngineRequestContext Context(const Fixture& fixture,
   api::EngineRequestContext context;
   context.request_id = "pfar-014-management-authorization";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.cluster_uuid.canonical = MakeUuidText(platform::UuidKind::object, 20);
-  context.node_uuid.canonical = MakeUuidText(platform::UuidKind::object, 21);
-  context.principal_uuid.canonical = fixture.principal_uuid;
-  context.session_uuid.canonical = "session-pfar-014";
-  context.transaction_uuid.canonical = fixture.transaction_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.cluster_uuid = MakeIdentity(platform::UuidKind::object, 20);
+  context.node_uuid = MakeIdentity(platform::UuidKind::object, 21);
+  context.principal_uuid = fixture.principal_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 501);
+  context.transaction_uuid = fixture.transaction_uuid;
   context.local_transaction_id = 14014;
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
@@ -137,8 +143,8 @@ api::EngineRequestContext ProductionContext(
   std::uint64_t index = 0;
   auto add_grant = [&](std::string_view right, bool deny) {
     api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid.canonical =
-        "pfar-014-production-grant-" + std::to_string(index++);
+    grant.grant_uuid =
+        scratchbird::tests::FixtureUuid(1603, ++index);
     grant.subject_uuid = context.principal_uuid;
     grant.subject_kind = "principal";
     grant.right = std::string(right);
@@ -153,7 +159,7 @@ api::EngineRequestContext ProductionContext(
 
 api::EngineObjectReference FilespaceTarget(const Fixture& fixture) {
   api::EngineObjectReference target;
-  target.uuid.canonical = fixture.filespace_uuid;
+  target.uuid = fixture.filespace_uuid;
   target.object_kind = "filespace";
   return target;
 }
@@ -177,7 +183,7 @@ void AddObservedMetricSnapshotEvidence(api::EngineAgentActionHookRequest* reques
   request->option_envelopes.push_back("agent_metric_snapshot_protected_material_present:false");
   request->option_envelopes.push_back("agent_metric_snapshot_provenance_record:pfar014:provenance:" +
                                       std::string(digest_suffix));
-  request->option_envelopes.push_back("agent_metric_snapshot_scope_uuid:" + fixture.database_uuid);
+  request->option_envelopes.push_back("agent_metric_snapshot_scope_uuid:" + IdentityBytes(fixture.database_uuid));
   request->option_envelopes.push_back("agent_metric_snapshot_digest:sha256:pfar014:" +
                                       std::string(digest_suffix));
   request->option_envelopes.push_back("agent_metric_snapshot_schema_digest:sha256:pfar014:schema:" +
@@ -185,7 +191,7 @@ void AddObservedMetricSnapshotEvidence(api::EngineAgentActionHookRequest* reques
   request->option_envelopes.push_back("agent_metric_snapshot_id:pfar014:" +
                                       std::string(digest_suffix));
   request->option_envelopes.push_back("agent_metric_snapshot_evidence_uuid:" +
-                                      MakeUuidText(platform::UuidKind::object, 190));
+                                      IdentityBytes(MakeIdentity(platform::UuidKind::object, 190)));
 }
 
 bool HasDiagnostic(const api::EngineApiResult& result, std::string_view code) {
@@ -200,7 +206,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) {
       return true;
     }
   }
@@ -254,8 +260,8 @@ api::EngineRequestPagePreallocationRequest PageHookRequest(const Fixture& fixtur
   request.context = Context(fixture, {"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL"});
   request.agent_type = "page_allocation_manager";
   request.action_class = "page_preallocation_request";
-  request.agent_uuid.canonical = fixture.agent_uuid;
-  request.policy_snapshot_uuid.canonical = fixture.policy_uuid;
+  request.agent_uuid = fixture.agent_uuid;
+  request.policy_snapshot_uuid = fixture.policy_uuid;
   request.target_filespace = FilespaceTarget(fixture);
   request.page_family = "data";
   request.page_type = "relation";
@@ -283,9 +289,9 @@ sblr::SblrDispatchResult DispatchClusterAgentList(const Fixture& fixture,
           "cluster agent list canonical registry row missing");
   request.envelope.opcode_code = registry->code;
   request.envelope.parser_package_uuid =
-      "019f0914-0000-7000-8000-000000000104";
+      scratchbird::tests::FixtureUuidLiteral("019f0914-0000-7000-8000-000000000104");
   request.envelope.registry_snapshot_uuid =
-      "019f0914-0000-7000-8000-000000000106";
+      scratchbird::tests::FixtureUuidLiteral("019f0914-0000-7000-8000-000000000106");
   request.envelope.requires_security_context = true;
   request.envelope.requires_cluster_authority = true;
   request.envelope.result_shape = "cluster.provider.stub.v1";
@@ -503,13 +509,13 @@ void TestHookRequiresStrictObservedMetricSnapshot(const Fixture& fixture) {
   untrusted.option_envelopes.push_back("agent_metric_snapshot_protected_material_present:false");
   untrusted.option_envelopes.push_back("agent_metric_snapshot_provenance_record:pfar014:provenance:untrusted");
   untrusted.option_envelopes.push_back("agent_metric_snapshot_scope_uuid:" +
-                                       fixture.database_uuid);
+                                       IdentityBytes(fixture.database_uuid));
   untrusted.option_envelopes.push_back("agent_metric_snapshot_digest:sha256:pfar014:untrusted");
   untrusted.option_envelopes.push_back(
       "agent_metric_snapshot_schema_digest:sha256:pfar014:schema:untrusted");
   untrusted.option_envelopes.push_back("agent_metric_snapshot_id:pfar014:untrusted");
   untrusted.option_envelopes.push_back("agent_metric_snapshot_evidence_uuid:" +
-                                       MakeUuidText(platform::UuidKind::object, 191));
+                                       IdentityBytes(MakeIdentity(platform::UuidKind::object, 191)));
   const auto refused = api::EngineRequestPagePreallocation(untrusted);
   Require(!refused.ok, "page hook accepted untrusted observed metrics");
   Require(refused.refusal_reason.rfind("SB_AGENT_METRIC_SNAPSHOT.UNTRUSTED", 0) ==

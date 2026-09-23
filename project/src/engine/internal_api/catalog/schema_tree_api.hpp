@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "catalog/schema_tree_codec.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -21,8 +22,8 @@ namespace scratchbird::engine::internal_api {
 struct EngineSchemaTreeRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string schema_uuid;
-  std::string parent_schema_uuid;
+  EngineUuid schema_uuid;
+  EngineUuid parent_schema_uuid;
   // Migration/display cache only. SQL object name authority is SBNAME1 name registry.
   std::string default_name;
   // Parser/request compatibility cache. Durable authority is SBNAME1 name registry.
@@ -40,22 +41,23 @@ std::vector<EngineSchemaTreeRecord> VisibleSchemaTreeRecords(const EngineRequest
                                                              std::uint64_t observer_tx,
                                                              EngineApiDiagnostic& diagnostic);
 std::optional<EngineSchemaTreeRecord> FindVisibleSchemaTreeRecord(const EngineRequestContext& context,
-                                                                  const std::string& schema_uuid,
+                                                                  const EngineUuid& schema_uuid,
                                                                   std::uint64_t observer_tx,
                                                                   EngineApiDiagnostic& diagnostic);
 std::string SchemaTreeDefaultName(const std::vector<EngineLocalizedName>& names, const std::string& fallback);
-std::string SchemaTreePayload(const std::string& parent_schema_uuid,
+std::string SchemaTreePayload(const EngineUuid& parent_schema_uuid,
                               const std::vector<EngineLocalizedName>& names,
-                              const std::vector<std::pair<std::string, std::string>>& comments);
+                              const std::vector<std::pair<std::string, std::string>>& comments,
+                              BinaryCatalogMetadata extensions = {});
 std::optional<std::string> SchemaTreePathConflict(const EngineRequestContext& context,
-                                                  const std::string& schema_uuid,
-                                                  const std::string& parent_schema_uuid,
+                                                  const EngineUuid& schema_uuid,
+                                                  const EngineUuid& parent_schema_uuid,
                                                   const std::vector<EngineLocalizedName>& names,
                                                   std::uint64_t observer_tx,
                                                   EngineApiDiagnostic& diagnostic);
 bool SchemaTreeWouldCreateCycle(const EngineRequestContext& context,
-                                const std::string& schema_uuid,
-                                const std::string& proposed_parent_schema_uuid,
+                                const EngineUuid& schema_uuid,
+                                const EngineUuid& proposed_parent_schema_uuid,
                                 std::uint64_t observer_tx,
                                 EngineApiDiagnostic& diagnostic);
 EngineApiDiagnostic PersistSchemaTreeRecord(const EngineRequestContext& context,

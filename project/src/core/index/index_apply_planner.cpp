@@ -11,37 +11,36 @@
 #include <algorithm>
 #include <map>
 #include <set>
-#include <sstream>
+#include <tuple>
 #include <utility>
 
 namespace scratchbird::core::index {
 namespace {
 
-std::uint64_t Fnva64(const std::string& value) {
-  std::uint64_t hash = 1469598103934665603ull;
-  for (const unsigned char ch : value) {
-    hash ^= static_cast<std::uint64_t>(ch);
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
 std::string FamilyProfileKey(const CommitGroupLocalityIndexApplyItem& item) {
   return item.family + "|" + item.profile;
 }
 
-std::string UniqueLocalityKey(const CommitGroupLocalityIndexApplyItem& item) {
-  return "unique_order:" + item.index_uuid;
+IndexApplyLocalityKey UniqueLocalityKey(const CommitGroupLocalityIndexApplyItem& item) {
+  return {item.index_uuid, 0, true};
 }
 
-std::string NonUniqueLocalityKey(const CommitGroupLocalityIndexApplyItem& item) {
-  std::ostringstream stable;
-  stable << item.index_uuid << '\0' << item.family << '\0' << item.profile;
-  for (const auto& key : item.target_keys) {
-    stable << '\0' << key;
-  }
-  const std::uint64_t bucket = Fnva64(stable.str()) % 64u;
-  return "leaf_bucket:" + item.index_uuid + ":" + std::to_string(bucket);
+IndexApplyLocalityKey NonUniqueLocalityKey(const CommitGroupLocalityIndexApplyItem& item) {
+  std::uint64_t hash = 1469598103934665603ull;
+  const auto octet = [&](std::uint8_t value) {
+    hash ^= value;
+    hash *= 1099511628211ull;
+  };
+  const auto field = [&](const std::string& value) {
+    const auto size = static_cast<std::uint64_t>(value.size());
+    for (unsigned i = 0; i < 8; ++i) octet(static_cast<std::uint8_t>(size >> (8 * i)));
+    for (const unsigned char ch : value) octet(ch);
+  };
+  for (const auto byte : item.index_uuid.bytes) octet(byte);
+  field(item.family);
+  field(item.profile);
+  for (const auto& key : item.target_keys) field(key);
+  return {item.index_uuid, static_cast<std::uint8_t>(hash % 64u), false};
 }
 
 PageAwareSecondaryChangeBufferRequest ChangeBufferRequestForItem(
@@ -57,7 +56,7 @@ PageAwareSecondaryChangeBufferRequest ChangeBufferRequestForItem(
 
 }  // namespace
 
-std::string CommitGroupLocalityTargetKey(
+IndexApplyLocalityKey CommitGroupLocalityTargetKey(
     const CommitGroupLocalityIndexApplyItem& item) {
   return item.unique ? UniqueLocalityKey(item) : NonUniqueLocalityKey(item);
 }
@@ -67,7 +66,7 @@ CommitGroupLocalityIndexApplyPlan PlanCommitGroupLocalityIndexApply(
   CommitGroupLocalityIndexApplyPlan plan;
   plan.pending_item_count = static_cast<std::uint64_t>(items.size());
   for (const auto& item : items) {
-    if (item.index_uuid.empty()) {
+    if (item.index_uuid.is_nil()) {
       plan.refusal_reason = "index_uuid_required";
       return plan;
     }
@@ -82,8 +81,11 @@ CommitGroupLocalityIndexApplyPlan PlanCommitGroupLocalityIndexApply(
   }
 
   std::set<std::string> family_profile_keys;
-  std::map<std::string, CommitGroupLocalityIndexApplyGroup> unique_groups;
-  std::map<std::string, CommitGroupLocalityIndexApplyGroup> locality_groups;
+  using UniqueGroupKey = std::tuple<std::size_t, scratchbird::core::platform::Uuid,
+                                    std::string, std::string>;
+  using LocalityGroupKey = std::tuple<std::string, std::string, IndexApplyLocalityKey>;
+  std::map<UniqueGroupKey, CommitGroupLocalityIndexApplyGroup> unique_groups;
+  std::map<LocalityGroupKey, CommitGroupLocalityIndexApplyGroup> locality_groups;
   plan.secondary_change_buffer_decisions.reserve(items.size());
   for (std::size_t ordinal = 0; ordinal < items.size(); ++ordinal) {
     const auto& item = items[ordinal];
@@ -92,8 +94,8 @@ CommitGroupLocalityIndexApplyPlan PlanCommitGroupLocalityIndexApply(
     const std::string family_profile_key = FamilyProfileKey(item);
     family_profile_keys.insert(family_profile_key);
     if (item.unique) {
-      const std::string group_key =
-          "unique|" + std::to_string(item.source_batch_ordinal);
+      const UniqueGroupKey group_key{item.source_batch_ordinal, item.index_uuid,
+                                     item.family, item.profile};
       auto& group = unique_groups[group_key];
       group.family_profile_key = family_profile_key;
       group.target_leaf_page_locality_key = UniqueLocalityKey(item);
@@ -102,8 +104,8 @@ CommitGroupLocalityIndexApplyPlan PlanCommitGroupLocalityIndexApply(
       continue;
     }
 
-    const std::string locality_key = NonUniqueLocalityKey(item);
-    const std::string group_key = family_profile_key + "|" + locality_key;
+    const auto locality_key = NonUniqueLocalityKey(item);
+    const LocalityGroupKey group_key{item.family, item.profile, locality_key};
     auto& group = locality_groups[group_key];
     group.family_profile_key = family_profile_key;
     group.target_leaf_page_locality_key = locality_key;
@@ -140,7 +142,7 @@ CommitGroupLocalityIndexApplyPlan PlanCommitGroupLocalityIndexApply(
     plan.groups.push_back(std::move(entry.second));
   }
 
-  std::set<std::string> locality_keys;
+  std::set<IndexApplyLocalityKey> locality_keys;
   for (const auto& group : plan.groups) {
     locality_keys.insert(group.target_leaf_page_locality_key);
   }

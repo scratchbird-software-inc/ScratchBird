@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 
 #include <chrono>
@@ -14,8 +15,7 @@ int main() {
       (std::filesystem::temp_directory_path() /
        ("sb_create_temporary_table_2663_" + unique))
           .string();
-  context.database_uuid.canonical =
-      "019d0000-0000-7000-8000-000000002663";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002663");
   context.security_context_present = true;
   context.trace_tags = {"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};
 

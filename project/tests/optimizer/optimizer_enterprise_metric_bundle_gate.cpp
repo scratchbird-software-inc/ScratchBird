@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "metric_registry.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include <algorithm>
 #include "observability/optimizer_metric_support_bundle.hpp"
 #include "optimizer_metric_manifest.hpp"
 #include "optimizer_route_metrics.hpp"
@@ -89,7 +91,7 @@ obs::OptimizerMetricSupportBundleAuthority GoodAuthority() {
 
 obs::OptimizerMetricSupportBundleRequest GoodRequest() {
   obs::OptimizerMetricSupportBundleRequest request;
-  request.scope_uuid = "database-scope-bundle";
+  request.scope_uuid = scratchbird::tests::FixtureUuid(1262, 1);
   request.support_bundle_id = "support-bundle-1";
   request.capture_generation = "capture-generation-1";
   request.evidence_digest = "support-bundle-request-digest";
@@ -116,13 +118,18 @@ void TestSupportBundleExport() {
   Require(result.tamper_digest.rfind("sha256:", 0) == 0,
           "support bundle tamper digest missing SHA-256 prefix");
   Require(result.redaction_applied, "support bundle did not apply redaction");
-  Require(result.support_bundle_json.find("sensitive-evidence-digest-bundle") ==
-              std::string::npos,
+  const std::string secret = "sensitive-evidence-digest-bundle";
+  Require(std::search(result.support_bundle_bytes.begin(), result.support_bundle_bytes.end(),
+                      secret.begin(), secret.end()) == result.support_bundle_bytes.end(),
           "support bundle leaked sensitive evidence digest");
   bool saw_redacted_label = false;
   for (const auto& row : result.rows) {
-    if (row.serialized_redacted_value.find("evidence_digest=<redacted>") !=
-        std::string::npos) {
+    Require(!row.encoded_redacted_value.empty(), "missing encoded metric value");
+    Require(std::search(row.encoded_redacted_value.begin(), row.encoded_redacted_value.end(),
+                        secret.begin(), secret.end()) == row.encoded_redacted_value.end(),
+            "encoded metric value leaked sensitive evidence digest");
+    if (std::find(row.omitted_sensitive_labels.begin(), row.omitted_sensitive_labels.end(),
+                  "evidence_digest") != row.omitted_sensitive_labels.end()) {
       saw_redacted_label = true;
     }
   }

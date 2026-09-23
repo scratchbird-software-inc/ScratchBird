@@ -1,10 +1,11 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 #include <cassert>
 int main() {
   namespace a = scratchbird::engine::internal_api;
   a::EngineRequestContext context;
   context.database_path = "/tmp/sb_create_materialized_view_2953";
-  context.database_uuid.canonical = "019d0000-0000-7000-8000-000000002953";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002953");
   context.security_context_present = true;
   context.trace_tags = {"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};
   a::SblrExecutorAvailabilityRowIdentity row{

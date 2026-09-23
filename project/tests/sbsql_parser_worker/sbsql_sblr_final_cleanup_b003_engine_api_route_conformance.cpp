@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -270,9 +271,9 @@ std::string EvidenceMessage(const B003Row& row,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-00000000e701";
-  session.connection_uuid = "019f0000-0000-7000-8000-00000000e702";
-  session.database_uuid = "019f0000-0000-7000-8000-00000000e703";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e701");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e702");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e703");
   session.catalog_epoch = 101;
   session.security_policy_epoch = 103;
   session.descriptor_epoch = 107;
@@ -282,7 +283,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-00000000e704";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e704");
   config.bundle_contract_id = "sbp_sbsql@sbsql-sblr-final-cleanup-b003";
   config.build_id = "sbsql-sblr-final-cleanup-b003";
   return config;
@@ -330,10 +331,10 @@ api::EngineTypedValue TypedValue(std::string type, std::string value) {
   return out;
 }
 
-api::EngineRowValue Row(std::string uuid,
+api::EngineRowValue Row(api::EngineUuid uuid,
                         std::vector<std::pair<std::string, api::EngineTypedValue>> fields) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(uuid);
+  row.requested_row_uuid = std::move(uuid);
   row.fields = std::move(fields);
   return row;
 }
@@ -344,13 +345,13 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   context.request_id = "sbsql-sblr-final-cleanup-b003";
   context.security_context_present = security_context_present;
   context.database_path = "/tmp/sbsql_sblr_final_cleanup_b003.sbdb";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-00000000e801";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-00000000e802";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-00000000e803";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-00000000e804";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-00000000e805";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-00000000e806";
-  context.current_diagnostic_uuid.canonical = "019f0000-0000-7000-8000-00000000e807";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e801");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e802");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e803");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e804");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e805");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e806");
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e807");
   context.local_transaction_id = 44;
   context.snapshot_visible_through_local_transaction_id = 44;
   context.catalog_generation_id = 101;
@@ -404,17 +405,17 @@ sblr::SblrOperationEnvelope EngineEnvelope(const B003Row& row) {
 }
 
 void AddObject(api::EngineApiRequest* request,
-               std::string uuid,
+               api::EngineUuid uuid,
                std::string kind) {
-  request->target_object.uuid.canonical = std::move(uuid);
+  request->target_object.uuid = std::move(uuid);
   request->target_object.object_kind = std::move(kind);
 }
 
 void AddRelatedObject(api::EngineApiRequest* request,
-                      std::string uuid,
+                      api::EngineUuid uuid,
                       std::string kind) {
   api::EngineObjectReference object;
-  object.uuid.canonical = std::move(uuid);
+  object.uuid = std::move(uuid);
   object.object_kind = std::move(kind);
   request->related_objects.push_back(std::move(object));
 }
@@ -426,7 +427,7 @@ api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
                                      std::string(row.result_shape));
   request.option_envelopes.push_back(std::string("engine_api_function:") +
                                      std::string(row.engine_api_function));
-  AddObject(&request, "019f0000-0000-7000-8000-00000000e901", "object");
+  AddObject(&request, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e901"), "object");
 
   if (StartsWith(row.operation_id, "agents.")) {
     request.option_envelopes.insert(request.option_envelopes.end(),
@@ -440,22 +441,22 @@ api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
                                      "page_type:heap",
                                      "dry_run:true"});
     if (Contains(row.operation_id, "index_")) {
-      AddRelatedObject(&request, "019f0000-0000-7000-8000-00000000e902", "index");
+      AddRelatedObject(&request, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e902"), "index");
     } else {
-      AddRelatedObject(&request, "019f0000-0000-7000-8000-00000000e903", "filespace");
+      AddRelatedObject(&request, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e903"), "filespace");
     }
   } else if (StartsWith(row.operation_id, "artifact.")) {
     if (StartsWith(row.operation_id, "artifact.external_git.")) {
       request.option_envelopes.push_back("external_git_policy:enabled");
     }
-    request.rows.push_back(Row("artifact-row-1",
+    request.rows.push_back(Row(scratchbird::tests::FixtureUuid(1265, 1),
                                {{"artifact_format", TypedValue("text", "sb.catalog.artifact.v1")},
                                 {"object_uuid", TypedValue("uuid", "019f0000-0000-7000-8000-00000000e904")},
                                 {"object_kind", TypedValue("text", "schema")},
                                 {"default_name", TypedValue("text", "b003_schema")},
                                 {"payload", TypedValue("text", "localized_name=en,default,b003_schema,b003_schema,default")}}));
   } else if (StartsWith(row.operation_id, "dml.")) {
-    AddObject(&request, "019f0000-0000-7000-8000-00000000e905", "table");
+    AddObject(&request, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e905"), "table");
     request.option_envelopes.insert(request.option_envelopes.end(),
                                     {"source_kind:native_sbsql_import",
                                      "format_family:csv",
@@ -465,16 +466,16 @@ api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
                                      "source_fingerprint:b003-import",
                                      "source_position:0",
                                      "estimated_row_count:1"});
-    request.rows.push_back(Row("import-row-1",
+    request.rows.push_back(Row(scratchbird::tests::FixtureUuid(1265, 2),
                                {{"id", TypedValue("int64", "1")},
                                 {"payload", TypedValue("text", "b003")}}));
   } else if (row.operation_id == "ddl.create_database") {
     request.localized_names.push_back({"en", "primary", "", "b003_database", true});
     request.option_envelopes.push_back("name:b003_database");
   } else if (StartsWith(row.operation_id, "catalog.")) {
-    AddObject(&request, "019f0000-0000-7000-8000-00000000e907", "schema");
+    AddObject(&request, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e907"), "schema");
     request.localized_names.push_back({"en", "primary", "b003_schema", "b003_schema", true});
-    AddRelatedObject(&request, "019f0000-0000-7000-8000-00000000e908", "table");
+    AddRelatedObject(&request, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e908"), "table");
   } else if (StartsWith(row.operation_id, "security.")) {
     request.option_envelopes.insert(request.option_envelopes.end(),
                                     {"identity_kind:user",
@@ -487,7 +488,7 @@ api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
                                      "visibility_right:READ",
                                      "policy_uuid:019f0000-0000-7000-8000-00000000e90b",
                                      "required_right:READ"});
-    AddObject(&request, "019f0000-0000-7000-8000-00000000e90a", "table");
+    AddObject(&request, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000e90a"), "table");
   } else if (StartsWith(row.operation_id, "management.")) {
     request.option_envelopes.insert(request.option_envelopes.end(),
                                     {"name:b003_config",
@@ -504,24 +505,24 @@ api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
                                        "descriptor_profile:dimension=3;element_type=real32",
                                        "vector_dimension:3"});
     } else if (row.operation_id == "query.canonicalize_document_value") {
-      request.rows.push_back(Row("query-row-1",
+      request.rows.push_back(Row(scratchbird::tests::FixtureUuid(1265, 3),
                                  {{"value", TypedValue("json", "{\"b003\":true}")}}));
       request.option_envelopes.push_back("document_reference_profile:sbsql");
     } else if (row.operation_id == "query.apply_numeric_operation") {
       request.descriptors.push_back(Descriptor("int64"));
-      request.rows.push_back(Row("query-row-1",
+      request.rows.push_back(Row(scratchbird::tests::FixtureUuid(1265, 3),
                                  {{"left", TypedValue("int64", "2")},
                                   {"right", TypedValue("int64", "3")}}));
       request.option_envelopes.insert(request.option_envelopes.end(),
                                       {"numeric_operation:add",
                                        "rounding:half_even"});
     } else if (row.operation_id == "query.extract_value") {
-      request.rows.push_back(Row("query-row-1",
+      request.rows.push_back(Row(scratchbird::tests::FixtureUuid(1265, 3),
                                  {{"value", TypedValue("timestamp", "2026-05-20T00:00:00Z")}}));
       request.option_envelopes.push_back("field:year");
     } else {
       request.descriptors.push_back(Descriptor("text"));
-      request.rows.push_back(Row("query-row-1",
+      request.rows.push_back(Row(scratchbird::tests::FixtureUuid(1265, 3),
                                  {{"value", TypedValue("text", "b003")},
                                   {"other", TypedValue("text", "b003")}}));
       request.option_envelopes.insert(request.option_envelopes.end(),

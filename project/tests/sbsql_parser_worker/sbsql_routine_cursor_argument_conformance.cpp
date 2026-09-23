@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -146,7 +147,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000450001";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000450001");
   config.bundle_contract_id = "sbp_sbsql@routine-cursor-proof";
   config.build_id = "routine-cursor-argument-proof";
   return config;
@@ -155,10 +156,10 @@ ParserConfig ParserConfigForTest() {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000450003";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000450004";
-  session.database_uuid = "019f0000-0000-7000-8000-000000450005";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000450003");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000450004");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000450005");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 450;
   session.security_policy_epoch = 451;
   session.descriptor_epoch = 452;
@@ -180,7 +181,7 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
   artifacts.ast = BuildAst(artifacts.cst);
   artifacts.bound = BindAst(
       artifacts.ast, artifacts.cst, ParserConfigForTest(), session,
-      {"019f0000-0000-7000-8000-000000450006"});
+      {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000450006")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -206,7 +207,8 @@ void RequireCursorRoutineSignature(std::string_view sql,
   Require(artifacts.envelope.payload.empty() &&
               artifacts.envelope.operands.empty() &&
               artifacts.envelope.resolved_object_uuids.empty() &&
-              artifacts.envelope.descriptor_refs ==
+              artifacts.envelope.descriptor_refs.empty() &&
+              artifacts.envelope.descriptor_requirements ==
                   std::vector<std::string>{"sys.sbsql.surface_registry"},
           "ROUTINE-CURSOR-GATE-001 refusal retained executable authority");
   Require(!artifacts.envelope.parser_executes_sql,
@@ -254,7 +256,6 @@ std::string ParserJsonEnvelope(std::uint64_t stream_rows) {
 }
 
 std::string RoutineCursorEnvelope(
-    const std::array<std::uint8_t, 16>& cursor_uuid,
     std::string_view context_kind,
     std::string_view action,
     std::string_view borrow_policy = "borrowed_read",
@@ -274,9 +275,7 @@ std::string RoutineCursorEnvelope(
   out += "\"resource_contract\":\"routine_cursor_argument.resource.v1\",";
   out += "\"trace_key\":\"ROUTINE-CURSOR-PROOF-CLOSURE\",";
   out += "\"source_payload_embedded\":false,";
-  out += "\"routine_cursor_uuid\":\"";
-  out += scratchbird::server::UuidBytesToText(cursor_uuid);
-  out += "\",\"routine_context_kind\":\"";
+  out += "\"routine_context_kind\":\"";
   out += std::string(context_kind);
   out += "\",\"routine_cursor_action\":\"";
   out += std::string(action);
@@ -321,7 +320,8 @@ sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
 
 sbps::Frame ExecuteEnvelopeFrame(
     const std::array<std::uint8_t, 16>& session_uuid,
-    const std::string& envelope) {
+    const std::string& envelope,
+    const std::array<std::uint8_t, 16>& cursor_uuid) {
   sbps::Frame frame;
   frame.header.message_type =
       static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
@@ -329,7 +329,8 @@ sbps::Frame ExecuteEnvelopeFrame(
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
   frame.header.session_uuid = session_uuid;
   frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
-      session_uuid, {}, envelope, false);
+      session_uuid, {}, envelope, false,
+      std::vector<std::uint8_t>(cursor_uuid.begin(), cursor_uuid.end()));
   return frame;
 }
 
@@ -363,7 +364,7 @@ void AddSession(ServerSessionRegistry* registry,
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = "/tmp/sbsql_routine_cursor_argument_conformance.sbdb";
-  session.database_uuid = "019f0000-0000-7000-8000-000000450101";
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000450101");
   registry->sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
 }
 
@@ -374,7 +375,7 @@ HostedEngineState MakeEngineState() {
   database.state = HostedDatabaseState::kOpen;
   database.database_open = true;
   database.database_path = "/tmp/sbsql_routine_cursor_argument_conformance.sbdb";
-  database.database_uuid = "019f0000-0000-7000-8000-000000450101";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000450101");
   state.databases.push_back(database);
   return state;
 }
@@ -416,8 +417,7 @@ SessionOperationResult ExecuteRoutineCursor(
       registry,
       engine_state,
       ExecuteEnvelopeFrame(session_uuid,
-                           RoutineCursorEnvelope(cursor_uuid,
-                                                 context_kind,
+                           RoutineCursorEnvelope(context_kind,
                                                  action,
                                                  borrow_policy,
                                                  descriptor,
@@ -425,14 +425,14 @@ SessionOperationResult ExecuteRoutineCursor(
                                                  security_rechecked,
                                                  protected_material_rechecked,
                                                  deterministic_context,
-                                                 lifetime)));
+                                                 lifetime), cursor_uuid));
 }
 
 void RequireRetiredRoutineCursorTextRefusal() {
   const auto cursor_uuid = sbps::MakeUuidV7Bytes();
   const auto refused = scratchbird::server::AdmitServerSblrEnvelope(
       scratchbird::server::ServerSblrAdmissionRequest{
-          RoutineCursorEnvelope(cursor_uuid, "procedure", "fetch"), false});
+          RoutineCursorEnvelope("procedure", "fetch"), false});
   Require(!refused.admitted && !refused.diagnostics.empty() &&
               refused.diagnostics.front().code ==
                   "SBLR.OPERATION.NONCANONICAL",

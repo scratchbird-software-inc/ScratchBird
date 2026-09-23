@@ -17,6 +17,8 @@
 #include "nosql/nosql_surface_support.hpp"
 #include "security/security_model.hpp"
 #include "uuid.hpp"
+#include "nosql/native_descriptor_fields.hpp"
+#include <set>
 
 #include <algorithm>
 #include <array>
@@ -41,14 +43,14 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 struct IndexedSearchDocument {
-  std::string document_uuid;
+  EngineUuid document_uuid;
   std::string segment_kind;
   std::map<std::string, EngineApiU64> term_frequency;
   EngineApiU64 token_count = 0;
 };
 
 struct SearchCandidate {
-  std::string document_uuid;
+  EngineUuid document_uuid;
   std::string segment_kind;
   double score = 0.0;
   std::vector<std::pair<std::string, double>> contributions;
@@ -66,6 +68,9 @@ TResult DiagnosticResult(const EngineRequestContext& context,
 
 void AddSelectionEvidence(const EngineNoSqlPhysicalProviderSelection& selection,
                           EngineApiResult* result) {
+  if (!selection.generation_uuid.is_nil()) {
+    result->evidence.push_back({"provider_generation_uuid", selection.generation_uuid});
+  }
   for (const auto& item : selection.evidence) {
     AddApiBehaviorEvidence(result, "search_physical_provider", item);
   }
@@ -140,9 +145,7 @@ std::vector<IndexedSearchDocument> BuildIndexedDocuments(
   indexed.reserve(corpus.size());
   for (std::size_t i = 0; i < corpus.size(); ++i) {
     IndexedSearchDocument doc;
-    doc.document_uuid = corpus[i].document_uuid.empty()
-                            ? "search_doc_" + std::to_string(i + 1)
-                            : corpus[i].document_uuid;
+    doc.document_uuid = corpus[i].document_uuid;
     doc.segment_kind = corpus[i].sealed_segment ? "sealed_inverted_segment"
                                                 : "mutable_buffer";
     for (const auto& token : TokenizeSearchText(corpus[i].text)) {
@@ -278,6 +281,12 @@ EngineSearchQueryResult PhysicalSearchQuery(
       SelectLocalNoSqlPhysicalProvider(request.physical_proof.provider_contract);
   const auto query_terms =
       UniqueTermsPreserveOrder(TokenizeSearchText(request.query_text));
+  for (const auto& document : request.document_corpus) {
+    if (!core::uuid::IsEngineIdentityUuid(document.document_uuid)) {
+      return DiagnosticResult<EngineSearchQueryResult>(request.context, operation_id,
+                                           "SB_MODEL_SEARCH_DOCUMENT_IDENTITY_INVALID_V1");
+    }
+  }
   const auto indexed_documents = BuildIndexedDocuments(request.document_corpus);
   const EngineApiU64 top_k = request.top_k == 0 ? 10 : request.top_k;
 
@@ -483,20 +492,8 @@ namespace {
 constexpr std::string_view kBoundSearchAnalyzerDigest =
     "9033908d159ddd442f2042467fd49e0a12b47679f7514e9aa6e55488e151d316";
 
-bool CanonicalBoundSearchUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const char ch = value[index];
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-      return false;
-    }
-  }
-  return true;
+bool CanonicalBoundSearchUuid(const EngineUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool ValidBoundSearchUtf8(const std::string_view value) {
@@ -634,30 +631,10 @@ bool BoundSearchPhraseMatch(const std::vector<std::string>& document,
   return false;
 }
 
-std::string BoundSearchDescriptorField(const std::string_view descriptor,
-                                       const std::string_view name) {
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto end = descriptor.find(';', offset);
-    const auto field = descriptor.substr(
-        offset, end == std::string_view::npos ? descriptor.size() - offset
-                                              : end - offset);
-    const auto equals = field.find('=');
-    if (equals != std::string_view::npos && field.substr(0, equals) == name) {
-      return std::string(field.substr(equals + 1));
-    }
-    if (end == std::string_view::npos) break;
-    offset = end + 1;
-  }
-  return {};
-}
 
-std::string BoundSearchTypeUuid(const EngineDescriptor& descriptor) {
-  return BoundSearchDescriptorField(descriptor.encoded_descriptor,
-                                    "type_uuid");
-}
+EngineUuid BoundSearchTypeUuid(const EngineDescriptor& descriptor) { return descriptor.type_uuid; }
 
-std::string ExactBoundSearchCoreTypeUuid(const std::string_view stable_name) {
+EngineUuid ExactBoundSearchCoreTypeUuid(const std::string_view stable_name) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -671,50 +648,22 @@ std::string ExactBoundSearchCoreTypeUuid(const std::string_view stable_name) {
       !found->descriptor_uuid.valid()) {
     return {};
   }
-  const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
-      found->descriptor_uuid.value);
+  const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          "019d0000-0000-7000-8000-00000000d701",
+          scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
           manifest.manifest.catalog_epoch, 1, descriptor_uuid,
           found->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
-bool ExactBoundSearchDescriptorFields(
-    const EngineDescriptor& descriptor,
-    const std::initializer_list<std::pair<std::string_view, std::string_view>>&
-        expected) {
-  std::map<std::string_view, std::string_view> fields;
-  const auto encoded = std::string_view(descriptor.encoded_descriptor);
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto end = encoded.find(';', offset);
-    const auto field = encoded.substr(
-        offset, end == std::string_view::npos ? std::string_view::npos
-                                              : end - offset);
-    const auto equal = field.find('=');
-    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
-        equal + 1 == field.size() ||
-        !fields.emplace(field.substr(0, equal), field.substr(equal + 1)).second) {
-      return false;
-    }
-    if (end == std::string_view::npos) break;
-    offset = end + 1;
-  }
-  if (fields.size() != expected.size()) return false;
-  return std::ranges::all_of(expected, [&](const auto& field) {
-    const auto found = fields.find(field.first);
-    return found != fields.end() && found->second == field.second;
-  });
-}
 
 bool ExactBoundSearchStorageDescriptorImpl(
     const MgaRelationStorageDescriptor& descriptor,
-    const std::string_view collection_uuid) {
+    const EngineUuid& collection_uuid) {
   const auto text_type_uuid = ExactBoundSearchCoreTypeUuid("character");
   if (descriptor.relation_uuid != collection_uuid ||
-      text_type_uuid.empty() ||
+      text_type_uuid.is_nil() ||
       !CanonicalBoundSearchUuid(descriptor.database_uuid) ||
       !CanonicalBoundSearchUuid(descriptor.schema_uuid) ||
       descriptor.relation_kind != "table" ||
@@ -727,13 +676,13 @@ bool ExactBoundSearchStorageDescriptorImpl(
   const auto exact_text = [](const auto& column,
                              const std::uint32_t ordinal,
                              const std::string_view name,
-                             const std::string_view text_type_uuid) {
+                             const EngineUuid& text_type_uuid) {
     return column.ordinal == ordinal && column.canonical_name_key == name &&
            !column.nullable && !column.generated && !column.identity_column &&
            column.storage_class == "inline_row_value" &&
            column.max_inline_bytes == 4096 &&
            column.overflow_policy == "mga_large_value_locator" &&
-           column.charset_uuid.empty() && column.collation_uuid.empty() &&
+           column.charset_uuid.is_nil() && column.collation_uuid.is_nil() &&
            column.character_length == 0 &&
            column.value_descriptor.descriptor_kind ==
                "canonical_type_descriptor" &&
@@ -743,18 +692,18 @@ bool ExactBoundSearchStorageDescriptorImpl(
                column.value_descriptor.descriptor_uuid) &&
            column.value_descriptor.descriptor_uuid ==
                column.column_uuid &&
-           ExactBoundSearchDescriptorFields(
+           ExactNativeDescriptorFields(
                column.value_descriptor,
                {{"canonical", "text"},
                 {"type_uuid", text_type_uuid},
                 {"nullable", "false"},
                 {"column_uuid", column.column_uuid},
                 {"datatype_descriptor_uuid",
-                 "019d0000-0000-7000-8000-00000000d718"},
+                 EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x18}}},
                 {"datatype_descriptor_generation", "1"},
                 {"type_generation", "1"},
                 {"codec_uuid",
-                 "019d0000-0000-7000-8000-00000000d71a"},
+                 EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x1a}}},
                 {"codec_id", "datatype.text.utf8.v1"},
                 {"codec_version", "1"},
                 {"codec_generation", "1"},
@@ -773,15 +722,15 @@ bool ExactBoundSearchOutputDescriptors(
   if (descriptors.size() != 5) return false;
   static constexpr std::array<std::string_view, 5> kTypes{
       "uuid", "uuid", "uint64", "real64", "uint64"};
-  std::unordered_set<std::string> descriptor_uuids;
+  std::set<EngineUuid> descriptor_uuids;
   for (std::size_t index = 0; index < descriptors.size(); ++index) {
     const auto& descriptor = descriptors[index];
     const auto type_uuid = ExactBoundSearchCoreTypeUuid(kTypes[index]);
     if (!CanonicalBoundSearchUuid(descriptor.descriptor_uuid) ||
         !descriptor_uuids.insert(descriptor.descriptor_uuid).second ||
-        descriptor.descriptor_kind != "scalar" || type_uuid.empty() ||
+        descriptor.descriptor_kind != "scalar" || type_uuid.is_nil() ||
         descriptor.canonical_type_name != kTypes[index] ||
-        !ExactBoundSearchDescriptorFields(
+        !ExactNativeDescriptorFields(
             descriptor,
             {{"type_uuid", type_uuid}, {"nullability", "non_null"}})) {
       return false;
@@ -832,13 +781,13 @@ std::string CanonicalBoundSearchReal64(double value) {
 }
 
 struct BoundSearchDocument {
-  std::string document_uuid;
+  EngineUuid document_uuid;
   std::string category;
   std::vector<std::string> tokens;
 };
 
 struct BoundSearchScoredRow {
-  std::string document_uuid;
+  EngineUuid document_uuid;
   double score = 0.0;
   std::string encoded_score;
 };
@@ -848,7 +797,7 @@ bool BoundSearchCarrierContextMatches(
     const EngineNoSqlProviderGenerationMetadata& carrier) {
   const auto& context = request.context;
   return carrier.family == EngineNoSqlProviderFamily::kSearch &&
-         carrier.provider_id == request.selected_provider_uuid &&
+         carrier.provider_uuid == request.selected_provider_uuid &&
          carrier.search_segment_capability_uuid ==
              request.selected_capability_uuid &&
          carrier.database_identity ==
@@ -913,7 +862,7 @@ bool BoundSearchCarrierDescriptorMatches(
 
 bool ExactBoundSearchStorageDescriptorV1(
     const MgaRelationStorageDescriptor& descriptor,
-    const std::string_view collection_uuid) {
+    const EngineUuid& collection_uuid) {
   return ExactBoundSearchStorageDescriptorImpl(descriptor, collection_uuid);
 }
 
@@ -1137,8 +1086,8 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
     return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "bounded duplicate-document recheck is unavailable");
   }
-  std::unordered_set<std::string> visible_version_uuids;
-  std::unordered_set<std::string> visible_predecessor_uuids;
+  std::set<EngineUuid> visible_version_uuids;
+  std::set<EngineUuid> visible_predecessor_uuids;
   for (const auto& row : scoped_rows.state.row_versions) {
     if (row.table_uuid == request.collection_uuid &&
         CrudRowVersionVisibleToContext(scoped_rows.state.relation_metadata, row,
@@ -1148,12 +1097,12 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
   }
   for (const auto& row : scoped_rows.state.row_versions) {
     if (visible_version_uuids.contains(row.version_uuid) &&
-        !row.previous_version_uuid.empty() &&
+        !row.previous_version_uuid.is_nil() &&
         visible_version_uuids.contains(row.previous_version_uuid)) {
       visible_predecessor_uuids.insert(row.previous_version_uuid);
     }
   }
-  std::unordered_set<std::string> current_document_uuids;
+  std::set<EngineUuid> current_document_uuids;
   for (const auto& row : scoped_rows.state.row_versions) {
     if (!visible_version_uuids.contains(row.version_uuid) || row.deleted ||
         visible_predecessor_uuids.contains(row.version_uuid)) {
@@ -1185,7 +1134,7 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
 
   std::vector<BoundSearchDocument> documents;
   documents.reserve(read.visible_rows.size());
-  std::unordered_set<std::string> visible_document_uuids;
+  std::set<EngineUuid> visible_document_uuids;
   std::uint64_t analyzed_tokens = 0;
   std::uint64_t analyzed_positions = 0;
   std::uint64_t filtered_rows = 0;
@@ -1224,7 +1173,7 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
                     "search token/position contract is exceeded");
     }
     std::uint64_t row_memory = sizeof(BoundSearchDocument);
-    if (!CheckedBoundSearchAdd(row_memory, base_row.row_uuid.size(),
+    if (!CheckedBoundSearchAdd(row_memory, base_row.row_uuid.bytes.size(),
                                &row_memory) ||
         !CheckedBoundSearchAdd(row_memory, base_row.values[0].second.size(),
                                &row_memory) ||
@@ -1391,8 +1340,8 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
   result.rows.reserve(scored_rows.size());
   std::uint64_t rank = 1;
   for (const auto& scored : scored_rows) {
-    std::uint64_t row_bytes = scored.document_uuid.size();
-    if (!CheckedBoundSearchAdd(row_bytes, request.analyzer_uuid.size(),
+    std::uint64_t row_bytes = scored.document_uuid.bytes.size();
+    if (!CheckedBoundSearchAdd(row_bytes, request.analyzer_uuid.bytes.size(),
                                &row_bytes) ||
         !CheckedBoundSearchAdd(row_bytes, scored.encoded_score.size(),
                                &row_bytes) ||

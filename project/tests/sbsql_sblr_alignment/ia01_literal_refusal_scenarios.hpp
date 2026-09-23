@@ -44,7 +44,7 @@ inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
   literal_admin_context.trace_tags.push_back(
       "right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
   api::SblrExecutorAvailabilitySetRequest literal_install;
-  literal_install.database_uuid = context.database_uuid.canonical;
+  literal_install.database_uuid = context.database_uuid;
   literal_install.expected_snapshot_uuid =
       literal_bootstrap.snapshot.snapshot_uuid;
   literal_install.expected_generation = literal_bootstrap.snapshot.generation;
@@ -62,7 +62,7 @@ inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
   };
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;
@@ -73,7 +73,7 @@ inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
                                  : "CSC-TEST-002327 receipt acquisition failed");
   if (result) (void)sb_engine_result_release(result);
   auto literal = literal_fixture::FinalizeLiteral(receipt, view);
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 8327));
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 8327));
   const auto submission = literal_fixture::BuildLiteralSubmission(
       fixture, view, parser_uuid, &literal);
 
@@ -97,7 +97,7 @@ inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
   admission.admitted_parser_package_uuid = parser_uuid;
   admission.admitted_parser_package_version_major = 1;
   admission.admitted_registry_snapshot_uuid = view.catalog_epoch_uuid;
-  admission.authenticated_principal_uuid = Text(fixture.principal_uuid);
+  admission.authenticated_principal_uuid = Identity(fixture.principal_uuid);
   admission.catalog_snapshot_uuid = view.statement_metadata_snapshot_uuid;
   admission.engine_mga_statement_uuid = view.statement_uuid;
   admission.engine_mga_snapshot_uuid = view.statement_snapshot_uuid;
@@ -130,7 +130,7 @@ inline int RunLiteralRefusalScenario(bool cancel_after_admission) {
     Require(installed.ok && installed.snapshot.installed,
             "CSC-TEST-002327 installed executor snapshot missing");
     api::SblrExecutorAvailabilitySetRequest revoke;
-    revoke.database_uuid = context.database_uuid.canonical;
+    revoke.database_uuid = context.database_uuid;
     revoke.expected_snapshot_uuid = installed.snapshot.snapshot_uuid;
     revoke.expected_generation = installed.snapshot.generation;
     revoke.requested_state =

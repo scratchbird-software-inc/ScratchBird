@@ -44,11 +44,14 @@ std::uint64_t NowMillis() {
 struct UuidFactory {
   std::uint64_t base_millis = NowMillis();
 
-  std::string Text(std::uint64_t salt) const {
+  scratchbird::core::platform::Uuid Native(std::uint64_t salt) const {
     const auto generated =
         uuid::GenerateEngineIdentityV7(UuidKind::object, base_millis + salt);
     Require(generated.ok(), "CDP-025 UUID generation failed");
-    return uuid::UuidToString(generated.value.value);
+    return generated.value.value;
+  }
+  std::string Text(std::uint64_t salt) const {
+    return uuid::UuidToString(Native(salt));
   }
 };
 
@@ -152,8 +155,8 @@ sblr::SblrOperationEnvelope CanonicalEnvelope(const sblr::SblrOpcodeEntry& entry
   auto envelope = sblr::MakeSblrEnvelope(entry.operation_id,
                                          entry.opcode,
                                          "CDP-025-SBLR-REGISTRY-ROUND-TRIP");
-  envelope.parser_package_uuid = uuids.Text(salt);
-  envelope.registry_snapshot_uuid = uuids.Text(salt + 1);
+  envelope.parser_package_uuid = uuids.Native(salt);
+  envelope.registry_snapshot_uuid = uuids.Native(salt + 1);
   envelope.requires_security_context = entry.requires_security_context;
   envelope.requires_transaction_context = entry.requires_transaction_context;
   envelope.requires_cluster_authority = entry.requires_cluster_authority;

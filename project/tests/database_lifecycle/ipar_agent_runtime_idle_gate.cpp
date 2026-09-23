@@ -51,9 +51,6 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string UuidText(const platform::TypedUuid& typed) {
-  return uuid::UuidToString(typed.value);
-}
 
 struct Fixture {
   std::filesystem::path dir;
@@ -101,8 +98,8 @@ server::HostedEngineState HostedState(const Fixture& fixture) {
   server::HostedDatabaseSnapshot database;
   database.state = server::HostedDatabaseState::kOpen;
   database.database_path = fixture.database_path.string();
-  database.database_uuid = UuidText(fixture.database_uuid);
-  database.filespace_uuid = UuidText(fixture.filespace_uuid);
+  database.database_uuid = fixture.database_uuid.value;
+  database.filespace_uuid = fixture.filespace_uuid.value;
   database.database_created = true;
   database.database_open = true;
   database.write_admission_fenced = false;

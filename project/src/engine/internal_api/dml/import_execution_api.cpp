@@ -657,6 +657,15 @@ EngineTypedValue RejectTextValue(std::string value, bool is_null = false) {
   return typed;
 }
 
+EngineTypedValue RejectUuidValue(const EngineUuid& identity) {
+  EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = "uuid";
+  typed.descriptor.encoded_descriptor = "type=uuid;nullable=false";
+  typed.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
+  return typed;
+}
+
 EngineTypedValue RejectU64Value(EngineApiU64 value) {
   EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
@@ -699,10 +708,10 @@ EngineRowValue MakeRejectDiagnosticRow(const EngineExecuteImportRowsRequest& req
                                        bool include_payload_reference_columns) {
   const EngineApiDiagnostic stable_diagnostic = NormalizeImportRejectDiagnostic(diagnostic);
   EngineRowValue row;
-  row.requested_row_uuid = "import-reject-" + std::to_string(source_row_number);
+  row.requested_row_uuid = GenerateCrudEngineUuid("row");
   row.fields.push_back({"source_row_number", RejectU64Value(source_row_number)});
   row.fields.push_back({"source_position", RejectTextValue(request.source.source_position, request.source.source_position.empty())});
-  row.fields.push_back({"target_table_uuid", RejectTextValue(request.target_table.uuid)});
+  row.fields.push_back({"target_table_uuid", RejectUuidValue(request.target_table.uuid)});
   row.fields.push_back({"target_column", RejectTextValue({}, true)});
   row.fields.push_back({"diagnostic_code", RejectTextValue(stable_diagnostic.code)});
   row.fields.push_back({"message_key", RejectTextValue(stable_diagnostic.message_key)});
@@ -712,7 +721,7 @@ EngineRowValue MakeRejectDiagnosticRow(const EngineExecuteImportRowsRequest& req
   row.fields.push_back({"policy_name", RejectTextValue(request.import_policy.reject_mode)});
   row.fields.push_back({"audit_evidence_id", RejectTextValue("import_reject:" + std::to_string(source_row_number))});
   if (include_payload_reference_columns) {
-    row.fields.push_back({"payload_reference_uuid", RejectTextValue(row.requested_row_uuid)});
+    row.fields.push_back({"payload_reference_uuid", RejectUuidValue(row.requested_row_uuid)});
     row.fields.push_back({"payload_encryption_profile", RejectTextValue(request.import_policy.reject_payload_policy)});
   }
   return row;

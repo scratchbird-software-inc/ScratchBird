@@ -10,6 +10,7 @@
 #include "datatype_advanced_family.hpp"
 #include "datatype_binary.hpp"
 #include "datatype_document.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <iostream>
 #include <string>
@@ -65,12 +66,12 @@ bool DecodeHasRecord(const dt::DatatypeDescriptorEnvelopeResult& decoded,
   return false;
 }
 
-api::EngineDescriptor Descriptor(std::string uuid,
+api::EngineDescriptor Descriptor(api::EngineUuid uuid,
                                  std::string kind,
                                  std::string type_name,
                                  std::string encoded) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = std::move(uuid);
+  descriptor.descriptor_uuid = uuid;
   descriptor.descriptor_kind = std::move(kind);
   descriptor.canonical_type_name = std::move(type_name);
   descriptor.encoded_descriptor = std::move(encoded);
@@ -200,7 +201,7 @@ int main() {
   const std::string value_payload("value\0bytes\twith-tabs", 21);
   api::EngineDatatypeTransportRecord transport;
   transport.transport_scope = "backup";
-  transport.descriptor = Descriptor("019dffff-0000-7000-8000-000000000044",
+  transport.descriptor = Descriptor(scratchbird::tests::FixtureUuid(42, 68),
                                     "structured",
                                     "map",
                                     descriptor_payload);
@@ -215,6 +216,33 @@ int main() {
        ok;
   const auto decoded_transport = api::DecodeDatatypeTransportRecord(encoded_transport.encoded_envelope);
   ok = Expect(decoded_transport.ok, "datatype transport did not decode") && ok;
+  ok = Expect(decoded_transport.record.descriptor.descriptor_uuid ==
+                  transport.descriptor.descriptor_uuid &&
+                  decoded_transport.record.value.descriptor.descriptor_uuid ==
+                  transport.value.descriptor.descriptor_uuid,
+              "datatype transport changed binary UUID identity") && ok;
+  const auto raw_transport = dt::DecodeDatatypeDescriptorEnvelope(
+      Bytes(encoded_transport.encoded_envelope));
+  for (const auto& field_name : {"descriptor_uuid", "value_descriptor_uuid"}) {
+    for (const auto& field : raw_transport.envelope.records) {
+      if (field.field_name != field_name) continue;
+      const auto& expected = transport.descriptor.descriptor_uuid.bytes;
+      ok = Expect(field.payload == std::vector<byte>(expected.begin(), expected.end()),
+                  "transport UUID field is not exactly raw16") && ok;
+    }
+    // Recompute the envelope integrity so malformed identity widths reach
+    // the owning transport decoder instead of failing only its checksum.
+    for (const std::size_t width : {0u, 15u, 17u, 36u}) {
+      auto malformed = raw_transport.envelope;
+      for (auto& field : malformed.records)
+        if (field.field_name == field_name) field.payload.resize(width, 'a');
+      const auto resealed = dt::EncodeDatatypeDescriptorEnvelope(malformed);
+      ok = Expect(resealed.ok(), "malformed UUID test envelope did not encode") && ok;
+      const std::string bytes(resealed.encoded.begin(), resealed.encoded.end());
+      ok = Expect(!api::DecodeDatatypeTransportRecord(bytes).ok,
+                  "transport accepted a UUID field with nonbinary width") && ok;
+    }
+  }
   ok = Expect(decoded_transport.record.descriptor.encoded_descriptor == descriptor_payload,
               "datatype transport lost binary descriptor payload") &&
        ok;

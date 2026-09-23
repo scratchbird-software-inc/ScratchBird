@@ -12,6 +12,7 @@
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
 
 #include "api_diagnostics.hpp"
+#include "mga_relation_store/mga_large_value_codec.hpp"
 #include "crud_support/crud_store.hpp"
 
 #include <algorithm>
@@ -21,6 +22,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -31,7 +33,7 @@ namespace {
 // Owns payload chunk persistence, locator expansion, and transaction-visible
 // reclaim evidence. Large-value records are companion data; they never decide
 // transaction finality or row visibility.
-constexpr const char* kRowStoreMagic = "SBMGA1";
+constexpr const char* kRowStoreMagic = "SBMGL002";
 constexpr std::size_t kMgaLargeValueChunkBytes = 2048;
 
 std::string LargeValueStorePath(const EngineRequestContext& context) {
@@ -42,28 +44,27 @@ EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-std::vector<std::string> SplitTabs(const std::string& line) {
+std::vector<std::string> SplitTabs(const std::string& record) {
   std::vector<std::string> fields;
-  std::size_t start = 0;
-  while (start <= line.size()) {
-    const auto tab = line.find('\t', start);
-    if (tab == std::string::npos) {
-      fields.push_back(line.substr(start));
-      break;
-    }
-    fields.push_back(line.substr(start, tab - start));
-    start = tab + 1;
-  }
+  if (!DecodeMgaMetadataFields(record, &fields) || !ValidateMgaLargeValueFields(fields)) return {};
   return fields;
 }
-
+EngineUuid LargeValueIdentity(const std::string& bytes) {
+  EngineUuid id;
+  if (!ReadMetadataUuid(bytes, &id)) throw std::invalid_argument("large_value_identity_invalid");
+  return id;
+}
+bool ReadLargeValueRecords(const std::string& path, std::vector<std::string>* output) {
+  std::vector<std::string> records;
+  if (!ReadCompleteMgaMetadataRecords(path, &records)) return false;
+  for (const auto& record : records) if (record.size() > 16384 || SplitTabs(record).empty()) return false;
+  output->swap(records);
+  return true;
+}
 std::string JoinLine(const std::vector<std::string>& fields) {
-  std::string line;
-  for (std::size_t index = 0; index < fields.size(); ++index) {
-    if (index != 0) line.push_back('\t');
-    line += fields[index];
-  }
-  return line;
+  if (!ValidateMgaLargeValueFields(fields)) return {};
+  auto frame = EncodeMgaMetadataFields(fields);
+  return frame.size() <= 16384 ? frame : std::string{};
 }
 
 std::uint64_t ParseU64(const std::string& text,
@@ -79,7 +80,8 @@ std::uint64_t ParseU64(const std::string& text,
 bool AppendLine(const std::string& path, const std::string& line) {
   std::ofstream output(path, std::ios::app | std::ios::binary);
   if (!output) return false;
-  output << line << '\n';
+  if (line.empty()) return false;
+  output.write(line.data(), static_cast<std::streamsize>(line.size()));
   output.flush();
   return static_cast<bool>(output);
 }
@@ -89,33 +91,17 @@ bool AppendLines(const std::string& path,
                  std::uint64_t* stream_opens,
                  std::uint64_t* stream_flushes) {
   if (lines.empty()) return true;
+  for (const auto& line : lines) if (line.empty()) return false;
   std::ofstream output(path, std::ios::app | std::ios::binary);
   if (!output) return false;
   if (stream_opens != nullptr) ++(*stream_opens);
-  for (const auto& line : lines) output << line << '\n';
+  for (const auto& line : lines) {
+    if (line.empty()) return false;
+    output.write(line.data(), static_cast<std::streamsize>(line.size()));
+  }
   output.flush();
   if (stream_flushes != nullptr) ++(*stream_flushes);
   return static_cast<bool>(output);
-}
-
-int HexValue(char value) {
-  if (value >= '0' && value <= '9') return value - '0';
-  if (value >= 'a' && value <= 'f') return 10 + value - 'a';
-  if (value >= 'A' && value <= 'F') return 10 + value - 'A';
-  return -1;
-}
-
-std::string DecodeCrudTextLocal(const std::string& encoded) {
-  if ((encoded.size() % 2) != 0) return {};
-  std::string decoded;
-  decoded.reserve(encoded.size() / 2);
-  for (std::size_t index = 0; index < encoded.size(); index += 2) {
-    const int high = HexValue(encoded[index]);
-    const int low = HexValue(encoded[index + 1]);
-    if (high < 0 || low < 0) return {};
-    decoded.push_back(static_cast<char>((high << 4) | low));
-  }
-  return decoded;
 }
 
 std::uint64_t ChecksumText(const std::string& value) {
@@ -125,20 +111,6 @@ std::uint64_t ChecksumText(const std::string& value) {
     checksum *= 1099511628211ull;
   }
   return checksum;
-}
-
-std::string MakeMgaLargeValueLocator(const std::string& overflow_uuid,
-                                     const std::string& content_hash,
-                                     std::uint64_t total_bytes) {
-  return "SBMGA_LARGE_VALUE:" + overflow_uuid + ":" + content_hash + ":" + std::to_string(total_bytes);
-}
-
-bool StartsWith(const std::string& value, const std::string& prefix) {
-  return value.rfind(prefix, 0) == 0;
-}
-
-bool IsMgaLargeValueLocator(const std::string& value) {
-  return StartsWith(value, "SBMGA_LARGE_VALUE:");
 }
 
 struct LargeValueRecord {
@@ -165,7 +137,7 @@ MgaLargeValueReclaimLoadResult LoadVisibleMgaLargeValueReclaimsImpl(
     return result;
   }
   std::vector<std::string> records;
-  if (!ReadCompleteMgaTextRecords(LargeValueStorePath(context), &records)) {
+  if (!ReadLargeValueRecords(LargeValueStorePath(context), &records)) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.large_value", "large_value_store_read_failed");
     return result;
   }
@@ -180,7 +152,7 @@ MgaLargeValueReclaimLoadResult LoadVisibleMgaLargeValueReclaimsImpl(
                            creator_tx,
                            0,
                            context.local_transaction_id)) {
-      result.overflow_uuids.insert(fields[3]);
+      result.overflow_uuids.insert(LargeValueIdentity(fields[3]));
     }
   }
   return result;
@@ -193,9 +165,9 @@ LargeValueLoadResult LoadMgaLargeValuePayloads(const EngineRequestContext& conte
     result.diagnostic = reclaimed.diagnostic;
     return result;
   }
-  std::map<std::string, LargeValueRecord> records;
+  std::map<EngineUuid, LargeValueRecord> records;
   std::vector<std::string> store_records;
-  if (!ReadCompleteMgaTextRecords(LargeValueStorePath(context), &store_records)) {
+  if (!ReadLargeValueRecords(LargeValueStorePath(context), &store_records)) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.large_value", "large_value_store_read_failed");
     return result;
   }
@@ -203,13 +175,13 @@ LargeValueLoadResult LoadMgaLargeValuePayloads(const EngineRequestContext& conte
     const auto fields = SplitTabs(line);
     if (fields.size() < 2 || fields[0] != kRowStoreMagic) { continue; }
     if (fields[1] == "LARGE_VALUE" && fields.size() >= 11) {
-      auto& record = records[fields[3]];
+      auto& record = records[LargeValueIdentity(fields[3])];
       record.total_bytes = ParseU64(fields[8]);
       record.content_hash = fields[9];
     } else if (fields[1] == "LARGE_VALUE_CHUNK" && fields.size() >= 7) {
-      const std::string overflow_uuid = fields[3];
+      const EngineUuid overflow_uuid = LargeValueIdentity(fields[3]);
       const std::uint64_t ordinal = ParseU64(fields[4]);
-      const std::string fragment = DecodeCrudTextLocal(fields[5]);
+      const std::string fragment = fields[5];
       const std::uint64_t expected_checksum = ParseU64(fields[6]);
       if (ChecksumText(fragment) != expected_checksum) {
         result.diagnostic = MakeInvalidRequestDiagnostic("mga.large_value", "large_value_chunk_checksum_mismatch");
@@ -220,7 +192,7 @@ LargeValueLoadResult LoadMgaLargeValuePayloads(const EngineRequestContext& conte
   }
   for (const auto& [overflow_uuid, record] : records) {
     const std::string locator =
-        MakeMgaLargeValueLocator(overflow_uuid, record.content_hash, record.total_bytes);
+        MakeMgaLargeValueLocator(overflow_uuid, ParseU64(record.content_hash), record.total_bytes);
     if (reclaimed.overflow_uuids.count(overflow_uuid) != 0) {
       result.reclaimed_locators.insert(locator);
       continue;
@@ -247,6 +219,7 @@ EngineApiDiagnostic ExpandMgaLargeValueLocatorsImpl(const EngineRequestContext& 
   for (auto& row : *rows) {
     for (auto& [field, value] : row.values) {
       (void)field;
+      if (value.starts_with("SBMGA_LARGE_VALUE:")) return MakeInvalidRequestDiagnostic("mga.large_value", "legacy_text_locator_refused");
       if (!IsMgaLargeValueLocator(value)) { continue; }
       const auto payload_it = payloads.locator_payloads.find(value);
       if (payload_it == payloads.locator_payloads.end()) {
@@ -266,7 +239,7 @@ bool RowsContainLargeValueLocatorsImpl(const std::vector<CrudRowVersionRecord>& 
       if (CrudValueIsLargeValueLocator(value)) {
         return true;
       }
-      if (IsMgaLargeValueLocator(value)) {
+      if (IsMgaLargeValueLocator(value) || value.starts_with("SBMGA_LARGE_VALUE:")) {
         return true;
       }
     }
@@ -282,16 +255,16 @@ MgaLargeValueReclaimLoadResult LoadVisibleMgaLargeValueReclaims(
 
 MgaTemporaryLargeValueRecoveryResult ClassifyMgaTemporaryLargeValueRecovery(
     const EngineRequestContext& context,
-    const std::set<std::string>& temporary_tables,
+    const std::set<EngineUuid>& temporary_tables,
     const std::map<std::uint64_t, std::string>& transaction_states) {
   MgaTemporaryLargeValueRecoveryResult result;
   std::vector<std::string> records;
-  if (!ReadCompleteMgaTextRecords(LargeValueStorePath(context), &records)) {
+  if (!ReadLargeValueRecords(LargeValueStorePath(context), &records)) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.large_value", "large_value_store_read_failed");
     return result;
   }
-  std::set<std::string> committed_large_values;
-  std::set<std::string> reclaimed_large_values;
+  std::set<EngineUuid> committed_large_values;
+  std::set<EngineUuid> reclaimed_large_values;
   auto classify_event = [&](const std::uint64_t creator_tx) {
     if (creator_tx == 0) return std::string("committed");
     const auto found = transaction_states.find(creator_tx);
@@ -314,15 +287,15 @@ MgaTemporaryLargeValueRecoveryResult ClassifyMgaTemporaryLargeValueRecovery(
     const auto fields = SplitTabs(line);
     if (fields.size() >= 11 && fields[0] == kRowStoreMagic &&
         fields[1] == "LARGE_VALUE") {
-      if (temporary_tables.count(fields[4]) == 0) continue;
+      if (temporary_tables.count(LargeValueIdentity(fields[4])) == 0) continue;
       if (classify_event(ParseU64(fields[2])) == "committed") {
-        committed_large_values.insert(fields[3]);
+        committed_large_values.insert(LargeValueIdentity(fields[3]));
       }
     } else if (fields.size() >= 9 && fields[0] == kRowStoreMagic &&
                fields[1] == "LARGE_VALUE_RECLAIMED") {
-      if (temporary_tables.count(fields[4]) == 0) continue;
+      if (temporary_tables.count(LargeValueIdentity(fields[4])) == 0) continue;
       if (classify_event(ParseU64(fields[2])) == "committed") {
-        reclaimed_large_values.insert(fields[3]);
+        reclaimed_large_values.insert(LargeValueIdentity(fields[3]));
       }
     }
   }
@@ -348,9 +321,9 @@ EngineApiDiagnostic ExpandMgaLargeValueLocators(
 }
 
 EngineApiDiagnostic PersistMgaLargeValuesForRow(const EngineRequestContext& context,
-                                                const std::string& table_uuid,
-                                                const std::string& row_uuid,
-                                                const std::string& version_uuid,
+                                                const EngineUuid& table_uuid,
+                                                const EngineUuid& row_uuid,
+                                                const EngineUuid& version_uuid,
                                                 bool force_large_value,
                                                 std::vector<std::pair<std::string, std::string>>* values,
                                                 std::vector<EngineEvidenceReference>* evidence) {
@@ -389,6 +362,11 @@ EngineApiDiagnostic PersistMgaLargeValuesForRows(
   std::vector<std::string> lines;
 
   for (const auto& row : rows) {
+    if (!core::uuid::IsEngineIdentityUuid(row.table_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(row.row_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(row.version_uuid) || context.local_transaction_id == 0) {
+      return MakeInvalidRequestDiagnostic("mga.large_value", "identity_or_creator_invalid");
+    }
     if (row.values == nullptr) {
       return MakeInvalidRequestDiagnostic("mga.large_value", "values_required");
     }
@@ -420,17 +398,17 @@ EngineApiDiagnostic PersistMgaLargeValuesForRows(
 
       force_one_remaining = false;
       const std::string original = selected->second;
-      const std::string overflow_uuid = GenerateCrudEngineUuid("object");
+      const EngineUuid overflow_uuid = GenerateCrudEngineUuid("object");
       const std::string content_hash = std::to_string(ChecksumText(original));
       const std::uint64_t total_bytes =
           static_cast<std::uint64_t>(original.size());
       lines.push_back(JoinLine({kRowStoreMagic,
                                 "LARGE_VALUE",
                                 std::to_string(context.local_transaction_id),
-                                overflow_uuid,
-                                row.table_uuid,
-                                row.row_uuid,
-                                row.version_uuid,
+                                MetadataUuidBytes(overflow_uuid),
+                                MetadataUuidBytes(row.table_uuid),
+                                MetadataUuidBytes(row.row_uuid),
+                                MetadataUuidBytes(row.version_uuid),
                                 selected->first,
                                 std::to_string(total_bytes),
                                 content_hash,
@@ -448,14 +426,14 @@ EngineApiDiagnostic PersistMgaLargeValuesForRows(
         lines.push_back(JoinLine({kRowStoreMagic,
                                   "LARGE_VALUE_CHUNK",
                                   std::to_string(context.local_transaction_id),
-                                  overflow_uuid,
+                                  MetadataUuidBytes(overflow_uuid),
                                   std::to_string(ordinal++),
-                                  EncodeCrudText(fragment),
+                                  fragment,
                                   std::to_string(ChecksumText(fragment))}));
         ++counters->chunks_appended;
       }
       selected->second = MakeMgaLargeValueLocator(overflow_uuid,
-                                                  content_hash,
+                                                  ParseU64(content_hash),
                                                   total_bytes);
       pending_evidence.push_back({"mga_large_value_overflow", overflow_uuid});
     }
@@ -504,7 +482,7 @@ EngineApiDiagnostic AppendMgaLargeValueReclaimMarkersForRowVersion(
     std::uint64_t local_transaction_id,
     const CrudRowVersionRecord& row,
     const std::string& cleanup_reason,
-    std::set<std::string>* already_reclaimed_overflow_uuids,
+    std::set<EngineUuid>* already_reclaimed_overflow_uuids,
     std::uint64_t* reclaimed_count) {
   EngineRequestContext owner = context;
   owner.local_transaction_id = local_transaction_id;
@@ -514,19 +492,19 @@ EngineApiDiagnostic AppendMgaLargeValueReclaimMarkersForRowVersion(
     return MakeInvalidRequestDiagnostic("mga.large_value", "reclaim_state_required");
   }
   std::vector<std::string> records;
-  if (!ReadCompleteMgaTextRecords(LargeValueStorePath(context), &records)) {
+  if (!ReadLargeValueRecords(LargeValueStorePath(context), &records)) {
     return MakeInvalidRequestDiagnostic("mga.large_value", "large_value_store_read_failed");
   }
   for (const auto& line : records) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
         fields[1] != "LARGE_VALUE" ||
-        fields[4] != row.table_uuid ||
-        fields[5] != row.row_uuid ||
-        fields[6] != row.version_uuid) {
+        LargeValueIdentity(fields[4]) != row.table_uuid ||
+        LargeValueIdentity(fields[5]) != row.row_uuid ||
+        LargeValueIdentity(fields[6]) != row.version_uuid) {
       continue;
     }
-    const std::string& overflow_uuid = fields[3];
+    const EngineUuid overflow_uuid = LargeValueIdentity(fields[3]);
     if (already_reclaimed_overflow_uuids->count(overflow_uuid) != 0) {
       continue;
     }
@@ -534,17 +512,17 @@ EngineApiDiagnostic AppendMgaLargeValueReclaimMarkersForRowVersion(
     // to the caller's reclaimed set. Failure (including an allocation
     // exception) must not cause a subsequent retry to skip a missing marker.
     // Transfer of the prepared node after append needs no new allocation.
-    std::set<std::string> staged_reclaim;
+    std::set<EngineUuid> staged_reclaim;
     auto staged = staged_reclaim.insert(overflow_uuid);
     auto reclaimed_node = staged_reclaim.extract(staged.first);
     const std::string reclaim_line =
         JoinLine({kRowStoreMagic,
                   "LARGE_VALUE_RECLAIMED",
                   std::to_string(local_transaction_id),
-                  overflow_uuid,
-                  row.table_uuid,
-                  row.row_uuid,
-                  row.version_uuid,
+                  MetadataUuidBytes(overflow_uuid),
+                  MetadataUuidBytes(row.table_uuid),
+                  MetadataUuidBytes(row.row_uuid),
+                  MetadataUuidBytes(row.version_uuid),
                   fields[7],
                   cleanup_reason});
     if (!AppendLine(LargeValueStorePath(context), reclaim_line)) {

@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -296,10 +297,10 @@ opt::OptimizerPlanCacheKeyInput CacheInput() {
   input.compatibility_epoch = 8410;
   input.format_compatibility_epoch = 8411;
   input.route_epoch = 8412;
-  input.object_uuids = {"rel.customer.084"};
-  input.function_uuids = {"fn.mask.084"};
-  input.index_uuids = {"idx.customer.084"};
-  input.filespace_uuids = {"filespace.hot.084"};
+  input.object_uuids = {scratchbird::tests::FixtureUuid(1440, 1)};
+  input.function_uuids = {scratchbird::tests::FixtureUuid(1440, 2)};
+  input.index_uuids = {scratchbird::tests::FixtureUuid(1440, 3)};
+  input.filespace_uuids = {scratchbird::tests::FixtureUuid(1440, 4)};
   input.dependency_digests = {
       "sha256:dep-rel-084", "sha256:dep-idx-084",
       "sha256:dep-stats-084", "sha256:dep-route-084",
@@ -328,8 +329,8 @@ opt::CachedOptimizerPlan CachePlan(const opt::OptimizerPlanCacheKeyInput& input)
 
 opt::OptimizerPlanCachePersistenceRequest PersistenceRequest() {
   opt::OptimizerPlanCachePersistenceRequest request;
-  request.storage_scope_uuid = "catalog.plan_cache.scope.084";
-  request.persisted_by_principal_uuid = "principal.optimizer.084";
+  request.storage_scope_uuid = scratchbird::tests::FixtureUuid(1440, 5);
+  request.persisted_by_principal_uuid = scratchbird::tests::FixtureUuid(1440, 6);
   request.persisted_epoch = 8420;
   request.catalog_epoch = 8401;
   request.stats_epoch = 8402;

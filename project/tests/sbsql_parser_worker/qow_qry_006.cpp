@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -134,7 +135,7 @@ sbsql::NativeRelationalBindingContext ScalarBindingContext() {
 
 sbsql::ParserConfig ParserConfigForTest() {
   sbsql::ParserConfig config;
-  config.parser_uuid = "019f0000-0000-7500-8000-000000000609";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000000609");
   config.bundle_contract_id = "sbp_sbsql@qow-qry-006-v1";
   config.build_id = "qow-qry-006-v1";
   return config;
@@ -173,31 +174,22 @@ bool HasOperand(const sbsql::SblrEnvelope& envelope,
 api::EngineRequestContext ScalarEngineContext() {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000000610";
-  context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000000611";
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000000612";
-  context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7100-8000-000000000602";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000000610");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000000611");
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000000612");
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000000602");
   context.local_transaction_id = 601;
   context.snapshot_visible_through_local_transaction_id = 602;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000000613";
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000000613");
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f0000-0000-7110-8000-000000000602";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7110-8000-000000000602");
   context.catalog_generation_id = 602;
   context.security_epoch = 603;
   context.resource_epoch = 604;
-  context.optimizer_capability_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006001";
-  context.optimizer_resource_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006002";
-  context.optimizer_route_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006003";
+  context.optimizer_capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006001");
+  context.optimizer_resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006002");
+  context.optimizer_route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006003");
   context.optimizer_route_epoch = 605;
   context.optimizer_route_generation = 606;
   context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
@@ -311,31 +303,22 @@ bool ValidateComposableScalarLowering() {
 
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000000610";
-  context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000000611";
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000000612";
-  context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7100-8000-000000000602";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000000610");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000000611");
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000000612");
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000000602");
   context.local_transaction_id = 601;
   context.snapshot_visible_through_local_transaction_id = 602;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000000613";
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000000613");
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f0000-0000-7110-8000-000000000602";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7110-8000-000000000602");
   context.catalog_generation_id = 602;
   context.security_epoch = 603;
   context.resource_epoch = 604;
-  context.optimizer_capability_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006001";
-  context.optimizer_resource_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006002";
-  context.optimizer_route_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000006003";
+  context.optimizer_capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006001");
+  context.optimizer_resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006002");
+  context.optimizer_route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000006003");
   context.optimizer_route_epoch = 605;
   context.optimizer_route_generation = 606;
   context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
@@ -450,28 +433,23 @@ bool ValidateScalarStatementContextRefusal() {
 
   bool passed = true;
   auto context = ScalarEngineContext();
-  context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000000699";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000000699");
   passed &= Require(refused_before_publication(std::move(context)),
                     "statement mismatch published scalar query evidence");
   context = ScalarEngineContext();
-  context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000000699";
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000000699");
   passed &= Require(refused_before_publication(std::move(context)),
                     "transaction mismatch published scalar query evidence");
   context = ScalarEngineContext();
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000000699";
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000000699");
   passed &= Require(refused_before_publication(std::move(context)),
                     "data snapshot mismatch published scalar query evidence");
   context = ScalarEngineContext();
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000000699";
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000000699");
   passed &= Require(refused_before_publication(std::move(context)),
                     "metadata snapshot mismatch published scalar query evidence");
   context = ScalarEngineContext();
-  context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7100-8000-000000000699";
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000000699");
   passed &= Require(refused_before_publication(std::move(context)),
                     "catalog mismatch published scalar query evidence");
   context = ScalarEngineContext();

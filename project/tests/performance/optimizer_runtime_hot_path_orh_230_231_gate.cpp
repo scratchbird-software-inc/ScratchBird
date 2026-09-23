@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -51,17 +52,16 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind,
   return typed.value;
 }
 
-std::string UuidText(platform::UuidKind kind,
+api::EngineUuid NativeIdentity(platform::UuidKind kind,
                      platform::u64 millis,
                      platform::byte suffix) {
-  return uuid::UuidToString(GeneratedUuid(kind, millis, suffix).value);
+  return GeneratedUuid(kind, millis, suffix).value;
 }
 
-std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
+std::vector<platform::byte> EncodedKey(const api::EngineUuid& index_uuid,
                                        const std::string& key) {
   const auto descriptor_uuid =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           index_uuid);
+      uuid::MakeTypedUuid(platform::UuidKind::object, index_uuid);
   Require(descriptor_uuid.ok(), "index uuid parse for key encoding failed");
   idx::IndexKeyEncodingComponent component;
   component.kind = idx::IndexKeyComponentKind::scalar;
@@ -73,29 +73,26 @@ std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
   return encoded.encoded;
 }
 
-page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
+page::IndexBtreePhysicalTree MakeTree(const api::EngineUuid& index_uuid) {
   const auto parsed =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           index_uuid);
+      uuid::MakeTypedUuid(platform::UuidKind::object, index_uuid);
   Require(parsed.ok(), "index uuid parse failed");
   auto initialized = page::InitializeIndexBtreePhysicalTree(parsed.value, 4096);
   Require(initialized.ok(), "physical btree init failed");
   return std::move(initialized.tree);
 }
 
-page::IndexBtreeCell Cell(const std::string& index_uuid,
+page::IndexBtreeCell Cell(const api::EngineUuid& index_uuid,
                           const std::string& key,
-                          const std::string& row_uuid,
-                          const std::string& version_uuid) {
+                          const api::EngineUuid& row_uuid,
+                          const api::EngineUuid& version_uuid) {
   page::IndexBtreeCell cell;
   cell.key_ordinal = 0;
   cell.encoded_key = EncodedKey(index_uuid, key);
   const auto parsed_row =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::row,
-                                           row_uuid);
+      uuid::MakeTypedUuid(platform::UuidKind::row, row_uuid);
   const auto parsed_version =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::row,
-                                           version_uuid);
+      uuid::MakeTypedUuid(platform::UuidKind::row, version_uuid);
   Require(parsed_row.ok() && parsed_version.ok(),
           "row/version uuid parse failed");
   cell.row_uuid = parsed_row.value;
@@ -123,7 +120,7 @@ void InsertCell(page::IndexBtreePhysicalTree* tree,
 }
 
 std::size_t CountKey(const page::IndexBtreePhysicalTree& tree,
-                     const std::string& index_uuid,
+                     const api::EngineUuid& index_uuid,
                      const std::string& key) {
   const auto scan =
       page::PointLookupIndexBtreePhysicalTree(tree, EncodedKey(index_uuid, key));
@@ -131,8 +128,8 @@ std::size_t CountKey(const page::IndexBtreePhysicalTree& tree,
   return scan.locators.size();
 }
 
-api::CrudIndexRecord Index(std::string uuid,
-                           std::string table_uuid,
+api::CrudIndexRecord Index(api::EngineUuid uuid,
+                           api::EngineUuid table_uuid,
                            std::string family,
                            std::string column,
                            bool unique = false) {
@@ -150,8 +147,8 @@ api::CrudIndexRecord Index(std::string uuid,
   return index;
 }
 
-api::DmlIndexWriteRowImage Row(std::string row_uuid,
-                               std::string version_uuid,
+api::DmlIndexWriteRowImage Row(api::EngineUuid row_uuid,
+                               api::EngineUuid version_uuid,
                                std::string id,
                                std::string name,
                                std::string payload = "payload") {
@@ -171,7 +168,7 @@ api::DmlIndexWriteEvent BaseEvent(api::DmlIndexWriteOperation operation,
   event.operation = operation;
   event.index = index;
   event.table_uuid = index.table_uuid;
-  event.transaction_uuid = UuidText(platform::UuidKind::transaction,
+  event.transaction_uuid = NativeIdentity(platform::UuidKind::transaction,
                                     1702300000000ull,
                                     static_cast<platform::byte>(0x20 + ordinal));
   event.local_transaction_id = 230 + ordinal;
@@ -202,12 +199,20 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view id) {
   return std::any_of(evidence.begin(), evidence.end(), [&](const auto& item) {
     return item.evidence_kind == kind &&
-           item.evidence_id.find(id) != std::string::npos;
+           scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos;
+  });
+}
+
+bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
+                 std::string_view kind, const api::EngineUuid& identity) {
+  return std::any_of(evidence.begin(), evidence.end(), [&](const auto& item) {
+    return item.evidence_kind == kind &&
+           scratchbird::tests::EvidenceIdentityEquals(item.evidence_id, identity);
   });
 }
 
 api::DmlTargetAccessPlanRequest BasePlanRequest(
-    const std::string& relation_uuid) {
+    const api::EngineUuid& relation_uuid) {
   api::DmlTargetAccessPlanRequest request;
   request.mutation_kind = "orh_230_locator_batch";
   request.relation_uuid = relation_uuid;
@@ -229,8 +234,8 @@ api::DmlTargetAccessPlanRequest BasePlanRequest(
 }
 
 api::DmlTargetAccessPlan RowUuidListPlan(
-    const std::string& relation_uuid,
-    const std::vector<std::string>& row_uuids) {
+    const api::EngineUuid& relation_uuid,
+    const std::vector<api::EngineUuid>& row_uuids) {
   auto request = BasePlanRequest(relation_uuid);
   request.predicate_kind = "row_uuid_in_list";
   request.row_uuids = row_uuids;
@@ -239,8 +244,8 @@ api::DmlTargetAccessPlan RowUuidListPlan(
   return plan;
 }
 
-api::DmlTargetAccessPlan IndexPlan(const std::string& relation_uuid,
-                                   const std::string& index_uuid,
+api::DmlTargetAccessPlan IndexPlan(const api::EngineUuid& relation_uuid,
+                                   const api::EngineUuid& index_uuid,
                                    std::string predicate_kind,
                                    bool unique) {
   auto request = BasePlanRequest(relation_uuid);
@@ -340,26 +345,26 @@ void RequireWriteAuthorityEvidence(
 }
 
 void TestUpdateDeleteMergeAndConflictConsumeLocatorBatches() {
-  const std::string table_uuid =
-      UuidText(platform::UuidKind::object, 1702300100000ull, 0x31);
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1702300101000ull, 0x32);
+  const api::EngineUuid table_uuid =
+      NativeIdentity(platform::UuidKind::object, 1702300100000ull, 0x31);
+  const api::EngineUuid index_uuid =
+      NativeIdentity(platform::UuidKind::object, 1702300101000ull, 0x32);
   auto tree = MakeTree(index_uuid);
   const auto index =
       Index(index_uuid, table_uuid, api::kCrudIndexFamilyBtree, "name");
 
-  const std::string update_row =
-      UuidText(platform::UuidKind::row, 1702300102000ull, 0x33);
-  const std::string delete_row =
-      UuidText(platform::UuidKind::row, 1702300103000ull, 0x34);
-  const std::string merge_row =
-      UuidText(platform::UuidKind::row, 1702300104000ull, 0x35);
-  const std::string update_v1 =
-      UuidText(platform::UuidKind::row, 1702300105000ull, 0x36);
-  const std::string delete_v1 =
-      UuidText(platform::UuidKind::row, 1702300106000ull, 0x37);
-  const std::string merge_v1 =
-      UuidText(platform::UuidKind::row, 1702300107000ull, 0x38);
+  const api::EngineUuid update_row =
+      NativeIdentity(platform::UuidKind::row, 1702300102000ull, 0x33);
+  const api::EngineUuid delete_row =
+      NativeIdentity(platform::UuidKind::row, 1702300103000ull, 0x34);
+  const api::EngineUuid merge_row =
+      NativeIdentity(platform::UuidKind::row, 1702300104000ull, 0x35);
+  const api::EngineUuid update_v1 =
+      NativeIdentity(platform::UuidKind::row, 1702300105000ull, 0x36);
+  const api::EngineUuid delete_v1 =
+      NativeIdentity(platform::UuidKind::row, 1702300106000ull, 0x37);
+  const api::EngineUuid merge_v1 =
+      NativeIdentity(platform::UuidKind::row, 1702300107000ull, 0x38);
 
   InsertCell(&tree, Cell(index_uuid, "alpha", update_row, update_v1));
   InsertCell(&tree, Cell(index_uuid, "bravo", delete_row, delete_v1));
@@ -415,15 +420,15 @@ void TestUpdateDeleteMergeAndConflictConsumeLocatorBatches() {
                       "0:0:matched"),
           "MERGE locator source/action evidence missing");
 
-  const std::string unique_index_uuid =
-      UuidText(platform::UuidKind::object, 1702300108000ull, 0x39);
+  const api::EngineUuid unique_index_uuid =
+      NativeIdentity(platform::UuidKind::object, 1702300108000ull, 0x39);
   auto unique_tree = MakeTree(unique_index_uuid);
   const auto unique_index =
       Index(unique_index_uuid, table_uuid, "unique_btree", "id", true);
-  const std::string conflict_row =
-      UuidText(platform::UuidKind::row, 1702300109000ull, 0x3a);
-  const std::string conflict_v1 =
-      UuidText(platform::UuidKind::row, 1702300110000ull, 0x3b);
+  const api::EngineUuid conflict_row =
+      NativeIdentity(platform::UuidKind::row, 1702300109000ull, 0x3a);
+  const api::EngineUuid conflict_v1 =
+      NativeIdentity(platform::UuidKind::row, 1702300110000ull, 0x3b);
   InsertCell(&unique_tree,
              Cell(unique_index_uuid, "42", conflict_row, conflict_v1),
              true);
@@ -451,7 +456,7 @@ void TestUpdateDeleteMergeAndConflictConsumeLocatorBatches() {
   update.has_new_row = true;
   update.new_row =
       Row(update_row,
-          UuidText(platform::UuidKind::row, 1702300111000ull, 0x3c),
+          NativeIdentity(platform::UuidKind::row, 1702300111000ull, 0x3c),
           "1",
           "delta");
   events.push_back(update);
@@ -467,7 +472,7 @@ void TestUpdateDeleteMergeAndConflictConsumeLocatorBatches() {
   merge_update.has_new_row = true;
   merge_update.new_row =
       Row(merge_row,
-          UuidText(platform::UuidKind::row, 1702300112000ull, 0x3d),
+          NativeIdentity(platform::UuidKind::row, 1702300112000ull, 0x3d),
           "3",
           "echo");
   events.push_back(merge_update);
@@ -486,10 +491,10 @@ void TestUpdateDeleteMergeAndConflictConsumeLocatorBatches() {
 }
 
 void TestFailClosedLocatorAndRouteLimits() {
-  const std::string table_uuid =
-      UuidText(platform::UuidKind::object, 1702300200000ull, 0x41);
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1702300201000ull, 0x42);
+  const api::EngineUuid table_uuid =
+      NativeIdentity(platform::UuidKind::object, 1702300200000ull, 0x41);
+  const api::EngineUuid index_uuid =
+      NativeIdentity(platform::UuidKind::object, 1702300201000ull, 0x42);
 
   auto empty = BasePlanRequest(table_uuid);
   empty.predicate_kind = "row_uuid_in_list";
@@ -546,18 +551,18 @@ void TestFailClosedLocatorAndRouteLimits() {
   idx::PersistentSecondaryIndexDeltaLedger hash_ledger;
   auto hash_update =
       BaseEvent(api::DmlIndexWriteOperation::update, hash_index, 3);
-  const std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1702300202000ull, 0x43);
+  const api::EngineUuid row_uuid =
+      NativeIdentity(platform::UuidKind::row, 1702300202000ull, 0x43);
   hash_update.has_old_row = true;
   hash_update.old_row =
       Row(row_uuid,
-          UuidText(platform::UuidKind::row, 1702300203000ull, 0x44),
+          NativeIdentity(platform::UuidKind::row, 1702300203000ull, 0x44),
           "1",
           "hash-old");
   hash_update.has_new_row = true;
   hash_update.new_row =
       Row(row_uuid,
-          UuidText(platform::UuidKind::row, 1702300204000ull, 0x45),
+          NativeIdentity(platform::UuidKind::row, 1702300204000ull, 0x45),
           "1",
           "hash-new");
   auto write_result = ApplyWriteBatch({hash_update}, nullptr, &hash_ledger, true);
@@ -573,13 +578,13 @@ void TestFailClosedLocatorAndRouteLimits() {
   reference_update_event.has_old_row = true;
   reference_update_event.old_row =
       Row(row_uuid,
-          UuidText(platform::UuidKind::row, 1702300205000ull, 0x46),
+          NativeIdentity(platform::UuidKind::row, 1702300205000ull, 0x46),
           "1",
           "reference-old");
   reference_update_event.has_new_row = true;
   reference_update_event.new_row =
       Row(row_uuid,
-          UuidText(platform::UuidKind::row, 1702300206000ull, 0x47),
+          NativeIdentity(platform::UuidKind::row, 1702300206000ull, 0x47),
           "1",
           "reference-new");
   auto reference_tree = MakeTree(index_uuid);
@@ -599,13 +604,13 @@ void TestFailClosedLocatorAndRouteLimits() {
   candidate_update.has_old_row = true;
   candidate_update.old_row =
       Row(row_uuid,
-          UuidText(platform::UuidKind::row, 1702300207000ull, 0x48),
+          NativeIdentity(platform::UuidKind::row, 1702300207000ull, 0x48),
           "1",
           "candidate-old");
   candidate_update.has_new_row = true;
   candidate_update.new_row =
       Row(row_uuid,
-          UuidText(platform::UuidKind::row, 1702300208000ull, 0x49),
+          NativeIdentity(platform::UuidKind::row, 1702300208000ull, 0x49),
           "1",
           "candidate-new");
   auto candidate_tree = MakeTree(index_uuid);
@@ -618,19 +623,19 @@ void TestFailClosedLocatorAndRouteLimits() {
 }
 
 void TestHotLikeAndDeferredDeltaUpdateFastPaths() {
-  const std::string table_uuid =
-      UuidText(platform::UuidKind::object, 1702310100000ull, 0x51);
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1702310101000ull, 0x52);
+  const api::EngineUuid table_uuid =
+      NativeIdentity(platform::UuidKind::object, 1702310100000ull, 0x51);
+  const api::EngineUuid index_uuid =
+      NativeIdentity(platform::UuidKind::object, 1702310101000ull, 0x52);
   const auto index =
       Index(index_uuid, table_uuid, api::kCrudIndexFamilyBtree, "name");
   auto tree = MakeTree(index_uuid);
-  const std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1702310102000ull, 0x53);
-  const std::string v1 =
-      UuidText(platform::UuidKind::row, 1702310103000ull, 0x54);
-  const std::string v2 =
-      UuidText(platform::UuidKind::row, 1702310104000ull, 0x55);
+  const api::EngineUuid row_uuid =
+      NativeIdentity(platform::UuidKind::row, 1702310102000ull, 0x53);
+  const api::EngineUuid v1 =
+      NativeIdentity(platform::UuidKind::row, 1702310103000ull, 0x54);
+  const api::EngineUuid v2 =
+      NativeIdentity(platform::UuidKind::row, 1702310104000ull, 0x55);
   InsertCell(&tree, Cell(index_uuid, "alpha", row_uuid, v1));
 
   auto unchanged = BaseEvent(api::DmlIndexWriteOperation::update, index, 6);
@@ -652,8 +657,8 @@ void TestHotLikeAndDeferredDeltaUpdateFastPaths() {
                       index_uuid),
           "HOT-like MGA chain recheck evidence missing");
 
-  const std::string hash_index_uuid =
-      UuidText(platform::UuidKind::object, 1702310109000ull, 0x5a);
+  const api::EngineUuid hash_index_uuid =
+      NativeIdentity(platform::UuidKind::object, 1702310109000ull, 0x5a);
   const auto hash_index =
       Index(hash_index_uuid, table_uuid, api::kCrudIndexFamilyHash, "name");
   idx::PersistentSecondaryIndexDeltaLedger ledger;
@@ -663,7 +668,7 @@ void TestHotLikeAndDeferredDeltaUpdateFastPaths() {
   changed.has_new_row = true;
   changed.new_row =
       Row(row_uuid,
-          UuidText(platform::UuidKind::row, 1702310105000ull, 0x56),
+          NativeIdentity(platform::UuidKind::row, 1702310105000ull, 0x56),
           "1",
           "bravo");
   write_result = ApplyWriteBatch({changed}, nullptr, &ledger, true);
@@ -689,8 +694,8 @@ void TestHotLikeAndDeferredDeltaUpdateFastPaths() {
                       "true"),
           "deferred delta MGA authority evidence missing");
 
-  const std::string unique_uuid =
-      UuidText(platform::UuidKind::object, 1702310106000ull, 0x57);
+  const api::EngineUuid unique_uuid =
+      NativeIdentity(platform::UuidKind::object, 1702310106000ull, 0x57);
   const auto unique =
       Index(unique_uuid, table_uuid, "unique_btree", "id", true);
   idx::PersistentSecondaryIndexDeltaLedger unique_ledger;
@@ -699,13 +704,13 @@ void TestHotLikeAndDeferredDeltaUpdateFastPaths() {
   unique_update.has_old_row = true;
   unique_update.old_row =
       Row(row_uuid,
-          UuidText(platform::UuidKind::row, 1702310107000ull, 0x58),
+          NativeIdentity(platform::UuidKind::row, 1702310107000ull, 0x58),
           "1",
           "alpha");
   unique_update.has_new_row = true;
   unique_update.new_row =
       Row(row_uuid,
-          UuidText(platform::UuidKind::row, 1702310108000ull, 0x59),
+          NativeIdentity(platform::UuidKind::row, 1702310108000ull, 0x59),
           "2",
           "alpha");
   auto unique_tree = MakeTree(unique_uuid);

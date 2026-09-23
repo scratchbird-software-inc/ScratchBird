@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "storage_metrics_management.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -42,15 +43,6 @@ bool SawMetric(const metrics::StorageMetricsManagementResult& result,
   return false;
 }
 
-std::string BundleText(const metrics::StorageMetricsManagementResult& result) {
-  std::string out;
-  for (const auto& line : result.support_bundle_lines) {
-    out += line;
-    out += '\n';
-  }
-  return out;
-}
-
 metrics::StorageMetricsManagementRequest AuthorizedRequest() {
   metrics::StorageMetricsManagementRequest request;
   request.metrics_read_authorized = true;
@@ -58,9 +50,9 @@ metrics::StorageMetricsManagementRequest AuthorizedRequest() {
   request.allow_sensitive_labels = false;
   request.observed_metric_generation = 7;
   request.current_metric_generation = 7;
-  request.database_uuid = "database-storage-secret";
-  request.filespace_uuid = "filespace-storage-secret";
-  request.node_uuid = "node-storage-1";
+  request.database_uuid = scratchbird::tests::FixtureUuid(1037, 1);
+  request.filespace_uuid = scratchbird::tests::FixtureUuid(1037, 2);
+  request.node_uuid = scratchbird::tests::FixtureUuid(1037, 3);
   request.local_path_sample = "/tmp/raw-storage-path";
   request.protected_payload_sample = "RAW_STORAGE_PROTECTED_PAYLOAD";
   return request;
@@ -114,19 +106,35 @@ void TestRedactionAuthorizationAndStaleInvalidation() {
   const auto result =
       metrics::PublishStorageMetricsManagementSurface(AuthorizedRequest());
   Require(result.redaction_applied, "MDF-018 redaction flag missing");
-  const std::string bundle = BundleText(result);
-  Require(Contains(bundle, "namespace=sys.metrics.storage"),
-          "MDF-018 support bundle namespace missing");
-  Require(Contains(bundle, "database_uuid=[redacted]"),
-          "MDF-018 database UUID was not redacted");
-  Require(Contains(bundle, "local_path=[redacted]"),
-          "MDF-018 local path was not redacted");
-  Require(Contains(bundle, "protected_payload=[redacted]"),
-          "MDF-018 protected payload was not redacted");
-  Require(!Contains(bundle, "RAW_STORAGE_PROTECTED_PAYLOAD"),
-          "MDF-018 support bundle leaked protected payload");
-  Require(!Contains(bundle, "/tmp/raw-storage-path"),
-          "MDF-018 support bundle leaked local path");
+  Require(result.ok && !result.support_bundle_records.empty(),
+          "MDF-018 binary support records missing");
+  for (const auto& record : result.support_bundle_records) {
+    Require(record.identities_redacted && record.database_uuid.is_nil() && record.filespace_uuid.is_nil(),
+            "MDF-018 storage identities were not redacted");
+    Require(record.local_path_redacted && record.protected_payload_redacted,
+            "MDF-018 sensitive payload metadata missing");
+    const auto& bytes = record.metric.encoded_value;
+    Require(bytes.size() >= metrics::kMetricValueHeaderBytes,
+            "MDF-018 binary metric frame missing");
+    const std::string payload(bytes.begin(), bytes.end());
+    Require(!Contains(payload, "RAW_STORAGE_PROTECTED_PAYLOAD") &&
+            !Contains(payload, "/tmp/raw-storage-path"),
+            "MDF-018 binary support records leaked sensitive payload");
+  }
+  auto permitted = AuthorizedRequest();
+  permitted.allow_sensitive_labels = true;
+  const auto native = metrics::PublishStorageMetricsManagementSurface(permitted);
+  Require(native.ok && !native.support_bundle_records.empty(),
+          "MDF-018 native support records missing");
+  for (const auto& record : native.support_bundle_records) {
+    Require(!record.identities_redacted && record.database_uuid == permitted.database_uuid &&
+            record.filespace_uuid == permitted.filespace_uuid,
+            "MDF-018 storage identities were not preserved as binary16");
+  }
+  auto missing_identity = AuthorizedRequest(); missing_identity.database_uuid = {};
+  const auto invalid = metrics::PublishStorageMetricsManagementSurface(missing_identity);
+  Require(!invalid.ok && invalid.visible_metrics.empty() && invalid.support_bundle_records.empty(),
+          "MDF-018 missing identity was replaced by a fabricated UUID");
 
   auto unauthorized = AuthorizedRequest();
   unauthorized.metrics_read_authorized = false;

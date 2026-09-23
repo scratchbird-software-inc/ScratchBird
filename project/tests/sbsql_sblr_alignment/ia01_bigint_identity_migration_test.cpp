@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "hash_digest.hpp"
@@ -29,35 +30,33 @@ namespace memory = scratchbird::core::memory;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr const char* kLegacy = "67000000-696e-7436-b400-000000000000";
-constexpr const char* kCanonicalBigintDescriptor =
-    "019d0000-0000-7000-8000-00000000d711";
-constexpr const char* kCanonical = "019d0000-0000-7000-8000-00000000d712";
-constexpr const char* kCanonicalBoolean =
-    "01000000-626f-7f6c-a561-6e0000000000";
-constexpr const char* kLegacyInt32 = "66000000-696e-7433-b200-000000000000";
-constexpr const char* kCanonicalInt32Descriptor =
-    "019d0000-0000-7000-8000-00000000d716";
-constexpr const char* kCanonicalInt32Type =
-    "019d0000-0000-7000-8000-00000000d717";
-constexpr const char* kCanonicalDecimalDescriptor =
-    "a0000000-6465-7369-ad61-6c0000000000";
-constexpr const char* kCanonicalDecimalType =
-    "019d0000-0000-7000-8000-00000000d713";
-constexpr const char* kCanonicalInt128Descriptor =
-    "019d0000-0000-7000-8000-00000000d714";
-constexpr const char* kCanonicalInt128Type =
-    "019d0000-0000-7000-8000-00000000d715";
-constexpr const char* kLegacyText =
-    "2c010000-6368-7172-a163-746572000000";
-constexpr const char* kCanonicalTextDescriptor =
-    "019d0000-0000-7000-8000-00000000d718";
-constexpr const char* kCanonicalTextType =
-    "019d0000-0000-7000-8000-00000000d719";
-constexpr const char* kCanonicalTextCodec =
-    "019d0000-0000-7000-8000-00000000d71a";
-constexpr const char* kDatatypeCatalogSnapshot =
-    "019d0000-0000-7000-8000-00000000d701";
+using NativeUuid = scratchbird::core::platform::Uuid;
+std::string IdentityBytes(const NativeUuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()),id.bytes.size()};
+}
+NativeUuid FixtureIdentity(std::string_view bytes) {
+  if (bytes.size()!=16) throw std::invalid_argument("fixture UUID must be binary16");
+  NativeUuid id;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()),16,id.bytes.begin());
+  return id;
+}
+
+const std::string kLegacy = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("67000000-696e-7436-b400-000000000000"));
+const std::string kCanonicalBigintDescriptor = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"));
+const std::string kCanonical = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712"));
+const std::string kCanonicalBoolean = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"));
+const std::string kLegacyInt32 = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("66000000-696e-7433-b200-000000000000"));
+const std::string kCanonicalInt32Descriptor = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716"));
+const std::string kCanonicalInt32Type = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717"));
+const std::string kCanonicalDecimalDescriptor = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("a0000000-6465-7369-ad61-6c0000000000"));
+const std::string kCanonicalDecimalType = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d713"));
+const std::string kCanonicalInt128Descriptor = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714"));
+const std::string kCanonicalInt128Type = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d715"));
+const std::string kLegacyText = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("2c010000-6368-7172-a163-746572000000"));
+const std::string kCanonicalTextDescriptor = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718"));
+const std::string kCanonicalTextType = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719"));
+const std::string kCanonicalTextCodec = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71a"));
+const std::string kDatatypeCatalogSnapshot = IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"));
 constexpr std::size_t kTextMigrationHeaderFields = 17;
 constexpr std::size_t kTextMigrationFieldsPerRow = 25;
 constexpr std::size_t kTextMigrationSingleRowFields =
@@ -138,7 +137,7 @@ void ConfigureMemoryFixture() {
 std::string Id(UuidKind kind, std::uint64_t salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, 1786830000000ull + salt);
   Require(generated.ok(), "uuid generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return IdentityBytes(generated.value.value);
 }
 
 struct Fixture {
@@ -328,23 +327,11 @@ std::uint64_t CanonicalU64(const std::string_view encoded) {
   return value;
 }
 
-std::string CanonicalUuidBytes(const std::string_view uuid) {
-  Require(uuid.size() == 36 && uuid[8] == '-' && uuid[13] == '-' &&
-              uuid[18] == '-' && uuid[23] == '-',
-          "UUID field shape is noncanonical");
-  std::string hex;
-  hex.reserve(32);
-  for (std::size_t index = 0; index < uuid.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    Require((uuid[index] >= '0' && uuid[index] <= '9') ||
-                (uuid[index] >= 'a' && uuid[index] <= 'f'),
-            "UUID field hex is noncanonical");
-    hex.push_back(uuid[index]);
-  }
-  const auto raw = HexDecode(hex);
-  Require(raw.size() == 16, "UUID field did not decode to 16 bytes");
-  return raw;
+std::string CanonicalUuidBytes(std::string_view bytes) {
+  Require(bytes.size()==16,"UUID field must be exactly binary16");
+  return std::string(bytes);
 }
+std::string CanonicalUuidBytes(const NativeUuid& id) { return IdentityBytes(id); }
 
 void AppendU32Le(std::string* out, const std::uint32_t value) {
   Require(out != nullptr, "u32 output is missing");
@@ -734,16 +721,16 @@ Fixture MakeFixture(const std::string_view mode) {
   for (const auto& charset : created.state.resource_seed_catalog.charsets) {
     if ((charset.canonical_name == "UTF8" ||
          charset.canonical_name == "UTF-8") &&
-        !charset.default_collation_uuid.empty()) {
-      fixture.charset_uuid = charset.resource_uuid;
+        !charset.default_collation_uuid.is_nil()) {
+      fixture.charset_uuid = IdentityBytes(charset.resource_uuid);
       fixture.charset_generation = charset.family_epoch;
-      fixture.collation_uuid = charset.default_collation_uuid;
+      fixture.collation_uuid = IdentityBytes(charset.default_collation_uuid);
       break;
     }
   }
   for (const auto& collation :
        created.state.resource_seed_catalog.collations) {
-    if (collation.resource_uuid == fixture.collation_uuid) {
+    if (collation.resource_uuid == FixtureIdentity(fixture.collation_uuid)) {
       fixture.collation_generation = collation.family_epoch;
       break;
     }
@@ -757,7 +744,7 @@ Fixture MakeFixture(const std::string_view mode) {
       fixture.path.string(),
       scratchbird::transaction::mga::MakeEmptyLocalTransactionInventory());
   Require(inventory.ok(), "transaction inventory initialization failed");
-  fixture.database_uuid = uuid::UuidToString(config.database_uuid.value);
+  fixture.database_uuid = IdentityBytes(config.database_uuid.value);
   return fixture;
 }
 
@@ -765,16 +752,15 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   api::EngineRequestContext context;
   context.request_id = "ia01-bigint-identity-migration";
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.current_schema_uuid.canonical = fixture.baseline_schema_uuid;
-  context.session_uuid.canonical = Id(UuidKind::object, 3);
-  context.principal_uuid.canonical = Id(UuidKind::principal, 4);
+  context.database_uuid = FixtureIdentity(fixture.database_uuid);
+  context.current_schema_uuid = FixtureIdentity(fixture.baseline_schema_uuid);
+  context.session_uuid = FixtureIdentity(Id(UuidKind::object, 3));
+  context.principal_uuid = FixtureIdentity(Id(UuidKind::principal, 4));
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = fixture.resource_epoch;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
@@ -814,7 +800,7 @@ void Rollback(const api::EngineRequestContext& context) {
 
 api::CrudTableRecord LegacyTable(const Fixture& fixture) {
   api::CrudTableRecord table;
-  table.table_uuid = fixture.table_uuid;
+  table.table_uuid = FixtureIdentity(fixture.table_uuid);
   table.default_name = "migration_target";
   table.columns.push_back({"id", "column_uuid=" + fixture.column_uuid +
       ";canonical=bigint;type_uuid=" + kLegacy + ";nullability=non_null"});
@@ -824,17 +810,17 @@ api::CrudTableRecord LegacyTable(const Fixture& fixture) {
 api::MgaBigintIdentityMigrationRequest Migration(const Fixture& fixture,
                                                   std::uint64_t old_generation) {
   api::MgaBigintIdentityMigrationRequest request;
-  request.prior_catalog_snapshot_uuid = Id(UuidKind::object, 30);
-  request.new_catalog_snapshot_uuid = Id(UuidKind::object, 31);
+  request.prior_catalog_snapshot_uuid = FixtureIdentity(Id(UuidKind::object, 30));
+  request.new_catalog_snapshot_uuid = FixtureIdentity(Id(UuidKind::object, 31));
   request.prior_catalog_generation = 7;
   request.new_catalog_generation = 8;
-  request.rows.push_back({fixture.table_uuid, fixture.column_uuid, old_generation});
+  request.rows.push_back({FixtureIdentity(fixture.table_uuid), FixtureIdentity(fixture.column_uuid), old_generation});
   return request;
 }
 
 api::CrudTableRecord LegacyInt32Table(const Fixture& fixture) {
   api::CrudTableRecord table;
-  table.table_uuid = fixture.int32_table_uuid;
+  table.table_uuid = FixtureIdentity(fixture.int32_table_uuid);
   table.default_name = "int32_migration_target";
   const auto descriptor = [](const std::string& column_uuid,
                              const char* name) {
@@ -852,7 +838,7 @@ api::CrudTableRecord LegacyInt32Table(const Fixture& fixture) {
 
 api::CrudTableRecord ContradictoryInt32Table(const Fixture& fixture) {
   api::CrudTableRecord table;
-  table.table_uuid = fixture.int32_conflict_table_uuid;
+  table.table_uuid = FixtureIdentity(fixture.int32_conflict_table_uuid);
   table.default_name = "int32_migration_conflict";
   table.columns.push_back({
       "id",
@@ -867,20 +853,20 @@ api::MgaInt32IdentityMigrationRequest Int32Migration(
     const Fixture& fixture,
     std::uint64_t old_generation) {
   api::MgaInt32IdentityMigrationRequest request;
-  request.prior_catalog_snapshot_uuid = Id(UuidKind::object, 32);
-  request.new_catalog_snapshot_uuid = Id(UuidKind::object, 33);
+  request.prior_catalog_snapshot_uuid = FixtureIdentity(Id(UuidKind::object, 32));
+  request.new_catalog_snapshot_uuid = FixtureIdentity(Id(UuidKind::object, 33));
   request.prior_catalog_generation = 11;
   request.new_catalog_generation = 12;
   request.rows.push_back(
-      {fixture.int32_table_uuid, fixture.int32_column_a_uuid, old_generation});
+      {FixtureIdentity(fixture.int32_table_uuid), FixtureIdentity(fixture.int32_column_a_uuid), old_generation});
   request.rows.push_back(
-      {fixture.int32_table_uuid, fixture.int32_column_b_uuid, old_generation});
+      {FixtureIdentity(fixture.int32_table_uuid), FixtureIdentity(fixture.int32_column_b_uuid), old_generation});
   return request;
 }
 
 api::CrudTableRecord LegacyTextTable(const Fixture& fixture) {
   api::CrudTableRecord table;
-  table.table_uuid = fixture.text_table_uuid;
+  table.table_uuid = FixtureIdentity(fixture.text_table_uuid);
   table.default_name = "text_migration_target";
   table.columns.push_back({
       "payload",
@@ -891,7 +877,7 @@ api::CrudTableRecord LegacyTextTable(const Fixture& fixture) {
 
 api::CrudTableRecord ContradictoryTextTable(const Fixture& fixture) {
   api::CrudTableRecord table;
-  table.table_uuid = fixture.text_conflict_table_uuid;
+  table.table_uuid = FixtureIdentity(fixture.text_conflict_table_uuid);
   table.default_name = "text_migration_conflict";
   table.columns.push_back({
       "payload",
@@ -903,7 +889,7 @@ api::CrudTableRecord ContradictoryTextTable(const Fixture& fixture) {
 
 api::CrudTableRecord SemanticConflictTextTable(const Fixture& fixture) {
   api::CrudTableRecord table;
-  table.table_uuid = fixture.text_semantic_table_uuid;
+  table.table_uuid = FixtureIdentity(fixture.text_semantic_table_uuid);
   table.default_name = "text_semantic_migration_conflict";
   table.columns.push_back({
       "payload",
@@ -915,7 +901,7 @@ api::CrudTableRecord SemanticConflictTextTable(const Fixture& fixture) {
 
 api::CrudTableRecord ResourceBoundLegacyTextTable(const Fixture& fixture) {
   api::CrudTableRecord table;
-  table.table_uuid = fixture.text_resource_table_uuid;
+  table.table_uuid = FixtureIdentity(fixture.text_resource_table_uuid);
   table.default_name = "text_resource_migration_target";
   table.columns.push_back({
       "payload",
@@ -933,7 +919,7 @@ api::CrudTableRecord ResourceBoundLegacyTextTable(const Fixture& fixture) {
 
 api::CrudTableRecord StaleColumnLegacyTextTable(const Fixture& fixture) {
   api::CrudTableRecord table;
-  table.table_uuid = fixture.text_stale_column_table_uuid;
+  table.table_uuid = FixtureIdentity(fixture.text_stale_column_table_uuid);
   table.default_name = "text_stale_column_migration_target";
   table.columns.push_back({
       "payload",
@@ -944,7 +930,7 @@ api::CrudTableRecord StaleColumnLegacyTextTable(const Fixture& fixture) {
 
 api::CrudTableRecord ResourceConflictLegacyTextTable(const Fixture& fixture) {
   api::CrudTableRecord table;
-  table.table_uuid = fixture.text_resource_conflict_table_uuid;
+  table.table_uuid = FixtureIdentity(fixture.text_resource_conflict_table_uuid);
   table.default_name = "text_resource_migration_conflict";
   table.columns.push_back({
       "payload",
@@ -959,8 +945,8 @@ api::CrudTableRecord StaleResourceGenerationLegacyTextTable(
     const Fixture& fixture,
     const bool stale_charset) {
   api::CrudTableRecord table;
-  table.table_uuid = stale_charset ? fixture.text_stale_charset_table_uuid
-                                   : fixture.text_stale_collation_table_uuid;
+  table.table_uuid = FixtureIdentity(stale_charset ? fixture.text_stale_charset_table_uuid
+                                   : fixture.text_stale_collation_table_uuid);
   table.default_name = stale_charset
                            ? "text_stale_charset_generation_migration_conflict"
                            : "text_stale_collation_generation_migration_conflict";
@@ -985,14 +971,11 @@ api::MgaTextIdentityMigrationRequest TextMigration(
     std::uint64_t old_generation,
     bool conflict = false) {
   api::MgaTextIdentityMigrationRequest request;
-  request.prior_catalog_snapshot_uuid = Id(UuidKind::object, 36);
-  request.new_catalog_snapshot_uuid = Id(UuidKind::object, 37);
+  request.prior_catalog_snapshot_uuid = FixtureIdentity(Id(UuidKind::object, 36));
+  request.new_catalog_snapshot_uuid = FixtureIdentity(Id(UuidKind::object, 37));
   request.prior_catalog_generation = 21;
   request.new_catalog_generation = 22;
-  request.rows.push_back({
-      conflict ? fixture.text_conflict_table_uuid : fixture.text_table_uuid,
-      conflict ? fixture.text_conflict_column_uuid : fixture.text_column_uuid,
-      old_generation});
+  request.rows.push_back({FixtureIdentity(conflict ? fixture.text_conflict_table_uuid : fixture.text_table_uuid), FixtureIdentity(conflict ? fixture.text_conflict_column_uuid : fixture.text_column_uuid), old_generation});
   return request;
 }
 
@@ -1003,7 +986,7 @@ api::MgaTextIdentityMigrationRequest TextMigrationFor(
     const std::uint64_t old_generation) {
   auto request = TextMigration(fixture, old_generation);
   request.rows.clear();
-  request.rows.push_back({object_uuid, column_uuid, old_generation});
+  request.rows.push_back({FixtureIdentity(object_uuid), FixtureIdentity(column_uuid), old_generation});
   return request;
 }
 
@@ -1012,7 +995,7 @@ api::EngineRequestContext BeginTextMigration(
     const api::MgaTextIdentityMigrationRequest& request) {
   auto context = BaseContext(fixture);
   context.catalog_generation_id = request.prior_catalog_generation;
-  context.statement_metadata_snapshot_uuid.canonical =
+  context.statement_metadata_snapshot_uuid =
       request.prior_catalog_snapshot_uuid;
   return Begin(std::move(context));
 }
@@ -1041,7 +1024,7 @@ std::string VisibleDescriptor(const api::EngineRequestContext& context,
   Require(loaded.ok, "relation metadata recovery load failed");
   const auto newest = api::FindVisibleCrudTable(
       loaded.state.relation_metadata,
-      table_uuid.empty() ? fixture.table_uuid : table_uuid,
+      FixtureIdentity(table_uuid.empty() ? fixture.table_uuid : table_uuid),
       context.local_transaction_id);
   Require(newest.has_value() && !newest->columns.empty(),
           "visible table projection missing");
@@ -1054,7 +1037,7 @@ std::uint64_t VisibleTableGeneration(
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "visible table generation load failed");
   const auto table = api::FindVisibleCrudTable(
-      loaded.state.relation_metadata, table_uuid, context.local_transaction_id);
+      loaded.state.relation_metadata, FixtureIdentity(table_uuid), context.local_transaction_id);
   Require(table.has_value(), "visible table generation missing");
   return table->event_sequence;
 }
@@ -1065,7 +1048,7 @@ std::vector<std::string> VisibleDescriptors(
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "relation metadata recovery load failed");
   const auto newest = api::FindVisibleCrudTable(
-      loaded.state.relation_metadata, table_uuid, context.local_transaction_id);
+      loaded.state.relation_metadata, FixtureIdentity(table_uuid), context.local_transaction_id);
   Require(newest.has_value(), "visible table projection missing");
   std::vector<std::string> descriptors;
   for (const auto& [name, descriptor] : newest->columns) {
@@ -1129,7 +1112,7 @@ std::string EnsureLegacyTextRelationDescriptor(
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "legacy text metadata load failed");
   const auto table = api::FindVisibleCrudTable(
-      loaded.state.relation_metadata, table_uuid, context.local_transaction_id);
+      loaded.state.relation_metadata, FixtureIdentity(table_uuid), context.local_transaction_id);
   Require(table.has_value(), "legacy text table is not visible");
   api::MgaRelationStorageDescriptor descriptor;
   const auto ensured = api::EnsureMgaRelationStorageDescriptor(
@@ -1139,16 +1122,16 @@ std::string EnsureLegacyTextRelationDescriptor(
   const auto& column = descriptor.columns.front();
   const std::string expected_encoded_descriptor =
       table->columns.front().second + ";column_uuid=" +
-      column.column_uuid.canonical;
-  Require(!CanonicalUuidBytes(column.column_uuid.canonical).empty() &&
-              column.value_descriptor.descriptor_uuid.canonical ==
-                  column.column_uuid.canonical &&
+      IdentityBytes(column.column_uuid);
+  Require(!CanonicalUuidBytes(column.column_uuid).empty() &&
+              column.value_descriptor.descriptor_uuid ==
+                  column.column_uuid &&
               DescriptorField(column.value_descriptor.encoded_descriptor,
                               "datatype_descriptor_uuid") == kLegacyText &&
               column.value_descriptor.encoded_descriptor ==
                   expected_encoded_descriptor,
           "legacy text relation descriptor seed failed");
-  return column.column_uuid.canonical;
+  return IdentityBytes(column.column_uuid);
 }
 }  // namespace
 
@@ -1219,7 +1202,7 @@ int main(const int argc, char* argv[]) {
   if (mode == FixtureMode::kNumericIdentityMigration) {
   auto rollback_tx = Begin(BaseContext(fixture));
   auto rollback_request = Migration(fixture, 1);
-  rollback_tx.statement_metadata_snapshot_uuid.canonical =
+  rollback_tx.statement_metadata_snapshot_uuid =
       rollback_request.prior_catalog_snapshot_uuid;
   const auto appended = api::AppendMgaBigintIdentityMigrationBatch(
       rollback_tx, rollback_request);
@@ -1249,7 +1232,7 @@ int main(const int argc, char* argv[]) {
 
   auto commit_tx = Begin(BaseContext(fixture));
   auto commit_request = Migration(fixture, 1);
-  commit_tx.statement_metadata_snapshot_uuid.canonical =
+  commit_tx.statement_metadata_snapshot_uuid =
       commit_request.prior_catalog_snapshot_uuid;
   Require(api::AppendMgaBigintIdentityMigrationBatch(commit_tx, commit_request).ok,
           "committed migration append failed");
@@ -1271,7 +1254,7 @@ int main(const int argc, char* argv[]) {
   // columns of the same table in one atomic catalog publication.
   auto cancelled = Begin(BaseContext(fixture));
   auto int32_request = Int32Migration(fixture, 2);
-  cancelled.statement_metadata_snapshot_uuid.canonical =
+  cancelled.statement_metadata_snapshot_uuid =
       int32_request.prior_catalog_snapshot_uuid;
   std::uint32_t cancel_checks = 0;
   cancelled.query_cancellation_requested = [&cancel_checks]() {
@@ -1287,7 +1270,7 @@ int main(const int argc, char* argv[]) {
   Rollback(cancelled);
 
   auto int32_rollback = Begin(BaseContext(fixture));
-  int32_rollback.statement_metadata_snapshot_uuid.canonical =
+  int32_rollback.statement_metadata_snapshot_uuid =
       int32_request.prior_catalog_snapshot_uuid;
   const auto int32_appended = api::AppendMgaInt32IdentityMigrationBatch(
       int32_rollback, int32_request);
@@ -1318,7 +1301,7 @@ int main(const int argc, char* argv[]) {
     out << "SBMGA1\tINT32_IDENTITY_MIGRATION_BATCH\t999\n";
   }
   auto int32_commit = Begin(BaseContext(fixture));
-  int32_commit.statement_metadata_snapshot_uuid.canonical =
+  int32_commit.statement_metadata_snapshot_uuid =
       int32_request.prior_catalog_snapshot_uuid;
   Require(api::AppendMgaInt32IdentityMigrationBatch(
               int32_commit, int32_request).ok,
@@ -1343,9 +1326,8 @@ int main(const int argc, char* argv[]) {
   auto conflict_tx = Begin(BaseContext(fixture));
   auto conflict_request = Int32Migration(fixture, 3);
   conflict_request.rows.clear();
-  conflict_request.rows.push_back({fixture.int32_conflict_table_uuid,
-                                   fixture.int32_conflict_column_uuid, 3});
-  conflict_tx.statement_metadata_snapshot_uuid.canonical =
+  conflict_request.rows.push_back({FixtureIdentity(fixture.int32_conflict_table_uuid), FixtureIdentity(fixture.int32_conflict_column_uuid), 3});
+  conflict_tx.statement_metadata_snapshot_uuid =
       conflict_request.prior_catalog_snapshot_uuid;
   const auto conflict_result = api::AppendMgaInt32IdentityMigrationBatch(
       conflict_tx, conflict_request);
@@ -1378,7 +1360,7 @@ int main(const int argc, char* argv[]) {
   Rollback(text_wrong_receipt);
 
   auto text_missing_receipt = BeginTextMigration(fixture, text_request);
-  text_missing_receipt.datatype_catalog_snapshot_uuid.canonical.clear();
+  text_missing_receipt.datatype_catalog_snapshot_uuid = {};
   text_missing_receipt.datatype_catalog_generation = 0;
   text_missing_receipt.datatype_registry_generation = 0;
   const auto missing_receipt_before = CaptureRefusalArtifacts(
@@ -1428,7 +1410,7 @@ int main(const int argc, char* argv[]) {
               << " key=" << duplicate.diagnostic.message_key
               << " detail=" << duplicate.diagnostic.detail;
     for (const auto& row : duplicate_request.rows) {
-      std::cerr << " row=" << row.object_uuid << '/' << row.column_uuid
+      std::cerr << " row=" << "[binary16]" << '/' << "[binary16]"
                 << '/' << row.old_row_generation;
     }
     std::cerr << '\n';
@@ -1448,7 +1430,7 @@ int main(const int argc, char* argv[]) {
       VisibleTableGeneration(text_semantic, fixture.text_semantic_table_uuid));
   text_semantic.catalog_generation_id =
       semantic_request.prior_catalog_generation;
-  text_semantic.statement_metadata_snapshot_uuid.canonical =
+  text_semantic.statement_metadata_snapshot_uuid =
       semantic_request.prior_catalog_snapshot_uuid;
   const auto semantic_before = CaptureRefusalArtifacts(text_semantic, fixture);
   const auto semantic_result = api::AppendMgaTextIdentityMigrationBatch(
@@ -1527,7 +1509,7 @@ int main(const int argc, char* argv[]) {
                              fixture.text_resource_table_uuid));
   text_stale_resource.catalog_generation_id =
       resource_request.prior_catalog_generation;
-  text_stale_resource.statement_metadata_snapshot_uuid.canonical =
+  text_stale_resource.statement_metadata_snapshot_uuid =
       resource_request.prior_catalog_snapshot_uuid;
   ++text_stale_resource.resource_epoch;
   const auto stale_resource_before = CaptureRefusalArtifacts(
@@ -1586,13 +1568,13 @@ int main(const int argc, char* argv[]) {
               creator_text.find(kLegacyText) == std::string::npos,
           "creator did not see the canonical text identity tuple");
   const auto creator_relation = api::LoadMgaRelationStorageDescriptor(
-      text_rollback, fixture.text_table_uuid);
+      text_rollback, FixtureIdentity(fixture.text_table_uuid));
   Require(creator_relation.ok && creator_relation.descriptor.columns.size() == 1 &&
               creator_relation.descriptor.relation_generation ==
                   expected_first_text_event &&
               creator_relation.descriptor.columns.front()
-                      .value_descriptor.descriptor_uuid.canonical ==
-                  fixture.text_column_uuid &&
+                      .value_descriptor.descriptor_uuid ==
+                  FixtureIdentity(fixture.text_column_uuid) &&
               DescriptorField(
                   creator_relation.descriptor.columns.front()
                       .value_descriptor.encoded_descriptor,
@@ -1610,11 +1592,11 @@ int main(const int argc, char* argv[]) {
               .find(kLegacyText) != std::string::npos,
           "rolled-back text migration became visible");
   const auto rolled_back_relation = api::LoadMgaRelationStorageDescriptor(
-      text_after_rollback, fixture.text_table_uuid);
+      text_after_rollback, FixtureIdentity(fixture.text_table_uuid));
   Require(rolled_back_relation.ok &&
               rolled_back_relation.descriptor.columns.front()
-                      .value_descriptor.descriptor_uuid.canonical ==
-                  fixture.text_column_uuid &&
+                      .value_descriptor.descriptor_uuid ==
+                  FixtureIdentity(fixture.text_column_uuid) &&
               DescriptorField(
                   rolled_back_relation.descriptor.columns.front()
                       .value_descriptor.encoded_descriptor,
@@ -1651,7 +1633,7 @@ int main(const int argc, char* argv[]) {
               DescriptorField(recovered_text, "null_encoding") == "1",
           "committed text migration did not recover the exact registry tuple");
   const auto recovered_relation = api::LoadMgaRelationStorageDescriptor(
-      text_recovered, fixture.text_table_uuid);
+      text_recovered, FixtureIdentity(fixture.text_table_uuid));
   Require(recovered_relation.ok &&
               recovered_relation.descriptor.relation_generation > 4 &&
               recovered_relation.descriptor.columns.front()
@@ -1695,7 +1677,7 @@ int main(const int argc, char* argv[]) {
   auto resource_recovered = Begin(BaseContext(fixture));
   const auto recovered_resource_relation =
       api::LoadMgaRelationStorageDescriptor(
-          resource_recovered, fixture.text_resource_table_uuid);
+          resource_recovered, FixtureIdentity(fixture.text_resource_table_uuid));
   Require(recovered_resource_relation.ok &&
               recovered_resource_relation.descriptor.columns.size() == 1 &&
               recovered_resource_relation.descriptor.columns.front()
@@ -1726,7 +1708,7 @@ int main(const int argc, char* argv[]) {
   Rollback(stale_receipt_restart);
 
   auto zero_receipt_restart_context = BaseContext(fixture);
-  zero_receipt_restart_context.datatype_catalog_snapshot_uuid.canonical.clear();
+  zero_receipt_restart_context.datatype_catalog_snapshot_uuid = {};
   zero_receipt_restart_context.datatype_catalog_generation = 0;
   zero_receipt_restart_context.datatype_registry_generation = 0;
   auto zero_receipt_restart = Begin(zero_receipt_restart_context);
@@ -1775,7 +1757,7 @@ int main(const int argc, char* argv[]) {
   auto fresh = Begin(BaseContext(fixture));
   api::EngineCreateSchemaRequest schema;
   schema.context = fresh;
-  schema.target_object.uuid.canonical = fixture.fresh_schema_uuid;
+  schema.target_object.uuid = FixtureIdentity(fixture.fresh_schema_uuid);
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(PrimaryName("text_identity_fresh"));
   Require(api::EngineCreateSchema(schema).ok,
@@ -1784,8 +1766,8 @@ int main(const int argc, char* argv[]) {
   api::EngineCreateTableRequest fresh_table;
   fresh_table.context = fresh;
   fresh_table.target_schema = schema.target_object;
-  fresh_table.requested_table_uuid.canonical =
-      fixture.fresh_text_table_uuid;
+  fresh_table.requested_table_uuid =
+      FixtureIdentity(fixture.fresh_text_table_uuid);
   fresh_table.table_names.push_back(PrimaryName("fresh_text_table"));
   api::EngineColumnDefinition fresh_column;
   fresh_column.ordinal = 0;
@@ -1818,8 +1800,8 @@ int main(const int argc, char* argv[]) {
           "fresh DDL did not persist canonical text authority");
 
   auto fresh_resource_table = fresh_table;
-  fresh_resource_table.requested_table_uuid.canonical =
-      fixture.fresh_resource_text_table_uuid;
+  fresh_resource_table.requested_table_uuid =
+      FixtureIdentity(fixture.fresh_resource_text_table_uuid);
   fresh_resource_table.table_names.clear();
   fresh_resource_table.table_names.push_back(
       PrimaryName("fresh_resource_text_table"));
@@ -1845,8 +1827,8 @@ int main(const int argc, char* argv[]) {
           "fresh DDL did not persist exact text resource authority");
 
   auto rejected_table = fresh_table;
-  rejected_table.requested_table_uuid.canonical =
-      fixture.rejected_text_table_uuid;
+  rejected_table.requested_table_uuid =
+      FixtureIdentity(fixture.rejected_text_table_uuid);
   rejected_table.table_names.clear();
   rejected_table.table_names.push_back(PrimaryName("rejected_text_table"));
   rejected_table.table_columns.front().descriptor.encoded_descriptor =
@@ -1862,13 +1844,13 @@ int main(const int argc, char* argv[]) {
   Require(fresh_state.ok &&
               !api::FindVisibleCrudTable(
                    fresh_state.state.relation_metadata,
-                   fixture.rejected_text_table_uuid,
+                   FixtureIdentity(fixture.rejected_text_table_uuid),
                    fresh.local_transaction_id).has_value(),
           "refused fresh text DDL published a table row");
 
   auto semantic_rejected_table = fresh_table;
-  semantic_rejected_table.requested_table_uuid.canonical =
-      fixture.rejected_text_length_table_uuid;
+  semantic_rejected_table.requested_table_uuid =
+      FixtureIdentity(fixture.rejected_text_length_table_uuid);
   semantic_rejected_table.table_names.clear();
   semantic_rejected_table.table_names.push_back(
       PrimaryName("semantic_rejected_text_table"));
@@ -1882,8 +1864,8 @@ int main(const int argc, char* argv[]) {
       "contradictory fresh TEXT semantics changed DDL artifacts");
 
   auto type_mismatch_table = fresh_table;
-  type_mismatch_table.requested_table_uuid.canonical =
-      Id(UuidKind::object, 53);
+  type_mismatch_table.requested_table_uuid =
+      FixtureIdentity(Id(UuidKind::object, 53));
   type_mismatch_table.table_names.clear();
   type_mismatch_table.table_names.push_back(
       PrimaryName("type_mismatch_rejected_text_table"));
@@ -1897,8 +1879,8 @@ int main(const int argc, char* argv[]) {
       "contradictory fresh TEXT type changed DDL artifacts");
 
   auto canonical_mismatch_table = fresh_table;
-  canonical_mismatch_table.requested_table_uuid.canonical =
-      Id(UuidKind::object, 54);
+  canonical_mismatch_table.requested_table_uuid =
+      FixtureIdentity(Id(UuidKind::object, 54));
   canonical_mismatch_table.table_names.clear();
   canonical_mismatch_table.table_names.push_back(
       PrimaryName("canonical_mismatch_rejected_text_table"));
@@ -1912,7 +1894,7 @@ int main(const int argc, char* argv[]) {
       "contradictory fresh TEXT canonical field changed DDL artifacts");
 
   auto dual_type_table = fresh_table;
-  dual_type_table.requested_table_uuid.canonical = Id(UuidKind::object, 55);
+  dual_type_table.requested_table_uuid = FixtureIdentity(Id(UuidKind::object, 55));
   dual_type_table.table_names.clear();
   dual_type_table.table_names.push_back(
       PrimaryName("dual_type_rejected_text_table"));
@@ -1926,8 +1908,8 @@ int main(const int argc, char* argv[]) {
       "dual fresh TEXT type authority changed DDL artifacts");
 
   auto nullable_mismatch_table = fresh_table;
-  nullable_mismatch_table.requested_table_uuid.canonical =
-      Id(UuidKind::object, 56);
+  nullable_mismatch_table.requested_table_uuid =
+      FixtureIdentity(Id(UuidKind::object, 56));
   nullable_mismatch_table.table_names.clear();
   nullable_mismatch_table.table_names.push_back(
       PrimaryName("nullable_mismatch_rejected_text_table"));
@@ -1941,8 +1923,8 @@ int main(const int argc, char* argv[]) {
       "fresh TEXT nullable mismatch changed DDL artifacts");
 
   auto duplicate_semantics_table = fresh_table;
-  duplicate_semantics_table.requested_table_uuid.canonical =
-      Id(UuidKind::object, 48);
+  duplicate_semantics_table.requested_table_uuid =
+      FixtureIdentity(Id(UuidKind::object, 48));
   duplicate_semantics_table.table_names.clear();
   duplicate_semantics_table.table_names.push_back(
       PrimaryName("duplicate_semantics_rejected_text_table"));
@@ -1956,8 +1938,8 @@ int main(const int argc, char* argv[]) {
       "duplicate fresh TEXT semantics changed DDL artifacts");
 
   auto zero_length_table = fresh_table;
-  zero_length_table.requested_table_uuid.canonical =
-      fixture.rejected_text_resource_table_uuid;
+  zero_length_table.requested_table_uuid =
+      FixtureIdentity(fixture.rejected_text_resource_table_uuid);
   zero_length_table.table_names.clear();
   zero_length_table.table_names.push_back(
       PrimaryName("zero_length_rejected_text_table"));
@@ -1971,8 +1953,8 @@ int main(const int argc, char* argv[]) {
       "zero-length fresh TEXT refusal changed DDL artifacts");
 
   auto stale_resource_table = fresh_resource_table;
-  stale_resource_table.requested_table_uuid.canonical =
-      Id(UuidKind::object, 47);
+  stale_resource_table.requested_table_uuid =
+      FixtureIdentity(Id(UuidKind::object, 47));
   stale_resource_table.table_names.clear();
   stale_resource_table.table_names.push_back(
       PrimaryName("stale_resource_rejected_text_table"));
@@ -1985,8 +1967,8 @@ int main(const int argc, char* argv[]) {
       "stale fresh TEXT resource refusal changed DDL artifacts");
 
   auto stale_charset_generation_table = fresh_resource_table;
-  stale_charset_generation_table.requested_table_uuid.canonical =
-      Id(UuidKind::object, 57);
+  stale_charset_generation_table.requested_table_uuid =
+      FixtureIdentity(Id(UuidKind::object, 57));
   stale_charset_generation_table.table_names.clear();
   stale_charset_generation_table.table_names.push_back(
       PrimaryName("stale_charset_generation_rejected_text_table"));
@@ -2002,8 +1984,8 @@ int main(const int argc, char* argv[]) {
       "stale fresh TEXT charset generation changed DDL artifacts");
 
   auto stale_collation_generation_table = fresh_resource_table;
-  stale_collation_generation_table.requested_table_uuid.canonical =
-      Id(UuidKind::object, 58);
+  stale_collation_generation_table.requested_table_uuid =
+      FixtureIdentity(Id(UuidKind::object, 58));
   stale_collation_generation_table.table_names.clear();
   stale_collation_generation_table.table_names.push_back(
       PrimaryName("stale_collation_generation_rejected_text_table"));
@@ -2020,8 +2002,8 @@ int main(const int argc, char* argv[]) {
       "stale fresh TEXT collation generation changed DDL artifacts");
 
   auto wrong_receipt_table = fresh_table;
-  wrong_receipt_table.requested_table_uuid.canonical =
-      fixture.wrong_receipt_text_table_uuid;
+  wrong_receipt_table.requested_table_uuid =
+      FixtureIdentity(fixture.wrong_receipt_text_table_uuid);
   wrong_receipt_table.table_names.clear();
   wrong_receipt_table.table_names.push_back(
       PrimaryName("wrong_receipt_rejected_text_table"));
@@ -2039,8 +2021,8 @@ int main(const int argc, char* argv[]) {
   api::EngineCreateTableRequest non_text_table;
   non_text_table.context = fresh;
   non_text_table.target_schema = schema.target_object;
-  non_text_table.requested_table_uuid.canonical =
-      fixture.fresh_non_text_table_uuid;
+  non_text_table.requested_table_uuid =
+      FixtureIdentity(fixture.fresh_non_text_table_uuid);
   non_text_table.table_names.push_back(PrimaryName("fresh_non_text_table"));
   struct ExpectedRegistryIdentity {
     std::string name;
@@ -2101,7 +2083,7 @@ int main(const int argc, char* argv[]) {
             "fresh non-text DDL registry tuple changed");
   }
   const auto non_text_relation = api::LoadMgaRelationStorageDescriptor(
-      fresh, fixture.fresh_non_text_table_uuid);
+      fresh, FixtureIdentity(fixture.fresh_non_text_table_uuid));
   Require(non_text_relation.ok &&
               non_text_relation.descriptor.columns.size() ==
                   expected_non_text.size(),
@@ -2109,8 +2091,8 @@ int main(const int argc, char* argv[]) {
   for (std::size_t index = 0; index < expected_non_text.size(); ++index) {
     const auto& persisted = non_text_relation.descriptor.columns[index];
     const bool registry_authority_preserved =
-        persisted.value_descriptor.descriptor_uuid.canonical ==
-            persisted.column_uuid.canonical &&
+        persisted.value_descriptor.descriptor_uuid ==
+            persisted.column_uuid &&
         DescriptorField(persisted.value_descriptor.encoded_descriptor,
                         "datatype_descriptor_uuid") ==
             expected_non_text[index].descriptor_uuid &&
@@ -2120,8 +2102,8 @@ int main(const int argc, char* argv[]) {
             non_text_descriptors[index];
     if (!registry_authority_preserved) {
       std::cerr << "non-text-descriptor[" << index << "] value_uuid="
-                << persisted.value_descriptor.descriptor_uuid.canonical
-                << " column_uuid=" << persisted.column_uuid.canonical
+                << "[binary16]"
+                << " column_uuid=" << "[binary16]"
                 << " kind=" << persisted.value_descriptor.descriptor_kind
                 << " datatype_uuid="
                 << DescriptorField(persisted.value_descriptor.encoded_descriptor,
@@ -2141,8 +2123,8 @@ int main(const int argc, char* argv[]) {
   }
 
   auto wrong_non_text_receipt = non_text_table;
-  wrong_non_text_receipt.requested_table_uuid.canonical =
-      fixture.wrong_receipt_non_text_table_uuid;
+  wrong_non_text_receipt.requested_table_uuid =
+      FixtureIdentity(fixture.wrong_receipt_non_text_table_uuid);
   wrong_non_text_receipt.table_names.clear();
   wrong_non_text_receipt.table_names.push_back(
       PrimaryName("wrong_receipt_rejected_non_text_table"));
@@ -2156,8 +2138,8 @@ int main(const int argc, char* argv[]) {
       "wrong fresh non-text receipt changed DDL artifacts");
 
   auto contradictory_non_text = non_text_table;
-  contradictory_non_text.requested_table_uuid.canonical =
-      fixture.contradictory_non_text_table_uuid;
+  contradictory_non_text.requested_table_uuid =
+      FixtureIdentity(fixture.contradictory_non_text_table_uuid);
   contradictory_non_text.table_names.clear();
   contradictory_non_text.table_names.push_back(
       PrimaryName("contradictory_rejected_non_text_table"));
@@ -2178,12 +2160,12 @@ int main(const int argc, char* argv[]) {
               fresh_descriptor,
           "fresh text descriptor changed after restart");
   const auto fresh_relation = api::LoadMgaRelationStorageDescriptor(
-      fresh_restart, fixture.fresh_text_table_uuid);
+      fresh_restart, FixtureIdentity(fixture.fresh_text_table_uuid));
   Require(fresh_relation.ok && fresh_relation.descriptor.columns.size() == 1 &&
               fresh_relation.descriptor.columns.front()
-                      .value_descriptor.descriptor_uuid.canonical ==
+                      .value_descriptor.descriptor_uuid ==
                   fresh_relation.descriptor.columns.front()
-                      .column_uuid.canonical &&
+                      .column_uuid &&
               DescriptorField(
                   fresh_relation.descriptor.columns.front()
                       .value_descriptor.encoded_descriptor,
@@ -2201,7 +2183,7 @@ int main(const int argc, char* argv[]) {
   const auto later_state = api::LoadMgaRelationStoreState(later_metadata);
   Require(later_state.ok, "later metadata setup load failed");
   const auto current_text_table = api::FindVisibleCrudTable(
-      later_state.state.relation_metadata, fixture.text_table_uuid,
+      later_state.state.relation_metadata, FixtureIdentity(fixture.text_table_uuid),
       later_metadata.local_transaction_id);
   Require(current_text_table.has_value(),
           "canonical TEXT table missing before later metadata test");
@@ -2214,7 +2196,7 @@ int main(const int argc, char* argv[]) {
 
   auto later_metadata_restart = Begin(BaseContext(fixture));
   const auto conflicted_descriptor = api::LoadMgaRelationStorageDescriptor(
-      later_metadata_restart, fixture.text_table_uuid);
+      later_metadata_restart, FixtureIdentity(fixture.text_table_uuid));
   if (conflicted_descriptor.ok ||
       !ExactSealedRelationDescriptorSnapshotConflictDiagnostic(
           conflicted_descriptor.diagnostic)) {
@@ -2228,8 +2210,7 @@ int main(const int argc, char* argv[]) {
     if (conflicted_descriptor.ok &&
         !conflicted_descriptor.descriptor.columns.empty()) {
       std::cerr << " descriptor_uuid="
-                << conflicted_descriptor.descriptor.columns.front()
-                       .value_descriptor.descriptor_uuid.canonical;
+                << "[binary16]";
     }
     std::cerr << '\n';
   }

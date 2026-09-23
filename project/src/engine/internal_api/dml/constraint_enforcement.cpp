@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/constraint_enforcement.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <stdexcept>
 
 #include "api_diagnostics.hpp"
 #include "dml/transactional_relation_store.hpp"
@@ -89,44 +91,36 @@ void UpsertField(std::vector<std::pair<std::string, std::string>>* values,
   values->push_back({field, value});
 }
 
-std::map<std::string, std::string> DescriptorFields(const std::string& descriptor) {
-  std::map<std::string, std::string> fields;
-  for (const auto& raw_part : Split(descriptor, ';')) {
-    const std::string part = TrimAscii(raw_part);
-    if (part.empty()) { continue; }
-    const auto pos = part.find('=');
-    if (pos == std::string::npos) {
-      fields[LowerAscii(part)] = "true";
-      continue;
-    }
-    fields[LowerAscii(TrimAscii(part.substr(0, pos)))] = TrimAscii(part.substr(pos + 1));
-  }
+CatalogColumnMetadata DescriptorFields(const std::string& descriptor) {
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor, &fields))
+    throw std::invalid_argument("constraint_column_metadata_invalid");
   return fields;
 }
-
-std::string DescriptorText(const std::map<std::string, std::string>& fields) {
+std::string DescriptorText(const CatalogColumnMetadata& fields) {
   std::string descriptor;
-  for (const auto& [key, value] : fields) {
-    if (!descriptor.empty()) { descriptor.push_back(';'); }
-    descriptor += key;
-    if (!value.empty() && value != "true") {
-      descriptor.push_back('=');
-      descriptor += value;
-    }
-  }
+  if (!EncodeCatalogColumnMetadata(fields, &descriptor))
+    throw std::invalid_argument("constraint_column_metadata_invalid");
   return descriptor;
 }
-
-std::string FieldOrEmpty(const std::map<std::string, std::string>& fields,
+std::string FieldOrEmpty(const CatalogColumnMetadata& fields,
                          std::initializer_list<const char*> keys) {
-  for (const char* key : keys) {
-    const auto found = fields.find(key);
-    if (found != fields.end()) { return found->second; }
+  for(const char* key:keys) {
+    const auto found=fields.text.find(key);
+    if(found!=fields.text.end())return found->second;
+  }
+  return {};
+}
+EngineUuid IdentityOrNil(const CatalogColumnMetadata& fields,
+                         std::initializer_list<const char*> keys) {
+  for(const char* key:keys) {
+    const auto found=fields.identities.find(key);
+    if(found!=fields.identities.end())return found->second;
   }
   return {};
 }
 
-bool BoolField(const std::map<std::string, std::string>& fields,
+bool BoolField(const CatalogColumnMetadata& fields,
                std::initializer_list<const char*> keys,
                bool fallback = false) {
   const std::string value = LowerAscii(FieldOrEmpty(fields, keys));
@@ -134,19 +128,18 @@ bool BoolField(const std::map<std::string, std::string>& fields,
   return value == "1" || value == "true" || value == "yes" || value == "on";
 }
 
-bool FalseField(const std::map<std::string, std::string>& fields,
+bool FalseField(const CatalogColumnMetadata& fields,
                 std::initializer_list<const char*> keys) {
   const std::string value = LowerAscii(FieldOrEmpty(fields, keys));
   return value == "0" || value == "false" || value == "no" || value == "off";
 }
 
-std::string ConstraintUuid(const std::map<std::string, std::string>& fields,
+EngineUuid ConstraintUuid(const CatalogColumnMetadata& fields,
                            const CrudTableRecord& table,
                            const std::string& column_name,
                            const std::string& constraint_class) {
-  const std::string explicit_uuid = FieldOrEmpty(fields, {"constraint_uuid", "uuid"});
-  if (!explicit_uuid.empty()) { return explicit_uuid; }
-  return "descriptor:" + table.table_uuid + ":" + column_name + ":" + constraint_class;
+  (void)table;(void)column_name;(void)constraint_class;
+  return IdentityOrNil(fields, {"constraint_uuid", "uuid"});
 }
 
 EngineApiDiagnostic OkDiagnostic() {
@@ -156,33 +149,18 @@ EngineApiDiagnostic OkDiagnostic() {
 std::string ConstraintDiagnosticDetail(const EngineRequestContext& context,
                                        const CrudTableRecord& table,
                                        const std::string& constraint_class,
-                                       const std::string& constraint_uuid,
+                                       const EngineUuid& constraint_uuid,
                                        const std::string& detail,
                                        const std::string& column_name,
-                                       const std::string& key_descriptor_uuid = {},
-                                       const std::string& support_uuid = {},
+                                       const EngineUuid& key_descriptor_uuid = {},
+                                       const EngineUuid& support_uuid = {},
                                        const std::string& support_path = "table_scan") {
-  std::vector<std::pair<std::string, std::string>> fields = {
-      {"constraint_uuid", constraint_uuid},
-      {"constraint_class", constraint_class},
-      {"owner_object_uuid", table.table_uuid},
-      {"key_descriptor_uuid", key_descriptor_uuid},
-      {"support_uuid", support_uuid},
-      {"transaction_uuid", context.transaction_uuid},
-      {"operation_uuid", context.request_id},
-      {"savepoint_uuid", ""},
-      {"pending_check_uuid", ""},
-      {"validation_run_uuid", ""},
-      {"maintenance_operation_uuid", ""},
-      {"validation_state", "unvalidated"},
-      {"trust_state", "untrusted"},
-      {"enforcement_timing", "immediate"},
-      {"support_path_used", support_path},
-      {"dependency_uuid", ""},
-      {"reference_profile_uuid", context.reference_profile_uuid},
-      {"column", column_name},
-      {"detail", detail},
-  };
+  (void)context;(void)table;(void)constraint_uuid;(void)key_descriptor_uuid;(void)support_uuid;
+  const std::vector<std::pair<std::string,std::string>> fields = {
+      {"constraint_class",constraint_class},{"validation_state","unvalidated"},
+      {"trust_state","untrusted"},{"enforcement_timing","immediate"},
+      {"support_path_used",support_path},{"column",column_name},{"detail",detail},
+      {"reference_profile_id",context.reference_profile_uuid}};
   std::string encoded;
   for (const auto& [key, value] : fields) {
     if (!encoded.empty()) { encoded.push_back(';'); }
@@ -198,13 +176,13 @@ EngineApiDiagnostic ConstraintDiagnostic(const std::string& code,
                                          const EngineRequestContext& context,
                                          const CrudTableRecord& table,
                                          const std::string& constraint_class,
-                                         const std::string& constraint_uuid,
+                                         const EngineUuid& constraint_uuid,
                                          const std::string& detail,
                                          const std::string& column_name,
-                                         const std::string& key_descriptor_uuid = {},
-                                         const std::string& support_uuid = {},
+                                         const EngineUuid& key_descriptor_uuid = {},
+                                         const EngineUuid& support_uuid = {},
                                          const std::string& support_path = "table_scan") {
-  return MakeEngineApiDiagnostic(
+  auto diagnostic = MakeEngineApiDiagnostic(
       code,
       message_key,
       ConstraintDiagnosticDetail(context,
@@ -217,12 +195,17 @@ EngineApiDiagnostic ConstraintDiagnostic(const std::string& code,
                                  support_uuid,
                                  support_path),
       true);
+  diagnostic.identity_fields = {{"constraint_uuid",constraint_uuid},
+      {"owner_object_uuid",table.table_uuid},{"key_descriptor_uuid",key_descriptor_uuid},
+      {"support_uuid",support_uuid},{"transaction_uuid",context.transaction_uuid},
+      {"operation_uuid",context.statement_uuid}};
+  return diagnostic;
 }
 
 EngineApiDiagnostic ForeignKeyViolationDiagnostic(
     const EngineRequestContext& context,
     const CrudTableRecord& owner_table,
-    const std::map<std::string, std::string>& descriptor_fields,
+    const CatalogColumnMetadata& descriptor_fields,
     const std::string& child_column_name,
     const std::string& key_value,
     const std::string& violation_kind) {
@@ -259,7 +242,7 @@ EngineApiDiagnostic ForeignKeyViolationDiagnostic(
   return diagnostic;
 }
 
-bool TimingRequiresDeferredStore(const std::map<std::string, std::string>& fields) {
+bool TimingRequiresDeferredStore(const CatalogColumnMetadata& fields) {
   const std::string timing = LowerAscii(FieldOrEmpty(fields, {"enforcement_timing", "timing"}));
   if (timing == "deferred" || timing == "transaction_end" || timing == "initially_deferred") {
     return true;
@@ -270,7 +253,7 @@ bool TimingRequiresDeferredStore(const std::map<std::string, std::string>& field
 std::optional<EngineApiDiagnostic> ValidateImmediateTiming(
     const EngineRequestContext& context,
     const CrudTableRecord& table,
-    const std::map<std::string, std::string>& fields,
+    const CatalogColumnMetadata& fields,
     const std::string& column_name,
     const std::string& constraint_class) {
   if (!TimingRequiresDeferredStore(fields)) { return std::nullopt; }
@@ -324,7 +307,14 @@ std::optional<std::string> MaterializeDefault(const EngineRequestContext& contex
   if (StartsWith(envelope, "sequence_next:")) {
     scratchbird::engine::sblr::SblrSequenceRequest request;
     request.context = ConstraintSblrContext(context);
-    request.sequence_uuid = LowerAscii(envelope.substr(14));
+    scratchbird::engine::sblr::SblrValue sequence_argument;
+    sequence_argument.descriptor_id = "text";
+    sequence_argument.payload_kind = scratchbird::engine::sblr::SblrValuePayloadKind::text;
+    sequence_argument.is_null = false;
+    sequence_argument.text_value = LowerAscii(envelope.substr(14));
+    if (!scratchbird::engine::sblr::BindSblrSequenceArgumentIdentity(sequence_argument, &request)) {
+      return std::nullopt;
+    }
     request.result_descriptor_id = "int64";
     const auto result = scratchbird::engine::sblr::NextSblrSequenceValue(
         &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(), request);
@@ -461,7 +451,7 @@ std::vector<std::string> RelationIndexKeyColumns(
 }
 
 std::optional<CrudIndexRecord> FindVisibleUniqueIndexForColumn(const MgaRelationReadView& state,
-                                                               const std::string& table_uuid,
+                                                               const EngineUuid& table_uuid,
                                                                const std::string& column_name,
                                                                std::uint64_t observer_tx) {
   for (const auto& index : VisibleMgaIndexesForTable(state, table_uuid, observer_tx)) {
@@ -477,28 +467,29 @@ bool AnyNullKey(const std::vector<std::string>& keys) {
   return false;
 }
 
-std::string TableColumnCacheKey(const std::string& table_uuid,
+std::string TableColumnCacheKey(const EngineUuid& table_uuid,
                                 const std::string& column_name) {
-  return table_uuid + "\n" + column_name;
+  return EncodeMgaMetadataFields({"constraint.table.column.v2", MetadataUuidBytes(table_uuid), column_name});
 }
 
 std::string UniquePreflightProofKey(const CrudIndexRecord& index,
-                                    const std::string& row_uuid,
+                                    const EngineUuid& row_uuid,
                                     const std::string& key) {
-  return index.index_uuid + "\n" + row_uuid + "\n" + key;
+  return EncodeMgaMetadataFields({"constraint.unique.proof.v2",MetadataUuidBytes(index.index_uuid),MetadataUuidBytes(row_uuid),key});
 }
 
 std::string ContextScopedCacheKey(const EngineRequestContext& context,
                                   const std::string& identity) {
-  return std::to_string(context.local_transaction_id) + "\n" +
-         std::to_string(context.snapshot_visible_through_local_transaction_id) + "\n" +
-         std::to_string(context.catalog_generation_id) + "\n" +
-         std::to_string(context.security_epoch) + "\n" +
-         std::to_string(context.resource_epoch) + "\n" +
-         std::to_string(context.name_resolution_epoch) + "\n" +
-         context.database_uuid + "\n" +
-         context.principal_uuid + "\n" + identity;
+  return EncodeMgaMetadataFields({"constraint.context.cache.v2",
+      std::to_string(context.local_transaction_id),std::to_string(context.snapshot_visible_through_local_transaction_id),
+      std::to_string(context.catalog_generation_id),std::to_string(context.security_epoch),
+      std::to_string(context.resource_epoch),std::to_string(context.name_resolution_epoch),
+      MetadataUuidBytes(context.database_uuid),MetadataUuidBytes(context.principal_uuid),identity});
 }
+std::string ContextScopedCacheKey(const EngineRequestContext& context, const EngineUuid& identity) {
+  return ContextScopedCacheKey(context, MetadataUuidBytes(identity));
+}
+
 
 std::string TraceTagFingerprint(const EngineRequestContext& context) {
   std::vector<std::string> tags = context.trace_tags;
@@ -548,21 +539,18 @@ bool SameProofContext(const ConstraintDmlProofContext& left,
 
 std::string ProofBody(const std::string& proof_kind,
                       const std::string& proof_identity) {
-  return proof_kind + "\n" + proof_identity;
+  return EncodeMgaMetadataFields({"constraint.proof.v2",proof_kind,proof_identity});
 }
 
 std::string ProofFullKey(const std::string& proof_body,
                          const ConstraintDmlProofContext& context) {
-  return proof_body + "\nctx\n" + context.database_uuid + "\n" +
-         context.transaction_uuid + "\n" + context.principal_uuid + "\n" +
-         context.isolation_level + "\n" + context.trace_tag_fingerprint + "\n" +
-         std::to_string(context.local_transaction_id) + "\n" +
-         std::to_string(context.snapshot_visible_through_local_transaction_id) + "\n" +
-         std::to_string(context.catalog_generation_id) + "\n" +
-         std::to_string(context.security_epoch) + "\n" +
-         std::to_string(context.resource_epoch) + "\n" +
-         std::to_string(context.name_resolution_epoch) + "\n" +
-         (context.security_context_present ? "security_present" : "security_absent");
+  return EncodeMgaMetadataFields({"constraint.proof.context.v2",proof_body,
+      MetadataUuidBytes(context.database_uuid),MetadataUuidBytes(context.transaction_uuid),
+      MetadataUuidBytes(context.principal_uuid),context.isolation_level,context.trace_tag_fingerprint,
+      std::to_string(context.local_transaction_id),std::to_string(context.snapshot_visible_through_local_transaction_id),
+      std::to_string(context.catalog_generation_id),std::to_string(context.security_epoch),
+      std::to_string(context.resource_epoch),std::to_string(context.name_resolution_epoch),
+      context.security_context_present?"security_present":"security_absent"});
 }
 
 std::string FirstProofContextMismatch(const ConstraintDmlProofContext& stored,
@@ -597,17 +585,20 @@ std::string FirstProofContextMismatch(const ConstraintDmlProofContext& stored,
 
 std::string ProofEvidenceId(const std::string& proof_kind,
                             const std::string& proof_identity) {
-  const auto newline = proof_identity.find('\n');
-  const std::string compact_identity =
-      newline == std::string::npos ? proof_identity : proof_identity.substr(0, newline);
-  return proof_kind + ":" + compact_identity;
+  const auto digest=core::hash::ComputeSha256Digest(
+      reinterpret_cast<const core::platform::byte*>(proof_identity.data()),proof_identity.size());
+  if(!digest.ok())throw std::runtime_error("constraint_proof_digest_failed");
+  static constexpr char hex[]="0123456789abcdef";
+  std::string result=proof_kind+":sha256:";
+  for(auto byte:digest.digest){result.push_back(hex[byte>>4]);result.push_back(hex[byte&15]);}
+  return result;
 }
 
 bool HasIndexBackedUniquePreflightProof(
     const ConstraintDmlValidationCache* cache,
     const EngineRequestContext& context,
     const CrudIndexRecord& index,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::string>& keys,
     std::vector<EngineEvidenceReference>* evidence = nullptr) {
   if (cache == nullptr) {
@@ -629,7 +620,7 @@ bool HasIndexBackedUniquePreflightProof(
 const std::vector<CrudRowVersionRecord>& CachedVisibleRowsForTable(
     ConstraintDmlValidationCache* cache,
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EngineRequestContext& context) {
   if (cache == nullptr) {
     static thread_local std::vector<CrudRowVersionRecord> uncached_rows;
@@ -644,14 +635,14 @@ const std::vector<CrudRowVersionRecord>& CachedVisibleRowsForTable(
   return cache->visible_rows_by_table_uuid[cache_key];
 }
 
-const std::map<std::string, std::set<std::string>>& CachedUniqueKeyRowsForIndex(
+const std::map<std::string, std::set<EngineUuid>>& CachedUniqueKeyRowsForIndex(
     ConstraintDmlValidationCache* cache,
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const CrudIndexRecord& index,
     const EngineRequestContext& context) {
   if (cache == nullptr) {
-    static thread_local std::map<std::string, std::set<std::string>> uncached_keys;
+    static thread_local std::map<std::string, std::set<EngineUuid>> uncached_keys;
     uncached_keys.clear();
     for (const auto& row : VisibleMgaRowsForContext(state, table.table_uuid, context)) {
       for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
@@ -675,7 +666,7 @@ const std::map<std::string, std::set<std::string>>& CachedUniqueKeyRowsForIndex(
 const std::set<std::string>& CachedColumnValues(
     ConstraintDmlValidationCache* cache,
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::string& column_name,
     const EngineRequestContext& context) {
   const std::string key =
@@ -702,9 +693,9 @@ std::optional<EngineApiDiagnostic> ValidateUniqueIndexNoDuplicate(
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const CrudIndexRecord& index,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
-    const std::map<std::string, std::string>& fields,
+    const CatalogColumnMetadata& fields,
     const std::string& column_name,
     const std::string& constraint_class,
     bool nulls_distinct,
@@ -735,7 +726,7 @@ std::optional<EngineApiDiagnostic> ValidateUniqueIndexNoDuplicate(
                                   ConstraintUuid(fields, table, column_name, constraint_class),
                                   "duplicate_key",
                                   column_name,
-                                  "key:" + index.index_uuid,
+                                  IdentityOrNil(fields, {"candidate_key_descriptor_uuid", "key_descriptor_uuid"}),
                                   index.index_uuid,
                                   "support_structure");
     }
@@ -744,74 +735,48 @@ std::optional<EngineApiDiagnostic> ValidateUniqueIndexNoDuplicate(
 }
 
 struct ForeignKeyReference {
-  std::string parent_table_uuid;
+  EngineUuid parent_table_uuid;
   std::string parent_column;
-  std::string parent_column_uuid;
-  std::string parent_candidate_key_constraint_uuid;
-  std::string key_descriptor_uuid;
-  std::string support_uuid;
+  EngineUuid parent_column_uuid;
+  EngineUuid parent_candidate_key_constraint_uuid;
+  EngineUuid key_descriptor_uuid;
+  EngineUuid support_uuid;
   std::string support_family;
-  std::string mutation_batch_uuid;
+  EngineUuid mutation_batch_uuid;
   bool sealed = false;
 };
 
 std::optional<ForeignKeyReference> ParseForeignKeyReference(
-    const std::map<std::string, std::string>& fields) {
+    const CatalogColumnMetadata& fields) {
   ForeignKeyReference reference;
-  reference.parent_table_uuid = FieldOrEmpty(fields, {"referenced_table_uuid", "foreign_table_uuid", "foreign_table"});
+  reference.parent_table_uuid = IdentityOrNil(fields, {"referenced_table_uuid", "foreign_table_uuid"});
   reference.parent_column = FieldOrEmpty(fields, {"referenced_column", "foreign_column", "parent_column"});
   reference.parent_column_uuid =
-      FieldOrEmpty(fields, {"referenced_column_uuid"});
-  reference.parent_candidate_key_constraint_uuid = FieldOrEmpty(
+      IdentityOrNil(fields, {"referenced_column_uuid"});
+  reference.parent_candidate_key_constraint_uuid = IdentityOrNil(
       fields, {"referenced_candidate_key_constraint_uuid"});
-  reference.key_descriptor_uuid = FieldOrEmpty(
+  reference.key_descriptor_uuid = IdentityOrNil(
       fields, {"referenced_key_descriptor_uuid", "key_descriptor_uuid"});
-  reference.support_uuid = FieldOrEmpty(
+  reference.support_uuid = IdentityOrNil(
       fields, {"referenced_support_uuid", "support_uuid"});
   reference.support_family =
       LowerAscii(FieldOrEmpty(fields, {"support_family"}));
-  reference.mutation_batch_uuid = FieldOrEmpty(
+  reference.mutation_batch_uuid = IdentityOrNil(
       fields, {"constraint_mutation_batch_uuid"});
   reference.sealed =
       LowerAscii(FieldOrEmpty(fields, {"constraint_mutation_batch_state"})) ==
       "sealed";
-  if (!reference.parent_table_uuid.empty() && !reference.parent_column.empty()) { return reference; }
-  const std::string envelope = FieldOrEmpty(fields, {"foreign_key", "references", "fk"});
-  if (envelope.empty()) { return std::nullopt; }
-  const auto colon = envelope.find(':');
-  const auto dot = envelope.rfind('.');
-  const auto open = envelope.find('(');
-  const auto close = envelope.rfind(')');
-  if (colon != std::string::npos) {
-    reference.parent_table_uuid = envelope.substr(0, colon);
-    reference.parent_column = envelope.substr(colon + 1);
-  } else if (dot != std::string::npos) {
-    reference.parent_table_uuid = envelope.substr(0, dot);
-    reference.parent_column = envelope.substr(dot + 1);
-  } else if (open != std::string::npos && close == envelope.size() - 1 && close > open + 1) {
-    reference.parent_table_uuid = envelope.substr(0, open);
-    reference.parent_column = envelope.substr(open + 1, close - open - 1);
-  }
-  if (reference.parent_table_uuid.empty() || reference.parent_column.empty()) { return std::nullopt; }
+  if (reference.parent_table_uuid.is_nil() || reference.parent_column.empty()) return std::nullopt;
   return reference;
 }
 
-bool DescriptorDeclaresForeignKey(const std::map<std::string, std::string>& fields) {
-  return !FieldOrEmpty(fields,
-                       {"foreign_key",
-                        "references",
-                        "fk",
-                        "referenced_table_uuid",
-                        "foreign_table_uuid",
-                        "foreign_table",
-                        "referenced_column",
-                        "foreign_column",
-                        "parent_column"})
-              .empty();
+bool DescriptorDeclaresForeignKey(const CatalogColumnMetadata& fields) {
+  return !IdentityOrNil(fields,{"referenced_table_uuid","foreign_table_uuid"}).is_nil() ||
+      !FieldOrEmpty(fields,{"foreign_key","references","fk","foreign_table","referenced_column","foreign_column","parent_column"}).empty();
 }
 
 std::optional<CrudTableRecord> VisibleTableByUuid(const MgaRelationReadView& state,
-                                                  const std::string& table_uuid,
+                                                  const EngineUuid& table_uuid,
                                                   std::uint64_t observer_tx) {
   return FindVisibleMgaTable(state, table_uuid, observer_tx);
 }
@@ -820,7 +785,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
     const EngineRequestContext& context,
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
-    const std::map<std::string, std::string>& fields,
+    const CatalogColumnMetadata& fields,
     const std::string& column_name,
     const std::string& value,
     ConstraintDmlValidationCache* cache,
@@ -828,7 +793,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
   const auto reference = ParseForeignKeyReference(fields);
   if (!reference.has_value()) { return std::nullopt; }
   if (IsNullValue(value)) { return std::nullopt; }
-  const std::string constraint_uuid = ConstraintUuid(fields, table, column_name, "foreign_key");
+  const EngineUuid constraint_uuid = ConstraintUuid(fields, table, column_name, "foreign_key");
   const auto parent = VisibleTableByUuid(state,
                                          reference->parent_table_uuid,
                                          context.local_transaction_id);
@@ -844,13 +809,13 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
   }
   std::optional<CrudIndexRecord> parent_index;
   if (reference->sealed) {
-    if (reference->parent_column_uuid.empty() ||
-        reference->parent_candidate_key_constraint_uuid.empty() ||
-        reference->key_descriptor_uuid.empty() ||
-        reference->support_uuid.empty() ||
+    if (reference->parent_column_uuid.is_nil() ||
+        reference->parent_candidate_key_constraint_uuid.is_nil() ||
+        reference->key_descriptor_uuid.is_nil() ||
+        reference->support_uuid.is_nil() ||
         reference->support_family != "btree" ||
-        reference->mutation_batch_uuid.empty() ||
-        FieldOrEmpty(fields, {"constraint_uuid"}).empty() ||
+        reference->mutation_batch_uuid.is_nil() ||
+        IdentityOrNil(fields, {"constraint_uuid"}).is_nil() ||
         FieldOrEmpty(fields, {"constraint_name"}).empty() ||
         LowerAscii(FieldOrEmpty(fields, {"enforcement_timing"})) !=
             "immediate" ||
@@ -885,7 +850,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
         child_storage.descriptor.columns.end(),
         [&](const MgaRelationColumnStorageDescriptor& column) {
           return column.column_uuid ==
-                     FieldOrEmpty(fields, {"child_column_uuid"}) &&
+                     IdentityOrNil(fields, {"child_column_uuid"}) &&
                  column.canonical_name_key == column_name;
         });
     const auto parent_column = std::find_if(
@@ -917,13 +882,11 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
         DescriptorFields(parent_metadata_column->second);
     const std::string parent_candidate_key_class = LowerAscii(
         FieldOrEmpty(parent_key_fields, {"candidate_key_class"}));
-    if (FieldOrEmpty(parent_key_fields,
-                     {"candidate_key_constraint_uuid"}) !=
+    if (IdentityOrNil(parent_key_fields, {"candidate_key_constraint_uuid"}) !=
             reference->parent_candidate_key_constraint_uuid ||
-        FieldOrEmpty(parent_key_fields,
-                     {"candidate_key_descriptor_uuid"}) !=
+        IdentityOrNil(parent_key_fields, {"candidate_key_descriptor_uuid"}) !=
             reference->key_descriptor_uuid ||
-        FieldOrEmpty(parent_key_fields, {"support_uuid"}) !=
+        IdentityOrNil(parent_key_fields, {"support_uuid"}) !=
             reference->support_uuid ||
         LowerAscii(FieldOrEmpty(parent_key_fields, {"support_family"})) !=
             reference->support_family ||
@@ -991,7 +954,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
                                 "none");
   }
   const std::string proof_identity =
-      constraint_uuid + "\n" + parent_index->index_uuid + "\n" + value;
+      EncodeMgaMetadataFields({"constraint.foreign.proof.v2",MetadataUuidBytes(constraint_uuid),MetadataUuidBytes(parent_index->index_uuid),value});
   if (FindConstraintDmlProofPayload(cache,
                                     context,
                                     "foreign_key_parent_exists",
@@ -1019,7 +982,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
                                        "parent_missing");
 }
 
-bool DescriptorHasExclusion(const std::map<std::string, std::string>& fields) {
+bool DescriptorHasExclusion(const CatalogColumnMetadata& fields) {
   return BoolField(fields, {"exclusion", "exclusion_constraint"}) ||
          !FieldOrEmpty(fields, {"exclusion_operator", "exclusion_family"}).empty();
 }
@@ -1059,20 +1022,20 @@ bool ExclusionValuesConflict(const std::string& left, const std::string& right) 
   return left == right;
 }
 
-std::vector<std::pair<std::string, std::map<std::string, std::string>>> ConstraintColumns(
+std::vector<std::pair<std::string, CatalogColumnMetadata>> ConstraintColumns(
     const CrudTableRecord& table) {
-  std::vector<std::pair<std::string, std::map<std::string, std::string>>> result;
+  std::vector<std::pair<std::string, CatalogColumnMetadata>> result;
   for (const auto& [column_name, descriptor] : table.columns) {
     result.push_back({column_name, DescriptorFields(descriptor)});
   }
   return result;
 }
 
-const std::vector<std::pair<std::string, std::map<std::string, std::string>>>&
+const std::vector<std::pair<std::string, CatalogColumnMetadata>>&
 CachedConstraintColumns(ConstraintDmlValidationCache* cache,
                         const CrudTableRecord& table) {
-  if (cache == nullptr || table.table_uuid.empty()) {
-    static thread_local std::vector<std::pair<std::string, std::map<std::string, std::string>>>
+  if (cache == nullptr || table.table_uuid.is_nil()) {
+    static thread_local std::vector<std::pair<std::string, CatalogColumnMetadata>>
         uncached_columns;
     uncached_columns = ConstraintColumns(table);
     return uncached_columns;
@@ -1091,7 +1054,7 @@ bool ContainsAssignedColumn(const std::set<std::string>& assigned_columns,
   return assigned_columns.find(column_name) != assigned_columns.end();
 }
 
-bool IsKeyColumnReferencedByChildren(const std::map<std::string, std::string>& child_fields,
+bool IsKeyColumnReferencedByChildren(const CatalogColumnMetadata& child_fields,
                                      const CrudTableRecord& parent_table,
                                      const std::string& parent_column) {
   const auto reference = ParseForeignKeyReference(child_fields);
@@ -1212,7 +1175,7 @@ void RecordIndexBackedUniquePreflightProof(
     ConstraintDmlValidationCache* cache,
     const EngineRequestContext& context,
     const CrudIndexRecord& index,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     std::vector<EngineEvidenceReference>* evidence) {
   if (cache == nullptr) {
@@ -1289,7 +1252,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraints(
     const EngineRequestContext& context,
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     const std::string& mutation_kind,
     ConstraintDmlValidationCache* cache) {
@@ -1308,7 +1271,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
     const EngineRequestContext& context,
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     const std::string& mutation_kind,
     const ConstraintDmlValidationOptions& options,
@@ -1343,8 +1306,9 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
           return result;
         }
         const std::string proof_identity =
-            ConstraintUuid(fields, table, column_name, "not_null_constraint") + "\n" +
-            table.table_uuid + "\n" + column_name + "\nnon_null_value_present";
+            EncodeMgaMetadataFields({"constraint.not.null.proof.v2",
+                MetadataUuidBytes(ConstraintUuid(fields, table, column_name, "not_null_constraint")),
+                MetadataUuidBytes(table.table_uuid),column_name,"non_null_value_present"});
         if (!FindConstraintDmlProofPayload(cache,
                                            context,
                                            "not_null_descriptor",
@@ -1370,9 +1334,9 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
         const std::string unknown_policy = LowerAscii(FieldOrEmpty(fields, {"check_unknown_policy", "unknown_policy"}));
         if (IsNullValue(value) && unknown_policy != "fail") {
           const std::string proof_identity =
-              ConstraintUuid(fields, table, column_name, "check_constraint") + "\n" +
-              table.table_uuid + "\n" + column_name + "\n" + check_envelope + "\n" +
-              unknown_policy + "\n<NULL>";
+              EncodeMgaMetadataFields({"constraint.check.proof.v2",
+                  MetadataUuidBytes(ConstraintUuid(fields, table, column_name, "check_constraint")),
+                  MetadataUuidBytes(table.table_uuid),column_name,check_envelope,unknown_policy,"<NULL>"});
           if (!FindConstraintDmlProofPayload(cache,
                                              context,
                                              "check_predicate",
@@ -1389,9 +1353,9 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
           result.evidence.push_back({"constraint_check_unknown_passed", column_name});
         } else {
           const std::string proof_identity =
-              ConstraintUuid(fields, table, column_name, "check_constraint") + "\n" +
-              table.table_uuid + "\n" + column_name + "\n" + check_envelope + "\n" +
-              unknown_policy + "\n" + value;
+              EncodeMgaMetadataFields({"constraint.check.proof.v2",
+                  MetadataUuidBytes(ConstraintUuid(fields, table, column_name, "check_constraint")),
+                  MetadataUuidBytes(table.table_uuid),column_name,check_envelope,unknown_policy,value});
           if (FindConstraintDmlProofPayload(cache,
                                             context,
                                             "check_predicate",
@@ -1677,7 +1641,7 @@ EngineApiDiagnostic ValidateImmediateDeleteConstraints(
 EngineApiDiagnostic ValidateDmlDeleteNoInboundConstraintProfileV1(
     const EngineRequestContext& context, const MgaRelationReadView& state,
     const CrudTableRecord& target) {
-  std::set<std::string> seen;
+  std::set<EngineUuid> seen;
   for (const auto& candidate : state.tables) {
     if (!seen.insert(candidate.table_uuid).second) continue;
     const auto child = FindVisibleMgaTable(state, candidate.table_uuid, context.local_transaction_id);
@@ -1685,8 +1649,7 @@ EngineApiDiagnostic ValidateDmlDeleteNoInboundConstraintProfileV1(
     for (const auto& [name, fields] : ConstraintColumns(*child)) {
       if (!DescriptorDeclaresForeignKey(fields)) continue;
       const auto reference = ParseForeignKeyReference(fields);
-      if (!reference || reference->parent_table_uuid == target.table_uuid ||
-          (!target.default_name.empty() && reference->parent_table_uuid == target.default_name))
+      if (!reference || reference->parent_table_uuid == target.table_uuid)
         return MakeEngineApiDiagnostic("SBLR.OPERATION_UNSUPPORTED",
             "sblr.dml_delete_rows.inbound_constraint_provider_required", name, true);
     }
@@ -1742,10 +1705,10 @@ EngineApiDiagnostic ValidateDeferredTransactionConstraints(const EngineRequestCo
       auto fields = DescriptorFields(descriptor);
       if (!TimingRequiresDeferredStore(fields)) { continue; }
       has_deferred_constraints = true;
-      fields.erase("deferrable");
-      fields.erase("initially_deferred");
-      fields.erase("enforcement_timing");
-      fields.erase("timing");
+      fields.text.erase("deferrable");
+      fields.text.erase("initially_deferred");
+      fields.text.erase("enforcement_timing");
+      fields.text.erase("timing");
       descriptor = DescriptorText(fields);
     }
     if (!has_deferred_constraints) {

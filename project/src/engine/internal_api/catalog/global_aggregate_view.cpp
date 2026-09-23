@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/global_aggregate_view.hpp"
+#include "catalog/binary_view_options.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -127,11 +128,8 @@ bool SafeViewName(std::string_view name) {
 }
 
 bool CanonicalTypedUuid(scratchbird::core::platform::UuidKind kind,
-                        std::string_view value) {
-  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
-      kind, std::string(value));
-  return parsed.ok() &&
-         scratchbird::core::uuid::UuidToString(parsed.value.value) == value;
+                        const EngineUuid& value) {
+  return scratchbird::core::uuid::MakeTypedUuid(kind,value).ok();
 }
 
 bool HasForbiddenRequestData(const EngineApiRequest& request) {
@@ -176,7 +174,7 @@ EngineApiDiagnostic ValidateExactActiveTransaction(
       context.transaction_uuid.is_nil()) {
     return ViewDiagnostic("exact_active_transaction_identity_required");
   }
-  const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
+  const auto parsed_transaction = scratchbird::core::uuid::MakeTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
       context.transaction_uuid);
   if (!parsed_transaction.ok()) {
@@ -216,47 +214,9 @@ EngineApiDiagnostic ValidateExactActiveTransaction(
   return OkDiagnostic();
 }
 
-std::string PayloadFieldValue(std::string_view payload,
-                              std::string_view prefix) {
-  std::size_t offset = 0;
-  while (offset <= payload.size()) {
-    const auto delimiter = payload.find(';', offset);
-    const auto end = delimiter == std::string_view::npos
-                         ? payload.size()
-                         : delimiter;
-    const auto field = payload.substr(offset, end - offset);
-    if (field.rfind(prefix, 0) == 0) {
-      return std::string(field.substr(prefix.size()));
-    }
-    if (delimiter == std::string_view::npos) break;
-    offset = delimiter + 1;
-  }
-  return {};
-}
-
 std::vector<std::string> PayloadOptions(std::string_view payload) {
-  constexpr std::string_view prefix = "options=";
-  std::size_t options_offset = 0;
-  if (payload.rfind(prefix, 0) == 0) {
-    options_offset = prefix.size();
-  } else {
-    const auto found = payload.find(";options=");
-    if (found == std::string_view::npos) return {};
-    options_offset = found + std::string_view(";options=").size();
-  }
   std::vector<std::string> options;
-  std::size_t offset = options_offset;
-  while (offset <= payload.size()) {
-    const auto delimiter = payload.find(';', offset);
-    const auto end = delimiter == std::string_view::npos
-                         ? payload.size()
-                         : delimiter;
-    if (end != offset) {
-      options.emplace_back(payload.substr(offset, end - offset));
-    }
-    if (delimiter == std::string_view::npos) break;
-    offset = delimiter + 1;
-  }
+  if (!DecodeBinaryViewOptions(payload,&options)) return {};
   return options;
 }
 
@@ -303,39 +263,39 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
   EngineGlobalAggregateViewDescriptor descriptor;
   descriptor.view_uuid = record.object_uuid;
   descriptor.view_descriptor_uuid =
-      options[1].substr(std::string("view_descriptor_uuid:").size());
+      BinaryViewUuid(options[1].substr(std::string("view_descriptor_uuid:").size()));
   const auto view_generation = ParseCanonicalU64(
       options[2].substr(
           std::string("view_descriptor_generation:").size()));
   descriptor.source_relation_uuid =
-      options[3].substr(std::string("source_relation_uuid:").size());
+      BinaryViewUuid(options[3].substr(std::string("source_relation_uuid:").size()));
   descriptor.source_relation_descriptor_uuid =
-      options[4].substr(
-          std::string("source_relation_descriptor_uuid:").size());
+      BinaryViewUuid(options[4].substr(
+          std::string("source_relation_descriptor_uuid:").size()));
   const auto source_generation = ParseCanonicalU64(
       options[5].substr(
           std::string("source_relation_descriptor_generation:").size()));
   descriptor.source_column_uuid =
-      options[6].substr(std::string("source_column_uuid:").size());
+      BinaryViewUuid(options[6].substr(std::string("source_column_uuid:").size()));
   descriptor.source_column_descriptor_uuid =
-      options[7].substr(
-          std::string("source_column_descriptor_uuid:").size());
+      BinaryViewUuid(options[7].substr(
+          std::string("source_column_descriptor_uuid:").size()));
   const auto literal = ParseCanonicalI32(
       options[10].substr(
           std::string("expression_literal_value:").size()));
   descriptor.aggregate_function_uuid =
-      options[12].substr(
-          std::string("aggregate_function_uuid:").size());
+      BinaryViewUuid(options[12].substr(
+          std::string("aggregate_function_uuid:").size()));
   descriptor.result_alias =
       options[13].substr(std::string("aggregate_result_alias:").size());
   descriptor.result_descriptor =
       EngineGlobalAggregateAvgIntegerResultDescriptor();
 
-  const std::string schema_uuid =
-      PayloadFieldValue(record.payload, "schema=");
-  const std::string target_uuid =
-      PayloadFieldValue(record.payload, "target=");
-  const std::set<std::string> persisted_identities = {
+  const EngineUuid schema_uuid =
+      record.target_schema_uuid;
+  const EngineUuid target_uuid =
+      record.target_object_uuid;
+  const std::set<EngineUuid> persisted_identities = {
       descriptor.view_uuid,
       descriptor.view_descriptor_uuid,
       descriptor.source_relation_uuid,
@@ -383,7 +343,7 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
 
 const MgaRelationColumnStorageDescriptor* FindExactColumn(
     const MgaRelationStorageDescriptor& relation,
-    std::string_view column_uuid,
+    const EngineUuid& column_uuid,
     bool* duplicate = nullptr) {
   const MgaRelationColumnStorageDescriptor* found = nullptr;
   if (duplicate != nullptr) *duplicate = false;
@@ -406,7 +366,7 @@ struct VisibleApiBehaviorLookup {
 
 VisibleApiBehaviorLookup LookupVisibleApiBehaviorRecord(
     const EngineRequestContext& context,
-    std::string_view object_uuid) {
+    const EngineUuid& object_uuid) {
   VisibleApiBehaviorLookup lookup;
   const auto loaded = LoadApiBehaviorState(context);
   if (!loaded.ok) {
@@ -524,8 +484,8 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
     result.diagnostic = ViewDiagnostic("global_aggregate_view_name_invalid");
     return result;
   }
-  const std::string aggregate_uuid =
-      SingleOptionValue(request, "aggregate_function_uuid:");
+  const EngineUuid aggregate_uuid =
+      BinaryViewUuid(SingleOptionValue(request, "aggregate_function_uuid:"));
   const std::string alias =
       SingleOptionValue(request, "aggregate_result_alias:");
   if (aggregate_uuid != EngineGlobalAggregateAvgFunctionUuid() ||
@@ -541,7 +501,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
     return result;
   }
 
-  const std::string source_uuid =
+  const EngineUuid source_uuid =
       request.related_objects.front().uuid;
   const auto source =
       LoadMgaRelationStorageDescriptor(request.context, source_uuid);
@@ -556,7 +516,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
   if (relation.relation_uuid != source_uuid ||
       relation.relation_kind != "table" ||
       relation.descriptor_uuid !=
-          SingleOptionValue(request, "source_relation_descriptor_uuid:") ||
+          BinaryViewUuid(SingleOptionValue(request, "source_relation_descriptor_uuid:")) ||
       !expected_source_generation || *expected_source_generation == 0 ||
       relation.descriptor_generation != *expected_source_generation) {
     result.diagnostic = ViewDiagnostic(
@@ -617,8 +577,8 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
   }
 
   std::optional<ApiBehaviorRecord> existing;
-  std::string view_uuid = request.target_object.uuid;
-  if (!view_uuid.empty()) {
+  EngineUuid view_uuid = request.target_object.uuid;
+  if (!view_uuid.is_nil()) {
     const auto lookup =
         LookupVisibleApiBehaviorRecord(request.context, view_uuid);
     if (!lookup.ok) {
@@ -662,7 +622,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
         existing->operation_id != "ddl.create_view" ||
         existing->state != "created" || existing->deleted ||
         existing->default_name != view_name ||
-        PayloadFieldValue(existing->payload, "schema=") !=
+        existing->target_schema_uuid !=
             request.target_schema.uuid) {
       result.diagnostic = ViewDiagnostic(
           "global_aggregate_view_existing_descriptor_invalid");
@@ -676,7 +636,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
     previous = *parsed;
     result.altered_existing = true;
   } else {
-    if (!view_uuid.empty()) {
+    if (!view_uuid.is_nil()) {
       result.diagnostic = ViewDiagnostic(
           "global_aggregate_view_existing_record_not_visible");
       return result;
@@ -745,28 +705,23 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
   result.canonical_persisted_options = {
       std::string("view_query_shape:") +
           kEngineGlobalAggregateViewMarkerV1,
-      "view_descriptor_uuid:" +
-          descriptor.view_descriptor_uuid,
+      BinaryViewUuidOption("view_descriptor_uuid:", descriptor.view_descriptor_uuid),
       "view_descriptor_generation:" +
           std::to_string(descriptor.view_descriptor_generation),
-      "source_relation_uuid:" +
-          descriptor.source_relation_uuid,
-      "source_relation_descriptor_uuid:" +
-          descriptor.source_relation_descriptor_uuid,
+      BinaryViewUuidOption("source_relation_uuid:", descriptor.source_relation_uuid),
+      BinaryViewUuidOption("source_relation_descriptor_uuid:", descriptor.source_relation_descriptor_uuid),
       "source_relation_descriptor_generation:" +
           std::to_string(
               descriptor.source_relation_descriptor_generation),
-      "source_column_uuid:" + descriptor.source_column_uuid,
-      "source_column_descriptor_uuid:" +
-          descriptor.source_column_descriptor_uuid,
+      BinaryViewUuidOption("source_column_uuid:", descriptor.source_column_uuid),
+      BinaryViewUuidOption("source_column_descriptor_uuid:", descriptor.source_column_descriptor_uuid),
       std::string("expression_kind:") +
           kEngineGlobalAggregateViewInt32MultiplyV1,
       "expression_literal_type:int32",
       "expression_literal_value:" +
           std::to_string(descriptor.expression_literal_int32),
       "expression_result_type:int64",
-      "aggregate_function_uuid:" +
-          descriptor.aggregate_function_uuid,
+      BinaryViewUuidOption("aggregate_function_uuid:", descriptor.aggregate_function_uuid),
       "aggregate_result_alias:" + descriptor.result_alias,
       "aggregate_result_type:int64_nullable"};
   result.descriptor = std::move(descriptor);
@@ -777,10 +732,10 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
 
 EngineGlobalAggregateViewDescriptor DescribeEngineGlobalAggregateView(
     const EngineRequestContext& context,
-    const std::string& view_uuid) {
+    const EngineUuid& view_uuid) {
   EngineGlobalAggregateViewDescriptor descriptor;
   descriptor.diagnostic = OkDiagnostic();
-  if (view_uuid.empty()) {
+  if (view_uuid.is_nil()) {
     descriptor.diagnostic = ViewDiagnostic(
         "global_aggregate_view_uuid_required");
     return descriptor;
@@ -805,7 +760,7 @@ EngineGlobalAggregateViewDescriptor DescribeEngineGlobalAggregateView(
   const auto& record = *lookup.record;
   const auto options = PayloadOptions(record.payload);
   if (!PayloadMentionsBoundedViewFamily(options)) {
-    if (record.payload.find("engine.global_aggregate_view") !=
+    if ((record.payload.starts_with("SBVIEW02") && options.empty()) || record.payload.find("engine.global_aggregate_view") !=
         std::string::npos) {
       descriptor.diagnostic = ViewDiagnostic(
           "global_aggregate_view_descriptor_invalid");
@@ -839,13 +794,9 @@ EngineDescriptor EngineGlobalAggregateViewSemanticDescriptor(
   semantic.descriptor_uuid = descriptor.view_descriptor_uuid;
   semantic.descriptor_kind = "global_aggregate_view";
   semantic.canonical_type_name = kEngineGlobalAggregateViewMarkerV1;
-  semantic.encoded_descriptor =
-      std::string("marker=") + kEngineGlobalAggregateViewMarkerV1 +
-      ";view_uuid=" + descriptor.view_uuid +
-      ";view_descriptor_generation=" +
-      std::to_string(descriptor.view_descriptor_generation) +
-      ";result_alias=" + descriptor.result_alias +
-      ";result_type=int64;result_nullable=true";
+  semantic.encoded_descriptor = GlobalAggregateSemanticPayload(
+      descriptor.view_uuid,descriptor.view_descriptor_generation,
+      kEngineGlobalAggregateViewMarkerV1,descriptor.result_alias);
   return semantic;
 }
 

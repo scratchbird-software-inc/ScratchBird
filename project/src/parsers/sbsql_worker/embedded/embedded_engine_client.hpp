@@ -42,7 +42,7 @@ class EmbeddedEngineClient {
       const std::vector<ipc::PublicRelationResolutionRequest>& requests,
       const ParserConfig& config);
   PublicNameResolutionResult RenderUuidPublic(const SessionContext& session,
-                                              std::string_view object_uuid);
+                                              const scratchbird::core::platform::Uuid& object_uuid);
   ipc::ServerStatementContextResult AcquireNativeStatementContext(
       const SessionContext& session,
       const ipc::ParserTransactionSelector& transaction);
@@ -199,15 +199,15 @@ class EmbeddedEngineClient {
       const std::vector<std::uint8_t>& data_packet,
       bool cursor_requested = false);
   ServerFetchResult FetchCursor(const SessionContext& session,
-                                std::string_view cursor_uuid,
+                                const scratchbird::core::platform::Uuid& cursor_uuid,
                                 const ipc::CursorStreamDescriptorV1& stream_descriptor,
                                 std::uint64_t max_rows = 1,
                                 std::uint64_t max_bytes = 0,
                                 std::uint32_t fetch_flags = 0);
   ServerCloseCursorResult CloseCursor(const SessionContext& session,
-                                      std::string_view cursor_uuid);
+                                      const scratchbird::core::platform::Uuid& cursor_uuid);
   ServerCloseCursorResult CancelCursor(const SessionContext& session,
-                                       std::string_view cursor_uuid);
+                                       const scratchbird::core::platform::Uuid& cursor_uuid);
   ServerManagementResult Manage(const SessionContext& session,
                                 std::string_view operation_key,
                                 std::string_view target_uuid = {},

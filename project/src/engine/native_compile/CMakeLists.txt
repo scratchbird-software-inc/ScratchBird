@@ -38,6 +38,7 @@ target_link_libraries(sb_engine_native_compile PUBLIC
   sb_core_resource_governance
   sb_core_memory
   sb_core_platform
+  sb_core_uuid
   sb_core_metrics
   OpenSSL::Crypto
   ${CMAKE_DL_LIBS}

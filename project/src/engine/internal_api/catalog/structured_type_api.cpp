@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "catalog/binary_catalog_metadata.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -70,62 +71,45 @@ std::uint64_t OptionU64(const EngineApiRequest& request,
   }
 }
 
-std::map<std::string, std::string> PayloadFields(std::string_view payload) {
-  std::map<std::string, std::string> fields;
-  std::string key;
-  std::string value;
-  bool in_key = true;
-  for (char ch : payload) {
-    if (in_key && ch == '=') {
-      in_key = false;
-      continue;
-    }
-    if (ch == ';') {
-      if (!key.empty()) fields[key] = value;
-      key.clear();
-      value.clear();
-      in_key = true;
-      continue;
-    }
-    (in_key ? key : value).push_back(ch);
-  }
-  if (!key.empty()) fields[key] = value;
-  return fields;
+bool DecodeStructuredPayload(std::string_view payload, BinaryCatalogMetadata* fields) {
+  return DecodeBinaryCatalogMetadata(payload, "structured_type.v2", fields);
 }
-
 std::string PayloadField(std::string_view payload, std::string_view key) {
-  const auto fields = PayloadFields(payload);
-  const auto found = fields.find(std::string(key));
-  return found == fields.end() ? std::string() : found->second;
+  BinaryCatalogMetadata fields;
+  if (!DecodeStructuredPayload(payload, &fields)) return {};
+  const auto found = fields.text.find(std::string(key));
+  return found == fields.text.end() ? std::string{} : found->second;
 }
-
-std::vector<std::string> Split(std::string_view value, char delimiter) {
+EngineUuid PayloadUuid(std::string_view payload, const std::string& key) {
+  BinaryCatalogMetadata fields;
+  return DecodeStructuredPayload(payload, &fields) ? BinaryCatalogUuid(fields, key) : EngineUuid{};
+}
+std::vector<std::string> DecodeValueList(std::string_view value) {
+  if (value.empty()) return {};
+  const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t*>(value.data()), value.size());
+  std::size_t cursor = 0; std::uint32_t count = 0;
+  if (!ReadBinaryU32(bytes, &cursor, &count) || count > (bytes.size() - cursor) / 4) return {};
   std::vector<std::string> values;
-  std::string current;
-  std::istringstream in{std::string(value)};
-  while (std::getline(in, current, delimiter)) {
-    if (!current.empty()) values.push_back(current);
+  for (std::uint32_t n = 0; n < count; ++n) {
+    std::string item;
+    if (!ReadBinaryString(bytes, &cursor, &item)) return {};
+    values.push_back(std::move(item));
   }
-  return values;
+  return cursor == bytes.size() ? values : std::vector<std::string>{};
 }
-
-std::string Join(const std::vector<std::string>& values, char delimiter) {
-  std::string out;
-  for (const auto& value : values) {
-    if (!out.empty()) out.push_back(delimiter);
-    out += value;
-  }
-  return out;
+std::string EncodeValueList(const std::vector<std::string>& values) {
+  std::string bytes;
+  AppendBinaryU32(&bytes, static_cast<std::uint32_t>(values.size()));
+  for (const auto& value : values) if (!AppendBinaryString(&bytes, value)) return {};
+  return bytes;
 }
-
-std::string StructuredTypeUuid(const EngineApiRequest& request) {
-  const std::string explicit_uuid = OptionValue(request, "type_uuid:");
-  if (!explicit_uuid.empty()) return explicit_uuid;
-  if (request.target_object.object_kind == std::string(kStructuredTypeKind) ||
-      request.target_object.object_kind == "type" ||
-      request.target_object.object_kind == "structured_type") {
-    return request.target_object.uuid;
-  }
+EngineUuid BinaryOptionUuid(std::string_view bytes) {
+  EngineUuid value;
+  if (bytes.size() != value.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), 16, value.bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(value) ? value : EngineUuid{};
+}
+EngineUuid StructuredTypeUuid(const EngineApiRequest& request) {
   return request.target_object.uuid;
 }
 
@@ -197,10 +181,10 @@ bool ContainsRawSqlText(const EngineApiRequest& request) {
   return false;
 }
 
-bool MatchesTarget(const std::string& grant_target,
-                   const std::string& target_uuid,
+bool MatchesTarget(const EngineUuid& grant_target,
+                   const EngineUuid& target_uuid,
                    const EngineApiRequest& request) {
-  return grant_target.empty() || grant_target == "*" ||
+  return grant_target.is_nil() ||
          grant_target == target_uuid ||
          grant_target == request.target_database.uuid ||
          grant_target == request.target_schema.uuid ||
@@ -238,7 +222,7 @@ bool EvidenceTagGrants(const EngineRequestContext& context,
 
 bool HasRight(const EngineApiRequest& request,
               std::string_view right,
-              std::string_view target_uuid) {
+              const EngineUuid& target_uuid) {
   const auto& context = request.context;
   const auto& auth = context.authorization_context;
   if (!context.security_context_present || !auth.present) return false;
@@ -250,7 +234,7 @@ bool HasRight(const EngineApiRequest& request,
                                grant.right == "ALL" ||
                                grant.right == "SYSARCH";
     if (!right_matches ||
-        !MatchesTarget(grant.target_uuid, std::string(target_uuid), request)) {
+        !MatchesTarget(grant.target_uuid, target_uuid, request)) {
       continue;
     }
     if (grant.deny) return false;
@@ -263,7 +247,14 @@ EngineApiDiagnostic ValidateStructuredContext(const EngineApiRequest& request,
                                               std::string_view operation_id,
                                               bool require_transaction,
                                               std::string_view right,
-                                              std::string_view target_uuid) {
+                                              const EngineUuid& target_uuid) {
+  for (const auto prefix : {"type_uuid:", "base_range_uuid:", "element_range_uuid:"}) {
+    const auto bytes = OptionValue(request, prefix);
+    if (!bytes.empty() && (BinaryOptionUuid(bytes).is_nil() ||
+        (std::string_view(prefix) == "type_uuid:" && BinaryOptionUuid(bytes) != request.target_object.uuid))) {
+      return MakeInvalidRequestDiagnostic(std::string(operation_id), "binary_uuid_option_required");
+    }
+  }
   if (ContainsRawSqlText(request)) {
     return MakeInvalidRequestDiagnostic(std::string(operation_id),
                                         "structured_type_engine_request_must_not_contain_sql_text");
@@ -285,14 +276,21 @@ EngineApiDiagnostic ValidateStructuredContext(const EngineApiRequest& request,
 }
 
 std::optional<ApiBehaviorRecord> FindStructuredType(const EngineApiRequest& request,
-                                                    const std::string& type_uuid,
+                                                    const EngineUuid& type_uuid,
                                                     EngineApiDiagnostic& diagnostic) {
   const auto records = VisibleApiBehaviorRecords(request.context,
                                                 std::string(kStructuredTypeKind),
                                                 request.context.local_transaction_id, diagnostic);
   if (diagnostic.error) return {};
   for (const auto& record : records) {
-    if (record.object_uuid == type_uuid && !record.deleted) return record;
+    if (record.object_uuid == type_uuid && !record.deleted) {
+      BinaryCatalogMetadata fields;
+      if (!DecodeStructuredPayload(record.payload, &fields)) {
+        diagnostic = MakeInvalidRequestDiagnostic("structured_type.lookup", "invalid_binary_structured_type_payload");
+        return {};
+      }
+      return record;
+    }
   }
   return std::nullopt;
 }
@@ -306,12 +304,11 @@ std::uint64_t DescriptorVersion(std::string_view payload) {
   }
 }
 
-void AppendField(std::string* payload, std::string key, std::string value) {
-  if (value.empty()) return;
-  if (!payload->empty()) payload->push_back(';');
-  *payload += std::move(key);
-  payload->push_back('=');
-  *payload += std::move(value);
+void AppendField(BinaryCatalogMetadata* fields, std::string key, std::string value) {
+  if (!value.empty()) fields->text[std::move(key)] = std::move(value);
+}
+void AppendField(BinaryCatalogMetadata* fields, std::string key, const EngineUuid& value) {
+  fields->identities[std::move(key)] = value;
 }
 
 std::string DescriptorPayload(const EngineApiRequest& request,
@@ -325,28 +322,26 @@ std::string DescriptorPayload(const EngineApiRequest& request,
   const auto range_options = OptionValues(request, "range_option:");
   const std::uint64_t version = DescriptorVersion(previous_payload) + 1;
 
-  std::string payload;
+  BinaryCatalogMetadata payload;
   AppendField(&payload, "structured_action", std::move(action));
   AppendField(&payload, "structured_family", std::move(family));
-  AppendField(&payload, "type_uuid", StructuredTypeUuid(request));
   AppendField(&payload, "type_name", PrimaryName(request));
-  AppendField(&payload, "schema_uuid", request.target_schema.uuid);
   AppendField(&payload, "syntax_form", OptionValue(request, "syntax_form:"));
   AppendField(&payload, "descriptor_version", std::to_string(version));
   AppendField(&payload, "catalog_identity", "structured_type_uuidv7");
   AppendField(&payload, "field_count", std::to_string(fields.size()));
-  AppendField(&payload, "fields", Join(fields, '|'));
+  AppendField(&payload, "fields", EncodeValueList(fields));
   AppendField(&payload, "label_count", std::to_string(labels.size()));
-  AppendField(&payload, "labels", Join(labels, '|'));
+  AppendField(&payload, "labels", EncodeValueList(labels));
   AppendField(&payload, "alternative_count", std::to_string(alternatives.size()));
-  AppendField(&payload, "alternatives", Join(alternatives, '|'));
+  AppendField(&payload, "alternatives", EncodeValueList(alternatives));
   AppendField(&payload, "member_count", std::to_string(members.size()));
-  AppendField(&payload, "members", Join(members, '|'));
+  AppendField(&payload, "members", EncodeValueList(members));
   AppendField(&payload, "subtype", OptionValue(request, "subtype:"));
-  AppendField(&payload, "base_range_uuid", OptionValue(request, "base_range_uuid:"));
-  AppendField(&payload, "element_range_uuid", OptionValue(request, "element_range_uuid:"));
+  AppendField(&payload, "base_range_uuid", BinaryOptionUuid(OptionValue(request, "base_range_uuid:")));
+  AppendField(&payload, "element_range_uuid", BinaryOptionUuid(OptionValue(request, "element_range_uuid:")));
   AppendField(&payload, "element_type", OptionValue(request, "element_type:"));
-  AppendField(&payload, "range_options", Join(range_options, '|'));
+  AppendField(&payload, "range_options", EncodeValueList(range_options));
   AppendField(&payload, "auto_derived_multirange",
               OptionBool(request, "auto_derived:") ? "true" : "false");
   AppendField(&payload, "explicit_multirange",
@@ -354,7 +349,9 @@ std::string DescriptorPayload(const EngineApiRequest& request,
   AppendField(&payload, "retired_labels", PayloadField(previous_payload, "retired_labels"));
   AppendField(&payload, "parser_sql_authority", "false");
   AppendField(&payload, "mga_finality_authority", "engine");
-  return payload;
+  std::string encoded;
+  if (!EncodeBinaryCatalogMetadata(payload, "structured_type.v2", &encoded)) return {};
+  return encoded;
 }
 
 EngineApiDiagnostic OkDiagnostic() {
@@ -364,8 +361,8 @@ EngineApiDiagnostic OkDiagnostic() {
 EngineApiDiagnostic ValidateCreateDescriptor(const EngineApiRequest& request,
                                              std::string_view operation_id,
                                              std::string* family_out) {
-  const std::string type_uuid = StructuredTypeUuid(request);
-  if (type_uuid.empty()) {
+  const EngineUuid type_uuid = StructuredTypeUuid(request);
+  if (type_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic(std::string(operation_id),
                                         "structured_type_uuid_required");
   }
@@ -390,7 +387,7 @@ EngineApiDiagnostic ValidateCreateDescriptor(const EngineApiRequest& request,
     }
     for (const auto& field : fields) {
       const std::string field_type = FieldType(field);
-      if ((Lower(field_type) == "self" || field_type == type_uuid) &&
+      if ((Lower(field_type) == "self" || BinaryOptionUuid(field_type) == type_uuid) &&
           !OptionBool(request, "recursive_indirection:") &&
           OptionValue(request, "indirection:") != "container") {
         return MakeEngineApiDiagnostic("SBSQL.STRUCTURED_TYPE_DIRECT_RECURSION_REFUSED",
@@ -459,14 +456,14 @@ EngineApiDiagnostic ValidateAlterDescriptor(const EngineApiRequest& request,
                                             std::string_view operation_id,
                                             ApiBehaviorRecord* existing_out,
                                             std::string* payload_out) {
-  const std::string type_uuid = StructuredTypeUuid(request);
+  const EngineUuid type_uuid = StructuredTypeUuid(request);
   EngineApiDiagnostic behavior_diagnostic;
   auto existing = FindStructuredType(request, type_uuid, behavior_diagnostic);
   if (behavior_diagnostic.error) return behavior_diagnostic;
   if (!existing.has_value()) {
     return MakeEngineApiDiagnostic("SBSQL.STRUCTURED_TYPE_NOT_FOUND",
                                    "sbsql.structured_type.not_found",
-                                   type_uuid);
+                                   "type_uuid");
   }
   const std::uint64_t mutation_count = OptionU64(request, "mutation_count:", 1);
   if (mutation_count != 1) {
@@ -475,20 +472,23 @@ EngineApiDiagnostic ValidateAlterDescriptor(const EngineApiRequest& request,
                                    "one_alter_type_mutation_per_statement");
   }
   const std::string family = PayloadField(existing->payload, "structured_family");
-  std::string payload = existing->payload;
+  BinaryCatalogMetadata payload;
+  if (!DecodeStructuredPayload(existing->payload, &payload)) {
+    return MakeInvalidRequestDiagnostic(std::string(operation_id), "invalid_binary_structured_type_payload");
+  }
   const std::string drop_label = OptionValue(request, "drop_label:");
   if (!drop_label.empty()) {
     if (family != "enum") {
       return MakeInvalidRequestDiagnostic(std::string(operation_id),
                                           "drop_label_requires_enum");
     }
-    const auto labels = Split(PayloadField(existing->payload, "labels"), '|');
+    const auto labels = DecodeValueList(PayloadField(existing->payload, "labels"));
     if (std::find(labels.begin(), labels.end(), drop_label) == labels.end()) {
       return MakeEngineApiDiagnostic("SBSQL.STRUCTURED_ENUM_LABEL_NOT_FOUND",
                                      "sbsql.structured_type.enum_label_not_found",
                                      drop_label);
     }
-    const auto retired = Split(PayloadField(existing->payload, "retired_labels"), '|');
+    const auto retired = DecodeValueList(PayloadField(existing->payload, "retired_labels"));
     if (std::find(retired.begin(), retired.end(), drop_label) != retired.end()) {
       return MakeEngineApiDiagnostic("SBSQL.STRUCTURED_ENUM_LABEL_RETIRED",
                                      "sbsql.structured_type.enum_label_retired",
@@ -498,7 +498,7 @@ EngineApiDiagnostic ValidateAlterDescriptor(const EngineApiRequest& request,
     new_retired.push_back(drop_label);
     AppendField(&payload, "structured_action", "alter_type");
     AppendField(&payload, "alter_action", "drop_enum_value_tombstone");
-    AppendField(&payload, "retired_labels", Join(new_retired, '|'));
+    AppendField(&payload, "retired_labels", EncodeValueList(new_retired));
     AppendField(&payload, "descriptor_version",
                 std::to_string(DescriptorVersion(existing->payload) + 1));
   } else if (!OptionValue(request, "set_range_option:").empty()) {
@@ -519,7 +519,9 @@ EngineApiDiagnostic ValidateAlterDescriptor(const EngineApiRequest& request,
                 std::to_string(DescriptorVersion(existing->payload) + 1));
   }
   *existing_out = *existing;
-  *payload_out = std::move(payload);
+  if (!EncodeBinaryCatalogMetadata(payload, "structured_type.v2", payload_out)) {
+    return MakeInvalidRequestDiagnostic(std::string(operation_id), "structured_type_payload_limit");
+  }
   return OkDiagnostic();
 }
 
@@ -553,7 +555,7 @@ void AddStructuredTypeRow(EngineApiResult* result,
                     {{"type_uuid", record.object_uuid},
                      {"type_name", record.default_name},
                      {"structured_family", PayloadField(record.payload, "structured_family")},
-                     {"schema_uuid", PayloadField(record.payload, "schema_uuid")},
+                     {"schema_uuid", record.target_schema_uuid},
                      {"syntax_form", PayloadField(record.payload, "syntax_form")},
                      {"descriptor_version", PayloadField(record.payload, "descriptor_version")},
                      {"field_count", PayloadField(record.payload, "field_count")},
@@ -561,8 +563,8 @@ void AddStructuredTypeRow(EngineApiResult* result,
                      {"alternative_count", PayloadField(record.payload, "alternative_count")},
                      {"member_count", PayloadField(record.payload, "member_count")},
                      {"subtype", PayloadField(record.payload, "subtype")},
-                     {"base_range_uuid", PayloadField(record.payload, "base_range_uuid")},
-                     {"element_range_uuid", PayloadField(record.payload, "element_range_uuid")},
+                     {"base_range_uuid", PayloadUuid(record.payload, "base_range_uuid")},
+                     {"element_range_uuid", PayloadUuid(record.payload, "element_range_uuid")},
                      {"element_type", PayloadField(record.payload, "element_type")},
                      {"retired_labels", PayloadField(record.payload, "retired_labels")},
                      {"catalog_identity", "structured_type_uuidv7"},
@@ -573,7 +575,7 @@ void AddStructuredTypeRow(EngineApiResult* result,
 EngineApiDiagnostic ValidateUsageRequest(const EngineApiRequest& request,
                                          std::string_view operation_id,
                                          ApiBehaviorRecord* record_out) {
-  const std::string type_uuid = StructuredTypeUuid(request);
+  const EngineUuid type_uuid = StructuredTypeUuid(request);
   const auto base = ValidateStructuredContext(request,
                                              operation_id,
                                              false,
@@ -586,14 +588,14 @@ EngineApiDiagnostic ValidateUsageRequest(const EngineApiRequest& request,
   if (!record.has_value()) {
     return MakeEngineApiDiagnostic("SBSQL.STRUCTURED_TYPE_NOT_FOUND",
                                    "sbsql.structured_type.not_found",
-                                   type_uuid);
+                                   "type_uuid");
   }
   *record_out = *record;
   return OkDiagnostic();
 }
 
 bool IsRetiredEnumLabel(const ApiBehaviorRecord& record, std::string_view label) {
-  const auto retired = Split(PayloadField(record.payload, "retired_labels"), '|');
+  const auto retired = DecodeValueList(PayloadField(record.payload, "retired_labels"));
   return std::find(retired.begin(), retired.end(), label) != retired.end();
 }
 
@@ -602,7 +604,7 @@ bool IsRetiredEnumLabel(const ApiBehaviorRecord& record, std::string_view label)
 EngineCreateStructuredTypeResult EngineCreateStructuredType(
     const EngineCreateStructuredTypeRequest& request) {
   constexpr std::string_view kOperation = "engine.op.ddl_create_type";
-  const std::string type_uuid = StructuredTypeUuid(request);
+  const EngineUuid type_uuid = StructuredTypeUuid(request);
   const auto base = ValidateStructuredContext(request,
                                              kOperation,
                                              true,
@@ -620,6 +622,9 @@ EngineCreateStructuredTypeResult EngineCreateStructuredType(
                                                               std::string(kOperation),
                                                               descriptor);
   }
+  const auto payload = DescriptorPayload(request, "create_type", family);
+  if (payload.empty()) return DiagnosticResult<EngineCreateStructuredTypeResult>(request,
+      std::string(kOperation), MakeInvalidRequestDiagnostic(std::string(kOperation), "structured_type_payload_limit"));
   EngineCreateStructuredTypeRequest normalized = request;
   normalized.target_object.object_kind = std::string(kStructuredTypeKind);
   auto result = PersistedRecordResultWithPayload<EngineCreateStructuredTypeResult>(
@@ -629,7 +634,7 @@ EngineCreateStructuredTypeResult EngineCreateStructuredType(
       true,
       "active",
       false,
-      DescriptorPayload(request, "create_type", family));
+      payload);
   if (result.ok) {
     result.result_shape.result_kind = "rs.structured_type.descriptor.v1";
     AddStructuredEvidence(&result, "create_type", "EngineCreateStructuredType", family);
@@ -642,7 +647,7 @@ EngineCreateStructuredTypeResult EngineCreateStructuredType(
 EngineAlterStructuredTypeResult EngineAlterStructuredType(
     const EngineAlterStructuredTypeRequest& request) {
   constexpr std::string_view kOperation = "engine.op.ddl_alter_type";
-  const std::string type_uuid = StructuredTypeUuid(request);
+  const EngineUuid type_uuid = StructuredTypeUuid(request);
   const auto base = ValidateStructuredContext(request,
                                              kOperation,
                                              true,
@@ -690,7 +695,7 @@ EngineAlterStructuredTypeResult EngineAlterStructuredType(
 EngineDropStructuredTypeResult EngineDropStructuredType(
     const EngineDropStructuredTypeRequest& request) {
   constexpr std::string_view kOperation = "engine.op.ddl_drop_type";
-  const std::string type_uuid = StructuredTypeUuid(request);
+  const EngineUuid type_uuid = StructuredTypeUuid(request);
   const auto base = ValidateStructuredContext(request,
                                              kOperation,
                                              true,
@@ -711,7 +716,18 @@ EngineDropStructuredTypeResult EngineDropStructuredType(
         std::string(kOperation),
         MakeEngineApiDiagnostic("SBSQL.STRUCTURED_TYPE_NOT_FOUND",
                                 "sbsql.structured_type.not_found",
-                                type_uuid));
+                                "type_uuid"));
+  }
+  BinaryCatalogMetadata metadata;
+  std::string payload;
+  if (!DecodeStructuredPayload(existing->payload, &metadata)) {
+    return DiagnosticResult<EngineDropStructuredTypeResult>(request, std::string(kOperation),
+        MakeInvalidRequestDiagnostic(std::string(kOperation), "invalid_binary_structured_type_payload"));
+  }
+  metadata.text["structured_action"] = "drop_type";
+  if (!EncodeBinaryCatalogMetadata(metadata, "structured_type.v2", &payload)) {
+    return DiagnosticResult<EngineDropStructuredTypeResult>(request, std::string(kOperation),
+        MakeInvalidRequestDiagnostic(std::string(kOperation), "structured_type_payload_limit"));
   }
   EngineDropStructuredTypeRequest normalized = request;
   normalized.target_object.object_kind = std::string(kStructuredTypeKind);
@@ -722,7 +738,7 @@ EngineDropStructuredTypeResult EngineDropStructuredType(
       true,
       "dropped",
       true,
-      existing->payload + ";structured_action=drop_type");
+      payload);
   if (result.ok) {
     result.result_shape.result_kind = "rs.ddl.commit.v1";
     AddStructuredEvidence(&result,
@@ -782,6 +798,11 @@ EngineShowStructuredTypesResult EngineShowStructuredTypes(
   if (behavior_diagnostic.error) return DiagnosticResult<EngineShowStructuredTypesResult>(
       request, std::string(kOperation), behavior_diagnostic);
   for (const auto& record : records) {
+    BinaryCatalogMetadata metadata;
+    if (!DecodeStructuredPayload(record.payload, &metadata)) {
+      return DiagnosticResult<EngineShowStructuredTypesResult>(request, std::string(kOperation),
+          MakeInvalidRequestDiagnostic(std::string(kOperation), "invalid_binary_structured_type_payload"));
+    }
     if (!family_filter.empty() &&
         PayloadField(record.payload, "structured_family") != family_filter) {
       continue;

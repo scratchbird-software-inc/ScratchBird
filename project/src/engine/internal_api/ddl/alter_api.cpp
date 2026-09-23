@@ -9,6 +9,8 @@
 #include "ddl/alter_api.hpp"
 
 #include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "catalog/constraint_metadata_codec.hpp"
 #include "catalog/name_registry.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "crud_support/crud_store.hpp"
@@ -151,84 +153,42 @@ std::optional<std::uint64_t> ParseU64(std::string_view text) {
   return value;
 }
 
-std::string UpsertDescriptorField(std::string descriptor,
-                                  const std::string& key,
-                                  const std::string& value) {
-  std::vector<std::string> parts;
-  std::size_t start = 0;
-  bool replaced = false;
-  while (start <= descriptor.size()) {
-    const std::size_t end = descriptor.find(';', start);
-    const std::string part = descriptor.substr(
-        start,
-        end == std::string::npos ? std::string::npos : end - start);
-    if (part.rfind(key + "=", 0) == 0) {
-      parts.push_back(key + "=" + value);
-      replaced = true;
-    } else if (!part.empty()) {
-      parts.push_back(part);
-    }
-    if (end == std::string::npos) break;
-    start = end + 1;
+using AlterMetadataValue = std::variant<std::string, EngineUuid>;
+std::string UpsertDescriptorField(std::string descriptor, const std::string& key,
+                                  const AlterMetadataValue& value) {
+  BinaryCatalogMetadata fields;
+  const bool constraint = DecodeCatalogConstraintMetadata(descriptor, &fields);
+  if (!constraint && !AdmitCatalogColumnMetadata(descriptor, &fields)) return {};
+  if (const auto* id = std::get_if<EngineUuid>(&value)) {
+    if (fields.text.contains(key)) return {};
+    fields.identities[key] = *id;
+  } else {
+    if (key.ends_with("uuid") || fields.identities.contains(key)) return {};
+    fields.text[key] = std::get<std::string>(value);
   }
-  if (!replaced) parts.push_back(key + "=" + value);
-  std::string out;
-  for (const auto& part : parts) {
-    if (!out.empty()) out.push_back(';');
-    out.append(part);
-  }
-  return out;
+  std::string encoded;
+  const bool ok = constraint ? EncodeCatalogConstraintMetadata(fields, &encoded)
+                            : EncodeCatalogColumnMetadata(fields, &encoded);
+  return ok ? encoded : std::string{};
 }
-
-std::map<std::string, std::string> ConstraintEnvelopeFields(
-    std::string_view envelope) {
-  std::map<std::string, std::string> fields;
-  std::size_t start = 0;
-  while (start <= envelope.size()) {
-    const auto end = envelope.find(';', start);
-    const std::string part = std::string(envelope.substr(
-        start,
-        end == std::string_view::npos ? envelope.size() - start
-                                      : end - start));
-    const auto equals = part.find('=');
-    if (equals != std::string::npos && equals != 0) {
-      fields[LowerAscii(part.substr(0, equals))] = part.substr(equals + 1);
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
+BinaryCatalogMetadata ConstraintEnvelopeFields(std::string_view envelope) {
+  BinaryCatalogMetadata fields;
+  if (!DecodeCatalogConstraintMetadata(envelope, &fields))
+    DecodeCatalogColumnMetadata(envelope, &fields);
   return fields;
 }
-
-bool ConstraintEnvelopeHasExactlyFields(
-    std::string_view envelope,
+bool ConstraintEnvelopeHasExactlyFields(std::string_view envelope,
     const std::set<std::string>& allowed_fields) {
+  BinaryCatalogMetadata fields;
+  if (!DecodeCatalogConstraintMetadata(envelope, &fields)) return false;
   std::set<std::string> seen;
-  std::size_t start = 0;
-  while (start <= envelope.size()) {
-    const auto end = envelope.find(';', start);
-    const std::string part = std::string(envelope.substr(
-        start,
-        end == std::string_view::npos ? envelope.size() - start
-                                      : end - start));
-    const auto equals = part.find('=');
-    if (equals == std::string::npos || equals == 0) return false;
-    const std::string key = LowerAscii(part.substr(0, equals));
-    if (allowed_fields.find(key) == allowed_fields.end() ||
-        !seen.insert(key).second) {
-      return false;
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
+  for (const auto& [key, value] : fields.text) seen.insert(key);
+  for (const auto& [key, value] : fields.identities) seen.insert(key);
   return seen == allowed_fields;
 }
-
-std::string ConstraintField(
-    const std::map<std::string, std::string>& fields,
-    std::string_view key) {
-  const auto found = fields.find(std::string(key));
-  return found == fields.end() ? std::string{} : found->second;
+std::string ConstraintField(const BinaryCatalogMetadata& fields, std::string_view key) {
+  const auto it = fields.text.find(std::string(key));
+  return it == fields.text.end() ? std::string{} : it->second;
 }
 
 std::vector<std::string> AlterIndexKeyColumns(const CrudIndexRecord& index) {
@@ -262,7 +222,7 @@ std::vector<std::string> AlterIndexKeyColumns(const CrudIndexRecord& index) {
 
 const MgaRelationColumnStorageDescriptor* RelationColumnByUuid(
     const MgaRelationStorageDescriptor& descriptor,
-    std::string_view column_uuid) {
+    const EngineUuid& column_uuid) {
   const MgaRelationColumnStorageDescriptor* matched = nullptr;
   for (const auto& column : descriptor.columns) {
     if (column.column_uuid != column_uuid) continue;
@@ -274,7 +234,7 @@ const MgaRelationColumnStorageDescriptor* RelationColumnByUuid(
 
 bool RelationDescriptorContainsIndex(
     const MgaRelationStorageDescriptor& descriptor,
-    std::string_view index_uuid) {
+    const EngineUuid& index_uuid) {
   return std::any_of(descriptor.indexes.begin(), descriptor.indexes.end(),
                      [&](const auto& index) {
                        return index.index_uuid == index_uuid;
@@ -466,7 +426,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
       updated.localized_names = request.localized_names;
       updated.default_name = SchemaTreeDefaultName(updated.localized_names, updated.default_name);
     }
-    std::vector<std::string> schema_extension_payload;
+    BinaryCatalogMetadata schema_extensions;
     for (const auto& option : request.option_envelopes) {
       if (StartsWith(option, "comment:")) {
         updated.localized_comments.push_back({"und", option.substr(8)});
@@ -480,23 +440,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
               MakeInvalidRequestDiagnostic("ddl.alter_object", "localized_comment_requires_language_and_text"));
         }
         updated.localized_comments.push_back({rest.substr(0, pos), rest.substr(pos + 1)});
-      } else if (StartsWith(option, "schema_union_member:")) {
-        schema_extension_payload.push_back("schema_union_member=" + option.substr(20));
-      } else if (StartsWith(option, "schema_union_policy:")) {
-        schema_extension_payload.push_back("schema_union_policy=" + option.substr(20));
-      } else if (StartsWith(option, "schema_union_root:")) {
-        schema_extension_payload.push_back("schema_union_root=" + option.substr(18));
-      } else if (StartsWith(option, "lifecycle_transition:")) {
-        schema_extension_payload.push_back("lifecycle_transition=" + option.substr(21));
-      } else if (StartsWith(option, "mga_root_mutation_registry:")) {
-        schema_extension_payload.push_back("mga_root_mutation_registry=" + option.substr(27));
-      } else if (StartsWith(option, "implementation_flavour:")) {
-        schema_extension_payload.push_back("implementation_flavour=" + option.substr(22));
-      } else if (StartsWith(option, "filespace_diagnostic:")) {
-        schema_extension_payload.push_back("filespace_diagnostic=" + option.substr(21));
-      } else if (StartsWith(option, "catalog_ddl_mutation_audit:")) {
-        schema_extension_payload.push_back("catalog_ddl_mutation_audit=" + option.substr(27));
-      } else {
+      } else if (!AddSchemaTreeExtension(option,&schema_extensions)) {
         return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
             request.context,
             "ddl.alter_object",
@@ -513,11 +457,8 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
           "ddl.alter_object",
           MakeInvalidRequestDiagnostic("ddl.alter_object", "schema_path_ambiguous:" + *conflict));
     }
-    updated.payload = SchemaTreePayload(updated.parent_schema_uuid, updated.localized_names, updated.localized_comments);
-    for (const auto& extension : schema_extension_payload) {
-      if (!updated.payload.empty()) { updated.payload.push_back(';'); }
-      updated.payload.append(extension);
-    }
+    updated.payload = SchemaTreePayload(updated.parent_schema_uuid, updated.localized_names,
+        updated.localized_comments,schema_extensions);
     const auto appended = PersistSchemaTreeRecord(request.context, updated, "ddl.alter_schema");
     if (appended.error) {
       return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", appended);
@@ -545,11 +486,8 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     result.catalog_row_uuid = GenerateCrudEngineUuid("row");
     AddApiBehaviorEvidence(&result, "api_behavior_event", "ddl.alter_schema");
     AddApiBehaviorEvidence(&result, "schema_identity_preserved", updated.schema_uuid);
-    for (const auto& extension : schema_extension_payload) {
-      const auto pos = extension.find('=');
-      if (pos == std::string::npos) { continue; }
-      AddApiBehaviorEvidence(&result, extension.substr(0, pos), extension.substr(pos + 1));
-    }
+    for (const auto& [key,value]:schema_extensions.text) AddApiBehaviorEvidence(&result,key,value);
+    for (const auto& [key,value]:schema_extensions.identities) AddApiBehaviorEvidence(&result,key,value);
     AddApiBehaviorRow(&result, {{"object_uuid", updated.schema_uuid},
                                 {"object_kind", "schema"},
                                 {"name", updated.default_name},
@@ -571,13 +509,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
           MakeInvalidRequestDiagnostic("ddl.alter_object", "local_transaction_id_required"));
     }
     const std::string lookup_key = SecurityOptionValue(request, "sequence_lookup_key:");
-    std::vector<std::string> runtime_keys;
-    if (!lookup_key.empty()) runtime_keys.push_back(lookup_key);
-    if (!request.target_object.uuid.is_nil() &&
-        request.target_object.uuid != lookup_key) {
-      runtime_keys.push_back(request.target_object.uuid);
-    }
-    if (runtime_keys.empty()) {
+    if (request.target_object.uuid.is_nil() && lookup_key.empty()) {
       return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
           request.context,
           "ddl.alter_object",
@@ -618,34 +550,34 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
       }
     }
     const auto sblr_context = AlterSblrContext(request.context);
-    for (const auto& key : runtime_keys) {
-      alteration.sequence_uuid = key;
-      const auto altered = scratchbird::engine::sblr::AlterSblrSequence(
+    alteration.sequence_uuid = request.target_object.uuid;
+    alteration.sequence_name_hint = lookup_key;
+    const auto altered = scratchbird::engine::sblr::AlterSblrSequence(
+        &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(),
+        alteration,
+        sblr_context);
+    if (!altered.ok()) {
+      return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          SequenceRuntimeDiagnostic("ddl.alter_object", altered));
+    }
+    if (restart.has_value()) {
+      scratchbird::engine::sblr::SblrSequenceRequest sequence_request;
+      sequence_request.context = sblr_context;
+      sequence_request.sequence_uuid = request.target_object.uuid;
+      sequence_request.sequence_name_hint = lookup_key;
+      sequence_request.result_descriptor_id = "int64";
+      sequence_request.set_value = *restart;
+      sequence_request.is_called = false;
+      const auto restarted = scratchbird::engine::sblr::SetSblrSequenceValue(
           &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(),
-          alteration,
-          sblr_context);
-      if (!altered.ok()) {
+          sequence_request);
+      if (!restarted.ok()) {
         return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
             request.context,
             "ddl.alter_object",
-            SequenceRuntimeDiagnostic("ddl.alter_object", altered));
-      }
-      if (restart.has_value()) {
-        scratchbird::engine::sblr::SblrSequenceRequest sequence_request;
-        sequence_request.context = sblr_context;
-        sequence_request.sequence_uuid = key;
-        sequence_request.result_descriptor_id = "int64";
-        sequence_request.set_value = *restart;
-        sequence_request.is_called = false;
-        const auto restarted = scratchbird::engine::sblr::SetSblrSequenceValue(
-            &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(),
-            sequence_request);
-        if (!restarted.ok()) {
-          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
-              request.context,
-              "ddl.alter_object",
-              SequenceRuntimeDiagnostic("ddl.alter_object", restarted));
-        }
+            SequenceRuntimeDiagnostic("ddl.alter_object", restarted));
       }
     }
     auto result = PersistedRecordResult<EngineAlterObjectResult>(
@@ -656,7 +588,10 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
         "altered");
     if (!result.ok) return result;
     result.primary_object = request.target_object;
-    AddApiBehaviorEvidence(&result, "sequence_runtime_alter", runtime_keys.front());
+    if (!request.target_object.uuid.is_nil())
+      AddApiBehaviorEvidence(&result, "sequence_runtime_alter", request.target_object.uuid);
+    else
+      AddApiBehaviorEvidence(&result, "sequence_runtime_alter", lookup_key);
     if (alteration.cache_size.has_value()) {
       AddApiBehaviorEvidence(&result, "sequence_runtime_cache", std::to_string(*alteration.cache_size));
     }
@@ -819,8 +754,8 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
             MakeInvalidRequestDiagnostic("ddl.alter_object", "domain_base_change_requires_dependency_revalidation"));
       }
       const auto& descriptor = request.descriptors.front();
-      const std::string base_domain_uuid = DomainUuidFromDescriptor(descriptor);
-      if (!base_domain_uuid.empty()) {
+      const EngineUuid base_domain_uuid = DomainUuidFromDescriptor(descriptor);
+      if (!base_domain_uuid.is_nil()) {
         if (base_domain_uuid == updated.domain_uuid ||
             DomainChainContainsUuid(request.context, base_domain_uuid, updated.domain_uuid, request.context.local_transaction_id)) {
           return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
@@ -1113,8 +1048,8 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
           name_lookup_request,
           request.target_object.uuid,
           "table");
-      const std::string existing_scope_uuid =
-          existing_name.ok ? existing_name.entry.scope_uuid : std::string{};
+      const EngineUuid existing_scope_uuid =
+          existing_name.ok ? existing_name.entry.scope_uuid : EngineUuid{};
 
       const auto retired = RetireNameRegistryEntriesForObject(request.context,
                                                              "ddl.alter_object",
@@ -1125,10 +1060,10 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
             "ddl.alter_object",
             retired);
       }
-      std::string scope_uuid = request.target_schema.uuid;
-      if (scope_uuid.empty()) scope_uuid = existing_scope_uuid;
-      if (scope_uuid.empty()) scope_uuid = request.context.current_schema_uuid;
-      if (scope_uuid.empty()) {
+      EngineUuid scope_uuid = request.target_schema.uuid;
+      if (scope_uuid.is_nil()) scope_uuid = existing_scope_uuid;
+      if (scope_uuid.is_nil()) scope_uuid = request.context.current_schema_uuid;
+      if (scope_uuid.is_nil()) {
         return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
             request.context,
             "ddl.alter_object",
@@ -1250,26 +1185,26 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
   if (!ConstraintEnvelopeHasExactlyFields(
           definition.canonical_constraint_envelope,
           allowed_input_fields) ||
-      fields.size() != allowed_input_fields.size()) {
+      fields.text.size() + fields.identities.size() != allowed_input_fields.size()) {
     return fail("neutral_foreign_key_input_shape_invalid_or_reserved");
   }
   if (ConstraintField(fields, "descriptor_version") !=
       "neutral_fk_single_column_v1") {
     return fail("neutral_single_column_foreign_key_descriptor_required");
   }
-  const std::string child_table_uuid =
-      ConstraintField(fields, "child_table_uuid");
-  const std::string child_column_uuid =
-      ConstraintField(fields, "child_column_uuid");
-  const std::string parent_table_uuid =
-      ConstraintField(fields, "parent_table_uuid");
-  const std::string parent_column_uuid =
-      ConstraintField(fields, "parent_column_uuid");
+  const EngineUuid child_table_uuid =
+      BinaryCatalogUuid(fields, "child_table_uuid");
+  const EngineUuid child_column_uuid =
+      BinaryCatalogUuid(fields, "child_column_uuid");
+  const EngineUuid parent_table_uuid =
+      BinaryCatalogUuid(fields, "parent_table_uuid");
+  const EngineUuid parent_column_uuid =
+      BinaryCatalogUuid(fields, "parent_column_uuid");
   if (child_table_uuid != request.target_object.uuid ||
-      ConstraintField(fields, "referenced_table_uuid") != parent_table_uuid ||
-      ConstraintField(fields, "referenced_column_uuid") != parent_column_uuid ||
-      child_column_uuid.empty() || parent_table_uuid.empty() ||
-      parent_column_uuid.empty()) {
+      BinaryCatalogUuid(fields, "referenced_table_uuid") != parent_table_uuid ||
+      BinaryCatalogUuid(fields, "referenced_column_uuid") != parent_column_uuid ||
+      child_column_uuid.is_nil() || parent_table_uuid.is_nil() ||
+      parent_column_uuid.is_nil()) {
     return fail("exact_relation_and_column_uuid_bindings_required");
   }
   const std::string timing =
@@ -1317,9 +1252,9 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
       ConstraintField(fields, "child_relation_descriptor_generation"));
   const auto expected_parent_descriptor_generation = ParseU64(
       ConstraintField(fields, "parent_relation_descriptor_generation"));
-  if (ConstraintField(fields, "child_relation_descriptor_uuid") !=
+  if (BinaryCatalogUuid(fields, "child_relation_descriptor_uuid") !=
           child_storage.descriptor.descriptor_uuid ||
-      ConstraintField(fields, "parent_relation_descriptor_uuid") !=
+      BinaryCatalogUuid(fields, "parent_relation_descriptor_uuid") !=
           parent_storage.descriptor.descriptor_uuid ||
       !expected_child_descriptor_generation ||
       !expected_parent_descriptor_generation ||
@@ -1364,17 +1299,14 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
   }
   const auto parent_key_fields =
       ConstraintEnvelopeFields(parent_metadata_column->second);
-  const std::string parent_candidate_key_constraint_uuid = ConstraintField(
-      parent_key_fields, "candidate_key_constraint_uuid");
-  const std::string parent_candidate_key_descriptor_uuid = ConstraintField(
-      parent_key_fields, "candidate_key_descriptor_uuid");
-  const std::string expected_support_uuid = ConstraintField(
-      parent_key_fields, "support_uuid");
+  const EngineUuid parent_candidate_key_constraint_uuid = BinaryCatalogUuid(parent_key_fields, "candidate_key_constraint_uuid");
+  const EngineUuid parent_candidate_key_descriptor_uuid = BinaryCatalogUuid(parent_key_fields, "candidate_key_descriptor_uuid");
+  const EngineUuid expected_support_uuid = BinaryCatalogUuid(parent_key_fields, "support_uuid");
   const std::string candidate_key_class = LowerAscii(
       ConstraintField(parent_key_fields, "candidate_key_class"));
-  if (parent_candidate_key_constraint_uuid.empty() ||
-      parent_candidate_key_descriptor_uuid.empty() ||
-      expected_support_uuid.empty() ||
+  if (parent_candidate_key_constraint_uuid.is_nil() ||
+      parent_candidate_key_descriptor_uuid.is_nil() ||
+      expected_support_uuid.is_nil() ||
       (candidate_key_class != "primary_key" &&
        candidate_key_class != "unique")) {
     return fail("authoritative_parent_candidate_key_descriptor_required");
@@ -1402,7 +1334,7 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
                                          ? CrudIndexFamilyForProfile(
                                                support.profile)
                                          : support.family;
-  if (support.index_uuid.empty() || support_family.empty()) {
+  if (support.index_uuid.is_nil() || support_family.empty()) {
     return fail("exact_support_index_identity_required");
   }
 
@@ -1426,7 +1358,7 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
     }
   }
   const auto existing_fields = ConstraintEnvelopeFields(mutable_column->second);
-  if (!ConstraintField(existing_fields, "referenced_table_uuid").empty() ||
+  if (!BinaryCatalogUuid(existing_fields, "referenced_table_uuid").is_nil() ||
       !ConstraintField(existing_fields, "foreign_key").empty()) {
     return fail("child_column_foreign_key_already_present");
   }
@@ -1471,13 +1403,13 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
       if (duplicate) return fail("constraint_name_already_visible");
     }
   }
-  const std::string constraint_uuid = GenerateCrudEngineUuid("object");
-  const std::string key_descriptor_uuid =
+  const EngineUuid constraint_uuid = GenerateCrudEngineUuid("object");
+  const EngineUuid key_descriptor_uuid =
       parent_candidate_key_descriptor_uuid;
-  const std::string mutation_batch_uuid = GenerateCrudEngineUuid("row");
+  const EngineUuid mutation_batch_uuid = GenerateCrudEngineUuid("row");
   std::string final_envelope = definition.canonical_constraint_envelope;
   for (const auto& [key, value] :
-       std::vector<std::pair<std::string, std::string>>{
+       std::vector<std::pair<std::string, AlterMetadataValue>>{
            {"constraint_uuid", constraint_uuid},
            {"constraint_name", constraint_name},
            {"child_column", child_column->canonical_name_key},
@@ -1497,7 +1429,7 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
 
   std::string descriptor = mutable_column->second;
   for (const auto& [key, value] :
-       std::vector<std::pair<std::string, std::string>>{
+       std::vector<std::pair<std::string, AlterMetadataValue>>{
            {"foreign_key", "true"},
            {"constraint_uuid", constraint_uuid},
            {"constraint_name", constraint_name},
@@ -1682,7 +1614,7 @@ EngineAlterTriggerResult EngineAlterTrigger(
         MakeEngineApiDiagnostic(
             "MGA.AUTHORITY_MISMATCH",
             "ddl.alter_trigger.executable_generation_mismatch",
-            request.target_object.uuid, true));
+            "target_object_uuid", true));
   }
 
   EngineCatalogAlterObjectRequest catalog_request;

@@ -1,9 +1,11 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_ddl_create_schema_execution_journal.hpp"
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 #include "catalog/name_registry.hpp"
+#include "catalog/binary_view_options.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "core/hash/hash_digest.hpp"
 #include "database_lifecycle.hpp"
@@ -72,18 +74,8 @@ void Fill(std::array<std::uint8_t, N>* value, std::uint8_t seed) {
   }
 }
 
-std::string UuidText(const std::array<std::uint8_t, 16>& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string text;
-  text.reserve(36);
-  for (std::size_t index = 0; index != value.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      text.push_back('-');
-    }
-    text.push_back(kHex[value[index] >> 4U]);
-    text.push_back(kHex[value[index] & 0x0fU]);
-  }
-  return text;
+api::EngineUuid NativeUuid(const std::array<std::uint8_t, 16>& value) {
+  return api::EngineUuid{value};
 }
 
 std::uint64_t NowMillis() {
@@ -93,17 +85,15 @@ std::uint64_t NowMillis() {
           .count());
 }
 
-std::string NewUuid(UuidKind kind, std::uint64_t salt) {
+api::EngineUuid NewUuid(UuidKind kind, std::uint64_t salt) {
   const auto generated =
       uuid::GenerateEngineIdentityV7(kind, NowMillis() + salt);
   Require(generated.ok(), "engine UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
-std::array<std::uint8_t, 16> UuidBytes(std::string_view text) {
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  Require(parsed.ok(), "canonical UUID parsing failed");
-  return parsed.value.bytes;
+std::array<std::uint8_t, 16> UuidBytes(const api::EngineUuid& identity) {
+  return identity.bytes;
 }
 
 class TemporaryRoot {
@@ -177,31 +167,31 @@ api::EngineRequestContext Context(
     const sblr::SblrDdlCreateSchemaDescriptorV1& descriptor) {
   api::EngineRequestContext context;
   context.database_path = database_path.string();
-  context.database_uuid.canonical = UuidText(descriptor.database_uuid);
-  context.statement_receipt_uuid.canonical = UuidText(descriptor.receipt);
-  context.transaction_uuid.canonical =
-      UuidText(descriptor.owning_transaction_uuid);
+  context.database_uuid = NativeUuid(descriptor.database_uuid);
+  context.statement_receipt_uuid = NativeUuid(descriptor.receipt);
+  context.transaction_uuid =
+      NativeUuid(descriptor.owning_transaction_uuid);
   context.local_transaction_id = descriptor.owning_local_transaction_id;
-  context.statement_snapshot_uuid.canonical =
-      UuidText(descriptor.statement_snapshot_uuid);
-  context.catalog_epoch_uuid.canonical =
-      UuidText(descriptor.catalog_epoch_uuid);
+  context.statement_snapshot_uuid =
+      NativeUuid(descriptor.statement_snapshot_uuid);
+  context.catalog_epoch_uuid =
+      NativeUuid(descriptor.catalog_epoch_uuid);
   context.catalog_generation_id = descriptor.catalog_generation;
   context.security_context_present = true;
   context.security_epoch = descriptor.security_epoch;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      UuidText(descriptor.security_context_uuid);
+  context.authorization_context.authority_uuid =
+      NativeUuid(descriptor.security_context_uuid);
   context.authorization_context.security_epoch = descriptor.security_epoch;
-  context.transaction_policy_snapshot_uuid.canonical =
-      UuidText(descriptor.policy_snapshot_uuid);
+  context.transaction_policy_snapshot_uuid =
+      NativeUuid(descriptor.policy_snapshot_uuid);
   context.transaction_policy_snapshot_generation =
       descriptor.policy_generation;
-  context.resource_admission_uuid.canonical =
-      UuidText(descriptor.resource_grant_uuid);
+  context.resource_admission_uuid =
+      NativeUuid(descriptor.resource_grant_uuid);
   context.resource_epoch = descriptor.resource_generation;
-  context.principal_uuid.canonical =
-      UuidText(descriptor.owner_principal_uuid);
+  context.principal_uuid =
+      NativeUuid(descriptor.owner_principal_uuid);
   context.statement_metadata_snapshot_engine_owned = true;
   context.trace_tags.push_back(
       "private_ddl_create_schema_execution_journal");
@@ -268,10 +258,9 @@ MarkerResult PublishMarker(const std::filesystem::path& path) {
 
 std::filesystem::path JournalPath(
     const api::EngineRequestContext& context,
-    const api::SblrDdlCreateSchemaJournalKeyV1& key) {
+    const api::SblrDdlCreateSchemaJournalKeyV1&) {
   return context.database_path +
-         ".sb.sblr_ddl_create_schema_execution_journal.v1." +
-         UuidText(key.recovery_uuid);
+         ".sb.sblr_ddl_create_schema_execution_journal.v2";
 }
 
 void RequireExactResult(
@@ -297,15 +286,15 @@ void RequireExactResult(
 }
 
 api::EngineRequestContext BeginTransaction(
-    const std::filesystem::path& path, const std::string& database_uuid,
-    const std::string& principal_uuid, std::uint64_t salt) {
+    const std::filesystem::path& path, const api::EngineUuid& database_uuid,
+    const api::EngineUuid& principal_uuid, std::uint64_t salt) {
   api::EngineBeginTransactionRequest request;
   request.context.trust_mode = api::EngineTrustMode::server_isolated;
   request.context.request_id = "ia08-ddl-create-schema-recovery";
   request.context.database_path = path.string();
-  request.context.database_uuid.canonical = database_uuid;
-  request.context.principal_uuid.canonical = principal_uuid;
-  request.context.session_uuid.canonical = NewUuid(UuidKind::object, salt);
+  request.context.database_uuid = database_uuid;
+  request.context.principal_uuid = principal_uuid;
+  request.context.session_uuid = NewUuid(UuidKind::object, salt);
   request.context.security_context_present = true;
   request.context.identifier_profile_uuid = "sbsql_v3";
   request.context.language_context.language_tag = "en";
@@ -313,8 +302,7 @@ api::EngineRequestContext BeginTransaction(
   request.context.catalog_generation_id = 1;
   request.context.security_epoch = 1;
   request.context.resource_epoch = 1;
-  request.context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  request.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   request.context.datatype_catalog_generation = 1;
   request.context.datatype_registry_generation = 1;
   request.context.name_resolution_epoch = 1;
@@ -328,7 +316,7 @@ api::EngineRequestContext BeginTransaction(
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
+  context.authorization_context.authority_uuid =
       NewUuid(UuidKind::object, salt + 40);
   context.authorization_context.security_context_generation = 1;
   context.authorization_context.principal_uuid = context.principal_uuid;
@@ -341,7 +329,7 @@ api::EngineRequestContext BeginTransaction(
   subject.subject_kind = "principal";
   context.authorization_context.effective_subjects.push_back(subject);
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = NewUuid(UuidKind::object, salt + 41);
+  grant.grant_uuid = NewUuid(UuidKind::object, salt + 41);
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
   grant.target_uuid = context.database_uuid;
@@ -352,14 +340,14 @@ api::EngineRequestContext BeginTransaction(
 }
 
 sblr::SblrDdlCreateSchemaDescriptorV1 DescriptorForTransaction(
-    api::EngineRequestContext* context, const std::string& schema_uuid,
+    api::EngineRequestContext* context, const api::EngineUuid& schema_uuid,
     std::uint64_t salt) {
   auto descriptor = Descriptor(0xf0);
   descriptor.receipt = UuidBytes(NewUuid(UuidKind::object, salt + 1));
   descriptor.schema_uuid = UuidBytes(schema_uuid);
-  descriptor.database_uuid = UuidBytes(context->database_uuid.canonical);
+  descriptor.database_uuid = UuidBytes(context->database_uuid);
   descriptor.owning_transaction_uuid =
-      UuidBytes(context->transaction_uuid.canonical);
+      UuidBytes(context->transaction_uuid);
   descriptor.owning_local_transaction_id = context->local_transaction_id;
   descriptor.statement_snapshot_uuid =
       UuidBytes(NewUuid(UuidKind::object, salt + 2));
@@ -376,33 +364,33 @@ sblr::SblrDdlCreateSchemaDescriptorV1 DescriptorForTransaction(
       UuidBytes(NewUuid(UuidKind::object, salt + 6));
   descriptor.resource_generation = context->resource_epoch;
   descriptor.owner_principal_uuid =
-      UuidBytes(context->principal_uuid.canonical);
+      UuidBytes(context->principal_uuid);
   descriptor.binding_uuid = UuidBytes(NewUuid(UuidKind::object, salt + 7));
   descriptor.recovery_uuid = UuidBytes(NewUuid(UuidKind::object, salt + 8));
   descriptor.evidence = {};
 
-  context->statement_receipt_uuid.canonical = UuidText(descriptor.receipt);
-  context->statement_snapshot_uuid.canonical =
-      UuidText(descriptor.statement_snapshot_uuid);
+  context->statement_receipt_uuid = NativeUuid(descriptor.receipt);
+  context->statement_snapshot_uuid =
+      NativeUuid(descriptor.statement_snapshot_uuid);
   context->statement_metadata_snapshot_engine_owned = true;
   context->statement_metadata_snapshot_uuid = context->statement_snapshot_uuid;
-  context->catalog_epoch_uuid.canonical =
-      UuidText(descriptor.catalog_epoch_uuid);
+  context->catalog_epoch_uuid =
+      NativeUuid(descriptor.catalog_epoch_uuid);
   context->authorization_context.present = true;
-  context->authorization_context.authority_uuid.canonical =
-      UuidText(descriptor.security_context_uuid);
+  context->authorization_context.authority_uuid =
+      NativeUuid(descriptor.security_context_uuid);
   context->authorization_context.security_context_generation = 1;
   context->authorization_context.principal_uuid = context->principal_uuid;
   context->authorization_context.security_epoch = descriptor.security_epoch;
   context->authorization_context.policy_epoch = 1;
   context->authorization_context.catalog_generation_id =
       descriptor.catalog_generation;
-  context->transaction_policy_snapshot_uuid.canonical =
-      UuidText(descriptor.policy_snapshot_uuid);
+  context->transaction_policy_snapshot_uuid =
+      NativeUuid(descriptor.policy_snapshot_uuid);
   context->transaction_policy_snapshot_generation =
       descriptor.policy_generation;
-  context->resource_admission_uuid.canonical =
-      UuidText(descriptor.resource_grant_uuid);
+  context->resource_admission_uuid =
+      NativeUuid(descriptor.resource_grant_uuid);
   context->trace_tags.push_back(
       "private_ddl_create_schema_execution_journal");
   return descriptor;
@@ -474,20 +462,20 @@ api::EngineApiDiagnostic CreateSchemaMutation(
   request.operation_id = "ddl.create_schema";
   request.target_database.uuid = context.database_uuid;
   request.target_database.object_kind = "database";
-  request.target_object.uuid.canonical = UuidText(descriptor.schema_uuid);
+  request.target_object.uuid = NativeUuid(descriptor.schema_uuid);
   request.target_object.object_kind = "schema";
   request.localized_names.push_back(
       {"en", "primary", "recovered_schema", "recovered_schema", true});
-  request.recovery_operation_uuid.canonical =
-      UuidText(descriptor.recovery_uuid);
-  request.requested_catalog_row_uuid.canonical =
-      UuidText(planned_result.catalog_row_uuid);
-  request.mutation_uuid.canonical = UuidText(planned_result.mutation_uuid);
-  request.statement_publication_barrier_uuid.canonical =
-      UuidText(planned_result.publication_barrier);
+  request.recovery_operation_uuid =
+      NativeUuid(descriptor.recovery_uuid);
+  request.requested_catalog_row_uuid =
+      NativeUuid(planned_result.catalog_row_uuid);
+  request.mutation_uuid = NativeUuid(planned_result.mutation_uuid);
+  request.statement_publication_barrier_uuid =
+      NativeUuid(planned_result.publication_barrier);
   request.option_envelopes.push_back(
-      "catalog_ddl_mutation_audit:" +
-      request.recovery_operation_uuid.canonical);
+      api::BinaryViewUuidOption("catalog_ddl_mutation_audit:",
+      request.recovery_operation_uuid));
   const auto created = api::EngineCreateSchema(request);
   if (!created.ok) {
     if (!created.diagnostics.empty()) return created.diagnostics.front();
@@ -497,10 +485,10 @@ api::EngineApiDiagnostic CreateSchemaMutation(
         "sblr.ddl_create_schema.test_catalog_mutation_failed";
     return diagnostic;
   }
-  Require(created.primary_object.uuid.canonical ==
-                  request.target_object.uuid.canonical &&
-              created.catalog_row_uuid.canonical ==
-                  request.requested_catalog_row_uuid.canonical,
+  Require(created.primary_object.uuid ==
+                  request.target_object.uuid &&
+              created.catalog_row_uuid ==
+                  request.requested_catalog_row_uuid,
           "CREATE SCHEMA recovery returned changed catalog identities");
   return Ok();
 }
@@ -600,8 +588,7 @@ int main() {
             "changed CREATE SCHEMA authority reused a recovery identity");
 
     auto foreign_context = context;
-    foreign_context.statement_receipt_uuid.canonical =
-        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    foreign_context.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     const auto hidden = api::LookupSblrDdlCreateSchemaExecutionJournalV1(
         foreign_context, key);
     Require(!hidden.ok && hidden.diagnostic.code == "SECURITY.ACCESS_DENIED",
@@ -687,7 +674,7 @@ int main() {
             "CREATE SCHEMA recovery database creation failed");
 
     const auto catalog_database_uuid =
-        uuid::UuidToString(database_identity.value.value);
+        database_identity.value.value;
     const auto catalog_principal_uuid = NewUuid(UuidKind::object, 202);
     const auto catalog_schema_uuid = NewUuid(UuidKind::schema, 203);
     auto catalog_context = BeginTransaction(
@@ -800,7 +787,7 @@ int main() {
             "committed CREATE SCHEMA recovery did not replay exact CSRS");
 
     auto foreign_recovery_context = observer;
-    foreign_recovery_context.principal_uuid.canonical =
+    foreign_recovery_context.principal_uuid =
         NewUuid(UuidKind::object, 240);
     const auto foreign_recovery =
         api::RecoverSblrDdlCreateSchemaExecutionJournalV1(

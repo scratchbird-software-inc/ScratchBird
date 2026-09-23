@@ -70,7 +70,7 @@ std::filesystem::path MakeTempDir() {
 
 struct Fixture {
   std::filesystem::path path;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
 };
 
 Fixture CreateActiveDatabase(const std::filesystem::path& path, std::uint64_t now_millis) {
@@ -87,7 +87,7 @@ Fixture CreateActiveDatabase(const std::filesystem::path& path, std::uint64_t no
   Require(created.ok(), "DBLC-011 notification database create failed");
   const auto opened = db::OpenDatabaseFile({path.string(), false, false, false});
   Require(opened.ok(), "DBLC-011 notification database open failed");
-  return Fixture{path, uuid::UuidToString(create.database_uuid.value)};
+  return Fixture{path, create.database_uuid.value};
 }
 
 ServerBootstrapConfig Config(const Fixture& fixture) {

@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -67,7 +68,12 @@ bool EvidenceHas(const std::vector<std::string>& evidence,
 
 index::IndexOperationMetricSample GoodSample(std::string suffix = "positive") {
   index::IndexOperationMetricSample sample;
-  sample.identity.index_uuid = "ceic040-index-" + suffix;
+  const std::vector<std::string> cases = {"positive", "descriptor-only", "authority",
+      "missing-generation", "freshness", "cluster", "successor", "bundle-negative"};
+  const auto found = std::find(cases.begin(), cases.end(), suffix);
+  Require(found != cases.end(), "unknown metric identity fixture");
+  sample.identity.index_uuid = scratchbird::tests::FixtureUuid(
+      1538, 1 + static_cast<std::uint32_t>(found - cases.begin()));
   sample.identity.index_family = "hash";
   sample.identity.route_kind = "sql_select";
   sample.identity.index_generation = "ceic040-generation-" + suffix;
@@ -97,12 +103,13 @@ index::IndexOperationMetricSample GoodSample(std::string suffix = "positive") {
   return sample;
 }
 
-std::vector<metrics::MetricValue> SnapshotFor(std::string_view index_uuid) {
+std::vector<metrics::MetricValue> SnapshotFor(const metrics::MetricUuid& index_uuid) {
   std::vector<metrics::MetricValue> out;
   for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent(false)) {
     bool matches = false;
     for (const auto& label : value.labels) {
-      if (label.key == "index_uuid" && label.value == index_uuid) {
+      const auto* identity = std::get_if<metrics::MetricUuid>(&label.value);
+      if (label.key == "index_uuid" && identity && *identity == index_uuid) {
         matches = true;
         break;
       }
@@ -131,8 +138,8 @@ metrics::MetricValue SyntheticProtectedMetric() {
   value.family = index::IndexOperationCounterFamily(
       index::IndexOperationCounterKind::probe);
   value.type = metrics::MetricType::counter;
-  value.value = 1;
-  value.labels = {{"index_uuid", "secret-token-index"},
+  value.value = std::uint64_t{1};
+  value.labels = {{"index_uuid", scratchbird::tests::FixtureUuid(1538, 100)},
                   {"index_family", "hash"},
                   {"route_kind", "sql_select"},
                   {"operation", "probe"},
@@ -359,6 +366,12 @@ void ValidateSupportBundleRefusalsAndBounds() {
   }
   {
     index::IndexOperationMetricSupportBundleRequest request;
+    auto text_identity = SyntheticProtectedMetric();
+    SetLabel(&text_identity, "index_uuid", "018f0000-0000-7000-8000-00000000d001");
+    request.metrics = {text_identity};
+    request.require_all_operation_counters = false;
+    const auto rejected = index::BuildIndexOperationMetricSupportBundle(request);
+    Require(!rejected.ok, "CEIC-040 support bundle accepted a textual index UUID");
     request.metrics = {SyntheticProtectedMetric()};
     request.require_all_operation_counters = false;
     const auto bundle = index::BuildIndexOperationMetricSupportBundle(request);
@@ -366,11 +379,16 @@ void ValidateSupportBundleRefusalsAndBounds() {
     Require(bundle.redacted_row_count == 1,
             "CEIC-040 protected values must be redacted");
     Require(bundle.rows.size() == 1, "CEIC-040 redaction test emitted wrong row count");
-    Require(bundle.rows.front().index_uuid == "<protected-material-excluded>",
-            "CEIC-040 protected index UUID must not be exposed");
-    Require(!ContainsProtectedText(bundle.rows.front().labels),
+    Require(bundle.rows.front().index_uuid == scratchbird::tests::FixtureUuid(1538, 100),
+            "CEIC-040 redaction must preserve binary index identity");
+    Require(std::none_of(bundle.rows.front().labels.begin(), bundle.rows.front().labels.end(),
+                         [](const auto& label) {
+                           const auto* text = std::get_if<std::string>(&label.value);
+                           return text && ContainsProtectedText(*text);
+                         }),
             "CEIC-040 redacted labels leaked protected text");
-    Require(!ContainsProtectedText(bundle.rows.front().value),
+    Require(std::holds_alternative<std::uint64_t>(bundle.rows.front().value) &&
+                std::get<std::uint64_t>(bundle.rows.front().value) == 1,
             "CEIC-040 redacted value leaked protected text");
   }
 }

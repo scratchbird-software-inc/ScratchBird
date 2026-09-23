@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "api_types.hpp"
 #include "expression/reference_variable_compatibility.hpp"
 #include "expression/expression_catalog.hpp"
@@ -33,13 +34,13 @@ api::EngineRequestContext TestContext() {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.database_path = "/tmp/sbsql-missing-system-variable-contract.sbdb";
-  context.database_uuid.canonical = "019f1000-0000-7000-8000-000000000001";
-  context.node_uuid.canonical = "019f1000-0000-7000-8000-000000000002";
-  context.session_uuid.canonical = "019f1000-0000-7000-8000-000000000003";
-  context.statement_uuid.canonical = "019f1000-0000-7000-8000-000000000004";
-  context.principal_uuid.canonical = "019f1000-0000-7000-8000-000000000005";
-  context.transaction_uuid.canonical = "019f1000-0000-7000-8000-000000000006";
-  context.current_schema_uuid.canonical = "019f1000-0000-7000-8000-000000000007";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000001");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000002");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000003");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000004");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000005");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000006");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000007");
   context.local_transaction_id = 42;
   context.transaction_isolation_level = "snapshot";
   context.security_context_present = true;
@@ -59,9 +60,9 @@ sblr::SblrDispatchResult DispatchSystemVariable(std::string_view variable_id,
       "SBLR_SYSTEM_VARIABLE_READ",
       "sbsql-missing-functionality-system-variable-contract");
   request.envelope.parser_package_uuid =
-      "019f1000-0000-7000-8000-000000000008";
+      scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000008");
   request.envelope.registry_snapshot_uuid =
-      "019f1000-0000-7000-8000-000000000009";
+      scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000009");
   request.envelope.requires_transaction_context = false;
   if (!variable_id.empty()) {
     request.envelope.operands.push_back(
@@ -84,9 +85,9 @@ sblr::SblrDispatchResult DispatchReferenceVariable(std::string_view reference_sp
       binding.sblr_opcode,
       "sbsql-missing-functionality-reference-variable-lowering-contract");
   request.envelope.parser_package_uuid =
-      "019f1000-0000-7000-8000-000000000008";
+      scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000008");
   request.envelope.registry_snapshot_uuid =
-      "019f1000-0000-7000-8000-000000000009";
+      scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000009");
   request.envelope.requires_transaction_context = false;
   for (const auto& operand : binding.operands) {
     request.envelope.operands.push_back(
@@ -114,7 +115,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) {
       return true;
     }
   }
@@ -270,8 +271,8 @@ bool ValidateContextVariableResolver() {
   bool ok = true;
   const auto context = TestContext();
   sblr::SblrExecutionContext sblr_context;
-  sblr_context.session_uuid = context.session_uuid.canonical;
-  sblr_context.user_uuid = context.principal_uuid.canonical;
+  sblr_context.session_uuid = context.session_uuid;
+  sblr_context.user_uuid = context.principal_uuid;
   sblr_context.local_transaction_id = context.local_transaction_id;
   sblr_context.transaction_isolation_level = context.transaction_isolation_level;
   sblr_context.last_row_count = context.last_row_count;

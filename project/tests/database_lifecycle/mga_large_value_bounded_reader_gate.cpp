@@ -3,7 +3,9 @@
 
 // Companion-reader component evidence only. Caller row visibility is supplied
 // here; real MGA selection/rollback/restart is covered by the server route gate.
+#include "../support/binary_uuid_fixture.hpp"
 #include "mga_relation_store/mga_large_value_store.hpp"
+#include "mga_relation_store/mga_large_value_codec.hpp"
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
 #include <chrono>
@@ -26,9 +28,9 @@ int main() {
   context.local_transaction_id = 1;
   api::CrudRowVersionRecord row;
   row.creator_tx = 1;
-  row.table_uuid = "019f2100-0000-7000-8000-0000000002e1";
-  row.row_uuid = "019f2100-0000-7000-8000-0000000002e2";
-  row.version_uuid = "019f2100-0000-7000-8000-0000000002e3";
+  row.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-0000000002e1");
+  row.row_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-0000000002e2");
+  row.version_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-0000000002e3");
   std::string payload(12000, 'x');
   payload[45] = '\0'; payload.replace(100, 4, "\xf0\x9f\x98\x80");
   row.values = {{"payload", payload}};
@@ -71,22 +73,46 @@ int main() {
   run(original, false, limit, limit, true);
   run(original, false, limit, limit, false, true);
   run(original.substr(0, original.size() - 1), false, limit, limit, false);
-  const auto header_end = original.find('\n');
-  run(original.substr(0, header_end + 1) + original, false, limit, limit, false);
-  const auto first_chunk_end = original.find('\n', header_end + 1);
-  run(original.substr(0, first_chunk_end + 1) + original.substr(header_end + 1),
-      false, limit, limit, false);
-  auto corrupt = original;
-  const auto chunk = corrupt.find("LARGE_VALUE_CHUNK");
-  auto value = corrupt.find('\t', chunk);
-  for (int field = 0; field < 3; ++field) value = corrupt.find('\t', value + 1);
-  corrupt[value + 1] = corrupt[value + 1] == '0' ? '1' : '0';
-  run(corrupt, false, limit, limit, false);
-  const auto uuid_begin = row.values[0].second.find(':') + 1;
-  const auto overflow_uuid = row.values[0].second.substr(uuid_begin, 36);
-  run(original + "SBMGA1\tLARGE_VALUE_RECLAIMED\t1\t" + overflow_uuid + "\t" +
-      row.table_uuid + "\t" + row.row_uuid + "\t" + row.version_uuid + "\tpayload\ttest\n",
-      false, limit, limit, false);
+  std::vector<std::string> frames;
+  expect(api::DecodeMgaMetadataStream(
+      {reinterpret_cast<const std::uint8_t*>(original.data()), original.size()}, &frames) && frames.size() > 1,
+      "fixture large values are not complete binary metadata frames");
+  if (failures) return 1;
+  run(frames.front() + original, false, limit, limit, false);
+  std::size_t chunk_index = 0;
+  std::vector<std::string> chunk_fields;
+  for (; chunk_index < frames.size(); ++chunk_index) {
+    expect(api::DecodeMgaMetadataFields(frames[chunk_index], &chunk_fields), "fixture metadata decode failed");
+    if (chunk_fields.size() == 7 && chunk_fields[1] == "LARGE_VALUE_CHUNK") break;
+  }
+  expect(chunk_index < frames.size() && !chunk_fields[5].empty(), "fixture contains no nonempty chunk");
+  if (failures) return 1;
+  const auto joined = [](const std::vector<std::string>& records) {
+    std::string bytes;
+    for (const auto& record : records) bytes += record;
+    return bytes;
+  };
+  auto duplicate = frames;
+  duplicate.insert(duplicate.begin() + chunk_index, frames[chunk_index]);
+  run(joined(duplicate), false, limit, limit, false);
+  auto corrupt = frames;
+  chunk_fields[5][0] ^= 1;
+  corrupt[chunk_index] = api::EncodeMgaMetadataFields(chunk_fields);
+  expect(!corrupt[chunk_index].empty(), "corrupt payload fixture encoding failed");
+  run(joined(corrupt), false, limit, limit, false);
+  auto checksum_corrupt = original;
+  checksum_corrupt.back() ^= 1;
+  run(checksum_corrupt, false, limit, limit, false);
+  api::EngineUuid overflow_uuid;
+  std::uint64_t checksum = 0, logical_size = 0;
+  expect(api::ReadMgaLargeValueLocator(row.values[0].second, &overflow_uuid, &checksum, &logical_size),
+         "fixture overflow locator did not preserve native identity");
+  const auto reclaimed = api::EncodeMgaMetadataFields(
+      {"SBMGL002", "LARGE_VALUE_RECLAIMED", "1", api::MetadataUuidBytes(overflow_uuid),
+       api::MetadataUuidBytes(row.table_uuid), api::MetadataUuidBytes(row.row_uuid),
+       api::MetadataUuidBytes(row.version_uuid), "payload", "test"});
+  expect(!reclaimed.empty(), "reclaim fixture binary encoding failed");
+  run(original + reclaimed, false, limit, limit, false);
   std::cout << "checks=" << checks << " failures=" << failures << " artifacts=" << root << '\n';
   if (!failures) std::filesystem::remove_all(root);
   return failures ? 1 : 0;

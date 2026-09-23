@@ -87,7 +87,8 @@ int main() {
   source.evidence.push_back({"fixture_origin", "component_only"});
   source.evidence.push_back({"binary_reference",row.requested_row_uuid});
   rendering::EngineParserPackageRenderOptions options;
-  options.parser_package_uuid = "019e150f-0000-7000-8000-000000000021";
+  const api::EngineUuid package_uuid{{0x01,0x9e,0x15,0x0f,0,0,0x70,0,0x80,0,0,0,0,0,0,0x21}};
+  options.parser_package_uuid.assign(reinterpret_cast<const char*>(package_uuid.bytes.data()), package_uuid.bytes.size());
   options.parser_package_version = "attestation-regression";
   options.client_dialect = "sbsql";
   const auto projected = rendering::RenderEngineApiResultForParserPackage(source, options);
@@ -98,7 +99,10 @@ int main() {
   Check(projected.operation_id == source.operation_id, "operation identity changed");
   Check(projected.rows.size() == 1, "source row lost");
   if (projected.rows.size() == 1) {
-    Check(projected.rows[0].row_uuid == "019e150f-0000-7000-8000-000000000015", "row identity changed");
+    Check(projected.rows[0].row_uuid.size() == 16 &&
+          projected.rows[0].row_uuid == std::string(
+              reinterpret_cast<const char*>(row.requested_row_uuid.bytes.data()),16),
+          "binary row identity changed");
     Check(projected.rows[0].fields.size() == 2, "source field lost");
     if (projected.rows[0].fields.size() == 2) {
       Check(projected.rows[0].fields[0].encoded_value == value.encoded_value,

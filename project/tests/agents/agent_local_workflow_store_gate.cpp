@@ -6,6 +6,12 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+using scratchbird::tests::FixtureIdentityForLabel;
+#include "../support/binary_uuid_fixture.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "agents/agent_local_workflow_store_api.hpp"
 
@@ -40,8 +46,8 @@ void Require(bool condition, const std::string& message) {
 
 struct TestDatabase {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
 };
 
@@ -99,8 +105,8 @@ TestDatabase CreateActiveDatabase(const char* basename) {
 
   TestDatabase result;
   result.path = path;
-  result.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  result.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
+  result.database_uuid = database_uuid.value.value;
+  result.transaction_uuid = transaction_uuid.value.value;
   result.local_transaction_id = begun.entry.identity.local_id.value;
   return result;
 }
@@ -109,14 +115,13 @@ api::EngineRequestContext Context(const TestDatabase& database) {
   api::EngineRequestContext context;
   context.request_id = "aeic-local-workflow-store";
   context.database_path = database.path.string();
-  context.database_uuid.canonical = database.database_uuid;
-  context.transaction_uuid.canonical = database.transaction_uuid;
+  context.database_uuid = database.database_uuid;
+  context.transaction_uuid = database.transaction_uuid;
   context.local_transaction_id = database.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       database.local_transaction_id;
   context.security_context_present = true;
-  context.principal_uuid.canonical =
-      "018f0000-0000-7000-8000-00000000de10";
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000de10");
   return context;
 }
 
@@ -125,7 +130,7 @@ void SeedCatalog(const api::EngineRequestContext& context) {
   api::AgentDurableCatalogStoreRequest seed;
   seed.context = context;
   seed.image = image;
-  seed.evidence_uuid = "018f0000-0000-7000-8000-00000000de11";
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000de11"));
   seed.production_live_path = true;
   seed.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(seed).ok,
@@ -139,12 +144,12 @@ agents::AgentLocalWorkflowRequest BackupWorkflow(
   request.domain = agents::AgentLocalWorkflowDomain::backup;
   request.operation_id = "start_backup";
   request.idempotency_key = std::move(idempotency_key);
-  request.authority.database_uuid = context.database_uuid.canonical;
+  request.authority.database_uuid = BinaryFixtureIdentity(context.database_uuid);
   request.authority.principal_uuid =
-      "018f0000-0000-7000-8000-00000000de20";
-  request.authority.subject_uuid = "018f0000-0000-7000-8000-00000000de21";
-  request.authority.mga_transaction_uuid = context.transaction_uuid.canonical;
-  request.authority.evidence_uuid = "018f0000-0000-7000-8000-00000000de22";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000de20"));
+  request.authority.subject_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000de21"));
+  request.authority.mga_transaction_uuid = BinaryFixtureIdentity(context.transaction_uuid);
+  request.authority.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000de22"));
   request.authority.local_transaction_id = context.local_transaction_id;
   request.authority.catalog_generation = 3;
   request.authority.durable_catalog_bound = true;

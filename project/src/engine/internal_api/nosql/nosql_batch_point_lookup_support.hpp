@@ -25,8 +25,8 @@
 namespace scratchbird::engine::internal_api {
 
 struct EngineNoSqlBatchPointLookupItem {
-  std::string encoded_key;
-  std::string row_uuid;
+  std::variant<std::string, EngineUuid> encoded_key;
+  EngineUuid row_uuid;
   double score = 0.0;
   std::string payload;
   std::vector<std::pair<std::string, std::string>> attributes;
@@ -57,21 +57,22 @@ EngineNoSqlBatchLookupAuthorityFromSelection(
 }
 
 inline scratchbird::core::platform::TypedUuid EngineNoSqlLookupRowUuid(
-    const std::string& candidate) {
-  if (!candidate.empty()) {
-    const auto parsed =
-        scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
-            scratchbird::core::platform::UuidKind::row, candidate);
-    if (parsed.ok()) {
-      return parsed.value;
-    }
+    const EngineUuid& candidate) {
+  const auto admitted = core::uuid::MakeDurableEngineIdentityUuid(
+      core::platform::UuidKind::row, candidate);
+  return admitted.ok() ? admitted.value : core::platform::TypedUuid{};
+}
+
+inline std::string EncodeNoSqlBatchLookupKey(
+    const std::variant<std::string, EngineUuid>& key) {
+  if (const auto* uuid = std::get_if<EngineUuid>(&key)) {
+    std::string encoded(1, '\2');
+    encoded.append(reinterpret_cast<const char*>(uuid->bytes.data()), uuid->bytes.size());
+    return encoded;
   }
-  const auto generated = GenerateCrudEngineUuid("row");
-  const auto parsed =
-      scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
-          scratchbird::core::platform::UuidKind::row, generated);
-  return parsed.ok() ? parsed.value
-                     : scratchbird::core::platform::TypedUuid{};
+  std::string encoded(1, '\1');
+  encoded += std::get<std::string>(key);
+  return encoded;
 }
 
 inline void AddEngineNoSqlBatchLookupEvidence(
@@ -107,13 +108,13 @@ std::optional<TResult> AddEngineNoSqlOrderedBatchLookupEvidence(
   plan.caller_evidence = selection.evidence;
   plan.keys.reserve(items.size());
   for (std::size_t i = 0; i < items.size(); ++i) {
-    plan.keys.push_back({items[i].encoded_key,
+    plan.keys.push_back({EncodeNoSqlBatchLookupKey(items[i].encoded_key),
                          static_cast<EngineApiU64>(i)});
   }
 
   std::map<std::string, std::vector<EngineNoSqlBatchPointLookupItem>> by_key;
   for (const auto& item : items) {
-    by_key[item.encoded_key].push_back(item);
+    by_key[EncodeNoSqlBatchLookupKey(item.encoded_key)].push_back(item);
   }
 
   auto lookup = scratchbird::core::index::RunBatchPointLookup(

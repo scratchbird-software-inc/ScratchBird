@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -71,13 +72,16 @@ mem::AllocationPolicy AllocationPolicy() {
 
 mem::QueryMemoryContext Context() {
   mem::QueryMemoryContext context;
-  context.query_id = "q-mmch020";
-  context.statement_id = "stmt-mmch020";
-  context.session_id = "session-mmch020";
-  context.transaction_id = "txn-mmch020";
-  context.database_id = "db-mmch020";
-  context.engine_id = "engine-mmch020";
-  context.operation_id = "op-mmch020";
+  context.query_id = scratchbird::tests::FixtureUuid(1439, 101);
+  context.statement_id = scratchbird::tests::FixtureUuid(1439, 102);
+  context.session_id = scratchbird::tests::FixtureUuid(1439, 103);
+  context.transaction_id = scratchbird::tests::FixtureUuid(1439, 104);
+  context.database_id = scratchbird::tests::FixtureUuid(1439, 105);
+  context.engine_id = scratchbird::tests::FixtureUuid(1439, 106);
+  context.operation_id = scratchbird::tests::FixtureUuid(1439, 107);
+  context.snapshot_boundary = scratchbird::tests::FixtureUuid(1439, 301);
+  context.metadata_boundary = scratchbird::tests::FixtureUuid(1439, 302);
+  context.resource_budget_reference = scratchbird::tests::FixtureUuid(1439, 303);
   context.engine_mga_authoritative = true;
   return context;
 }
@@ -97,6 +101,8 @@ mem::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
   mem::TempWorkspacePolicy policy;
   policy.policy_name = "mmch020_temp";
   policy.root_path = root;
+  policy.database_uuid = Context().database_id;
+  policy.engine_uuid = Context().engine_id;
   policy.filespace_quota_bytes = 512 * 1024;
   policy.session_quota_bytes = 512 * 1024;
   policy.transaction_quota_bytes = 512 * 1024;
@@ -161,7 +167,7 @@ void AllOperatorKindsRequestAndReleaseArenaGrants() {
       exec::ExecutorMemoryOperatorKind::dml_write,
       exec::ExecutorMemoryOperatorKind::streaming_result};
 
-  std::vector<std::pair<exec::ExecutorMemoryOperatorKind, std::string>> grants;
+  std::vector<std::pair<exec::ExecutorMemoryOperatorKind, mem::QueryMemoryUuid>> grants;
   for (const auto kind : operators) {
     exec::ExecutorOperatorMemoryRequest request;
     request.operator_kind = kind;
@@ -182,7 +188,7 @@ void AllOperatorKindsRequestAndReleaseArenaGrants() {
 
     auto result = exec::RequestExecutorOperatorMemory(std::move(request));
     Require(result.ok(), "MMCH-020 operator memory grant failed");
-    Require(!result.grant_id.empty(), "MMCH-020 operator grant id missing");
+    Require(!result.grant_id.is_nil(), "MMCH-020 operator grant id missing");
     Require(EvidenceHas(result.evidence, "MMCH_LIVE_OPERATOR_MEMORY_GRANTS"),
             "MMCH-020 live operator evidence marker missing");
     Require(EvidenceHas(result.evidence, "executor.operator_memory.live_operator_route=true"),

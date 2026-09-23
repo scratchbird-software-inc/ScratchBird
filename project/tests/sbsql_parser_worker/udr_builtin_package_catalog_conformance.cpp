@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../../tools/udr_manifest/udr_manifest_display.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -182,7 +184,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
           "builtin runtime state ABI mismatch");
 
   const runtime::UdrCallInput describe{
-      std::string(spec.package_uuid), "describe_capabilities", {}, TrustedContext(spec)};
+      spec.package_uuid, "describe_capabilities", {}, TrustedContext(spec)};
   const auto described = runtime::InvokePackage(describe);
   Require(described.ok, "builtin package describe_capabilities failed");
   Require(Contains(described.payload, spec.family_id),
@@ -193,7 +195,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
           "builtin package describe payload allowed parser execution authority");
 
   const runtime::UdrCallInput missing_context{
-      std::string(spec.package_uuid), "validate_admission", {}, {}};
+      spec.package_uuid, "validate_admission", {}, {}};
   const auto missing_context_result = runtime::InvokePackage(missing_context);
   Require(!missing_context_result.ok,
           "builtin package validate_admission accepted missing context");
@@ -202,14 +204,14 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
           "builtin package missing-context diagnostic mismatch");
 
   const runtime::UdrCallInput validate{
-      std::string(spec.package_uuid), "validate_admission", {}, TrustedContext(spec)};
+      spec.package_uuid, "validate_admission", {}, TrustedContext(spec)};
   const auto validation = runtime::InvokePackage(validate);
   Require(validation.ok, "builtin package validate_admission failed");
   Require(Contains(validation.message_vector_json, "engine_mga_authority"),
           "builtin package validation missing MGA authority proof");
 
   const runtime::UdrCallInput execute{
-      std::string(spec.package_uuid), "execute", "operation_payload", TrustedContext(spec)};
+      spec.package_uuid, "execute", "operation_payload", TrustedContext(spec)};
   const auto executed = runtime::InvokePackage(execute);
   Require(!executed.ok,
           "builtin package execute must fail closed without package-specific policy");
@@ -221,7 +223,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
           "builtin package execute did not preserve MGA authority");
 
   const runtime::UdrCallInput missing_sblr_authority{
-      std::string(spec.package_uuid),
+      spec.package_uuid,
       "execute",
       "sql=DROP TABLE spoofed_payload;",
       "engine_context=trusted;"};
@@ -232,7 +234,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
           "builtin package missing SBLR authority diagnostic mismatch");
 
   const runtime::UdrCallInput bad_entrypoint{
-      std::string(spec.package_uuid),
+      spec.package_uuid,
       "execute_sql_text_directly",
       "SELECT 1",
       TrustedContext(spec)};
@@ -245,7 +247,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
 
   if (spec.cluster_scoped) {
     const runtime::UdrCallInput cluster_without_provider{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "validate_admission",
         {},
         "engine_context=trusted;sblr_authorized_invocation=true;"};
@@ -259,7 +261,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
 
   if (spec.category == "file_provider") {
     const runtime::UdrCallInput admitted_file_read{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "execute",
         FileProviderInlineStream(spec),
         FileProviderContext(spec, "id=2", "1")};
@@ -281,7 +283,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
             "file-provider UDR stream-read diagnostic missing");
 
     const runtime::UdrCallInput budget_refusal{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "execute",
         FileProviderInlineStream(spec),
         FileProviderContext(spec, {}, "1")};
@@ -292,7 +294,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
             "file-provider UDR budget refusal diagnostic mismatch");
 
     const runtime::UdrCallInput schema_refusal{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "execute",
         FileProviderInlineStream(spec),
         TrustedContext(spec) +
@@ -306,7 +308,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
             "file-provider UDR schema refusal diagnostic mismatch");
 
     const runtime::UdrCallInput path_escape{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "execute",
         FileProviderInlineStream(spec),
         TrustedContext(spec) +
@@ -330,7 +332,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
       fixture << FileProviderInlineStream(spec);
     }
     const runtime::UdrCallInput file_path_read{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "execute",
         {},
         FileProviderContext(spec, "id=3", "1", temp_path)};
@@ -348,7 +350,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
     scratchbird::engine::internal_api::ResetExternalEffectOutboxForTests();
 #endif
     const runtime::UdrCallInput precommit_side_effect{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "execute",
         "payload_hash_only=true",
         SideEffectContext(spec, false)};
@@ -360,7 +362,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
             "side-effects UDR pre-commit refusal exposed external effect");
 
     const runtime::UdrCallInput side_effect{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "execute",
         "payload_hash_only=true",
         SideEffectContext(spec, true)};
@@ -385,7 +387,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
 
   if (spec.security_definer) {
     const runtime::UdrCallInput missing_role_chain{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "execute",
         "safe_payload=true",
         TrustedContext(spec) +
@@ -397,7 +399,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
             "security-definer missing-context diagnostic mismatch");
 
     const runtime::UdrCallInput security_definer{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "execute",
         "safe_payload=true",
         SecurityDefinerContext(spec)};
@@ -413,7 +415,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
             "security-definer UDR did not ignore payload context");
 
     const runtime::UdrCallInput spoofed{
-        std::string(spec.package_uuid),
+        spec.package_uuid,
         "execute",
         "effective_principal_uuid=019f7100-0000-7000-8000-00000000bad0;",
         SecurityDefinerContext(spec)};
@@ -432,7 +434,7 @@ void VerifyRuntimeCallbacks(const builtin::BuiltinUdrPackageSpec& spec) {
 void VerifyRuntimeRefusals() {
   auto descriptor =
       builtin::BuiltinUdrPackageDescriptor(builtin::BuiltinUdrPackageSpecs().front());
-  descriptor.package_uuid = "019f7100-0000-7000-8000-00000000bad1";
+  descriptor.package_uuid = scratchbird::tests::FixtureUuidLiteral("019f7100-0000-7000-8000-00000000bad1");
   descriptor.package_name = "sbup_bad_non_cpp";
   descriptor.runtime_language = "python";
   const auto refused = runtime::RegisterPackage(descriptor);
@@ -453,7 +455,7 @@ void VerifyDeploymentManifest(std::size_t expected_package_count) {
   Require(rows.size() == expected_package_count,
           "builtin UDR deployment manifest package count mismatch");
 
-  std::map<std::string, builtin::BuiltinUdrPackageDeploymentManifestRow> by_uuid;
+  std::map<runtime::UdrUuid, builtin::BuiltinUdrPackageDeploymentManifestRow> by_uuid;
   for (const auto& row : rows) {
     Require(row.abi_version == "sb_udr_v1",
             "builtin UDR deployment manifest ABI mismatch");
@@ -480,7 +482,7 @@ void VerifyDeploymentManifest(std::size_t expected_package_count) {
   }
 
   for (const auto& spec : builtin::BuiltinUdrPackageSpecs()) {
-    const auto found = by_uuid.find(std::string(spec.package_uuid));
+    const auto found = by_uuid.find(spec.package_uuid);
     Require(found != by_uuid.end(),
             "builtin UDR deployment manifest missing package row");
     const auto& row = found->second;
@@ -498,7 +500,7 @@ void VerifyDeploymentManifest(std::size_t expected_package_count) {
             "builtin UDR deployment manifest diagnostic mismatch");
   }
 
-  const auto json = builtin::BuiltinUdrPackageDeploymentManifestJson();
+  const auto json = scratchbird::client::udr_manifest::BuiltinUdrPackageDeploymentManifestJson();
   Require(Contains(json, "\"manifest_kind\":\"builtin_trusted_cpp_udr_packages\""),
           "builtin UDR deployment manifest JSON missing kind");
   Require(Contains(json, "\"public_abi_status\":\"frozen_builtin_udr_sb_udr_v1\""),
@@ -514,7 +516,7 @@ int main() {
   const auto specs = builtin::BuiltinUdrPackageSpecs();
   Require(specs.size() >= 49, "builtin UDR package catalog is incomplete");
 
-  std::set<std::string_view> uuids;
+  std::set<runtime::UdrUuid> uuids;
   std::set<std::string_view> names;
   std::map<std::string_view, int> category_counts;
   int file_provider_count = 0;

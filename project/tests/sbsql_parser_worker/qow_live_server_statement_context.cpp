@@ -6,6 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_catalog_column_fixture.hpp"
+#include <type_traits>
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "ddl/create_api.hpp"
@@ -142,8 +145,8 @@ platform::TypedUuid NewTypedUuid(platform::UuidKind kind,
   return durable.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, std::uint64_t salt) {
-  return uuid::UuidToString(NewTypedUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, std::uint64_t salt) {
+  return NewTypedUuid(kind, salt).value;
 }
 
 sb_engine_uuid_t PublicUuid(const platform::TypedUuid& typed) {
@@ -155,8 +158,8 @@ sb_engine_uuid_t PublicUuid(const platform::TypedUuid& typed) {
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string filespace_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid filespace_uuid;
   platform::TypedUuid principal_uuid;
   platform::TypedUuid session_uuid;
   platform::TypedUuid schema_uuid;
@@ -166,8 +169,8 @@ struct Fixture {
   platform::TypedUuid columnar_relation_uuid;
   platform::TypedUuid spatial_crs_uuid;
   std::uint64_t resource_epoch = 1;
-  std::string utf8_charset_uuid;
-  std::string utf8_default_collation_uuid;
+  api::EngineUuid utf8_charset_uuid;
+  api::EngineUuid utf8_default_collation_uuid;
   std::uint64_t salt = 0;
 
   Fixture() = default;
@@ -242,8 +245,8 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
   }
   Require(created.ok(), "statement-context database creation failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.filespace_uuid = uuid::UuidToString(create.filespace_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.filespace_uuid = create.filespace_uuid.value;
   fixture.principal_uuid = credentialed_full_route
                                ? created.bootstrap_principal_uuid
                                : NewTypedUuid(platform::UuidKind::principal,
@@ -273,8 +276,8 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
     fixture.utf8_default_collation_uuid = utf8->default_collation_uuid;
   }
   if (credentialed_full_route) {
-    Require(!fixture.utf8_charset_uuid.empty() &&
-                !fixture.utf8_default_collation_uuid.empty(),
+    Require(!fixture.utf8_charset_uuid.is_nil() &&
+                !fixture.utf8_default_collation_uuid.is_nil(),
             "statement-context UTF8 resource authority is unavailable");
   }
   if (!credentialed_full_route) {
@@ -293,11 +296,9 @@ api::EngineRequestContext BeginTransaction(const Fixture& fixture) {
   begin.context.trust_mode = api::EngineTrustMode::server_isolated;
   begin.context.request_id = "qow-live-statement-context-begin";
   begin.context.database_path = fixture.database_path.string();
-  begin.context.database_uuid.canonical = fixture.database_uuid;
-  begin.context.principal_uuid.canonical =
-      uuid::UuidToString(fixture.principal_uuid.value);
-  begin.context.session_uuid.canonical =
-      uuid::UuidToString(fixture.session_uuid.value);
+  begin.context.database_uuid = fixture.database_uuid;
+  begin.context.principal_uuid = fixture.principal_uuid.value;
+  begin.context.session_uuid = fixture.session_uuid.value;
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 1;
@@ -314,8 +315,8 @@ api::EngineRequestContext BeginTransaction(const Fixture& fixture) {
       begun.snapshot_visible_through_local_transaction_id;
 
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 6);
+  context.authorization_context.authority_uuid =
+      NewIdentity(platform::UuidKind::object, fixture.salt + 6);
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
   context.authorization_context.policy_epoch = 1;
@@ -402,7 +403,7 @@ bridge::StatementContextReceiptHandle Acquire(
     std::string_view expected_diagnostic_code = {}) {
   bridge::StatementContextAcquireRequest request;
   request.engine_context = &context;
-  request.exact_transaction_uuid = context.transaction_uuid.canonical;
+  request.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   sb_engine_result_t result = nullptr;
   const auto status = bridge::AcquireStatementContextReceipt(
@@ -446,7 +447,7 @@ bridge::StatementContextReceiptHandle Acquire(
 
 void AssertDistinctReceiptIdentities(
     const bridge::StatementContextReceiptView& view) {
-  const std::set<std::string> identities = {
+  const std::set<api::EngineUuid> identities = {
       view.receipt_uuid,
       view.statement_uuid,
       view.owning_transaction_uuid,
@@ -482,12 +483,12 @@ api::EngineLocalizedName PrimaryName(std::string name) {
   return localized;
 }
 
-std::string CoreTypeUuid(const std::string_view stable_name) {
+api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
   if (stable_name == "int64") {
     const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-        "019d0000-0000-7000-8000-00000000d701", 1, 1,
-        "019d0000-0000-7000-8000-00000000d711", 1);
-    Require(identity.ok && !identity.row.type_uuid.empty(),
+        scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"), 1, 1,
+        scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"), 1);
+    Require(identity.ok && !identity.row.type_uuid.is_nil(),
             "int64 type-codec identity is unavailable");
     return identity.row.type_uuid;
   }
@@ -499,25 +500,57 @@ std::string CoreTypeUuid(const std::string_view stable_name) {
   Require(found != manifest.manifest.descriptor_rows.end() &&
               found->descriptor_uuid.valid(),
           "required core datatype descriptor is unavailable");
-  return uuid::UuidToString(found->descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
+      manifest.manifest.catalog_epoch, 1, found->descriptor_uuid.value, found->descriptor_epoch);
+  Require(identity.ok && !identity.row.type_uuid.is_nil(), "core type-codec identity unavailable");
+  return identity.row.type_uuid;
 }
 
-std::string DescriptorFieldValue(const std::string_view descriptor,
-                                 const std::string_view key) {
-  std::size_t begin = 0;
-  while (begin <= descriptor.size()) {
-    const auto end = descriptor.find(';', begin);
-    const auto field = descriptor.substr(
-        begin, end == std::string_view::npos ? descriptor.size() - begin
-                                             : end - begin);
-    const auto separator = field.find('=');
-    if (separator != std::string_view::npos &&
-        field.substr(0, separator) == key) {
-      return std::string(field.substr(separator + 1));
-    }
-    if (end == std::string_view::npos) break;
-    begin = end + 1;
+std::string IdentityBytes(const api::EngineUuid& identity) {
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
+}
+api::CatalogColumnMetadata DescriptorFields(std::string_view descriptor) {
+  api::CatalogColumnMetadata fields;
+  Require(api::DecodeCatalogColumnMetadata(descriptor, &fields), "fixture descriptor framing invalid");
+  return fields;
+}
+template <class T>
+std::string AddDescriptorField(std::string descriptor, std::string key, const T& value) {
+  auto fields = DescriptorFields(descriptor);
+  if constexpr (std::is_same_v<std::decay_t<T>, api::EngineUuid>) fields.identities.emplace(std::move(key), value);
+  else fields.text.emplace(std::move(key), value);
+  return scratchbird::tests::NativeCatalogColumnFixture(std::move(fields));
+}
+std::string MalformedDescriptorFields(std::string_view descriptor,
+                                      bool duplicate_codec, bool column_first) {
+  const auto fields = DescriptorFields(descriptor);
+  std::string bytes = "SBMETA02";
+  Require(api::AppendBinaryString(&bytes, "column.v2"), "fixture schema encoding failed");
+  api::AppendBinaryU32(&bytes, fields.text.size() + (duplicate_codec ? 1 : 0));
+  api::AppendBinaryU32(&bytes, fields.identities.size());
+  for (const auto& [key, value] : fields.text) {
+    Require(api::catalog_record_codec::Put(bytes, key) && api::catalog_record_codec::Put(bytes, value), "fixture text encoding failed");
   }
+  if (duplicate_codec) {
+    Require(api::catalog_record_codec::Put(bytes, std::string("codec_id")) &&
+            api::catalog_record_codec::Put(bytes, fields.text.at("codec_id")), "fixture duplicate encoding failed");
+  }
+  const auto append_identity = [&](const auto& key, const auto& value) {
+    Require(api::catalog_record_codec::Put(bytes, key) && api::catalog_record_codec::Put(bytes, value), "fixture identity encoding failed");
+  };
+  if (column_first) append_identity(std::string("column_uuid"), fields.identities.at("column_uuid"));
+  for (const auto& [key, value] : fields.identities) {
+    if (column_first && key == "column_uuid") continue;
+    append_identity(key, value);
+  }
+  return bytes;
+}
+
+std::string DescriptorFieldValue(std::string_view descriptor, std::string_view key) {
+  const auto fields = DescriptorFields(descriptor);
+  if (const auto found = fields.text.find(std::string(key)); found != fields.text.end()) return found->second;
+  if (const auto found = fields.identities.find(std::string(key)); found != fields.identities.end()) return IdentityBytes(found->second);
   return {};
 }
 
@@ -535,45 +568,27 @@ std::uint64_t ExactDescriptorU64(const std::string_view descriptor,
 }
 
 std::string ReplaceExactDescriptorField(std::string descriptor,
-                                        const std::string_view key,
-                                        const std::string_view replacement) {
-  const std::string prefix = std::string(key) + "=";
-  const auto begin = descriptor.find(prefix);
-  Require(begin != std::string::npos &&
-              (begin == 0 || descriptor[begin - 1] == ';') &&
-              descriptor.find(prefix, begin + prefix.size()) ==
-                  std::string::npos,
-          "canonical TEXT mutation field is absent or duplicated");
-  const auto value_begin = begin + prefix.size();
-  const auto end = descriptor.find(';', value_begin);
-  descriptor.replace(value_begin,
-                     end == std::string::npos
-                         ? descriptor.size() - value_begin
-                         : end - value_begin,
-                     replacement);
-  return descriptor;
-}
-
-std::string RemoveExactDescriptorField(std::string descriptor,
-                                       const std::string_view key) {
-  const std::string prefix = std::string(key) + "=";
-  const auto begin = descriptor.find(prefix);
-  Require(begin != std::string::npos &&
-              (begin == 0 || descriptor[begin - 1] == ';') &&
-              descriptor.find(prefix, begin + prefix.size()) ==
-                  std::string::npos,
-          "canonical TEXT removal field is absent or duplicated");
-  const auto end = descriptor.find(';', begin + prefix.size());
-  if (begin == 0) {
-    descriptor.erase(0, end == std::string::npos ? descriptor.size()
-                                                  : end + 1);
+                                        std::string_view key,
+                                        std::string_view replacement) {
+  auto fields = DescriptorFields(descriptor);
+  const std::string name(key);
+  if (auto found = fields.identities.find(name); found != fields.identities.end()) {
+    if (replacement.size() != 16) {
+      // Explicit malformed UUID input: corrupt a fixed-width identity record.
+      return descriptor + std::string(replacement);
+    }
+    std::copy_n(reinterpret_cast<const std::uint8_t*>(replacement.data()), 16, found->second.bytes.begin());
   } else {
-    descriptor.erase(begin - 1,
-                     end == std::string::npos
-                         ? descriptor.size() - (begin - 1)
-                         : end - (begin - 1));
+    Require(fields.text.contains(name), "fixture mutation field absent");
+    fields.text[name] = std::string(replacement);
   }
-  return descriptor;
+  return scratchbird::tests::NativeCatalogColumnFixture(std::move(fields));
+}
+std::string RemoveExactDescriptorField(std::string descriptor, std::string_view key) {
+  auto fields = DescriptorFields(descriptor);
+  Require(fields.text.erase(std::string(key)) + fields.identities.erase(std::string(key)) == 1,
+          "fixture removal field absent");
+  return scratchbird::tests::NativeCatalogColumnFixture(std::move(fields));
 }
 
 void VerifyCanonicalTextPersistedRowAuthority(
@@ -584,8 +599,8 @@ void VerifyCanonicalTextPersistedRowAuthority(
   const auto& encoded = runtime_descriptor.encoded_descriptor;
   api::RelationalTypeDescriptor bound;
   bound.descriptor_id = 1;
-  bound.descriptor_uuid = runtime_descriptor.descriptor_uuid.canonical;
-  bound.type_uuid = DescriptorFieldValue(encoded, "type_uuid");
+  bound.descriptor_uuid = runtime_descriptor.descriptor_uuid;
+  bound.type_uuid = runtime_descriptor.type_uuid;
   bound.nullability = persisted.nullable
                           ? api::RelationalNullability::kNullable
                           : api::RelationalNullability::kNonNull;
@@ -600,19 +615,19 @@ void VerifyCanonicalTextPersistedRowAuthority(
       ExactDescriptorU64(encoded, "codec_version"));
   bound.codec_generation = ExactDescriptorU64(encoded, "codec_generation");
   bound.statement_receipt_uuid =
-      receipt_context.statement_receipt_uuid.canonical;
+      receipt_context.statement_receipt_uuid;
   bound.datatype_catalog_snapshot_uuid =
-      receipt_context.datatype_catalog_snapshot_uuid.canonical;
+      receipt_context.datatype_catalog_snapshot_uuid;
   bound.datatype_catalog_generation =
       receipt_context.datatype_catalog_generation;
   bound.datatype_registry_generation =
       receipt_context.datatype_registry_generation;
-  Require(!bound.descriptor_uuid.empty() && !bound.type_uuid.empty() &&
+  Require(!bound.descriptor_uuid.is_nil() && !bound.type_uuid.is_nil() &&
               bound.collation_uuid.has_value() &&
-              !bound.collation_uuid->empty() && bound.width.has_value() &&
+              !bound.collation_uuid->is_nil() && bound.width.has_value() &&
               *bound.width != 0 && !bound.codec_id.empty() &&
               bound.codec_version != 0 && bound.codec_generation != 0 &&
-              !bound.statement_receipt_uuid.empty(),
+              !bound.statement_receipt_uuid.is_nil(),
           "canonical TEXT test bound is incomplete");
 
   const auto validates = [&](const api::EngineRequestContext& context,
@@ -647,7 +662,7 @@ void VerifyCanonicalTextPersistedRowAuthority(
   refused_field("type_generation", "2",
                 "stale canonical TEXT type generation was admitted");
   refused_field("codec_uuid",
-                "019d0000-0000-7000-8000-00000000d71b",
+                IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71b")),
                 "lookalike canonical TEXT codec UUID was admitted");
   refused_field("codec_id", "datatype.text.utf8.v2",
                 "lookalike canonical TEXT codec ID was admitted");
@@ -667,7 +682,7 @@ void VerifyCanonicalTextPersistedRowAuthority(
                 std::to_string(receipt_context.resource_epoch + 1),
                 "stale canonical TEXT resource epoch was admitted");
   refused_field("charset_uuid",
-                "019d0000-0000-7000-8000-00000000d71b",
+                IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71b")),
                 "crossed canonical TEXT charset resource was admitted");
   refused_field("nullable", persisted.nullable ? "false" : "true",
                 "crossed canonical TEXT nullability was admitted");
@@ -676,11 +691,11 @@ void VerifyCanonicalTextPersistedRowAuthority(
                 "crossed canonical TEXT width was admitted");
 
   auto duplicate = runtime_descriptor;
-  duplicate.encoded_descriptor += ";codec_id=" + bound.codec_id;
+  duplicate.encoded_descriptor = MalformedDescriptorFields(duplicate.encoded_descriptor, true, false);
   Require(!validates(receipt_context, bound, duplicate),
           "duplicate canonical TEXT authority field was admitted");
   auto extra = runtime_descriptor;
-  extra.encoded_descriptor += ";precision=1";
+  extra.encoded_descriptor = AddDescriptorField(extra.encoded_descriptor, "precision", "1");
   Require(!validates(receipt_context, bound, extra),
           "non-applicable canonical TEXT authority field was admitted");
   auto missing = runtime_descriptor;
@@ -694,13 +709,7 @@ void VerifyCanonicalTextPersistedRowAuthority(
   Require(!validates(receipt_context, bound, missing_column),
           "missing canonical TEXT column UUID was admitted");
   auto reordered_column = runtime_descriptor;
-  const auto column_uuid = DescriptorFieldValue(
-      reordered_column.encoded_descriptor, "column_uuid");
-  reordered_column.encoded_descriptor = RemoveExactDescriptorField(
-      reordered_column.encoded_descriptor, "column_uuid");
-  reordered_column.encoded_descriptor =
-      "column_uuid=" + column_uuid + ";" +
-      reordered_column.encoded_descriptor;
+  reordered_column.encoded_descriptor = MalformedDescriptorFields(reordered_column.encoded_descriptor, false, true);
   Require(!validates(receipt_context, bound, reordered_column),
           "reordered canonical TEXT column UUID was admitted");
   auto noncanonical_number = runtime_descriptor;
@@ -714,8 +723,7 @@ void VerifyCanonicalTextPersistedRowAuthority(
   Require(!validates(receipt_context, stale_bound, runtime_descriptor),
           "stale canonical TEXT receipt registry generation was admitted");
   auto crossed_receipt = receipt_context;
-  crossed_receipt.statement_receipt_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d71b";
+  crossed_receipt.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71b");
   Require(!validates(crossed_receipt, bound, runtime_descriptor),
           "cross-receipt canonical TEXT descriptor was admitted");
   auto non_text_shape = bound;
@@ -727,7 +735,7 @@ void VerifyCanonicalTextPersistedRowAuthority(
   crossed_column.value_descriptor.encoded_descriptor =
       ReplaceExactDescriptorField(
           crossed_column.value_descriptor.encoded_descriptor, "column_uuid",
-          "019d0000-0000-7000-8000-00000000d71b");
+          IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71b")));
   Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(
               receipt_context, crossed_column),
           "crossed persisted canonical TEXT column UUID was admitted");
@@ -738,7 +746,7 @@ void VerifyCanonicalTextPersistedRowAuthority(
   identifier.expression_id = 1;
   identifier.expression_kind = api::RelationalExpressionKind::kIdentifier;
   identifier.result_descriptor_id = bound.descriptor_id;
-  identifier.bound_name_uuid = persisted.column_uuid.canonical;
+  identifier.bound_name_uuid = persisted.column_uuid;
   dag.expressions.push_back(std::move(identifier));
   sblr::CanonicalRelationalExpressionRowBinding row_binding;
   row_binding.row_descriptor_ids.push_back(bound.descriptor_id);
@@ -989,49 +997,32 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
               int64_row.manifest.descriptor_rows.front()
                   .descriptor_uuid.valid(),
           "canonical int64 manifest row is unavailable");
-  const auto descriptor_uuid = uuid::UuidToString(
-      int64_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+  const auto descriptor_uuid = int64_row.manifest.descriptor_rows.front().descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      receipt_context.datatype_catalog_snapshot_uuid.canonical,
+      receipt_context.datatype_catalog_snapshot_uuid,
       receipt_context.datatype_catalog_generation,
       receipt_context.datatype_registry_generation, descriptor_uuid,
       int64_row.manifest.descriptor_rows.front().descriptor_epoch);
   const bool exact_suffix_absent =
-      identity.ok && identity.row.codec_uuid.empty() &&
+      identity.ok && identity.row.codec_uuid.is_nil() &&
       persisted.value_descriptor.canonical_type_name == "int64" &&
-      DescriptorFieldValue(persisted.value_descriptor.encoded_descriptor,
-                           "type_uuid") == identity.row.type_uuid &&
-      persisted.value_descriptor.descriptor_uuid.canonical !=
+      persisted.value_descriptor.type_uuid == identity.row.type_uuid &&
+      persisted.value_descriptor.descriptor_uuid !=
           identity.row.descriptor_uuid &&
       sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
                                                    persisted);
-  if (!exact_suffix_absent) {
-    std::cerr << "qow_int64_suffix_authority=" << (identity.ok ? 1 : 0)
-              << ':' << (identity.row.codec_uuid.empty() ? 1 : 0) << ':'
-              << persisted.value_descriptor.canonical_type_name << ':'
-              << DescriptorFieldValue(
-                     persisted.value_descriptor.encoded_descriptor,
-                     "type_uuid")
-              << ':' << identity.row.type_uuid << ':'
-              << persisted.value_descriptor.descriptor_uuid.canonical << ':'
-              << identity.row.descriptor_uuid << ':'
-              << (sblr::Rcp079ExactPersistedColumnDescriptorV1(
-                      receipt_context, persisted)
-                      ? 1
-                      : 0)
-              << '\n';
-  }
+  if (!exact_suffix_absent) std::cerr << "qow_int64_suffix_authority_invalid\n";
   Require(exact_suffix_absent,
           "suffix-absent non-TEXT descriptor handle was not preserved");
 
   auto complete = persisted;
-  const auto append = [&](const std::string_view key,
-                          const std::string& value) {
-    if (DescriptorFieldValue(complete.value_descriptor.encoded_descriptor,
-                             key) != "")
-      return;
-    complete.value_descriptor.encoded_descriptor +=
-        ";" + std::string(key) + "=" + value;
+  const auto append = [&](std::string_view key, const auto& value) {
+    auto fields = DescriptorFields(complete.value_descriptor.encoded_descriptor);
+    const std::string name(key);
+    if constexpr (std::is_same_v<std::decay_t<decltype(value)>, api::EngineUuid>) {
+      fields.identities.try_emplace(name, value);
+    } else fields.text.try_emplace(name, value);
+    complete.value_descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture(std::move(fields));
   };
   append("datatype_descriptor_uuid", identity.row.descriptor_uuid);
   append("datatype_descriptor_generation",
@@ -1056,7 +1047,7 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
             message);
   };
   refused_field("datatype_descriptor_uuid",
-                "019d0000-0000-7000-8000-00000000d71b",
+                IdentityBytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71b")),
                 "lookalike non-TEXT descriptor UUID suffix was admitted");
   refused_field("datatype_descriptor_generation", "2",
                 "stale non-TEXT descriptor generation was admitted");
@@ -1074,8 +1065,9 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
                 "non-canonical non-TEXT numeric suffix was admitted");
 
   auto partial = persisted;
-  partial.value_descriptor.encoded_descriptor +=
-      ";datatype_descriptor_uuid=" + identity.row.descriptor_uuid;
+  auto partial_fields = DescriptorFields(partial.value_descriptor.encoded_descriptor);
+  partial_fields.identities["datatype_descriptor_uuid"] = identity.row.descriptor_uuid;
+  partial.value_descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture(std::move(partial_fields));
   Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
                                                         partial),
           "partial non-TEXT registry suffix was admitted");
@@ -1086,13 +1078,12 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
                                                         missing),
           "incomplete non-TEXT registry suffix was admitted");
   auto unsupported = complete;
-  unsupported.value_descriptor.encoded_descriptor +=
-      ";codec_uuid=019d0000-0000-7000-8000-00000000d71a";
+  unsupported.value_descriptor.encoded_descriptor = AddDescriptorField(unsupported.value_descriptor.encoded_descriptor, "codec_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71a"));
   Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
                                                         unsupported),
           "unsupported non-TEXT codec UUID suffix was admitted");
   auto unknown = complete;
-  unknown.value_descriptor.encoded_descriptor += ";codec_alias=lookalike";
+  unknown.value_descriptor.encoded_descriptor = AddDescriptorField(unknown.value_descriptor.encoded_descriptor, "codec_alias", "lookalike");
   Require(!sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
                                                         unknown),
           "unknown non-TEXT registry suffix was admitted");
@@ -1117,12 +1108,12 @@ void VerifyRcp079ColumnarOperationAliasAuthority(
     api::RelationalTypeDescriptor descriptor;
     descriptor.descriptor_id = static_cast<std::uint32_t>(ordinal + 1);
     descriptor.descriptor_uuid =
-        column.value_descriptor.descriptor_uuid.canonical;
-    descriptor.type_uuid = DescriptorFieldValue(encoded, "type_uuid");
+        column.value_descriptor.descriptor_uuid;
+    descriptor.type_uuid = column.value_descriptor.type_uuid;
     descriptor.nullability =
         column.nullable ? api::RelationalNullability::kNullable
                         : api::RelationalNullability::kNonNull;
-    if (!column.collation_uuid.empty()) {
+    if (!column.collation_uuid.is_nil()) {
       descriptor.collation_uuid = column.collation_uuid;
     }
     if (column.character_length != 0) {
@@ -1142,9 +1133,9 @@ void VerifyRcp079ColumnarOperationAliasAuthority(
       descriptor.codec_generation =
           ExactDescriptorU64(encoded, "codec_generation");
       descriptor.statement_receipt_uuid =
-          receipt_context.statement_receipt_uuid.canonical;
+          receipt_context.statement_receipt_uuid;
       descriptor.datatype_catalog_snapshot_uuid =
-          receipt_context.datatype_catalog_snapshot_uuid.canonical;
+          receipt_context.datatype_catalog_snapshot_uuid;
       descriptor.datatype_catalog_generation =
           receipt_context.datatype_catalog_generation;
       descriptor.datatype_registry_generation =
@@ -1159,7 +1150,7 @@ void VerifyRcp079ColumnarOperationAliasAuthority(
     source.node_kind = api::RelationalDagNodeKind::kScan;
     source.output_descriptor_ids = outputs;
     source.bound_expression_ids = operations;
-    source.required_object_uuids = {persisted.relation_uuid.canonical};
+    source.required_object_uuids = {persisted.relation_uuid};
     source.semantic_variant_id = "SBLR_MODEL_SOURCE_V1";
     return source;
   };
@@ -1169,7 +1160,7 @@ void VerifyRcp079ColumnarOperationAliasAuthority(
     expression.expression_kind =
         api::RelationalExpressionKind::kFunctionCall;
     expression.result_descriptor_id = 1;
-    expression.bound_name_uuid = persisted.relation_uuid.canonical;
+    expression.bound_name_uuid = persisted.relation_uuid;
     expression.operator_name = "COLUMNAR_SOURCE";
     return expression;
   };
@@ -1178,7 +1169,7 @@ void VerifyRcp079ColumnarOperationAliasAuthority(
     expression.expression_id = expression_id;
     expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
     expression.result_descriptor_id = 1;
-    expression.bound_name_uuid = persisted.relation_uuid.canonical;
+    expression.bound_name_uuid = persisted.relation_uuid;
     return expression;
   };
   const auto column = [&](const std::uint32_t expression_id,
@@ -1189,7 +1180,7 @@ void VerifyRcp079ColumnarOperationAliasAuthority(
     expression.result_descriptor_id =
         static_cast<std::uint32_t>(ordinal + 1);
     expression.bound_name_uuid =
-        persisted.columns[ordinal].column_uuid.canonical;
+        persisted.columns[ordinal].column_uuid;
     return expression;
   };
   const auto literal = [&](const std::uint32_t expression_id,
@@ -1317,7 +1308,7 @@ void VerifyRcp079ColumnarOperationAliasAuthority(
           "missing columnar alias object UUID was admitted");
   changed = filter;
   expression(&changed, 3)->bound_name_uuid =
-      "019d0000-0000-7000-8000-00000000d71b";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71b");
   refused(std::move(changed), true, false,
           "crossed columnar alias object UUID was admitted");
   changed = filter;
@@ -1338,11 +1329,11 @@ void VerifyRcp079ColumnarOperationAliasAuthority(
           "columnar alias with an extra scalar field was admitted");
   changed = filter;
   expression(&changed, 3)->bound_name_uuid =
-      persisted.columns[1].column_uuid.canonical;
+      persisted.columns[1].column_uuid;
   refused(std::move(changed), true, false,
           "persisted column identifier was admitted as a relation alias");
   changed = project;
-  expression(&changed, 4)->bound_name_uuid = persisted.relation_uuid.canonical;
+  expression(&changed, 4)->bound_name_uuid = persisted.relation_uuid;
   refused(std::move(changed), false, true,
           "relation alias UUID was admitted as a persisted column");
 }
@@ -1372,10 +1363,10 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   }
   Require(ddl_receipt_copy_status == SB_ENGINE_STATUS_OK,
           "object-backed fixture datatype receipt copy failed");
-  Require(!ddl_receipt_context.datatype_catalog_snapshot_uuid.canonical.empty() &&
+  Require(!ddl_receipt_context.datatype_catalog_snapshot_uuid.is_nil() &&
               ddl_receipt_context.datatype_catalog_generation != 0 &&
               ddl_receipt_context.datatype_registry_generation != 0 &&
-              ddl_receipt_context.datatype_catalog_snapshot_uuid.canonical ==
+              ddl_receipt_context.datatype_catalog_snapshot_uuid ==
                   ddl_receipt_view.literal_catalog_snapshot_uuid &&
               ddl_receipt_context.datatype_catalog_generation ==
                   ddl_receipt_view.literal_catalog_generation &&
@@ -1389,15 +1380,15 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   context.datatype_registry_generation =
       ddl_receipt_context.datatype_registry_generation;
   const auto fixture_text_descriptor = [&]() {
-    return "type=text;character_length=256;charset_uuid=" +
-           fixture->utf8_charset_uuid + ";collation_uuid=" +
-           fixture->utf8_default_collation_uuid;
+    return scratchbird::tests::NativeCatalogColumnFixture({
+        {{"type", "text"}, {"character_length", "256"}},
+        {{"charset_uuid", fixture->utf8_charset_uuid},
+         {"collation_uuid", fixture->utf8_default_collation_uuid}}});
   };
 
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
-  schema.target_object.uuid.canonical =
-      uuid::UuidToString(fixture->schema_uuid.value);
+  schema.target_object.uuid = fixture->schema_uuid.value;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(PrimaryName("qow_packet7"));
   RequireEngineOk(api::EngineCreateSchema(schema),
@@ -1406,8 +1397,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   api::EngineCreateTableRequest table;
   table.context = context;
   table.target_schema = schema.target_object;
-  table.requested_table_uuid.canonical =
-      uuid::UuidToString(fixture->relation_uuid.value);
+  table.requested_table_uuid = fixture->relation_uuid.value;
   table.table_names.push_back(PrimaryName("qow_packet7_relation"));
   api::EngineColumnDefinition column;
   column.ordinal = 0;
@@ -1455,8 +1445,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   api::EngineCreateTableRequest join_table;
   join_table.context = context;
   join_table.target_schema = schema.target_object;
-  join_table.requested_table_uuid.canonical =
-      uuid::UuidToString(fixture->join_relation_uuid.value);
+  join_table.requested_table_uuid = fixture->join_relation_uuid.value;
   join_table.table_names.push_back(PrimaryName("qow_packet7_join_relation"));
   api::EngineColumnDefinition join_column;
   join_column.ordinal = 0;
@@ -1488,8 +1477,8 @@ void CreateObjectBackedRelation(Fixture* fixture) {
                   "object-backed join fixture table create failed");
 
   for (const auto relation_uuid : {
-           uuid::UuidToString(fixture->relation_uuid.value),
-           uuid::UuidToString(fixture->join_relation_uuid.value)}) {
+           fixture->relation_uuid.value,
+           fixture->join_relation_uuid.value}) {
     const auto loaded =
         api::LoadMgaRelationStorageDescriptor(context, relation_uuid);
     if (!loaded.ok) {
@@ -1508,7 +1497,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   const auto uuid_type_uuid = CoreTypeUuid("uuid");
   const auto geometry_type_uuid = CoreTypeUuid("geometry");
   const auto int64_type_uuid = CoreTypeUuid("int64");
-  const auto crs_uuid = uuid::UuidToString(fixture->spatial_crs_uuid.value);
+  const auto crs_uuid = fixture->spatial_crs_uuid.value;
   const auto make_column = [](const std::uint32_t ordinal,
                               std::string name,
                               std::string canonical_type,
@@ -1528,23 +1517,20 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   api::EngineCreateTableRequest spatial_table;
   spatial_table.context = context;
   spatial_table.target_schema = schema.target_object;
-  spatial_table.requested_table_uuid.canonical =
-      uuid::UuidToString(fixture->spatial_relation_uuid.value);
+  spatial_table.requested_table_uuid = fixture->spatial_relation_uuid.value;
   spatial_table.table_names.push_back(
       PrimaryName("qow_packet7_spatial_relation"));
   spatial_table.table_columns.push_back(make_column(
       0, "row_uuid", "uuid",
-      "canonical=uuid;type_uuid=" + uuid_type_uuid + ";nullable=false",
+      scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "uuid"}, {"nullable", "false"}}, {{"type_uuid", uuid_type_uuid}}}),
       false));
   spatial_table.table_columns.push_back(make_column(
       1, "spatial_value", "geometry",
-      "canonical=geometry;type_uuid=" + geometry_type_uuid +
-          ";nullable=false;subtype=POINT;axes=x,y;crs_uuid=" + crs_uuid +
-          ";crs_generation=1",
+      scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "geometry"}, {"nullable", "false"}, {"subtype", "POINT"}, {"axes", "x,y"}, {"crs_generation", "1"}}, {{"type_uuid", geometry_type_uuid}, {"crs_uuid", crs_uuid}}}),
       false));
   spatial_table.table_columns.push_back(make_column(
       2, "crs_uuid", "uuid",
-      "canonical=uuid;type_uuid=" + uuid_type_uuid + ";nullable=false",
+      scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "uuid"}, {"nullable", "false"}}, {{"type_uuid", uuid_type_uuid}}}),
       false));
   RequireEngineOk(api::EngineCreateTable(spatial_table),
                   "object-backed spatial fixture table create failed");
@@ -1552,17 +1538,16 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   api::EngineCreateTableRequest columnar_table;
   columnar_table.context = context;
   columnar_table.target_schema = schema.target_object;
-  columnar_table.requested_table_uuid.canonical =
-      uuid::UuidToString(fixture->columnar_relation_uuid.value);
+  columnar_table.requested_table_uuid = fixture->columnar_relation_uuid.value;
   columnar_table.table_names.push_back(
       PrimaryName("qow_packet7_columnar_relation"));
   columnar_table.table_columns.push_back(make_column(
       0, "row_uuid", "uuid",
-      "canonical=uuid;type_uuid=" + uuid_type_uuid + ";nullable=false",
+      scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "uuid"}, {"nullable", "false"}}, {{"type_uuid", uuid_type_uuid}}}),
       false));
   columnar_table.table_columns.push_back(make_column(
       1, "join_key", "int64",
-      "canonical=int64;type_uuid=" + int64_type_uuid + ";nullable=false",
+      scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "int64"}, {"nullable", "false"}}, {{"type_uuid", int64_type_uuid}}}),
       false));
   columnar_table.table_columns.push_back(make_column(
       2, "payload", "text", fixture_text_descriptor(),
@@ -1570,7 +1555,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   RequireEngineOk(api::EngineCreateTable(columnar_table),
                   "object-backed columnar fixture table create failed");
   const auto persisted_columnar = api::LoadMgaRelationStorageDescriptor(
-      context, uuid::UuidToString(fixture->columnar_relation_uuid.value));
+      context, fixture->columnar_relation_uuid.value);
   Require(persisted_columnar.ok && persisted_columnar.descriptor.columns.size() ==
                                         columnar_table.table_columns.size(),
           "object-backed columnar descriptor inspection failed");
@@ -1591,8 +1576,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
 
   api::EngineInsertRowsRequest insert;
   insert.context = context;
-  insert.target_table.uuid.canonical =
-      uuid::UuidToString(fixture->relation_uuid.value);
+  insert.target_table.uuid = fixture->relation_uuid.value;
   insert.target_table.object_kind = "table";
   for (std::int64_t value = 1; value <= 3; ++value) {
     api::EngineTypedValue typed;
@@ -1649,8 +1633,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
 
   api::EngineInsertRowsRequest join_insert;
   join_insert.context = context;
-  join_insert.target_table.uuid.canonical =
-      uuid::UuidToString(fixture->join_relation_uuid.value);
+  join_insert.target_table.uuid = fixture->join_relation_uuid.value;
   join_insert.target_table.object_kind = "table";
   for (const std::int64_t value : {2, 3, 4}) {
     api::EngineTypedValue typed;
@@ -1686,42 +1669,41 @@ void CreateObjectBackedRelation(Fixture* fixture) {
 
   const auto make_typed_value = [](std::string canonical_type,
                                    std::string encoded_descriptor,
-                                   std::string encoded_value) {
+                                   auto encoded_value) {
     api::EngineTypedValue value;
     value.descriptor.descriptor_kind = "scalar";
     value.descriptor.canonical_type_name = std::move(canonical_type);
     value.descriptor.encoded_descriptor = std::move(encoded_descriptor);
-    value.encoded_value = std::move(encoded_value);
+    if constexpr (std::is_same_v<decltype(encoded_value), api::EngineUuid>)
+      value.binary_value.assign(encoded_value.bytes.begin(), encoded_value.bytes.end());
+    else value.encoded_value = std::move(encoded_value);
     return value;
   };
   const auto uuid_descriptor =
-      "canonical=uuid;type_uuid=" + uuid_type_uuid + ";nullable=false";
+      scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "uuid"}, {"nullable", "false"}}, {{"type_uuid", uuid_type_uuid}}});
   const auto geometry_descriptor =
-      "canonical=geometry;type_uuid=" + geometry_type_uuid +
-      ";nullable=false;subtype=POINT;axes=x,y;crs_uuid=" + crs_uuid +
-      ";crs_generation=1";
+      scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "geometry"}, {"nullable", "false"}, {"subtype", "POINT"}, {"axes", "x,y"}, {"crs_generation", "1"}}, {{"type_uuid", geometry_type_uuid}, {"crs_uuid", crs_uuid}}});
   const auto int64_descriptor =
-      "canonical=int64;type_uuid=" + int64_type_uuid + ";nullable=false";
+      scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "int64"}, {"nullable", "false"}}, {{"type_uuid", int64_type_uuid}}});
   const auto text_descriptor = fixture_text_descriptor();
   const auto shared_row_uuid =
-      NewUuidText(platform::UuidKind::row, fixture->salt + 100);
+      NewIdentity(platform::UuidKind::row, fixture->salt + 100);
   const auto spatial_only_row_uuid =
-      NewUuidText(platform::UuidKind::row, fixture->salt + 101);
+      NewIdentity(platform::UuidKind::row, fixture->salt + 101);
   const auto columnar_only_row_uuid =
-      NewUuidText(platform::UuidKind::row, fixture->salt + 102);
+      NewIdentity(platform::UuidKind::row, fixture->salt + 102);
 
   api::EngineInsertRowsRequest spatial_insert;
   spatial_insert.context = context;
-  spatial_insert.target_table.uuid.canonical =
-      uuid::UuidToString(fixture->spatial_relation_uuid.value);
+  spatial_insert.target_table.uuid = fixture->spatial_relation_uuid.value;
   spatial_insert.target_table.object_kind = "table";
-  const std::array<std::pair<std::string, nosql::SpatialPoint2dV1>, 2>
+  const std::array<std::pair<api::EngineUuid, nosql::SpatialPoint2dV1>, 2>
       spatial_seeds{{{shared_row_uuid, {0, 0}},
                      {spatial_only_row_uuid, {3, 4}}}};
   for (const auto& [row_uuid, point] : spatial_seeds) {
     const auto encoded = nosql::EncodeSpatialPoint2dV1(point);
     api::EngineRowValue row;
-    row.requested_row_uuid.canonical = row_uuid;
+    row.requested_row_uuid = row_uuid;
     row.fields.push_back(
         {"row_uuid", make_typed_value("uuid", uuid_descriptor, row_uuid)});
     row.fields.push_back(
@@ -1743,15 +1725,14 @@ void CreateObjectBackedRelation(Fixture* fixture) {
 
   api::EngineInsertRowsRequest columnar_insert;
   columnar_insert.context = context;
-  columnar_insert.target_table.uuid.canonical =
-      uuid::UuidToString(fixture->columnar_relation_uuid.value);
+  columnar_insert.target_table.uuid = fixture->columnar_relation_uuid.value;
   columnar_insert.target_table.object_kind = "table";
-  const std::array<std::tuple<std::string, std::int64_t, std::string>, 2>
+  const std::array<std::tuple<api::EngineUuid, std::int64_t, std::string>, 2>
       columnar_seeds{{{shared_row_uuid, 7, "matched"},
                       {columnar_only_row_uuid, 9, "columnar-only"}}};
   for (const auto& [row_uuid, join_key, payload] : columnar_seeds) {
     api::EngineRowValue row;
-    row.requested_row_uuid.canonical = row_uuid;
+    row.requested_row_uuid = row_uuid;
     row.fields.push_back(
         {"row_uuid", make_typed_value("uuid", uuid_descriptor, row_uuid)});
     row.fields.push_back(
@@ -1874,7 +1855,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
 
   {
     sbsql::ParserConfig parser_config;
-    parser_config.parser_uuid = "qow-packet7-live-parser-worker";
+    parser_config.parser_uuid = scratchbird::tests::FixtureUuid(1375, 1);
     parser_config.server_endpoint = config.sbps_endpoint.string();
     parser_config.database_token = "default";
     parser_config.default_search_path = {"qow_packet7"};
@@ -1888,7 +1869,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 std::string::npos &&
                 parser.session().authenticated &&
                 parser.session().local_transaction_id != 0 &&
-                !parser.session().transaction_uuid.empty(),
+                !parser.session().transaction_uuid.is_nil(),
             "full parser-server route authentication/attach failed");
 
     const auto verify_mixed_spatial_columnar = [&] {
@@ -1913,7 +1894,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       Require(
           mixed_model_join.accepted &&
               mixed_model_join.server_operation_id == "query.execute" &&
-              mixed_model_join.server_cursor_uuid.empty() &&
+              mixed_model_join.server_cursor_uuid.is_nil() &&
               mixed_model_join.server_row_count == 1 &&
               mixed_model_join.server_result_payload.find("payload=matched") !=
                   std::string::npos &&
@@ -1942,7 +1923,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       executor_admin.request_id =
           "qow-contextual-text-v1-executor-unavailable-proof";
       executor_admin.database_path = fixture.database_path.string();
-      executor_admin.database_uuid.canonical = fixture.database_uuid;
+      executor_admin.database_uuid = fixture.database_uuid;
       executor_admin.security_context_present = true;
       executor_admin.trace_tags.push_back(
           "right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
@@ -2034,7 +2015,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       Require(
           columnar_text_filter.accepted &&
               columnar_text_filter.server_operation_id == "query.execute" &&
-              columnar_text_filter.server_cursor_uuid.empty() &&
+              columnar_text_filter.server_cursor_uuid.is_nil() &&
               columnar_text_filter.server_row_count == 1 &&
               columnar_text_filter.server_result_payload.find(
                   "payload=matched") != std::string::npos &&
@@ -2056,7 +2037,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       }
       Require(
           !contextual_cursor.accepted && cursor_route_mismatch &&
-              contextual_cursor.server_cursor_uuid.empty() &&
+              contextual_cursor.server_cursor_uuid.is_nil() &&
               contextual_cursor.server_row_count == 0 &&
               contextual_cursor.server_result_payload.empty(),
           "contextual TEXT authority entered a retained cursor result route");
@@ -2070,7 +2051,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!filtered_count.accepted) PrintMessages(filtered_count.messages);
       Require(filtered_count.accepted &&
                   filtered_count.server_operation_id == "query.execute" &&
-                  filtered_count.server_cursor_uuid.empty() &&
+                  filtered_count.server_cursor_uuid.is_nil() &&
                   filtered_count.server_row_count == 1 &&
                   filtered_count.server_result_payload.find("row_count=2") !=
                       std::string::npos,
@@ -2082,7 +2063,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           true);
       if (!sum.accepted) PrintMessages(sum.messages);
       Require(sum.accepted && sum.server_operation_id == "query.execute" &&
-                  sum.server_cursor_uuid.empty() && sum.server_row_count == 1 &&
+                  sum.server_cursor_uuid.is_nil() && sum.server_row_count == 1 &&
                   sum.server_result_payload.find("total_amount=6") !=
                       std::string::npos,
               "object-backed SUM(expression) did not execute through the "
@@ -2094,7 +2075,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!average.accepted) PrintMessages(average.messages);
       Require(average.accepted &&
                   average.server_operation_id == "query.execute" &&
-                  average.server_cursor_uuid.empty() &&
+                  average.server_cursor_uuid.is_nil() &&
                   average.server_row_count == 1 &&
                   average.server_result_payload.find("average_value=2") !=
                       std::string::npos,
@@ -2110,7 +2091,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!source_free.accepted) PrintMessages(source_free.messages);
       Require(source_free.accepted &&
                   source_free.server_operation_id == "query.execute" &&
-                  source_free.server_cursor_uuid.empty(),
+                  source_free.server_cursor_uuid.is_nil(),
               "source-free native SELECT did not complete the full live route");
 
       auto object_backed = parser.RunPipeline(
@@ -2119,7 +2100,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       Require(
           object_backed.accepted &&
               object_backed.server_operation_id == "query.execute" &&
-              object_backed.server_cursor_uuid.empty() &&
+              object_backed.server_cursor_uuid.is_nil() &&
               object_backed.server_row_count == 3,
           "object-backed native SELECT did not complete the full live route");
 
@@ -2134,7 +2115,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           object_backed_cross_join.accepted &&
               object_backed_cross_join.server_operation_id ==
                   "query.execute" &&
-              object_backed_cross_join.server_cursor_uuid.empty() &&
+              object_backed_cross_join.server_cursor_uuid.is_nil() &&
               object_backed_cross_join.server_row_count == 9 &&
               object_backed_cross_join.server_result_payload.find(
                   "join_value") != std::string::npos,
@@ -2167,7 +2148,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       Require(
           generate_series.accepted &&
               generate_series.server_operation_id == "query.execute" &&
-              generate_series.server_cursor_uuid.empty() &&
+              generate_series.server_cursor_uuid.is_nil() &&
               generate_series.server_row_count == 3 &&
               generate_series.server_result_payload.find(
                   "generate_series=1") != std::string::npos &&
@@ -2281,7 +2262,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       Require(
           match_recognize.accepted &&
               match_recognize.server_operation_id == "query.execute" &&
-              match_recognize.server_cursor_uuid.empty() &&
+              match_recognize.server_cursor_uuid.is_nil() &&
               match_recognize.server_row_count == 3 &&
               one != std::string::npos && three != std::string::npos &&
               five != std::string::npos && one < three && three < five,
@@ -2321,7 +2302,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         joined_literal_parameter_tail.accepted &&
             joined_literal_parameter_tail.server_operation_id ==
                 "query.execute" &&
-            joined_literal_parameter_tail.server_cursor_uuid.empty() &&
+            joined_literal_parameter_tail.server_cursor_uuid.is_nil() &&
             joined_literal_parameter_tail.server_row_count == 1 &&
             joined_literal_parameter_tail.server_result_payload.find(
                 "integer_value") != std::string::npos &&
@@ -2344,7 +2325,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
             joined_unprojected_literal_parameter_tail.server_operation_id ==
                 "query.execute" &&
             joined_unprojected_literal_parameter_tail.server_cursor_uuid
-                .empty() &&
+                .is_nil() &&
             joined_unprojected_literal_parameter_tail.server_row_count == 1 &&
             joined_unprojected_literal_parameter_tail.server_result_payload
                     .find("join_limit_value") != std::string::npos,
@@ -2364,7 +2345,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         three_way_literal_parameter_tail.accepted &&
             three_way_literal_parameter_tail.server_operation_id ==
                 "query.execute" &&
-            three_way_literal_parameter_tail.server_cursor_uuid.empty() &&
+            three_way_literal_parameter_tail.server_cursor_uuid.is_nil() &&
             three_way_literal_parameter_tail.server_row_count == 1 &&
             three_way_literal_parameter_tail.server_result_payload.find(
                 "join_limit_value") != std::string::npos,
@@ -2396,7 +2377,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
     Require(three_way_join_limit.accepted &&
                 three_way_join_limit.server_operation_id == "query.execute" &&
-                three_way_join_limit.server_cursor_uuid.empty() &&
+                three_way_join_limit.server_cursor_uuid.is_nil() &&
                 three_way_join_limit.server_row_count == 1,
             "three-way ordinary CROSS JOIN/LIMIT did not complete the "
             "bounded multi-source live route");
@@ -2412,7 +2393,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     Require(object_backed_inner_join.accepted &&
                 object_backed_inner_join.server_operation_id ==
                     "query.execute" &&
-                object_backed_inner_join.server_cursor_uuid.empty() &&
+                object_backed_inner_join.server_cursor_uuid.is_nil() &&
                 object_backed_inner_join.server_row_count == 2,
             "object-backed native INNER JOIN did not evaluate its typed ON "
             "predicate over two heap scans");
@@ -2428,7 +2409,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           if (!joined.accepted) PrintMessages(joined.messages);
           Require(joined.accepted &&
                       joined.server_operation_id == "query.execute" &&
-                      joined.server_cursor_uuid.empty() &&
+                      joined.server_cursor_uuid.is_nil() &&
                       joined.server_row_count == expected_rows,
                   "object-backed INNER JOIN did not execute canonical typed "
                   "comparison operator " +
@@ -2455,7 +2436,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           if (!joined.accepted) PrintMessages(joined.messages);
           Require(joined.accepted &&
                       joined.server_operation_id == "query.execute" &&
-                      joined.server_cursor_uuid.empty() &&
+                      joined.server_cursor_uuid.is_nil() &&
                       joined.server_row_count == expected_rows,
                   "object-backed INNER JOIN did not execute composite typed "
                   "predicate " +
@@ -2502,7 +2483,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!joined.accepted) PrintMessages(joined.messages);
       Require(joined.accepted &&
                   joined.server_operation_id == "query.execute" &&
-                  joined.server_cursor_uuid.empty() &&
+                  joined.server_cursor_uuid.is_nil() &&
                   joined.server_row_count == expected_rows,
               label);
     };
@@ -2530,7 +2511,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!joined.accepted) PrintMessages(joined.messages);
       Require(joined.accepted &&
                   joined.server_operation_id == "query.execute" &&
-                  joined.server_cursor_uuid.empty() &&
+                  joined.server_cursor_uuid.is_nil() &&
                   joined.server_row_count == expected_rows &&
                   joined.server_result_payload.find("integer_value") !=
                       std::string::npos &&
@@ -2556,7 +2537,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           "SELECT * FROM qow_packet7.qow_packet7_relation;", true);
       if (!scan.accepted) PrintMessages(scan.messages);
       Require(scan.accepted && scan.server_operation_id == "query.execute" &&
-                  scan.server_cursor_uuid.empty() && scan.server_row_count == 3,
+                  scan.server_cursor_uuid.is_nil() && scan.server_row_count == 3,
               "single-source heap scan did not publish its three visible rows");
       const auto result_rows = [](std::string_view payload) {
         std::vector<std::string> rows;
@@ -2578,7 +2559,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           "qow_packet7.qow_packet7_relation) SELECT * FROM visible_rows;", true);
       if (!cte.accepted) PrintMessages(cte.messages);
       Require(cte.accepted && cte.server_operation_id == "query.execute" &&
-                  cte.server_cursor_uuid.empty() && cte.server_row_count == 3 &&
+                  cte.server_cursor_uuid.is_nil() && cte.server_row_count == 3 &&
                   result_rows(cte.server_result_payload) == scan_rows,
               "canonical parser CTE did not preserve the heap scan rows");
       auto quoted_cte = parser.RunPipeline(
@@ -2586,7 +2567,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           "qow_packet7.qow_packet7_relation) SELECT * FROM \"Visible Rows\";", true);
       if (!quoted_cte.accepted) PrintMessages(quoted_cte.messages);
       Require(quoted_cte.accepted && quoted_cte.server_operation_id == "query.execute" &&
-                  quoted_cte.server_row_count == 3 && quoted_cte.server_cursor_uuid.empty() &&
+                  quoted_cte.server_row_count == 3 && quoted_cte.server_cursor_uuid.is_nil() &&
                   result_rows(quoted_cte.server_result_payload) == scan_rows,
               "quoted CTE binding did not preserve the canonical heap rows");
       for (const std::string sql : {
@@ -2594,7 +2575,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                "WITH RECURSIVE v AS (SELECT * FROM qow_packet7.qow_packet7_relation) SELECT * FROM v;",
                "WITH v AS (SELECT * FROM v) SELECT * FROM v;"}) {
         const auto refused = parser.RunPipeline(sql, true);
-        Require(!refused.accepted && refused.server_cursor_uuid.empty() &&
+        Require(!refused.accepted && refused.server_cursor_uuid.is_nil() &&
                     refused.server_row_count == 0 && refused.server_result_payload.empty() &&
                     std::ranges::any_of(refused.messages.diagnostics, [](const auto& diagnostic) {
                       return diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE";
@@ -2608,7 +2589,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       const auto last_rank = ranking.server_result_payload.find("row_no=3");
       Require(ranking.accepted &&
                   ranking.server_operation_id == "query.execute" &&
-                  ranking.server_cursor_uuid.empty() &&
+                  ranking.server_cursor_uuid.is_nil() &&
                   ranking.server_row_count == 3 &&
                   first_rank != std::string::npos &&
                   last_rank != std::string::npos && first_rank < last_rank,
@@ -2621,7 +2602,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
     Require(object_backed_count.accepted &&
                 object_backed_count.server_operation_id == "query.execute" &&
-                object_backed_count.server_cursor_uuid.empty() &&
+                object_backed_count.server_cursor_uuid.is_nil() &&
                 object_backed_count.server_row_count == 1 &&
                 object_backed_count.server_result_payload.find("row_count=3") !=
                     std::string::npos,
@@ -2638,7 +2619,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     Require(object_backed_filtered_count.accepted &&
                 object_backed_filtered_count.server_operation_id ==
                     "query.execute" &&
-                object_backed_filtered_count.server_cursor_uuid.empty() &&
+                object_backed_filtered_count.server_cursor_uuid.is_nil() &&
                 object_backed_filtered_count.server_row_count == 1 &&
                 object_backed_filtered_count.server_result_payload.find(
                     "row_count=2") != std::string::npos,
@@ -2654,7 +2635,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     Require(object_backed_count_limit.accepted &&
                 object_backed_count_limit.server_operation_id ==
                     "query.execute" &&
-                object_backed_count_limit.server_cursor_uuid.empty() &&
+                object_backed_count_limit.server_cursor_uuid.is_nil() &&
                 object_backed_count_limit.server_row_count == 1 &&
                 object_backed_count_limit.server_result_payload.find(
                     "row_count=3") != std::string::npos,
@@ -2671,7 +2652,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     Require(object_backed_count_expression.accepted &&
                 object_backed_count_expression.server_operation_id ==
                     "query.execute" &&
-                object_backed_count_expression.server_cursor_uuid.empty() &&
+                object_backed_count_expression.server_cursor_uuid.is_nil() &&
                 object_backed_count_expression.server_row_count == 1 &&
                 object_backed_count_expression.server_result_payload.find(
                     "row_count=2") != std::string::npos,
@@ -2684,7 +2665,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!object_backed_sum.accepted) PrintMessages(object_backed_sum.messages);
     Require(object_backed_sum.accepted &&
                 object_backed_sum.server_operation_id == "query.execute" &&
-                object_backed_sum.server_cursor_uuid.empty() &&
+                object_backed_sum.server_cursor_uuid.is_nil() &&
                 object_backed_sum.server_row_count == 1 &&
                 object_backed_sum.server_result_payload.find("total_amount=6") !=
                     std::string::npos,
@@ -2701,7 +2682,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     Require(object_backed_filtered_sum.accepted &&
                 object_backed_filtered_sum.server_operation_id ==
                     "query.execute" &&
-                object_backed_filtered_sum.server_cursor_uuid.empty() &&
+                object_backed_filtered_sum.server_cursor_uuid.is_nil() &&
                 object_backed_filtered_sum.server_row_count == 1 &&
                 object_backed_filtered_sum.server_result_payload.find(
                     "total_amount=5") != std::string::npos,
@@ -2714,7 +2695,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!object_backed_avg.accepted) PrintMessages(object_backed_avg.messages);
     Require(object_backed_avg.accepted &&
                 object_backed_avg.server_operation_id == "query.execute" &&
-                object_backed_avg.server_cursor_uuid.empty() &&
+                object_backed_avg.server_cursor_uuid.is_nil() &&
                 object_backed_avg.server_row_count == 1 &&
                 object_backed_avg.server_result_payload.find(
                     "average_value=2") != std::string::npos,
@@ -2728,7 +2709,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!object_backed_min.accepted) PrintMessages(object_backed_min.messages);
     Require(object_backed_min.accepted &&
                 object_backed_min.server_operation_id == "query.execute" &&
-                object_backed_min.server_cursor_uuid.empty() &&
+                object_backed_min.server_cursor_uuid.is_nil() &&
                 object_backed_min.server_row_count == 1 &&
                 object_backed_min.server_result_payload.find(
                     "minimum_value=10") != std::string::npos,
@@ -2742,7 +2723,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!object_backed_max.accepted) PrintMessages(object_backed_max.messages);
     Require(object_backed_max.accepted &&
                 object_backed_max.server_operation_id == "query.execute" &&
-                object_backed_max.server_cursor_uuid.empty() &&
+                object_backed_max.server_cursor_uuid.is_nil() &&
                 object_backed_max.server_row_count == 1 &&
                 object_backed_max.server_result_payload.find(
                     "maximum_value=20") != std::string::npos,
@@ -2770,7 +2751,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!aggregate.accepted) PrintMessages(aggregate.messages);
       Require(aggregate.accepted &&
                   aggregate.server_operation_id == "query.execute" &&
-                  aggregate.server_cursor_uuid.empty() &&
+                  aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
                   aggregate.server_result_payload.find(
                       proof.expected_payload) != std::string::npos,
@@ -2792,7 +2773,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!aggregate.accepted) PrintMessages(aggregate.messages);
       Require(aggregate.accepted &&
                   aggregate.server_operation_id == "query.execute" &&
-                  aggregate.server_cursor_uuid.empty() &&
+                  aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
                   aggregate.server_result_payload.find(
                       proof.expected_payload) != std::string::npos,
@@ -2823,7 +2804,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!aggregate.accepted) PrintMessages(aggregate.messages);
       Require(aggregate.accepted &&
                   aggregate.server_operation_id == "query.execute" &&
-                  aggregate.server_cursor_uuid.empty() &&
+                  aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
                   aggregate.server_result_payload.find(
                       proof.expected_payload) != std::string::npos,
@@ -2840,7 +2821,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     Require(repeated_pair_argument.accepted &&
                 repeated_pair_argument.server_operation_id ==
                     "query.execute" &&
-                repeated_pair_argument.server_cursor_uuid.empty() &&
+                repeated_pair_argument.server_cursor_uuid.is_nil() &&
                 repeated_pair_argument.server_row_count == 1 &&
                 repeated_pair_argument.server_result_payload.find(
                     "corr_value=1") != std::string::npos,
@@ -2860,7 +2841,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!aggregate.accepted) PrintMessages(aggregate.messages);
       Require(aggregate.accepted &&
                   aggregate.server_operation_id == "query.execute" &&
-                  aggregate.server_cursor_uuid.empty() &&
+                  aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
                   aggregate.server_result_payload.find(
                       proof.expected_payload) != std::string::npos,
@@ -2877,7 +2858,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
     Require(approximate_top_k.accepted &&
                 approximate_top_k.server_operation_id == "query.execute" &&
-                approximate_top_k.server_cursor_uuid.empty() &&
+                approximate_top_k.server_cursor_uuid.is_nil() &&
                 approximate_top_k.server_row_count == 1 &&
                 approximate_top_k.server_result_payload.find(
                     "approx_top_k_value=[{\"value\":\"alpha\",\"count\":2},"
@@ -2895,7 +2876,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
     Require(string_aggregate.accepted &&
                 string_aggregate.server_operation_id == "query.execute" &&
-                string_aggregate.server_cursor_uuid.empty() &&
+                string_aggregate.server_cursor_uuid.is_nil() &&
                 string_aggregate.server_row_count == 1 &&
                 string_aggregate.server_result_payload.find(
                     "string_agg_value=alpha,beta,alpha") !=
@@ -2910,7 +2891,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!listagg.accepted) PrintMessages(listagg.messages);
     Require(listagg.accepted &&
                 listagg.server_operation_id == "query.execute" &&
-                listagg.server_cursor_uuid.empty() &&
+                listagg.server_cursor_uuid.is_nil() &&
                 listagg.server_row_count == 1 &&
                 listagg.server_result_payload.find(
                     "listagg_value=alpha,beta,alpha") != std::string::npos,
@@ -2945,7 +2926,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       }
       Require(aggregate.accepted &&
                   aggregate.server_operation_id == "query.execute" &&
-                  aggregate.server_cursor_uuid.empty() &&
+                  aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
                   aggregate.server_result_payload.find(
                       proof.expected_payload) != std::string::npos,
@@ -2960,7 +2941,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!mode.accepted) PrintMessages(mode.messages);
     Require(mode.accepted &&
                 mode.server_operation_id == "query.execute" &&
-                mode.server_cursor_uuid.empty() &&
+                mode.server_cursor_uuid.is_nil() &&
                 mode.server_row_count == 1 &&
                 mode.server_result_payload.find("mode_value=1") !=
                     std::string::npos,
@@ -2986,7 +2967,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!percentile.accepted) PrintMessages(percentile.messages);
       Require(percentile.accepted &&
                   percentile.server_operation_id == "query.execute" &&
-                  percentile.server_cursor_uuid.empty() &&
+                  percentile.server_cursor_uuid.is_nil() &&
                   percentile.server_row_count == 1 &&
                   percentile.server_result_payload.find(
                       proof.expected_payload) != std::string::npos,
@@ -3010,7 +2991,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!hypothetical.accepted) PrintMessages(hypothetical.messages);
       Require(hypothetical.accepted &&
                   hypothetical.server_operation_id == "query.execute" &&
-                  hypothetical.server_cursor_uuid.empty() &&
+                  hypothetical.server_cursor_uuid.is_nil() &&
                   hypothetical.server_row_count == 1 &&
                   hypothetical.server_result_payload.find(
                       proof.expected_payload) != std::string::npos,
@@ -3023,7 +3004,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!projected.accepted) PrintMessages(projected.messages);
     Require(projected.accepted &&
                 projected.server_operation_id == "query.execute" &&
-                projected.server_cursor_uuid.empty() &&
+                projected.server_cursor_uuid.is_nil() &&
                 projected.server_row_count == 3 &&
                 projected.server_result_payload.find("integer_value") !=
                     std::string::npos &&
@@ -3045,7 +3026,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         reordered_projection.server_result_payload.find("integer_value");
     Require(reordered_projection.accepted &&
                 reordered_projection.server_operation_id == "query.execute" &&
-                reordered_projection.server_cursor_uuid.empty() &&
+                reordered_projection.server_cursor_uuid.is_nil() &&
                 reordered_projection.server_row_count == 1 &&
                 auxiliary_position != std::string::npos &&
                 integer_position != std::string::npos &&
@@ -3062,7 +3043,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
     Require(projected_filter.accepted &&
                 projected_filter.server_operation_id == "query.execute" &&
-                projected_filter.server_cursor_uuid.empty() &&
+                projected_filter.server_cursor_uuid.is_nil() &&
                 projected_filter.server_row_count == 1 &&
                 projected_filter.server_result_payload.find(
                     "integer_value") != std::string::npos &&
@@ -3078,7 +3059,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!hidden_filter.accepted) PrintMessages(hidden_filter.messages);
     Require(hidden_filter.accepted &&
                 hidden_filter.server_operation_id == "query.execute" &&
-                hidden_filter.server_cursor_uuid.empty() &&
+                hidden_filter.server_cursor_uuid.is_nil() &&
                 hidden_filter.server_row_count == 2 &&
                 hidden_filter.server_result_payload.find("integer_value") !=
                     std::string::npos &&
@@ -3096,7 +3077,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
     Require(hidden_filter_limit.accepted &&
                 hidden_filter_limit.server_operation_id == "query.execute" &&
-                hidden_filter_limit.server_cursor_uuid.empty() &&
+                hidden_filter_limit.server_cursor_uuid.is_nil() &&
                 hidden_filter_limit.server_row_count == 1 &&
                 hidden_filter_limit.server_result_payload.find(
                     "integer_value") != std::string::npos &&
@@ -3112,7 +3093,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!ordered_limit.accepted) PrintMessages(ordered_limit.messages);
     Require(ordered_limit.accepted &&
                 ordered_limit.server_operation_id == "query.execute" &&
-                ordered_limit.server_cursor_uuid.empty() &&
+                ordered_limit.server_cursor_uuid.is_nil() &&
                 ordered_limit.server_row_count == 1 &&
                 ordered_limit.server_result_payload.find("integer_value=3") !=
                     std::string::npos,
@@ -3126,7 +3107,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     if (!hidden_order.accepted) PrintMessages(hidden_order.messages);
     Require(hidden_order.accepted &&
                 hidden_order.server_operation_id == "query.execute" &&
-                hidden_order.server_cursor_uuid.empty() &&
+                hidden_order.server_cursor_uuid.is_nil() &&
                 hidden_order.server_row_count == 1 &&
                 hidden_order.server_result_payload.find("integer_value") !=
                     std::string::npos &&
@@ -3175,7 +3156,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         filtered_order.server_result_payload.find("integer_value=2");
     Require(filtered_order.accepted &&
                 filtered_order.server_operation_id == "query.execute" &&
-                filtered_order.server_cursor_uuid.empty() &&
+                filtered_order.server_cursor_uuid.is_nil() &&
                 filtered_order.server_row_count == 2 &&
                 ordered_three != std::string::npos &&
                 ordered_two != std::string::npos && ordered_three < ordered_two &&
@@ -3224,7 +3205,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!filtered.accepted) PrintMessages(filtered.messages);
       Require(filtered.accepted &&
                   filtered.server_operation_id == "query.execute" &&
-                  filtered.server_cursor_uuid.empty() &&
+                  filtered.server_cursor_uuid.is_nil() &&
                   filtered.server_row_count == filter_case.expected_rows,
               "object-backed native SELECT WHERE comparison did not complete "
               "the full live route");
@@ -3240,7 +3221,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     Require(object_backed_filter_limit.accepted &&
                 object_backed_filter_limit.server_operation_id ==
                     "query.execute" &&
-                object_backed_filter_limit.server_cursor_uuid.empty() &&
+                object_backed_filter_limit.server_cursor_uuid.is_nil() &&
                 object_backed_filter_limit.server_row_count == 1,
             "object-backed native SELECT WHERE/LIMIT did not complete the "
             "full live route");
@@ -3252,7 +3233,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     }
     Require(object_backed_limit.accepted &&
                 object_backed_limit.server_operation_id == "query.execute" &&
-                object_backed_limit.server_cursor_uuid.empty() &&
+                object_backed_limit.server_cursor_uuid.is_nil() &&
                 object_backed_limit.server_row_count == 1,
             "object-backed native SELECT with LIMIT did not complete the full "
             "live route");
@@ -3266,14 +3247,14 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     Require(object_backed_limit_offset.accepted &&
                 object_backed_limit_offset.server_operation_id ==
                     "query.execute" &&
-                object_backed_limit_offset.server_cursor_uuid.empty() &&
+                object_backed_limit_offset.server_cursor_uuid.is_nil() &&
                 object_backed_limit_offset.server_row_count == 1,
             "object-backed native SELECT with LIMIT/OFFSET did not complete "
             "the full live route");
 
     auto cursor = parser.RunPipeline(kSourceFreeNativeSelect, true, true);
     if (!cursor.accepted) PrintMessages(cursor.messages);
-    Require(cursor.accepted && !cursor.server_cursor_uuid.empty(),
+    Require(cursor.accepted && !cursor.server_cursor_uuid.is_nil(),
             "canonical cursor execution did not retain its live receipt");
     const auto fetched = parser.FetchCursorOnRoute(cursor.server_cursor_uuid);
     Require(fetched.accepted && fetched.end_of_cursor,
@@ -3283,7 +3264,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
 
     auto cancelled = parser.RunPipeline(kSourceFreeNativeSelect, true, true);
     if (!cancelled.accepted) PrintMessages(cancelled.messages);
-    Require(cancelled.accepted && !cancelled.server_cursor_uuid.empty(),
+    Require(cancelled.accepted && !cancelled.server_cursor_uuid.is_nil(),
             "canonical cancellation cursor did not open");
     Require(parser.CancelCursorOnRoute(cancelled.server_cursor_uuid).accepted,
             "canonical cursor cancellation failed");
@@ -3316,13 +3297,13 @@ sbps::Frame AcquireFrame(
   frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   ipc::ParserSessionContext parser_session;
-  parser_session.session_uuid = server::UuidBytesToText(session_uuid);
+  parser_session.session_uuid = platform::Uuid{session_uuid};
   parser_session.connection_uuid = parser_session.session_uuid;
   parser_session.authenticated = true;
   ipc::ParserTransactionSelector parser_transaction;
   parser_transaction.local_transaction_id = local_transaction_id;
   parser_transaction.transaction_uuid =
-      uuid::UuidToString(platform::Uuid{transaction_uuid});
+      platform::Uuid{transaction_uuid};
   frame.payload =
       ipc::EncodeAcquireStatementContextRequestPayloadV1ForTest(
           parser_session, parser_transaction);
@@ -3385,12 +3366,12 @@ void SetPayloadU64(std::vector<std::uint8_t>* payload,
   }
 }
 
-std::string PayloadUuidText(const std::vector<std::uint8_t>& payload,
+api::EngineUuid PayloadIdentity(const std::vector<std::uint8_t>& payload,
                             const std::size_t offset) {
   std::array<std::uint8_t, 16> bytes{};
   std::copy_n(payload.begin() + static_cast<std::ptrdiff_t>(offset),
               bytes.size(), bytes.begin());
-  return server::UuidBytesToText(bytes);
+  return platform::Uuid{bytes};
 }
 
 struct NativePayloadLayout {
@@ -3463,14 +3444,12 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
   server::ServerSessionRegistry registry;
   server::HostedEngineState engine_state;
   const auto session_uuid = fixture.session_uuid.value.bytes;
-  const auto transaction_uuid =
-      uuid::ParseUuid(transaction.transaction_uuid.canonical);
-  Require(transaction_uuid.ok(),
-          "server statement-context transaction UUID parse failed");
+  const auto transaction_uuid = uuid::MakeTypedUuid(platform::UuidKind::transaction, transaction.transaction_uuid);
+  Require(transaction_uuid.ok(), "server statement-context transaction UUID invalid");
 
   server::ServerTransactionState server_transaction;
   server_transaction.local_transaction_id = transaction.local_transaction_id;
-  server_transaction.transaction_uuid = transaction.transaction_uuid.canonical;
+  server_transaction.transaction_uuid = transaction.transaction_uuid;
   server_transaction.snapshot_visible_through_local_transaction_id =
       transaction.snapshot_visible_through_local_transaction_id;
   server_transaction.isolation_level = "read_committed";
@@ -3520,7 +3499,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       engine_state,
       AcquireFrame(session_uuid,
                    server_transaction.local_transaction_id,
-                   transaction_uuid.value.bytes));
+                   transaction_uuid.value.value.bytes));
   if (!acquired.accepted) {
     for (const auto& diagnostic : acquired.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
@@ -3570,7 +3549,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
             &registry, engine_state,
             AcquireNativeFrame(session_uuid,
                                server_transaction.local_transaction_id,
-                               transaction_uuid.value.bytes, version,
+                               transaction_uuid.value.value.bytes, version,
                                request_schema_id));
         const auto profile_count_offset =
             kBaseBytes + native_uuid_count * 16;
@@ -3590,8 +3569,8 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
         }
         const auto statement_uuid =
             projected.payload.size() >= 19
-                ? PayloadUuidText(projected.payload, 3)
-                : std::string{};
+                ? PayloadIdentity(projected.payload, 3)
+                : api::EngineUuid{};
         const auto projected_statement =
             registry.statement_contexts_by_statement_uuid.find(statement_uuid);
         Require(projected.accepted &&
@@ -3625,7 +3604,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
             engine_state,
             AcquireNativeFrame(session_uuid,
                                server_transaction.local_transaction_id,
-                               transaction_uuid.value.bytes,
+                               transaction_uuid.value.value.bytes,
                                version,
                                request_schema_id));
         ipc::ParserStatementContext projected_context;
@@ -3756,7 +3735,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 7,
+                         transaction_uuid.value.value.bytes, 7,
                          sbps::kSchemaAcquireStatementContextRequestV7));
   ipc::ParserStatementContext v7_context;
   Require(v7_projection.accepted &&
@@ -3793,7 +3772,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 8,
+                         transaction_uuid.value.value.bytes, 8,
                          sbps::kSchemaAcquireStatementContextRequestV8));
   ipc::ParserStatementContext v8_context;
   const auto v8_layout = LocateNativePayloadLayout(v8_projection.payload, 8);
@@ -3818,9 +3797,9 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       real64_count == 1 &&
               real64_row != core_manifest.manifest.descriptor_rows.end() &&
               real64_row->descriptor_uuid.valid()
-          ? uuid::UuidToString(real64_row->descriptor_uuid.value)
-          : std::string{};
-  std::set<std::string> v8_descriptor_uuids;
+          ? CoreTypeUuid("real64")
+          : api::EngineUuid{};
+  std::set<api::EngineUuid> v8_descriptor_uuids;
   bool v8_unique_descriptors = false;
   if (ipc::DecodeAcquireStatementContextResultPayloadV8ForTest(
           v8_projection.payload, &v8_context)) {
@@ -3845,7 +3824,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
               v8_context.descriptor_profiles[321].slot == 1 &&
               v8_context.descriptor_profiles[320].descriptor_uuid !=
                   v8_context.descriptor_profiles[321].descriptor_uuid &&
-              !canonical_real64_type_uuid.empty() &&
+              !canonical_real64_type_uuid.is_nil() &&
               v8_context.descriptor_profiles[320].type_uuid ==
                   canonical_real64_type_uuid &&
               v8_context.descriptor_profiles[321].type_uuid ==
@@ -4027,7 +4006,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 9,
+                         transaction_uuid.value.value.bytes, 9,
                          sbps::kSchemaAcquireStatementContextRequestV9));
   ipc::ParserStatementContext v9_context;
   const auto v9_layout = LocateNativePayloadLayout(v9_projection.payload, 9);
@@ -4051,12 +4030,12 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
     return count == 1 &&
                    row != core_manifest.manifest.descriptor_rows.end() &&
                    row->descriptor_uuid.valid()
-               ? uuid::UuidToString(row->descriptor_uuid.value)
-               : std::string{};
+               ? CoreTypeUuid(stable_name)
+               : api::EngineUuid{};
   };
   const auto canonical_uuid_type_uuid = canonical_type_uuid("uuid");
   const auto canonical_uint64_type_uuid = canonical_type_uuid("uint64");
-  std::set<std::string> v9_descriptor_uuids;
+  std::set<api::EngineUuid> v9_descriptor_uuids;
   bool v9_unique_descriptors = false;
   if (ipc::DecodeAcquireStatementContextResultPayloadV9ForTest(
           v9_projection.payload, &v9_context)) {
@@ -4071,11 +4050,11 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
   const auto exact_v9_profile = [&](const std::size_t ordinal,
                                     const std::uint8_t kind,
                                     const std::uint16_t slot,
-                                    const std::string& type_uuid) {
+                                    const api::EngineUuid& type_uuid) {
     const auto& profile = v9_context.descriptor_profiles[ordinal];
     return profile.profile_kind == kind && profile.slot == slot &&
-           profile.type_uuid == type_uuid && !profile.descriptor_uuid.empty() &&
-           !profile.nullable && profile.collation_uuid.empty() &&
+           profile.type_uuid == type_uuid && !profile.descriptor_uuid.is_nil() &&
+           !profile.nullable && profile.collation_uuid.is_nil() &&
            profile.width == 0 && profile.precision == 0 &&
            profile.scale == 0;
   };
@@ -4085,9 +4064,9 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
               v9_layout.has_value() && v9_layout->profile_count == 326 &&
               v9_context.native_v9_complete() && v9_unique_descriptors &&
               v9_descriptor_uuids.size() == 326 &&
-              !canonical_real64_type_uuid.empty() &&
-              !canonical_uuid_type_uuid.empty() &&
-              !canonical_uint64_type_uuid.empty() &&
+              !canonical_real64_type_uuid.is_nil() &&
+              !canonical_uuid_type_uuid.is_nil() &&
+              !canonical_uint64_type_uuid.is_nil() &&
               exact_v9_profile(320, 11, 0, canonical_real64_type_uuid) &&
               exact_v9_profile(321, 11, 1, canonical_real64_type_uuid) &&
               exact_v9_profile(322, 12, 0, canonical_uuid_type_uuid) &&
@@ -4253,17 +4232,17 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 10,
+                         transaction_uuid.value.value.bytes, 10,
                          sbps::kSchemaAcquireStatementContextRequestV10));
   ipc::ParserStatementContext v10_context;
   const auto v10_layout = LocateNativePayloadLayout(v10_projection.payload, 10);
   const auto canonical_boolean_type_uuid = canonical_type_uuid("boolean");
   const auto canonical_geometry_type_uuid = canonical_type_uuid("geometry");
-  const std::array<std::string, 5> expected_multileg_types = {
+  const std::array<api::EngineUuid, 5> expected_multileg_types = {
       canonical_uuid_type_uuid, canonical_uint64_type_uuid,
       canonical_real64_type_uuid, canonical_boolean_type_uuid,
       canonical_geometry_type_uuid};
-  std::set<std::string> v10_descriptor_uuids;
+  std::set<api::EngineUuid> v10_descriptor_uuids;
   bool v10_unique_descriptors = false;
   if (ipc::DecodeAcquireStatementContextResultPayloadV10ForTest(
           v10_projection.payload, &v10_context)) {
@@ -4283,7 +4262,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
         profile.slot == expected_slot &&
         profile.type_uuid == expected_multileg_types[type_group] &&
         profile.nullable == (expected_kind % 2 == 1) &&
-        profile.collation_uuid.empty() && profile.width == 0 &&
+        profile.collation_uuid.is_nil() && profile.width == 0 &&
         profile.precision == 0 && profile.scale == 0;
   }
   const bool dv001_exact =
@@ -4294,8 +4273,8 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       v10_context.native_v10_complete() && v10_unique_descriptors &&
       v10_descriptor_uuids.size() == 646 && exact_v10_suffix &&
       std::ranges::all_of(expected_multileg_types,
-                          [](const auto& value) { return !value.empty(); }) &&
-      std::set<std::string>(expected_multileg_types.begin(),
+                          [](const auto& value) { return !value.is_nil(); }) &&
+      std::set<api::EngineUuid>(expected_multileg_types.begin(),
                             expected_multileg_types.end()).size() == 5;
   Require(dv001_exact,
           "native V10 multileg descriptor projection drifted");
@@ -4455,7 +4434,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 11,
+                         transaction_uuid.value.value.bytes, 11,
                          sbps::kSchemaAcquireStatementContextRequestV11));
   ipc::ParserStatementContext v11_context;
   const auto v11_layout = LocateNativePayloadLayout(v11_projection.payload, 11);
@@ -4527,13 +4506,13 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 7,
+                         transaction_uuid.value.value.bytes, 7,
                          sbps::kSchemaAcquireStatementContextRequestV8));
   const auto v7_schema_v8_version = server::HandleAcquireStatementContext(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 8,
+                         transaction_uuid.value.value.bytes, 8,
                          sbps::kSchemaAcquireStatementContextRequestV7));
   Require(!v8_schema_v7_version.accepted &&
               !v7_schema_v8_version.accepted &&
@@ -4549,13 +4528,13 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 8,
+                         transaction_uuid.value.value.bytes, 8,
                          sbps::kSchemaAcquireStatementContextRequestV9));
   const auto v8_schema_v9_version = server::HandleAcquireStatementContext(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 9,
+                         transaction_uuid.value.value.bytes, 9,
                          sbps::kSchemaAcquireStatementContextRequestV8));
   Require(!v9_schema_v8_version.accepted &&
               !v8_schema_v9_version.accepted &&
@@ -4571,13 +4550,13 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 9,
+                         transaction_uuid.value.value.bytes, 9,
                          sbps::kSchemaAcquireStatementContextRequestV10));
   const auto v9_schema_v10_version = server::HandleAcquireStatementContext(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 10,
+                         transaction_uuid.value.value.bytes, 10,
                          sbps::kSchemaAcquireStatementContextRequestV9));
   Require(!v10_schema_v9_version.accepted &&
               !v9_schema_v10_version.accepted &&
@@ -4593,7 +4572,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
                          server_transaction.local_transaction_id,
-                         transaction_uuid.value.bytes, 6,
+                         transaction_uuid.value.value.bytes, 6,
                          sbps::kSchemaAcquireStatementContextRequestV7));
   Require(!mismatched_version.accepted &&
               !mismatched_version.diagnostics.empty() &&
@@ -4618,7 +4597,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
 
   auto cross_session = AcquireFrame(session_uuid,
                                     server_transaction.local_transaction_id,
-                                    transaction_uuid.value.bytes);
+                                    transaction_uuid.value.value.bytes);
   cross_session.payload[2] ^= 0x01u;
   const auto refused_cross_session = server::HandleAcquireStatementContext(
       &registry, engine_state, cross_session);
@@ -4720,8 +4699,8 @@ int main(int argc, char** argv) {
           "cross-session statement-context acquisition returned a receipt");
 
   auto caller_authority = transaction;
-  caller_authority.statement_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 8);
+  caller_authority.statement_uuid =
+      NewIdentity(platform::UuidKind::object, fixture.salt + 8);
   const auto caller_forgery =
       Acquire(owner.get(), caller_authority, &refused_view,
               SB_ENGINE_STATUS_CONFLICT);
@@ -4746,7 +4725,7 @@ int main(int argc, char** argv) {
               first_view.statement_timestamp.back() == 'Z',
           "live statement-context receipt is incomplete");
   Require(first_view.owning_transaction_uuid ==
-                  transaction.transaction_uuid.canonical &&
+                  transaction.transaction_uuid &&
               first_view.owning_local_transaction_id ==
                   transaction.local_transaction_id,
           "live statement-context receipt transaction identity drifted");
@@ -4762,8 +4741,8 @@ int main(int argc, char** argv) {
   AssertDistinctReceiptIdentities(first_view);
 
   auto resolve_context = transaction;
-  resolve_context.statement_uuid.canonical = first_view.statement_uuid;
-  resolve_context.statement_snapshot_uuid.canonical =
+  resolve_context.statement_uuid = first_view.statement_uuid;
+  resolve_context.statement_snapshot_uuid =
       first_view.statement_snapshot_uuid;
   resolve_context.snapshot_visible_through_local_transaction_id =
       first_view.visible_committed_high_watermark;

@@ -6,6 +6,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+#include "../support/binary_uuid_fixture.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 
 #include "agent_durable_catalog.hpp"
@@ -21,7 +25,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
-#include <unordered_set>
+#include <set>
 #include <utility>
 
 namespace {
@@ -44,8 +48,8 @@ void Require(bool condition, const std::string& message) {
 
 struct TestDatabase {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
 };
 
@@ -113,8 +117,8 @@ TestDatabase CreateActiveDatabase() {
 
   TestDatabase result;
   result.path = path;
-  result.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  result.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
+  result.database_uuid = database_uuid.value.value;
+  result.transaction_uuid = transaction_uuid.value.value;
   result.local_transaction_id = begun.entry.identity.local_id.value;
   return result;
 }
@@ -123,23 +127,22 @@ api::EngineRequestContext Context(const TestDatabase& database) {
   api::EngineRequestContext context;
   context.request_id = "aeic-agent-catalog-store";
   context.database_path = database.path.string();
-  context.database_uuid.canonical = database.database_uuid;
-  context.transaction_uuid.canonical = database.transaction_uuid;
+  context.database_uuid = database.database_uuid;
+  context.transaction_uuid = database.transaction_uuid;
   context.local_transaction_id = database.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       database.local_transaction_id;
   context.security_context_present = true;
-  context.principal_uuid.canonical =
-      "018f0000-0000-7000-8000-00000000ae10";
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ae10");
   return context;
 }
 
 agents::DurableAgentCatalogImage CatalogImage() {
   agents::DurableAgentCatalogImage image;
   agents::AgentInstanceRecord instance;
-  instance.instance_uuid = "018f0000-0000-7000-8000-00000000ae11";
+  instance.instance_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ae11"));
   instance.agent_type_id = "node_resource_agent";
-  instance.policy_uuid = "018f0000-0000-7000-8000-00000000ae12";
+  instance.policy_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ae12"));
   instance.scope = "node";
   instance.state = agents::AgentLifecycleState::registered;
   instance.run_generation = 1;
@@ -177,11 +180,10 @@ api::CrudTableRecord FindCatalogTable(const api::MgaRelationReadView& state) {
 }
 
 api::CrudRowVersionRecord FindCatalogRootRow(const api::MgaRelationReadView& state,
-                                             const std::string& table_uuid) {
+                                             const api::EngineUuid& table_uuid) {
   api::CrudRowVersionRecord latest;
   for (const auto& row : state.row_versions) {
-    if (row.deleted || row.table_uuid != table_uuid ||
-        row.row_uuid != "agent-catalog-runtime-root") {
+    if (row.deleted || row.table_uuid != table_uuid) {
       continue;
     }
     if (FieldValue(row.values, "record_kind") != "agent_catalog_image") {
@@ -202,7 +204,7 @@ void TestPersistLoadRoundTrip() {
   api::AgentDurableCatalogStoreRequest request;
   request.context = context;
   request.image = CatalogImage();
-  request.evidence_uuid = "018f0000-0000-7000-8000-00000000ae13";
+  request.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ae13"));
   request.production_live_path = true;
   request.fsync_or_checkpoint_evidence = true;
 
@@ -217,29 +219,29 @@ void TestPersistLoadRoundTrip() {
           "persisted image does not validate as production durable catalog");
 
   const auto relation_descriptor =
-      api::LoadMgaRelationStorageDescriptor(context, persisted.table_uuid);
+      api::LoadMgaRelationStorageDescriptor(context, NativeFixtureIdentity(persisted.table_uuid));
   Require(relation_descriptor.ok,
           "durable catalog MGA relation descriptor missing: " +
               relation_descriptor.diagnostic.detail);
-  Require(relation_descriptor.descriptor.relation_uuid.canonical ==
-              persisted.table_uuid &&
+  Require(relation_descriptor.descriptor.relation_uuid ==
+              NativeFixtureIdentity(persisted.table_uuid) &&
               relation_descriptor.descriptor.columns.size() == 7,
           "durable catalog MGA relation descriptor drifted");
-  std::unordered_set<std::string> descriptor_identities;
+  std::set<api::EngineUuid> descriptor_identities;
   descriptor_identities.insert(
-      relation_descriptor.descriptor.relation_uuid.canonical);
-  Require(!relation_descriptor.descriptor.descriptor_uuid.canonical.empty() &&
+      relation_descriptor.descriptor.relation_uuid);
+  Require(!relation_descriptor.descriptor.descriptor_uuid.is_nil() &&
               descriptor_identities
-                  .insert(relation_descriptor.descriptor.descriptor_uuid.canonical)
+                  .insert(relation_descriptor.descriptor.descriptor_uuid)
                   .second,
           "durable catalog relation/descriptor identities are missing or collide");
   for (const auto& column : relation_descriptor.descriptor.columns) {
-    Require(!column.column_uuid.canonical.empty() &&
-                descriptor_identities.insert(column.column_uuid.canonical).second,
+    Require(!column.column_uuid.is_nil() &&
+                descriptor_identities.insert(column.column_uuid).second,
             "durable catalog column identity is missing or collides");
-    Require(!column.value_descriptor.descriptor_uuid.canonical.empty() &&
+    Require(!column.value_descriptor.descriptor_uuid.is_nil() &&
                 descriptor_identities
-                    .insert(column.value_descriptor.descriptor_uuid.canonical)
+                    .insert(column.value_descriptor.descriptor_uuid)
                     .second,
             "durable catalog type-descriptor identity is missing or collides");
   }
@@ -265,7 +267,7 @@ void TestLoadMigratesAndPersistsOldSchemaImage() {
   api::AgentDurableCatalogStoreRequest request;
   request.context = context;
   request.image = CatalogImage();
-  request.evidence_uuid = "018f0000-0000-7000-8000-00000000ae16";
+  request.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ae16"));
   request.production_live_path = true;
   request.fsync_or_checkpoint_evidence = true;
 
@@ -292,7 +294,8 @@ void TestLoadMigratesAndPersistsOldSchemaImage() {
   api::CrudRowVersionRecord old_row;
   old_row.creator_tx = context.local_transaction_id;
   old_row.table_uuid = table.table_uuid;
-  old_row.row_uuid = "agent-catalog-runtime-root";
+  old_row.row_uuid = current.row_uuid;
+  old_row.creator_transaction_uuid = context.transaction_uuid;
   old_row.version_uuid = api::GenerateCrudEngineUuid("row");
   old_row.previous_version_uuid = current.version_uuid;
   old_row.previous_sequence = current.sequence;
@@ -323,7 +326,7 @@ void TestLoadMigratesAndPersistsOldSchemaImage() {
   load.persist_schema_migration = true;
   load.fsync_or_checkpoint_evidence = true;
   load.migration_evidence_uuid =
-      "018f0000-0000-7000-8000-00000000ae17";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ae17"));
   const auto migrated = api::LoadAgentDurableCatalogImage(load);
   Require(migrated.ok, "durable catalog load/migrate/persist failed: " +
                            migrated.diagnostic.detail);
@@ -365,7 +368,7 @@ void TestRefusals() {
   api::AgentDurableCatalogStoreRequest missing_fsync;
   missing_fsync.context = context;
   missing_fsync.image = CatalogImage();
-  missing_fsync.evidence_uuid = "018f0000-0000-7000-8000-00000000ae14";
+  missing_fsync.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ae14"));
   missing_fsync.production_live_path = true;
   missing_fsync.fsync_or_checkpoint_evidence = false;
   Require(!api::PersistAgentDurableCatalogImage(missing_fsync).ok,

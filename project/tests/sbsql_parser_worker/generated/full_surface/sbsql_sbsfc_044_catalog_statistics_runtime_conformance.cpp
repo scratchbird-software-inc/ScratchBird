@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -75,7 +76,7 @@ void CleanupDatabase(const std::filesystem::path& path) {
   std::filesystem::remove(path.string() + ".sb.mga_savepoints");
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -93,17 +94,17 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "SBSFC044 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const std::string& database_uuid) {
+                                      const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsfc044-catalog-statistics";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = kSessionUuid;
-  context.principal_uuid.canonical = kPrincipalUuid;
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000002");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000003");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -113,7 +114,7 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginTransaction(const std::filesystem::path& path,
-                                           const std::string& database_uuid) {
+                                           const api::EngineUuid& database_uuid) {
   api::EngineBeginTransactionRequest begin;
   begin.context = BaseContext(path, database_uuid);
   const auto begun = api::EngineBeginTransaction(begin);
@@ -133,15 +134,15 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& path,
 
 void SeedCatalogStatisticsFixture(const api::EngineRequestContext& context) {
   api::CrudTableRecord table;
-  table.table_uuid = kTableUuid;
+  table.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101");
   table.default_name = "sbsfc044_catalog_stats";
   table.columns = {{"id", "type=int64"}, {"note", "type=character"}};
   auto diagnostic = api::AppendMgaTableMetadata(context, table);
   Require(!diagnostic.error, "SBSFC044 table metadata append failed");
 
   api::CrudIndexRecord index;
-  index.index_uuid = kIndexUuid;
-  index.table_uuid = kTableUuid;
+  index.index_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000102");
+  index.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101");
   index.column_name = "id";
   index.family = api::kCrudIndexFamilyBtree;
   index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
@@ -152,24 +153,24 @@ void SeedCatalogStatisticsFixture(const api::EngineRequestContext& context) {
 
   api::CrudRowVersionRecord row_a;
   row_a.creator_tx = context.local_transaction_id;
-  row_a.table_uuid = kTableUuid;
-  row_a.row_uuid = kRowA;
-  row_a.version_uuid = kVersionA;
+  row_a.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101");
+  row_a.row_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000201");
+  row_a.version_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000301");
   row_a.values = {{"id", "1"}, {"note", "alpha"}};
   diagnostic = api::AppendMgaRowVersion(context, row_a, nullptr);
   Require(!diagnostic.error, "SBSFC044 row A append failed");
-  diagnostic = api::AppendMgaIndexEntriesForIndex(context, index, kRowA, kVersionA, row_a.values);
+  diagnostic = api::AppendMgaIndexEntriesForIndex(context, index, row_a.row_uuid, row_a.version_uuid, row_a.values);
   Require(!diagnostic.error, "SBSFC044 row A index append failed");
 
   api::CrudRowVersionRecord row_b;
   row_b.creator_tx = context.local_transaction_id;
-  row_b.table_uuid = kTableUuid;
-  row_b.row_uuid = kRowB;
-  row_b.version_uuid = kVersionB;
+  row_b.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101");
+  row_b.row_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000202");
+  row_b.version_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000302");
   row_b.values = {{"id", "2"}, {"note", "bravo"}};
   diagnostic = api::AppendMgaRowVersion(context, row_b, nullptr);
   Require(!diagnostic.error, "SBSFC044 row B append failed");
-  diagnostic = api::AppendMgaIndexEntriesForIndex(context, index, kRowB, kVersionB, row_b.values);
+  diagnostic = api::AppendMgaIndexEntriesForIndex(context, index, row_b.row_uuid, row_b.version_uuid, row_b.values);
   Require(!diagnostic.error, "SBSFC044 row B index append failed");
 }
 
@@ -206,10 +207,10 @@ scratchbird::engine::sblr::SblrExecutionContext SblrContextFromEngine(
     const api::EngineRequestContext& context) {
   scratchbird::engine::sblr::SblrExecutionContext out;
   out.database_path = context.database_path;
-  out.database_uuid = context.database_uuid.canonical;
-  out.session_uuid = context.session_uuid.canonical;
-  out.user_uuid = context.principal_uuid.canonical;
-  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.database_uuid = context.database_uuid;
+  out.session_uuid = context.session_uuid;
+  out.user_uuid = context.principal_uuid;
+  out.transaction_uuid = context.transaction_uuid;
   out.local_transaction_id = context.local_transaction_id;
   out.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;

@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -19,6 +20,7 @@
 #include "sblr_opcode_registry.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -95,8 +97,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -137,7 +139,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, id)) {
       return true;
     }
   }
@@ -149,7 +151,7 @@ bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
                       std::string_view token) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind &&
-        item.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, token) != std::string::npos) {
       return true;
     }
   }
@@ -160,7 +162,7 @@ bool AnyEvidenceContains(const std::vector<api::EngineEvidenceReference>& eviden
                          std::string_view token) {
   for (const auto& item : evidence) {
     if (item.evidence_kind.find(token) != std::string::npos ||
-        item.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, token) != std::string::npos) {
       return true;
     }
   }
@@ -172,7 +174,7 @@ std::size_t EvidenceIndex(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view token) {
   for (std::size_t index = 0; index < evidence.size(); ++index) {
     if (evidence[index].evidence_kind == kind &&
-        evidence[index].evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(evidence[index].evidence_id, token) != std::string::npos) {
       return index;
     }
   }
@@ -183,7 +185,9 @@ std::string EvidenceValue(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view kind) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind) {
-      return item.evidence_id;
+      const auto* value = std::get_if<std::string>(&item.evidence_id);
+      Require(value != nullptr, "expected scalar counter evidence");
+      return *value;
     }
   }
   return {};
@@ -227,9 +231,12 @@ void RequireNoForbiddenEvidence(
                              "contracts",
                              "references"}) {
       if (item.evidence_kind.find(token) != std::string::npos ||
-          item.evidence_id.find(token) != std::string::npos) {
+          scratchbird::tests::EvidenceTextFind(item.evidence_id, token) != std::string::npos) {
         std::cerr << "Forbidden runtime evidence token in " << scenario << ": "
-                  << item.evidence_kind << '=' << item.evidence_id << '\n';
+                  << item.evidence_kind << '=';
+        if (const auto* text = std::get_if<std::string>(&item.evidence_id)) std::cerr << *text;
+        else std::cerr << "[binary UUID]";
+        std::cerr << '\n';
         Fail("ODF-112 runtime evidence leaked documentation dependency");
       }
     }
@@ -331,9 +338,9 @@ void AddProof(ScenarioEvidence* scenario, std::string key, std::string value) {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid id_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -350,11 +357,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -443,9 +450,12 @@ api::CrudTableRecord ProofTable(const Fixture& fixture,
   table.table_uuid = fixture.table_uuid;
   table.default_name = "odf112_bulk_constraint_proof";
   table.columns.push_back({"id", "canonical=character;primary_key=true"});
-  table.columns.push_back({"parent_id",
-                           "canonical=character;foreign_key=" +
-                               fixture.table_uuid + ":id"});
+  api::CatalogColumnMetadata fields;
+  fields.text = {{"canonical", "character"}, {"referenced_column", "id"}};
+  fields.identities.emplace("referenced_table_uuid", fixture.table_uuid);
+  std::string metadata;
+  Require(api::EncodeCatalogColumnMetadata(fields, &metadata), "bulk proof foreign-key metadata encoding failed");
+  table.columns.push_back({"parent_id", std::move(metadata)});
   table.columns.push_back({"note", "canonical=character;not_null=true"});
   return table;
 }
@@ -480,9 +490,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt, FixtureKind kind) {
   }
   Require(created.ok(), "ODF-112 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.id_index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "odf112-metadata");
   switch (kind) {
@@ -545,7 +555,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     std::vector<std::string> options = {}) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";
@@ -599,7 +609,7 @@ api::EngineExecuteNativeBulkIngestRequest NativeRequest(
     bool strict = false) {
   api::EngineExecuteNativeBulkIngestRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
   request.estimated_row_count =
@@ -623,7 +633,7 @@ api::EngineApiU64 SelectCount(const Fixture& fixture,
                               const api::EngineRequestContext& context) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
   const auto selected = api::EngineSelectRows(request);
@@ -664,8 +674,8 @@ sblr::SblrOperationEnvelope NativeEnvelope() {
   Require(operation != nullptr,
           "ODF-112 native bulk SBLR registry entry missing");
   envelope.opcode_code = operation->code;
-  envelope.parser_package_uuid = NewUuidText(platform::UuidKind::object, 112000);
-  envelope.registry_snapshot_uuid = NewUuidText(platform::UuidKind::object, 112001);
+  envelope.parser_package_uuid = NewIdentity(platform::UuidKind::object, 112000);
+  envelope.registry_snapshot_uuid = NewIdentity(platform::UuidKind::object, 112001);
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
@@ -682,7 +692,7 @@ sblr::SblrOperationEnvelope NativeEnvelope() {
 api::EngineApiRequest SblrApiRequest(const Fixture& fixture,
                                      std::vector<api::EngineRowValue> rows) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.rows = std::move(rows);
   request.option_envelopes.push_back("estimated_row_count:" +

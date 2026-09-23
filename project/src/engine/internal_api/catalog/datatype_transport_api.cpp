@@ -11,6 +11,7 @@
 #include "catalog/wire_driver_metadata_api.hpp"
 #include "datatype_binary.hpp"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -48,6 +49,22 @@ bool ReadRecord(const scratchbird::core::datatypes::DatatypeDescriptorEnvelope& 
       *out = StringFromBytes(record.payload);
       return true;
     }
+  }
+  return false;
+}
+
+scratchbird::core::datatypes::DatatypeDescriptorRecord Record(
+    std::string name, const EngineUuid& value) {
+  return {std::move(name), {value.bytes.begin(), value.bytes.end()}};
+}
+
+bool ReadRecord(const scratchbird::core::datatypes::DatatypeDescriptorEnvelope& envelope,
+                const std::string& name, EngineUuid* out) {
+  for (const auto& record : envelope.records) {
+    if (record.field_name != name) continue;
+    if (record.payload.size() != out->bytes.size()) return false;
+    std::copy(record.payload.begin(), record.payload.end(), out->bytes.begin());
+    return true;
   }
   return false;
 }

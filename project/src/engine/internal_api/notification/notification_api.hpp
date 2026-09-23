@@ -17,10 +17,10 @@
 namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: EVN_IMPL_001_CORE_EVENT_TYPES
-inline constexpr const char* kEventNotificationRecordMagic = "SBEVN1";
+inline constexpr const char* kEventNotificationRecordMagic = "SBEVN2";
 
 struct EventQueuePolicyShape {
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
   std::string durability_profile = "ephemeral_session";
   std::uint64_t max_payload_bytes = 8192;
   std::uint64_t max_queued_events = 1024;
@@ -31,31 +31,32 @@ struct EventQueuePolicyShape {
 };
 
 struct EventChannelShape {
-  std::string channel_uuid;
+  EngineUuid channel_uuid;
   std::string channel_name;
-  std::string payload_descriptor_uuid;
-  std::string queue_policy_uuid;
+  EngineUuid payload_descriptor_uuid;
+  // Nil selects the built-in ephemeral profile; it is not a catalog policy identity.
+  EngineUuid queue_policy_uuid;
   std::string state;
   std::string visibility = "normal";
   std::string redaction_policy = "none";
 };
 
 struct EventSubscriptionShape {
-  std::string subscription_uuid;
-  std::string session_uuid;
-  std::string principal_uuid;
-  std::string channel_uuid;
+  EngineUuid subscription_uuid;
+  EngineUuid session_uuid;
+  EngineUuid principal_uuid;
+  EngineUuid channel_uuid;
   std::string delivery_profile;
   std::string state;
 };
 
 struct EventPublicationShape {
-  std::string event_uuid;
-  std::string channel_uuid;
-  std::string payload_descriptor_uuid;
+  EngineUuid event_uuid;
+  EngineUuid channel_uuid;
+  EngineUuid payload_descriptor_uuid;
   std::string payload;
   std::string redaction_state = "clean";
-  std::string source_object_uuid;
+  EngineUuid source_object_uuid;
   std::uint64_t local_transaction_id = 0;
   std::uint64_t event_sequence = 0;
   std::string state;
@@ -111,7 +112,7 @@ EnginePollEventDeliveryResult EnginePollEventDelivery(const EnginePollEventDeliv
 
 struct EngineAcknowledgeEventDeliveryRequest : EngineApiRequest {};
 struct EngineAcknowledgeEventDeliveryResult : EngineApiResult {
-  std::string acknowledgement_uuid;
+  EngineUuid acknowledgement_uuid;
 };
 EngineAcknowledgeEventDeliveryResult EngineAcknowledgeEventDelivery(const EngineAcknowledgeEventDeliveryRequest& request);
 

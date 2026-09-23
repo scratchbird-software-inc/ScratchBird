@@ -9,6 +9,8 @@
 #include "management/memory_management_api.hpp"
 
 #include "api_diagnostics.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "mga_relation_store/mga_update_durable_frame_store_internal.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "background_memory_reclamation.hpp"
 #include "disk_device.hpp"
@@ -983,6 +985,32 @@ std::string JoinPageTypes(const std::vector<disk::PageType>& page_types) {
   return out.str();
 }
 
+bool ValidateMemoryCatalogRecord(const std::string& record, std::string* record_key = nullptr) {
+  std::vector<std::string> fields, key;
+  std::vector<std::pair<std::string, std::string>> identities;
+  if (!DecodeMgaMetadataFields(record, &fields) || fields.size() != 4 ||
+      fields[0] != "memory.catalog.v2" || !DecodeMgaMetadataFields(fields[1], &key) ||
+      key.size() < 3 || !DecodeMetadataPairs(fields[2], &identities)) return false;
+  const bool residency = key[0] == kObjectResidencyCatalogName;
+  const bool migration = key[0] == kPolicyMigrationCatalogName;
+  const bool report = key[0] == kReportCatalogName;
+  const bool rate = key[0] == kRateLimitCatalogName;
+  if ((!residency && !migration && !report && !rate) ||
+      key.size() != (migration ? 5u : 3u)) return false;
+  EngineUuid identity;
+  if (!ReadMetadataUuid(key[1], &identity) ||
+      ((residency || migration) && !ReadMetadataUuid(key[2], &identity))) return false;
+  if (identities.size() != (rate ? 0u : 1u)) return false;
+  if (!rate) {
+    const std::string expected = residency ? "filespace_uuid" :
+        migration ? "profile_uuid" : "recommendation_uuid";
+    if (identities[0].first != expected ||
+        !ReadMetadataUuid(identities[0].second, &identity, true)) return false;
+  }
+  if (record_key) *record_key = fields[1];
+  return true;
+}
+
 EngineApiDiagnostic ReadCatalogLines(const std::filesystem::path& path,
                                      const char* operation,
                                      std::vector<std::string>* lines) {
@@ -1010,21 +1038,35 @@ EngineApiDiagnostic ReadCatalogLines(const std::filesystem::path& path,
                             "MEMORY.CATALOG_OPEN_FAILED",
                             "memory_catalog_open_failed");
   }
-  std::string line;
-  while (std::getline(in, line)) {
-    if (!line.empty()) lines->push_back(line);
+  const auto size = std::filesystem::file_size(path, ec);
+  if (ec || size > kMgaMetadataMaximumBytes) {
+    return MemoryDiagnostic(operation, "MEMORY.CATALOG_READ_FAILED", "memory_catalog_extent_invalid");
   }
-  if (!in.eof()) {
-    return MemoryDiagnostic(operation,
-                            "MEMORY.CATALOG_READ_FAILED",
-                            "memory_catalog_read_failed");
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+  in.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
+  std::vector<std::string> records;
+  if (!in || in.peek() != std::char_traits<char>::eof() ||
+      !DecodeMgaMetadataStream(bytes, &records)) {
+    return MemoryDiagnostic(operation, "MEMORY.CATALOG_READ_FAILED", "memory_catalog_binary_frame_invalid");
   }
+  for (const auto& record : records) {
+    if (!ValidateMemoryCatalogRecord(record))
+      return MemoryDiagnostic(operation, "MEMORY.CATALOG_READ_FAILED", "memory_catalog_record_invalid");
+  }
+  lines->swap(records);
   return {};
 }
 
 EngineApiDiagnostic PersistCatalogLines(const std::filesystem::path& path,
                                         const std::vector<std::string>& lines,
                                         const char* operation) {
+  std::size_t total_bytes = 0;
+  for (const auto& record : lines) {
+    if (!ValidateMemoryCatalogRecord(record) ||
+        record.size() > kMgaMetadataMaximumBytes - total_bytes)
+      return MemoryDiagnostic(operation, "MEMORY.CATALOG_WRITE_FAILED", "memory_catalog_record_or_extent_invalid");
+    total_bytes += record.size();
+  }
   std::error_code ec;
   const auto parent = path.parent_path();
   if (!parent.empty()) {
@@ -1058,9 +1100,8 @@ EngineApiDiagnostic PersistCatalogLines(const std::filesystem::path& path,
                               "MEMORY.CATALOG_TEMP_OPEN_FAILED",
                               "memory_catalog_temp_open_failed");
     }
-    out << "format=ScratchBirdMemoryPolicyCatalog|version=1\n";
     for (const auto& line : lines) {
-      out << line << '\n';
+      out.write(line.data(), line.size());
     }
     out.close();
     if (!out) {
@@ -1098,20 +1139,26 @@ EngineApiDiagnostic UpsertCatalogLine(const std::filesystem::path& path,
                                       std::string line,
                                       const char* operation,
                                       EngineApiU64* record_count) {
+  std::string supplied_key;
+  if (!ValidateMemoryCatalogRecord(line, &supplied_key) || supplied_key != key_prefix)
+    return MemoryDiagnostic(operation, "MEMORY.CATALOG_WRITE_FAILED", "memory_catalog_record_key_invalid");
+  namespace durable = mga_update_durable_detail;
+  const auto parent = path.parent_path().string();
+  if ((!parent.empty() && !durable::DmlUpdateDurableEnsureDirectory(parent)))
+    return MemoryDiagnostic(operation, "MEMORY.CATALOG_PARENT_CREATE_FAILED", "memory_catalog_parent_create_failed");
+  durable::DmlUpdateDurableFileLock lock(path.string());
+  if (!lock.ok()) return MemoryDiagnostic(operation, "MEMORY.CATALOG_LOCK_FAILED", "memory_catalog_lock_failed");
   std::vector<std::string> lines;
   if (auto diagnostic = ReadCatalogLines(path, operation, &lines);
       !diagnostic.code.empty()) {
     return diagnostic;
   }
-  lines.erase(std::remove_if(lines.begin(),
-                             lines.end(),
-                             [](const std::string& existing) {
-                               return existing.rfind("format=", 0) == 0;
-                             }),
-              lines.end());
   bool replaced = false;
   for (auto& existing : lines) {
-    if (existing.rfind(key_prefix, 0) == 0) {
+    std::vector<std::string> fields;
+    if (!DecodeMgaMetadataFields(existing, &fields) || fields.size() != 4)
+      return MemoryDiagnostic(operation, "MEMORY.CATALOG_READ_FAILED", "memory_catalog_record_invalid");
+    if (fields[1] == key_prefix) {
       existing = std::move(line);
       replaced = true;
       break;
@@ -1137,14 +1184,9 @@ EngineApiDiagnostic PersistObjectResidencyPolicy(
   }
   const char* operation = EngineMemoryManagementOperationName(request.memory_operation);
   const auto path = MemoryCatalogPath(request.context, kObjectResidencyCatalogName);
-  const std::string key =
-      std::string("catalog=") + kObjectResidencyCatalogName +
-      "|database_uuid=" + request.context.database_uuid +
-      "|object_uuid=" + descriptor.object_uuid + "|";
+  const std::string key = EncodeMgaMetadataFields({kObjectResidencyCatalogName, MetadataUuidBytes(request.context.database_uuid), MetadataUuidBytes(descriptor.object_uuid)});
   std::ostringstream line;
-  line << key
-       << "object_kind=" << descriptor.object_kind
-       << "|filespace_uuid=" << descriptor.filespace_uuid
+  line << "object_kind=" << descriptor.object_kind
        << "|residency_class="
        << EngineMemoryObjectResidencyClassName(descriptor.residency_class)
        << "|page_types=" << JoinPageTypes(descriptor.page_types)
@@ -1157,8 +1199,10 @@ EngineApiDiagnostic PersistObjectResidencyPolicy(
        << "|restart_warmup_manifest_persisted="
        << (descriptor.restart_warmup_manifest_persistence_requested ? "true" : "false")
        << "|local_transaction_id=" << request.context.local_transaction_id;
+  const auto record = EncodeMgaMetadataFields({"memory.catalog.v2", key,
+      EncodeMetadataPairs({{"filespace_uuid", MetadataUuidBytes(descriptor.filespace_uuid)}}), line.str()});
   EngineApiU64 count = 0;
-  if (auto diagnostic = UpsertCatalogLine(path, key, line.str(), operation, &count);
+  if (auto diagnostic = UpsertCatalogLine(path, key, record, operation, &count);
       !diagnostic.code.empty()) {
     return diagnostic;
   }
@@ -1188,13 +1232,9 @@ EngineApiDiagnostic PersistAutomationReportCatalog(
   }
   const char* operation = EngineMemoryManagementOperationName(request.memory_operation);
   const auto path = MemoryCatalogPath(request.context, kReportCatalogName);
-  const std::string key =
-      std::string("catalog=") + kReportCatalogName +
-      "|database_uuid=" + request.context.database_uuid +
-      "|report_generation=" + std::to_string(descriptor.report_generation) + "|";
+  const std::string key = EncodeMgaMetadataFields({kReportCatalogName, MetadataUuidBytes(request.context.database_uuid), std::to_string(descriptor.report_generation)});
   std::ostringstream line;
-  line << key
-       << "recommendation_uuid=" << descriptor.recommendation_uuid
+  line
        << "|recommendation_generation=" << descriptor.recommendation_generation
        << "|report_bounded=" << (descriptor.report_bounded ? "true" : "false")
        << "|report_redaction_validated="
@@ -1206,8 +1246,10 @@ EngineApiDiagnostic PersistAutomationReportCatalog(
        << "|guardrail_policy_resolved="
        << (descriptor.guardrail_policy_resolved ? "true" : "false")
        << "|local_transaction_id=" << request.context.local_transaction_id;
+  const auto record = EncodeMgaMetadataFields({"memory.catalog.v2", key,
+      EncodeMetadataPairs({{"recommendation_uuid", MetadataUuidBytes(descriptor.recommendation_uuid)}}), line.str()});
   EngineApiU64 count = 0;
-  if (auto diagnostic = UpsertCatalogLine(path, key, line.str(), operation, &count);
+  if (auto diagnostic = UpsertCatalogLine(path, key, record, operation, &count);
       !diagnostic.code.empty()) {
     return diagnostic;
   }
@@ -1230,13 +1272,9 @@ EngineApiDiagnostic PersistRateLimitPolicy(
   }
   const char* operation = EngineMemoryManagementOperationName(request.memory_operation);
   const auto path = MemoryCatalogPath(request.context, kRateLimitCatalogName);
-  const std::string key =
-      std::string("catalog=") + kRateLimitCatalogName +
-      "|database_uuid=" + request.context.database_uuid +
-      "|limit_class=" + EngineMemoryRateLimitClassName(descriptor.limit_class) + "|";
+  const std::string key = EncodeMgaMetadataFields({kRateLimitCatalogName, MetadataUuidBytes(request.context.database_uuid), EngineMemoryRateLimitClassName(descriptor.limit_class)});
   std::ostringstream line;
-  line << key
-       << "action=" << EngineMemoryRateLimitActionName(descriptor.action)
+  line << "action=" << EngineMemoryRateLimitActionName(descriptor.action)
        << "|limit_per_window=" << descriptor.limit_per_window
        << "|window_seconds=" << descriptor.window_seconds
        << "|policy_generation=" << descriptor.policy_generation
@@ -1244,8 +1282,10 @@ EngineApiDiagnostic PersistRateLimitPolicy(
        << "|integrity_event=" << (descriptor.integrity_event ? "true" : "false")
        << "|corruption_event=" << (descriptor.corruption_event ? "true" : "false")
        << "|local_transaction_id=" << request.context.local_transaction_id;
+  const auto record = EncodeMgaMetadataFields({"memory.catalog.v2", key,
+      EncodeMetadataPairs({}), line.str()});
   EngineApiU64 count = 0;
-  if (auto diagnostic = UpsertCatalogLine(path, key, line.str(), operation, &count);
+  if (auto diagnostic = UpsertCatalogLine(path, key, record, operation, &count);
       !diagnostic.code.empty()) {
     return diagnostic;
   }
@@ -1268,15 +1308,9 @@ EngineApiDiagnostic PersistPolicyMigrationCatalog(
   }
   const char* operation = EngineMemoryManagementOperationName(request.memory_operation);
   const auto path = MemoryCatalogPath(request.context, kPolicyMigrationCatalogName);
-  const std::string key =
-      std::string("catalog=") + kPolicyMigrationCatalogName +
-      "|database_uuid=" + request.context.database_uuid +
-      "|policy_uuid=" + descriptor.policy_uuid +
-      "|target_policy_version=" + std::to_string(descriptor.target_policy_version) +
-      "|target_schema_version=" + std::to_string(descriptor.target_schema_version) + "|";
+  const std::string key = EncodeMgaMetadataFields({kPolicyMigrationCatalogName, MetadataUuidBytes(request.context.database_uuid), MetadataUuidBytes(descriptor.policy_uuid), std::to_string(descriptor.target_policy_version), std::to_string(descriptor.target_schema_version)});
   std::ostringstream line;
-  line << key
-       << "profile_uuid=" << descriptor.profile_uuid
+  line
        << "|source_policy_version=" << descriptor.source_policy_version
        << "|source_schema_version=" << descriptor.source_schema_version
        << "|policy_schema_validated="
@@ -1300,8 +1334,10 @@ EngineApiDiagnostic PersistPolicyMigrationCatalog(
        << "|recovery_checkpoint_persisted="
        << (descriptor.recovery_checkpoint_persistence_requested ? "true" : "false")
        << "|local_transaction_id=" << request.context.local_transaction_id;
+  const auto record = EncodeMgaMetadataFields({"memory.catalog.v2", key,
+      EncodeMetadataPairs({{"profile_uuid", MetadataUuidBytes(descriptor.profile_uuid)}}), line.str()});
   EngineApiU64 count = 0;
-  if (auto diagnostic = UpsertCatalogLine(path, key, line.str(), operation, &count);
+  if (auto diagnostic = UpsertCatalogLine(path, key, record, operation, &count);
       !diagnostic.code.empty()) {
     return diagnostic;
   }

@@ -22,7 +22,7 @@ namespace scratchbird::engine::internal_api {
 // packages are not authority here; callers provide UUID-resolved internal API
 // requests and receive UUID-first catalog identities.
 
-inline constexpr const char* kCatalogObjectLifecycleEventMagic = "SBCATOBJ1";
+inline constexpr const char* kCatalogObjectLifecycleEventMagic = "SBCAT002";
 
 inline constexpr const char* kCatalogObjectDiagnosticUuidRequired = "CATALOG.OBJECT.UUID_REQUIRED";
 inline constexpr const char* kCatalogObjectDiagnosticKindRequired = "CATALOG.OBJECT.KIND_REQUIRED";
@@ -60,24 +60,26 @@ inline constexpr const char* kCatalogConstraintDiagnosticDependencyInvalid = "CA
 struct EngineCatalogObjectRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string object_uuid;
+  EngineUuid object_uuid;
   std::string object_kind;
-  std::string schema_uuid;
-  std::string owner_principal_uuid;
+  EngineUuid schema_uuid;
+  EngineUuid owner_principal_uuid;
   std::string lifecycle_state = "active";
   std::uint64_t definition_epoch = 0;
   std::uint64_t metadata_epoch = 0;
   std::string payload;
+  EngineUuid synonym_target_uuid;
+  std::string synonym_target_class;
   bool deleted = false;
 };
 
 struct EngineCatalogNameRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string name_entry_uuid;
-  std::string object_uuid;
+  EngineUuid name_entry_uuid;
+  EngineUuid object_uuid;
   std::string object_kind;
-  std::string schema_uuid;
+  EngineUuid schema_uuid;
   std::string language_tag = "en";
   std::string name_class = "primary";
   std::string identifier_profile_uuid = "sbsql_v3";
@@ -93,9 +95,9 @@ struct EngineCatalogNameRecord {
 struct EngineCatalogDependencyRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string source_uuid;
+  EngineUuid source_uuid;
   std::string source_kind;
-  std::string dependency_uuid;
+  EngineUuid dependency_uuid;
   std::string dependency_kind;
   std::uint64_t metadata_epoch = 0;
   bool deleted = false;
@@ -104,8 +106,8 @@ struct EngineCatalogDependencyRecord {
 struct EngineCatalogColumnMetadataRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string column_uuid;
-  std::string owner_object_uuid;
+  EngineUuid column_uuid;
+  EngineUuid owner_object_uuid;
   std::string descriptor_kind;
   std::string canonical_type_name;
   std::string default_expression_envelope;
@@ -118,19 +120,19 @@ struct EngineCatalogColumnMetadataRecord {
 struct EngineCatalogConstraintDescriptorRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string constraint_uuid;
+  EngineUuid constraint_uuid;
   std::string constraint_class;
-  std::string owner_object_uuid;
-  std::string name_ref_uuid;
-  std::string constraint_policy_version_uuid;
+  EngineUuid owner_object_uuid;
+  EngineUuid name_ref_uuid;
+  EngineUuid constraint_policy_version_uuid;
   std::string enforcement_timing = "immediate";
   std::string validation_state = "unvalidated";
   std::string trust_state = "untrusted";
   std::string support_requirement = "optional";
-  std::string predicate_sblr_uuid;
-  std::string diagnostic_profile_uuid;
-  std::string metrics_profile_uuid;
-  std::string conformance_profile_uuid;
+  EngineUuid predicate_sblr_uuid;
+  EngineUuid diagnostic_profile_uuid;
+  EngineUuid metrics_profile_uuid;
+  EngineUuid conformance_profile_uuid;
   std::string constraint_hash;
   std::string canonical_constraint_envelope;
   std::uint64_t metadata_epoch = 0;
@@ -140,14 +142,14 @@ struct EngineCatalogConstraintDescriptorRecord {
 struct EngineCatalogKeyDescriptorRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string key_descriptor_uuid;
-  std::string constraint_uuid;
+  EngineUuid key_descriptor_uuid;
+  EngineUuid constraint_uuid;
   std::string key_class;
-  std::string owner_object_uuid;
+  EngineUuid owner_object_uuid;
   std::string component_order_hash;
   std::string comparison_profile_hash;
   std::string null_policy = "not_applicable";
-  std::string canonical_encoding_uuid;
+  EngineUuid canonical_encoding_uuid;
   bool candidate_reference_allowed = true;
   std::string key_state = "active";
   std::string key_hash;
@@ -158,12 +160,12 @@ struct EngineCatalogKeyDescriptorRecord {
 struct EngineCatalogConstraintSubjectRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string subject_uuid;
-  std::string constraint_uuid;
+  EngineUuid subject_uuid;
+  EngineUuid constraint_uuid;
   std::string subject_kind;
-  std::string subject_object_uuid;
+  EngineUuid subject_object_uuid;
   std::string subject_descriptor;
-  std::string expression_sblr_uuid;
+  EngineUuid expression_sblr_uuid;
   std::uint32_t ordinal = 0;
   std::uint64_t metadata_epoch = 0;
   bool deleted = false;
@@ -172,11 +174,11 @@ struct EngineCatalogConstraintSubjectRecord {
 struct EngineCatalogConstraintDependencyRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string dependency_uuid;
-  std::string constraint_uuid;
+  EngineUuid dependency_uuid;
+  EngineUuid constraint_uuid;
   std::string dependency_kind;
-  std::string dependency_object_uuid;
-  std::string dependency_version_uuid;
+  EngineUuid dependency_object_uuid;
+  EngineUuid dependency_version_uuid;
   std::string invalidation_action;
   std::string dependency_hash;
   std::uint64_t metadata_epoch = 0;
@@ -186,9 +188,9 @@ struct EngineCatalogConstraintDependencyRecord {
 struct EngineCatalogConstraintSupportStructureRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string support_binding_uuid;
-  std::string constraint_uuid;
-  std::string support_uuid;
+  EngineUuid support_binding_uuid;
+  EngineUuid constraint_uuid;
+  EngineUuid support_uuid;
   std::string support_class;
   std::string support_family;
   std::string coverage_scope_hash;
@@ -199,6 +201,21 @@ struct EngineCatalogConstraintSupportStructureRecord {
   std::string binding_hash;
   std::uint64_t metadata_epoch = 0;
   bool deleted = false;
+};
+
+struct EngineCatalogRetireNamesRecord {
+  std::uint64_t creator_tx = 0;
+  EngineUuid object_uuid;
+  std::uint64_t metadata_epoch = 0;
+};
+
+struct EngineCatalogCacheInvalidationRecord {
+  std::uint64_t creator_tx = 0;
+  EngineUuid object_uuid;
+  std::string operation_id;
+  std::uint64_t metadata_epoch = 0;
+  std::uint64_t name_resolution_epoch = 0;
+  std::uint64_t resource_epoch = 0;
 };
 
 struct EngineCatalogObjectLifecycleState {
@@ -219,7 +236,7 @@ struct EngineCatalogSynonymResolutionResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
   EngineCatalogObjectRecord final_object;
-  std::vector<std::string> synonym_chain;
+  std::vector<EngineUuid> synonym_chain;
 };
 
 struct EngineLoadCatalogObjectLifecycleStateResult {

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "storage/storage_management_api.hpp"
 
 #include <cstdlib>
@@ -37,7 +38,7 @@ bool HasEvidence(const engine::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) {
       return true;
     }
   }
@@ -48,8 +49,8 @@ engine::EngineRequestContext Context(bool mutation_right = false) {
   engine::EngineRequestContext context;
   context.trust_mode = engine::EngineTrustMode::embedded_in_process;
   context.security_context_present = true;
-  context.database_uuid.canonical = "019e3000-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical = "019e3000-0000-7000-8000-000000000002";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e3000-0000-7000-8000-000000000001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e3000-0000-7000-8000-000000000002");
   context.local_transaction_id = mutation_right ? 7001 : 0;
   context.catalog_generation_id = 12;
   context.resource_epoch = 34;
@@ -63,9 +64,9 @@ engine::EngineRequestContext Context(bool mutation_right = false) {
 
 engine::EngineStorageTierMigrationDescriptor Descriptor() {
   engine::EngineStorageTierMigrationDescriptor descriptor;
-  descriptor.storage_tier_policy_uuid.canonical = "019e3000-0000-7000-8000-000000000010";
-  descriptor.source_tier_uuid.canonical = "019e3000-0000-7000-8000-000000000011";
-  descriptor.target_tier_uuid.canonical = "019e3000-0000-7000-8000-000000000012";
+  descriptor.storage_tier_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019e3000-0000-7000-8000-000000000010");
+  descriptor.source_tier_uuid = scratchbird::tests::FixtureUuidLiteral("019e3000-0000-7000-8000-000000000011");
+  descriptor.target_tier_uuid = scratchbird::tests::FixtureUuidLiteral("019e3000-0000-7000-8000-000000000012");
   descriptor.source_tier_class = engine::EngineStorageTierClass::hot;
   descriptor.target_tier_class = engine::EngineStorageTierClass::cold;
   descriptor.target_filespace_role = filespace::FilespaceRole::secondary_data;
@@ -91,7 +92,7 @@ engine::EngineStorageTierMigrationRequest Request(
   request.operation_id = engine::EngineStorageTierMigrationOperationName(operation);
   request.tier_operation = operation;
   request.target_object.object_kind = "filespace";
-  request.target_object.uuid.canonical = "019e3000-0000-7000-8000-000000000020";
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e3000-0000-7000-8000-000000000020");
   request.descriptor = Descriptor();
   return request;
 }

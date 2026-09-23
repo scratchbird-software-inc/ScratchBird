@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -70,7 +71,8 @@ bool MetricHasLabel(const scratchbird::core::metrics::MetricValue& metric,
                     std::string_view key,
                     std::string_view value) {
   for (const auto& label : metric.labels) {
-    if (label.key == key && label.value == value) {
+    if (label.key == key && std::holds_alternative<std::string>(label.value) &&
+        std::get<std::string>(label.value) == value) {
       return true;
     }
   }
@@ -88,7 +90,8 @@ bool HasGaugeValue(std::string_view family,
         MetricHasLabel(metric, "operation", operation) &&
         MetricHasLabel(metric, "result", result) &&
         MetricHasLabel(metric, "reason", reason) &&
-        metric.value == value) {
+        std::holds_alternative<double>(metric.value) &&
+        std::get<double>(metric.value) == value) {
       return true;
     }
   }
@@ -314,8 +317,8 @@ native::NativeCompileRequest NativeRequest(
     bool required) {
   native::NativeCompileRequest request;
   request.module_payload = "sblr:predicate:ceic_061_col_i32_gt_const";
-  request.target_object_uuid = "018f0000-0000-7000-8000-000000006161";
-  request.principal_uuid = "018f0000-0000-7000-8000-000000006162";
+  request.target_object_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000006161");
+  request.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000006162");
   request.database_path = "/tmp/sb_ceic_061_llvm_memory";
   request.catalog_generation_id = 6101;
   request.security_epoch = 6102;
@@ -326,7 +329,7 @@ native::NativeCompileRequest NativeRequest(
   request.policy_profiles.push_back(
       required ? "native_compile.jit_required_for_declared_units"
                : "native_compile.jit_optional");
-  request.descriptors.push_back({"018f0000-0000-7000-8000-000000006163",
+  request.descriptors.push_back({scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000006163"),
                                  "table_descriptor",
                                  "sys.ceic_061",
                                  "columns:i32"});
@@ -334,6 +337,10 @@ native::NativeCompileRequest NativeRequest(
   request.memory_accounting.foreign_ledger = foreign_ledger;
   request.memory_accounting.scope_chain = ScopeChain(required ? "native-required"
                                                               : "native-optional");
+  request.memory_accounting.owner_id = required ? "ceic-061-native-required-owner"
+                                                 : "ceic-061-native-optional-owner";
+  request.memory_accounting.owning_scope = required ? "ceic-061-native-required-scope"
+                                                     : "ceic-061-native-optional-scope";
   request.memory_accounting.operation_id = required
                                                ? "ceic-061-native-required"
                                                : "ceic-061-native-optional";

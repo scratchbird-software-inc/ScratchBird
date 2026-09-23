@@ -1,3 +1,4 @@
+#include "wire/public_result_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -13224,6 +13225,9 @@ bool IsFirebirdRestoreSystemGeneratorMaintenanceBlock(std::string_view sql_text)
 }
 
 std::string TextLineValueLocal(std::string_view payload, std::string_view key) {
+  if (payload.starts_with(scratchbird::wire::public_result::kMagic))
+    return scratchbird::wire::public_result::Value(payload, key).value_or("");
+
   std::size_t start = 0;
   const std::string prefix = std::string(key) + "=";
   while (start <= payload.size()) {
@@ -13238,6 +13242,14 @@ std::string TextLineValueLocal(std::string_view payload, std::string_view key) {
 }
 
 std::map<std::string, std::string> ParseSemicolonFields(std::string_view row) {
+  if (row.starts_with(scratchbird::wire::public_result::kMagic)) {
+    std::vector<scratchbird::wire::public_result::Field> fields;
+    if (!scratchbird::wire::public_result::Decode(row, &fields)) return {};
+    std::map<std::string, std::string> values;
+    for (auto& field : fields) values.emplace(std::move(field.name), std::move(field.value));
+    return values;
+  }
+
   std::map<std::string, std::string> fields;
   std::size_t start = 0;
   while (start <= row.size()) {
@@ -13256,6 +13268,14 @@ std::map<std::string, std::string> ParseSemicolonFields(std::string_view row) {
 
 std::vector<std::pair<std::string, std::string>> ParseSemicolonFieldOrder(
     std::string_view row) {
+  if (row.starts_with(scratchbird::wire::public_result::kMagic)) {
+    std::vector<scratchbird::wire::public_result::Field> fields;
+    if (!scratchbird::wire::public_result::Decode(row, &fields)) return {};
+    std::vector<std::pair<std::string, std::string>> values;
+    for (auto& field : fields) values.emplace_back(std::move(field.name), std::move(field.value));
+    return values;
+  }
+
   std::vector<std::pair<std::string, std::string>> fields;
   std::size_t start = 0;
   while (start <= row.size()) {
@@ -13407,6 +13427,30 @@ struct ServerRowRecord {
 
 std::vector<ServerRowRecord> ServerRowRecords(std::string_view payload, std::uint64_t row_count) {
   std::map<std::uint64_t, ServerRowRecord> records_by_index;
+
+  if (payload.starts_with(scratchbird::wire::public_result::kMagic)) {
+    std::vector<scratchbird::wire::public_result::Field> fields;
+    if (!scratchbird::wire::public_result::Decode(payload, &fields)) return {};
+    for (const auto& field : fields) {
+      const bool is_row = field.name.starts_with("row[");
+      const bool is_metadata = field.name.starts_with("row_meta[");
+      if (!is_row && !is_metadata) continue;
+      const auto open = field.name.find('['); const auto close = field.name.find(']', open);
+      if (close != field.name.size() - 1) return {};
+      const auto index = ParseUnsignedText(std::string_view(field.name).substr(open + 1, close - open - 1));
+      if (!index || (is_row && field.kind != scratchbird::wire::public_result::Kind::row)) return {};
+      auto& record = records_by_index[*index];
+      auto& value = is_row ? record.row_text : record.row_meta_text;
+      if (!value.empty()) return {};
+      value = field.value;
+    }
+    std::vector<ServerRowRecord> records;
+    for (const auto& [index, record] : records_by_index) {
+      if (records.size() >= row_count || record.row_text.empty()) return {};
+      records.push_back(record);
+    }
+    return records;
+  }
   std::size_t start = 0;
   while (start <= payload.size()) {
     const auto end = payload.find('\n', start);

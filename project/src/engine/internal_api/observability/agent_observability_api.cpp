@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cctype>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 
 namespace scratchbird::engine::internal_api {
@@ -136,14 +137,32 @@ EngineApiDiagnostic InvalidCatalogUuidDiagnostic(std::string field_name) {
                                  true);
 }
 
+bool ReadEvidenceIdentity(std::string_view bytes, EngineUuid* identity) {
+  if (!identity || bytes.size() != 16) return false;
+  EngineUuid candidate;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), 16, candidate.bytes.begin());
+  if (!uuid::IsEngineIdentityUuid(candidate)) return false;
+  *identity = candidate;
+  return true;
+}
+
+EngineUuid ValidatedEvidenceIdentity(std::string_view bytes) {
+  EngineUuid identity;
+  // The collector validates every record before metrics or result publication.
+  // Empty optional references are represented by the nil binary identity.
+  if (!bytes.empty() && !ReadEvidenceIdentity(bytes, &identity))
+    throw std::invalid_argument("agent evidence identity was not validated");
+  return identity;
+}
+
 EngineApiDiagnostic ValidateOptionalEngineUuid(std::string_view value,
                                                platform::UuidKind kind,
                                                std::string field_name) {
   if (value.empty()) {
     return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
-  const auto parsed = uuid::ParseDurableEngineIdentityUuid(kind, std::string(value));
-  if (!parsed.ok()) {
+  EngineUuid identity;
+  if (!ReadEvidenceIdentity(value, &identity) || !uuid::MakeTypedUuid(kind, identity).ok()) {
     return InvalidCatalogUuidDiagnostic(std::move(field_name));
   }
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -195,12 +214,12 @@ metrics::MetricValidationResult RecordMetrics(const EngineAgentRuntimeEvidenceRe
   auto status = metrics::RecordAgentAction(record.agent_type_id, action, result);
   if (!status.ok) { return status; }
   if (IsFilespaceCapacityAgent(record.agent_type_id) && !record.filespace_uuid.empty()) {
-    status = metrics::RecordFilespaceAgentCapacityRequest(record.filespace_uuid, action, result);
+    status = metrics::RecordFilespaceAgentCapacityRequest(ValidatedEvidenceIdentity(record.filespace_uuid), action, result);
     if (!status.ok) { return status; }
   }
   if (IsPageAllocationAgent(record.agent_type_id) && !record.filespace_uuid.empty()) {
     status = metrics::RecordPageAllocationAgentRequest(
-        record.filespace_uuid,
+        ValidatedEvidenceIdentity(record.filespace_uuid),
         "data",
         action,
         result);
@@ -214,10 +233,10 @@ void AddCollectedRow(EngineCollectAgentRuntimeObservabilityResult* result,
   AddApiBehaviorRow(result,
                     {{"source_surface", record.source_surface.empty() ? "engine_api" : record.source_surface},
                      {"agent_type_id", record.agent_type_id},
-                     {"agent_uuid", record.agent_uuid},
-                     {"filespace_uuid", record.filespace_uuid},
-                     {"policy_uuid", record.policy_uuid},
-                     {"evidence_uuid", record.evidence_uuid},
+                     {"agent_uuid", ValidatedEvidenceIdentity(record.agent_uuid)},
+                     {"filespace_uuid", ValidatedEvidenceIdentity(record.filespace_uuid)},
+                     {"policy_uuid", ValidatedEvidenceIdentity(record.policy_uuid)},
+                     {"evidence_uuid", ValidatedEvidenceIdentity(record.evidence_uuid)},
                      {"evidence_kind", EvidenceKindOrDefault(record)},
                      {"action_id", ActionOrDefault(record)},
                      {"result_state", ResultStateOrDefault(record)},
@@ -386,7 +405,7 @@ EngineCollectAgentRuntimeObservabilityResult EngineCollectAgentRuntimeObservabil
     AddApiBehaviorEvidence(&result, "agent_observability_audit", EvidenceKindOrDefault(record));
     AddApiBehaviorEvidence(&result, "agent_observability_support_bundle", "redacted");
     if (!record.evidence_uuid.empty()) {
-      AddApiBehaviorEvidence(&result, "agent_evidence_uuid", record.evidence_uuid);
+      AddApiBehaviorEvidence(&result, "agent_evidence_uuid", ValidatedEvidenceIdentity(record.evidence_uuid));
     }
     result.diagnostics.push_back(MakeEngineApiDiagnostic(DiagnosticOrDefault(record),
                                                         "agent.observability.diagnostic",

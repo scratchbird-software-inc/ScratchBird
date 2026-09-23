@@ -10,10 +10,12 @@
 
 #include "api_diagnostics.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "crud_support/crud_store.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "descriptor_value_runtime.hpp"
 #include "uuid.hpp"
+#include "mga_relation_store/mga_binary_identity_codec.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -38,18 +40,17 @@ namespace {
 // construction. It consumes policy and descriptor authority but owns neither
 // transaction visibility nor finality.
 
-constexpr std::string_view kLegacyTextDescriptorUuid =
-    "2c010000-6368-7172-a163-746572000000";
-constexpr std::string_view kLegacyTextTypeUuid =
-    "2c010000-6368-7172-a163-746572000000";
-constexpr std::string_view kCanonicalTextDescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d718";
-constexpr std::string_view kCanonicalTextTypeUuid =
-    "019d0000-0000-7000-8000-00000000d719";
-constexpr std::string_view kCanonicalTextCodecUuid =
-    "019d0000-0000-7000-8000-00000000d71a";
+constexpr EngineUuid kLegacyTextDescriptorUuid{{0x2c,0x01,0x00,0x00,0x63,0x68,0x71,0x72,0xa1,0x63,0x74,0x65,0x72,0x00,0x00,0x00}};
+constexpr EngineUuid kLegacyTextTypeUuid{{0x2c,0x01,0x00,0x00,0x63,0x68,0x71,0x72,0xa1,0x63,0x74,0x65,0x72,0x00,0x00,0x00}};
+constexpr EngineUuid kCanonicalTextDescriptorUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x18}};
+constexpr EngineUuid kCanonicalTextTypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x19}};
+constexpr EngineUuid kCanonicalTextCodecUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x1a}};
 constexpr std::string_view kCanonicalTextCodecId =
     "datatype.text.utf8.v1";
+
+constexpr EngineUuid kCanonicalTextDescriptorIdentity{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x18}};
+constexpr EngineUuid kCanonicalTextTypeIdentity{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x19}};
+constexpr EngineUuid kCanonicalTextCodecIdentity{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x1a}};
 
 EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -90,119 +91,38 @@ std::string RelationDescriptorLowerAscii(std::string value) {
   return value;
 }
 
-std::map<std::string, std::string> RelationDescriptorFields(
-    const std::string& descriptor) {
-  std::map<std::string, std::string> fields;
-  std::string current;
-  auto flush = [&fields](std::string part) {
-    part = RelationDescriptorTrimAscii(std::move(part));
-    if (part.empty()) { return; }
-    const auto equals = part.find('=');
-    if (equals == std::string::npos) {
-      fields[RelationDescriptorLowerAscii(std::move(part))] = "true";
-      return;
-    }
-    fields[RelationDescriptorLowerAscii(
-        RelationDescriptorTrimAscii(part.substr(0, equals)))] =
-            RelationDescriptorTrimAscii(part.substr(equals + 1));
-  };
-  for (char ch : descriptor) {
-    if (ch == ';') {
-      flush(current);
-      current.clear();
-    } else {
-      current.push_back(ch);
-    }
-  }
-  flush(current);
-  return fields;
+std::map<std::string, std::string> RelationDescriptorFields(const std::string& descriptor) {
+  CatalogColumnMetadata fields;
+  return AdmitCatalogColumnMetadata(descriptor, &fields) ? fields.text
+      : std::map<std::string, std::string>{};
 }
-
 std::optional<std::map<std::string, std::string>>
 StrictRelationDescriptorFields(const std::string& descriptor) {
-  std::map<std::string, std::string> fields;
-  std::size_t start = 0;
-  while (start <= descriptor.size()) {
-    const std::size_t end = descriptor.find(';', start);
-    std::string part = RelationDescriptorTrimAscii(descriptor.substr(
-        start, end == std::string::npos ? std::string::npos : end - start));
-    const auto equals = part.find('=');
-    if (part.empty() || equals == std::string::npos || equals == 0) {
-      return std::nullopt;
-    }
-    const std::string key = RelationDescriptorLowerAscii(
-        RelationDescriptorTrimAscii(part.substr(0, equals)));
-    if (key.empty() || fields.find(key) != fields.end()) {
-      return std::nullopt;
-    }
-    fields.emplace(
-        key, RelationDescriptorTrimAscii(part.substr(equals + 1)));
-    if (end == std::string::npos) break;
-    start = end + 1;
+  CatalogColumnMetadata fields;
+  if (!DecodeCatalogColumnMetadata(descriptor, &fields)) return std::nullopt;
+  return fields.text;
+}
+bool ReplaceExactRelationDescriptorIdentities(std::string* descriptor,
+    const std::map<std::string, std::pair<EngineUuid, EngineUuid>>& replacements) {
+  CatalogColumnMetadata fields;
+  if (!descriptor || replacements.empty() || !DecodeCatalogColumnMetadata(*descriptor, &fields)) return false;
+  for (const auto& [key, replacement] : replacements) {
+    const auto it = fields.identities.find(key);
+    if (it == fields.identities.end() || it->second != replacement.first) return false;
+    it->second = replacement.second;
   }
-  return fields;
+  return EncodeCatalogColumnMetadata(fields, descriptor);
+}
+// Binary carriers only: fixed width bytes, never a textual UUID spelling.
+bool CanonicalNonNilMigrationUuid(const std::string_view bytes) {
+  EngineUuid id;
+  if (bytes.size() != 16) return false;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), 16, id.bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(id);
 }
 
-bool ReplaceExactRelationDescriptorIdentities(
-    std::string* descriptor,
-    const std::map<std::string,
-                   std::pair<std::string_view, std::string_view>>& replacements) {
-  if (descriptor == nullptr || replacements.empty()) return false;
-  struct Edit {
-    std::size_t begin{0};
-    std::size_t size{0};
-    std::string replacement;
-  };
-  std::vector<Edit> edits;
-  std::set<std::string> found;
-  std::size_t start = 0;
-  while (start <= descriptor->size()) {
-    const std::size_t end = descriptor->find(';', start);
-    const std::size_t part_end =
-        end == std::string::npos ? descriptor->size() : end;
-    const std::size_t equals = descriptor->find('=', start);
-    if (equals == std::string::npos || equals >= part_end) return false;
-    const std::string key = RelationDescriptorLowerAscii(
-        RelationDescriptorTrimAscii(
-            descriptor->substr(start, equals - start)));
-    if (key.empty()) return false;
-    const auto replacement = replacements.find(key);
-    if (replacement != replacements.end()) {
-      if (!found.emplace(key).second) return false;
-      std::size_t value_begin = equals + 1;
-      while (value_begin < part_end &&
-             std::isspace(static_cast<unsigned char>((*descriptor)[value_begin]))) {
-        ++value_begin;
-      }
-      std::size_t value_end = part_end;
-      while (value_end > value_begin &&
-             std::isspace(static_cast<unsigned char>((*descriptor)[value_end - 1]))) {
-        --value_end;
-      }
-      if (descriptor->substr(value_begin, value_end - value_begin) !=
-          replacement->second.first) {
-        return false;
-      }
-      edits.push_back({value_begin,
-                       value_end - value_begin,
-                       std::string(replacement->second.second)});
-    }
-    if (end == std::string::npos) break;
-    start = end + 1;
-  }
-  if (found.size() != replacements.size()) return false;
-  for (auto edit = edits.rbegin(); edit != edits.rend(); ++edit) {
-    descriptor->replace(edit->begin, edit->size, edit->replacement);
-  }
-  return true;
-}
-
-bool CanonicalNonNilMigrationUuid(const std::string_view value) {
-  if (value.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(value));
-  return parsed.ok() &&
-         !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == value;
+bool CanonicalNonNilMigrationUuid(const EngineUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool ExactCanonicalTextIdentityAuthorityAvailable(
@@ -218,7 +138,7 @@ bool ExactCanonicalTextIdentityAuthorityAvailable(
           context.datatype_catalog_snapshot_uuid,
           context.datatype_catalog_generation,
           context.datatype_registry_generation,
-          std::string(kCanonicalTextDescriptorUuid), 1);
+          kCanonicalTextDescriptorIdentity, 1);
   return identity.ok &&
          identity.row.catalog_snapshot_uuid ==
              context.datatype_catalog_snapshot_uuid &&
@@ -226,11 +146,11 @@ bool ExactCanonicalTextIdentityAuthorityAvailable(
              context.datatype_catalog_generation &&
          identity.row.registry_generation ==
              context.datatype_registry_generation &&
-         identity.row.descriptor_uuid == kCanonicalTextDescriptorUuid &&
+         identity.row.descriptor_uuid == kCanonicalTextDescriptorIdentity &&
          identity.row.descriptor_generation == 1 &&
-         identity.row.type_uuid == kCanonicalTextTypeUuid &&
+         identity.row.type_uuid == kCanonicalTextTypeIdentity &&
          identity.row.type_generation == 1 &&
-         identity.row.codec_uuid == kCanonicalTextCodecUuid &&
+         identity.row.codec_uuid == kCanonicalTextCodecIdentity &&
          identity.row.codec_id == kCanonicalTextCodecId &&
          identity.row.codec_version == 1 &&
          identity.row.codec_generation == 1 &&
@@ -255,7 +175,8 @@ bool ExactCanonicalTextIdentityAuthorityAvailable(
 
 bool ExactTextDescriptorResourceShape(
     const EngineRequestContext& context,
-    const std::map<std::string, std::string>& fields) {
+    const CatalogColumnMetadata& metadata) {
+  const auto& fields = metadata.text;
   static const std::set<std::string> kAllowedFields{
       "type", "canonical", "nullable", "default", "column_uuid",
       "datatype_descriptor_uuid", "datatype_descriptor_generation",
@@ -272,6 +193,9 @@ bool ExactTextDescriptorResourceShape(
     (void)value;
     if (!kAllowedFields.contains(key)) return false;
   }
+  for (const auto& [key, value] : metadata.identities) {
+    if (!kAllowedFields.contains(key)) return false;
+  }
   const auto type = fields.find("type");
   const auto canonical = fields.find("canonical");
   if ((type == fields.end()) == (canonical == fields.end())) return false;
@@ -285,18 +209,18 @@ bool ExactTextDescriptorResourceShape(
       fields.contains("nullability")) {
     return false;
   }
-  const auto charset = fields.find("charset_uuid");
+  const auto charset = metadata.identities.find("charset_uuid");
   const auto charset_generation = fields.find("charset_generation");
-  const auto collation = fields.find("collation_uuid");
+  const auto collation = metadata.identities.find("collation_uuid");
   const auto collation_generation = fields.find("collation_generation");
   const auto resource_epoch = fields.find("resource_epoch");
   const bool has_resource_authority =
-      charset != fields.end() || charset_generation != fields.end() ||
-      collation != fields.end() || collation_generation != fields.end() ||
+      charset != metadata.identities.end() || charset_generation != fields.end() ||
+      collation != metadata.identities.end() || collation_generation != fields.end() ||
       resource_epoch != fields.end();
   if (has_resource_authority) {
-    if (charset == fields.end() || charset_generation == fields.end() ||
-        collation == fields.end() || collation_generation == fields.end() ||
+    if (charset == metadata.identities.end() || charset_generation == fields.end() ||
+        collation == metadata.identities.end() || collation_generation == fields.end() ||
         resource_epoch == fields.end()) {
       return false;
     }
@@ -320,21 +244,19 @@ bool ExactTextDescriptorResourceShape(
         resource_epoch_value != context.resource_epoch) {
       return false;
     }
-    EngineUuid charset_uuid;
-    charset_uuid = charset->second;
+    const EngineUuid charset_uuid = charset->second;
     const auto live_charset = LookupEngineResourceDescriptorByUuid(
         context, charset_uuid, "charset");
-    EngineUuid collation_uuid;
-    collation_uuid = collation->second;
+    const EngineUuid collation_uuid = collation->second;
     const auto live_collation = LookupEngineResourceDescriptorByUuid(
         context, collation_uuid, "collation");
     if (!live_charset.ok || !live_collation.ok ||
         live_charset.resource_descriptor.resource_uuid !=
-            charset->second ||
+            charset_uuid ||
         live_collation.resource_descriptor.resource_uuid !=
-            collation->second ||
+            collation_uuid ||
         live_collation.resource_descriptor.parent_resource_uuid !=
-            charset->second ||
+            charset_uuid ||
         live_charset.resource_descriptor.family_epoch !=
             charset_generation_value ||
         live_collation.resource_descriptor.family_epoch !=
@@ -362,92 +284,52 @@ bool ExactTextDescriptorResourceShape(
   return true;
 }
 
-bool ExactCanonicalMigratedTextDescriptor(
-    const EngineRequestContext& context,
-    const std::string_view descriptor,
-    const std::string_view column_uuid) {
+bool ExactCanonicalMigratedTextDescriptor(const EngineRequestContext& context,
+    std::string_view descriptor, const EngineUuid& column_uuid) {
+  CatalogColumnMetadata fields;
   if (!ExactCanonicalTextIdentityAuthorityAvailable(context) ||
-      !CanonicalNonNilMigrationUuid(column_uuid)) {
-    return false;
-  }
-  const auto fields = StrictRelationDescriptorFields(std::string(descriptor));
-  if (!fields || !ExactTextDescriptorResourceShape(context, *fields)) {
-    return false;
-  }
-  const auto exact = [&](const std::string_view key,
-                         const std::string_view value) {
-    const auto found = fields->find(std::string(key));
-    return found != fields->end() && found->second == value;
+      !CanonicalNonNilMigrationUuid(column_uuid) ||
+      !DecodeCatalogColumnMetadata(descriptor, &fields) ||
+      !ExactTextDescriptorResourceShape(context, fields)) return false;
+  const auto exact = [&](const std::string& key, const std::string& value) {
+    const auto it = fields.text.find(key);
+    return it != fields.text.end() && it->second == value;
   };
-  return exact("column_uuid", column_uuid) &&
-         exact("datatype_descriptor_uuid", kCanonicalTextDescriptorUuid) &&
-         exact("datatype_descriptor_generation", "1") &&
-         exact("type_uuid", kCanonicalTextTypeUuid) &&
-         exact("type_generation", "1") &&
-         exact("codec_uuid", kCanonicalTextCodecUuid) &&
-         exact("codec_id", kCanonicalTextCodecId) &&
-         exact("codec_version", "1") &&
-         exact("codec_generation", "1") &&
-         exact("null_encoding", "1");
+  return BinaryCatalogUuid(fields, "column_uuid") == column_uuid &&
+      BinaryCatalogUuid(fields, "datatype_descriptor_uuid") == kCanonicalTextDescriptorUuid &&
+      BinaryCatalogUuid(fields, "type_uuid") == kCanonicalTextTypeUuid &&
+      BinaryCatalogUuid(fields, "codec_uuid") == kCanonicalTextCodecUuid &&
+      exact("datatype_descriptor_generation", "1") && exact("type_generation", "1") &&
+      exact("codec_id", std::string(kCanonicalTextCodecId)) && exact("codec_version", "1") &&
+      exact("codec_generation", "1") && exact("null_encoding", "1");
 }
-
 bool RewriteLegacyTextDescriptor(const EngineRequestContext& context,
-                                 std::string* descriptor,
-                                 const std::string_view column_uuid) {
-  if (descriptor == nullptr ||
-      !ExactCanonicalTextIdentityAuthorityAvailable(context) ||
-      !CanonicalNonNilMigrationUuid(column_uuid)) {
-    return false;
+    std::string* descriptor, const EngineUuid& column_uuid) {
+  CatalogColumnMetadata fields;
+  if (!descriptor || !ExactCanonicalTextIdentityAuthorityAvailable(context) ||
+      !CanonicalNonNilMigrationUuid(column_uuid) ||
+      !DecodeCatalogColumnMetadata(*descriptor, &fields) ||
+      !ExactTextDescriptorResourceShape(context, fields) ||
+      BinaryCatalogUuid(fields, "datatype_descriptor_uuid") != kLegacyTextDescriptorUuid ||
+      BinaryCatalogUuid(fields, "type_uuid") != kLegacyTextTypeUuid) return false;
+  if (fields.identities.contains("column_uuid") &&
+      BinaryCatalogUuid(fields, "column_uuid") != column_uuid) return false;
+  for (const char* key : {"datatype_descriptor_generation", "type_generation",
+       "codec_uuid", "codec_id", "codec_version", "codec_generation", "null_encoding"}) {
+    if (fields.text.contains(key) || fields.identities.contains(key)) return false;
   }
-  const auto fields = StrictRelationDescriptorFields(*descriptor);
-  if (!fields || !ExactTextDescriptorResourceShape(context, *fields)) {
-    return false;
-  }
-  const auto exact = [&](const std::string_view key,
-                         const std::string_view value) {
-    const auto found = fields->find(std::string(key));
-    return found != fields->end() && found->second == value;
-  };
-  if (!exact("datatype_descriptor_uuid", kLegacyTextDescriptorUuid) ||
-      !exact("type_uuid", kLegacyTextTypeUuid)) {
-    return false;
-  }
-  const auto carried_column = fields->find("column_uuid");
-  if (carried_column != fields->end() &&
-      carried_column->second != column_uuid) {
-    return false;
-  }
-  for (const std::string_view key : {
-           "datatype_descriptor_generation", "type_generation",
-           "codec_uuid", "codec_id", "codec_version",
-           "codec_generation", "null_encoding"}) {
-    if (fields->contains(std::string(key))) return false;
-  }
-  const std::map<std::string,
-                 std::pair<std::string_view, std::string_view>> replacements{
-      {"datatype_descriptor_uuid",
-       {kLegacyTextDescriptorUuid, kCanonicalTextDescriptorUuid}},
-      {"type_uuid", {kLegacyTextTypeUuid, kCanonicalTextTypeUuid}}};
-  if (!ReplaceExactRelationDescriptorIdentities(descriptor, replacements)) {
-    return false;
-  }
-  const auto append = [&](const std::string_view key,
-                          const std::string_view value) {
-    if (!descriptor->empty()) descriptor->push_back(';');
-    descriptor->append(key);
-    descriptor->push_back('=');
-    descriptor->append(value);
-  };
-  if (carried_column == fields->end()) append("column_uuid", column_uuid);
-  append("datatype_descriptor_generation", "1");
-  append("type_generation", "1");
-  append("codec_uuid", kCanonicalTextCodecUuid);
-  append("codec_id", kCanonicalTextCodecId);
-  append("codec_version", "1");
-  append("codec_generation", "1");
-  append("null_encoding", "1");
-  return ExactCanonicalMigratedTextDescriptor(
-      context, *descriptor, column_uuid);
+  fields.identities["column_uuid"] = column_uuid;
+  fields.identities["datatype_descriptor_uuid"] = kCanonicalTextDescriptorUuid;
+  fields.identities["type_uuid"] = kCanonicalTextTypeUuid;
+  fields.identities["codec_uuid"] = kCanonicalTextCodecUuid;
+  for (const char* key : {"datatype_descriptor_generation", "type_generation",
+       "codec_version", "codec_generation", "null_encoding"}) fields.text[key] = "1";
+  fields.text["codec_id"] = kCanonicalTextCodecId;
+  std::string encoded;
+  if (!EncodeCatalogColumnMetadata(fields, &encoded) ||
+      !ExactCanonicalMigratedTextDescriptor(context, encoded, column_uuid)) return false;
+  descriptor->swap(encoded);
+  return true;
 }
 
 EngineApiDiagnostic ContextualTextMgaDiagnostic(std::string detail) {
@@ -457,39 +339,24 @@ EngineApiDiagnostic ContextualTextMgaDiagnostic(std::string detail) {
       std::move(detail), true);
 }
 
-bool CopyContextualUuidV2(const std::string_view text,
+bool CopyContextualUuidV2(const EngineUuid& value,
                           MgaContextualTextUuidV2* output,
                           const bool allow_nil) {
-  if (output == nullptr) return false;
-  *output = {};
-  if (text.empty()) return allow_nil;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() ||
-      (!allow_nil && scratchbird::core::uuid::IsNilUuid(parsed.value)) ||
-      scratchbird::core::uuid::UuidToString(parsed.value) != text) {
-    return false;
-  }
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            output->begin());
+  if (!output || !(core::uuid::IsEngineIdentityUuid(value) ||
+                   (allow_nil && value.is_nil()))) return false;
+  *output = value.bytes;
   return true;
 }
 
-std::string ContextualUuidTextV2(const MgaContextualTextUuidV2& value) {
-  constexpr char kHex[] = "0123456789abcdef";
-  if (std::ranges::none_of(
-          value, [](const std::uint8_t byte) { return byte != 0; })) {
-    return {};
-  }
-  std::string text;
-  text.reserve(36);
-  for (std::size_t index = 0; index != value.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      text.push_back('-');
-    }
-    text.push_back(kHex[value[index] >> 4]);
-    text.push_back(kHex[value[index] & 0x0f]);
-  }
-  return text;
+bool CopyContextualUuidV2(const std::string_view bytes,
+    MgaContextualTextUuidV2* output, const bool allow_nil) {
+  if (bytes.size() != 16) return false;
+  EngineUuid id;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), 16, id.bytes.begin());
+  return CopyContextualUuidV2(id, output, allow_nil);
+}
+EngineUuid ContextualUuidNativeV2(const MgaContextualTextUuidV2& value) {
+  return EngineUuid{value};
 }
 
 bool ParseCanonicalPositiveU64(
@@ -569,7 +436,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
   output->public_projection.columns.reserve(relation.columns.size());
   output->projected_columns.reserve(relation.columns.size());
   std::set<std::uint32_t> ordinals;
-  std::set<std::string> column_uuids;
+  std::set<EngineUuid> column_uuids;
   for (const auto& column : relation.columns) {
     EnginePublicRelationProjectionColumnV3 projected;
     MgaContextualTextProjectedColumnV2 contextual;
@@ -610,7 +477,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
 
     std::optional<EngineResolvedResourceDescriptor> charset;
     std::optional<EngineResolvedResourceDescriptor> collation;
-    if (!column.charset_uuid.empty()) {
+    if (!column.charset_uuid.is_nil()) {
       EngineUuid requested;
       requested = column.charset_uuid;
       const auto live = LookupEngineResourceDescriptorByUuid(
@@ -636,7 +503,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
       projected.charset_max_bytes = charset->max_bytes;
       if (charset->variable_width) projected.attributes |= 0x08u;
     }
-    if (!column.collation_uuid.empty()) {
+    if (!column.collation_uuid.is_nil()) {
       EngineUuid requested;
       requested = column.collation_uuid;
       const auto live = LookupEngineResourceDescriptorByUuid(
@@ -657,26 +524,25 @@ bool BuildMgaContextualTextProjectionMaterialV2(
       collation = live.resource_descriptor;
       projected.collation_name = collation->canonical_name;
     }
-    if (column.charset_uuid.empty() != column.collation_uuid.empty()) {
+    if (column.charset_uuid.is_nil() != column.collation_uuid.is_nil()) {
       *diagnostic = ContextualTextMgaDiagnostic(
           "projected charset and collation authority is incomplete");
       return false;
     }
 
-    const auto encoded_descriptor_fields = StrictRelationDescriptorFields(
-        column.value_descriptor.encoded_descriptor);
-    const auto embedded_datatype_descriptor =
-        encoded_descriptor_fields == std::nullopt
-            ? std::map<std::string, std::string>::const_iterator{}
-            : encoded_descriptor_fields->find("datatype_descriptor_uuid");
-    const std::string canonical_datatype_descriptor_uuid =
-        encoded_descriptor_fields != std::nullopt &&
-                embedded_datatype_descriptor !=
-                    encoded_descriptor_fields->end() &&
-                CanonicalNonNilMigrationUuid(
-                    embedded_datatype_descriptor->second)
-            ? embedded_datatype_descriptor->second
-            : column.value_descriptor.descriptor_uuid;
+    CatalogColumnMetadata encoded_metadata;
+    if (!DecodeCatalogColumnMetadata(column.value_descriptor.encoded_descriptor, &encoded_metadata)) {
+      *diagnostic = ContextualTextMgaDiagnostic("binary column metadata required");
+      return false;
+    }
+    EngineUuid canonical_datatype_descriptor_uuid = column.value_descriptor.datatype_descriptor_uuid;
+    const auto embedded_identity = BinaryCatalogUuid(encoded_metadata, "datatype_descriptor_uuid");
+    if (canonical_datatype_descriptor_uuid.is_nil()) canonical_datatype_descriptor_uuid = embedded_identity;
+    if ((!embedded_identity.is_nil() && embedded_identity != canonical_datatype_descriptor_uuid) ||
+        canonical_datatype_descriptor_uuid.is_nil()) {
+      *diagnostic = ContextualTextMgaDiagnostic("conflicting or missing datatype identity");
+      return false;
+    }
     if (!CopyContextualUuidV2(
             canonical_datatype_descriptor_uuid,
             &contextual.projected_datatype_descriptor_uuid)) {
@@ -712,7 +578,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
     }
 
     const bool canonical_text_identity =
-        canonical_datatype_descriptor_uuid == kCanonicalTextDescriptorUuid;
+        canonical_datatype_descriptor_uuid == kCanonicalTextDescriptorIdentity;
     if (canonical_text_identity) {
       if (!catalog_context_exact || context.resource_epoch == 0 ||
           !ExactCanonicalTextIdentityAuthorityAvailable(context) ||
@@ -741,10 +607,8 @@ bool BuildMgaContextualTextProjectionMaterialV2(
         std::uint64_t charset_generation = 0;
         std::uint64_t collation_generation = 0;
         std::uint64_t carried_resource_epoch = 0;
-        const auto exact_field = [&](const std::string_view key,
-                                     const std::string_view value) {
-          const auto found = encoded_fields->find(std::string(key));
-          return found != encoded_fields->end() && found->second == value;
+        const auto exact_field = [&](const std::string_view key, const EngineUuid& value) {
+          return BinaryCatalogUuid(encoded_metadata, std::string(key)) == value;
         };
         if (!exact_field("charset_uuid", column.charset_uuid) ||
             !exact_field("collation_uuid", column.collation_uuid) ||
@@ -862,7 +726,7 @@ bool BindFreshCanonicalTextColumnIdentitiesV2(
     }
     return false;
   }
-  std::set<std::string> column_uuids;
+  std::set<EngineUuid> column_uuids;
   for (std::size_t index = 0; index != table->columns.size(); ++index) {
     auto& table_column = table->columns[index];
     auto& relation_column = relation_descriptor->columns[index];
@@ -871,33 +735,31 @@ bool BindFreshCanonicalTextColumnIdentitiesV2(
           "fresh table and relation column order differs");
       return false;
     }
-    const auto fields = StrictRelationDescriptorFields(table_column.second);
-    const auto embedded_datatype_descriptor =
-        fields == std::nullopt
-            ? std::map<std::string, std::string>::const_iterator{}
-            : fields->find("datatype_descriptor_uuid");
-    if (fields != std::nullopt &&
-        embedded_datatype_descriptor != fields->end() &&
-        embedded_datatype_descriptor->second == kCanonicalTextDescriptorUuid) {
-      const auto carried = fields->find("column_uuid");
-      if (carried != fields->end()) {
+    CatalogColumnMetadata fields;
+    if (!DecodeCatalogColumnMetadata(table_column.second, &fields)) {
+      *diagnostic = ContextualTextMgaDiagnostic("fresh column binary metadata is invalid");
+      return false;
+    }
+    if (BinaryCatalogUuid(fields, "datatype_descriptor_uuid") == kCanonicalTextDescriptorUuid) {
+      const auto carried = fields.identities.find("column_uuid");
+      if (carried != fields.identities.end()) {
         if (!CanonicalNonNilMigrationUuid(carried->second)) {
-          *diagnostic = ContextualTextMgaDiagnostic(
-              "fresh canonical d718 column UUID is invalid");
+          *diagnostic = ContextualTextMgaDiagnostic("fresh canonical column UUID is invalid");
           return false;
         }
         relation_column.column_uuid = carried->second;
       } else {
-        if (!CanonicalNonNilMigrationUuid(
-                relation_column.column_uuid)) {
-          *diagnostic = ContextualTextMgaDiagnostic(
-              "fresh canonical d718 generated column UUID is invalid");
+        if (!CanonicalNonNilMigrationUuid(relation_column.column_uuid)) {
+          *diagnostic = ContextualTextMgaDiagnostic("fresh canonical generated column UUID is invalid");
           return false;
         }
-        if (!table_column.second.empty()) table_column.second.push_back(';');
-        table_column.second.append("column_uuid=");
-        table_column.second.append(relation_column.column_uuid);
+        fields.identities["column_uuid"] = relation_column.column_uuid;
+        if (!EncodeCatalogColumnMetadata(fields, &table_column.second)) {
+          *diagnostic = ContextualTextMgaDiagnostic("fresh column metadata encoding failed");
+          return false;
+        }
       }
+      relation_column.value_descriptor.datatype_descriptor_uuid = kCanonicalTextDescriptorUuid;
       relation_column.value_descriptor.encoded_descriptor =
           table_column.second;
       // The persisted relation column owns a distinct public descriptor
@@ -1005,42 +867,21 @@ bool RelationDescriptorRequiresDeferredStore(
   return RelationDescriptorBoolField(fields, {"deferrable", "initially_deferred"});
 }
 
-std::optional<std::string> ParentTableUuidFromRelationDescriptor(
-    const std::string& descriptor) {
-  const auto fields = RelationDescriptorFields(descriptor);
-  auto field = [&fields](const char* key) -> std::string {
-    const auto found = fields.find(key);
-    return found == fields.end() ? std::string{} : found->second;
-  };
-  std::string parent = field("referenced_table_uuid");
-  if (parent.empty()) { parent = field("foreign_table_uuid"); }
-  if (parent.empty()) { parent = field("foreign_table"); }
-  if (!parent.empty()) { return parent; }
-  std::string envelope = field("foreign_key");
-  if (envelope.empty()) { envelope = field("references"); }
-  if (envelope.empty()) { envelope = field("fk"); }
-  if (envelope.empty()) { return std::nullopt; }
-  envelope = RelationDescriptorTrimAscii(std::move(envelope));
-  const auto colon = envelope.find(':');
-  const auto dot = envelope.rfind('.');
-  const auto open = envelope.find('(');
-  if (colon != std::string::npos) {
-    parent = envelope.substr(0, colon);
-  } else if (dot != std::string::npos) {
-    parent = envelope.substr(0, dot);
-  } else if (open != std::string::npos) {
-    parent = envelope.substr(0, open);
+std::optional<EngineUuid> ParentTableUuidFromRelationDescriptor(const std::string& descriptor) {
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor, &fields)) return std::nullopt;
+  for (const char* key : {"referenced_table_uuid", "foreign_table_uuid"}) {
+    const auto it = fields.identities.find(key);
+    if (it != fields.identities.end() && !it->second.is_nil()) return it->second;
   }
-  parent = RelationDescriptorTrimAscii(std::move(parent));
-  if (parent.empty()) { return std::nullopt; }
-  return parent;
+  return std::nullopt;
 }
 
-std::set<std::string> InsertTargetRelationScope(const EngineRequestContext& context,
+std::optional<std::set<EngineUuid>> InsertTargetRelationScope(const EngineRequestContext& context,
                                                 const RelationReadSnapshot& metadata,
-                                                const std::string& table_uuid) {
-  std::set<std::string> table_scope;
-  if (table_uuid.empty()) { return table_scope; }
+                                                const EngineUuid& table_uuid) {
+  std::set<EngineUuid> table_scope;
+  if (table_uuid.is_nil()) { return table_scope; }
   table_scope.insert(table_uuid);
   const auto table = FindVisibleCrudTable(metadata,
                                           table_uuid,
@@ -1049,12 +890,12 @@ std::set<std::string> InsertTargetRelationScope(const EngineRequestContext& cont
   for (const auto& [column_name, descriptor] : table->columns) {
     (void)column_name;
     const auto parent = ParentTableUuidFromRelationDescriptor(descriptor);
-    if (parent && !parent->empty()) {
+    if (parent && !parent->is_nil()) {
       table_scope.insert(*parent);
     }
   }
   for (const auto& candidate : metadata.tables) {
-    if (candidate.table_uuid.empty() || candidate.table_uuid == table_uuid) {
+    if (candidate.table_uuid.is_nil() || candidate.table_uuid == table_uuid) {
       continue;
     }
     if (!CrudCreatorVisible(metadata,

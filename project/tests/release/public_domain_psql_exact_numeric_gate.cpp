@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -114,7 +115,19 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool HasEvidence(const api::EngineApiResult& result,
+                 std::string_view kind,
+                 const api::EngineUuid& identity) {
+  for (const auto& evidence : result.evidence) {
+    const auto* actual = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && actual && *actual == identity) {
       return true;
     }
   }
@@ -148,12 +161,12 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string UuidText(TypedUuid typed_uuid) {
-  return uuid::UuidToString(typed_uuid.value);
+api::EngineUuid NativeIdentity(TypedUuid typed_uuid) {
+  return typed_uuid.value;
 }
 
-std::string UuidText(UuidKind kind, u64 offset) {
-  return UuidText(MakeUuid(kind, offset));
+api::EngineUuid NativeIdentity(UuidKind kind, u64 offset) {
+  return NativeIdentity(MakeUuid(kind, offset));
 }
 
 DatabaseFixture CreateDatabaseFixture(const std::filesystem::path& root) {
@@ -187,10 +200,10 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = UuidText(fixture.database_uuid);
-  context.node_uuid.canonical = UuidText(UuidKind::object, 3);
-  context.principal_uuid.canonical = UuidText(UuidKind::principal, 4);
-  context.session_uuid.canonical = UuidText(UuidKind::object, 5);
+  context.database_uuid = NativeIdentity(fixture.database_uuid);
+  context.node_uuid = NativeIdentity(UuidKind::object, 3);
+  context.principal_uuid = NativeIdentity(UuidKind::principal, 4);
+  context.session_uuid = NativeIdentity(UuidKind::object, 5);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -226,7 +239,7 @@ bool Commit(api::EngineRequestContext* context) {
     return false;
   }
   context->local_transaction_id = 0;
-  context->transaction_uuid.canonical.clear();
+  context->transaction_uuid = {};
   return true;
 }
 
@@ -248,7 +261,7 @@ api::EngineTypedValue TypedValue(std::string canonical_type_name,
 }
 
 api::DomainRecord Domain(std::uint64_t creator_tx,
-                         std::string domain_uuid,
+                         api::EngineUuid domain_uuid,
                          std::string base_type,
                          std::string check_envelope,
                          std::string method_binding = {},
@@ -256,10 +269,10 @@ api::DomainRecord Domain(std::uint64_t creator_tx,
   api::DomainRecord record;
   record.creator_tx = creator_tx;
   record.domain_uuid = std::move(domain_uuid);
-  record.catalog_row_uuid = UuidText(UuidKind::object, 100 + creator_tx);
-  record.schema_uuid = UuidText(UuidKind::schema, 200 + creator_tx);
+  record.catalog_row_uuid = NativeIdentity(UuidKind::object, 100 + creator_tx);
+  record.schema_uuid = NativeIdentity(UuidKind::schema, 200 + creator_tx);
   record.default_name = "pcr041_domain_cache";
-  record.base_descriptor_uuid = UuidText(UuidKind::object, 300 + creator_tx);
+  record.base_descriptor_uuid = NativeIdentity(UuidKind::object, 300 + creator_tx);
   record.base_descriptor_kind = "scalar";
   record.base_canonical_type_name = std::move(base_type);
   record.base_encoded_descriptor = "canonical=" + record.base_canonical_type_name;
@@ -463,11 +476,11 @@ bool TestExactNumericSurfaces(const api::EngineRequestContext& context) {
 sblr::SblrExecutionContext SblrContext(const api::EngineRequestContext& context) {
   sblr::SblrExecutionContext out;
   out.database_path = context.database_path;
-  out.database_uuid = context.database_uuid.canonical;
-  out.node_uuid = context.node_uuid.canonical;
-  out.user_uuid = context.principal_uuid.canonical;
-  out.session_uuid = context.session_uuid.canonical;
-  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.database_uuid = context.database_uuid;
+  out.node_uuid = context.node_uuid;
+  out.user_uuid = context.principal_uuid;
+  out.session_uuid = context.session_uuid;
+  out.transaction_uuid = context.transaction_uuid;
   out.local_transaction_id = context.local_transaction_id;
   out.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
@@ -483,7 +496,7 @@ bool TestDomainSurfaces(DatabaseFixture fixture) {
 
   auto no_tx_context = Context(fixture, "pcr041-domain-no-tx");
   auto no_tx_domain = Domain(77,
-                             UuidText(UuidKind::object, 410),
+                             NativeIdentity(UuidKind::object, 410),
                              "character",
                              "sblr_predicate:not_empty");
   const auto no_tx_append =
@@ -499,7 +512,7 @@ bool TestDomainSurfaces(DatabaseFixture fixture) {
   }
 
   auto mismatched = Domain(writer.local_transaction_id + 100,
-                           UuidText(UuidKind::object, 411),
+                           NativeIdentity(UuidKind::object, 411),
                            "character",
                            "sblr_predicate:not_empty");
   const auto mismatched_append =
@@ -508,10 +521,10 @@ bool TestDomainSurfaces(DatabaseFixture fixture) {
                                "domain_creator_tx_mismatch",
                                "domain append accepted mismatched creator transaction");
 
-  const auto text_domain_uuid = UuidText(UuidKind::object, 412);
-  const auto numeric_domain_uuid = UuidText(UuidKind::object, 413);
-  const auto udr_domain_uuid = UuidText(UuidKind::object, 414);
-  const auto no_method_domain_uuid = UuidText(UuidKind::object, 415);
+  const auto text_domain_uuid = NativeIdentity(UuidKind::object, 412);
+  const auto numeric_domain_uuid = NativeIdentity(UuidKind::object, 413);
+  const auto udr_domain_uuid = NativeIdentity(UuidKind::object, 414);
+  const auto no_method_domain_uuid = NativeIdentity(UuidKind::object, 415);
 
   const auto text_domain = Domain(writer.local_transaction_id,
                                   text_domain_uuid,
@@ -562,7 +575,7 @@ bool TestDomainSurfaces(DatabaseFixture fixture) {
   validate_text.input_value = TypedValue("character", "Alpha");
   const auto text_valid = api::EngineValidateDomainValue(validate_text);
   ok &= ExpectApiOk(text_valid, "domain SBLR predicate validation failed");
-  ok &= Expect(text_valid.value.descriptor.descriptor_uuid.canonical == text_domain_uuid,
+  ok &= Expect(text_valid.value.descriptor.descriptor_uuid == text_domain_uuid,
                "domain validation did not return UUID descriptor authority");
   ok &= Expect(HasEvidence(text_valid, "domain_validation", text_domain_uuid),
                "domain validation evidence missing");
@@ -596,8 +609,9 @@ bool TestDomainSurfaces(DatabaseFixture fixture) {
   const auto sblr_valid = sblr::ValidateSblrDomainValue(sblr_request);
   ok &= Expect(sblr_valid.ok(), "SBLR domain validation failed");
   ok &= Expect(!sblr_valid.scalar_values.empty() &&
-                   sblr_valid.scalar_values.front().descriptor_id ==
-                       "domain:" + text_domain_uuid,
+                   api::DomainUuidFromColumnDescriptor(
+                       sblr_valid.scalar_values.front().descriptor_id) ==
+                       text_domain_uuid,
                "SBLR domain validation did not return domain descriptor");
 
   sblr_request.value.encoded_value = "Ace";

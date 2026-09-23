@@ -41,7 +41,7 @@ struct DmlPageAllocationRuntimeResult {
 DmlPageAllocationRuntimeResult ReserveDmlPageAllocationRuntime(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
-    const std::string& owner_object_uuid,
+    const EngineUuid& owner_object_uuid,
     DmlPageAllocationRuntimeFamily family,
     std::uint64_t requested_pages,
     std::string mutation_phase);
@@ -50,7 +50,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntime(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     std::string mutation_phase);
 
@@ -58,7 +58,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& row_values,
     std::string mutation_phase);
 
@@ -66,7 +66,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
     std::string mutation_phase);
 
@@ -74,7 +74,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowCount(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_count,
     std::string mutation_phase);
 

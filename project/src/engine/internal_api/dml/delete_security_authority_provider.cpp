@@ -103,7 +103,7 @@ EngineApiDiagnostic Resolve(const EngineRequestContext& c, const EngineUuid& tar
       state.state.security_context_generation != c.authorization_context.security_context_generation)
     return Refuse("durable_materialized_generation_mismatch", "MGA.TRANSACTION.STALE");
   for (const auto& policy : state.state.row_policies)
-    if (!policy.deleted && (policy.target_object_uuid.empty() || policy.target_object_uuid == target))
+    if (!policy.deleted && (policy.target_object_uuid.is_nil() || policy.target_object_uuid == target))
       return Refuse("DELETE_USING_provider_required", "SBLR.OPERATION_UNSUPPORTED");
   for (const auto& policy : c.authorization_context.policies)
     if (policy.target_uuid.is_nil() || policy.target_uuid == target)

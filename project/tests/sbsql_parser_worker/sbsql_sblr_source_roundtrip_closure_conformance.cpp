@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "sblr_source_artifact_runtime.hpp"
@@ -78,8 +79,8 @@ sblr::SblrOperationEnvelope CanonicalOperation(
   Require(entry != nullptr && entry->opcode == envelope.opcode && entry->code != 0,
           "source round-trip fixture lacks an exact canonical registry identity");
   envelope.opcode_code = entry->code;
-  envelope.parser_package_uuid = "019f1000-0000-7000-8000-000000000501";
-  envelope.registry_snapshot_uuid = "019f1000-0000-7000-8000-000000000502";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000501");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000502");
   envelope.parser_resolved_names_to_uuids = true;
   for (std::size_t index = 0; index < envelope.operands.size(); ++index) {
     auto& operand = envelope.operands[index];
@@ -458,7 +459,7 @@ std::vector<std::uint8_t> BinaryRoundTripCanonicalContainer(
   public_sblr::SblrCanonicalContainer container;
   const auto engine_uuid = uuid(0x21);
   const auto dialect_uuid = uuid(0x22);
-  const auto parser_uuid = ParseUuid(envelope.parser_package_uuid);
+  const auto parser_uuid = envelope.parser_package_uuid.bytes;
   const auto bundle_uuid = uuid(0x24);
   const auto request_uuid = uuid(0x25);
   std::copy(engine_uuid.begin(), engine_uuid.end(),

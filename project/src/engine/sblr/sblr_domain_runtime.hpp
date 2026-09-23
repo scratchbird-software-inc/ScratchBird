@@ -18,7 +18,7 @@ namespace scratchbird::engine::sblr {
 
 struct SblrDomainRequest {
   SblrExecutionContext context;
-  std::string domain_uuid;
+  SblrUuid domain_uuid;
   SblrValue value;
   std::string method_name;
 };

@@ -57,7 +57,7 @@ bool MaterializeExpressionProjectBatch(
 exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
     LiveProjectRegistrationProfile profile,
     std::string implementation_id,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t expected_input_row_count,
     scratchbird::engine::internal_api::TypedRelationalDag relational_dag,
     CanonicalRelationalExpressionRuntimeServices expression_services,

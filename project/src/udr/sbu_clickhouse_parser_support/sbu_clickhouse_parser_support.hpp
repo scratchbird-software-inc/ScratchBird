@@ -17,6 +17,7 @@ namespace scratchbird::udr::clickhouse_parser_support {
 
 inline constexpr std::string_view kSbuClickhousePackageUuid =
     "019e13c0-0000-7000-8000-000000000308";
+inline constexpr scratchbird::udr::runtime::UdrUuid kSbuClickhousePackageIdentity{{0x01, 0x9e, 0x13, 0xc0, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x08}};
 inline constexpr std::string_view kSbuClickhousePackageName = "sbup_clickhouse";
 
 struct UdrResult {

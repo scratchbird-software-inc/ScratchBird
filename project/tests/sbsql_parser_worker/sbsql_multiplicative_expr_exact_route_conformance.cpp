@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -56,7 +57,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -64,10 +65,10 @@ bool HasEvidence(const api::EngineApiResult& result,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000029101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000029102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000029103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 91;
   session.security_policy_epoch = 92;
   session.descriptor_epoch = 93;
@@ -78,7 +79,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_multiplicative_expr_route";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000029104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029104");
   config.bundle_contract_id = "sbp_sbsql@multiplicative-expr-route-test";
   config.build_id = "sbsql-multiplicative-expr-route-test";
   return config;
@@ -202,14 +203,14 @@ void RequireServerAdmission(const SblrEnvelope& envelope) {
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsql-multiplicative-expr-exact-route";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000029201";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000029202";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000029203";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000029204";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000029205";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000029206";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000029207";
-  context.current_role_uuid.canonical = "019f0000-0000-7000-8000-000000029208";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029201");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029202");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029203");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029204");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029205");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029206");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029207");
+  context.current_role_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000029208");
   context.local_transaction_id = 95;
   context.security_context_present = true;
   context.trace_tags.push_back("right:QUERY_PROJECTION_TEST");

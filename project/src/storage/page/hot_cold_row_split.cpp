@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "hot_cold_row_split.hpp"
+#include "payload_binary_codec.hpp"
 
 #include "filespace_lifecycle.hpp"
 #include "uuid.hpp"
@@ -38,16 +39,6 @@ std::vector<byte> PayloadBytes(const std::string& value) {
   return std::vector<byte>(value.begin(), value.end());
 }
 
-std::string Hex(const std::string& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(value.size() * 2);
-  for (const unsigned char ch : value) {
-    out.push_back(kHex[ch >> 4]);
-    out.push_back(kHex[ch & 0x0f]);
-  }
-  return out;
-}
 
 bool NameRequested(const std::vector<std::string>& requested, const std::string& field_name) {
   return requested.empty() ||
@@ -183,24 +174,20 @@ const char* HotColdFieldTemperatureName(HotColdFieldTemperature temperature) {
 }
 
 std::string SerializeHotColdRowHead(const HotColdRowHead& hot_head) {
-  std::ostringstream out;
-  out << "SB_HOT_COLD_ROW_HEAD_V1"
-      << ";row_uuid=" << scratchbird::core::uuid::UuidToString(hot_head.row_uuid.value)
-      << ";owner_object_uuid=" << scratchbird::core::uuid::UuidToString(hot_head.owner_object_uuid.value)
-      << ";transaction_uuid=" << scratchbird::core::uuid::UuidToString(hot_head.transaction_uuid.value)
-      << ";creator_local_tx=" << hot_head.creator_local_transaction_id
-      << ";row_version=" << hot_head.row_version
-      << ";hot_filespace_class=" << hot_head.hot_filespace_class
-      << ";cold_row_filespace_class=" << hot_head.cold_row_filespace_class
-      << ";descriptor_finality_authority=false"
-      << ";descriptor_visibility_authority=false";
-  for (const auto& field : hot_head.hot_fields) {
-    out << ";hot_field=" << Hex(field.field_name) << ":" << Hex(field.encoded_value);
-  }
-  for (const auto& field : hot_head.cold_fields) {
-    out << ";cold_field=" << Hex(field.field_name) << ":" << Hex(field.descriptor_text);
-  }
-  return out.str();
+  using namespace payload_binary;
+  std::string bytes="SBHCR002";
+  for(const auto* id:{&hot_head.row_uuid,&hot_head.owner_object_uuid,&hot_head.transaction_uuid})
+    if(!PutUuid(bytes,*id))return {};
+  PutU64(bytes,hot_head.creator_local_transaction_id);PutU64(bytes,hot_head.row_version);
+  if(!PutString(bytes,hot_head.hot_filespace_class)||!PutString(bytes,hot_head.cold_row_filespace_class))return {};
+  if(hot_head.hot_fields.size()>65536||hot_head.cold_fields.size()>65536)return {};
+  PutU64(bytes,hot_head.hot_fields.size());
+  for(const auto& field:hot_head.hot_fields)
+    if(!PutString(bytes,field.field_name)||!PutString(bytes,field.encoded_value))return {};
+  PutU64(bytes,hot_head.cold_fields.size());
+  for(const auto& field:hot_head.cold_fields)
+    if(!PutString(bytes,field.field_name)||!PutString(bytes,field.descriptor_text))return {};
+  return bytes.size()<=kMaximumBytes?bytes:std::string{};
 }
 
 HotColdRowSplitResult SplitHotColdRow(const HotColdRowSplitRequest& request) {

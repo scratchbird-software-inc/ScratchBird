@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -66,10 +67,10 @@ std::uint64_t NowMillis() {
           .count());
 }
 
-std::string GeneratedUuid(UuidKind kind, std::uint64_t salt) {
+api::EngineUuid GeneratedUuid(UuidKind kind, std::uint64_t salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, NowMillis() + salt);
   Require(generated.ok(), "UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 api::EngineLocalizedName Name(std::string value) {
@@ -87,7 +88,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) {
       return true;
     }
   }
@@ -95,15 +96,15 @@ bool HasEvidence(const api::EngineApiResult& result,
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const std::string& database_uuid,
-                                      std::string principal_uuid) {
+                                      const api::EngineUuid& database_uuid,
+                                      api::EngineUuid principal_uuid) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "cdp-uuid-descriptor-cache-gate";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = std::move(principal_uuid);
-  context.session_uuid.canonical = GeneratedUuid(UuidKind::object, 100);
+  context.database_uuid = database_uuid;
+  context.principal_uuid = std::move(principal_uuid);
+  context.session_uuid = GeneratedUuid(UuidKind::object, 100);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -116,8 +117,8 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext Begin(const std::filesystem::path& path,
-                                const std::string& database_uuid,
-                                const std::string& principal_uuid) {
+                                const api::EngineUuid& database_uuid,
+                                const api::EngineUuid& principal_uuid) {
   api::EngineBeginTransactionRequest request;
   request.context = BaseContext(path, database_uuid, principal_uuid);
   request.isolation_level = "read_committed";
@@ -144,7 +145,7 @@ void Rollback(const api::EngineRequestContext& context) {
   RequireOk(api::EngineRollbackTransaction(request), "rollback transaction failed");
 }
 
-std::string CreateDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -162,42 +163,42 @@ std::string CreateDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineCatalogCreateObjectRequest CreateRequest(
     const api::EngineRequestContext& context,
-    const std::string& object_uuid,
+    const api::EngineUuid& object_uuid,
     std::string object_kind,
-    const std::string& schema_uuid,
+    const api::EngineUuid& schema_uuid,
     std::string name) {
   api::EngineCatalogCreateObjectRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = object_uuid;
+  request.target_object.uuid = object_uuid;
   request.target_object.object_kind = std::move(object_kind);
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.localized_names.push_back(Name(std::move(name)));
   return request;
 }
 
 api::EngineResolveNameRequest ResolveRequest(const api::EngineRequestContext& context,
-                                             const std::string& schema_uuid,
+                                             const api::EngineUuid& schema_uuid,
                                              std::string object_kind,
                                              std::string name) {
   api::EngineResolveNameRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.target_object.object_kind = std::move(object_kind);
   request.localized_names.push_back(Name(std::move(name)));
   return request;
 }
 
 api::EngineGetDescriptorRequest DescriptorRequest(const api::EngineRequestContext& context,
-                                                  const std::string& table_uuid,
+                                                  const api::EngineUuid& table_uuid,
                                                   std::string cache_option) {
   api::EngineGetDescriptorRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = table_uuid;
+  request.target_object.uuid = table_uuid;
   request.target_object.object_kind = "table";
   request.option_envelopes.push_back(std::move(cache_option));
   return request;
@@ -208,10 +209,10 @@ api::EngineGetDescriptorRequest DescriptorRequest(const api::EngineRequestContex
 int main() {
   const auto path = std::filesystem::temp_directory_path() /
                     ("sb_cdp_uuid_descriptor_cache_" + std::to_string(NowMillis()) + ".sbdb");
-  const std::string database_uuid = CreateDatabase(path);
-  const std::string owner_uuid = GeneratedUuid(UuidKind::object, 10);
-  const std::string schema_uuid = GeneratedUuid(UuidKind::object, 11);
-  const std::string table_uuid = GeneratedUuid(UuidKind::object, 12);
+  const api::EngineUuid database_uuid = CreateDatabase(path);
+  const api::EngineUuid owner_uuid = GeneratedUuid(UuidKind::object, 10);
+  const api::EngineUuid schema_uuid = GeneratedUuid(UuidKind::object, 11);
+  const api::EngineUuid table_uuid = GeneratedUuid(UuidKind::object, 12);
   const std::string schema_name = "cdp_schema_" + std::to_string(NowMillis());
   const std::string table_name = "cdp_table_" + std::to_string(NowMillis());
   const std::string renamed_table = table_name + "_renamed";
@@ -227,7 +228,7 @@ int main() {
   const auto created_table =
       api::EngineCatalogCreateObject(CreateRequest(table_context, table_uuid, "table", schema_uuid, table_name));
   RequireOk(created_table, "table create failed");
-  Require(created_table.primary_object.uuid.canonical == table_uuid,
+  Require(created_table.primary_object.uuid == table_uuid,
           "table create did not preserve generated UUID identity");
   Commit(table_context);
 
@@ -237,7 +238,7 @@ int main() {
   const auto resolved =
       api::EngineResolveName(ResolveRequest(read_context, schema_uuid, "table", table_name));
   RequireOk(resolved, "resolver lookup failed");
-  Require(resolved.bound_object_identity.object_uuid.canonical == table_uuid,
+  Require(resolved.bound_object_identity.object_uuid == table_uuid,
           "resolver did not return generated table UUID");
 
   const auto descriptor_miss =
@@ -245,7 +246,7 @@ int main() {
   RequireOk(descriptor_miss, "descriptor cache miss lookup failed");
   Require(HasEvidence(descriptor_miss, "descriptor_metadata_cache", "miss"),
           "first descriptor cache lookup did not record miss");
-  Require(descriptor_miss.descriptor.descriptor_uuid.canonical == table_uuid,
+  Require(descriptor_miss.descriptor.descriptor_uuid == table_uuid,
           "descriptor did not bind generated table UUID");
 
   const auto descriptor_hit =
@@ -269,7 +270,7 @@ int main() {
   rename_context.catalog_generation_id = created_table.metadata_cache_epoch;
   api::EngineCatalogRenameObjectRequest rename;
   rename.context = rename_context;
-  rename.target_object.uuid.canonical = table_uuid;
+  rename.target_object.uuid = table_uuid;
   rename.target_object.object_kind = "table";
   rename.localized_names.push_back(Name(renamed_table));
   const auto renamed = api::EngineCatalogRenameObject(rename);

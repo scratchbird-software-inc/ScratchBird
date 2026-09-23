@@ -1,6 +1,12 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_catalog_column_fixture.hpp"
+#include "sblr_engine_envelope.hpp"
+#include "../agents/agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
 #include "ipc_server.hpp"
 #include "local_transaction_store.hpp"
 #include "sblr_dispatch_server.hpp"
@@ -18,6 +24,7 @@
 #include "parser_server_client.hpp"
 
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -57,26 +64,24 @@ void Require(bool condition, std::string_view message) {
 void VerifyExactPublicDatatypeIdentityProjection() {
   ipc::PublicRelationDescriptor descriptor;
   descriptor.datatype_catalog_snapshot_uuid =
-      "019d0000-0000-7000-8000-00000000d701";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   descriptor.datatype_catalog_generation = 1;
   descriptor.datatype_registry_generation = 1;
 
   ipc::PublicRelationColumnDescriptor text;
   text.type_descriptor_uuid =
-      "019d0000-0000-7000-8000-00000000d718";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
   text.datatype_identity_present = true;
   text.datatype_descriptor_generation = 1;
   text.datatype_type_uuid =
-      "019d0000-0000-7000-8000-00000000d719";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719");
   text.datatype_type_generation = 1;
   text.datatype_codec_id = "datatype.text.utf8.v1";
   text.datatype_codec_version = 1;
   text.datatype_codec_generation = 1;
   text.datatype_canonical_value_bytes = 0;
   text.datatype_null_encoding = 1;
-  text.encoded_type_descriptor =
-      "descriptor_kind=canonical_type_descriptor;"
-      "datatype_descriptor_uuid=019d0000-0000-7000-8000-00000000d718";
+  text.datatype_descriptor_uuid = text.type_descriptor_uuid;
   Require(ipc::ValidatePublicRelationDatatypeIdentityV3ForTest(descriptor,
                                                                text),
           "exact canonical TEXT public identity projection was refused");
@@ -100,7 +105,7 @@ void VerifyExactPublicDatatypeIdentityProjection() {
   reject_text(
       [](auto& identity, auto&) {
         identity.datatype_catalog_snapshot_uuid =
-            "019d0000-0000-7000-8000-00000000d702";
+            scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d702");
       },
       "TEXT public identity projection admitted a stale snapshot");
   reject_text(
@@ -115,15 +120,13 @@ void VerifyExactPublicDatatypeIdentityProjection() {
       "TEXT public identity projection admitted a stale registry generation");
   reject_text(
       [](auto&, auto& column) {
-        column.encoded_type_descriptor =
-            "descriptor_kind=canonical_type_descriptor;"
-            "datatype_descriptor_uuid=019d0000-0000-7000-8000-00000000d719";
+        column.datatype_descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719");
       },
       "TEXT public identity projection admitted a descriptor lookalike");
   reject_text(
       [](auto&, auto& column) {
         column.datatype_type_uuid =
-            "019d0000-0000-7000-8000-00000000d718";
+            scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
       },
       "TEXT public identity projection admitted a type lookalike");
   reject_text(
@@ -140,14 +143,12 @@ void VerifyExactPublicDatatypeIdentityProjection() {
 
   auto fixed = text;
   fixed.type_descriptor_uuid =
-      "019d0000-0000-7000-8000-00000000d716";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716");
   fixed.datatype_type_uuid =
-      "019d0000-0000-7000-8000-00000000d717";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717");
   fixed.datatype_codec_id = "datatype.int32.le.v1";
   fixed.datatype_canonical_value_bytes = 4;
-  fixed.encoded_type_descriptor =
-      "descriptor_kind=canonical_type_descriptor;"
-      "datatype_descriptor_uuid=019d0000-0000-7000-8000-00000000d716";
+  fixed.datatype_descriptor_uuid = fixed.type_descriptor_uuid;
   Require(ipc::ValidatePublicRelationDatatypeIdentityV3ForTest(descriptor,
                                                                fixed),
           "exact fixed-width public identity projection was refused");
@@ -175,22 +176,22 @@ platform::TypedUuid NewTypedUuid(platform::UuidKind kind,
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, std::uint64_t salt) {
-  return uuid::UuidToString(NewTypedUuid(kind, salt).value);
+platform::Uuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
+  return NewTypedUuid(kind, salt).value;
 }
 
 struct EngineTransactionFixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string schema_uuid;
-  std::string table_uuid;
-  std::string resource_table_uuid;
-  std::string routine_table_uuid;
-  std::string routine_column_uuid;
-  std::string gbk_charset_uuid;
-  std::string gbk_default_collation_uuid;
-  std::string gbk_unicode_collation_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid schema_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid resource_table_uuid;
+  platform::Uuid routine_table_uuid;
+  platform::Uuid routine_column_uuid;
+  platform::Uuid gbk_charset_uuid;
+  platform::Uuid gbk_default_collation_uuid;
+  platform::Uuid gbk_unicode_collation_uuid;
   std::uint64_t resource_epoch = 0;
   std::uint64_t salt = 0;
 
@@ -254,7 +255,7 @@ EngineTransactionFixture CreateEngineTransactionFixture() {
     std::cerr << '\n';
   }
   Require(created.ok(), "neutral transaction database creation failed");
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   fixture.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
   const auto* gbk = resources::FindResourceSeedCharset(
       created.state.resource_seed_catalog, "GBK");
@@ -264,7 +265,7 @@ EngineTransactionFixture CreateEngineTransactionFixture() {
       created.state.resource_seed_catalog, "GBK_UNICODE");
   Require(fixture.resource_epoch != 0 && gbk != nullptr &&
               gbk_default != nullptr && gbk_unicode != nullptr &&
-              !gbk->resource_uuid.empty() &&
+              !gbk->resource_uuid.is_nil() &&
               gbk_default->charset_uuid == gbk->resource_uuid &&
               gbk_unicode->charset_uuid == gbk->resource_uuid,
           "neutral transaction resource authority is incomplete");
@@ -282,17 +283,16 @@ api::EngineRequestContext BeginEngineTransaction(
   begin.context.request_id = "neutral-engine-begin-" +
                              std::to_string(ordinal);
   begin.context.database_path = fixture.database_path.string();
-  begin.context.database_uuid.canonical = fixture.database_uuid;
-  begin.context.principal_uuid.canonical = NewUuidText(
+  begin.context.database_uuid = fixture.database_uuid;
+  begin.context.principal_uuid = NewUuid(
       platform::UuidKind::principal, fixture.salt + 100 + ordinal);
-  begin.context.session_uuid.canonical = NewUuidText(
+  begin.context.session_uuid = NewUuid(
       platform::UuidKind::object, fixture.salt + 200 + ordinal);
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 1;
   begin.context.resource_epoch = fixture.resource_epoch;
-  begin.context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  begin.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   begin.context.datatype_catalog_generation = 1;
   begin.context.datatype_registry_generation = 1;
   begin.context.name_resolution_epoch = 1;
@@ -300,7 +300,7 @@ api::EngineRequestContext BeginEngineTransaction(
   const auto begun = api::EngineBeginTransaction(begin);
   RequireEngineOk(begun, "neutral engine transaction begin failed");
   Require(begun.local_transaction_id != 0 &&
-              !begun.transaction_uuid.canonical.empty(),
+              !begun.transaction_uuid.is_nil(),
           "engine begin did not issue a composite transaction identity");
   auto context = begin.context;
   context.local_transaction_id = begun.local_transaction_id;
@@ -357,19 +357,17 @@ api::EngineTypedValue NeutralIntegerValue(std::int64_t value) {
 api::EngineColumnDefinition NeutralResourceTextColumn(
     std::string name,
     std::uint32_t ordinal,
-    std::string_view charset_uuid,
-    std::string_view collation_uuid = {}) {
+    const platform::Uuid& charset_uuid,
+    const platform::Uuid& collation_uuid = {}) {
   api::EngineColumnDefinition column;
   column.names.push_back(NeutralName(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
-  column.descriptor.encoded_descriptor =
-      "type=text;charset_uuid=" + std::string(charset_uuid);
-  if (!collation_uuid.empty()) {
-    column.descriptor.encoded_descriptor +=
-        ";collation_uuid=" + std::string(collation_uuid);
-  }
-  column.descriptor.encoded_descriptor += ";character_length=20";
+  api::CatalogColumnMetadata metadata;
+  metadata.text = {{"type", "text"}, {"character_length", "20"}};
+  metadata.identities.emplace("charset_uuid", charset_uuid);
+  if (!collation_uuid.is_nil()) metadata.identities.emplace("collation_uuid", collation_uuid);
+  column.descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture(std::move(metadata));
   column.ordinal = ordinal;
   column.nullable = true;
   return column;
@@ -386,26 +384,26 @@ void CreateNeutralVisibilityTable(EngineTransactionFixture* fixture) {
   const auto created_schema = api::EngineCreateSchema(schema);
   RequireEngineOk(created_schema,
                   "neutral visibility schema creation failed");
-  fixture->schema_uuid = created_schema.primary_object.uuid.canonical;
-  Require(!fixture->schema_uuid.empty(),
+  fixture->schema_uuid = created_schema.primary_object.uuid;
+  Require(!fixture->schema_uuid.is_nil(),
           "engine did not issue the neutral visibility schema UUID");
 
   api::EngineCreateTableRequest table;
   table.context = context;
-  table.target_schema.uuid.canonical = fixture->schema_uuid;
+  table.target_schema.uuid = fixture->schema_uuid;
   table.target_schema.object_kind = "schema";
   table.table_names.push_back(NeutralName("selector_visibility"));
   table.table_columns.push_back(NeutralTextColumn("id", 0));
   const auto created_table = api::EngineCreateTable(table);
   RequireEngineOk(created_table,
                   "neutral visibility table creation failed");
-  fixture->table_uuid = created_table.primary_object.uuid.canonical;
-  Require(!fixture->table_uuid.empty(),
+  fixture->table_uuid = created_table.primary_object.uuid;
+  Require(!fixture->table_uuid.is_nil(),
           "engine did not issue the neutral visibility table UUID");
 
   api::EngineCreateTableRequest resource_table;
   resource_table.context = context;
-  resource_table.target_schema.uuid.canonical = fixture->schema_uuid;
+  resource_table.target_schema.uuid = fixture->schema_uuid;
   resource_table.target_schema.object_kind = "schema";
   resource_table.table_names.push_back(
       NeutralName("neutral_resource_projection"));
@@ -423,8 +421,8 @@ void CreateNeutralVisibilityTable(EngineTransactionFixture* fixture) {
   RequireEngineOk(created_resource_table,
                   "neutral resource projection table creation failed");
   fixture->resource_table_uuid =
-      created_resource_table.primary_object.uuid.canonical;
-  Require(!fixture->resource_table_uuid.empty(),
+      created_resource_table.primary_object.uuid;
+  Require(!fixture->resource_table_uuid.is_nil(),
           "engine did not issue the neutral resource table UUID");
 
   api::EngineCommitTransactionRequest commit;
@@ -434,25 +432,25 @@ void CreateNeutralVisibilityTable(EngineTransactionFixture* fixture) {
 }
 
 void CreateNeutralRoutineTable(EngineTransactionFixture* fixture) {
-  Require(fixture != nullptr && !fixture->schema_uuid.empty(),
+  Require(fixture != nullptr && !fixture->schema_uuid.is_nil(),
           "neutral routine fixture requires a committed schema");
   const auto context = BeginEngineTransaction(*fixture, 40);
 
   api::EngineCreateTableRequest table;
   table.context = context;
-  table.target_schema.uuid.canonical = fixture->schema_uuid;
+  table.target_schema.uuid = fixture->schema_uuid;
   table.target_schema.object_kind = "schema";
   table.table_names.push_back(NeutralName("neutral_routine_values"));
   table.table_columns.push_back(NeutralIntegerColumn("a", 0));
   const auto created = api::EngineCreateTable(table);
   RequireEngineOk(created, "neutral routine table creation failed");
-  fixture->routine_table_uuid = created.primary_object.uuid.canonical;
-  Require(!fixture->routine_table_uuid.empty(),
+  fixture->routine_table_uuid = created.primary_object.uuid;
+  Require(!fixture->routine_table_uuid.is_nil(),
           "engine did not publish the neutral routine table UUID");
 
   api::EngineInsertRowsRequest insert;
   insert.context = context;
-  insert.target_table.uuid.canonical = fixture->routine_table_uuid;
+  insert.target_table.uuid = fixture->routine_table_uuid;
   insert.target_table.object_kind = "table";
   for (std::int64_t value = 1; value <= 10; ++value) {
     api::EngineRowValue row;
@@ -467,15 +465,15 @@ void CreateNeutralRoutineTable(EngineTransactionFixture* fixture) {
   const auto descriptor = api::LoadMgaRelationStorageDescriptor(
       context, fixture->routine_table_uuid);
   Require(descriptor.ok &&
-              descriptor.descriptor.relation_uuid.canonical ==
+              descriptor.descriptor.relation_uuid ==
                   fixture->routine_table_uuid &&
               descriptor.descriptor.columns.size() == 1 &&
               descriptor.descriptor.columns.front().canonical_name_key == "a" &&
               !descriptor.descriptor.columns.front()
-                   .column_uuid.canonical.empty(),
+                   .column_uuid.is_nil(),
           "neutral routine fixture lacks its persisted column descriptor");
   fixture->routine_column_uuid =
-      descriptor.descriptor.columns.front().column_uuid.canonical;
+      descriptor.descriptor.columns.front().column_uuid;
 
   api::EngineCommitTransactionRequest commit;
   commit.context = context;
@@ -496,8 +494,8 @@ bool InventoryContainsExactActiveTransaction(
     const bool active = entry.state == mga::TransactionState::active ||
                         entry.state == mga::TransactionState::read_only_active;
     return active &&
-           uuid::UuidToString(entry.identity.transaction_uuid.value) ==
-               context.transaction_uuid.canonical;
+           entry.identity.transaction_uuid.value ==
+               context.transaction_uuid;
   }
   return false;
 }
@@ -508,7 +506,7 @@ void RequireCompositeRefusal(const api::EngineCommitTransactionResult& result,
               result.commit_finality_state ==
                   "refused_before_inventory_commit" &&
               result.local_transaction_id == 0 &&
-              result.transaction_uuid.canonical.empty(),
+              result.transaction_uuid.is_nil(),
           message);
 }
 
@@ -519,7 +517,7 @@ void RequireCompositeRefusal(
               result.rollback_finality_state ==
                   "refused_before_inventory_rollback" &&
               result.local_transaction_id == 0 &&
-              result.transaction_uuid.canonical.empty(),
+              result.transaction_uuid.is_nil(),
           message);
 }
 
@@ -555,7 +553,7 @@ void PutBytes(std::vector<std::uint8_t>* out,
 }
 
 server::ServerTransactionState Transaction(std::uint64_t id,
-                                           std::string uuid) {
+                                           platform::Uuid uuid) {
   server::ServerTransactionState transaction;
   transaction.local_transaction_id = id;
   transaction.snapshot_visible_through_local_transaction_id = id;
@@ -599,7 +597,7 @@ sbps::Frame ExecuteFrameV2(
   PutU8(&frame.payload, 0);
   PutU8(&frame.payload, 1);
   PutU64(&frame.payload, transaction.local_transaction_id);
-  PutString(&frame.payload, transaction.transaction_uuid);
+  PutUuid(&frame.payload, transaction.transaction_uuid.bytes);
   std::string envelope = "operation_id=" + std::string(operation_id) + "\n";
   PutString(&frame.payload, envelope);
   PutBytes(&frame.payload, {});
@@ -634,9 +632,9 @@ std::vector<std::uint8_t> KnownAppliedCommitPayload() {
   PutU8(&payload, 1);
   PutU8(&payload, 0);
   PutU64(&payload, 91);
-  PutString(&payload, "019f0000-0000-7000-8000-000000000091");
+  PutUuid(&payload, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000091").bytes);
   PutU64(&payload, 91);
-  PutString(&payload, "019f0000-0000-7000-8000-000000000091");
+  PutUuid(&payload, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000091").bytes);
   PutString(&payload, "committed_by_engine_inventory");
   PutString(&payload, "SBWP.COMMIT.POST_INVENTORY_SECONDARY_FAILURE");
   PutU8(&payload, 0);
@@ -669,7 +667,7 @@ void VerifyNeutralCodecAndPreEngineFinality() {
 
   const auto session_uuid = sbps::MakeUuidV7Bytes();
   const auto transaction = Transaction(
-      91, "019f0000-0000-7000-8000-000000000091");
+      91, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000091"));
   const auto refused = server::RejectExecuteSblrBeforeEngine(
       ExecuteFrameV2(session_uuid, "transaction.commit", transaction),
       "SERVER.MAINTENANCE.SBLR_ADMISSION_FENCED",
@@ -691,7 +689,7 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
   auto session = Session(
       session_uuid,
       sbps::MakeUuidV7Bytes(),
-      Transaction(202, "019f0000-0000-7000-8000-000000000202"));
+      Transaction(202, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000202")));
   session.database_uuid = platform::Uuid{{0x01,0x9f,0,0,0,0,0x70,0,0x80,0,0,0,0,0,3,2}};
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid = sbps::MakeUuidV7Bytes();
@@ -725,7 +723,7 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
     // replacement selector 202, and close carries neither identity.
     prepared.prepare_local_transaction_id = 201;
     prepared.prepare_transaction_uuid =
-        "019f0000-0000-7000-8000-000000000201";
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000201");
     prepared.prepare_snapshot_visible_through_local_transaction_id = 201;
     return prepared;
   };
@@ -785,13 +783,12 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
       &registry, ClosePreparedFrame(session_uuid, first_uuid));
   const auto& first = registry.prepared_by_uuid.at(
       scratchbird::core::platform::Uuid{first_uuid});
-  const auto handle_key = server::UuidBytesToText(session_uuid) + "#" +
-                          std::to_string(shared_handle.handle_id);
+  const auto handle_key = std::make_pair(platform::Uuid{session_uuid}, shared_handle.handle_id);
   Require(closed_first.accepted && closed_first.response_schema_id == 4014 &&
               first.closed && first.encoded_sblr_envelope.empty() &&
               first.prepare_local_transaction_id == 201 &&
               first.prepare_transaction_uuid ==
-                  "019f0000-0000-7000-8000-000000000201" &&
+                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000201") &&
               !registry.prepared_execution_contexts_by_uuid.contains(
                   scratchbird::core::platform::Uuid{first_uuid}) &&
               registry.cursors_by_uuid.at(
@@ -849,7 +846,7 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
   auto other_session = Session(
       other_session_uuid,
       sbps::MakeUuidV7Bytes(),
-      Transaction(203, "019f0000-0000-7000-8000-000000000203"));
+      Transaction(203, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000203")));
   other_session.database_uuid = stored_session.database_uuid;
   registry.sessions_by_uuid[scratchbird::core::platform::Uuid{other_session_uuid}] =
       other_session;
@@ -869,14 +866,14 @@ void VerifyChannelScopedQuarantine() {
   const auto session_a_uuid = sbps::MakeUuidV7Bytes();
   const auto session_b_uuid = sbps::MakeUuidV7Bytes();
   auto transaction_a = Transaction(
-      101, "019f0000-0000-7000-8000-000000000101");
+      101, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000101"));
   transaction_a.lifecycle_state =
       server::ServerTransactionLifecycleState::kFinalityUnknown;
   auto session_a = Session(session_a_uuid, channel_a, transaction_a);
   auto session_b = Session(
       session_b_uuid,
       channel_b,
-      Transaction(102, "019f0000-0000-7000-8000-000000000102"));
+      Transaction(102, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000102")));
   registry.physical_channel_by_connection_uuid[
       scratchbird::core::platform::Uuid{session_a_uuid}] = channel_a;
   registry.physical_channel_by_connection_uuid[
@@ -905,16 +902,16 @@ void VerifyDefaultMapAndHelloInvariants() {
   auto session = Session(
       session_uuid,
       sbps::MakeUuidV7Bytes(),
-      Transaction(111, "019f0000-0000-7000-8000-000000000111"));
+      Transaction(111, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000111")));
   Require(server::AdoptAndFindExactActiveDefaultTransaction(&session) !=
               nullptr,
           "exact active default transaction was not recognized");
   Require(server::IsCompleteEngineTransactionIdentity(
-              111, "019f0000-0000-7000-8000-000000000111") &&
+              111, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000111")) &&
               !server::IsCompleteEngineTransactionIdentity(
-                  0, "019f0000-0000-7000-8000-000000000111") &&
+                  0, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000111")) &&
               !server::IsCompleteEngineTransactionIdentity(
-                  111, "not-a-transaction-uuid"),
+                  111, platform::Uuid{{1}}),
           "server accepted an incomplete begin/attach transaction identity");
   session.default_local_transaction_id = 999;
   Require(server::AdoptAndFindExactActiveDefaultTransaction(&session) ==
@@ -1005,20 +1002,20 @@ void VerifyEngineCompositeFinalityAuthority() {
                   "refused_before_inventory_commit" &&
               commit_policy_result.local_transaction_id ==
                   commit_context.local_transaction_id &&
-              commit_policy_result.transaction_uuid.canonical ==
-                  commit_context.transaction_uuid.canonical &&
+              commit_policy_result.transaction_uuid ==
+                  commit_context.transaction_uuid &&
               InventoryContainsExactActiveTransaction(fixture,
                                                       commit_context),
           "commit runtime-policy refusal was not exact known-not-applied");
   for (const auto& refused_uuid :
-       std::vector<std::string>{
+       std::vector<platform::Uuid>{
            {},
-           "not-a-transaction-uuid",
-           NewUuidText(platform::UuidKind::transaction,
+           platform::Uuid{{1}},
+           NewUuid(platform::UuidKind::transaction,
                        fixture.salt + 301)}) {
     api::EngineCommitTransactionRequest commit;
     commit.context = commit_context;
-    commit.context.transaction_uuid.canonical = refused_uuid;
+    commit.context.transaction_uuid = refused_uuid;
     RequireCompositeRefusal(
         api::EngineCommitTransaction(commit),
         "commit accepted or echoed a non-exact composite transaction identity");
@@ -1043,31 +1040,31 @@ void VerifyEngineCompositeFinalityAuthority() {
                   "refused_before_inventory_rollback" &&
               rollback_policy_result.local_transaction_id ==
                   rollback_context.local_transaction_id &&
-              rollback_policy_result.transaction_uuid.canonical ==
-                  rollback_context.transaction_uuid.canonical &&
+              rollback_policy_result.transaction_uuid ==
+                  rollback_context.transaction_uuid &&
               InventoryContainsExactActiveTransaction(fixture,
                                                       rollback_context),
           "rollback runtime-policy refusal was not exact known-not-applied");
   for (const auto& refused_uuid :
-       std::vector<std::string>{
+       std::vector<platform::Uuid>{
            {},
-           "not-a-transaction-uuid",
-           NewUuidText(platform::UuidKind::transaction,
+           platform::Uuid{{1}},
+           NewUuid(platform::UuidKind::transaction,
                        fixture.salt + 302)}) {
     api::EngineRollbackTransactionRequest rollback;
     rollback.context = rollback_context;
-    rollback.context.transaction_uuid.canonical = refused_uuid;
+    rollback.context.transaction_uuid = refused_uuid;
     RequireCompositeRefusal(
         api::EngineRollbackTransaction(rollback),
         "rollback accepted or echoed a non-exact composite transaction identity");
     Require(InventoryContainsExactActiveTransaction(fixture, rollback_context),
             "rollback identity refusal mutated the active inventory entry");
   }
-  const std::string two_phase_wrong_uuid = NewUuidText(
+  const platform::Uuid two_phase_wrong_uuid = NewUuid(
       platform::UuidKind::transaction, fixture.salt + 303);
   api::EnginePrepareTransactionRequest prepare;
   prepare.context = rollback_context;
-  prepare.context.transaction_uuid.canonical = two_phase_wrong_uuid;
+  prepare.context.transaction_uuid = two_phase_wrong_uuid;
   Require(!api::EnginePrepareTransaction(prepare).ok &&
               InventoryContainsExactActiveTransaction(fixture,
                                                       rollback_context),
@@ -1075,7 +1072,7 @@ void VerifyEngineCompositeFinalityAuthority() {
 
   api::EngineExecuteTransactionBlockRequest execute_block;
   execute_block.context = rollback_context;
-  execute_block.context.transaction_uuid.canonical = two_phase_wrong_uuid;
+  execute_block.context.transaction_uuid = two_phase_wrong_uuid;
   Require(!api::EngineExecuteTransactionBlock(execute_block).ok &&
               InventoryContainsExactActiveTransaction(fixture,
                                                       rollback_context),
@@ -1105,10 +1102,8 @@ sbps::Frame RoutedExecuteFrameV2(
   PutU8(&frame.payload, route);
   PutU64(&frame.payload,
          transaction == nullptr ? 0 : transaction->local_transaction_id);
-  PutString(&frame.payload,
-            transaction == nullptr ? std::string_view{}
-                                   : std::string_view(
-                                         transaction->transaction_uuid));
+  PutUuid(&frame.payload, transaction == nullptr ? platform::Uuid{}.bytes
+                                               : transaction->transaction_uuid.bytes);
   PutString(&frame.payload, encoded);
   PutBytes(&frame.payload, {});
   return frame;
@@ -1131,7 +1126,7 @@ sbps::Frame RoutedPrepareFrameV2(
   PutU64(&frame.payload, 1);
   PutU64(&frame.payload, 1);
   PutU64(&frame.payload, transaction.local_transaction_id);
-  PutString(&frame.payload, transaction.transaction_uuid);
+  PutUuid(&frame.payload, transaction.transaction_uuid.bytes);
   PutString(&frame.payload, encoded);
   return frame;
 }
@@ -1152,33 +1147,36 @@ sbps::Frame RoutedExecutePreparedFrameV2(
   PutU8(&frame.payload, 0);
   PutU8(&frame.payload, 1);
   PutU64(&frame.payload, transaction.local_transaction_id);
-  PutString(&frame.payload, transaction.transaction_uuid);
+  PutUuid(&frame.payload, transaction.transaction_uuid.bytes);
   PutString(&frame.payload, std::string_view{});
   PutBytes(&frame.payload, {});
   return frame;
 }
 
+namespace sblr = scratchbird::engine::sblr;
+void AddIdentity(sblr::SblrOperationEnvelope& envelope, std::string name,
+                 const platform::Uuid& id) {
+  sblr::SblrOperand operand;
+  operand.name = std::move(name); operand.type = "uuid";
+  operand.value_kind = sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(id.bytes.begin(), id.bytes.end());
+  envelope.operands.push_back(std::move(operand));
+}
+sblr::SblrOperationEnvelope NeutralEnvelope(std::string operation, std::string opcode) {
+  auto envelope = sblr::MakeSblrEnvelope(std::move(operation), std::move(opcode), "neutral-routing");
+  envelope.parser_resolved_names_to_uuids = true;
+  envelope.requires_security_context = true;
+  envelope.requires_transaction_context = true;
+  return envelope;
+}
 std::string NeutralOperationEnvelope(std::string_view operation_id,
                                      std::string_view opcode,
                                      std::string_view family,
                                      bool requires_transaction) {
-  std::string out;
-  out += "operation_id=";
-  out += operation_id;
-  out += "\nopcode=";
-  out += opcode;
-  out += "\nsblr_operation_family=";
-  out += family;
-  out += "\nresult_shape=engine.api.result.v1\n";
-  out += "diagnostic_shape=engine.diagnostic.v1\n";
-  out += "trace_key=parser-neutral-v2-visibility\n";
-  out += "contains_sql_text=false\n";
-  out += "parser_resolved_names_to_uuids=true\n";
-  out += "requires_security_context=true\n";
-  out += requires_transaction ? "requires_transaction_context=true\n"
-                              : "requires_transaction_context=false\n";
-  out += "requires_cluster_authority=false\n";
-  return out;
+  (void)family;
+  auto envelope = NeutralEnvelope(std::string(operation_id), std::string(opcode));
+  envelope.requires_transaction_context = requires_transaction;
+  return sblr::EncodeSblrEnvelope(envelope);
 }
 
 std::string NeutralTransactionEnvelope(std::string_view operation_id,
@@ -1189,202 +1187,113 @@ std::string NeutralTransactionEnvelope(std::string_view operation_id,
                                   true);
 }
 
-std::string NeutralProceduralBlockEnvelope(std::string_view fields) {
-  std::string out =
-      "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
-      "\"envelope_major\":3,"
-      "\"sblr_version\":\"sblr_v3\","
-      "\"operation_id\":\"transaction.execute_block\","
-      "\"opcode\":\"SBLR_TRANSACTION_EXECUTE_BLOCK\","
-      "\"operation_family\":\"sblr.transaction.control.v3\","
-      "\"sblr_operation_family\":\"sblr.transaction.control.v3\","
-      "\"result_shape\":\"engine.api.result.v1\","
-      "\"diagnostic_shape\":\"engine.diagnostic.v1\","
-      "\"parser_resolved_names_to_uuids\":true,"
-      "\"requires_security_context\":true,"
-      "\"requires_transaction_context\":true,"
-      "\"requires_cluster_authority\":false,"
-      "\"contains_sql_text\":false,"
-      "\"identifier_profile_uuid\":\"neutral_conformance\","
-      "\"source_dialect\":\"neutral_conformance\"";
-  if (!fields.empty()) {
-    out += ',';
-    out += fields;
-  }
-  out += '}';
-  return out;
+std::string NeutralProceduralBlockEnvelope(
+    std::initializer_list<std::pair<std::string, std::string>> fields) {
+  auto envelope = NeutralEnvelope("transaction.execute_block", "SBLR_TRANSACTION_EXECUTE_BLOCK");
+  for (const auto& [key, value] : fields) envelope.operands.push_back({"text", key, value});
+  return sblr::EncodeSblrEnvelope(envelope);
 }
 
 std::string NeutralEmptyResultProceduralBlockEnvelope() {
-  return NeutralProceduralBlockEnvelope(
-      "\"procedural_ir_contract\":\"sblr.procedural.block.v1\","
-      "\"procedural_block_kind\":\"anonymous\","
-      "\"procedural_input_count\":\"0\","
-      "\"procedural_local_count\":\"0\","
-      "\"procedural_output_count\":\"1\","
-      "\"procedural_slot_count\":\"1\","
-      "\"procedural_instruction_count\":\"0\","
-      "\"procedural_yield_count\":\"0\","
-      "\"procedural_slot_0_id\":\"result.0\","
-      "\"procedural_slot_0_kind\":\"result\","
-      "\"procedural_slot_0_type\":\"int32\","
-      "\"procedural_slot_0_nullable\":\"false\"");
+  return NeutralProceduralBlockEnvelope({{"procedural_ir_contract", "sblr.procedural.block.v1"},
+      {"procedural_block_kind", "anonymous"},
+      {"procedural_input_count", "0"},
+      {"procedural_local_count", "0"},
+      {"procedural_output_count", "1"},
+      {"procedural_slot_count", "1"},
+      {"procedural_instruction_count", "0"},
+      {"procedural_yield_count", "0"},
+      {"procedural_slot_0_id", "result.0"},
+      {"procedural_slot_0_kind", "result"},
+      {"procedural_slot_0_type", "int32"},
+      {"procedural_slot_0_nullable", "false"}});
 }
 
 std::string NeutralTimestampAssignmentProceduralBlockEnvelope() {
-  return NeutralProceduralBlockEnvelope(
-      "\"procedural_ir_contract\":\"sblr.procedural.block.v1\","
-      "\"procedural_block_kind\":\"anonymous\","
-      "\"procedural_input_count\":\"0\","
-      "\"procedural_local_count\":\"1\","
-      "\"procedural_output_count\":\"0\","
-      "\"procedural_slot_count\":\"1\","
-      "\"procedural_instruction_count\":\"1\","
-      "\"procedural_yield_count\":\"0\","
-      "\"procedural_slot_0_id\":\"local.0\","
-      "\"procedural_slot_0_kind\":\"local\","
-      "\"procedural_slot_0_type\":\"character\","
-      "\"procedural_slot_0_nullable\":\"true\","
-      "\"procedural_slot_0_character_length\":\"100\","
-      "\"procedural_instruction_0_kind\":\"assign\","
-      "\"procedural_instruction_0_target_slot\":\"local.0\","
-      "\"procedural_instruction_0_expression_kind\":\"substring\","
-      "\"procedural_instruction_0_source_kind\":\"context_variable\","
-      "\"procedural_instruction_0_source_id\":\"ctx_current_timestamp\","
-      "\"procedural_instruction_0_source_cast_type\":\"character\","
-      "\"procedural_instruction_0_start_kind\":\"literal_int64\","
-      "\"procedural_instruction_0_start_value\":\"1\","
-      "\"procedural_instruction_0_length_kind\":\"to_end\"");
+  return NeutralProceduralBlockEnvelope({{"procedural_ir_contract", "sblr.procedural.block.v1"},
+      {"procedural_block_kind", "anonymous"},
+      {"procedural_input_count", "0"},
+      {"procedural_local_count", "1"},
+      {"procedural_output_count", "0"},
+      {"procedural_slot_count", "1"},
+      {"procedural_instruction_count", "1"},
+      {"procedural_yield_count", "0"},
+      {"procedural_slot_0_id", "local.0"},
+      {"procedural_slot_0_kind", "local"},
+      {"procedural_slot_0_type", "character"},
+      {"procedural_slot_0_nullable", "true"},
+      {"procedural_slot_0_character_length", "100"},
+      {"procedural_instruction_0_kind", "assign"},
+      {"procedural_instruction_0_target_slot", "local.0"},
+      {"procedural_instruction_0_expression_kind", "substring"},
+      {"procedural_instruction_0_source_kind", "context_variable"},
+      {"procedural_instruction_0_source_id", "ctx_current_timestamp"},
+      {"procedural_instruction_0_source_cast_type", "character"},
+      {"procedural_instruction_0_start_kind", "literal_int64"},
+      {"procedural_instruction_0_start_value", "1"},
+      {"procedural_instruction_0_length_kind", "to_end"}});
 }
 
-std::string NeutralInsertEnvelope(
-    const EngineTransactionFixture& fixture,
-    std::string_view value = "neutral-v2-visible-row") {
-  auto out = NeutralOperationEnvelope("dml.insert_rows",
-                                      "SBLR_DML_INSERT_ROWS",
-                                      "sblr.dml.operation.v3",
-                                      true);
-  out += "target_object_uuid=" + fixture.table_uuid + "\n";
-  out += "target_object_kind=table\n";
-  out += "estimated_row_count=1\n";
-  // The empty row identity before '|id' is deliberate: the engine, not this
-  // conformance client, must mint the durable row UUID.
-  out += "operand=row_field:text\t|id\t";
-  out += value;
-  out += "\n";
-  return out;
+std::string NeutralInsertEnvelope(const EngineTransactionFixture& fixture,
+                                 std::string_view value = "neutral-v2-visible-row") {
+  auto envelope = NeutralEnvelope("dml.insert_rows", "SBLR_DML_INSERT_ROWS");
+  AddIdentity(envelope, "target_object_uuid", fixture.table_uuid);
+  envelope.operands = [&] { auto operands = envelope.operands;
+    operands.push_back({"text", "target_object_kind", "table"});
+    operands.push_back({"text", "estimated_row_count", "1"});
+    operands.push_back({"row_field:text", "|id", std::string(value)});
+    return operands; }();
+  return sblr::EncodeSblrEnvelope(envelope);
 }
-
-std::string NeutralDeleteEnvelope(
-    const EngineTransactionFixture& fixture,
-    std::string_view result_payload_policy = {}) {
-  auto out = NeutralOperationEnvelope("dml.delete_rows",
-                                      "SBLR_DML_DELETE_ROWS",
-                                      "sblr.dml.operation.v3",
-                                      true);
-  out += "target_object_uuid=" + fixture.table_uuid + "\n";
-  out += "target_object_kind=table\n";
-  if (!result_payload_policy.empty()) {
-    out += "result_payload_policy=";
-    out += result_payload_policy;
-    out += "\n";
-  }
-  return out;
+std::string NeutralDeleteEnvelope(const EngineTransactionFixture& fixture,
+                                 std::string_view result_payload_policy = {}) {
+  auto envelope = NeutralEnvelope("dml.delete_rows", "SBLR_DML_DELETE_ROWS");
+  AddIdentity(envelope, "target_object_uuid", fixture.table_uuid);
+  envelope.operands.push_back({"text", "target_object_kind", "table"});
+  if (!result_payload_policy.empty()) envelope.operands.push_back({"text", "result_payload_policy", std::string(result_payload_policy)});
+  return sblr::EncodeSblrEnvelope(envelope);
 }
-
 std::string NeutralSelectEnvelope(const EngineTransactionFixture& fixture) {
-  auto out = NeutralOperationEnvelope("dml.select_rows",
-                                      "SBLR_DML_SELECT_ROWS",
-                                      "sblr.query.relational.v3",
-                                      true);
-  out += "target_object_uuid=" + fixture.table_uuid + "\n";
-  out += "target_object_kind=table\n";
-  out += "projection_count=1\nprojection_0=id\n";
-  out += "predicate_kind=column_equals\n";
-  out += "predicate_column=id\n";
-  out += "predicate_value=neutral-v2-visible-row\n";
-  out += "predicate_value_type=text\nlimit=1\n";
-  return out;
+  auto envelope = NeutralEnvelope("dml.select_rows", "SBLR_DML_SELECT_ROWS");
+  AddIdentity(envelope, "target_object_uuid", fixture.table_uuid);
+  for (const auto& [key, value] : std::initializer_list<std::pair<std::string, std::string>>{
+      {"target_object_kind", "table"}, {"projection_count", "1"}, {"projection_0", "id"},
+      {"predicate_kind", "column_equals"}, {"predicate_column", "id"},
+      {"predicate_value", "neutral-v2-visible-row"}, {"predicate_value_type", "text"}, {"limit", "1"}})
+    envelope.operands.push_back({"text", key, value});
+  return sblr::EncodeSblrEnvelope(envelope);
 }
-
-std::string NeutralRoutineCreateOrAlterEnvelope(
-    const EngineTransactionFixture& fixture) {
-  std::string out =
-      "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
-      "\"envelope_major\":3,"
-      "\"sblr_version\":\"sblr_v3\","
-      "\"operation_id\":\"ddl.create_procedure\","
-      "\"opcode\":\"SBLR_DDL_CREATE_PROCEDURE\","
-      "\"operation_family\":\"sblr.catalog.mutation.v3\","
-      "\"sblr_operation_family\":\"sblr.catalog.mutation.v3\","
-      "\"result_shape\":\"engine.api.result.v1\","
-      "\"diagnostic_shape\":\"engine.diagnostic.v1\","
-      "\"parser_resolved_names_to_uuids\":true,"
-      "\"requires_security_context\":true,"
-      "\"requires_transaction_context\":true,"
-      "\"requires_cluster_authority\":false,"
-      "\"contains_sql_text\":false,"
-      "\"identifier_profile_uuid\":\"sbsql_v3\","
-      "\"source_dialect\":\"neutral_conformance\","
-      "\"target_object_kind\":\"procedure\","
-      "\"procedure_name\":\"neutral_delete_between\","
-      "\"target_schema_uuid\":\"";
-  out += fixture.schema_uuid;
-  out +=
-      "\",\"executor\":\"sblr\","
-      "\"sblr_hash\":\"sha256:3f4bbd573a74f8a6a99d1073cc8f6f954f030e20f44dfbcebd2f4f3df953f861\","
-      "\"sblr_provenance\":\"engine_compiled_uuid_bound_routine_v1\","
-      "\"side_effect_class\":\"data_mutation\","
-      "\"executable_descriptor_kind\":\"create_or_alter_procedure\","
-      "\"compiled_body_descriptor\":\"";
-  out += api::kRoutineDeleteColumnRangeCountDescriptorV1;
-  out += "|" + fixture.routine_table_uuid + "|" +
-         fixture.routine_column_uuid + "|0|1|2|2\",";
-  out +=
-      "\"routine_parameter_count\":\"2\","
-      "\"routine_parameter_0_mode\":\"in\","
-      "\"routine_parameter_0_type\":\"integer\","
-      "\"routine_parameter_1_mode\":\"in\","
-      "\"routine_parameter_1_type\":\"integer\","
-      "\"routine_return_count\":\"1\","
-      "\"routine_return_0_type\":\"integer\","
-      "\"related_object_0_uuid\":\"";
-  out += fixture.routine_table_uuid;
-  out +=
-      "\",\"related_object_0_kind\":\"table\","
-      "\"permission\":\"manage_executable\"}";
-  return out;
+std::string NeutralRoutineCreateOrAlterEnvelope(const EngineTransactionFixture& fixture) {
+  auto envelope = NeutralEnvelope("ddl.create_procedure", "SBLR_DDL_CREATE_PROCEDURE");
+  AddIdentity(envelope, "target_schema_uuid", fixture.schema_uuid);
+  AddIdentity(envelope, "related_object_0_uuid", fixture.routine_table_uuid);
+  std::string body = std::string(api::kRoutineDeleteColumnRangeCountDescriptorV1) + "|";
+  body += BinaryFixtureIdentity(fixture.routine_table_uuid);
+  body += BinaryFixtureIdentity(fixture.routine_column_uuid);
+  for (std::uint32_t slot : {0u, 1u, 2u, 2u})
+    for (unsigned shift = 0; shift < 32; shift += 8) body.push_back(static_cast<char>(slot >> shift));
+  envelope.operands.push_back({"text", "compiled_body_descriptor", std::move(body)});
+  for (const auto& [key, value] : std::initializer_list<std::pair<std::string, std::string>>{
+      {"target_object_kind", "procedure"}, {"procedure_name", "neutral_delete_between"},
+      {"executor", "sblr"},
+      {"sblr_hash", "sha256:3f4bbd573a74f8a6a99d1073cc8f6f954f030e20f44dfbcebd2f4f3df953f861"},
+      {"sblr_provenance", "engine_compiled_uuid_bound_routine_v1"},
+      {"side_effect_class", "data_mutation"}, {"executable_descriptor_kind", "create_or_alter_procedure"},
+      {"routine_parameter_count", "2"}, {"routine_parameter_0_mode", "in"}, {"routine_parameter_0_type", "integer"},
+      {"routine_parameter_1_mode", "in"}, {"routine_parameter_1_type", "integer"}, {"routine_return_count", "1"},
+      {"routine_return_0_type", "integer"}, {"related_object_0_kind", "table"}, {"permission", "manage_executable"}})
+    envelope.operands.push_back({"text", key, value});
+  return sblr::EncodeSblrEnvelope(envelope);
 }
-
-std::string NeutralRoutineInvokeEnvelope(std::string_view procedure_uuid) {
-  std::string out =
-      "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
-      "\"envelope_major\":3,"
-      "\"sblr_version\":\"sblr_v3\","
-      "\"operation_id\":\"routine.procedure_invoke\","
-      "\"opcode\":\"SBLR_PROCEDURE_INVOKE\","
-      "\"operation_family\":\"sblr.routine.execute.v3\","
-      "\"sblr_operation_family\":\"sblr.routine.execute.v3\","
-      "\"result_shape\":\"engine.api.result.v1\","
-      "\"diagnostic_shape\":\"engine.diagnostic.v1\","
-      "\"parser_resolved_names_to_uuids\":true,"
-      "\"requires_security_context\":true,"
-      "\"requires_transaction_context\":true,"
-      "\"requires_cluster_authority\":false,"
-      "\"contains_sql_text\":false,"
-      "\"identifier_profile_uuid\":\"sbsql_v3\","
-      "\"source_dialect\":\"neutral_conformance\","
-      "\"target_object_uuid\":\"";
-  out += procedure_uuid;
-  out +=
-      "\",\"target_object_kind\":\"procedure\","
-      "\"routine_argument_count\":\"2\","
-      "\"routine_argument_0_type\":\"integer\","
-      "\"routine_argument_0_value\":\"4\","
-      "\"routine_argument_1_type\":\"integer\","
-      "\"routine_argument_1_value\":\"7\","
-      "\"permission\":\"invoke_executable\"}";
-  return out;
+std::string NeutralRoutineInvokeEnvelope(const platform::Uuid& procedure_uuid) {
+  auto envelope = NeutralEnvelope("routine.procedure_invoke", "SBLR_PROCEDURE_INVOKE");
+  AddIdentity(envelope, "target_object_uuid", procedure_uuid);
+  for (const auto& [key, value] : std::initializer_list<std::pair<std::string, std::string>>{
+      {"target_object_kind", "procedure"}, {"routine_argument_count", "2"}, {"routine_argument_0_type", "integer"},
+      {"routine_argument_0_value", "4"}, {"routine_argument_1_type", "integer"}, {"routine_argument_1_value", "7"},
+      {"permission", "invoke_executable"}})
+    envelope.operands.push_back({"text", key, value});
+  return sblr::EncodeSblrEnvelope(envelope);
 }
 
 struct NeutralLiveV2Route {
@@ -1402,7 +1311,7 @@ NeutralLiveV2Route MakeNeutralLiveV2Route(
   const auto channel_uuid = sbps::MakeUuidV7Bytes();
   route.default_transaction =
       Transaction(context.local_transaction_id,
-                  context.transaction_uuid.canonical);
+                  context.transaction_uuid);
   route.default_transaction.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
 
@@ -1505,18 +1414,18 @@ void VerifyNeutralPersistedRelationProjection() {
   client_session.transaction_routing_v2_negotiated = true;
   client_session.relation_descriptor_projection_v3_negotiated = true;
   client_session.session_uuid =
-      server::UuidBytesToText(route.session_uuid);
+      platform::Uuid{route.session_uuid};
   client_session.connection_uuid = client_session.session_uuid;
   client_session.database_uuid = fixture.database_uuid;
   client_session.default_language = "en";
-  client_session.dialect_profile_uuid = "sbsql_v3";
+  client_session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   client_session.catalog_epoch = 1;
   client_session.security_policy_epoch = 1;
   ipc::ParserClientConfig client_config;
-  client_config.dialect_profile_uuid = "sbsql_v3";
+  client_config.dialect_profile_uuid = client_session.dialect_profile_uuid;
   ipc::ParserTransactionSelector selector;
   selector.local_transaction_id = context.local_transaction_id;
-  selector.transaction_uuid = context.transaction_uuid.canonical;
+  selector.transaction_uuid = context.transaction_uuid;
 
   const auto v2_payload =
       ipc::EncodeResolveNameRequestPayloadV2ForTest(
@@ -1529,14 +1438,14 @@ void VerifyNeutralPersistedRelationProjection() {
   std::vector<std::uint8_t> expected_v2;
   PutString(&expected_v2, "neutral_resource_projection");
   PutU8(&expected_v2, 0);
-  PutString(&expected_v2, "sbsql_v3");
+  PutUuid(&expected_v2, client_config.dialect_profile_uuid.bytes);
   PutString(&expected_v2, "en");
   PutString(&expected_v2, "");
   PutString(&expected_v2, "relation");
   PutU8(&expected_v2, 1);
   PutUuid(&expected_v2, route.session_uuid);
   PutU64(&expected_v2, selector.local_transaction_id);
-  PutString(&expected_v2, selector.transaction_uuid);
+  PutUuid(&expected_v2, selector.transaction_uuid.bytes);
   Require(v2_payload == expected_v2,
           "ResolveName V3 work changed the legacy V2 request bytes");
 
@@ -1561,7 +1470,7 @@ void VerifyNeutralPersistedRelationProjection() {
   std::vector<std::uint8_t> v1_cache_prewarm_payload;
   PutString(&v1_cache_prewarm_payload, "neutral_resource_projection");
   PutU8(&v1_cache_prewarm_payload, 0);
-  PutString(&v1_cache_prewarm_payload, "sbsql_v3");
+  PutUuid(&v1_cache_prewarm_payload, client_config.dialect_profile_uuid.bytes);
   PutString(&v1_cache_prewarm_payload, "en");
   PutString(&v1_cache_prewarm_payload, "");
   PutString(&v1_cache_prewarm_payload, "relation");
@@ -1699,12 +1608,12 @@ void VerifyNeutralPersistedRelationProjection() {
       !projected.relation_descriptor.present) {
     std::cerr << "projected_decoded=" << projected_decoded
               << " resolved=" << projected.resolved
-              << " object_uuid=" << projected.object_uuid
-              << " expected_uuid=" << fixture.resource_table_uuid
+              << " object_uuid=" << (projected.object_uuid == fixture.resource_table_uuid)
+              << " expected_uuid=" << !fixture.resource_table_uuid.is_nil()
               << " descriptor_present="
               << projected.relation_descriptor.present
               << " relation_uuid="
-              << projected.relation_descriptor.relation_uuid
+              << (projected.relation_descriptor.relation_uuid == fixture.resource_table_uuid)
               << " generation="
               << projected.relation_descriptor.descriptor_generation
               << " validated_epoch="
@@ -1747,8 +1656,8 @@ void VerifyNeutralPersistedRelationProjection() {
               f2->charset_canonical_name == "GBK" &&
               f2->collation_canonical_name == "GBK_UNICODE" &&
               f2->character_length == 20 &&
-              !f1->type_descriptor_uuid.empty() &&
-              !f2->type_descriptor_uuid.empty(),
+              !f1->type_descriptor_uuid.is_nil() &&
+              !f2->type_descriptor_uuid.is_nil(),
           "V3 text projection lost canonical charset/collation metadata");
   Require(ReadBinaryFile(descriptor_path) == descriptor_bytes_before,
           "V3 persisted relation projection changed durable descriptor bytes");
@@ -1779,7 +1688,7 @@ void VerifyNeutralPersistedRelationProjection() {
 
   auto noncanonical_bypass_payload = v3_payload;
   const std::size_t selector_bytes =
-      16 + 8 + 2 + selector.transaction_uuid.size();
+      16 + 8 + 16;
   const std::size_t bypass_offset =
       expected_v2.size() - selector_bytes - 1;
   noncanonical_bypass_payload[bypass_offset] = 2;
@@ -1837,7 +1746,7 @@ void VerifyNeutralPersistedRelationProjection() {
           "V3 accepted unknown projection flags");
 
   auto wrong_selector = selector;
-  wrong_selector.transaction_uuid = NewUuidText(
+  wrong_selector.transaction_uuid = NewUuid(
       platform::UuidKind::transaction, fixture.salt + 9000);
   const auto wrong_selector_payload =
       ipc::EncodeResolveNameRequestPayloadV3ForTest(
@@ -1970,10 +1879,10 @@ void VerifyNeutralPersistedRelationProjection() {
   missing_selector.local_transaction_id =
       missing_context.local_transaction_id;
   missing_selector.transaction_uuid =
-      missing_context.transaction_uuid.canonical;
+      missing_context.transaction_uuid;
   auto missing_client_session = client_session;
   missing_client_session.session_uuid =
-      server::UuidBytesToText(missing_route.session_uuid);
+      platform::Uuid{missing_route.session_uuid};
   missing_client_session.connection_uuid =
       missing_client_session.session_uuid;
   const auto missing_payload =
@@ -2040,7 +1949,7 @@ bool InventoryContainsExactActiveSelector(
     const bool active = entry.state == mga::TransactionState::active ||
                         entry.state == mga::TransactionState::read_only_active;
     return active &&
-           uuid::UuidToString(entry.identity.transaction_uuid.value) ==
+           entry.identity.transaction_uuid.value ==
                selector.transaction_uuid;
   }
   return false;
@@ -2134,9 +2043,8 @@ void VerifyNeutralProceduralBlockBridge() {
       "prepared neutral procedural block lost its exact MGA selector");
   Require(empty_result_decoded.row_count == 0,
           "prepared neutral zero-yield block returned rows");
-  Require(empty_result_decoded.cursor_uuid.empty(),
-          "prepared neutral zero-yield block returned cursor " +
-              empty_result_decoded.cursor_uuid);
+  Require(empty_result_decoded.cursor_uuid.is_nil(),
+          "prepared neutral zero-yield block returned a non-nil cursor");
   Require(empty_result_decoded.row_packet.find(
               "result_kind=sblr.procedural.block.rows.v1") !=
               std::string::npos,
@@ -2185,8 +2093,7 @@ void VerifyNeutralProceduralBlockBridge() {
       route.engine_state,
       RoutedExecuteFrameV2(
           route.session_uuid,
-          NeutralProceduralBlockEnvelope(
-              "\"procedural_ir_contract\":\"sblr.procedural.block.v1\""),
+          NeutralProceduralBlockEnvelope({{"procedural_ir_contract", "sblr.procedural.block.v1"}}),
           1,
           &selector));
   Require(!malformed.accepted &&
@@ -2200,7 +2107,7 @@ void VerifyNeutralProceduralBlockBridge() {
       route.engine_state,
       RoutedExecuteFrameV2(
           route.session_uuid,
-          NeutralProceduralBlockEnvelope("\"source_sql\":\"present\""),
+          NeutralProceduralBlockEnvelope({{"source_sql", "present"}}),
           1,
           &selector));
   Require(!source_only.accepted &&
@@ -2249,14 +2156,11 @@ void VerifyServerRoutedCreateOrAlterRoutineEnvelope() {
   const auto context = BeginEngineTransaction(fixture, 41);
   const std::string create_envelope =
       NeutralRoutineCreateOrAlterEnvelope(fixture);
-  Require(create_envelope.find("\"target_object_uuid\":") ==
-                  std::string::npos &&
-              create_envelope.find("\"procedure_object_uuid\":") ==
-                  std::string::npos &&
-              create_envelope.find("\"sql_text\":") ==
-                  std::string::npos &&
-              create_envelope.find("\"contains_sql_text\":false") !=
-                  std::string::npos,
+  const auto decoded_create = sblr::DecodeSblrEnvelope(create_envelope);
+  Require(decoded_create.ok && !decoded_create.envelope.contains_sql_text &&
+              std::none_of(decoded_create.envelope.operands.begin(), decoded_create.envelope.operands.end(),
+                           [](const auto& operand) { return operand.name == "target_object_uuid" ||
+                               operand.name == "procedure_object_uuid" || operand.name == "sql_text"; }),
           "neutral routine CREATE envelope supplied identity or SQL text");
   auto route = MakeNeutralLiveV2Route(fixture, context);
   const auto selector = route.default_transaction;
@@ -2274,15 +2178,15 @@ void VerifyServerRoutedCreateOrAlterRoutineEnvelope() {
       created,
       selector,
       "server-routed CREATE OR ALTER lost its exact MGA selector");
-  const std::string created_procedure_uuid =
-      ResultRowField(created_result.row_packet, "object_uuid");
-  if (created_procedure_uuid.empty()) {
+  const auto created_procedure_uuid = NativeFixtureIdentity(
+      ResultRowField(created_result.row_packet, "object_uuid"));
+  if (created_procedure_uuid.is_nil()) {
     std::cerr << "routine_create_row_count=" << created_result.row_count
               << " routine_create_payload=" << created_result.row_packet
               << '\n';
   }
   Require(created_result.row_count >= 1 &&
-              !created_procedure_uuid.empty() &&
+              !created_procedure_uuid.is_nil() &&
               created_result.row_packet.find(
                   "sblr_hash:sha256:3f4bbd573a74f8a6a99d1073cc8f6f954f030e20f44dfbcebd2f4f3df953f861") !=
                   std::string::npos &&
@@ -2298,15 +2202,15 @@ void VerifyServerRoutedCreateOrAlterRoutineEnvelope() {
   client_session.authenticated = true;
   client_session.transaction_routing_v2_negotiated = true;
   client_session.relation_descriptor_projection_v3_negotiated = true;
-  client_session.session_uuid = server::UuidBytesToText(route.session_uuid);
+  client_session.session_uuid = platform::Uuid{route.session_uuid};
   client_session.connection_uuid = client_session.session_uuid;
   client_session.database_uuid = fixture.database_uuid;
   client_session.default_language = "en";
-  client_session.dialect_profile_uuid = "sbsql_v3";
+  client_session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   client_session.catalog_epoch = 1;
   client_session.security_policy_epoch = 1;
   ipc::ParserClientConfig client_config;
-  client_config.dialect_profile_uuid = "sbsql_v3";
+  client_config.dialect_profile_uuid = client_session.dialect_profile_uuid;
   ipc::ParserTransactionSelector parser_selector;
   parser_selector.local_transaction_id = selector.local_transaction_id;
   parser_selector.transaction_uuid = selector.transaction_uuid;
@@ -2399,9 +2303,11 @@ server::ServerTransactionState BeginAdditionalTransaction(
   Require(route != nullptr, "neutral V2 route is required");
   auto begin = NeutralTransactionEnvelope("transaction.begin",
                                           "SBLR_TRANSACTION_BEGIN");
-  begin += "transaction_isolation_level=";
-  begin += isolation_level;
-  begin += "\ntransaction_read_only=false\n";
+  auto begin_envelope = sblr::DecodeSblrEnvelope(begin);
+  Require(begin_envelope.ok, "begin envelope did not decode");
+  begin_envelope.envelope.operands.push_back({"text", "transaction_isolation_level", std::string(isolation_level)});
+  begin_envelope.envelope.operands.push_back({"text", "transaction_read_only", "false"});
+  begin = sblr::EncodeSblrEnvelope(begin_envelope.envelope);
   const auto result = server::HandleExecuteSblr(
       &route->registry,
       route->engine_state,
@@ -2436,9 +2342,9 @@ void VerifyTransferablePreparedRoutineMetadata() {
   const auto created_result = DecodeAcceptedV2Result(
       created,
       "transferable metadata fixture could not create its routine");
-  const std::string procedure_uuid =
-      ResultRowField(created_result.row_packet, "object_uuid");
-  Require(!procedure_uuid.empty(),
+  const auto procedure_uuid = NativeFixtureIdentity(
+      ResultRowField(created_result.row_packet, "object_uuid"));
+  Require(!procedure_uuid.is_nil(),
           "transferable metadata fixture did not receive an engine routine UUID");
 
   const auto ddl_commit = server::HandleExecuteSblr(

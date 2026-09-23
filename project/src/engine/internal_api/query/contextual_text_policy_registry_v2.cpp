@@ -23,8 +23,8 @@ namespace datatypes = scratchbird::core::datatypes;
 namespace uuid = scratchbird::core::uuid;
 namespace sblr = scratchbird::engine::sblr;
 
-constexpr std::string_view kCatalogSnapshotUuid =
-    "019d0000-0000-7000-8000-00000000d701";
+constexpr EngineUuid kCatalogSnapshotUuid =
+    EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}};
 
 EngineApiDiagnostic Diagnostic(std::string code,
                                std::string key,
@@ -38,23 +38,18 @@ EngineApiDiagnostic OkDiagnostic() {
                                  false);
 }
 
-bool ExactNonNilUuid(std::string_view text) {
-  if (text.empty()) return false;
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  return parsed.ok() && !uuid::IsNilUuid(parsed.value) &&
-         uuid::UuidToString(parsed.value) == text;
+bool ExactNonNilUuid(const EngineUuid& id) {
+  return !id.is_nil();
 }
 
-bool ToWireUuid(std::string_view text, sblr::ContextualTextUuidV2* out) {
-  if (out == nullptr || !ExactNonNilUuid(text)) return false;
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), out->begin());
-  return true;
+bool ToWireUuid(const EngineUuid& id, sblr::ContextualTextUuidV2* out) {
+  if(out==nullptr||!ExactNonNilUuid(id))return false;
+  *out=id.bytes;return true;
 }
 
 EngineContextualTextPolicyRowV2 Row(
     std::string_view row_id,
-    std::string_view identity_uuid,
+    const EngineUuid& identity_uuid,
     EngineContextualTextPolicyKindV2 kind,
     std::string_view exact_semantic_contract) {
   EngineContextualTextPolicyRowV2 row;
@@ -71,31 +66,31 @@ EngineContextualTextPolicyRowSetV2 ExactRows() {
   EngineContextualTextPolicyRowSetV2 rows;
   rows.normalization = Row(
       "text.normalization.unicode_scalar_identity.v1",
-      "35342fdb-2a81-5dfb-8dc8-c99b78acde3c",
+      EngineUuid{{0x35,0x34,0x2f,0xdb,0x2a,0x81,0x5d,0xfb,0x8d,0xc8,0xc9,0x9b,0x78,0xac,0xde,0x3c}},
       EngineContextualTextPolicyKindV2::normalization_policy,
       "well_formed_Unicode_scalar_sequence:identity_no_normalization");
   rows.render = Row(
       "text.render.canonical_utf8.v1",
-      "c5fb802c-17b7-5737-8ee8-0abf3ad2900f",
+      EngineUuid{{0xc5,0xfb,0x80,0x2c,0x17,0xb7,0x57,0x37,0x8e,0xe8,0x0a,0xbf,0x3a,0xd2,0x90,0x0f}},
       EngineContextualTextPolicyKindV2::render_policy,
       "exact_canonical_UTF8_bytes:metadata_only");
   rows.canonicalization = Row(
       "text.canonicalization.contextual_literal.v2",
-      "233c7c3d-7454-52b6-8c8e-cfda48f8c683",
+      EngineUuid{{0x23,0x3c,0x7c,0x3d,0x74,0x54,0x52,0xb6,0x8c,0x8e,0xcf,0xda,0x48,0xf8,0xc6,0x83}},
       EngineContextualTextPolicyKindV2::canonicalization_profile,
       "shortest_UTF8:scalar_count:identity_normalization:target_limits:"
       "d71a_v1_generation_1:decode_reencode_identity");
   rows.comparison = Row(
       "text.comparison.descriptor_collated_equality.v1",
-      "835325ab-4c2b-5d07-aa03-271a9bd3a79c",
+      EngineUuid{{0x83,0x53,0x25,0xab,0x4c,0x2b,0x5d,0x07,0xaa,0x03,0x27,0x1a,0x9b,0xd3,0xa7,0x9c}},
       EngineContextualTextPolicyKindV2::comparison_contract,
       "exact_live_TEXT_descriptors:target_collation:SQL_three_valued_equality");
   rows.equality = Row(
       "text.equality_operation.sb_operator_equal.v1",
-      "019de5fc-2400-7b73-9c38-dcf10204dbde",
+      EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7b,0x73,0x9c,0x38,0xdc,0xf1,0x02,0x04,0xdb,0xde}},
       EngineContextualTextPolicyKindV2::equality_operation_binding,
       "sb.operator.equal:contextual_TEXT_overload");
-  (void)ToWireUuid("019d0000-0000-7000-8000-00000000d720",
+  (void)ToWireUuid(EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x20}},
                    &rows.equality_operator_snapshot_uuid);
   rows.equality_operator_registry_generation = 1;
   return rows;

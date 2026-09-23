@@ -1,3 +1,6 @@
+#include "catalog/binary_catalog_metadata.hpp"
+#include "mga_relation_store/mga_row_codec.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +9,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "backup_archive/backup_archive_api.hpp"
@@ -31,6 +35,9 @@
 #include "transaction/savepoint_api.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "mga_relation_store/mga_large_value_codec.hpp"
+#include <map>
 
 #include "../release/public_release_authz_fixture.hpp"
 
@@ -61,94 +68,94 @@ constexpr std::string_view kRecoveryDatabasePathName =
     "sbsql_temporary_table_recovery_conformance.sbdb";
 constexpr std::string_view kBackupDatabasePathName =
     "sbsql_temporary_table_backup_exclusion_conformance.sbdb";
-constexpr std::string_view kTableUuid =
-    "019f0000-0000-7000-8000-000000440101";
-constexpr std::string_view kColumnUuid =
-    "019f0000-0000-7000-8000-000000440102";
-constexpr std::string_view kSchemaUuid =
-    "019f0000-0000-7000-8000-000000440012";
-constexpr std::string_view kSchemaSetupSessionUuid =
-    "019f0000-0000-7000-8000-000000440010";
-constexpr std::string_view kDurableShadowTableUuid =
-    "019f0000-0000-7000-8000-000000440301";
-constexpr std::string_view kTemporaryShadowTableUuid =
-    "019f0000-0000-7000-8000-000000440302";
-constexpr std::string_view kTemporaryPrivateOnlyTableUuid =
-    "019f0000-0000-7000-8000-000000440303";
-constexpr std::string_view kRollbackTableUuid =
-    "019f0000-0000-7000-8000-000000440304";
-constexpr std::string_view kRollbackCreatedTableUuid =
-    "019f0000-0000-7000-8000-000000440305";
-constexpr std::string_view kTemporaryIndexedTableUuid =
-    "019f0000-0000-7000-8000-000000440307";
-constexpr std::string_view kTemporaryLargeValueTableUuid =
-    "019f0000-0000-7000-8000-000000440308";
-constexpr std::string_view kTemporaryIndexUuid =
-    "019f0000-0000-7000-8000-000000440601";
-constexpr std::string_view kTemporaryDropTableUuid =
-    "019f0000-0000-7000-8000-000000440309";
-constexpr std::string_view kTemporaryLargeValueIdColumnUuid =
-    "019f0000-0000-7000-8000-000000440701";
-constexpr std::string_view kTemporaryLargeValuePayloadColumnUuid =
-    "019f0000-0000-7000-8000-000000440702";
-constexpr std::string_view kTemporaryRecoveryGlobalTableUuid =
-    "019f0000-0000-7000-8000-000000440309";
-constexpr std::string_view kTemporaryRecoveryPrivateTableUuid =
-    "019f0000-0000-7000-8000-000000440310";
-constexpr std::string_view kTemporaryRecoveryColumnUuid =
-    "019f0000-0000-7000-8000-000000440801";
-constexpr std::string_view kBackupDurableTableUuid =
-    "019f0000-0000-7000-8000-000000440321";
-constexpr std::string_view kBackupDurableColumnUuid =
-    "019f0000-0000-7000-8000-000000440822";
-constexpr std::string_view kBackupGlobalTempTableUuid =
-    "019f0000-0000-7000-8000-000000440323";
-constexpr std::string_view kBackupGlobalTempColumnUuid =
-    "019f0000-0000-7000-8000-000000440824";
-constexpr std::string_view kBackupPrivateTempTableUuid =
-    "019f0000-0000-7000-8000-000000440325";
-constexpr std::string_view kBackupPrivateTempColumnUuid =
-    "019f0000-0000-7000-8000-000000440826";
-constexpr std::string_view kBackupTempIndexUuid =
-    "019f0000-0000-7000-8000-000000440827";
-constexpr std::string_view kBackupDurableRowUuid =
-    "019f0000-0000-7000-8000-000000440831";
-constexpr std::string_view kBackupGlobalTempRowUuid =
-    "019f0000-0000-7000-8000-000000440832";
-constexpr std::string_view kBackupPrivateTempRowUuid =
-    "019f0000-0000-7000-8000-000000440833";
-constexpr std::string_view kNamespacePrivateFirstTableUuid =
-    "019f0000-0000-7000-8000-000000440330";
-constexpr std::string_view kNamespaceDurableAfterTableUuid =
-    "019f0000-0000-7000-8000-000000440331";
-constexpr std::string_view kNamespaceOtherPrivateTableUuid =
-    "019f0000-0000-7000-8000-000000440332";
-constexpr std::string_view kNamespaceDuplicatePrivateTableUuid =
-    "019f0000-0000-7000-8000-000000440333";
-constexpr std::string_view kNamespaceSameTxDurableTableUuid =
-    "019f0000-0000-7000-8000-000000440334";
-constexpr std::string_view kNamespaceSameTxPrivateTableUuid =
-    "019f0000-0000-7000-8000-000000440335";
-constexpr std::string_view kNamespaceSameTxDuplicateTableUuid =
-    "019f0000-0000-7000-8000-000000440336";
-constexpr std::string_view kNamespaceDurableCollisionTableUuid =
-    "019f0000-0000-7000-8000-000000440337";
-constexpr std::string_view kNamespaceGlobalCollisionTableUuid =
-    "019f0000-0000-7000-8000-000000440338";
-constexpr std::string_view kNamespaceInvalidCatalogObjectUuid =
-    "019f0000-0000-7000-8000-000000440339";
-constexpr std::string_view kNamespaceGlobalCollisionAttemptTableUuid =
-    "019f0000-0000-7000-8000-000000440340";
-constexpr std::string_view kNamespaceDurableCollisionAttemptTableUuid =
-    "019f0000-0000-7000-8000-000000440341";
-constexpr std::string_view kNamespaceMalformedPersistedTableUuid =
-    "019f0000-0000-7000-8000-000000440342";
-constexpr std::string_view kNamespaceMalformedPersistedAttemptTableUuid =
-    "019f0000-0000-7000-8000-000000440343";
-constexpr std::string_view kNamespaceLifecycleOnlyTableUuid =
-    "019f0000-0000-7000-8000-000000440344";
-constexpr std::string_view kNamespaceLifecycleOnlyAttemptTableUuid =
-    "019f0000-0000-7000-8000-000000440345";
+constexpr auto kTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440101");
+constexpr auto kColumnUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440102");
+constexpr auto kSchemaUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440012");
+constexpr auto kSchemaSetupSessionUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440010");
+constexpr auto kDurableShadowTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440301");
+constexpr auto kTemporaryShadowTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440302");
+constexpr auto kTemporaryPrivateOnlyTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440303");
+constexpr auto kRollbackTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440304");
+constexpr auto kRollbackCreatedTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440305");
+constexpr auto kTemporaryIndexedTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440307");
+constexpr auto kTemporaryLargeValueTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440308");
+constexpr auto kTemporaryIndexUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440601");
+constexpr auto kTemporaryDropTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440309");
+constexpr auto kTemporaryLargeValueIdColumnUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440701");
+constexpr auto kTemporaryLargeValuePayloadColumnUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440702");
+constexpr auto kTemporaryRecoveryGlobalTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440309");
+constexpr auto kTemporaryRecoveryPrivateTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440310");
+constexpr auto kTemporaryRecoveryColumnUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440801");
+constexpr auto kBackupDurableTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440321");
+constexpr auto kBackupDurableColumnUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440822");
+constexpr auto kBackupGlobalTempTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440323");
+constexpr auto kBackupGlobalTempColumnUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440824");
+constexpr auto kBackupPrivateTempTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440325");
+constexpr auto kBackupPrivateTempColumnUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440826");
+constexpr auto kBackupTempIndexUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440827");
+constexpr auto kBackupDurableRowUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440831");
+constexpr auto kBackupGlobalTempRowUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440832");
+constexpr auto kBackupPrivateTempRowUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440833");
+constexpr auto kNamespacePrivateFirstTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440330");
+constexpr auto kNamespaceDurableAfterTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440331");
+constexpr auto kNamespaceOtherPrivateTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440332");
+constexpr auto kNamespaceDuplicatePrivateTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440333");
+constexpr auto kNamespaceSameTxDurableTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440334");
+constexpr auto kNamespaceSameTxPrivateTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440335");
+constexpr auto kNamespaceSameTxDuplicateTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440336");
+constexpr auto kNamespaceDurableCollisionTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440337");
+constexpr auto kNamespaceGlobalCollisionTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440338");
+constexpr auto kNamespaceInvalidCatalogObjectUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440339");
+constexpr auto kNamespaceGlobalCollisionAttemptTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440340");
+constexpr auto kNamespaceDurableCollisionAttemptTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440341");
+constexpr auto kNamespaceMalformedPersistedTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440342");
+constexpr auto kNamespaceMalformedPersistedAttemptTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440343");
+constexpr auto kNamespaceLifecycleOnlyTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440344");
+constexpr auto kNamespaceLifecycleOnlyAttemptTableUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440345");
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -159,6 +166,10 @@ void Require(bool condition, std::string_view message) {
 
 bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
+}
+
+bool Contains(std::string_view haystack, const api::EngineUuid& needle) {
+  return Contains(haystack, api::MetadataUuidBytes(needle));
 }
 
 bool HasValue(const std::vector<std::string>& values, std::string_view expected) {
@@ -174,36 +185,31 @@ std::string ReadFile(const std::filesystem::path& path) {
 
 void CorruptPersistedTemporaryOwnerForTest(
     const std::filesystem::path& database_path,
-    std::string_view table_uuid,
-    std::string_view expected_owner,
-    std::string_view malformed_owner) {
+    const api::EngineUuid& table_uuid,
+    const api::EngineUuid& expected_owner,
+    const api::EngineUuid& malformed_owner) {
   const std::filesystem::path metadata_path =
       database_path.string() + ".sb.mga_relation_metadata";
   std::string contents = ReadFile(metadata_path);
-  const std::string table_marker = "\t" + std::string(table_uuid) + "\t";
-  const auto table_position = contents.find(table_marker);
-  Require(table_position != std::string::npos,
-          "TEMP-TABLE-GATE-005 persisted malformed-owner table row missing");
-  const auto row_begin = contents.rfind('\n', table_position);
-  const auto row_end = contents.find('\n', table_position);
-  const std::size_t row_offset =
-      row_begin == std::string::npos ? 0 : row_begin + 1;
-  const std::size_t row_limit =
-      row_end == std::string::npos ? contents.size() : row_end;
-  Require(contents.compare(row_offset,
-                           std::string_view("SBMGA1\t"
-                                            "TABLE_METADATA_SEALED_DESCRIPTOR_V2")
-                               .size(),
-                           "SBMGA1\tTABLE_METADATA_SEALED_DESCRIPTOR_V2") == 0,
-          "TEMP-TABLE-GATE-005 malformed-owner target was not a sealed MGA row");
-  const std::string owner_marker =
-      "\t" + std::string(expected_owner) + "\t";
-  const auto owner_position = contents.find(owner_marker, table_position);
-  Require(owner_position != std::string::npos && owner_position < row_limit,
-          "TEMP-TABLE-GATE-005 persisted temporary owner field missing");
-  contents.replace(owner_position + 1,
-                   expected_owner.size(),
-                   malformed_owner);
+  std::vector<std::string> records;
+  Require(api::DecodeMgaMetadataStream(
+      {reinterpret_cast<const std::uint8_t*>(contents.data()), contents.size()}, &records),
+      "temporary owner metadata stream invalid");
+  unsigned matched = 0;
+  for (auto& record : records) {
+    std::vector<std::string> fields;
+    Require(api::DecodeMgaMetadataFields(record, &fields), "temporary metadata record invalid");
+    if (fields.size() != 19 || fields[1] != "TABLE_METADATA_SEALED_DESCRIPTOR_V2" ||
+        fields[6] != api::MetadataUuidBytes(table_uuid)) continue;
+    Require(fields[11] == api::MetadataUuidBytes(expected_owner), "temporary owner fixture mismatch");
+    fields[11] = api::MetadataUuidBytes(malformed_owner);
+    record = api::EncodeMgaMetadataFields(fields);
+    Require(!record.empty(), "temporary owner corruption encoding failed");
+    ++matched;
+  }
+  Require(matched == 1, "temporary owner mutation must select exactly one sealed record");
+  contents.clear();
+  for (const auto& record : records) contents += record;
   std::ofstream output(metadata_path, std::ios::binary | std::ios::trunc);
   Require(static_cast<bool>(output),
           "TEMP-TABLE-GATE-005 malformed-owner metadata rewrite open failed");
@@ -228,7 +234,28 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
+  }
+  return false;
+}
+
+bool HasEvidence(const api::EngineApiResult& result, std::string_view kind,
+                 const api::EngineUuid& id) {
+  for (const auto& evidence : result.evidence) {
+    const auto* identity = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && identity && *identity == id) return true;
+  }
+  return false;
+}
+
+bool HasIndexEvidence(const api::EngineApiResult& result, const api::EngineUuid& id) {
+  for (const auto& evidence : result.evidence) {
+    const auto* bytes = std::get_if<std::string>(&evidence.evidence_id);
+    api::BinaryCatalogMetadata decoded;
+    if (evidence.evidence_kind == "index_lookup" && bytes &&
+        api::DecodeBinaryCatalogMetadata(*bytes, "crud.index_evidence.v2", &decoded) &&
+        decoded.identities.contains("index_uuid") && decoded.identities.at("index_uuid") == id &&
+        decoded.text.at("index_family") == "btree" && decoded.text.at("index_profile") == "btree") return true;
   }
   return false;
 }
@@ -238,7 +265,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
                       std::string_view fragment) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        evidence.evidence_id.find(fragment) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(evidence.evidence_id, fragment) != std::string::npos) {
       return true;
     }
   }
@@ -277,10 +304,13 @@ std::string ApiResultText(const api::EngineApiResult& result) {
         << diagnostic.detail << '\n';
   }
   for (const auto& evidence : result.evidence) {
-    out << evidence.evidence_kind << ':' << evidence.evidence_id << '\n';
+    out << evidence.evidence_kind << ':';
+    if (const auto* id = std::get_if<api::EngineUuid>(&evidence.evidence_id)) out << api::MetadataUuidBytes(*id);
+    else out << std::get<std::string>(evidence.evidence_id);
+    out << '\n';
   }
   for (const auto& row : result.result_shape.rows) {
-    out << row.requested_row_uuid.canonical << '\n';
+    out << api::MetadataUuidBytes(row.requested_row_uuid) << '\n';
     for (const auto& [field_name, value] : row.fields) {
       out << field_name << '=' << value.encoded_value << '\n';
     }
@@ -292,7 +322,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000440001";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440001");
   config.bundle_contract_id = "sbp_sbsql@temporary-table-proof";
   config.build_id = "sbsql-temporary-table-proof-closure";
   return config;
@@ -301,10 +331,10 @@ ParserConfig ParserConfigForTest() {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000440003";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000440004";
-  session.database_uuid = "019f0000-0000-7000-8000-000000440005";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440003");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440004");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440005");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 440;
   session.security_policy_epoch = 441;
   session.descriptor_epoch = 442;
@@ -332,7 +362,7 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
 
 PipelineArtifacts RunPipelineWithResolvedObjectUuids(
     std::string_view sql,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<api::EngineUuid>& resolved_object_uuids) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
@@ -414,7 +444,7 @@ void RequireRejectedTemporarySql(std::string_view sql) {
 void RequireDropTableExactRefusalWithoutEngineDescriptor() {
   const auto artifacts = RunPipelineWithResolvedObjectUuids(
       "DROP TABLE session_customer;",
-      {std::string(kTableUuid), "019f0000-0000-7000-8000-000000440012"});
+      {kTableUuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440012")});
   PrintMessages(artifacts.cst.messages);
   PrintMessages(artifacts.ast.messages);
   PrintMessages(artifacts.bound.messages);
@@ -499,7 +529,9 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
                               ignored);
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+std::map<std::string, api::EngineUuid> created_filespaces;
+
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -517,33 +549,31 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "TEMP-TABLE-GATE-004 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+    created_filespaces[path.string()] = create.filespace_uuid.value;
+  return create.database_uuid.value;
 }
 
-std::string MinimalDatabaseFilespaceUuid() {
-  const auto generated =
-      uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779814400001);
-  Require(generated.ok(),
-          "TEMP-TABLE-GATE-014 filespace UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+api::EngineUuid MinimalDatabaseFilespaceUuid(const std::filesystem::path& path) {
+  const auto found = created_filespaces.find(path.string());
+  Require(found != created_filespaces.end(), "created filespace identity missing");
+  return found->second;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid,
-                                        std::string session_uuid) {
+                                        const api::EngineUuid& database_uuid,
+                                        const api::EngineUuid& session_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-temporary-table-proof-closure";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = std::move(session_uuid);
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000440011";
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.database_uuid = database_uuid;
+  context.session_uuid = std::move(session_uuid);
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440011");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440012");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
@@ -570,8 +600,8 @@ api::EngineRequestContext BeginTransaction(api::EngineRequestContext context) {
 
 api::EngineRequestContext BackupEngineContext(
     const std::filesystem::path& path,
-    const std::string& database_uuid,
-    std::string session_uuid,
+    const api::EngineUuid& database_uuid,
+    const api::EngineUuid& session_uuid,
     std::string_view request_id) {
   auto context = EngineContext(path, database_uuid, std::move(session_uuid));
   context.request_id = std::string(request_id);
@@ -585,18 +615,18 @@ api::EngineRequestContext BackupEngineContext(
 api::EngineCreateTableRequest TemporaryCreateTableRequest(
     const api::EngineRequestContext& context,
     std::string_view on_commit = "delete_rows",
-    std::string_view table_uuid = kTableUuid,
+    const api::EngineUuid& table_uuid = kTableUuid,
     std::string_view table_name = "session_customer",
-    std::string_view column_uuid = kColumnUuid,
+    const api::EngineUuid& column_uuid = kColumnUuid,
     std::string_view scope = "private") {
   api::EngineCreateTableRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = context.current_schema_uuid.canonical;
+  request.target_schema.uuid = context.current_schema_uuid;
   request.target_schema.object_kind = "schema";
-  request.requested_table_uuid.canonical = std::string(table_uuid);
+  request.requested_table_uuid = table_uuid;
   request.table_names.push_back({"en", "primary", "", std::string(table_name), true});
   api::EngineColumnDefinition column;
-  column.requested_column_uuid.canonical = std::string(column_uuid);
+  column.requested_column_uuid = column_uuid;
   column.names.push_back({"en", "primary", "", "id", true});
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "int";
@@ -614,7 +644,7 @@ api::EngineCreateTableRequest TemporaryCreateTableRequest(
 api::EngineCreateTableRequest TemporaryPayloadCreateTableRequest(
     const api::EngineRequestContext& context,
     std::string_view on_commit,
-    std::string_view table_uuid,
+    const api::EngineUuid& table_uuid,
     std::string_view table_name,
     std::string_view scope) {
   auto request = TemporaryCreateTableRequest(context,
@@ -624,8 +654,8 @@ api::EngineCreateTableRequest TemporaryPayloadCreateTableRequest(
                                              kTemporaryLargeValueIdColumnUuid,
                                              scope);
   api::EngineColumnDefinition payload;
-  payload.requested_column_uuid.canonical =
-      std::string(kTemporaryLargeValuePayloadColumnUuid);
+  payload.requested_column_uuid =
+      kTemporaryLargeValuePayloadColumnUuid;
   payload.names.push_back({"en", "primary", "", "payload", true});
   payload.descriptor.descriptor_kind = "scalar";
   payload.descriptor.canonical_type_name = "text";
@@ -638,17 +668,17 @@ api::EngineCreateTableRequest TemporaryPayloadCreateTableRequest(
 
 api::EngineCreateTableRequest DurableCreateTableRequest(
     const api::EngineRequestContext& context,
-    std::string_view table_uuid,
+    const api::EngineUuid& table_uuid,
     std::string_view table_name,
-    std::string_view column_uuid) {
+    const api::EngineUuid& column_uuid) {
   api::EngineCreateTableRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = context.current_schema_uuid.canonical;
+  request.target_schema.uuid = context.current_schema_uuid;
   request.target_schema.object_kind = "schema";
-  request.requested_table_uuid.canonical = std::string(table_uuid);
+  request.requested_table_uuid = table_uuid;
   request.table_names.push_back({"en", "primary", "", std::string(table_name), true});
   api::EngineColumnDefinition column;
-  column.requested_column_uuid.canonical = std::string(column_uuid);
+  column.requested_column_uuid = column_uuid;
   column.names.push_back({"en", "primary", "", "id", true});
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "int";
@@ -677,14 +707,14 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineRowValue Row(std::string row_uuid, std::int64_t id) {
+api::EngineRowValue Row(const api::EngineUuid& row_uuid, std::int64_t id) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", IntValue(id)});
   return row;
 }
 
-api::EngineRowValue PayloadRow(std::string row_uuid,
+api::EngineRowValue PayloadRow(const api::EngineUuid& row_uuid,
                                std::int64_t id,
                                std::string payload) {
   auto row = Row(std::move(row_uuid), id);
@@ -693,12 +723,12 @@ api::EngineRowValue PayloadRow(std::string row_uuid,
 }
 
 api::EngineInsertRowsResult InsertRow(const api::EngineRequestContext& context,
-                                      std::string_view table_uuid,
-                                      std::string row_uuid,
+                                      const api::EngineUuid& table_uuid,
+                                      const api::EngineUuid& row_uuid,
                                       std::int64_t id) {
   api::EngineInsertRowsRequest insert;
   insert.context = context;
-  insert.target_table.uuid.canonical = std::string(table_uuid);
+  insert.target_table.uuid = table_uuid;
   insert.target_table.object_kind = "table";
   insert.input_rows = {Row(std::move(row_uuid), id)};
   insert.require_generated_row_uuid = false;
@@ -707,14 +737,14 @@ api::EngineInsertRowsResult InsertRow(const api::EngineRequestContext& context,
 
 api::EngineInsertRowsResult InsertPayloadRow(
     const api::EngineRequestContext& context,
-    std::string_view table_uuid,
-    std::string row_uuid,
+    const api::EngineUuid& table_uuid,
+    const api::EngineUuid& row_uuid,
     std::int64_t id,
     std::string payload,
     bool force_large_value) {
   api::EngineInsertRowsRequest insert;
   insert.context = context;
-  insert.target_table.uuid.canonical = std::string(table_uuid);
+  insert.target_table.uuid = table_uuid;
   insert.target_table.object_kind = "table";
   insert.input_rows = {PayloadRow(std::move(row_uuid), id, std::move(payload))};
   insert.require_generated_row_uuid = false;
@@ -728,15 +758,15 @@ api::EngineInsertRowsResult InsertRow(const api::EngineRequestContext& context,
                                       std::int64_t id) {
   return InsertRow(context,
                    kTableUuid,
-                   "019f0000-0000-7000-8000-000000440201",
+                   scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440201"),
                    id);
 }
 
 api::EngineSelectRowsResult SelectRows(const api::EngineRequestContext& context,
-                                       std::string_view table_uuid) {
+                                       const api::EngineUuid& table_uuid) {
   api::EngineSelectRowsRequest select;
   select.context = context;
-  select.source_object.uuid.canonical = std::string(table_uuid);
+  select.source_object.uuid = table_uuid;
   select.source_object.object_kind = "table";
   return api::EngineSelectRows(select);
 }
@@ -754,20 +784,20 @@ api::EnginePredicateEnvelope IdPredicate(std::int64_t id) {
 }
 
 api::EngineSelectRowsResult SelectRowsById(const api::EngineRequestContext& context,
-                                           std::string_view table_uuid,
+                                           const api::EngineUuid& table_uuid,
                                            std::int64_t id) {
   api::EngineSelectRowsRequest select;
   select.context = context;
-  select.source_object.uuid.canonical = std::string(table_uuid);
+  select.source_object.uuid = table_uuid;
   select.source_object.object_kind = "table";
   select.select_predicate = IdPredicate(id);
   return api::EngineSelectRows(select);
 }
 
-api::EngineIndexDefinition UniqueIdIndexDefinition(std::string_view index_uuid,
+api::EngineIndexDefinition UniqueIdIndexDefinition(const api::EngineUuid& index_uuid,
                                                    std::string_view index_name) {
   api::EngineIndexDefinition index;
-  index.requested_index_uuid.canonical = std::string(index_uuid);
+  index.requested_index_uuid = index_uuid;
   index.names.push_back({"en", "primary", "", std::string(index_name), true});
   index.index_kind = "btree";
   index.key_envelopes.push_back("unique");
@@ -776,20 +806,20 @@ api::EngineIndexDefinition UniqueIdIndexDefinition(std::string_view index_uuid,
 }
 
 api::EngineCreateIndexResult CreateIndex(const api::EngineRequestContext& context,
-                                         std::string_view table_uuid,
+                                         const api::EngineUuid& table_uuid,
                                          api::EngineIndexDefinition index) {
   api::EngineCreateIndexRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = std::string(table_uuid);
+  request.target_object.uuid = table_uuid;
   request.target_object.object_kind = "table";
   request.indexes.push_back(std::move(index));
   return api::EngineCreateIndex(request);
 }
 
 bool FirstSelectedRowUuidIs(const api::EngineSelectRowsResult& result,
-                            std::string_view row_uuid) {
+                            const api::EngineUuid& row_uuid) {
   return !result.result_shape.rows.empty() &&
-         result.result_shape.rows.front().requested_row_uuid.canonical == row_uuid;
+         result.result_shape.rows.front().requested_row_uuid == row_uuid;
 }
 
 std::string FirstSelectedFieldValue(const api::EngineSelectRowsResult& result,
@@ -803,24 +833,29 @@ std::string FirstSelectedFieldValue(const api::EngineSelectRowsResult& result,
 
 std::uint64_t CountLargeValueSidecarLines(const std::filesystem::path& path,
                                           std::string_view kind,
-                                          std::string_view table_uuid = {}) {
-  std::ifstream input(path.string() + ".sb.mga_large_values", std::ios::binary);
+                                          const api::EngineUuid& table_uuid = {}) {
+  const auto contents = ReadFile(path.string() + ".sb.mga_large_values");
+  std::vector<std::string> records;
+  Require(api::DecodeMgaMetadataStream(
+      {reinterpret_cast<const std::uint8_t*>(contents.data()), contents.size()}, &records),
+      "large value fixture stream invalid");
   std::uint64_t count = 0;
-  std::string line;
-  const std::string kind_token = "\t" + std::string(kind) + "\t";
-  while (std::getline(input, line)) {
-    if (!Contains(line, kind_token)) { continue; }
-    if (!table_uuid.empty() && !Contains(line, table_uuid)) { continue; }
+  for (const auto& record : records) {
+    std::vector<std::string> fields;
+    Require(api::DecodeMgaMetadataFields(record, &fields) && api::ValidateMgaLargeValueFields(fields),
+            "large value fixture record invalid");
+    if (fields[1] != kind) continue;
+    if (!table_uuid.is_nil() && (fields.size() < 9 || fields[4] != api::MetadataUuidBytes(table_uuid))) continue;
     ++count;
   }
   return count;
 }
 
 void RequireTemporaryDmlRequiresSession(const api::EngineRequestContext& context,
-                                        std::string_view table_uuid) {
+                                        const api::EngineUuid& table_uuid) {
   auto inserted = InsertRow(context,
                             table_uuid,
-                            "019f0000-0000-7000-8000-000000440431",
+                            scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440431"),
                             31);
   Require(!inserted.ok &&
               FirstDetail(inserted) ==
@@ -835,7 +870,7 @@ void RequireTemporaryDmlRequiresSession(const api::EngineRequestContext& context
 
   api::EngineUpdateRowsRequest update;
   update.context = context;
-  update.target_table.uuid.canonical = std::string(table_uuid);
+  update.target_table.uuid = table_uuid;
   update.target_table.object_kind = "table";
   update.assignments.push_back({"id", IntValue(32)});
   auto updated = api::EngineUpdateRows(update);
@@ -846,7 +881,7 @@ void RequireTemporaryDmlRequiresSession(const api::EngineRequestContext& context
 
   api::EngineDeleteRowsRequest delete_request;
   delete_request.context = context;
-  delete_request.target_table.uuid.canonical = std::string(table_uuid);
+  delete_request.target_table.uuid = table_uuid;
   delete_request.target_table.object_kind = "table";
   auto deleted = api::EngineDeleteRows(delete_request);
   Require(!deleted.ok &&
@@ -856,12 +891,12 @@ void RequireTemporaryDmlRequiresSession(const api::EngineRequestContext& context
 
   api::EngineMergeRowsRequest merge;
   merge.context = context;
-  merge.target_table.uuid.canonical = std::string(table_uuid);
+  merge.target_table.uuid = table_uuid;
   merge.target_table.object_kind = "table";
   merge.match_predicate.predicate_kind = "row_uuid_match";
   merge.insert_when_not_matched = true;
   merge.input_rows.push_back(
-      Row("019f0000-0000-7000-8000-000000440432", 32));
+      Row(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440432"), 32));
   auto merged = api::EngineMergeRows(merge);
   Require(!merged.ok &&
               FirstDetail(merged) ==
@@ -874,7 +909,7 @@ api::EngineResolveNameRequest ResolveTableRequest(
     std::string_view table_name) {
   api::EngineResolveNameRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = context.current_schema_uuid.canonical;
+  request.target_schema.uuid = context.current_schema_uuid;
   request.target_schema.object_kind = "schema";
   request.target_object.object_kind = "table";
   request.sql_object_reference.expected_object_type = "table";
@@ -915,15 +950,15 @@ api::EngineRollbackTransactionResult Rollback(api::EngineRequestContext context)
 }
 
 void CreateAndCommitRequiredSchema(const std::filesystem::path& path,
-                                   const std::string& database_uuid) {
+                                   const api::EngineUuid& database_uuid) {
   auto context = BeginTransaction(
-      EngineContext(path, database_uuid, std::string(kSchemaSetupSessionUuid)));
+      EngineContext(path, database_uuid, kSchemaSetupSessionUuid));
   scratchbird::tests::release::GrantMaterializedRights(
       &context, {"CATALOG_MUTATE"});
 
   api::EngineCreateSchemaRequest create;
   create.context = context;
-  create.target_object.uuid.canonical = std::string(kSchemaUuid);
+  create.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440012");
   create.target_object.object_kind = "schema";
   create.localized_names.push_back(
       {"en", "primary", "", "temporary_fixture", true});
@@ -941,7 +976,7 @@ void CreateAndCommitRequiredSchema(const std::filesystem::path& path,
 api::EngineCleanupTemporarySessionResult CleanupTemporarySession(
     api::EngineRequestContext context) {
   context.local_transaction_id = 0;
-  context.transaction_uuid.canonical.clear();
+  context.transaction_uuid = {};
   context.snapshot_visible_through_local_transaction_id = 0;
   api::EngineCleanupTemporarySessionRequest cleanup;
   cleanup.context = std::move(context);
@@ -951,7 +986,10 @@ api::EngineCleanupTemporarySessionResult CleanupTemporarySession(
 std::string ProjectionField(const api::SysInformationProjectionRow& row,
                             std::string_view name) {
   for (const auto& field : row.fields) {
-    if (field.first == name) { return field.second; }
+    if (field.first == name) {
+      if (const auto* id = std::get_if<api::EngineUuid>(&field.second)) return api::MetadataUuidBytes(*id);
+      return std::get<std::string>(field.second);
+    }
   }
   return {};
 }
@@ -976,7 +1014,7 @@ const api::SysInformationProjectionRow* ProjectionFindRowByField(
 }
 
 api::SysInformationProjectionContext TemporaryInformationContext(
-    std::string session_uuid) {
+    const api::EngineUuid& session_uuid) {
   api::SysInformationProjectionContext context;
   context.catalog_display_name = "TempProofDB";
   context.session_language = "en";
@@ -991,34 +1029,34 @@ api::SysInformationProjectionContext TemporaryInformationContext(
 std::vector<api::SysInformationCatalogObjectSource>
 TemporaryInformationCatalogObjects() {
   return {
-      {.object_uuid = "schema-temp-proof",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .object_class = "schema",
-       .schema_uuid = "",
+       .schema_uuid = {},
        .catalog_generation_id = 1,
        .created_local_transaction_id = 1},
-      {.object_uuid = "gtt-catalog-customer",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1605, 2),
        .object_class = "table",
-       .schema_uuid = "schema-temp-proof",
+       .schema_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .temporary = true,
        .temporary_scope = "global",
-       .temporary_session_uuid = "019f0000-0000-7000-8000-000000440131",
+       .temporary_session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440131"),
        .on_commit_action = "delete_rows",
        .catalog_generation_id = 4,
        .created_local_transaction_id = 4},
-      {.object_uuid = "private-catalog-customer",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1605, 3),
        .object_class = "table",
-       .schema_uuid = "schema-temp-proof",
+       .schema_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .temporary = true,
        .temporary_scope = "private",
-       .temporary_session_uuid = "019f0000-0000-7000-8000-000000440131",
+       .temporary_session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440131"),
        .on_commit_action = "preserve_rows",
        .catalog_generation_id = 5,
        .created_local_transaction_id = 5},
-      {.object_uuid = "malformed-catalog-temp",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1605, 4),
        .object_class = "table",
-       .schema_uuid = "schema-temp-proof",
+       .schema_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .temporary_scope = "private",
-       .temporary_session_uuid = "019f0000-0000-7000-8000-000000440131",
+       .temporary_session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440131"),
        .on_commit_action = "preserve_rows",
        .catalog_generation_id = 6,
        .created_local_transaction_id = 6},
@@ -1028,29 +1066,29 @@ TemporaryInformationCatalogObjects() {
 std::vector<api::SysInformationResolverNameSource>
 TemporaryInformationResolverNames() {
   return {
-      {.object_uuid = "schema-temp-proof",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .object_class = "schema",
        .language_tag = "en",
        .name_class = "primary",
        .display_name = "app",
        .catalog_generation_id = 1},
-      {.object_uuid = "gtt-catalog-customer",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1605, 2),
        .object_class = "table",
-       .scope_uuid = "schema-temp-proof",
+       .scope_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .language_tag = "en",
        .name_class = "primary",
        .display_name = "gtt_catalog_customer",
        .catalog_generation_id = 4},
-      {.object_uuid = "private-catalog-customer",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1605, 3),
        .object_class = "table",
-       .scope_uuid = "schema-temp-proof",
+       .scope_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .language_tag = "en",
        .name_class = "primary",
        .display_name = "private_catalog_customer",
        .catalog_generation_id = 5},
-      {.object_uuid = "malformed-catalog-temp",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1605, 4),
        .object_class = "table",
-       .scope_uuid = "schema-temp-proof",
+       .scope_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .language_tag = "en",
        .name_class = "primary",
        .display_name = "malformed_catalog_temp",
@@ -1060,22 +1098,22 @@ TemporaryInformationResolverNames() {
 
 std::vector<api::SysInformationColumnSource> TemporaryInformationColumns() {
   return {
-      {.relation_object_uuid = "gtt-catalog-customer",
-       .schema_uuid = "schema-temp-proof",
+      {.relation_object_uuid = scratchbird::tests::FixtureUuid(1605, 2),
+       .schema_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .column_name = "id",
        .ordinal_position = 1,
        .datatype_name = "int",
        .is_nullable = "YES",
        .catalog_generation_id = 4},
-      {.relation_object_uuid = "private-catalog-customer",
-       .schema_uuid = "schema-temp-proof",
+      {.relation_object_uuid = scratchbird::tests::FixtureUuid(1605, 3),
+       .schema_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .column_name = "private_id",
        .ordinal_position = 1,
        .datatype_name = "int",
        .is_nullable = "YES",
        .catalog_generation_id = 5},
-      {.relation_object_uuid = "malformed-catalog-temp",
-       .schema_uuid = "schema-temp-proof",
+      {.relation_object_uuid = scratchbird::tests::FixtureUuid(1605, 4),
+       .schema_uuid = scratchbird::tests::FixtureUuid(1605, 1),
        .column_name = "malformed_id",
        .ordinal_position = 1,
        .datatype_name = "int",
@@ -1089,10 +1127,10 @@ void RequireTemporaryInformationProjectionVisibility() {
   const auto names = TemporaryInformationResolverNames();
   const auto columns = TemporaryInformationColumns();
   const auto owner_context = TemporaryInformationContext(
-      "019f0000-0000-7000-8000-000000440131");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440131"));
   const auto other_context = TemporaryInformationContext(
-      "019f0000-0000-7000-8000-000000440132");
-  const auto sessionless_context = TemporaryInformationContext("");
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440132"));
+  const auto sessionless_context = TemporaryInformationContext({});
 
   auto tables = api::BuildSysInformationProjection(
       "sys.information.tables",
@@ -1232,17 +1270,17 @@ void RequireTemporaryInformationProjectionVisibility() {
 }
 
 void RequireEngineRefusals(const std::filesystem::path& path,
-                           const std::string& database_uuid) {
+                           const api::EngineUuid& database_uuid) {
   auto no_session = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440020"));
-  no_session.session_uuid.canonical.clear();
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440020")));
+  no_session.session_uuid = {};
   auto request = TemporaryCreateTableRequest(no_session);
   auto result = api::EngineCreateTable(request);
   Require(!result.ok && FirstDetail(result) == "ddl.create_table:temporary_table_requires_session_uuid",
           "TEMP-TABLE-GATE-004 missing session UUID did not fail closed");
 
   auto session = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440021"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440021")));
   request = TemporaryCreateTableRequest(session);
   request.option_envelopes = {"temporary:true", "temporary_scope:cluster"};
   result = api::EngineCreateTable(request);
@@ -1258,9 +1296,9 @@ void RequireEngineRefusals(const std::filesystem::path& path,
 }
 
 void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const api::EngineUuid& database_uuid) {
   auto owner = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440031"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440031")));
   auto create = api::EngineCreateTable(TemporaryCreateTableRequest(owner, "delete_rows"));
   if (!create.ok) { PrintApiDiagnostics(create); }
   Require(create.ok, "TEMP-TABLE-GATE-004 create temporary table failed");
@@ -1279,7 +1317,7 @@ void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
           "TEMP-TABLE-GATE-006 owner session cannot see temporary row");
 
   auto other = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440032"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440032")));
   insert = InsertRow(other, 9);
   Require(!insert.ok && FirstDetail(insert) == "dml.insert_rows:target_table_not_visible",
           "TEMP-TABLE-GATE-006 cross-session insert did not fail closed");
@@ -1296,7 +1334,7 @@ void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
           "TEMP-TABLE-GATE-007 commit missing delete-rows cleanup evidence");
 
   owner.local_transaction_id = 0;
-  owner.transaction_uuid.canonical.clear();
+  owner.transaction_uuid = {};
   owner = BeginTransaction(owner);
   selected = SelectRows(owner);
   if (!selected.ok) { PrintApiDiagnostics(selected); }
@@ -1304,20 +1342,19 @@ void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
           "TEMP-TABLE-GATE-007 rows survived ON COMMIT DELETE ROWS");
 
   auto preserve = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440033"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440033")));
   auto preserve_request = TemporaryCreateTableRequest(preserve, "preserve_rows");
-  preserve_request.requested_table_uuid.canonical =
-      "019f0000-0000-7000-8000-000000440103";
+  preserve_request.requested_table_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440103");
   preserve_request.table_names.front().name = "preserve_customer";
   auto preserve_create = api::EngineCreateTable(preserve_request);
   if (!preserve_create.ok) { PrintApiDiagnostics(preserve_create); }
   Require(preserve_create.ok, "TEMP-TABLE-GATE-008 create preserve table failed");
   api::EngineInsertRowsRequest preserve_insert;
   preserve_insert.context = preserve;
-  preserve_insert.target_table.uuid.canonical = preserve_request.requested_table_uuid.canonical;
+  preserve_insert.target_table.uuid = preserve_request.requested_table_uuid;
   preserve_insert.target_table.object_kind = "table";
   preserve_insert.input_rows = {
-      Row("019f0000-0000-7000-8000-000000440202", 11)};
+      Row(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440202"), 11)};
   preserve_insert.require_generated_row_uuid = false;
   auto preserve_inserted = api::EngineInsertRows(preserve_insert);
   if (!preserve_inserted.ok) { PrintApiDiagnostics(preserve_inserted); }
@@ -1330,12 +1367,11 @@ void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
   Require(HasEvidence(committed, "temporary_on_commit_deleted_rows", "0"),
           "TEMP-TABLE-GATE-008 preserve commit deleted rows");
   preserve.local_transaction_id = 0;
-  preserve.transaction_uuid.canonical.clear();
+  preserve.transaction_uuid = {};
   preserve = BeginTransaction(preserve);
   api::EngineSelectRowsRequest preserve_select;
   preserve_select.context = preserve;
-  preserve_select.source_object.uuid.canonical =
-      preserve_request.requested_table_uuid.canonical;
+  preserve_select.source_object.uuid = preserve_request.requested_table_uuid;
   preserve_select.source_object.object_kind = "table";
   auto preserve_selected = api::EngineSelectRows(preserve_select);
   if (!preserve_selected.ok) { PrintApiDiagnostics(preserve_selected); }
@@ -1356,7 +1392,7 @@ void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
                       "1"),
           "TEMP-TABLE-GATE-008 private temp cleanup did not retire metadata");
   preserve.local_transaction_id = 0;
-  preserve.transaction_uuid.canonical.clear();
+  preserve.transaction_uuid = {};
   preserve = BeginTransaction(preserve);
   preserve_select.context = preserve;
   preserve_selected = api::EngineSelectRows(preserve_select);
@@ -1372,14 +1408,14 @@ void RequireEngineTemporaryDmlAndCommit(const std::filesystem::path& path,
 
 void RequireEngineTemporaryDropRetiresMetadata(
     const std::filesystem::path& path,
-    const std::string& database_uuid) {
+    const api::EngineUuid& database_uuid) {
   auto owner = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440034"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440034")));
   auto request = TemporaryCreateTableRequest(owner,
                                              "preserve_rows",
                                              kTemporaryDropTableUuid,
                                              "drop_customer",
-                                             "019f0000-0000-7000-8000-000000440104",
+                                             scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440104"),
                                              "private");
   auto created = api::EngineCreateTable(request);
   if (!created.ok) { PrintApiDiagnostics(created); }
@@ -1389,18 +1425,18 @@ void RequireEngineTemporaryDropRetiresMetadata(
   Require(committed.ok, "TEMP-TABLE-GATE-015 temp drop target commit failed");
 
   owner.local_transaction_id = 0;
-  owner.transaction_uuid.canonical.clear();
+  owner.transaction_uuid = {};
   owner = BeginTransaction(owner);
   auto resolved = api::EngineResolveName(ResolveTableRequest(owner, "drop_customer"));
   if (!resolved.ok) { PrintApiDiagnostics(resolved); }
   Require(resolved.ok &&
-              resolved.primary_object.uuid.canonical ==
-                  std::string(kTemporaryDropTableUuid),
+              resolved.primary_object.uuid ==
+                  kTemporaryDropTableUuid,
           "TEMP-TABLE-GATE-015 temp drop target was not visible before drop");
 
   api::EngineDropObjectRequest drop;
   drop.context = owner;
-  drop.target_object.uuid.canonical = std::string(kTemporaryDropTableUuid);
+  drop.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440309");
   drop.target_object.object_kind = "table";
   auto dropped = api::EngineDropObject(drop);
   if (!dropped.ok) { PrintApiDiagnostics(dropped); }
@@ -1408,7 +1444,7 @@ void RequireEngineTemporaryDropRetiresMetadata(
   Require(HasEvidence(dropped, "temporary_metadata_retired", "true"),
           "TEMP-TABLE-GATE-015 temp drop did not retire metadata");
   Require(HasEvidence(dropped, "name_registry_retired",
-                      std::string(kTemporaryDropTableUuid)),
+                      kTemporaryDropTableUuid),
           "TEMP-TABLE-GATE-015 temp drop did not retire name registry entry");
 
   resolved = api::EngineResolveName(ResolveTableRequest(owner, "drop_customer"));
@@ -1425,13 +1461,13 @@ void RequireEngineTemporaryDropRetiresMetadata(
   Require(rolled_back.ok, "TEMP-TABLE-GATE-015 temp drop rollback failed");
 
   owner.local_transaction_id = 0;
-  owner.transaction_uuid.canonical.clear();
+  owner.transaction_uuid = {};
   owner = BeginTransaction(owner);
   resolved = api::EngineResolveName(ResolveTableRequest(owner, "drop_customer"));
   if (!resolved.ok) { PrintApiDiagnostics(resolved); }
   Require(resolved.ok &&
-              resolved.primary_object.uuid.canonical ==
-                  std::string(kTemporaryDropTableUuid),
+              resolved.primary_object.uuid ==
+                  kTemporaryDropTableUuid,
           "TEMP-TABLE-GATE-015 temp drop rollback did not restore metadata");
 
   drop.context = owner;
@@ -1443,7 +1479,7 @@ void RequireEngineTemporaryDropRetiresMetadata(
   Require(committed.ok, "TEMP-TABLE-GATE-015 committed temp drop finality failed");
 
   owner.local_transaction_id = 0;
-  owner.transaction_uuid.canonical.clear();
+  owner.transaction_uuid = {};
   owner = BeginTransaction(owner);
   resolved = api::EngineResolveName(ResolveTableRequest(owner, "drop_customer"));
   Require(!resolved.ok,
@@ -1457,17 +1493,17 @@ void RequireEngineTemporaryDropRetiresMetadata(
 
 void RequireEngineTemporaryNameScopesAndGttDataIsolation(
     const std::filesystem::path& path,
-    const std::string& database_uuid) {
+    const api::EngineUuid& database_uuid) {
   constexpr std::string_view kShadowName = "shadow_customer";
   constexpr std::string_view kGlobalName = "global_work_customer";
 
   auto durable = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440041"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440041")));
   auto durable_create = api::EngineCreateTable(
       DurableCreateTableRequest(durable,
                                 kDurableShadowTableUuid,
                                 kShadowName,
-                                "019f0000-0000-7000-8000-000000440401"));
+                                scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440401")));
   if (!durable_create.ok) { PrintApiDiagnostics(durable_create); }
   Require(durable_create.ok, "TEMP-TABLE-GATE-005 durable shadow target create failed");
   auto committed = Commit(durable);
@@ -1475,13 +1511,13 @@ void RequireEngineTemporaryNameScopesAndGttDataIsolation(
   Require(committed.ok, "TEMP-TABLE-GATE-005 durable shadow target commit failed");
 
   auto owner = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440042"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440042")));
   auto private_create = api::EngineCreateTable(
       TemporaryCreateTableRequest(owner,
                                   "delete_rows",
                                   kTemporaryShadowTableUuid,
                                   kShadowName,
-                                  "019f0000-0000-7000-8000-000000440402",
+                                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440402"),
                                   "private"));
   if (!private_create.ok) { PrintApiDiagnostics(private_create); }
   Require(private_create.ok, "TEMP-TABLE-GATE-005 private temporary shadow create failed");
@@ -1491,8 +1527,8 @@ void RequireEngineTemporaryNameScopesAndGttDataIsolation(
   auto owner_resolve = api::EngineResolveName(ResolveTableRequest(owner, kShadowName));
   if (!owner_resolve.ok) { PrintApiDiagnostics(owner_resolve); }
   Require(owner_resolve.ok &&
-              owner_resolve.primary_object.uuid.canonical ==
-                  std::string(kTemporaryShadowTableUuid),
+              owner_resolve.primary_object.uuid ==
+                  kTemporaryShadowTableUuid,
           "TEMP-TABLE-GATE-005 owner did not resolve private temp shadow");
   Require(HasEvidence(owner_resolve,
                       "temporary_name_resolution",
@@ -1500,41 +1536,41 @@ void RequireEngineTemporaryNameScopesAndGttDataIsolation(
           "TEMP-TABLE-GATE-005 private temp shadow evidence missing");
 
   auto other = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440043"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440043")));
   auto other_resolve = api::EngineResolveName(ResolveTableRequest(other, kShadowName));
   if (!other_resolve.ok) { PrintApiDiagnostics(other_resolve); }
   Require(other_resolve.ok &&
-              other_resolve.primary_object.uuid.canonical ==
-                  std::string(kDurableShadowTableUuid),
+              other_resolve.primary_object.uuid ==
+                  kDurableShadowTableUuid,
           "TEMP-TABLE-GATE-005 other session saw private temp metadata");
 
   committed = Commit(owner);
   if (!committed.ok) { PrintApiDiagnostics(committed); }
   Require(committed.ok, "TEMP-TABLE-GATE-005 private temp metadata commit failed");
   owner.local_transaction_id = 0;
-  owner.transaction_uuid.canonical.clear();
+  owner.transaction_uuid = {};
   owner = BeginTransaction(owner);
   owner_resolve = api::EngineResolveName(ResolveTableRequest(owner, kShadowName));
   if (!owner_resolve.ok) { PrintApiDiagnostics(owner_resolve); }
   Require(owner_resolve.ok &&
-              owner_resolve.primary_object.uuid.canonical ==
-                  std::string(kTemporaryShadowTableUuid),
+              owner_resolve.primary_object.uuid ==
+                  kTemporaryShadowTableUuid,
           "TEMP-TABLE-GATE-005 owner private temp metadata did not survive session boundary");
   other_resolve = api::EngineResolveName(ResolveTableRequest(other, kShadowName));
   if (!other_resolve.ok) { PrintApiDiagnostics(other_resolve); }
   Require(other_resolve.ok &&
-              other_resolve.primary_object.uuid.canonical ==
-                  std::string(kDurableShadowTableUuid),
+              other_resolve.primary_object.uuid ==
+                  kDurableShadowTableUuid,
           "TEMP-TABLE-GATE-005 committed private temp metadata leaked to other session");
 
   auto global_create_tx = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440044"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440044")));
   auto global_create = api::EngineCreateTable(
       TemporaryCreateTableRequest(global_create_tx,
                                   "delete_rows",
                                   kTemporaryPrivateOnlyTableUuid,
                                   kGlobalName,
-                                  "019f0000-0000-7000-8000-000000440403",
+                                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440403"),
                                   "global"));
   if (!global_create.ok) { PrintApiDiagnostics(global_create); }
   Require(global_create.ok, "TEMP-TABLE-GATE-004 global temporary table create failed");
@@ -1545,28 +1581,28 @@ void RequireEngineTemporaryNameScopesAndGttDataIsolation(
   Require(committed.ok, "TEMP-TABLE-GATE-004 global temporary metadata commit failed");
 
   auto no_session = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440054"));
-  no_session.session_uuid.canonical.clear();
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440054")));
+  no_session.session_uuid = {};
   RequireTemporaryDmlRequiresSession(no_session, kTemporaryPrivateOnlyTableUuid);
 
   auto gtt_a = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440045"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440045")));
   auto gtt_b = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440046"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440046")));
   auto gtt_a_resolve = api::EngineResolveName(ResolveTableRequest(gtt_a, kGlobalName));
   auto gtt_b_resolve = api::EngineResolveName(ResolveTableRequest(gtt_b, kGlobalName));
   if (!gtt_a_resolve.ok) { PrintApiDiagnostics(gtt_a_resolve); }
   if (!gtt_b_resolve.ok) { PrintApiDiagnostics(gtt_b_resolve); }
   Require(gtt_a_resolve.ok && gtt_b_resolve.ok &&
-              gtt_a_resolve.primary_object.uuid.canonical ==
-                  std::string(kTemporaryPrivateOnlyTableUuid) &&
-              gtt_b_resolve.primary_object.uuid.canonical ==
-                  std::string(kTemporaryPrivateOnlyTableUuid),
+              gtt_a_resolve.primary_object.uuid ==
+                  kTemporaryPrivateOnlyTableUuid &&
+              gtt_b_resolve.primary_object.uuid ==
+                  kTemporaryPrivateOnlyTableUuid,
           "TEMP-TABLE-GATE-005 global temporary metadata did not resolve cross-session");
 
   auto inserted_a = InsertRow(gtt_a,
                               kTemporaryPrivateOnlyTableUuid,
-                              "019f0000-0000-7000-8000-000000440421",
+                              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440421"),
                               21);
   if (!inserted_a.ok) { PrintApiDiagnostics(inserted_a); }
   Require(inserted_a.ok && inserted_a.inserted_count == 1,
@@ -1582,7 +1618,7 @@ void RequireEngineTemporaryNameScopesAndGttDataIsolation(
 
   auto inserted_b = InsertRow(gtt_b,
                               kTemporaryPrivateOnlyTableUuid,
-                              "019f0000-0000-7000-8000-000000440422",
+                              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440422"),
                               22);
   if (!inserted_b.ok) { PrintApiDiagnostics(inserted_b); }
   Require(inserted_b.ok && inserted_b.inserted_count == 1,
@@ -1602,7 +1638,7 @@ void RequireEngineTemporaryNameScopesAndGttDataIsolation(
   Require(HasEvidence(committed, "temporary_on_commit_deleted_rows", "1"),
           "TEMP-TABLE-GATE-007 GTT session A did not clear temporary rows at commit");
   gtt_a.local_transaction_id = 0;
-  gtt_a.transaction_uuid.canonical.clear();
+  gtt_a.transaction_uuid = {};
   gtt_a = BeginTransaction(gtt_a);
   selected_a = SelectRows(gtt_a, kTemporaryPrivateOnlyTableUuid);
   if (!selected_a.ok) { PrintApiDiagnostics(selected_a); }
@@ -1616,7 +1652,7 @@ void RequireEngineTemporaryNameScopesAndGttDataIsolation(
 
 void RequireEngineTemporaryCatalogNamespaceSemantics(
     const std::filesystem::path& path,
-    const std::string& database_uuid) {
+    const api::EngineUuid& database_uuid) {
   constexpr std::string_view kSameTransactionName =
       "same_transaction_shadow_customer";
   constexpr std::string_view kPrivateFirstName =
@@ -1627,26 +1663,25 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
       "global_durable_collision_customer";
   const auto restart = [](api::EngineRequestContext context) {
     context.local_transaction_id = 0;
-    context.transaction_uuid.canonical.clear();
+    context.transaction_uuid = {};
     context.snapshot_visible_through_local_transaction_id = 0;
     return BeginTransaction(std::move(context));
   };
 
   auto invalid = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-000000440091"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440091")));
   api::EngineCatalogCreateObjectRequest invalid_namespace;
   invalid_namespace.context = invalid;
-  invalid_namespace.target_object.uuid.canonical =
-      std::string(kNamespaceInvalidCatalogObjectUuid);
+  invalid_namespace.target_object.uuid =
+      kNamespaceInvalidCatalogObjectUuid;
   invalid_namespace.target_object.object_kind = "table";
-  invalid_namespace.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  invalid_namespace.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440012");
   invalid_namespace.localized_names.push_back(
       {"en", "primary", "", "forged_session_namespace", true});
   invalid_namespace.name_namespace.kind =
       api::EngineCatalogNameNamespaceKind::kSessionTemporary;
-  invalid_namespace.name_namespace.owner_session_uuid.canonical =
-      "019f0000-0000-7000-8000-000000440099";
+  invalid_namespace.name_namespace.owner_session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440099");
   const auto invalid_result =
       api::EngineCatalogCreateObject(invalid_namespace);
   Require(!invalid_result.ok &&
@@ -1655,10 +1690,9 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
                   api::kCatalogObjectDiagnosticNameNamespaceInvalid),
           "TEMP-TABLE-GATE-005 forged session namespace did not fail closed");
   auto malformed_namespace = invalid_namespace;
-  malformed_namespace.context.session_uuid.canonical =
-      "malformed-but-identical-session-owner";
-  malformed_namespace.name_namespace.owner_session_uuid.canonical =
-      malformed_namespace.context.session_uuid.canonical;
+  malformed_namespace.context.session_uuid =
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-6000-8000-000000440999");
+  malformed_namespace.name_namespace.owner_session_uuid = malformed_namespace.context.session_uuid;
   const auto malformed_namespace_result =
       api::EngineCatalogCreateObject(malformed_namespace);
   Require(!malformed_namespace_result.ok &&
@@ -1673,14 +1707,14 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   auto lifecycle_only = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-00000044009a"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000044009a")));
   api::EngineCatalogCreateObjectRequest lifecycle_only_create;
   lifecycle_only_create.context = lifecycle_only;
-  lifecycle_only_create.target_object.uuid.canonical =
-      std::string(kNamespaceLifecycleOnlyTableUuid);
+  lifecycle_only_create.target_object.uuid =
+      kNamespaceLifecycleOnlyTableUuid;
   lifecycle_only_create.target_object.object_kind = "table";
-  lifecycle_only_create.target_schema.uuid.canonical =
-      std::string(kSchemaUuid);
+  lifecycle_only_create.target_schema.uuid =
+      kSchemaUuid;
   lifecycle_only_create.localized_names.push_back(
       {"en", "primary", "", "lifecycle_only_catalog_customer", true});
   const auto lifecycle_only_created =
@@ -1691,8 +1725,8 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
   Require(lifecycle_only_created.ok,
           "TEMP-TABLE-GATE-005 lifecycle-only catalog relation create failed");
   auto lifecycle_only_duplicate = lifecycle_only_create;
-  lifecycle_only_duplicate.target_object.uuid.canonical =
-      std::string(kNamespaceLifecycleOnlyAttemptTableUuid);
+  lifecycle_only_duplicate.target_object.uuid =
+      kNamespaceLifecycleOnlyAttemptTableUuid;
   const auto lifecycle_only_duplicate_result =
       api::EngineCatalogCreateObject(lifecycle_only_duplicate);
   Require(!lifecycle_only_duplicate_result.ok &&
@@ -1707,7 +1741,7 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   auto malformed_persisted = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-00000044009b"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000044009b")));
   constexpr std::string_view kMalformedPersistedName =
       "malformed_persisted_private_customer";
   const auto malformed_persisted_created = api::EngineCreateTable(
@@ -1716,7 +1750,7 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
           "delete_rows",
           kNamespaceMalformedPersistedTableUuid,
           kMalformedPersistedName,
-          "019f0000-0000-7000-8000-000000440851",
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440851"),
           "private"));
   if (!malformed_persisted_created.ok) {
     PrintApiDiagnostics(malformed_persisted_created);
@@ -1726,8 +1760,8 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
   CorruptPersistedTemporaryOwnerForTest(
       path,
       kNamespaceMalformedPersistedTableUuid,
-      malformed_persisted.session_uuid.canonical,
-      "019f0000-0000-6000-8000-00000044009b");
+      malformed_persisted.session_uuid,
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-6000-8000-00000044009b"));
   const auto malformed_persisted_resolved = api::EngineResolveName(
       ResolveTableRequest(malformed_persisted, kMalformedPersistedName));
   Require(!malformed_persisted_resolved.ok &&
@@ -1739,7 +1773,7 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
           malformed_persisted,
           kNamespaceMalformedPersistedAttemptTableUuid,
           kMalformedPersistedName,
-          "019f0000-0000-7000-8000-000000440852"));
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440852")));
   Require(!malformed_persisted_collision.ok &&
               HasDiagnosticCode(
                   malformed_persisted_collision,
@@ -1752,12 +1786,12 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   auto same_tx = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-000000440092"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440092")));
   auto same_tx_durable = api::EngineCreateTable(
       DurableCreateTableRequest(same_tx,
                                 kNamespaceSameTxDurableTableUuid,
                                 kSameTransactionName,
-                                "019f0000-0000-7000-8000-000000440840"));
+                                scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440840")));
   if (!same_tx_durable.ok) { PrintApiDiagnostics(same_tx_durable); }
   Require(same_tx_durable.ok,
           "TEMP-TABLE-GATE-005 same-transaction durable create failed");
@@ -1767,7 +1801,7 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
           "delete_rows",
           kNamespaceSameTxPrivateTableUuid,
           kSameTransactionName,
-          "019f0000-0000-7000-8000-000000440841",
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440841"),
           "private"));
   if (!same_tx_private.ok) { PrintApiDiagnostics(same_tx_private); }
   Require(same_tx_private.ok,
@@ -1776,8 +1810,8 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
       ResolveTableRequest(same_tx, kSameTransactionName));
   if (!same_tx_resolved.ok) { PrintApiDiagnostics(same_tx_resolved); }
   Require(same_tx_resolved.ok &&
-              same_tx_resolved.primary_object.uuid.canonical ==
-                  std::string(kNamespaceSameTxPrivateTableUuid) &&
+              same_tx_resolved.primary_object.uuid ==
+                  kNamespaceSameTxPrivateTableUuid &&
               HasEvidence(same_tx_resolved,
                           "temporary_name_resolution",
                           "session_visible_shadow"),
@@ -1788,7 +1822,7 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
           "delete_rows",
           kNamespaceSameTxDuplicateTableUuid,
           kSameTransactionName,
-          "019f0000-0000-7000-8000-000000440842",
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440842"),
           "private"));
   Require(!same_tx_duplicate.ok &&
               HasDiagnosticCode(
@@ -1801,7 +1835,7 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
           "TEMP-TABLE-GATE-005 same-transaction overlay rollback failed");
   auto same_tx_observer = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-000000440093"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440093")));
   same_tx_resolved = api::EngineResolveName(
       ResolveTableRequest(same_tx_observer, kSameTransactionName));
   Require(!same_tx_resolved.ok,
@@ -1813,14 +1847,14 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   auto owner = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-000000440094"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440094")));
   auto private_first = api::EngineCreateTable(
       TemporaryCreateTableRequest(
           owner,
           "preserve_rows",
           kNamespacePrivateFirstTableUuid,
           kPrivateFirstName,
-          "019f0000-0000-7000-8000-000000440843",
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440843"),
           "private"));
   if (!private_first.ok) { PrintApiDiagnostics(private_first); }
   Require(private_first.ok,
@@ -1833,12 +1867,12 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   auto durable = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-000000440095"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440095")));
   auto durable_after = api::EngineCreateTable(
       DurableCreateTableRequest(durable,
                                 kNamespaceDurableAfterTableUuid,
                                 kPrivateFirstName,
-                                "019f0000-0000-7000-8000-000000440844"));
+                                scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440844")));
   if (!durable_after.ok) { PrintApiDiagnostics(durable_after); }
   Require(durable_after.ok,
           "TEMP-TABLE-GATE-005 durable create behind private namespace failed");
@@ -1851,8 +1885,8 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
       ResolveTableRequest(owner, kPrivateFirstName));
   if (!owner_resolved.ok) { PrintApiDiagnostics(owner_resolved); }
   Require(owner_resolved.ok &&
-              owner_resolved.primary_object.uuid.canonical ==
-                  std::string(kNamespacePrivateFirstTableUuid),
+              owner_resolved.primary_object.uuid ==
+                  kNamespacePrivateFirstTableUuid,
           "TEMP-TABLE-GATE-005 private-first owner did not retain shadow");
   auto duplicate_private = api::EngineCreateTable(
       TemporaryCreateTableRequest(
@@ -1860,7 +1894,7 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
           "delete_rows",
           kNamespaceDuplicatePrivateTableUuid,
           kPrivateFirstName,
-          "019f0000-0000-7000-8000-000000440845",
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440845"),
           "private"));
   Require(!duplicate_private.ok &&
               HasDiagnosticCode(
@@ -1870,14 +1904,14 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   auto other = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-000000440096"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440096")));
   auto other_private = api::EngineCreateTable(
       TemporaryCreateTableRequest(
           other,
           "delete_rows",
           kNamespaceOtherPrivateTableUuid,
           kPrivateFirstName,
-          "019f0000-0000-7000-8000-000000440846",
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440846"),
           "private"));
   if (!other_private.ok) { PrintApiDiagnostics(other_private); }
   Require(other_private.ok,
@@ -1886,19 +1920,19 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
       ResolveTableRequest(other, kPrivateFirstName));
   if (!other_resolved.ok) { PrintApiDiagnostics(other_resolved); }
   Require(other_resolved.ok &&
-              other_resolved.primary_object.uuid.canonical ==
-                  std::string(kNamespaceOtherPrivateTableUuid),
+              other_resolved.primary_object.uuid ==
+                  kNamespaceOtherPrivateTableUuid,
           "TEMP-TABLE-GATE-005 cross-session private owner resolved wrong UUID");
 
   auto observer = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-000000440097"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440097")));
   auto observer_resolved = api::EngineResolveName(
       ResolveTableRequest(observer, kPrivateFirstName));
   if (!observer_resolved.ok) { PrintApiDiagnostics(observer_resolved); }
   Require(observer_resolved.ok &&
-              observer_resolved.primary_object.uuid.canonical ==
-                  std::string(kNamespaceDurableAfterTableUuid),
+              observer_resolved.primary_object.uuid ==
+                  kNamespaceDurableAfterTableUuid,
           "TEMP-TABLE-GATE-005 foreign private candidate hid durable relation");
 
   rolled_back = Rollback(other);
@@ -1910,8 +1944,8 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
       ResolveTableRequest(other, kPrivateFirstName));
   if (!other_resolved.ok) { PrintApiDiagnostics(other_resolved); }
   Require(other_resolved.ok &&
-              other_resolved.primary_object.uuid.canonical ==
-                  std::string(kNamespaceDurableAfterTableUuid),
+              other_resolved.primary_object.uuid ==
+                  kNamespaceDurableAfterTableUuid,
           "TEMP-TABLE-GATE-005 rolled-back private did not reveal durable relation");
   rolled_back = Rollback(other);
   if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
@@ -1924,8 +1958,8 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   api::EngineDropObjectRequest drop_private;
   drop_private.context = owner;
-  drop_private.target_object.uuid.canonical =
-      std::string(kNamespacePrivateFirstTableUuid);
+  drop_private.target_object.uuid =
+      kNamespacePrivateFirstTableUuid;
   drop_private.target_object.object_kind = "table";
   auto dropped = api::EngineDropObject(drop_private);
   if (!dropped.ok) { PrintApiDiagnostics(dropped); }
@@ -1935,8 +1969,8 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
       ResolveTableRequest(owner, kPrivateFirstName));
   if (!owner_resolved.ok) { PrintApiDiagnostics(owner_resolved); }
   Require(owner_resolved.ok &&
-              owner_resolved.primary_object.uuid.canonical ==
-                  std::string(kNamespaceDurableAfterTableUuid),
+              owner_resolved.primary_object.uuid ==
+                  kNamespaceDurableAfterTableUuid,
           "TEMP-TABLE-GATE-005 retired private candidate short-circuited durable fallback");
   rolled_back = Rollback(owner);
   if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
@@ -1947,8 +1981,8 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
       ResolveTableRequest(owner, kPrivateFirstName));
   if (!owner_resolved.ok) { PrintApiDiagnostics(owner_resolved); }
   Require(owner_resolved.ok &&
-              owner_resolved.primary_object.uuid.canonical ==
-                  std::string(kNamespacePrivateFirstTableUuid),
+              owner_resolved.primary_object.uuid ==
+                  kNamespacePrivateFirstTableUuid,
           "TEMP-TABLE-GATE-005 drop rollback did not restore private shadow");
   drop_private.context = owner;
   dropped = api::EngineDropObject(drop_private);
@@ -1964,8 +1998,8 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
       ResolveTableRequest(owner, kPrivateFirstName));
   if (!owner_resolved.ok) { PrintApiDiagnostics(owner_resolved); }
   Require(owner_resolved.ok &&
-              owner_resolved.primary_object.uuid.canonical ==
-                  std::string(kNamespaceDurableAfterTableUuid),
+              owner_resolved.primary_object.uuid ==
+                  kNamespaceDurableAfterTableUuid,
           "TEMP-TABLE-GATE-005 committed retired candidate hid durable relation");
   rolled_back = Rollback(owner);
   if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
@@ -1974,13 +2008,13 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   auto durable_collision = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-0000004400a1"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000004400a1")));
   auto durable_collision_created = api::EngineCreateTable(
       DurableCreateTableRequest(
           durable_collision,
           kNamespaceDurableCollisionTableUuid,
           kDurableCollisionName,
-          "019f0000-0000-7000-8000-000000440847"));
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440847")));
   if (!durable_collision_created.ok) {
     PrintApiDiagnostics(durable_collision_created);
   }
@@ -1993,14 +2027,14 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   auto global_collision = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-0000004400a2"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000004400a2")));
   auto global_collision_result = api::EngineCreateTable(
       TemporaryCreateTableRequest(
           global_collision,
           "delete_rows",
           kNamespaceGlobalCollisionAttemptTableUuid,
           kDurableCollisionName,
-          "019f0000-0000-7000-8000-000000440848",
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440848"),
           "global"));
   Require(!global_collision_result.ok &&
               HasDiagnosticCode(
@@ -2014,14 +2048,14 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   auto global_target = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-0000004400a3"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000004400a3")));
   auto global_target_created = api::EngineCreateTable(
       TemporaryCreateTableRequest(
           global_target,
           "delete_rows",
           kNamespaceGlobalCollisionTableUuid,
           kGlobalCollisionName,
-          "019f0000-0000-7000-8000-000000440849",
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440849"),
           "global"));
   if (!global_target_created.ok) { PrintApiDiagnostics(global_target_created); }
   Require(global_target_created.ok,
@@ -2033,13 +2067,13 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
   auto durable_global_collision = BeginTransaction(
       EngineContext(path, database_uuid,
-                    "019f0000-0000-7000-8000-0000004400a4"));
+                    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000004400a4")));
   auto durable_global_collision_result = api::EngineCreateTable(
       DurableCreateTableRequest(
           durable_global_collision,
           kNamespaceDurableCollisionAttemptTableUuid,
           kGlobalCollisionName,
-          "019f0000-0000-7000-8000-000000440850"));
+          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440850")));
   Require(!durable_global_collision_result.ok &&
               HasDiagnosticCode(
                   durable_global_collision_result,
@@ -2053,15 +2087,15 @@ void RequireEngineTemporaryCatalogNamespaceSemantics(
 
 void RequireEngineTemporaryRollbackAndSavepoints(
     const std::filesystem::path& path,
-    const std::string& database_uuid) {
+    const api::EngineUuid& database_uuid) {
   auto context = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440051"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440051")));
   auto create = api::EngineCreateTable(
       TemporaryCreateTableRequest(context,
                                   "delete_rows",
                                   kRollbackTableUuid,
                                   "rollback_customer",
-                                  "019f0000-0000-7000-8000-000000440501",
+                                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440501"),
                                   "private"));
   if (!create.ok) { PrintApiDiagnostics(create); }
   Require(create.ok, "TEMP-TABLE-GATE-009 rollback temp table create failed");
@@ -2073,7 +2107,7 @@ void RequireEngineTemporaryRollbackAndSavepoints(
 
   auto insert = InsertRow(context,
                           kRollbackTableUuid,
-                          "019f0000-0000-7000-8000-000000440511",
+                          scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440511"),
                           51);
   if (!insert.ok) { PrintApiDiagnostics(insert); }
   Require(insert.ok && insert.inserted_count == 1,
@@ -2095,11 +2129,11 @@ void RequireEngineTemporaryRollbackAndSavepoints(
       ResolveTableRequest(context, "rollback_customer"));
   if (!resolved.ok) { PrintApiDiagnostics(resolved); }
   Require(resolved.ok &&
-              resolved.primary_object.uuid.canonical == std::string(kRollbackTableUuid),
+              resolved.primary_object.uuid == kRollbackTableUuid,
           "TEMP-TABLE-GATE-009 temp descriptor did not survive row savepoint rollback");
 
   auto descriptor_context = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440053"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440053")));
   savepoint = api::EngineCreateSavepoint(
       CreateSavepointRequest(descriptor_context, "before_temp_descriptor"));
   if (!savepoint.ok) { PrintApiDiagnostics(savepoint); }
@@ -2109,7 +2143,7 @@ void RequireEngineTemporaryRollbackAndSavepoints(
                                   "delete_rows",
                                   kRollbackCreatedTableUuid,
                                   "rollback_created_customer",
-                                  "019f0000-0000-7000-8000-000000440502",
+                                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440502"),
                                   "private"));
   if (!rollback_create.ok) { PrintApiDiagnostics(rollback_create); }
   Require(rollback_create.ok, "TEMP-TABLE-GATE-009 create after savepoint failed");
@@ -2117,8 +2151,8 @@ void RequireEngineTemporaryRollbackAndSavepoints(
       ResolveTableRequest(descriptor_context, "rollback_created_customer"));
   if (!resolved.ok) { PrintApiDiagnostics(resolved); }
   Require(resolved.ok &&
-              resolved.primary_object.uuid.canonical ==
-                  std::string(kRollbackCreatedTableUuid),
+              resolved.primary_object.uuid ==
+                  kRollbackCreatedTableUuid,
           "TEMP-TABLE-GATE-009 created temp descriptor did not resolve before rollback");
   rollback_to = api::EngineRollbackToSavepoint(
       RollbackToSavepointRequest(descriptor_context, "before_temp_descriptor"));
@@ -2134,13 +2168,13 @@ void RequireEngineTemporaryRollbackAndSavepoints(
           "TEMP-TABLE-GATE-009 rolled-back temp descriptor still visible by name");
 
   auto full = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440052"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440052")));
   auto full_create = api::EngineCreateTable(
       TemporaryCreateTableRequest(full,
                                   "delete_rows",
-                                  "019f0000-0000-7000-8000-000000440306",
+                                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440306"),
                                   "full_rollback_temp",
-                                  "019f0000-0000-7000-8000-000000440503",
+                                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440503"),
                                   "private"));
   if (!full_create.ok) { PrintApiDiagnostics(full_create); }
   Require(full_create.ok, "TEMP-TABLE-GATE-009 full rollback temp create failed");
@@ -2148,9 +2182,9 @@ void RequireEngineTemporaryRollbackAndSavepoints(
   if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
   Require(rolled_back.ok, "TEMP-TABLE-GATE-009 full rollback failed");
   full.local_transaction_id = 0;
-  full.transaction_uuid.canonical.clear();
+  full.transaction_uuid = {};
   full = BeginTransaction(full);
-  selected = SelectRows(full, "019f0000-0000-7000-8000-000000440306");
+  selected = SelectRows(full, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440306"));
   Require(!selected.ok &&
               FirstDetail(selected) == "dml.select_rows:source_table_not_visible",
           "TEMP-TABLE-GATE-009 full-rolled-back temp table visible by UUID");
@@ -2161,15 +2195,15 @@ void RequireEngineTemporaryRollbackAndSavepoints(
 
 void RequireEngineTemporaryIndexAndConstraintIsolation(
     const std::filesystem::path& path,
-    const std::string& database_uuid) {
+    const api::EngineUuid& database_uuid) {
   auto create_tx = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440061"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440061")));
   auto create = api::EngineCreateTable(
       TemporaryCreateTableRequest(create_tx,
                                   "preserve_rows",
                                   kTemporaryIndexedTableUuid,
                                   "indexed_global_work_customer",
-                                  "019f0000-0000-7000-8000-000000440602",
+                                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440602"),
                                   "global"));
   if (!create.ok) { PrintApiDiagnostics(create); }
   Require(create.ok, "TEMP-TABLE-GATE-010 indexed GTT create failed");
@@ -2177,19 +2211,19 @@ void RequireEngineTemporaryIndexAndConstraintIsolation(
   if (!committed.ok) { PrintApiDiagnostics(committed); }
   Require(committed.ok, "TEMP-TABLE-GATE-010 indexed GTT metadata commit failed");
 
-  constexpr std::string_view kRowA =
-      "019f0000-0000-7000-8000-000000440611";
-  constexpr std::string_view kRowB =
-      "019f0000-0000-7000-8000-000000440612";
-  constexpr std::string_view kRowB2 =
-      "019f0000-0000-7000-8000-000000440613";
-  constexpr std::string_view kRowC =
-      "019f0000-0000-7000-8000-000000440614";
+  constexpr auto kRowA =
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440611");
+  constexpr auto kRowB =
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440612");
+  constexpr auto kRowB2 =
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440613");
+  constexpr auto kRowC =
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440614");
 
   auto session_a = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440062"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440062")));
   auto inserted_a = InsertRow(session_a, kTemporaryIndexedTableUuid,
-                              std::string(kRowA), 71);
+                              kRowA, 71);
   if (!inserted_a.ok) { PrintApiDiagnostics(inserted_a); }
   Require(inserted_a.ok, "TEMP-TABLE-GATE-010 session A pre-index insert failed");
   committed = Commit(session_a);
@@ -2197,14 +2231,14 @@ void RequireEngineTemporaryIndexAndConstraintIsolation(
   Require(committed.ok, "TEMP-TABLE-GATE-010 session A preserve commit failed");
 
   auto session_b = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440063"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440063")));
   auto inserted_b = InsertRow(session_b, kTemporaryIndexedTableUuid,
-                              std::string(kRowB), 71);
+                              kRowB, 71);
   if (!inserted_b.ok) { PrintApiDiagnostics(inserted_b); }
   Require(inserted_b.ok,
           "TEMP-TABLE-GATE-010 same key in second GTT session failed before index");
   auto inserted_b2 = InsertRow(session_b, kTemporaryIndexedTableUuid,
-                               std::string(kRowB2), 72);
+                               kRowB2, 72);
   if (!inserted_b2.ok) { PrintApiDiagnostics(inserted_b2); }
   Require(inserted_b2.ok, "TEMP-TABLE-GATE-010 session B second row insert failed");
   committed = Commit(session_b);
@@ -2212,7 +2246,7 @@ void RequireEngineTemporaryIndexAndConstraintIsolation(
   Require(committed.ok, "TEMP-TABLE-GATE-010 session B preserve commit failed");
 
   auto index_tx = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440062"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440062")));
   auto indexed = CreateIndex(
       index_tx,
       kTemporaryIndexedTableUuid,
@@ -2229,21 +2263,18 @@ void RequireEngineTemporaryIndexAndConstraintIsolation(
   Require(committed.ok, "TEMP-TABLE-GATE-010 GTT unique index commit failed");
 
   session_a.local_transaction_id = 0;
-  session_a.transaction_uuid.canonical.clear();
+  session_a.transaction_uuid = {};
   session_a = BeginTransaction(session_a);
   auto selected = SelectRowsById(session_a, kTemporaryIndexedTableUuid, 71);
   if (!selected.ok) { PrintApiDiagnostics(selected); }
   Require(selected.ok && selected.visible_count == 1 &&
               FirstSelectedRowUuidIs(selected, kRowA),
           "TEMP-TABLE-GATE-010 indexed GTT read leaked or lost session A row");
-  Require(EvidenceContains(selected,
-                           "index_lookup",
-                           std::string(kTemporaryIndexUuid) +
-                               "|index_family=btree|index_profile=btree"),
+  Require(HasIndexEvidence(selected, kTemporaryIndexUuid),
           "TEMP-TABLE-GATE-010 session A select did not use GTT index");
 
   session_b.local_transaction_id = 0;
-  session_b.transaction_uuid.canonical.clear();
+  session_b.transaction_uuid = {};
   session_b = BeginTransaction(session_b);
   selected = SelectRowsById(session_b, kTemporaryIndexedTableUuid, 71);
   if (!selected.ok) { PrintApiDiagnostics(selected); }
@@ -2257,9 +2288,9 @@ void RequireEngineTemporaryIndexAndConstraintIsolation(
           "TEMP-TABLE-GATE-010 indexed GTT read missed second session B row");
 
   auto session_c = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440064"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440064")));
   auto inserted_c = InsertRow(session_c, kTemporaryIndexedTableUuid,
-                              std::string(kRowC), 71);
+                              kRowC, 71);
   if (!inserted_c.ok) { PrintApiDiagnostics(inserted_c); }
   Require(inserted_c.ok,
           "TEMP-TABLE-GATE-010 GTT unique index enforced uniqueness globally");
@@ -2271,17 +2302,17 @@ void RequireEngineTemporaryIndexAndConstraintIsolation(
 
   auto duplicate_b = InsertRow(session_b,
                                kTemporaryIndexedTableUuid,
-                               "019f0000-0000-7000-8000-000000440615",
+                               scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440615"),
                                71);
   Require(!duplicate_b.ok && Contains(FirstDetail(duplicate_b), "duplicate_key"),
           "TEMP-TABLE-GATE-010 GTT unique index did not reject same-session insert duplicate");
 
   api::EngineUpdateRowsRequest update;
   update.context = session_b;
-  update.target_table.uuid.canonical = std::string(kTemporaryIndexedTableUuid);
+  update.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440307");
   update.target_table.object_kind = "table";
   update.update_predicate.predicate_kind = "row_uuid_match";
-  update.update_predicate.canonical_predicate_envelope = std::string(kRowB2);
+  update.update_predicate.row_uuid = kRowB2;
   update.assignments.push_back({"id", IntValue(71)});
   auto updated = api::EngineUpdateRows(update);
   Require(!updated.ok &&
@@ -2304,7 +2335,7 @@ void RequireEngineTemporaryIndexAndConstraintIsolation(
                       "0"),
           "TEMP-TABLE-GATE-008 GTT session cleanup retired shared metadata");
   session_a.local_transaction_id = 0;
-  session_a.transaction_uuid.canonical.clear();
+  session_a.transaction_uuid = {};
   session_a = BeginTransaction(session_a);
   selected = SelectRows(session_a, kTemporaryIndexedTableUuid);
   if (!selected.ok) { PrintApiDiagnostics(selected); }
@@ -2318,8 +2349,8 @@ void RequireEngineTemporaryIndexAndConstraintIsolation(
       ResolveTableRequest(session_a, "indexed_global_work_customer"));
   if (!resolved.ok) { PrintApiDiagnostics(resolved); }
   Require(resolved.ok &&
-              resolved.primary_object.uuid.canonical ==
-                  std::string(kTemporaryIndexedTableUuid),
+              resolved.primary_object.uuid ==
+                  kTemporaryIndexedTableUuid,
           "TEMP-TABLE-GATE-008 GTT metadata disappeared after session cleanup");
   auto selected_b_after_cleanup = SelectRows(session_b, kTemporaryIndexedTableUuid);
   if (!selected_b_after_cleanup.ok) {
@@ -2332,9 +2363,9 @@ void RequireEngineTemporaryIndexAndConstraintIsolation(
 
 void RequireEngineTemporaryLargeValueCleanup(
     const std::filesystem::path& path,
-    const std::string& database_uuid) {
+    const api::EngineUuid& database_uuid) {
   auto create_tx = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440071"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440071")));
   auto create = api::EngineCreateTable(
       TemporaryPayloadCreateTableRequest(create_tx,
                                          "delete_rows",
@@ -2350,14 +2381,14 @@ void RequireEngineTemporaryLargeValueCleanup(
 
   const std::string payload =
       "temporary-large-value:" + std::string(5000, 'x') + ":end";
-  constexpr std::string_view kLargeRowUuid =
-      "019f0000-0000-7000-8000-000000440711";
+  constexpr auto kLargeRowUuid =
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440711");
 
   auto session_a = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440072"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440072")));
   auto inserted = InsertPayloadRow(session_a,
                                    kTemporaryLargeValueTableUuid,
-                                   std::string(kLargeRowUuid),
+                                   kLargeRowUuid,
                                    81,
                                    payload,
                                    true);
@@ -2381,7 +2412,7 @@ void RequireEngineTemporaryLargeValueCleanup(
           "TEMP-TABLE-GATE-011 owner session did not materialize large value");
 
   auto session_b = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440073"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440073")));
   selected = SelectRows(session_b, kTemporaryLargeValueTableUuid);
   if (!selected.ok) { PrintApiDiagnostics(selected); }
   Require(selected.ok && selected.visible_count == 0,
@@ -2402,7 +2433,7 @@ void RequireEngineTemporaryLargeValueCleanup(
           "TEMP-TABLE-GATE-011 sidecar missing temp large-value reclaim marker");
 
   session_a.local_transaction_id = 0;
-  session_a.transaction_uuid.canonical.clear();
+  session_a.transaction_uuid = {};
   session_a = BeginTransaction(session_a);
   selected = SelectRows(session_a, kTemporaryLargeValueTableUuid);
   if (!selected.ok) { PrintApiDiagnostics(selected); }
@@ -2417,12 +2448,12 @@ void RequireEngineTemporaryLargeValueCleanup(
 
 api::MgaTemporaryRecoveryClassificationResult ClassifyTemporaryRecovery(
     const std::filesystem::path& path,
-    const std::string& database_uuid) {
+    const api::EngineUuid& database_uuid) {
   auto context = EngineContext(path,
                                database_uuid,
-                               "019f0000-0000-7000-8000-000000440090");
+                               scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440090"));
   context.local_transaction_id = 0;
-  context.transaction_uuid.canonical.clear();
+  context.transaction_uuid = {};
   return api::ClassifyMgaTemporaryRecoveryState(context);
 }
 
@@ -2431,18 +2462,23 @@ void AppendFencedTemporaryRowEvidence(const std::filesystem::path& path) {
                     std::ios::app | std::ios::binary);
   Require(static_cast<bool>(out),
           "TEMP-TABLE-GATE-012 could not append fenced row evidence");
-  out << "SBMGA1\tROW_VERSION\t999999\t900\t"
-      << kTemporaryRecoveryGlobalTableUuid
-      << "\t019f0000-0000-7000-8000-000000440891"
-      << "\t019f0000-0000-7000-8000-000000440892"
-      << "\t0\t\t0\t\t019f0000-0000-7000-8000-000000440082\n";
+  api::CrudRowVersionRecord row;
+  row.creator_tx = 999999;  // Deliberately absent from durable transaction inventory.
+  row.creator_transaction_uuid = scratchbird::tests::FixtureUuid(1605, 999999);
+  row.event_sequence = 900;
+  row.table_uuid = kTemporaryRecoveryGlobalTableUuid;
+  row.row_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440891");
+  row.version_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440892");
+  row.temporary_session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440082");
+  const auto bytes = api::BuildRowVersionStoreLine(row);
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
   Require(static_cast<bool>(out),
           "TEMP-TABLE-GATE-012 fenced row evidence append failed");
 }
 
 void RequireEngineTemporaryCrashRestartClassification(
     const std::filesystem::path& path,
-    const std::string& database_uuid) {
+    const api::EngineUuid& database_uuid) {
   auto classified = ClassifyTemporaryRecovery(path, database_uuid);
   if (classified.diagnostic.error) {
     std::cerr << classified.diagnostic.code << ':'
@@ -2452,7 +2488,7 @@ void RequireEngineTemporaryCrashRestartClassification(
           "TEMP-TABLE-GATE-012 empty temporary recovery state was not old_state");
 
   auto create_active = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440081"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440081")));
   auto create = api::EngineCreateTable(
       TemporaryCreateTableRequest(create_active,
                                   "preserve_rows",
@@ -2479,7 +2515,7 @@ void RequireEngineTemporaryCrashRestartClassification(
           "TEMP-TABLE-GATE-012 rolled-back create was not old_state");
 
   auto global_create_tx = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440082"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440082")));
   create = api::EngineCreateTable(
       TemporaryCreateTableRequest(global_create_tx,
                                   "preserve_rows",
@@ -2500,10 +2536,10 @@ void RequireEngineTemporaryCrashRestartClassification(
           "TEMP-TABLE-GATE-012 committed GTT metadata was not new_state");
 
   auto dml_active = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440082"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440082")));
   auto inserted = InsertRow(dml_active,
                             kTemporaryRecoveryGlobalTableUuid,
-                            "019f0000-0000-7000-8000-000000440811",
+                            scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440811"),
                             91);
   if (!inserted.ok) { PrintApiDiagnostics(inserted); }
   Require(inserted.ok,
@@ -2519,10 +2555,10 @@ void RequireEngineTemporaryCrashRestartClassification(
           "TEMP-TABLE-GATE-012 active GTT DML rollback failed");
 
   auto preserve_tx = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440082"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440082")));
   inserted = InsertRow(preserve_tx,
                        kTemporaryRecoveryGlobalTableUuid,
-                       "019f0000-0000-7000-8000-000000440812",
+                       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440812"),
                        92);
   if (!inserted.ok) { PrintApiDiagnostics(inserted); }
   Require(inserted.ok,
@@ -2548,13 +2584,13 @@ void RequireEngineTemporaryCrashRestartClassification(
           "TEMP-TABLE-GATE-012 cleaned GTT state was not new_state");
 
   auto private_tx = BeginTransaction(
-      EngineContext(path, database_uuid, "019f0000-0000-7000-8000-000000440083"));
+      EngineContext(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440083")));
   create = api::EngineCreateTable(
       TemporaryCreateTableRequest(private_tx,
                                   "preserve_rows",
-                                  "019f0000-0000-7000-8000-000000440311",
+                                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440311"),
                                   "recovery_private_orphan",
-                                  "019f0000-0000-7000-8000-000000440802",
+                                  scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440802"),
                                   "private"));
   if (!create.ok) { PrintApiDiagnostics(create); }
   Require(create.ok,
@@ -2589,10 +2625,10 @@ void RequireEngineTemporaryCrashRestartClassification(
 
 void RequireEngineTemporaryBackupAndDeltaExclusion(
     const std::filesystem::path& path,
-    const std::string& database_uuid) {
-  constexpr std::string_view kSessionUuid =
-      "019f0000-0000-7000-8000-000000440141";
-  const auto filespace_uuid = MinimalDatabaseFilespaceUuid();
+    const api::EngineUuid& database_uuid) {
+  constexpr auto kSessionUuid =
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000440141");
+  const auto filespace_uuid = MinimalDatabaseFilespaceUuid(path);
   const std::filesystem::path logical_manifest =
       path.string() + ".temp_gate014.logical.backup";
   const std::filesystem::path delta_manifest =
@@ -2602,7 +2638,7 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
   std::filesystem::remove(delta_manifest, ignored);
 
   auto source = BeginTransaction(
-      EngineContext(path, database_uuid, std::string(kSessionUuid)));
+      EngineContext(path, database_uuid, kSessionUuid));
   const auto source_tx = source.local_transaction_id;
   auto durable_create = api::EngineCreateTable(
       DurableCreateTableRequest(source,
@@ -2646,21 +2682,21 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
 
   auto inserted = InsertRow(source,
                             kBackupDurableTableUuid,
-                            std::string(kBackupDurableRowUuid),
+                            kBackupDurableRowUuid,
                             141);
   if (!inserted.ok) { PrintApiDiagnostics(inserted); }
   Require(inserted.ok && inserted.inserted_count == 1,
           "TEMP-TABLE-GATE-014 durable backup row insert failed");
   inserted = InsertRow(source,
                        kBackupGlobalTempTableUuid,
-                       std::string(kBackupGlobalTempRowUuid),
+                       kBackupGlobalTempRowUuid,
                        142);
   if (!inserted.ok) { PrintApiDiagnostics(inserted); }
   Require(inserted.ok && inserted.inserted_count == 1,
           "TEMP-TABLE-GATE-014 GTT backup row insert failed");
   inserted = InsertRow(source,
                        kBackupPrivateTempTableUuid,
-                       std::string(kBackupPrivateTempRowUuid),
+                       kBackupPrivateTempRowUuid,
                        143);
   if (!inserted.ok) { PrintApiDiagnostics(inserted); }
   Require(inserted.ok && inserted.inserted_count == 1,
@@ -2673,13 +2709,13 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
 
   auto backup_context = BackupEngineContext(path,
                                             database_uuid,
-                                            std::string(kSessionUuid),
+                                            kSessionUuid,
                                             "temp-gate014-logical-backup");
   api::EngineStartLogicalBackupRequest backup;
   backup.context = backup_context;
   backup.option_envelopes.push_back("target_uri:" +
                                     logical_manifest.string());
-  backup.option_envelopes.push_back("filespace_uuid:" + filespace_uuid);
+  backup.option_envelopes.push_back("filespace_uuid:" + api::MetadataUuidBytes(filespace_uuid));
   auto backed_up = api::EngineStartLogicalBackup(backup);
   if (!backed_up.ok) { PrintApiDiagnostics(backed_up); }
   Require(backed_up.ok,
@@ -2693,14 +2729,14 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
               HasEvidence(backed_up, "temporary_indexes_excluded", "1"),
           "TEMP-TABLE-GATE-014 logical backup missing temp exclusion evidence");
   auto logical_body = ReadFile(logical_manifest);
-  Require(Contains(logical_body, HexEncode(kBackupDurableTableUuid)) &&
-              Contains(logical_body, HexEncode(kBackupDurableRowUuid)),
+  Require(Contains(logical_body, api::MetadataUuidBytes(kBackupDurableTableUuid)) &&
+              Contains(logical_body, api::MetadataUuidBytes(kBackupDurableRowUuid)),
           "TEMP-TABLE-GATE-014 logical backup omitted durable content");
-  Require(!Contains(logical_body, HexEncode(kBackupGlobalTempTableUuid)) &&
-              !Contains(logical_body, HexEncode(kBackupPrivateTempTableUuid)) &&
-              !Contains(logical_body, HexEncode(kBackupTempIndexUuid)) &&
-              !Contains(logical_body, HexEncode(kBackupGlobalTempRowUuid)) &&
-              !Contains(logical_body, HexEncode(kBackupPrivateTempRowUuid)),
+  Require(!Contains(logical_body, api::MetadataUuidBytes(kBackupGlobalTempTableUuid)) &&
+              !Contains(logical_body, api::MetadataUuidBytes(kBackupPrivateTempTableUuid)) &&
+              !Contains(logical_body, api::MetadataUuidBytes(kBackupTempIndexUuid)) &&
+              !Contains(logical_body, api::MetadataUuidBytes(kBackupGlobalTempRowUuid)) &&
+              !Contains(logical_body, api::MetadataUuidBytes(kBackupPrivateTempRowUuid)),
           "TEMP-TABLE-GATE-014 logical backup leaked temporary content");
   auto rolled_back = Rollback(backup_context);
   if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
@@ -2709,14 +2745,14 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
 
   auto delta_context = BackupEngineContext(path,
                                            database_uuid,
-                                           std::string(kSessionUuid),
+                                           kSessionUuid,
                                            "temp-gate014-delta-package");
   api::EnginePackageDeltaStreamRequest delta;
   delta.context = delta_context;
   delta.option_envelopes.push_back("target_uri:" + delta_manifest.string());
   delta.option_envelopes.push_back("source_backup_uuid:" +
-                                   backed_up.backup_uuid.canonical);
-  delta.option_envelopes.push_back("filespace_uuid:" + filespace_uuid);
+                                   api::MetadataUuidBytes(backed_up.backup_uuid));
+  delta.option_envelopes.push_back("filespace_uuid:" + api::MetadataUuidBytes(filespace_uuid));
   delta.option_envelopes.push_back("start_transaction_id:" +
                                    std::to_string(source_tx));
   delta.option_envelopes.push_back("end_transaction_id:" +
@@ -2733,14 +2769,14 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
               HasEvidence(packaged, "temporary_indexes_excluded", "1"),
           "TEMP-TABLE-GATE-014 delta package missing temp exclusion evidence");
   auto delta_body = ReadFile(delta_manifest);
-  Require(Contains(delta_body, HexEncode(kBackupDurableTableUuid)) &&
-              Contains(delta_body, HexEncode(kBackupDurableRowUuid)),
+  Require(Contains(delta_body, api::MetadataUuidBytes(kBackupDurableTableUuid)) &&
+              Contains(delta_body, api::MetadataUuidBytes(kBackupDurableRowUuid)),
           "TEMP-TABLE-GATE-014 delta package omitted durable content");
-  Require(!Contains(delta_body, HexEncode(kBackupGlobalTempTableUuid)) &&
-              !Contains(delta_body, HexEncode(kBackupPrivateTempTableUuid)) &&
-              !Contains(delta_body, HexEncode(kBackupTempIndexUuid)) &&
-              !Contains(delta_body, HexEncode(kBackupGlobalTempRowUuid)) &&
-              !Contains(delta_body, HexEncode(kBackupPrivateTempRowUuid)),
+  Require(!Contains(delta_body, api::MetadataUuidBytes(kBackupGlobalTempTableUuid)) &&
+              !Contains(delta_body, api::MetadataUuidBytes(kBackupPrivateTempTableUuid)) &&
+              !Contains(delta_body, api::MetadataUuidBytes(kBackupTempIndexUuid)) &&
+              !Contains(delta_body, api::MetadataUuidBytes(kBackupGlobalTempRowUuid)) &&
+              !Contains(delta_body, api::MetadataUuidBytes(kBackupPrivateTempRowUuid)),
           "TEMP-TABLE-GATE-014 delta package leaked temporary content");
   rolled_back = Rollback(delta_context);
   if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }
@@ -2749,7 +2785,7 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
 
   auto support_context = BackupEngineContext(path,
                                              database_uuid,
-                                             std::string(kSessionUuid),
+                                             kSessionUuid,
                                              "temp-gate014-support-bundle");
   api::EnginePrepareSupportBundleRequest support;
   support.context = support_context;
@@ -2769,10 +2805,10 @@ void RequireEngineTemporaryBackupAndDeltaExclusion(
               !Contains(support_text, kBackupPrivateTempTableUuid) &&
               !Contains(support_text, kBackupGlobalTempRowUuid) &&
               !Contains(support_text, kBackupPrivateTempRowUuid) &&
-              !Contains(support_text, HexEncode(kBackupGlobalTempTableUuid)) &&
-              !Contains(support_text, HexEncode(kBackupPrivateTempTableUuid)) &&
-              !Contains(support_text, HexEncode(kBackupGlobalTempRowUuid)) &&
-              !Contains(support_text, HexEncode(kBackupPrivateTempRowUuid)),
+              !Contains(support_text, api::MetadataUuidBytes(kBackupGlobalTempTableUuid)) &&
+              !Contains(support_text, api::MetadataUuidBytes(kBackupPrivateTempTableUuid)) &&
+              !Contains(support_text, api::MetadataUuidBytes(kBackupGlobalTempRowUuid)) &&
+              !Contains(support_text, api::MetadataUuidBytes(kBackupPrivateTempRowUuid)),
           "TEMP-TABLE-GATE-014 support bundle leaked temporary content");
   rolled_back = Rollback(support_context);
   if (!rolled_back.ok) { PrintApiDiagnostics(rolled_back); }

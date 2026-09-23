@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "server/sblr_local_gateway.hpp"
 #include "engine/sblr/sblr_ddl_create_index_runtime.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
@@ -17,12 +18,9 @@ namespace server = scratchbird::server;
 namespace sblr = scratchbird::engine::sblr;
 
 namespace {
-constexpr std::string_view kPackageUuid =
-    "018f1234-5678-7abc-8def-0123456789ab";
-constexpr std::string_view kRegistryUuid =
-    "018f4321-8765-7cba-8fed-ba9876543210";
-constexpr std::string_view kParserUuid =
-    "018faaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+constexpr auto kPackageUuid = scratchbird::tests::FixtureUuidLiteral("018f1234-5678-7abc-8def-0123456789ab");
+constexpr auto kRegistryUuid = scratchbird::tests::FixtureUuidLiteral("018f4321-8765-7cba-8fed-ba9876543210");
+constexpr auto kParserUuid = scratchbird::tests::FixtureUuidLiteral("018faaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee");
 const std::array<std::uint8_t, 16> kPackageBytes{
     0x01, 0x8f, 0x12, 0x34, 0x56, 0x78, 0x7a, 0xbc,
     0x8d, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab};
@@ -180,10 +178,10 @@ int main() {
   request.root_opcode_code = 0x1207;
   request.root_opcode = "SBLR_QUERY_EXECUTE";
   request.root_operation_id = "query.execute";
-  request.route_snapshot_uuid = "018f1111-2222-7333-8444-555555555555";
+  request.route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("018f1111-2222-7333-8444-555555555555");
   request.route_epoch = 7;
   request.route_generation = 9;
-  request.security_snapshot_uuid = "018faaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+  request.security_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("018faaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee");
   request.security_epoch = 11;
   request.security_observation_generation = 13;
   request.route_snapshot_engine_owned = true;

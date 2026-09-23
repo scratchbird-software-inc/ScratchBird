@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "agents/agent_management_api.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "agent_runtime.hpp"
@@ -35,19 +36,18 @@ void Require(bool condition, const std::string& message) {
 api::EngineRequestContext Context(std::initializer_list<std::string_view> rights) {
   api::EngineRequestContext context;
   context.request_id = "arhc-042-agent-management-durable-mutation";
-  context.database_uuid.canonical = "019f0300-0000-7000-8000-000000000001";
-  context.principal_uuid.canonical = "019f0300-0000-7000-8000-000000000002";
-  context.transaction_uuid.canonical = "019f0300-0000-7000-8000-000000000003";
-  context.session_uuid.canonical = "019f0300-0000-7000-8000-000000000004";
-  context.node_uuid.canonical = "019f0300-0000-7000-8000-000000000005";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000001");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000002");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000003");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000004");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000005");
   context.local_transaction_id = 42042;
   context.security_context_present = true;
   context.catalog_generation_id = 11;
   context.security_epoch = 12;
   context.resource_epoch = 13;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f0300-0000-7000-8000-000000000100";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000100");
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
   context.authorization_context.policy_epoch = context.security_epoch;
@@ -62,7 +62,7 @@ api::EngineRequestContext Context(std::initializer_list<std::string_view> rights
     const auto grant_uuid = uuid::GenerateEngineIdentityV7(
         UuidKind::object, 1790000000200 + grant_index++);
     Require(grant_uuid.ok(), "grant UUID generation failed");
-    grant.grant_uuid.canonical = uuid::UuidToString(grant_uuid.value.value);
+    grant.grant_uuid = grant_uuid.value.value;
     grant.subject_uuid = context.principal_uuid;
     grant.subject_kind = "principal";
     grant.right = std::string(right);
@@ -74,8 +74,8 @@ api::EngineRequestContext Context(std::initializer_list<std::string_view> rights
 
 struct TestDatabase {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
 };
 
@@ -135,8 +135,8 @@ TestDatabase CreateActiveDatabase() {
 
   TestDatabase result;
   result.path = path;
-  result.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  result.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
+  result.database_uuid = database_uuid.value.value;
+  result.transaction_uuid = transaction_uuid.value.value;
   result.local_transaction_id = begun.entry.identity.local_id.value;
   return result;
 }
@@ -146,8 +146,8 @@ api::EngineRequestContext StoreContext(
     std::initializer_list<std::string_view> rights) {
   auto context = Context(rights);
   context.database_path = database.path.string();
-  context.database_uuid.canonical = database.database_uuid;
-  context.transaction_uuid.canonical = database.transaction_uuid;
+  context.database_uuid = database.database_uuid;
+  context.transaction_uuid = database.transaction_uuid;
   context.local_transaction_id = database.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       database.local_transaction_id;
@@ -231,7 +231,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }

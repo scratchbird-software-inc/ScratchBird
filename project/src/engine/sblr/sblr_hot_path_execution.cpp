@@ -241,7 +241,7 @@ SblrHotPathExecutionResult ExecuteSblrHotPath(
 
   auto native_request = request.native_specialization;
   native_request.identity.stable_template_id =
-      native_request.identity.stable_template_id.empty()
+      native_request.identity.stable_template_id.is_nil()
           ? result.reused_prepare.prepared_template->template_id
           : native_request.identity.stable_template_id;
   native_request.identity.sblr_digest =
@@ -309,16 +309,16 @@ SblrHotPathExecutionResult ExecuteSblrHotPath(
   result.detail = "prepared SBLR hot path consumed";
   AddCommonEvidence(request, &result);
   result.evidence.push_back("sblr_hot_path.benchmark_clean=true");
-  result.evidence.push_back("sblr_hot_path.prepared_template_id=" +
+  result.identity_evidence.emplace_back("sblr_hot_path.prepared_template_id",
                             result.reused_prepare.prepared_template->template_id);
   result.evidence.push_back("sblr_hot_path.prepared_template_reused=true");
-  result.evidence.push_back(
-      "sblr_hot_path.statement_use_receipt_id=" +
+  result.identity_evidence.emplace_back(
+      "sblr_hot_path.statement_use_receipt_id",
       result.executable_statement_use_receipt->receipt_id());
   result.evidence.push_back(
       "sblr_hot_path.statement_use_receipt_executable=true");
-  result.evidence.push_back(
-      "sblr_hot_path.statement_uuid=" +
+  result.identity_evidence.emplace_back(
+      "sblr_hot_path.statement_uuid",
       result.executable_statement_use_receipt->statement_context()
           .statement_uuid);
   result.evidence.push_back("sblr_hot_path.opcode_specialization=native");

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "api_types.hpp"
 #include "sblr_ddl_create_synonym_runtime.hpp"
 #include "sblr_ddl_drop_synonym_runtime.hpp"
@@ -35,10 +36,10 @@ api::EngineRequestContext Context() {
   context.request_id = "synonym-dispatch-conformance";
   context.security_context_present = true;
   context.local_transaction_id = 77;
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000000401";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000000402";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000000403";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000000404";
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000401");
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000402");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000403");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000404");
   return context;
 }
 
@@ -53,8 +54,8 @@ sblr::SblrOperationEnvelope Envelope(std::string_view operation_id,
   envelope.opcode_code = opcode == "SBLR_DDL_DROP_SYNONYM" ? 1575 : 1574;
   envelope.result_shape = "ddl_result";
   envelope.diagnostic_shape = "diagnostic_vector";
-  envelope.parser_package_uuid = "019f0000-0000-7000-8000-000000000411";
-  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-000000000412";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000411");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000412");
   if (!add_descriptor) return envelope;
 
   sblr::SblrOperand operand;

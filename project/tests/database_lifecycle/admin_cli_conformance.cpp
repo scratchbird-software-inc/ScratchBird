@@ -76,8 +76,8 @@ std::filesystem::path MakeTempDir() {
 
 struct Fixture {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string filespace_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid filespace_uuid;
 };
 
 Fixture CreateCleanDatabase(const std::filesystem::path& path, std::uint64_t now_millis) {
@@ -97,8 +97,8 @@ Fixture CreateCleanDatabase(const std::filesystem::path& path, std::uint64_t now
   const auto clean = db::MarkDatabaseCleanShutdown(path.string());
   Require(clean.ok(), "DBLC-013P clean shutdown failed");
   return {path,
-          uuid::UuidToString(create.database_uuid.value),
-          uuid::UuidToString(create.filespace_uuid.value)};
+          create.database_uuid.value,
+          create.filespace_uuid.value};
 }
 
 HostedEngineState EngineState(const Fixture& fixture) {
@@ -116,7 +116,7 @@ HostedEngineState EngineState(const Fixture& fixture) {
 
 std::array<std::uint8_t, 16> AddSession(ServerSessionRegistry* registry,
                                         const std::filesystem::path& path,
-                                        std::string database_uuid,
+                                        scratchbird::core::platform::Uuid database_uuid,
                                         std::string_view principal,
                                         std::uint64_t local_transaction_id = 0) {
   ServerSessionRecord session;

@@ -57,11 +57,15 @@ std::array<std::uint8_t, 16> UuidBytes(std::uint8_t seed) {
           0x80, 0x00, 0x00, 0x00, 0x00, seed, seed, seed};
 }
 
-std::string UuidText(unsigned int suffix) {
-  std::ostringstream out;
-  out << "019f4100-0000-7000-8000-" << std::setw(12)
-      << std::setfill('0') << suffix;
-  return out.str();
+scratchbird::core::platform::Uuid FixtureIdentity(unsigned int suffix) {
+  scratchbird::core::platform::Uuid value{};
+  value.bytes = {0x01, 0x9f, 0x40, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 0};
+  for (std::size_t i = 16; i-- > 10;) {
+    const auto low = suffix % 10; suffix /= 10;
+    const auto high = suffix % 10; suffix /= 10;
+    value.bytes[i] = static_cast<std::uint8_t>((high << 4) | low);
+  }
+  return value;
 }
 
 ServerSessionRecord MakeSession(std::uint8_t seed) {
@@ -70,7 +74,7 @@ ServerSessionRecord MakeSession(std::uint8_t seed) {
   session.auth_context_uuid = UuidBytes(static_cast<std::uint8_t>(seed + 10));
   session.principal_uuid = UuidBytes(static_cast<std::uint8_t>(seed + 20));
   session.effective_user_uuid = UuidBytes(static_cast<std::uint8_t>(seed + 30));
-  session.database_uuid = UuidText(900 + seed);
+  session.database_uuid = FixtureIdentity(900 + seed);
   session.catalog_generation = 110;
   session.security_epoch = 210;
   session.descriptor_epoch = 310;
@@ -90,8 +94,8 @@ IparUuidDependency DependencyFor(const IparSupportSessionScope& scope) {
   IparUuidDependency dependency;
   dependency.dependency_kind = "relation";
   dependency.logical_name = "orders";
-  dependency.object_uuid = UuidText(101);
-  dependency.descriptor_uuid = UuidText(201);
+  dependency.object_uuid = FixtureIdentity(101);
+  dependency.descriptor_uuid = FixtureIdentity(201);
   dependency.descriptor_hash = "sha256:orders-descriptor";
   dependency.catalog_generation = scope.epoch.catalog_generation;
   dependency.descriptor_epoch = scope.epoch.descriptor_epoch;
@@ -112,7 +116,7 @@ scratchbird::server::IparPreparedTemplatePut MakePreparedPut(
       "operation_id=dml.update_rows\n"
       "operation_family=sblr.dml.update.v3\n"
       "target_object_uuid=" +
-      put.dependencies.front().object_uuid +
+      std::string(reinterpret_cast<const char*>(put.dependencies.front().object_uuid.bytes.data()), 16) +
       "\nparameter_slot=$1\nparameter_slot=$2\n"
       "parser_resolved_names_to_uuids=true\n";
   return put;

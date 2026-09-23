@@ -253,9 +253,9 @@ struct AgentRuntimeContext {
   bool repair_mode = false;
   bool backup_hold_mode = false;
   bool archive_hold_mode = false;
-  std::string principal_uuid;
-  std::string database_uuid;
-  std::string cluster_uuid;
+  scratchbird::core::platform::Uuid principal_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid cluster_uuid;
   std::vector<std::string> rights;
   // Engine-materialized group identity, never a display name or UUID text.
   // The legacy `groups` field below contains display labels only and cannot

@@ -136,7 +136,8 @@ bool MetricHasLabel(const metrics::MetricValue& value,
                     std::string_view key,
                     std::string_view expected) {
   for (const auto& label : value.labels) {
-    if (label.key == key && label.value == expected) {
+    const auto* text = std::get_if<std::string>(&label.value);
+    if (label.key == key && text != nullptr && *text == expected) {
       return true;
     }
   }
@@ -152,7 +153,10 @@ double MetricValueFor(std::string_view family,
         MetricHasLabel(value, "context", context) &&
         MetricHasLabel(value, "result", result) &&
         MetricHasLabel(value, "reason", reason)) {
-      return value.value;
+      const auto* counter = std::get_if<std::uint64_t>(&value.value);
+      Require(counter != nullptr && *counter <= (std::uint64_t{1} << 53),
+              "metric counter must retain exact uint64 representation");
+      return static_cast<double>(*counter);
     }
   }
   return -1.0;
@@ -408,7 +412,8 @@ void TestMetricsAndNoRuntimeDocTokenLeak() {
     Require(!ContainsForbiddenRuntimeToken(value.family), "ODF-055 metric family leaked docs token");
     for (const auto& label : value.labels) {
       Require(!ContainsForbiddenRuntimeToken(label.key), "ODF-055 metric label key leaked docs token");
-      Require(!ContainsForbiddenRuntimeToken(label.value), "ODF-055 metric label value leaked docs token");
+      if (const auto* text = std::get_if<std::string>(&label.value))
+        Require(!ContainsForbiddenRuntimeToken(*text), "ODF-055 metric label value leaked docs token");
     }
   }
   for (const auto& code : page::PageCacheDiagnosticCodes()) {

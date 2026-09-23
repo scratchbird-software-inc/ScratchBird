@@ -9,6 +9,7 @@
 #include "metric_contracts.hpp"
 
 #include "metric_producer.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -23,6 +24,11 @@ MetricValidationResult RequireNonEmpty(const std::string& value, const std::stri
     return MetricError("SB-METRICS-CONTRACT-LABEL-REQUIRED", diagnostic_detail);
   }
   return MetricOk();
+}
+
+MetricValidationResult RequireIdentity(const MetricUuid& value, const std::string& field) {
+  return core::uuid::IsEngineIdentityUuid(value)
+      ? MetricOk() : MetricError("SB-METRICS-CONTRACT-IDENTITY-REQUIRED", field);
 }
 
 MetricValidationResult RequireRange(const std::string& family, double value, double minimum, double maximum) {
@@ -336,11 +342,11 @@ MetricValidationResult PublishDatatypeCatalogDescriptorCount(double descriptor_c
                   "datatype_runtime");
 }
 
-MetricValidationResult RecordDomainMethodInvocation(std::string domain_uuid,
+MetricValidationResult RecordDomainMethodInvocation(MetricUuid domain_uuid,
                                                     std::string method,
                                                     std::string result,
                                                     std::string reason) {
-  auto status = RequireNonEmpty(domain_uuid, "domain_uuid");
+  auto status = RequireIdentity(domain_uuid, "domain_uuid");
   if (!status.ok) { return status; }
   status = RequireNonEmpty(method, "method");
   if (!status.ok) { return status; }
@@ -619,9 +625,9 @@ MetricValidationResult RecordInsertSlowPath(MetricUuid object_uuid,
 
 namespace {
 
-MetricLabelSet FilespaceLabels(std::string database_uuid,
-                               std::string filespace_uuid,
-                               std::string node_uuid,
+MetricLabelSet FilespaceLabels(MetricUuid database_uuid,
+                               MetricUuid filespace_uuid,
+                               MetricUuid node_uuid,
                                std::string filespace_role,
                                std::string device_class) {
   return Labels({{"component", "storage.filespace"},
@@ -632,9 +638,9 @@ MetricLabelSet FilespaceLabels(std::string database_uuid,
                  {"device_class", std::move(device_class)}});
 }
 
-MetricLabelSet PageLabels(std::string database_uuid,
-                          std::string filespace_uuid,
-                          std::string node_uuid,
+MetricLabelSet PageLabels(MetricUuid database_uuid,
+                          MetricUuid filespace_uuid,
+                          MetricUuid node_uuid,
                           std::string page_family,
                           std::string page_type) {
   return Labels({{"component", "storage.page"},
@@ -645,23 +651,23 @@ MetricLabelSet PageLabels(std::string database_uuid,
                  {"page_type", std::move(page_type)}});
 }
 
-MetricValidationResult RequireFilespaceIdentity(const std::string& database_uuid,
-                                                const std::string& filespace_uuid,
+MetricValidationResult RequireFilespaceIdentity(const MetricUuid& database_uuid,
+                                                const MetricUuid& filespace_uuid,
                                                 const std::string& filespace_role) {
-  auto status = RequireNonEmpty(database_uuid, "database_uuid");
+  auto status = RequireIdentity(database_uuid, "database_uuid");
   if (!status.ok) { return status; }
-  status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   return RequireNonEmpty(filespace_role, "filespace_role");
 }
 
-MetricValidationResult RequirePageIdentity(const std::string& database_uuid,
-                                           const std::string& filespace_uuid,
+MetricValidationResult RequirePageIdentity(const MetricUuid& database_uuid,
+                                           const MetricUuid& filespace_uuid,
                                            const std::string& page_family,
                                            const std::string& page_type) {
-  auto status = RequireNonEmpty(database_uuid, "database_uuid");
+  auto status = RequireIdentity(database_uuid, "database_uuid");
   if (!status.ok) { return status; }
-  status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   status = RequireNonEmpty(page_family, "page_family");
   if (!status.ok) { return status; }
@@ -673,9 +679,9 @@ MetricValidationResult RequirePageIdentity(const std::string& database_uuid,
 MetricValidationResult PublishFilespaceCapacitySnapshot(double total_bytes,
                                                         double used_bytes,
                                                         double free_bytes,
-                                                        std::string database_uuid,
-                                                        std::string filespace_uuid,
-                                                        std::string node_uuid,
+                                                        MetricUuid database_uuid,
+                                                        MetricUuid filespace_uuid,
+                                                        MetricUuid node_uuid,
                                                         std::string filespace_role,
                                                         std::string device_class) {
   auto status = RequireFilespaceIdentity(database_uuid, filespace_uuid, filespace_role);
@@ -689,9 +695,9 @@ MetricValidationResult PublishFilespaceCapacitySnapshot(double total_bytes,
 }
 
 MetricValidationResult PublishFilespaceReservedBytes(double reserved_bytes,
-                                                     std::string database_uuid,
-                                                     std::string filespace_uuid,
-                                                     std::string node_uuid,
+                                                     MetricUuid database_uuid,
+                                                     MetricUuid filespace_uuid,
+                                                     MetricUuid node_uuid,
                                                      std::string filespace_role,
                                                      std::string device_class,
                                                      std::string reason_class) {
@@ -707,9 +713,9 @@ MetricValidationResult PublishFilespaceReservedBytes(double reserved_bytes,
 
 MetricValidationResult PublishFilespaceHealthState(double state_value,
                                                    std::string state_text,
-                                                   std::string database_uuid,
-                                                   std::string filespace_uuid,
-                                                   std::string node_uuid,
+                                                   MetricUuid database_uuid,
+                                                   MetricUuid filespace_uuid,
+                                                   MetricUuid node_uuid,
                                                    std::string filespace_role,
                                                    std::string device_class) {
   auto status = RequireFilespaceIdentity(database_uuid, filespace_uuid, filespace_role);
@@ -726,9 +732,9 @@ MetricValidationResult PublishFilespaceHealthState(double state_value,
 
 MetricValidationResult PublishFilespaceRoleState(double state_value,
                                                  std::string state_text,
-                                                 std::string database_uuid,
-                                                 std::string filespace_uuid,
-                                                 std::string node_uuid,
+                                                 MetricUuid database_uuid,
+                                                 MetricUuid filespace_uuid,
+                                                 MetricUuid node_uuid,
                                                  std::string filespace_role,
                                                  std::string device_class) {
   auto status = RequireFilespaceIdentity(database_uuid, filespace_uuid, filespace_role);
@@ -744,9 +750,9 @@ MetricValidationResult PublishFilespaceRoleState(double state_value,
 }
 
 MetricValidationResult ObserveFilespaceDeviceReadLatency(double latency_microseconds,
-                                                         std::string database_uuid,
-                                                         std::string filespace_uuid,
-                                                         std::string node_uuid,
+                                                         MetricUuid database_uuid,
+                                                         MetricUuid filespace_uuid,
+                                                         MetricUuid node_uuid,
                                                          std::string filespace_role,
                                                          std::string device_class) {
   auto status = RequireFilespaceIdentity(database_uuid, filespace_uuid, filespace_role);
@@ -759,9 +765,9 @@ MetricValidationResult ObserveFilespaceDeviceReadLatency(double latency_microsec
 }
 
 MetricValidationResult ObserveFilespaceDeviceWriteLatency(double latency_microseconds,
-                                                          std::string database_uuid,
-                                                          std::string filespace_uuid,
-                                                          std::string node_uuid,
+                                                          MetricUuid database_uuid,
+                                                          MetricUuid filespace_uuid,
+                                                          MetricUuid node_uuid,
                                                           std::string filespace_role,
                                                           std::string device_class) {
   auto status = RequireFilespaceIdentity(database_uuid, filespace_uuid, filespace_role);
@@ -774,9 +780,9 @@ MetricValidationResult ObserveFilespaceDeviceWriteLatency(double latency_microse
 }
 
 MetricValidationResult ObserveFilespaceFsyncLatency(double latency_microseconds,
-                                                    std::string database_uuid,
-                                                    std::string filespace_uuid,
-                                                    std::string node_uuid,
+                                                    MetricUuid database_uuid,
+                                                    MetricUuid filespace_uuid,
+                                                    MetricUuid node_uuid,
                                                     std::string filespace_role,
                                                     std::string device_class) {
   auto status = RequireFilespaceIdentity(database_uuid, filespace_uuid, filespace_role);
@@ -789,9 +795,9 @@ MetricValidationResult ObserveFilespaceFsyncLatency(double latency_microseconds,
 }
 
 MetricValidationResult RecordFilespaceDeviceError(std::string error_class,
-                                                  std::string database_uuid,
-                                                  std::string filespace_uuid,
-                                                  std::string node_uuid,
+                                                  MetricUuid database_uuid,
+                                                  MetricUuid filespace_uuid,
+                                                  MetricUuid node_uuid,
                                                   std::string filespace_role,
                                                   std::string device_class) {
   auto status = RequireFilespaceIdentity(database_uuid, filespace_uuid, filespace_role);
@@ -806,9 +812,9 @@ MetricValidationResult RecordFilespaceDeviceError(std::string error_class,
 
 MetricValidationResult PublishPageAllocationSnapshot(double free_count,
                                                      double allocated_count,
-                                                     std::string database_uuid,
-                                                     std::string filespace_uuid,
-                                                     std::string node_uuid,
+                                                     MetricUuid database_uuid,
+                                                     MetricUuid filespace_uuid,
+                                                     MetricUuid node_uuid,
                                                      std::string page_family,
                                                      std::string page_type) {
   auto status = RequirePageIdentity(database_uuid, filespace_uuid, page_family, page_type);
@@ -820,9 +826,9 @@ MetricValidationResult PublishPageAllocationSnapshot(double free_count,
 }
 
 MetricValidationResult PublishPageReleasedFreeCount(double released_free_count,
-                                                    std::string database_uuid,
-                                                    std::string filespace_uuid,
-                                                    std::string node_uuid,
+                                                    MetricUuid database_uuid,
+                                                    MetricUuid filespace_uuid,
+                                                    MetricUuid node_uuid,
                                                     std::string page_family,
                                                     std::string page_type) {
   auto status = RequirePageIdentity(database_uuid, filespace_uuid, page_family, page_type);
@@ -835,9 +841,9 @@ MetricValidationResult PublishPageReleasedFreeCount(double released_free_count,
 }
 
 MetricValidationResult PublishPageReservedCount(double reserved_count,
-                                                std::string database_uuid,
-                                                std::string filespace_uuid,
-                                                std::string node_uuid,
+                                                MetricUuid database_uuid,
+                                                MetricUuid filespace_uuid,
+                                                MetricUuid node_uuid,
                                                 std::string page_family,
                                                 std::string page_type,
                                                 std::string reason_class) {
@@ -852,9 +858,9 @@ MetricValidationResult PublishPageReservedCount(double reserved_count,
 }
 
 MetricValidationResult ObservePageAllocationLatency(double latency_microseconds,
-                                                    std::string database_uuid,
-                                                    std::string filespace_uuid,
-                                                    std::string node_uuid,
+                                                    MetricUuid database_uuid,
+                                                    MetricUuid filespace_uuid,
+                                                    MetricUuid node_uuid,
                                                     std::string page_family,
                                                     std::string page_type) {
   auto status = RequirePageIdentity(database_uuid, filespace_uuid, page_family, page_type);
@@ -867,9 +873,9 @@ MetricValidationResult ObservePageAllocationLatency(double latency_microseconds,
 }
 
 MetricValidationResult RecordPageAllocationFailure(std::string error_class,
-                                                   std::string database_uuid,
-                                                   std::string filespace_uuid,
-                                                   std::string node_uuid,
+                                                   MetricUuid database_uuid,
+                                                   MetricUuid filespace_uuid,
+                                                   MetricUuid node_uuid,
                                                    std::string page_family,
                                                    std::string page_type) {
   auto status = RequirePageIdentity(database_uuid, filespace_uuid, page_family, page_type);
@@ -886,12 +892,12 @@ MetricValidationResult PublishPageCacheSnapshot(double resident_pages,
                                                 double resident_bytes,
                                                 double pinned_pages,
                                                 double dirty_pages,
-                                                std::string database_uuid,
-                                                std::string filespace_uuid,
+                                                MetricUuid database_uuid,
+                                                MetricUuid filespace_uuid,
                                                 std::string page_family) {
-  auto status = RequireNonEmpty(database_uuid, "database_uuid");
+  auto status = RequireIdentity(database_uuid, "database_uuid");
   if (!status.ok) { return status; }
-  status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   status = RequireNonEmpty(page_family, "page_family");
   if (!status.ok) { return status; }
@@ -908,13 +914,13 @@ MetricValidationResult PublishPageCacheSnapshot(double resident_pages,
   return SetGauge("sb_page_cache_dirty_pages", std::move(labels), dirty_pages, "storage_page");
 }
 
-MetricValidationResult RecordPageCacheEviction(std::string database_uuid,
-                                               std::string filespace_uuid,
+MetricValidationResult RecordPageCacheEviction(MetricUuid database_uuid,
+                                               MetricUuid filespace_uuid,
                                                std::string page_family,
                                                std::string result) {
-  auto status = RequireNonEmpty(database_uuid, "database_uuid");
+  auto status = RequireIdentity(database_uuid, "database_uuid");
   if (!status.ok) { return status; }
-  status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   status = RequireNonEmpty(page_family, "page_family");
   if (!status.ok) { return status; }
@@ -930,15 +936,15 @@ MetricValidationResult RecordPageCacheEviction(std::string database_uuid,
 
 namespace {
 
-MetricValidationResult RequirePageCacheContextIdentity(const std::string& database_uuid,
-                                                       const std::string& filespace_uuid,
+MetricValidationResult RequirePageCacheContextIdentity(const MetricUuid& database_uuid,
+                                                       const MetricUuid& filespace_uuid,
                                                        const std::string& page_family,
                                                        const std::string& context,
                                                        const std::string& result,
                                                        const std::string& reason) {
-  auto status = RequireNonEmpty(database_uuid, "database_uuid");
+  auto status = RequireIdentity(database_uuid, "database_uuid");
   if (!status.ok) { return status; }
-  status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   status = RequireNonEmpty(page_family, "page_family");
   if (!status.ok) { return status; }
@@ -949,8 +955,8 @@ MetricValidationResult RequirePageCacheContextIdentity(const std::string& databa
   return RequireNonEmpty(reason, "reason");
 }
 
-MetricLabelSet PageCacheContextLabels(std::string database_uuid,
-                                      std::string filespace_uuid,
+MetricLabelSet PageCacheContextLabels(MetricUuid database_uuid,
+                                      MetricUuid filespace_uuid,
                                       std::string page_family,
                                       std::string context,
                                       std::string result,
@@ -966,8 +972,8 @@ MetricLabelSet PageCacheContextLabels(std::string database_uuid,
 
 MetricValidationResult RecordPageCacheContextCounter(const std::string& family,
                                                      double count,
-                                                     std::string database_uuid,
-                                                     std::string filespace_uuid,
+                                                     MetricUuid database_uuid,
+                                                     MetricUuid filespace_uuid,
                                                      std::string page_family,
                                                      std::string context,
                                                      std::string result,
@@ -997,8 +1003,8 @@ MetricValidationResult PublishPageCacheContextSnapshot(double resident_pages,
                                                        double resident_bytes,
                                                        double pinned_pages,
                                                        double dirty_pages,
-                                                       std::string database_uuid,
-                                                       std::string filespace_uuid,
+                                                       MetricUuid database_uuid,
+                                                       MetricUuid filespace_uuid,
                                                        std::string page_family,
                                                        std::string context,
                                                        std::string result,
@@ -1022,8 +1028,8 @@ MetricValidationResult PublishPageCacheContextSnapshot(double resident_pages,
 }
 
 MetricValidationResult RecordPageCacheContextAdmission(double admissions,
-                                                       std::string database_uuid,
-                                                       std::string filespace_uuid,
+                                                       MetricUuid database_uuid,
+                                                       MetricUuid filespace_uuid,
                                                        std::string page_family,
                                                        std::string context,
                                                        std::string result,
@@ -1039,8 +1045,8 @@ MetricValidationResult RecordPageCacheContextAdmission(double admissions,
 }
 
 MetricValidationResult RecordPageCacheContextReuse(double reuses,
-                                                   std::string database_uuid,
-                                                   std::string filespace_uuid,
+                                                   MetricUuid database_uuid,
+                                                   MetricUuid filespace_uuid,
                                                    std::string page_family,
                                                    std::string context,
                                                    std::string result,
@@ -1056,8 +1062,8 @@ MetricValidationResult RecordPageCacheContextReuse(double reuses,
 }
 
 MetricValidationResult RecordPageCacheContextEviction(double evictions,
-                                                      std::string database_uuid,
-                                                      std::string filespace_uuid,
+                                                      MetricUuid database_uuid,
+                                                      MetricUuid filespace_uuid,
                                                       std::string page_family,
                                                       std::string context,
                                                       std::string result,
@@ -1073,8 +1079,8 @@ MetricValidationResult RecordPageCacheContextEviction(double evictions,
 }
 
 MetricValidationResult RecordPageCacheContextProtectedNormalHotSkip(double skips,
-                                                                    std::string database_uuid,
-                                                                    std::string filespace_uuid,
+                                                                    MetricUuid database_uuid,
+                                                                    MetricUuid filespace_uuid,
                                                                     std::string page_family,
                                                                     std::string context,
                                                                     std::string result,
@@ -1090,8 +1096,8 @@ MetricValidationResult RecordPageCacheContextProtectedNormalHotSkip(double skips
 }
 
 MetricValidationResult RecordPageCacheContextRefusal(double refusals,
-                                                     std::string database_uuid,
-                                                     std::string filespace_uuid,
+                                                     MetricUuid database_uuid,
+                                                     MetricUuid filespace_uuid,
                                                      std::string page_family,
                                                      std::string context,
                                                      std::string result,
@@ -1462,8 +1468,8 @@ MetricValidationResult PublishClusterSchedulerQueueDepth(double queue_depth, std
 }
 
 // SEARCH_KEY: SB_CLUSTER_INSERT_METRIC_CONTRACTS
-MetricValidationResult RecordClusterInsertRouteCheck(std::string database_uuid,
-                                                     std::string table_uuid,
+MetricValidationResult RecordClusterInsertRouteCheck(MetricUuid database_uuid,
+                                                     MetricUuid table_uuid,
                                                      std::string route_epoch,
                                                      std::string result,
                                                      std::string reason) {
@@ -1478,10 +1484,10 @@ MetricValidationResult RecordClusterInsertRouteCheck(std::string database_uuid,
                           "cluster_insert");
 }
 
-MetricValidationResult RecordClusterInsertStaleRouteRejection(std::string database_uuid,
-                                                              std::string table_uuid,
+MetricValidationResult RecordClusterInsertStaleRouteRejection(MetricUuid database_uuid,
+                                                              MetricUuid table_uuid,
                                                               std::string route_epoch,
-                                                              std::string owner_node_uuid) {
+                                                              MetricUuid owner_node_uuid) {
   return IncrementCounter("sb_cluster_insert_stale_route_rejections_total",
                           Labels({{"component", "cluster.insert"},
                                   {"database_uuid", std::move(database_uuid)},
@@ -1492,9 +1498,9 @@ MetricValidationResult RecordClusterInsertStaleRouteRejection(std::string databa
                           "cluster_insert");
 }
 
-MetricValidationResult RecordClusterInsertParticipantAdmission(std::string database_uuid,
-                                                               std::string table_uuid,
-                                                               std::string participant_node_uuid,
+MetricValidationResult RecordClusterInsertParticipantAdmission(MetricUuid database_uuid,
+                                                               MetricUuid table_uuid,
+                                                               MetricUuid participant_node_uuid,
                                                                std::string result,
                                                                std::string reason) {
   return IncrementCounter("sb_cluster_insert_participant_admissions_total",
@@ -1508,9 +1514,9 @@ MetricValidationResult RecordClusterInsertParticipantAdmission(std::string datab
                           "cluster_insert");
 }
 
-MetricValidationResult RecordClusterInsertRemoteRequest(std::string database_uuid,
-                                                        std::string table_uuid,
-                                                        std::string participant_node_uuid,
+MetricValidationResult RecordClusterInsertRemoteRequest(MetricUuid database_uuid,
+                                                        MetricUuid table_uuid,
+                                                        MetricUuid participant_node_uuid,
                                                         std::string result,
                                                         std::string retry_class) {
   return IncrementCounter("sb_cluster_insert_remote_requests_total",
@@ -1525,8 +1531,8 @@ MetricValidationResult RecordClusterInsertRemoteRequest(std::string database_uui
 }
 
 MetricValidationResult ObserveClusterInsertFinalityWait(double latency_microseconds,
-                                                        std::string database_uuid,
-                                                        std::string table_uuid,
+                                                        MetricUuid database_uuid,
+                                                        MetricUuid table_uuid,
                                                         std::string participant_count,
                                                         std::string result) {
   return ObserveHistogram("sb_cluster_insert_finality_wait_microseconds",
@@ -1540,9 +1546,9 @@ MetricValidationResult ObserveClusterInsertFinalityWait(double latency_microseco
 }
 
 MetricValidationResult RecordClusterInsertRowsMutated(double rows,
-                                                      std::string database_uuid,
-                                                      std::string table_uuid,
-                                                      std::string participant_node_uuid,
+                                                      MetricUuid database_uuid,
+                                                      MetricUuid table_uuid,
+                                                      MetricUuid participant_node_uuid,
                                                       std::string insert_mode) {
   return IncrementCounter("sb_cluster_insert_rows_mutated_total",
                           Labels({{"component", "cluster.insert"},
@@ -1554,8 +1560,8 @@ MetricValidationResult RecordClusterInsertRowsMutated(double rows,
                           "cluster_insert");
 }
 
-MetricValidationResult RecordClusterInsertFailClosed(std::string database_uuid,
-                                                     std::string table_uuid,
+MetricValidationResult RecordClusterInsertFailClosed(MetricUuid database_uuid,
+                                                     MetricUuid table_uuid,
                                                      std::string authority_family,
                                                      std::string reason) {
   return IncrementCounter("sb_cluster_insert_fail_closed_total",
@@ -1568,8 +1574,8 @@ MetricValidationResult RecordClusterInsertFailClosed(std::string database_uuid,
                           "cluster_insert");
 }
 
-MetricValidationResult RecordClusterInsertBadStatsSuppressed(std::string database_uuid,
-                                                             std::string table_uuid,
+MetricValidationResult RecordClusterInsertBadStatsSuppressed(MetricUuid database_uuid,
+                                                             MetricUuid table_uuid,
                                                              std::string reason) {
   return IncrementCounter("sb_cluster_insert_bad_stats_suppressed_total",
                           Labels({{"component", "cluster.insert"},
@@ -1654,10 +1660,10 @@ MetricValidationResult PublishAgentRuntimeServiceCatalogGeneration(double catalo
                   "agent_runtime");
 }
 
-MetricValidationResult RecordFilespaceAgentCapacityRequest(std::string filespace_uuid,
+MetricValidationResult RecordFilespaceAgentCapacityRequest(MetricUuid filespace_uuid,
                                                            std::string request_class,
                                                            std::string result) {
-  auto status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  auto status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   return IncrementCounter("sb_agent_filespace_capacity_requests_total",
                           Labels({{"component", "agent.filespace_capacity"},
@@ -1670,9 +1676,9 @@ MetricValidationResult RecordFilespaceAgentCapacityRequest(std::string filespace
 }
 
 MetricValidationResult PublishFilespaceAgentFreeReservePages(double pages,
-                                                             std::string filespace_uuid,
+                                                             MetricUuid filespace_uuid,
                                                              std::string reserve_class) {
-  auto status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  auto status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   return SetGauge("sb_agent_filespace_free_reserve_pages",
                   Labels({{"component", "agent.filespace_capacity"},
@@ -1684,9 +1690,9 @@ MetricValidationResult PublishFilespaceAgentFreeReservePages(double pages,
 }
 
 MetricValidationResult ObserveFilespaceAgentDecisionLatency(double latency_microseconds,
-                                                            std::string filespace_uuid,
+                                                            MetricUuid filespace_uuid,
                                                             std::string action_class) {
-  auto status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  auto status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   return ObserveHistogram("sb_agent_filespace_decision_latency_microseconds",
                           Labels({{"component", "agent.filespace_capacity"},
@@ -1697,11 +1703,11 @@ MetricValidationResult ObserveFilespaceAgentDecisionLatency(double latency_micro
                           "filespace_capacity_manager");
 }
 
-MetricValidationResult RecordPageAllocationAgentRequest(std::string filespace_uuid,
+MetricValidationResult RecordPageAllocationAgentRequest(MetricUuid filespace_uuid,
                                                         std::string page_family,
                                                         std::string request_class,
                                                         std::string result) {
-  auto status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  auto status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   return IncrementCounter("sb_agent_page_allocation_requests_total",
                           Labels({{"component", "agent.page_allocation"},
@@ -1715,9 +1721,9 @@ MetricValidationResult RecordPageAllocationAgentRequest(std::string filespace_uu
 }
 
 MetricValidationResult PublishPageAllocationAgentPreallocatedPages(double pages,
-                                                                   std::string filespace_uuid,
+                                                                   MetricUuid filespace_uuid,
                                                                    std::string page_family) {
-  auto status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  auto status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   return SetGauge("sb_agent_page_allocation_preallocated_pages",
                   Labels({{"component", "agent.page_allocation"},
@@ -1729,10 +1735,10 @@ MetricValidationResult PublishPageAllocationAgentPreallocatedPages(double pages,
 }
 
 MetricValidationResult RecordPageAllocationAgentRelocatedPages(double pages,
-                                                               std::string filespace_uuid,
+                                                               MetricUuid filespace_uuid,
                                                                std::string page_family,
                                                                std::string result) {
-  auto status = RequireNonEmpty(filespace_uuid, "filespace_uuid");
+  auto status = RequireIdentity(filespace_uuid, "filespace_uuid");
   if (!status.ok) { return status; }
   return IncrementCounter("sb_agent_page_allocation_relocated_pages_total",
                           Labels({{"component", "agent.page_allocation"},

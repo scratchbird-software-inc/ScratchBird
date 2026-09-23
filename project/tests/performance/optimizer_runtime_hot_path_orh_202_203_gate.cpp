@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -7,6 +8,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "direct_binary_result_frame.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "observability/performance_metric_event.hpp"
 #include "prepared_execution_template.hpp"
 #include "runtime_consumption_evidence.hpp"
@@ -66,28 +68,34 @@ opt::RuntimeOptimizedPathEvidence ConsumedRuntimeEvidence(
   return evidence;
 }
 
-api::EngineUuid Uuid(const std::string& value) {
-  api::EngineUuid uuid;
-  uuid.canonical = value;
-  return uuid;
+std::uint32_t FamilyOrdinal(const std::string& family) {
+  if (family == "select") return 1;
+  if (family == "insert") return 2;
+  Require(family == "aggregate", "unknown explicit prepared fixture family");
+  return 3;
 }
 
-api::EngineDescriptor Descriptor(const std::string& uuid,
-                                 const std::string& type) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = Uuid(uuid);
-  descriptor.descriptor_kind = "executor.scalar";
-  descriptor.canonical_type_name = type;
-  descriptor.encoded_descriptor = "type=" + type + ";uuid=" + uuid;
-  return descriptor;
-}
-
-api::EngineColumnDefinition Column(const std::string& uuid,
+api::EngineColumnDefinition Column(const api::EngineUuid& column_uuid,
                                    const std::string& type,
                                    std::uint32_t ordinal) {
+  using scratchbird::tests::FixtureUuidLiteral;
+  const auto descriptor_uuid = type == "int64"
+      ? FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711")
+      : FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
+  Require(type == "int64" || type == "text", "unexpected fixture datatype");
+  const auto binding = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
+      1, 1, descriptor_uuid, 1);
+  Require(binding.ok, "canonical fixture datatype binding unavailable");
   api::EngineColumnDefinition column;
-  column.requested_column_uuid = Uuid(uuid);
-  column.descriptor = Descriptor("desc:" + uuid, type);
+  column.requested_column_uuid = column_uuid;
+  column.descriptor.descriptor_uuid = binding.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
+  column.descriptor.type_uuid = binding.row.type_uuid;
+  column.descriptor.descriptor_kind = "executor.scalar";
+  column.descriptor.canonical_type_name = type;
+  column.descriptor.encoded_descriptor = "type=" + type;
   column.ordinal = ordinal;
   column.nullable = false;
   return column;
@@ -95,20 +103,20 @@ api::EngineColumnDefinition Column(const std::string& uuid,
 
 api::EngineRequestContext PreparedRouteContext(const std::string& family) {
   api::EngineRequestContext context;
-  context.database_uuid = Uuid("db.orh202." + family);
-  context.principal_uuid = Uuid("principal.orh202");
-  context.current_role_uuid = Uuid("role.reader");
-  context.session_uuid = Uuid("session.orh202." + family);
+  context.database_uuid = scratchbird::tests::FixtureUuid(1253, 100 + FamilyOrdinal(family));
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1253, 1);
+  context.current_role_uuid = scratchbird::tests::FixtureUuid(1253, 2);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1253, 200 + FamilyOrdinal(family));
   context.transaction_uuid =
-      Uuid("019f2020-0000-7000-8000-000000000002");
+      scratchbird::tests::FixtureUuidLiteral("019f2020-0000-7000-8000-000000000002");
   context.statement_uuid =
-      Uuid("019f2020-0000-7000-8000-000000000003");
+      scratchbird::tests::FixtureUuidLiteral("019f2020-0000-7000-8000-000000000003");
   context.statement_snapshot_uuid =
-      Uuid("019f2020-0000-7000-8000-000000000004");
+      scratchbird::tests::FixtureUuidLiteral("019f2020-0000-7000-8000-000000000004");
   context.statement_metadata_snapshot_uuid =
-      Uuid("019f2020-0000-7000-8000-000000000005");
+      scratchbird::tests::FixtureUuidLiteral("019f2020-0000-7000-8000-000000000005");
   context.catalog_epoch_uuid =
-      Uuid("019f2020-0000-7000-8000-000000000001");
+      scratchbird::tests::FixtureUuidLiteral("019f2020-0000-7000-8000-000000000001");
   context.local_transaction_id = 88;
   context.snapshot_visible_through_local_transaction_id = 0;
   context.transaction_isolation_level = "snapshot";
@@ -123,12 +131,12 @@ api::EngineRequestContext PreparedRouteContext(const std::string& family) {
 exec::CanonicalExecutionMgaAuthority PreparedRouteAuthority(
     const api::EngineRequestContext& context) {
   exec::PhysicalMgaStatementContext statement;
-  statement.statement_uuid = context.statement_uuid.canonical;
-  statement.owning_transaction_uuid = context.transaction_uuid.canonical;
+  statement.statement_uuid = context.statement_uuid;
+  statement.owning_transaction_uuid = context.transaction_uuid;
   statement.statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   statement.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   statement.owning_local_transaction_id = context.local_transaction_id;
   statement.visible_committed_high_watermark =
       context.snapshot_visible_through_local_transaction_id;
@@ -163,14 +171,14 @@ api::EngineApiRequest PreparedRouteRequest(
   request.operation_id = "query.execute";
   request.target_database.uuid = context.database_uuid;
   request.target_database.object_kind = "database";
-  request.target_schema.uuid = Uuid("schema.public");
+  request.target_schema.uuid = scratchbird::tests::FixtureUuid(1253, 3);
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid = Uuid("rel.orh202." + family);
+  request.target_object.uuid = scratchbird::tests::FixtureUuid(1253, 300 + FamilyOrdinal(family));
   request.target_object.object_kind = "relation";
   request.related_objects = {{request.target_object.uuid, "relation"}};
   request.columns = {
-      Column("col." + family + ".id", "int64", 0),
-      Column("col." + family + ".value", "text", 1),
+      Column(scratchbird::tests::FixtureUuid(1253, 400 + FamilyOrdinal(family)), "int64", 0),
+      Column(scratchbird::tests::FixtureUuid(1253, 500 + FamilyOrdinal(family)), "text", 1),
   };
   request.descriptors = {request.columns[0].descriptor,
                          request.columns[1].descriptor};
@@ -193,9 +201,9 @@ sblr::SblrOperationEnvelope PreparedRouteEnvelope(const std::string& family) {
                                          "trace.orh202." + family);
   envelope.opcode_code = 0x1207;
   envelope.parser_package_uuid =
-      "019f2020-0000-7000-8000-000000000101";
+      scratchbird::tests::FixtureUuidLiteral("019f2020-0000-7000-8000-000000000101");
   envelope.registry_snapshot_uuid =
-      "019f2020-0000-7000-8000-000000000102";
+      scratchbird::tests::FixtureUuidLiteral("019f2020-0000-7000-8000-000000000102");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.result_shape = "engine.result.orh202." + family + ".v1";

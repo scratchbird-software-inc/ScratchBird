@@ -64,27 +64,27 @@ int main() {
     const auto id=uuid::GenerateEngineIdentityV7(p::UuidKind::database,millis);
     const auto space=uuid::GenerateEngineIdentityV7(p::UuidKind::filespace,millis);
     Setup(id.ok()&&space.ok(),"UUID generation");
-    root=fs::temp_directory_path()/("scratchbird_schema_read_"+uuid::UuidToString(id.value.value));
+    root=fs::temp_directory_path()/("scratchbird_schema_read_"+std::to_string(millis));
     Setup(fs::create_directory(root),"unique fixture directory");
     db::DatabaseCreateConfig cfg;cfg.path=(root/"primary.sdb").string();
     cfg.database_uuid=id.value;cfg.filespace_uuid=space.value;cfg.page_size=16384;
     cfg.creation_unix_epoch_millis=millis;cfg.allow_minimal_resource_bootstrap=true;cfg.require_resource_seed_pack=false;
     Setup(db::CreateDatabaseFile(cfg).ok(),"real database initialization");
     api::EngineRequestContext context;context.database_path=cfg.path;
-    context.database_uuid.canonical=uuid::UuidToString(id.value.value);
+    context.database_uuid = id.value.value;
     const auto original=Read(cfg.path);
     const auto candidate_id=uuid::GenerateEngineIdentityV7(p::UuidKind::object,millis);
     Setup(candidate_id.ok(),"candidate UUID generation");
-    const auto candidate=uuid::UuidToString(candidate_id.value.value);
+    const auto candidate=candidate_id.value.value;
     api::EngineApiDiagnostic diagnostic;
     auto schemas=api::VisibleSchemaTreeRecords(context,0,diagnostic);
     Setup(!diagnostic.error&&schemas.size()==23,"real bootstrap schema tree");
-    std::string target,parent;
+    api::EngineUuid target,parent;
     for(const auto& s:schemas) for(const auto& n:s.localized_names) {
       if(n.path=="users.public")target=s.schema_uuid;
       if(n.path=="users")parent=s.schema_uuid;
     }
-    Setup(!target.empty()&&!parent.empty(),"independent known bootstrap paths");
+    Setup(!target.is_nil()&&!parent.is_nil(),"independent known bootstrap paths");
     api::EngineLocalizedName name;name.language_tag="en";name.path="users.public";name.name="public";
     const auto healthy=[&] {
       const auto tree=api::VisibleSchemaTreeRecords(context,0,diagnostic);
@@ -112,14 +112,14 @@ int main() {
       };
       api::EngineListCatalogChildrenRequest list;list.context=context;
       Check(result_error(api::EngineListCatalogChildren(list)),"list discards partial output");
-      api::EngineLookupObjectRequest lookup;lookup.context=context;lookup.target_object.uuid.canonical=target;
+      api::EngineLookupObjectRequest lookup;lookup.context=context;lookup.target_object.uuid=target;
       Check(result_error(api::EngineLookupObject(lookup)),"object lookup propagates diagnostic");
       api::EngineShowCatalogRequest show;show.context=context;show.option_envelopes={"catalog_projection:sys.catalog"};
       Check(result_error(api::EngineShowCatalog(show)),"readable projection propagates diagnostic");
       api::EngineExportCatalogArtifactsRequest export_request;export_request.context=context;
       Check(result_error(api::EngineExportCatalogArtifacts(export_request)),"artifact export no partial success");
       api::EngineCreateSchemaRequest create;create.context=context;create.context.local_transaction_id=1;
-      create.target_schema.uuid.canonical=parent;create.target_object.uuid.canonical=candidate;create.localized_names={name};
+      create.target_schema.uuid=parent;create.target_object.uuid=candidate;create.localized_names={name};
       const auto created=api::EngineCreateSchema(create);
       Check(result_error(created),"DDL cannot succeed after failed schema authority read");
       bool same_failure=false;
@@ -184,9 +184,9 @@ int main() {
     Setup(::mkfifo(cfg.path.c_str(),0600)==0,"primary FIFO");refused();fs::remove(cfg.path);
 #endif
     fs::rename(saved,cfg.path);healthy();
-    auto foreign=context.database_uuid.canonical;
-    context.database_uuid.canonical=uuid::UuidToString(uuid::GenerateEngineIdentityV7(p::UuidKind::database,millis).value.value);
-    refused();context.database_uuid.canonical=foreign;healthy();
+    auto foreign=context.database_uuid;
+    context.database_uuid=uuid::GenerateEngineIdentityV7(p::UuidKind::database,millis).value.value;
+    refused();context.database_uuid=foreign;healthy();
     const fs::path journal=cfg.path+".sb.api_events";
     Setup(!fs::exists(journal),"refused DDL must not create journal");
     Write(journal,"");healthy();fs::remove(journal);

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -68,7 +69,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -94,10 +95,10 @@ void PrintMessages(const MessageVectorSet& messages) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000b5e111";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000b5e112";
-  session.database_uuid = "019f0000-0000-7000-8000-000000b5e113";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e111");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e112");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e113");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 81;
   session.security_policy_epoch = 82;
   session.descriptor_epoch = 83;
@@ -108,7 +109,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000b5e114";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e114");
   config.bundle_contract_id = "sbp_sbsql@comment-on-route-test";
   config.build_id = "sbsql-comment-on-route-test";
   return config;
@@ -131,7 +132,7 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            {std::string(kTargetUuid)});
+                            {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e101")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -258,15 +259,8 @@ std::array<std::uint8_t, 16> AdmissionUuid(std::uint8_t suffix) {
   return value;
 }
 
-std::string AdmissionUuidText(const std::array<std::uint8_t, 16>& value) {
-  constexpr char kHex[] = "0123456789abcdef";
-  std::string text;
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (i == 4 || i == 6 || i == 8 || i == 10) text.push_back('-');
-    text.push_back(kHex[value[i] >> 4]);
-    text.push_back(kHex[value[i] & 0x0f]);
-  }
-  return text;
+scratchbird::core::platform::Uuid AdmissionIdentity(const std::array<std::uint8_t,16>& value) {
+  return {value};
 }
 
 CanonicalBytes AdmissionUuidField(const std::array<std::uint8_t, 16>& value) {
@@ -326,8 +320,8 @@ scratchbird::server::ServerSblrAdmissionRequest CanonicalAdmissionRequest() {
   const auto* registry = sblr::LookupSblrOperation(std::string(kOperationId));
   Require(registry != nullptr, "COMMENT ON opcode registry row missing");
   operation.opcode_code = registry->code;
-  operation.parser_package_uuid = AdmissionUuidText(parser_uuid);
-  operation.registry_snapshot_uuid = AdmissionUuidText(registry_uuid);
+  operation.parser_package_uuid = AdmissionIdentity(parser_uuid);
+  operation.registry_snapshot_uuid = AdmissionIdentity(registry_uuid);
   operation.requires_security_context = true;
   operation.requires_transaction_context = true;
   operation.parser_resolved_names_to_uuids = true;
@@ -398,13 +392,13 @@ scratchbird::server::ServerSblrAdmissionRequest CanonicalAdmissionRequest() {
   scratchbird::server::ServerSblrAdmissionRequest request;
   request.encoded_sblr_container.assign(container_bytes.begin(), container_bytes.end());
   request.encoded_execution_envelope.assign(ingress_bytes.begin(), ingress_bytes.end());
-  request.admitted_parser_package_uuid = AdmissionUuidText(parser_uuid);
+  request.admitted_parser_package_uuid = AdmissionIdentity(parser_uuid);
   request.admitted_parser_package_version_major = 1;
-  request.admitted_registry_snapshot_uuid = AdmissionUuidText(registry_uuid);
-  request.authenticated_principal_uuid = AdmissionUuidText(user_uuid);
-  request.catalog_snapshot_uuid = AdmissionUuidText(AdmissionUuid(0x43));
-  request.engine_mga_statement_uuid = AdmissionUuidText(AdmissionUuid(0x44));
-  request.engine_mga_snapshot_uuid = AdmissionUuidText(AdmissionUuid(0x45));
+  request.admitted_registry_snapshot_uuid = AdmissionIdentity(registry_uuid);
+  request.authenticated_principal_uuid = AdmissionIdentity(user_uuid);
+  request.catalog_snapshot_uuid = AdmissionIdentity(AdmissionUuid(0x43));
+  request.engine_mga_statement_uuid = AdmissionIdentity(AdmissionUuid(0x44));
+  request.engine_mga_snapshot_uuid = AdmissionIdentity(AdmissionUuid(0x45));
   request.catalog_epoch = 7;
   request.security_epoch = 8;
   request.resource_epoch = 9;
@@ -458,7 +452,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+scratchbird::core::platform::Uuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -476,17 +470,17 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "COMMENT ON engine dispatch test database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const scratchbird::core::platform::Uuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-comment-on-exact-route";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000b5e121";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000b5e122";
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e121");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e122");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -498,7 +492,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid) {
+                                                 const scratchbird::core::platform::Uuid& database_uuid) {
   auto context = EngineContext(path, database_uuid);
   auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
                                          "SBLR_TXN_BEGIN",
@@ -518,7 +512,7 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
 
 api::EngineApiRequest EngineCommentApiRequest(bool null_comment = false) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::string(kTargetUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e101");
   request.target_object.object_kind = "table";
   request.option_envelopes.push_back("comment_target_kind:table");
   request.option_envelopes.push_back("comment_language:en");
@@ -537,8 +531,8 @@ sblr::SblrOperationEnvelope EngineEnvelope() {
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  envelope.parser_package_uuid = "019f0000-0000-7000-8000-000000b5e131";
-  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-000000b5e132";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e131");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e132");
   if (const auto* entry = sblr::LookupSblrOperation(std::string(kOperationId))) {
     envelope.opcode_code = entry->code;
   }
@@ -551,7 +545,7 @@ void RequireEngineDispatch() {
   const auto database_uuid = CreateMinimalDatabase(path);
   auto context = EngineContext(path, database_uuid);
   context.local_transaction_id = 1;
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000b5e123";
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e123");
 
   const sblr::SblrDispatchRequest comment_request{
       context, EngineEnvelope(), EngineCommentApiRequest()};
@@ -576,7 +570,7 @@ void RequireEngineDispatch() {
           "EngineCommentOnObject did not persist comment text payload");
   Require(ResultPayloadContains(result.api_result, "comment_language:en"),
           "EngineCommentOnObject did not persist comment language payload");
-  Require(!result.api_result.catalog_row_uuid.canonical.empty(),
+  Require(!result.api_result.catalog_row_uuid.is_nil(),
           "EngineCommentOnObject missing catalog row UUID evidence");
 
   const sblr::SblrDispatchRequest null_comment_request{

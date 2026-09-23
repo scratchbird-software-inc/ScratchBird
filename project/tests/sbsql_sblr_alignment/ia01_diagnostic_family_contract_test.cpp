@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 
 #include <array>
@@ -47,8 +48,8 @@ sblr::SblrOperationEnvelope ExactEnvelope(const OperationSpec& spec) {
   envelope.opcode_code = spec.opcode_code;
   envelope.result_shape = spec.result_shape;
   envelope.diagnostic_shape = "diagnostic_vector";
-  envelope.parser_package_uuid = "018f1000-0000-7000-8000-000000003850";
-  envelope.registry_snapshot_uuid = "018f1000-0000-7000-8000-000000003851";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("018f1000-0000-7000-8000-000000003850");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("018f1000-0000-7000-8000-000000003851");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = spec.opcode_code == 6401;
   envelope.requires_cluster_authority = false;

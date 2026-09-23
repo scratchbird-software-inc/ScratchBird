@@ -19,15 +19,15 @@ namespace scratchbird::server {
 // SEARCH_KEY: EVN_IMPL_011_SBPS_EVENT_FRAME_DISPATCH
 struct ParserServerEventFrame {
   ParserServerEventMessageType message_type = ParserServerEventMessageType::kEventSubscribeRequest;
-  std::string request_uuid;
+  ParserServerEventUuidRef request_uuid;
   ParserServerEventSession session;
-  std::vector<std::pair<std::string, std::string>> fields;
+  ParserServerEventFields fields;
 };
 
 struct ParserServerEventOutboundFrame {
   ParserServerEventMessageType message_type = ParserServerEventMessageType::kEventSubscribeResult;
-  std::string request_uuid;
-  std::vector<std::pair<std::string, std::string>> fields;
+  ParserServerEventUuidRef request_uuid;
+  ParserServerEventFields fields;
   std::vector<ParserServerMessageVector> message_vector_set;
 };
 
@@ -48,7 +48,7 @@ class ParserServerEventFrameDispatcher {
  private:
   ParserServerEventIpcRuntime* runtime_;
 
-  ParserServerEventDispatchResult RuntimeUnavailable(const std::string& request_uuid) const;
+  ParserServerEventDispatchResult RuntimeUnavailable(const ParserServerEventUuidRef& request_uuid) const;
 };
 
 }  // namespace scratchbird::server

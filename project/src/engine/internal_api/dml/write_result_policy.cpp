@@ -46,6 +46,14 @@ EngineTypedValue PolicyU64Value(EngineApiU64 value) {
   return typed;
 }
 
+EngineTypedValue PolicyUuidValue(const EngineUuid& value) {
+  EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = "uuid";
+  typed.binary_value.assign(value.bytes.begin(), value.bytes.end());
+  return typed;
+}
+
 bool IsPolicyKey(const std::string& key) {
   return key == "write_result_policy" ||
          key == "result_payload_policy" ||
@@ -144,7 +152,7 @@ EngineResultShape IdsOnlyShape(const EngineResultShape& original) {
     EngineRowValue out;
     out.requested_row_uuid = row.requested_row_uuid;
     if (!row.requested_row_uuid.is_nil()) {
-      AddTextField(&out, "row_uuid", row.requested_row_uuid);
+      out.fields.push_back({"row_uuid", PolicyUuidValue(row.requested_row_uuid)});
     }
     for (const auto& [name, value] : row.fields) {
       if (IdentifierFieldName(name) && !HasField(out, name)) {
@@ -199,7 +207,7 @@ EngineResultShape ChangedFieldsShape(const EngineResultShape& original) {
     EngineRowValue out;
     out.requested_row_uuid = row.requested_row_uuid;
     if (!row.requested_row_uuid.is_nil()) {
-      AddTextField(&out, "row_uuid", row.requested_row_uuid);
+      out.fields.push_back({"row_uuid", PolicyUuidValue(row.requested_row_uuid)});
     }
     std::vector<std::string> names;
     names.reserve(row.fields.size());

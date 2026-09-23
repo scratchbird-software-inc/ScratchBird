@@ -1,3 +1,5 @@
+#include "catalog/column_metadata_codec.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -233,11 +235,6 @@ InsertPhysicalIntegrationResult Refuse(std::string diagnostic_code,
   return result;
 }
 
-std::string EvidenceRef(const std::string& kind, const TypedUuid& uuid) {
-  std::ostringstream out;
-  out << kind << ":" << scratchbird::core::uuid::UuidToString(uuid.value);
-  return out.str();
-}
 
 bool DirectIndexIsUnique(const CrudIndexRecord& index) {
   return index.unique ||
@@ -521,13 +518,14 @@ std::string DirectPageExtentPreallocationPrecheckFailure(
   return {};
 }
 
-TypedUuid ParseDirectOptionIdentity(UuidKind kind, const std::string& text) {
-  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(kind, text);
-  return parsed.ok() ? parsed.value : TypedUuid{};
+TypedUuid ParseDirectOptionIdentity(UuidKind kind, const std::string& bytes) {
+  EngineUuid identity;
+  if (!ReadMetadataUuid(bytes, &identity)) return {};
+  return BindDirectTypedUuid(kind, identity);
 }
 
-std::string TypedUuidText(const TypedUuid& uuid) {
-  return uuid.valid() ? scratchbird::core::uuid::UuidToString(uuid.value) : std::string{};
+EngineUuid TypedUuidIdentity(const TypedUuid& uuid) {
+  return uuid.valid() ? uuid.value : EngineUuid{};
 }
 
 std::string DiagnosticDetail(const DiagnosticRecord& diagnostic) {
@@ -570,7 +568,7 @@ void AddStrictBulkLifecycleEvidence(
     evidence->push_back({"strict_bulk_load_state_transition", previous + "->" + next});
     evidence->push_back({"strict_bulk_load_state", next});
     if (record.bulk_load_id.valid()) {
-      evidence->push_back({"strict_bulk_load_id", TypedUuidText(record.bulk_load_id)});
+      evidence->push_back({"strict_bulk_load_id", TypedUuidIdentity(record.bulk_load_id)});
     }
     if (!record.visibility_fence.empty()) {
       evidence->push_back({"strict_bulk_load_visibility_fence", record.visibility_fence});
@@ -649,27 +647,37 @@ std::string DirectTrimAscii(std::string value) {
   return value;
 }
 
-std::map<std::string, std::string> DirectDescriptorFields(
-    const std::string& descriptor) {
-  std::map<std::string, std::string> fields;
-  for (const auto& raw_part : DirectSplit(descriptor, ';')) {
-    const std::string part = DirectTrimAscii(raw_part);
-    if (part.empty()) {
-      continue;
-    }
-    const auto equal = part.find('=');
-    if (equal == std::string::npos) {
-      fields[LowerAscii(part)] = "true";
-    } else {
-      fields[LowerAscii(DirectTrimAscii(part.substr(0, equal)))] =
-          DirectTrimAscii(part.substr(equal + 1));
-    }
-  }
+struct DirectColumnFields : std::map<std::string, std::string> {
+  std::map<std::string, EngineUuid> identities;
+};
+
+DirectColumnFields DirectDescriptorFields(const std::string& descriptor) {
+  CatalogColumnMetadata decoded;
+  if (!AdmitCatalogColumnMetadata(descriptor, &decoded))
+    throw std::invalid_argument("bulk_column_metadata_invalid");
+  DirectColumnFields fields;
+  static_cast<std::map<std::string, std::string>&>(fields) = std::move(decoded.text);
+  fields.identities = std::move(decoded.identities);
   return fields;
 }
 
+EngineUuid DirectIdentityField(const DirectColumnFields& fields,
+                              std::initializer_list<const char*> keys) {
+  EngineUuid identity;
+  for (const auto* key : keys) {
+    if (fields.contains(key)) throw std::invalid_argument("bulk_text_identity_forbidden");
+    const auto it = fields.identities.find(key);
+    if (it == fields.identities.end()) continue;
+    if (!core::uuid::IsEngineIdentityUuid(it->second) ||
+        (!identity.is_nil() && identity != it->second))
+      throw std::invalid_argument("bulk_identity_binding_invalid");
+    identity = it->second;
+  }
+  return identity;
+}
+
 std::string DirectFieldOrEmpty(
-    const std::map<std::string, std::string>& fields,
+    const DirectColumnFields& fields,
     std::initializer_list<const char*> keys) {
   for (const char* key : keys) {
     const auto found = fields.find(key);
@@ -680,8 +688,8 @@ std::string DirectFieldOrEmpty(
   return {};
 }
 
-std::string DirectConstraintUuid(
-    const std::map<std::string, std::string>& fields,
+EngineUuid DirectConstraintUuid(
+    const DirectColumnFields& fields,
     const CrudTableRecord& table,
     const std::string& column_name,
     const std::string& constraint_class);
@@ -756,7 +764,7 @@ void PopulateDirectForeignKeyViolationFields(
   }
 }
 
-bool DirectBoolField(const std::map<std::string, std::string>& fields,
+bool DirectBoolField(const DirectColumnFields& fields,
                      std::initializer_list<const char*> keys) {
   const std::string value = LowerAscii(DirectFieldOrEmpty(fields, keys));
   return value == "true" || value == "1" || value == "yes" ||
@@ -769,18 +777,17 @@ bool DirectNullValue(const std::string& value) {
 
 inline constexpr char kDirectNullMarker[] = "<NULL>";
 
-std::string DirectConstraintUuid(
-    const std::map<std::string, std::string>& fields,
+EngineUuid DirectConstraintUuid(
+    const DirectColumnFields& fields,
     const CrudTableRecord& table,
     const std::string& column_name,
     const std::string& constraint_class) {
-  const std::string explicit_uuid =
-      DirectFieldOrEmpty(fields, {"constraint_uuid", "uuid"});
-  if (!explicit_uuid.empty()) {
-    return explicit_uuid;
-  }
-  return "descriptor:" + table.table_uuid + ":" + column_name + ":" +
-         constraint_class;
+  (void)table;
+  (void)column_name;
+  (void)constraint_class;
+  const auto identity = DirectIdentityField(fields, {"constraint_uuid", "uuid"});
+  if (identity.is_nil()) throw std::invalid_argument("bulk_constraint_identity_required");
+  return identity;
 }
 
 void PopulateDirectUniqueViolationDiagnostic(
@@ -824,55 +831,26 @@ void PopulateDirectUniqueViolationDiagnostic(
 }
 
 struct DirectForeignKeyReference {
-  std::string parent_table_uuid;
+  EngineUuid parent_table_uuid;
   std::string parent_column;
 };
 
 std::optional<DirectForeignKeyReference> DirectParseForeignKeyReference(
-    const std::map<std::string, std::string>& fields) {
+    const DirectColumnFields& fields) {
   DirectForeignKeyReference reference;
-  reference.parent_table_uuid =
-      DirectFieldOrEmpty(fields,
-                         {"referenced_table_uuid",
-                          "foreign_table_uuid",
-                          "foreign_table"});
-  reference.parent_column =
-      DirectFieldOrEmpty(fields,
-                         {"referenced_column",
-                          "foreign_column",
-                          "parent_column"});
-  if (!reference.parent_table_uuid.empty() && !reference.parent_column.empty()) {
-    return reference;
-  }
-  const std::string envelope =
-      DirectFieldOrEmpty(fields, {"foreign_key", "references", "fk"});
-  if (envelope.empty()) {
+  reference.parent_table_uuid = DirectIdentityField(
+      fields, {"referenced_table_uuid", "foreign_table_uuid", "foreign_table"});
+  reference.parent_column = DirectFieldOrEmpty(
+      fields, {"referenced_column", "foreign_column", "parent_column"});
+  if (reference.parent_table_uuid.is_nil() || reference.parent_column.empty())
     return std::nullopt;
-  }
-  const auto colon = envelope.find(':');
-  const auto dot = envelope.rfind('.');
-  const auto open = envelope.find('(');
-  const auto close = envelope.rfind(')');
-  if (colon != std::string::npos) {
-    reference.parent_table_uuid = envelope.substr(0, colon);
-    reference.parent_column = envelope.substr(colon + 1);
-  } else if (dot != std::string::npos) {
-    reference.parent_table_uuid = envelope.substr(0, dot);
-    reference.parent_column = envelope.substr(dot + 1);
-  } else if (open != std::string::npos && close == envelope.size() - 1 &&
-             close > open + 1) {
-    reference.parent_table_uuid = envelope.substr(0, open);
-    reference.parent_column = envelope.substr(open + 1, close - open - 1);
-  }
-  if (reference.parent_table_uuid.empty() || reference.parent_column.empty()) {
-    return std::nullopt;
-  }
   return reference;
 }
 
 bool DirectDescriptorDeclaresForeignKey(
-    const std::map<std::string, std::string>& fields) {
-  return !DirectFieldOrEmpty(
+    const DirectColumnFields& fields) {
+  return !DirectIdentityField(fields, {"referenced_table_uuid", "foreign_table_uuid", "foreign_table"}).is_nil() ||
+      !DirectFieldOrEmpty(
               fields,
               {"foreign_key",
                "references",
@@ -887,7 +865,7 @@ bool DirectDescriptorDeclaresForeignKey(
 }
 
 bool DirectTimingRequiresDeferredStore(
-    const std::map<std::string, std::string>& fields) {
+    const DirectColumnFields& fields) {
   const std::string timing = LowerAscii(DirectFieldOrEmpty(
       fields, {"enforcement_timing", "timing"}));
   return timing == "deferred" || timing == "transaction_end" ||
@@ -896,7 +874,7 @@ bool DirectTimingRequiresDeferredStore(
 }
 
 bool DirectDescriptorHasExclusion(
-    const std::map<std::string, std::string>& fields) {
+    const DirectColumnFields& fields) {
   return DirectBoolField(fields, {"exclusion", "exclusion_constraint"}) ||
          !DirectFieldOrEmpty(
               fields, {"exclusion_operator", "exclusion_family"})
@@ -948,10 +926,10 @@ bool DirectTableRequiresLiveRowVisibility(const CrudTableRecord& table) {
 
 bool DirectStateHasVisibleInboundForeignKey(
     const MgaRelationReadView& state,
-    std::string_view target_table_uuid,
+    const EngineUuid& target_table_uuid,
     std::uint64_t local_transaction_id) {
   for (const auto& candidate : state.tables) {
-    if (candidate.table_uuid.empty() ||
+    if (candidate.table_uuid.is_nil() ||
         candidate.table_uuid == target_table_uuid ||
         !MgaCreatorVisible(state,
                             candidate.creator_tx,
@@ -1690,7 +1668,7 @@ void AddCachedConflictingVisibleKeysForSortedBuild(
 void AddVisibleParentKeysForProof(
     const MgaRelationReadView& state,
     const EngineRequestContext& context,
-    const std::string& parent_table_uuid,
+    const EngineUuid& parent_table_uuid,
     const std::string& parent_column,
     const CrudIndexRecord& parent_index,
     std::vector<scratchbird::core::bulk_load::BulkConstraintProofKeyRef>* keys,
@@ -1968,7 +1946,8 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
       continue;
     }
     scratchbird::core::bulk_load::BulkUniqueProofRequest unique;
-    unique.constraint_uuid = "index:" + index.index_uuid + ":unique_key";
+    // The unique index itself is the enforcing catalog object.
+    unique.constraint_uuid = index.index_uuid;
     unique.index_uuid = index.index_uuid;
     unique.table_uuid = table.table_uuid;
     const auto columns = DirectIndexKeyColumns(index);
@@ -2118,8 +2097,8 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> DirectDeltaEntries(
     input.values = values;
     input.delta_kind = scratchbird::core::index::SecondaryIndexDeltaKind::insert;
     input.source_evidence_reference =
-        "engine.dml.direct_physical_bulk.secondary_index_delta:" +
-        batch_context.statement_uuid;
+        EncodeMgaMetadataFields({"engine.dml.direct_physical_bulk.secondary_index_delta.v2",
+            MetadataUuidBytes(batch_context.statement_uuid)});
     entries.push_back(std::move(input));
   }
   return entries;
@@ -4367,7 +4346,7 @@ const std::string& DirectInputFieldName(
 PreparedInsertRow PrepareDirectBulkOrderedRowFast(
     const EngineRowValue& input_row,
     const BoundInsertRowTemplate& row_template,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     bool force_large_values) {
   PreparedInsertRow row;
   row.row_uuid = row_uuid;
@@ -4390,7 +4369,7 @@ PreparedInsertRow PrepareDirectBulkSharedFieldOrderRowFast(
     const DirectPhysicalBulkAppendRequest& request,
     const EngineRowValue& input_row,
     const BoundInsertRowTemplate& row_template,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     bool force_large_values) {
   PreparedInsertRow row;
   row.row_uuid = row_uuid;
@@ -4700,7 +4679,7 @@ DirectPhysicalBulkAppendResult DirectBulkFailure(
       trace_path != nullptr && *trace_path != '\0') {
     if (std::ofstream out(trace_path, std::ios::app | std::ios::binary); out) {
       out << "operation=dml.direct_physical_bulk_append"
-          << "\ttable=" << request.target_table.uuid
+          << "\ttable_identity=binary16"
           << "\trows=0"
           << "\taccepted=0"
           << "\ttx=" << request.context.local_transaction_id
@@ -4820,18 +4799,19 @@ bool HasEvidence(const std::vector<EngineEvidenceReference>& evidence,
                  const std::string& kind,
                  const std::string& id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && std::holds_alternative<std::string>(item.evidence_id) &&
+        std::get<std::string>(item.evidence_id) == id) {
       return true;
     }
   }
   return false;
 }
 
-std::string FirstEvidenceId(const std::vector<EngineEvidenceReference>& evidence,
+EngineUuid FirstEvidenceIdentity(const std::vector<EngineEvidenceReference>& evidence,
                             const std::string& kind) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind) {
-      return item.evidence_id;
+      if (const auto* identity = std::get_if<EngineUuid>(&item.evidence_id)) return *identity;
     }
   }
   return {};
@@ -4911,11 +4891,13 @@ void WriteDirectBulkPhaseTrace(
     return;
   }
   out << "operation=dml.direct_physical_bulk_append"
-      << "\ttable=" << request.target_table.uuid
+      << "\ttable_identity=binary16"
       << "\trows=" << result.inserted_rows
       << "\taccepted=" << result.accepted_rows
       << "\ttx=" << request.context.local_transaction_id;
   for (const auto& evidence : result.evidence) {
+    const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+    if (!text) continue;
     if (evidence.evidence_kind == "direct_physical_bulk_append_context_cache" ||
         evidence.evidence_kind == "direct_physical_append_index_cache" ||
         evidence.evidence_kind == "direct_physical_append_index_cache_bypass" ||
@@ -4959,14 +4941,14 @@ void WriteDirectBulkPhaseTrace(
 	        evidence.evidence_kind == "bulk_constraint_proof_route_selected" ||
 	        evidence.evidence_kind == "index_apply_planner" ||
         evidence.evidence_kind == "index_apply_exact_entries_precomputed") {
-      out << '\t' << evidence.evidence_kind << '=' << evidence.evidence_id;
+      out << '\t' << evidence.evidence_kind << '=' << *text;
     } else if (evidence.evidence_kind.rfind(
                    "direct_physical_bulk_trace.",
                    0) == 0) {
       out << '\t'
           << evidence.evidence_kind.substr(
                  std::string_view("direct_physical_bulk_trace.").size())
-          << '=' << evidence.evidence_id;
+          << '=' << *text;
     }
   }
   for (const auto& [phase, micros] : phase_micros) {
@@ -5026,7 +5008,9 @@ EngineApiU64 DirectAllocationEvidenceU64(
     if (item.evidence_kind != kind) {
       continue;
     }
-    std::istringstream in(item.evidence_id);
+    const auto* text = std::get_if<std::string>(&item.evidence_id);
+    if (!text) continue;
+    std::istringstream in(*text);
     EngineApiU64 value = 0;
     in >> value;
     return in.fail() ? 0 : value;
@@ -5148,29 +5132,29 @@ void AddRequiredPreallocationSummary(
   AddPreallocationRuntimeCounters(row_allocation, &result->dml_summary);
   AddPreallocationRuntimeCounters(index_allocation, &result->dml_summary);
 
-  const std::string row_allocation_id =
-      FirstEvidenceId(row_allocation.evidence, "row_page_allocation");
-  const std::string index_allocation_id =
-      FirstEvidenceId(index_allocation.evidence, "index_page_allocation");
+  const EngineUuid row_allocation_id =
+      FirstEvidenceIdentity(row_allocation.evidence, "row_page_allocation");
+  const EngineUuid index_allocation_id =
+      FirstEvidenceIdentity(index_allocation.evidence, "index_page_allocation");
   result->evidence.push_back({"row_extent_reservation_count", std::to_string(row_count)});
   result->evidence.push_back({"version_extent_reservation_count", std::to_string(row_count)});
   result->evidence.push_back({"page_extent_reservation_count",
                               std::to_string(row_allocation.requested_pages)});
   result->evidence.push_back({"index_extent_reservation_count",
                               std::to_string(index_allocation.requested_pages)});
-  if (!row_allocation_id.empty()) {
+  if (!row_allocation_id.is_nil()) {
     result->evidence.push_back({"row_extent_reservation_id", row_allocation_id});
     result->evidence.push_back({"version_extent_reservation_id",
-                                row_allocation_id + ":versions"});
+                                row_allocation_id});
     result->evidence.push_back({"page_extent_reservation_id", row_allocation_id});
     result->evidence.push_back({"dml_summary.row_extent_reservation_id",
                                 row_allocation_id});
     result->evidence.push_back({"dml_summary.version_extent_reservation_id",
-                                row_allocation_id + ":versions"});
+                                row_allocation_id});
     result->evidence.push_back({"dml_summary.page_extent_reservation_id",
                                 row_allocation_id});
   }
-  if (!index_allocation_id.empty()) {
+  if (!index_allocation_id.is_nil()) {
     result->evidence.push_back({"index_extent_reservation_id", index_allocation_id});
     result->evidence.push_back({"dml_summary.index_extent_reservation_id",
                                 index_allocation_id});
@@ -6519,7 +6503,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       row_record.row_uuid = uuid_batch.row_uuids[row_ordinal];
       row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
 	      row_record.temporary_session_uuid =
-	          table->temporary ? request.context.session_uuid : "";
+	          table->temporary ? request.context.session_uuid : EngineUuid{};
 	      row_record.deleted = false;
 	      std::vector<std::pair<std::string, std::string>> row_values;
 	      row_values.reserve(generated_counter_plan.projections.size());
@@ -6664,7 +6648,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         row_record.version_uuid = std::move(uuid_batch.version_uuids[row_ordinal]);
       }
       row_record.temporary_session_uuid =
-          table->temporary ? request.context.session_uuid : "";
+          table->temporary ? request.context.session_uuid : EngineUuid{};
       row_record.deleted = false;
 
       std::string not_null_failure;
@@ -6976,7 +6960,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	      row_record.row_uuid = prepared.row_uuid;
 	      row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
 	      row_record.temporary_session_uuid =
-	          table->temporary ? request.context.session_uuid : "";
+	          table->temporary ? request.context.session_uuid : EngineUuid{};
 	      row_record.deleted = false;
 	      const auto value_copy_start = row_stage_timer_start();
 	      row_record.values = prepared.values;
@@ -7146,7 +7130,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         row_record.row_uuid = uuid_batch.row_uuids[row_ordinal];
         row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
         row_record.temporary_session_uuid =
-            table->temporary ? request.context.session_uuid : "";
+            table->temporary ? request.context.session_uuid : EngineUuid{};
         row_record.deleted = false;
       }
       std::vector<std::pair<std::string, std::string>> external_row_values;
@@ -7531,7 +7515,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     row_record.row_uuid = prepared.row_uuid;
     row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
     row_record.temporary_session_uuid =
-        table->temporary ? request.context.session_uuid : "";
+        table->temporary ? request.context.session_uuid : EngineUuid{};
     row_record.deleted = false;
     const auto value_copy_start = row_stage_timer_start();
     row_record.values = prepared.values;
@@ -7908,8 +7892,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         continue;
       }
       const std::string proof_id =
-          "not_null_descriptor:" + request.target_table.uuid + ":" +
-          column.column_name;
+          EncodeMgaMetadataFields({"not_null_descriptor.v2",
+              MetadataUuidBytes(request.target_table.uuid), column.column_name});
       result.evidence.push_back({"constraint_proof_store", proof_id});
       result.evidence.push_back({"constraint_proof_hit", proof_id});
     }
@@ -8306,10 +8290,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         request.borrowed_input_rows.size() == staged_rows.size()) ||
        native_bulk_native_packet_scoped_row_stream) &&
       !request.shared_row_field_order.empty();
-  std::string native_bulk_typed_scoped_table_uuid =
+  EngineUuid native_bulk_typed_scoped_table_uuid =
       request.target_table.uuid;
-  if ((native_bulk_typed_scoped_table_uuid.empty() ||
-       native_bulk_typed_scoped_table_uuid == "unknown") &&
+  if (native_bulk_typed_scoped_table_uuid.is_nil() &&
       !staged_rows.empty()) {
     native_bulk_typed_scoped_table_uuid = staged_rows.front().table_uuid;
   }
@@ -8371,7 +8354,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                                    native_bulk_typed_scoped_table_uuid,
 	                                    table->temporary
 	                                        ? request.context.session_uuid
-	                                        : "",
+	                                        : EngineUuid{},
 	                                    *request.native_row_packet)
 	                          : native_bulk_typed_logical_batch_bypass
 	                          ? hot_append
@@ -8380,7 +8363,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                                    native_bulk_typed_scoped_table_uuid,
 	                                    table->temporary
 	                                        ? request.context.session_uuid
-	                                        : "",
+	                                        : EngineUuid{},
 	                                    request.borrowed_input_rows,
 	                                    request.shared_row_field_order)
 	                          : hot_append.AppendRowVersionsReadOnlyScopedOnlyTyped(
@@ -8504,7 +8487,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                            strict_lifecycle.evidence.end());
     result.evidence.push_back({"strict_bulk_load_direct_lane", "enabled"});
     result.evidence.push_back({"strict_bulk_load_direct_lane_id",
-                               TypedUuidText(strict_lifecycle.bulk_load_id)});
+                               TypedUuidIdentity(strict_lifecycle.bulk_load_id)});
   }
   mark_phase("strict_bulk_lifecycle");
 

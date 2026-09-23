@@ -9,6 +9,7 @@
 #pragma once
 
 #include "compression_policy.hpp"
+#include "uuid.hpp"
 
 #include <cstdint>
 #include <string>
@@ -111,6 +112,7 @@ struct EngineNoSqlDescriptorVisibilityProof {
   bool behavior_store_scan_selected = false;
   std::uint64_t descriptor_generation = 0;
   std::string proof_id;
+  core::platform::Uuid proof_uuid;
 };
 
 struct EngineNoSqlSecurityRedactionProof {
@@ -119,6 +121,7 @@ struct EngineNoSqlSecurityRedactionProof {
   bool security_snapshot_bound = false;
   std::string redaction_profile = "unverified";
   std::string proof_id;
+  core::platform::Uuid proof_uuid;
 };
 
 struct EngineNoSqlIndexGenerationProof {
@@ -127,8 +130,10 @@ struct EngineNoSqlIndexGenerationProof {
   bool covers_predicate = false;
   std::uint64_t required_generation = 0;
   std::uint64_t available_generation = 0;
-  std::string index_uuid;
+  core::platform::Uuid index_uuid;
+  std::string index_name;
   std::string proof_id;
+  core::platform::Uuid proof_uuid;
 };
 
 struct EngineNoSqlDeltaOverlayProof {
@@ -137,12 +142,14 @@ struct EngineNoSqlDeltaOverlayProof {
   bool covers_snapshot = false;
   std::uint64_t overlay_generation = 0;
   std::string proof_id;
+  core::platform::Uuid proof_uuid;
 };
 
 struct EngineNoSqlPolicyProof {
   bool proof_present = false;
   bool allowed = false;
-  std::string policy_snapshot_uuid;
+  core::platform::Uuid policy_snapshot_uuid;
+  std::string policy_name;
   std::vector<std::string> refusal_reasons;
 };
 
@@ -160,16 +167,18 @@ struct EngineNoSqlProviderGenerationProof {
   std::uint64_t security_epoch = 0;
   std::uint64_t redaction_epoch = 0;
   std::uint64_t catalog_epoch = 0;
-  std::string generation_uuid;
+  core::platform::Uuid generation_uuid;
   std::string provider_id;
-  std::string database_uuid;
-  std::string collection_uuid;
+  core::platform::Uuid provider_uuid;
+  core::platform::Uuid database_uuid;
+  core::platform::Uuid collection_uuid;
   std::string publish_state = "unverified";
   std::string validation_state = "unverified";
   std::string backup_metadata_ref;
   std::string restore_metadata_ref;
   std::string repair_metadata_ref;
   std::string support_bundle_evidence_id;
+  core::platform::Uuid support_bundle_evidence_uuid;
   bool provider_claims_transaction_finality_authority = false;
   bool provider_claims_visibility_authority = false;
 };
@@ -191,6 +200,7 @@ struct EngineNoSqlPhysicalProviderContract {
   EngineNoSqlProviderFamily family = EngineNoSqlProviderFamily::kUnknown;
   EngineNoSqlProviderScope scope = EngineNoSqlProviderScope::kLocal;
   std::string provider_id = "nosql.local.provider";
+  core::platform::Uuid provider_uuid;
   std::string fallback_provider_id;
   bool local_provider_available = false;
   bool exact_fallback_available = false;
@@ -210,6 +220,7 @@ struct EngineNoSqlPhysicalProviderSelection {
   bool fail_closed = true;
   EngineNoSqlProviderFamily family = EngineNoSqlProviderFamily::kUnknown;
   EngineNoSqlProviderScope scope = EngineNoSqlProviderScope::kLocal;
+  core::platform::Uuid generation_uuid;
   std::string selected_provider_id;
   std::string fallback_provider_id;
   std::uint64_t estimated_rows = 0;

@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -70,8 +71,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -94,10 +95,10 @@ api::EngineRowValue Row(std::string id, std::string payload) {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
-  std::string schema_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid id_index_uuid;
+  api::EngineUuid schema_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -112,12 +113,12 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
+  context.current_schema_uuid = fixture.schema_uuid;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -205,10 +206,10 @@ Fixture MakeFixture() {
   create.allow_overwrite = true;
   Require(db::CreateDatabaseFile(create).ok(), "IPAR-P2-04 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.schema_uuid = NewUuidText(platform::UuidKind::schema, fixture.salt + 10);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 11);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 12);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.schema_uuid = NewIdentity(platform::UuidKind::schema, fixture.salt + 10);
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 11);
+  fixture.id_index_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 12);
 
   auto context = Begin(fixture, "ipar-p204-metadata", "read_committed");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
@@ -233,7 +234,7 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
                                       std::string payload) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), std::move(payload)));
   request.estimated_row_count = 1;
@@ -246,7 +247,7 @@ api::EngineUpdateRowsResult UpdatePayload(const Fixture& fixture,
                                           std::string payload) {
   api::EngineUpdateRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = IdEquals(std::move(id));
   request.assignments.push_back({"payload", TextValue(std::move(payload))});
@@ -258,7 +259,7 @@ api::EngineSelectRowsResult SelectById(const Fixture& fixture,
                                        std::string id) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate = IdEquals(std::move(id));
   return api::EngineSelectRows(request);

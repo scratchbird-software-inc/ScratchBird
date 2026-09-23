@@ -6,6 +6,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+using scratchbird::tests::FixtureIdentityForLabel;
 #include "agents/agent_management_api.hpp"
 #include "uuid.hpp"
 
@@ -40,20 +45,20 @@ platform::u64 NowMillis() {
           std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
-std::string MakeUuidText(platform::UuidKind kind, platform::u64 salt) {
+std::string MakeUuidBytes(platform::UuidKind kind, platform::u64 salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, NowMillis() + salt);
   Require(generated.ok(), "PFAR-016B UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return BinaryFixtureIdentity(generated.value.value);
 }
 
 struct Fixture {
-  std::string database_uuid = MakeUuidText(platform::UuidKind::database, 10);
-  std::string principal_uuid = MakeUuidText(platform::UuidKind::principal, 11);
-  std::string transaction_uuid = MakeUuidText(platform::UuidKind::transaction, 12);
-  std::string agent_uuid = MakeUuidText(platform::UuidKind::object, 13);
-  std::string policy_uuid = MakeUuidText(platform::UuidKind::object, 14);
-  std::string scope_uuid = MakeUuidText(platform::UuidKind::object, 15);
-  std::string request_uuid = MakeUuidText(platform::UuidKind::object, 16);
+  std::string database_uuid = MakeUuidBytes(platform::UuidKind::database, 10);
+  std::string principal_uuid = MakeUuidBytes(platform::UuidKind::principal, 11);
+  std::string transaction_uuid = MakeUuidBytes(platform::UuidKind::transaction, 12);
+  std::string agent_uuid = MakeUuidBytes(platform::UuidKind::object, 13);
+  std::string policy_uuid = MakeUuidBytes(platform::UuidKind::object, 14);
+  std::string scope_uuid = MakeUuidBytes(platform::UuidKind::object, 15);
+  std::string request_uuid = MakeUuidBytes(platform::UuidKind::object, 16);
 };
 
 api::EngineRequestContext Context(const Fixture& fixture,
@@ -61,9 +66,9 @@ api::EngineRequestContext Context(const Fixture& fixture,
   api::EngineRequestContext context;
   context.request_id = "pfar-016b-third-party-management";
   context.database_path = "/tmp/pfar-016b.sbdb";
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = fixture.principal_uuid;
-  context.transaction_uuid.canonical = fixture.transaction_uuid;
+  context.database_uuid = NativeFixtureIdentity(fixture.database_uuid);
+  context.principal_uuid = NativeFixtureIdentity(fixture.principal_uuid);
+  context.transaction_uuid = NativeFixtureIdentity(fixture.transaction_uuid);
   context.local_transaction_id = 16016;
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
@@ -210,7 +215,7 @@ void TestCatalogUuidAuthority(const Fixture& fixture) {
 
   auto policy_mismatch = Request(fixture, "agents.restart", {"OBS_AGENT_CONTROL"});
   policy_mismatch.agent_catalog_identity_sources.front().policy_uuid =
-      MakeUuidText(platform::UuidKind::object, 300);
+      MakeUuidBytes(platform::UuidKind::object, 300);
   const auto policy_mismatch_result =
       api::EngineSubmitThirdPartyAgentManagementRequest(policy_mismatch);
   Require(!policy_mismatch_result.ok, "mismatched catalog policy UUID was accepted");

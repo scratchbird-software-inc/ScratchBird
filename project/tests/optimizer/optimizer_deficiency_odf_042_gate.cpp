@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/import_execution_api.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
@@ -76,16 +77,16 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -115,7 +116,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) { return true; }
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextFields(item.evidence_id) == id) { return true; }
   }
   return false;
 }
@@ -124,7 +125,7 @@ bool AnyEvidenceContains(const std::vector<api::EngineEvidenceReference>& eviden
                          std::string_view token) {
   for (const auto& item : evidence) {
     if (item.evidence_kind.find(token) != std::string::npos ||
-        item.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFields(item.evidence_id).find(token) != std::string::npos) {
       return true;
     }
   }
@@ -136,7 +137,7 @@ std::size_t EvidenceIndex(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view token) {
   for (std::size_t index = 0; index < evidence.size(); ++index) {
     if (evidence[index].evidence_kind == kind &&
-        evidence[index].evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFields(evidence[index].evidence_id).find(token) != std::string::npos) {
       return index;
     }
   }
@@ -149,11 +150,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -238,9 +239,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-042 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
+  fixture.index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "odf042-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)),
@@ -281,7 +282,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     std::vector<std::string> options) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";
@@ -305,7 +306,7 @@ api::EngineExecuteNativeBulkIngestRequest NativeRequest(
     std::vector<std::string> options) {
   api::EngineExecuteNativeBulkIngestRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
   request.estimated_row_count =
@@ -322,7 +323,7 @@ api::EngineApiU64 SelectCount(const Fixture& fixture,
                               const api::EngineRequestContext& context) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
   const auto selected = api::EngineSelectRows(request);
@@ -340,7 +341,7 @@ void AssertNoRuntimeDocLeaks(const api::EngineApiResult& result) {
   for (const auto& evidence : result.evidence) {
     for (const auto token : forbidden) {
       Require(evidence.evidence_kind.find(token) == std::string::npos &&
-                  evidence.evidence_id.find(token) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFields(evidence.evidence_id).find(token) == std::string::npos,
               "ODF-042 runtime evidence leaked documentation token");
     }
   }
@@ -482,7 +483,7 @@ void AuthorityMissingFailsClosed() {
   auto fixture = MakeFixture("authority", 45000);
   auto context = Begin(fixture, "odf042-authority");
   auto bad_context = context;
-  bad_context.transaction_uuid.canonical = "not-a-transaction-uuid";
+  bad_context.transaction_uuid.bytes[8] = 0; // Invalid UUID variant.
   const auto refused = api::EngineExecuteImportRows(
       ImportRequest(fixture, bad_context, Rows("authority", 2),
                     PreallocationOptions(8, 8)));

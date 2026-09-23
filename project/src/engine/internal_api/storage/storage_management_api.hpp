@@ -65,8 +65,8 @@ struct EngineFilespaceDiscoveryRequest : EngineStorageManagementRequest {
   bool physical_delete_retention_satisfied = false;
   bool physical_delete_legal_hold_clear = false;
   bool physical_delete_cleanup_horizon_authoritative = false;
-  std::string inspector_uuid;
-  std::string release_authority_uuid;
+  scratchbird::core::platform::Uuid inspector_uuid;
+  scratchbird::core::platform::Uuid release_authority_uuid;
 };
 
 struct EngineFilespaceDiscoveryResult : EngineStorageManagementResult {

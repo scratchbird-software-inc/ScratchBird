@@ -1,3 +1,6 @@
+#include "engine/sblr/relational_descriptor_codec.hpp"
+#include "cache/binary_cache_key.hpp"
+#include "../../../wire/parser_server_ipc/public_relation_projection_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -7,6 +10,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "wire/sbsql_test_wire.hpp"
+#include "engine/sblr/native_row_field.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "lowering/relational_identity_operand.hpp"
 #include "engine/sblr/relational_identity_codec.hpp"
@@ -413,12 +417,12 @@ UuidKind UuidKindForCreatedObjectClass(std::string_view object_class) {
   return UuidKind::object;
 }
 
-std::string NewCreatedObjectUuid(std::string_view object_class) {
+core::platform::Uuid NewCreatedObjectUuid(std::string_view object_class) {
   static std::uint64_t sequence = 1000000;
   const auto generated =
       uuid::GenerateEngineIdentityV7(UuidKindForCreatedObjectClass(object_class),
                                      CurrentUnixMillis() + (++sequence));
-  return generated.ok() ? uuid::UuidToString(generated.value.value) : std::string{};
+  return generated.ok() ? generated.value.value : core::platform::Uuid{};
 }
 
 std::string AfterCommand(std::string_view line, std::string_view command) {
@@ -772,135 +776,34 @@ std::string NativeFilterSemantic(
 }
 
 struct ExactProjectedDescriptorFields {
-  std::optional<std::string> datatype_descriptor_uuid;
-  std::string type_uuid;
-  std::optional<std::string> collation_uuid;
+  std::optional<core::platform::Uuid> datatype_descriptor_uuid;
+  core::platform::Uuid type_uuid;
+  std::optional<core::platform::Uuid> collation_uuid;
   std::optional<std::string> timezone_profile_id;
-  std::optional<std::uint32_t> width;
-  std::optional<std::uint32_t> precision;
-  std::optional<std::uint32_t> scale;
+  std::optional<std::uint32_t> width, precision, scale;
   bool nullable{false};
 };
 
 std::optional<ExactProjectedDescriptorFields> ParseExactProjectedDescriptor(
-    std::string_view encoded,
-    std::string_view projected_collation_uuid,
-    bool projected_nullable) {
+    const ipc::PublicRelationColumnDescriptor& column) {
+  if (!column.datatype_identity_present ||
+      !core::uuid::IsEngineIdentityUuid(column.datatype_descriptor_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(column.datatype_type_uuid) ||
+      (!column.collation_uuid.is_nil() &&
+       !core::uuid::IsEngineIdentityUuid(column.collation_uuid)) ||
+      !ipc::relation_projection_detail::ScalarShapeMatches(column.encoded_type_descriptor,
+          column.type_shape, column.nullable, column.canonical_type_name) ||
+      (column.type_shape.scale && (!column.type_shape.precision ||
+       *column.type_shape.scale > *column.type_shape.precision))) return std::nullopt;
   ExactProjectedDescriptorFields fields;
-  std::optional<bool> canonical_nullable;
-  std::optional<bool> storage_nullable;
-  bool type_seen = false;
-  bool datatype_descriptor_seen = false;
-  bool collation_seen = false;
-  bool timezone_seen = false;
-  bool width_seen = false;
-  bool precision_seen = false;
-  bool scale_seen = false;
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto delimiter = encoded.find(';', offset);
-    const auto end = delimiter == std::string_view::npos ? encoded.size()
-                                                         : delimiter;
-    const auto field = encoded.substr(offset, end - offset);
-    const auto assign_text = [&](std::string_view prefix, bool* seen,
-                                 std::string* value) {
-      if (!field.starts_with(prefix)) return true;
-      if (*seen || field.size() == prefix.size()) return false;
-      *seen = true;
-      value->assign(field.substr(prefix.size()));
-      return true;
-    };
-    if (!assign_text("type_uuid=", &type_seen, &fields.type_uuid)) {
-      return std::nullopt;
-    }
-    std::string datatype_descriptor_uuid;
-    if (field.starts_with("datatype_descriptor_uuid=")) {
-      if (!assign_text("datatype_descriptor_uuid=", &datatype_descriptor_seen,
-                       &datatype_descriptor_uuid) ||
-          !CanonicalUuidBytes(datatype_descriptor_uuid).has_value()) {
-        return std::nullopt;
-      }
-      fields.datatype_descriptor_uuid = std::move(datatype_descriptor_uuid);
-    }
-    std::string collation_uuid;
-    if (field.starts_with("collation_uuid=")) {
-      if (!assign_text("collation_uuid=", &collation_seen,
-                       &collation_uuid)) {
-        return std::nullopt;
-      }
-      fields.collation_uuid = std::move(collation_uuid);
-    }
-    std::string timezone_profile_id;
-    if (field.starts_with("timezone_profile_id=")) {
-      if (!assign_text("timezone_profile_id=", &timezone_seen,
-                       &timezone_profile_id)) {
-        return std::nullopt;
-      }
-      fields.timezone_profile_id = std::move(timezone_profile_id);
-    }
-    const auto assign_u32 = [&](const std::string_view prefix, bool* seen,
-                                std::optional<std::uint32_t>* value) {
-      if (!field.starts_with(prefix)) return true;
-      if (*seen || field.size() == prefix.size()) return false;
-      std::uint32_t parsed = 0;
-      const auto text = field.substr(prefix.size());
-      const auto [end, error] =
-          std::from_chars(text.data(), text.data() + text.size(), parsed);
-      if (error != std::errc{} || end != text.data() + text.size()) {
-        return false;
-      }
-      *seen = true;
-      *value = parsed;
-      return true;
-    };
-    if (!assign_u32("width=", &width_seen, &fields.width) ||
-        !assign_u32("precision=", &precision_seen, &fields.precision) ||
-        !assign_u32("scale=", &scale_seen, &fields.scale)) {
-      return std::nullopt;
-    }
-    if (field.starts_with("nullability=")) {
-      if (canonical_nullable.has_value()) return std::nullopt;
-      const auto value = field.substr(std::string_view("nullability=").size());
-      if (value == "nullable") {
-        canonical_nullable = true;
-      } else if (value == "non_null") {
-        canonical_nullable = false;
-      } else {
-        return std::nullopt;
-      }
-    } else if (field.starts_with("nullable=")) {
-      if (storage_nullable.has_value()) return std::nullopt;
-      const auto value = field.substr(std::string_view("nullable=").size());
-      if (value == "true") {
-        storage_nullable = true;
-      } else if (value == "false") {
-        storage_nullable = false;
-      } else {
-        return std::nullopt;
-      }
-    }
-    if (delimiter == std::string_view::npos) break;
-    offset = delimiter + 1;
-  }
-  if (!type_seen || !CanonicalUuidBytes(fields.type_uuid).has_value() ||
-      (!canonical_nullable.has_value() && !storage_nullable.has_value()) ||
-      (canonical_nullable.has_value() && storage_nullable.has_value() &&
-       *canonical_nullable != *storage_nullable) ||
-      (fields.scale.has_value() &&
-       (!fields.precision.has_value() ||
-        *fields.scale > *fields.precision))) {
-    return std::nullopt;
-  }
-  fields.nullable = canonical_nullable.has_value() ? *canonical_nullable
-                                                    : *storage_nullable;
-  if (fields.nullable != projected_nullable ||
-      fields.collation_uuid.has_value() !=
-          !projected_collation_uuid.empty() ||
-      (fields.collation_uuid.has_value() &&
-       (*fields.collation_uuid != projected_collation_uuid ||
-        !CanonicalUuidBytes(*fields.collation_uuid).has_value()))) {
-    return std::nullopt;
-  }
+  fields.datatype_descriptor_uuid = column.datatype_descriptor_uuid;
+  fields.type_uuid = column.datatype_type_uuid;
+  if (!column.collation_uuid.is_nil()) fields.collation_uuid = column.collation_uuid;
+  fields.timezone_profile_id = column.type_shape.timezone_profile_id;
+  fields.width = column.type_shape.width;
+  fields.precision = column.type_shape.precision;
+  fields.scale = column.type_shape.scale;
+  fields.nullable = column.nullable;
   return fields;
 }
 
@@ -923,9 +826,7 @@ bool ExactGraphProjectedDescriptorCohort(
   std::set<core::platform::Uuid> type_descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = projection.columns[ordinal];
-    const auto fields = ParseExactProjectedDescriptor(
-        column.encoded_type_descriptor, column.collation_uuid,
-        column.nullable);
+    const auto fields = ParseExactProjectedDescriptor(column);
     const auto type_row =
         scratchbird::core::datatypes::LookupDatatypeCatalogRow(
             manifest.manifest,
@@ -935,38 +836,9 @@ bool ExactGraphProjectedDescriptorCohort(
         !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
       return false;
     }
-    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
-        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
-    std::unordered_set<std::string> encoded_keys;
-    std::size_t offset = 0;
-    while (offset <= column.encoded_type_descriptor.size()) {
-      const auto delimiter =
-          column.encoded_type_descriptor.find(';', offset);
-      const auto end = delimiter == std::string::npos
-                           ? column.encoded_type_descriptor.size()
-                           : delimiter;
-      const auto field = std::string_view(column.encoded_type_descriptor)
-                             .substr(offset, end - offset);
-      const auto equal = field.find('=');
-      if (field.empty() || equal == std::string_view::npos || equal == 0 ||
-          equal + 1 == field.size() ||
-          !encoded_keys.insert(std::string(field.substr(0, equal))).second ||
-          (field.substr(0, equal) != "canonical" &&
-           field.substr(0, equal) != "type_uuid" &&
-           field.substr(0, equal) != "nullability" &&
-           field.substr(0, equal) != "nullable")) {
-        return false;
-      }
-      if (field.substr(0, equal) == "canonical" &&
-          field.substr(equal + 1) != kTypes[ordinal]) {
-        return false;
-      }
-      if (delimiter == std::string::npos) break;
-      offset = delimiter + 1;
-    }
-    if (!encoded_keys.contains("type_uuid") ||
-        (encoded_keys.contains("nullability") ==
-         encoded_keys.contains("nullable")) ||
+    const auto expected_type_uuid = LookupNativeCanonicalTypeIdentity(
+        type_row.manifest, type_row.manifest.descriptor_rows.front().type_id).value_or(core::platform::Uuid{});
+    if (!ipc::relation_projection_detail::ScalarMetadata(column.encoded_type_descriptor) ||
         !CanonicalUuidBytes(column.column_uuid).has_value() ||
         !column_uuids.insert(column.column_uuid).second ||
         !CanonicalUuidBytes(column.type_descriptor_uuid).has_value() ||
@@ -1009,9 +881,7 @@ bool ExactKeyValueStorageDescriptorCohort(
   std::set<core::platform::Uuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = projection.columns[ordinal];
-    const auto fields = ParseExactProjectedDescriptor(
-        column.encoded_type_descriptor, column.collation_uuid,
-        column.nullable);
+    const auto fields = ParseExactProjectedDescriptor(column);
     const auto type_row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
         manifest.manifest,
         scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
@@ -1020,8 +890,8 @@ bool ExactKeyValueStorageDescriptorCohort(
         !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
       return false;
     }
-    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
-        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    const auto expected_type_uuid = LookupNativeCanonicalTypeIdentity(
+        type_row.manifest, type_row.manifest.descriptor_rows.front().type_id).value_or(core::platform::Uuid{});
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] ||
         column.canonical_type_name != kTypes[ordinal] ||
@@ -1064,9 +934,7 @@ bool ExactTimeSeriesStorageDescriptorCohort(
   std::set<core::platform::Uuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = projection.columns[ordinal];
-    const auto fields = ParseExactProjectedDescriptor(
-        column.encoded_type_descriptor, column.collation_uuid,
-        column.nullable);
+    const auto fields = ParseExactProjectedDescriptor(column);
     const auto type_row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
         manifest.manifest,
         scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
@@ -1075,8 +943,8 @@ bool ExactTimeSeriesStorageDescriptorCohort(
         !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
       return false;
     }
-    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
-        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    const auto expected_type_uuid = LookupNativeCanonicalTypeIdentity(
+        type_row.manifest, type_row.manifest.descriptor_rows.front().type_id).value_or(core::platform::Uuid{});
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] ||
         column.canonical_type_name != kTypes[ordinal] ||
@@ -1137,9 +1005,7 @@ bool ExactVectorStorageDescriptorCohort(
   std::set<core::platform::Uuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = projection.columns[ordinal];
-    const auto fields = ParseExactProjectedDescriptor(
-        column.encoded_type_descriptor, column.collation_uuid,
-        column.nullable);
+    const auto fields = ParseExactProjectedDescriptor(column);
     const auto type_row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
         manifest.manifest,
         scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
@@ -1148,8 +1014,8 @@ bool ExactVectorStorageDescriptorCohort(
         !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
       return false;
     }
-    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
-        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    const auto expected_type_uuid = LookupNativeCanonicalTypeIdentity(
+        type_row.manifest, type_row.manifest.descriptor_rows.front().type_id).value_or(core::platform::Uuid{});
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] ||
         column.canonical_type_name != kTypes[ordinal] || column.nullable ||
@@ -1199,15 +1065,13 @@ bool ExactSearchStorageDescriptorCohort(
       !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
     return false;
   }
-  const auto text_uuid = scratchbird::core::uuid::UuidToString(
-      type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+  const auto text_uuid = LookupNativeCanonicalTypeIdentity(
+        type_row.manifest, type_row.manifest.descriptor_rows.front().type_id).value_or(core::platform::Uuid{});
   std::set<core::platform::Uuid> column_uuids;
   std::set<core::platform::Uuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = projection.columns[ordinal];
-    const auto fields = ParseExactProjectedDescriptor(
-        column.encoded_type_descriptor, column.collation_uuid,
-        column.nullable);
+    const auto fields = ParseExactProjectedDescriptor(column);
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] ||
         column.canonical_type_name != "text" || column.nullable ||
@@ -1790,9 +1654,7 @@ BuildEngineProjectedNativeBindingContext(
     };
     for (std::size_t ordinal = 0; ordinal < projection.columns.size(); ++ordinal) {
       const auto& column = projection.columns[ordinal];
-      const auto fields = ParseExactProjectedDescriptor(
-          column.encoded_type_descriptor, column.collation_uuid,
-          column.nullable);
+      const auto fields = ParseExactProjectedDescriptor(column);
       if (column.ordinal != ordinal || column.canonical_name_key.empty() ||
           column.canonical_type_name.empty() ||
           !CanonicalUuidBytes(column.column_uuid).has_value() ||
@@ -1817,8 +1679,7 @@ BuildEngineProjectedNativeBindingContext(
       }
       if (column.datatype_identity_present) {
         const auto canonical_datatype_descriptor_uuid =
-            fields->datatype_descriptor_uuid.value_or(
-                column.type_descriptor_uuid);
+            *fields->datatype_descriptor_uuid;
         const auto datatype_identity = scratchbird::core::datatypes::
             LookupDatatypeTypeCodecIdentityV1(
                 projection.datatype_catalog_snapshot_uuid,
@@ -2407,9 +2268,7 @@ BuildEngineProjectedNativeBindingContext(
       return context.descriptors.back().descriptor_id;
     };
     for (const auto& column : projection.columns) {
-      const auto fields = ParseExactProjectedDescriptor(
-          column.encoded_type_descriptor, column.collation_uuid,
-          column.nullable);
+      const auto fields = ParseExactProjectedDescriptor(column);
       if (!fields.has_value()) {
         return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
                       "search storage descriptor cannot be decoded");
@@ -2690,8 +2549,8 @@ BuildEngineProjectedNativeBindingContext(
             std::next(real64_profiles.begin())->descriptor_uuid ||
         real64_profiles.begin()->nullable ||
         std::next(real64_profiles.begin())->nullable ||
-        !real64_profiles.begin()->collation_uuid.empty() ||
-        !std::next(real64_profiles.begin())->collation_uuid.empty() ||
+        !real64_profiles.begin()->collation_uuid.is_nil() ||
+        !std::next(real64_profiles.begin())->collation_uuid.is_nil() ||
         real64_profiles.begin()->width != 0 ||
         std::next(real64_profiles.begin())->width != 0 ||
         real64_profiles.begin()->precision != 0 ||
@@ -2727,9 +2586,7 @@ BuildEngineProjectedNativeBindingContext(
       return context.descriptors.back().descriptor_id;
     };
     for (const auto& column : projection.columns) {
-      const auto fields = ParseExactProjectedDescriptor(
-          column.encoded_type_descriptor, column.collation_uuid,
-          column.nullable);
+      const auto fields = ParseExactProjectedDescriptor(column);
       if (!fields.has_value()) {
         return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
                       "vector storage type descriptor cannot be decoded");
@@ -3069,9 +2926,7 @@ BuildEngineProjectedNativeBindingContext(
          storage_ordinal < storage_projection.columns.size();
          ++storage_ordinal) {
       const auto& column = storage_projection.columns[storage_ordinal];
-      const auto fields = ParseExactProjectedDescriptor(
-          column.encoded_type_descriptor, column.collation_uuid,
-          column.nullable);
+      const auto fields = ParseExactProjectedDescriptor(column);
       if (!fields.has_value() ||
           !descriptor_uuids.insert(column.type_descriptor_uuid).second) {
         return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
@@ -3579,8 +3434,8 @@ BuildEngineProjectedNativeBindingContext(
     row_identity_descriptor.descriptor_id = 1;
     row_identity_descriptor.descriptor_uuid =
         storage_projection.descriptor_uuid;
-    row_identity_descriptor.type_uuid = scratchbird::core::uuid::UuidToString(
-        uuid_type.manifest.descriptor_rows.front().descriptor_uuid.value);
+    row_identity_descriptor.type_uuid = LookupNativeCanonicalTypeIdentity(uuid_type.manifest,
+        uuid_type.manifest.descriptor_rows.front().type_id).value_or(core::platform::Uuid{});
     row_identity_descriptor.nullability = BoundNullability::kNonNull;
     context.descriptors.push_back(std::move(row_identity_descriptor));
     descriptor_by_name.emplace("row_uuid", 1);
@@ -3593,9 +3448,7 @@ BuildEngineProjectedNativeBindingContext(
     for (std::size_t storage_ordinal = 0; storage_ordinal < 2;
          ++storage_ordinal) {
       const auto& column = storage_projection.columns[storage_ordinal];
-      const auto fields = ParseExactProjectedDescriptor(
-          column.encoded_type_descriptor, column.collation_uuid,
-          column.nullable);
+      const auto fields = ParseExactProjectedDescriptor(column);
       if (!fields.has_value() ||
           !descriptor_uuids.insert(column.type_descriptor_uuid).second) {
         return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
@@ -3958,9 +3811,7 @@ BuildEngineProjectedNativeBindingContext(
     std::set<core::platform::Uuid> column_uuids;
     for (std::size_t ordinal = 0; ordinal < projection.columns.size(); ++ordinal) {
       const auto& column = projection.columns[ordinal];
-      const auto descriptor_fields = ParseExactProjectedDescriptor(
-          column.encoded_type_descriptor, column.collation_uuid,
-          column.nullable);
+      const auto descriptor_fields = ParseExactProjectedDescriptor(column);
       if (column.ordinal != ordinal || column.canonical_name_key.empty() ||
           !CanonicalUuidBytes(column.column_uuid).has_value() ||
           !column_uuids.insert(column.column_uuid).second ||
@@ -4351,9 +4202,7 @@ BuildEngineProjectedNativeBindingContext(
       for (std::size_t ordinal = 0; ordinal < projection.columns.size();
            ++ordinal) {
         const auto& column = projection.columns[ordinal];
-        const auto descriptor_fields = ParseExactProjectedDescriptor(
-            column.encoded_type_descriptor, column.collation_uuid,
-            column.nullable);
+        const auto descriptor_fields = ParseExactProjectedDescriptor(column);
         if (column.ordinal != ordinal || column.canonical_name_key.empty() ||
             !CanonicalUuidBytes(column.column_uuid).has_value() ||
             !column_uuids.insert(column.column_uuid).second ||
@@ -4763,9 +4612,9 @@ BuildEngineProjectedNativeBindingContext(
             std::vector<std::uint32_t>{source.source_id} ||
         source_relation->output_expression_ids.empty() || !resolved.resolved ||
         !projection.present || !relation_object_class ||
-        resolved.object_uuid.empty() ||
+        resolved.object_uuid.is_nil() ||
         projection.relation_uuid != resolved.object_uuid ||
-        projection.descriptor_uuid.empty() || projection.schema_uuid.empty() ||
+        projection.descriptor_uuid.is_nil() || projection.schema_uuid.is_nil() ||
         projection.descriptor_generation == 0 ||
         projection.validated_resource_epoch == 0 ||
         resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
@@ -4801,14 +4650,12 @@ BuildEngineProjectedNativeBindingContext(
           projection.columns, [&](const auto& candidate) {
             return candidate.canonical_name_key == expression->spelling;
           });
-      if (column == projection.columns.end() || column->column_uuid.empty() ||
+      if (column == projection.columns.end() || column->column_uuid.is_nil() ||
           column->canonical_type_name.empty() ||
           !CanonicalUuidBytes(column->type_descriptor_uuid).has_value()) {
         return fail("catalog_window_source_column_unresolved");
       }
-      const auto descriptor_fields = ParseExactProjectedDescriptor(
-          column->encoded_type_descriptor, column->collation_uuid,
-          column->nullable);
+      const auto descriptor_fields = ParseExactProjectedDescriptor(*column);
       if (!descriptor_fields.has_value()) {
         return fail("catalog_window_source_descriptor_invalid");
       }
@@ -6594,12 +6441,12 @@ BuildEngineProjectedNativeBindingContext(
     std::uint32_t binding_id = 1;
     std::array<std::uint16_t, 24> multileg_source_slots{};
     std::size_t resolution_ordinal = 0;
-    std::optional<std::string> bounded_search_analyzer_uuid;
+    std::optional<core::platform::Uuid> bounded_search_analyzer_uuid;
     std::uint64_t bounded_search_analyzer_generation = 0;
-    std::optional<std::string> authoritative_datatype_snapshot_uuid;
+    std::optional<core::platform::Uuid> authoritative_datatype_snapshot_uuid;
     std::uint64_t authoritative_datatype_catalog_generation = 0;
     std::uint64_t authoritative_datatype_registry_generation = 0;
-    std::unordered_map<std::string, std::string> relation_by_descriptor_uuid;
+    std::map<core::platform::Uuid, core::platform::Uuid> relation_by_descriptor_uuid;
     for (std::size_t source_ordinal = 0; source_ordinal < source_count;
          ++source_ordinal) {
       const auto& source = ast.catalog_relation_sources[source_ordinal];
@@ -6651,9 +6498,9 @@ BuildEngineProjectedNativeBindingContext(
               (expected_object_class.empty()
                    ? std::string_view{"relation"}
                    : expected_object_class) ||
-          !exact_object_class || resolved.object_uuid.empty() ||
+          !exact_object_class || resolved.object_uuid.is_nil() ||
           projection.relation_uuid != resolved.object_uuid ||
-          projection.descriptor_uuid.empty() || projection.schema_uuid.empty() ||
+          projection.descriptor_uuid.is_nil() || projection.schema_uuid.is_nil() ||
           projection.descriptor_generation == 0 ||
           projection.validated_resource_epoch == 0 ||
           resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
@@ -6666,10 +6513,10 @@ BuildEngineProjectedNativeBindingContext(
             ":expected_object_class=" + std::string(expected_object_class) +
             ":resolved=" + (resolved.resolved ? "1" : "0") +
             ":object_class=" + resolved.object_class +
-            ":object_uuid=" + resolved.object_uuid +
-            ":relation_uuid=" + projection.relation_uuid +
-            ":descriptor_uuid=" + projection.descriptor_uuid +
-            ":schema_uuid=" + projection.schema_uuid +
+            ":object_uuid_present=" + std::to_string(!resolved.object_uuid.is_nil()) +
+            ":relation_uuid_present=" + std::to_string(!projection.relation_uuid.is_nil()) +
+            ":descriptor_uuid_present=" + std::to_string(!projection.descriptor_uuid.is_nil()) +
+            ":schema_uuid_present=" + std::to_string(!projection.schema_uuid.is_nil()) +
             ":descriptor_generation=" +
             std::to_string(projection.descriptor_generation) +
             ":resource_epoch=" +
@@ -6701,10 +6548,8 @@ BuildEngineProjectedNativeBindingContext(
       for (std::size_t ordinal = 0; ordinal < projection.columns.size();
            ++ordinal, ++binding_id) {
         const auto& column = projection.columns[ordinal];
-        const auto descriptor_fields = ParseExactProjectedDescriptor(
-            column.encoded_type_descriptor, column.collation_uuid,
-            column.nullable);
-        if (column.ordinal != ordinal || column.column_uuid.empty() ||
+        const auto descriptor_fields = ParseExactProjectedDescriptor(column);
+        if (column.ordinal != ordinal || column.column_uuid.is_nil() ||
             column.canonical_name_key.empty() ||
             !CanonicalUuidBytes(column.type_descriptor_uuid).has_value() ||
             !descriptor_fields.has_value() ||
@@ -6713,7 +6558,7 @@ BuildEngineProjectedNativeBindingContext(
             // no authority in the absence of the V3 tuple.
             (!column.datatype_identity_present &&
              column.type_descriptor_uuid ==
-                 "019d0000-0000-7000-8000-00000000d718")) {
+                 core::platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x18}})) {
           return fail("catalog_cross_join_column_projection_incomplete");
         }
         NativeDescriptorBindingInput descriptor;
@@ -6734,14 +6579,13 @@ BuildEngineProjectedNativeBindingContext(
                   projection.datatype_catalog_snapshot_uuid,
                   projection.datatype_catalog_generation,
                   projection.datatype_registry_generation,
-                  descriptor_fields->datatype_descriptor_uuid.value_or(
-                      column.type_descriptor_uuid),
+                  *descriptor_fields->datatype_descriptor_uuid,
                   column.datatype_descriptor_generation);
-          if (statement_context.literal_preliminary_receipt_uuid.empty() ||
+          if (statement_context.literal_preliminary_receipt_uuid.is_nil() ||
               !CanonicalUuidBytes(
                    statement_context.literal_preliminary_receipt_uuid)
                    .has_value() ||
-              projection.datatype_catalog_snapshot_uuid.empty() ||
+              projection.datatype_catalog_snapshot_uuid.is_nil() ||
               !CanonicalUuidBytes(projection.datatype_catalog_snapshot_uuid)
                    .has_value() ||
               projection.datatype_catalog_snapshot_uuid !=
@@ -6759,8 +6603,7 @@ BuildEngineProjectedNativeBindingContext(
               column.datatype_codec_generation == 0 ||
               !datatype_identity.ok ||
               datatype_identity.row.descriptor_uuid !=
-                  descriptor_fields->datatype_descriptor_uuid.value_or(
-                      column.type_descriptor_uuid) ||
+                  *descriptor_fields->datatype_descriptor_uuid ||
               datatype_identity.row.descriptor_generation !=
                   column.datatype_descriptor_generation ||
               datatype_identity.row.type_uuid != column.datatype_type_uuid ||
@@ -6815,7 +6658,7 @@ BuildEngineProjectedNativeBindingContext(
                        candidate.slot == profile_slot &&
                        !candidate.nullable &&
                        candidate.type_uuid == descriptor_fields->type_uuid &&
-                       candidate.collation_uuid.empty() &&
+                       candidate.collation_uuid.is_nil() &&
                        candidate.width == 0 && candidate.precision == 0 &&
                        candidate.scale == 0;
               });
@@ -6890,7 +6733,7 @@ BuildEngineProjectedNativeBindingContext(
               [&](const auto& candidate) {
                 return candidate.profile_kind == kind &&
                        candidate.slot == slot && !candidate.nullable &&
-                       candidate.collation_uuid.empty() && candidate.width == 0 &&
+                       candidate.collation_uuid.is_nil() && candidate.width == 0 &&
                        candidate.precision == 0 && candidate.scale == 0 &&
                        CanonicalUuidBytes(candidate.descriptor_uuid).has_value() &&
                        CanonicalUuidBytes(candidate.type_uuid).has_value();
@@ -6998,7 +6841,7 @@ BuildEngineProjectedNativeBindingContext(
         const auto& leg = context.catalog_relations[source_ordinal];
         if (leg.columns.empty() ||
             leg.columns.front().descriptor_id == 0 ||
-            leg.object_uuid.empty()) {
+            leg.object_uuid.is_nil()) {
           return fail("model_join_leg_projection_binding_unavailable");
         }
         const auto expression_id =
@@ -7438,8 +7281,8 @@ BuildEngineProjectedNativeBindingContext(
         operand_descriptor.codec_id.clear();
         operand_descriptor.codec_version = 0;
         operand_descriptor.codec_generation = 0;
-        operand_descriptor.statement_receipt_uuid.clear();
-        operand_descriptor.datatype_catalog_snapshot_uuid.clear();
+        operand_descriptor.statement_receipt_uuid = {};
+        operand_descriptor.datatype_catalog_snapshot_uuid = {};
         operand_descriptor.datatype_catalog_generation = 0;
         operand_descriptor.datatype_registry_generation = 0;
         if (literal_filter_operand) {
@@ -7803,9 +7646,9 @@ BuildEngineProjectedNativeBindingContext(
         relation.relation_source_ids !=
             std::vector<std::uint32_t>{source.source_id} ||
         !resolved.resolved || !projection.present || !relation_object_class ||
-        resolved.object_uuid.empty() ||
+        resolved.object_uuid.is_nil() ||
         projection.relation_uuid != resolved.object_uuid ||
-        projection.descriptor_uuid.empty() || projection.schema_uuid.empty() ||
+        projection.descriptor_uuid.is_nil() || projection.schema_uuid.is_nil() ||
         projection.descriptor_generation == 0 ||
         projection.validated_resource_epoch == 0 ||
         resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
@@ -7884,115 +7727,7 @@ BuildEngineProjectedNativeBindingContext(
     // persisted descriptor fields transported by the selected-transaction
     // relation projection; never map canonical type names or use descriptor
     // UUIDs as type fallbacks.
-    struct ExactProjectedDescriptorFields {
-      std::optional<std::string> datatype_descriptor_uuid;
-      std::string type_uuid;
-      std::optional<std::string> collation_uuid;
-      std::optional<std::string> timezone_profile_id;
-      bool nullable{false};
-    };
-    const auto parse_exact_descriptor_fields =
-        [](std::string_view encoded,
-           std::string_view projected_collation_uuid,
-           bool projected_nullable)
-        -> std::optional<ExactProjectedDescriptorFields> {
-      ExactProjectedDescriptorFields fields;
-      std::optional<bool> canonical_nullable;
-      std::optional<bool> storage_nullable;
-      bool type_seen = false;
-      bool datatype_descriptor_seen = false;
-      bool collation_seen = false;
-      bool timezone_seen = false;
-      std::size_t offset = 0;
-      while (offset <= encoded.size()) {
-        const auto delimiter = encoded.find(';', offset);
-        const auto end = delimiter == std::string_view::npos
-                             ? encoded.size()
-                             : delimiter;
-        const auto field = encoded.substr(offset, end - offset);
-        const auto assign_text = [&](std::string_view prefix,
-                                     bool* seen,
-                                     std::string* value) {
-          if (!field.starts_with(prefix)) return true;
-          if (*seen || field.size() == prefix.size()) return false;
-          *seen = true;
-          value->assign(field.substr(prefix.size()));
-          return true;
-        };
-        if (!assign_text("type_uuid=", &type_seen, &fields.type_uuid)) {
-          return std::nullopt;
-        }
-        std::string datatype_descriptor_uuid;
-        if (field.starts_with("datatype_descriptor_uuid=")) {
-          if (!assign_text("datatype_descriptor_uuid=",
-                           &datatype_descriptor_seen,
-                           &datatype_descriptor_uuid) ||
-              !CanonicalUuidBytes(datatype_descriptor_uuid).has_value()) {
-            return std::nullopt;
-          }
-          fields.datatype_descriptor_uuid =
-              std::move(datatype_descriptor_uuid);
-        }
-        std::string collation_uuid;
-        if (field.starts_with("collation_uuid=")) {
-          if (!assign_text("collation_uuid=", &collation_seen,
-                           &collation_uuid)) {
-            return std::nullopt;
-          }
-          fields.collation_uuid = std::move(collation_uuid);
-        }
-        std::string timezone_profile_id;
-        if (field.starts_with("timezone_profile_id=")) {
-          if (!assign_text("timezone_profile_id=", &timezone_seen,
-                           &timezone_profile_id)) {
-            return std::nullopt;
-          }
-          fields.timezone_profile_id = std::move(timezone_profile_id);
-        }
-        if (field.starts_with("nullability=")) {
-          if (canonical_nullable.has_value()) return std::nullopt;
-          const auto value = field.substr(std::string_view("nullability=").size());
-          if (value == "nullable") {
-            canonical_nullable = true;
-          } else if (value == "non_null") {
-            canonical_nullable = false;
-          } else {
-            return std::nullopt;
-          }
-        } else if (field.starts_with("nullable=")) {
-          if (storage_nullable.has_value()) return std::nullopt;
-          const auto value = field.substr(std::string_view("nullable=").size());
-          if (value == "true") {
-            storage_nullable = true;
-          } else if (value == "false") {
-            storage_nullable = false;
-          } else {
-            return std::nullopt;
-          }
-        }
-        if (delimiter == std::string_view::npos) break;
-        offset = delimiter + 1;
-      }
-      if (!type_seen || !CanonicalUuidBytes(fields.type_uuid).has_value() ||
-          (!canonical_nullable.has_value() && !storage_nullable.has_value()) ||
-          (canonical_nullable.has_value() && storage_nullable.has_value() &&
-           *canonical_nullable != *storage_nullable)) {
-        return std::nullopt;
-      }
-      fields.nullable = canonical_nullable.has_value()
-                            ? *canonical_nullable
-                            : *storage_nullable;
-      if (fields.nullable != projected_nullable ||
-          fields.collation_uuid.has_value() !=
-              !projected_collation_uuid.empty() ||
-          (fields.collation_uuid.has_value() &&
-           (*fields.collation_uuid != projected_collation_uuid ||
-            !CanonicalUuidBytes(*fields.collation_uuid).has_value()))) {
-        return std::nullopt;
-      }
-      return fields;
-    };
-    std::vector<std::string> source_datatype_descriptor_uuids;
+    std::vector<core::platform::Uuid> source_datatype_descriptor_uuids;
     source_datatype_descriptor_uuids.reserve(source_column_indexes.size());
     for (std::size_t ordinal = 0; ordinal < source_column_indexes.size();
          ++ordinal) {
@@ -8000,20 +7735,17 @@ BuildEngineProjectedNativeBindingContext(
       const auto& column = projection.columns[selected_index];
       const auto expected_ordinal = static_cast<std::uint32_t>(ordinal);
       const auto binding_id = static_cast<std::uint32_t>(ordinal + 1);
-      if (column.ordinal != selected_index || column.column_uuid.empty() ||
+      if (column.ordinal != selected_index || column.column_uuid.is_nil() ||
           column.canonical_name_key.empty() ||
           !CanonicalUuidBytes(column.type_descriptor_uuid).has_value()) {
         return fail("catalog_source_column_projection_incomplete");
       }
-      const auto descriptor_fields = parse_exact_descriptor_fields(
-          column.encoded_type_descriptor, column.collation_uuid,
-          column.nullable);
+      const auto descriptor_fields = ParseExactProjectedDescriptor(column);
       if (!descriptor_fields.has_value()) {
         return fail("catalog_source_column_descriptor_carrier_invalid");
       }
       source_datatype_descriptor_uuids.push_back(
-          descriptor_fields->datatype_descriptor_uuid.value_or(
-              column.type_descriptor_uuid));
+          *descriptor_fields->datatype_descriptor_uuid);
       NativeDescriptorBindingInput descriptor;
       descriptor.descriptor_id = binding_id;
       descriptor.descriptor_uuid = column.type_descriptor_uuid;
@@ -8059,20 +7791,16 @@ BuildEngineProjectedNativeBindingContext(
     std::string aggregate_output_name;
     std::string aggregate_semantic;
     if (grouped_sum_int128_composition) {
-      constexpr std::string_view kBigintDescriptorUuid =
-          "019d0000-0000-7000-8000-00000000d711";
-      constexpr std::string_view kBigintTypeUuid =
-          "019d0000-0000-7000-8000-00000000d712";
-      constexpr std::string_view kInt128DescriptorUuid =
-          "019d0000-0000-7000-8000-00000000d714";
-      constexpr std::string_view kInt128TypeUuid =
-          "019d0000-0000-7000-8000-00000000d715";
+      constexpr core::platform::Uuid kBigintDescriptorUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x11}};
+      constexpr core::platform::Uuid kBigintTypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x12}};
+      constexpr core::platform::Uuid kInt128DescriptorUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x14}};
+      constexpr core::platform::Uuid kInt128TypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x15}};
       const auto int128_identity =
           scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
               projection.datatype_catalog_snapshot_uuid,
               projection.datatype_catalog_generation,
               projection.datatype_registry_generation,
-              std::string(kInt128DescriptorUuid), 1);
+              kInt128DescriptorUuid, 1);
       const auto aggregate_expression = std::ranges::find_if(
           ast.expressions, [&](const auto& candidate) {
             return candidate.expression_id ==
@@ -8104,8 +7832,8 @@ BuildEngineProjectedNativeBindingContext(
           context.descriptors[1].codec_id != "datatype.int64.le.v1" ||
           context.descriptors[1].codec_version != 1 ||
           context.descriptors[1].codec_generation != 1 ||
-          statement_context.literal_preliminary_receipt_uuid.empty() ||
-          projection.datatype_catalog_snapshot_uuid.empty() ||
+          statement_context.literal_preliminary_receipt_uuid.is_nil() ||
+          projection.datatype_catalog_snapshot_uuid.is_nil() ||
           projection.datatype_catalog_snapshot_uuid !=
               statement_context.literal_catalog_snapshot_uuid ||
           projection.datatype_catalog_generation !=
@@ -8137,10 +7865,10 @@ BuildEngineProjectedNativeBindingContext(
           static_cast<std::uint32_t>(context.descriptors.size() + 1);
       NativeDescriptorBindingInput descriptor;
       descriptor.descriptor_id = *aggregate_binding_id;
-      descriptor.descriptor_uuid = std::string(kInt128DescriptorUuid);
+      descriptor.descriptor_uuid = kInt128DescriptorUuid;
       descriptor.descriptor_generation =
           int128_identity.row.descriptor_generation;
-      descriptor.type_uuid = std::string(kInt128TypeUuid);
+      descriptor.type_uuid = kInt128TypeUuid;
       descriptor.type_generation = int128_identity.row.type_generation;
       descriptor.codec_id = int128_identity.row.codec_id;
       descriptor.codec_version = int128_identity.row.codec_version;
@@ -8890,7 +8618,7 @@ BuildEngineProjectedNativeBindingContext(
               expression.spelling)
         : scratchbird::engine::sblr::SblrLiteralExactDecimalCodecResultV1{};
     if (profile.profile_version != 1 ||
-        profile.binding_descriptor_uuid.empty() || profile.type_uuid.empty() ||
+        profile.binding_descriptor_uuid.is_nil() || profile.type_uuid.is_nil() ||
         profile.nullable || profile.descriptor_generation == 0 ||
         (!bigint_codec && !exact_decimal_codec) ||
         (exact_decimal_codec && !decimal.ok) ||
@@ -9294,13 +9022,13 @@ struct ContextualTextPrebindOccurrenceV2 {
   std::uint8_t target_argument_ordinal{0};
   std::uint32_t target_descriptor_handle{0};
   std::uint32_t literal_descriptor_handle{0};
-  std::string relation_uuid;
-  std::string relation_descriptor_uuid;
+  core::platform::Uuid relation_uuid;
+  core::platform::Uuid relation_descriptor_uuid;
   std::uint64_t relation_descriptor_generation{0};
-  std::string column_uuid;
+  core::platform::Uuid column_uuid;
   std::uint32_t column_ordinal{0};
-  std::string target_datatype_descriptor_uuid;
-  std::string target_collation_uuid;
+  core::platform::Uuid target_datatype_descriptor_uuid;
+  core::platform::Uuid target_collation_uuid;
   std::uint32_t target_character_length{0};
   std::vector<std::uint8_t> raw_token;
   std::vector<std::uint8_t> lexical_value;
@@ -9310,7 +9038,7 @@ struct ContextualTextPrebindOccurrenceV2 {
 
 struct ContextualTextPrebindStateV2 {
   const NativeRelationalBindingContext* binding_context_identity{nullptr};
-  std::string bound_ast_uuid;
+  core::platform::Uuid bound_ast_uuid;
   CanonicalContextualOperandNodeOrdinalizerV2 ordinalizer;
   std::vector<ContextualTextPrebindOccurrenceV2> occurrences;
   scratchbird::engine::sblr::ContextualTextLiteralNegotiationRequestV2 request;
@@ -9374,8 +9102,8 @@ bool IsContextualTextEqualityLiteralV2(
          descriptor->descriptor_generation != 0 &&
          descriptor->type_generation != 0 && !descriptor->codec_id.empty() &&
          descriptor->codec_version != 0 && descriptor->codec_generation != 0 &&
-         !descriptor->statement_receipt_uuid.empty() &&
-         !descriptor->datatype_catalog_snapshot_uuid.empty() &&
+         !descriptor->statement_receipt_uuid.is_nil() &&
+         !descriptor->datatype_catalog_snapshot_uuid.is_nil() &&
          descriptor->datatype_catalog_generation != 0 &&
          descriptor->datatype_registry_generation != 0;
 }
@@ -9665,9 +9393,11 @@ std::uint32_t LiteralReadU32(const CanonicalBytes& bytes,std::size_t o){
 std::uint64_t LiteralReadU64(const CanonicalBytes& bytes,std::size_t o){
   std::uint64_t v=0;for(unsigned i=0;i<8;++i)v|=std::uint64_t(bytes[o+i])<<(8*i);return v;
 }
-std::string LiteralReadUuid(const CanonicalBytes& bytes,std::size_t o){
-  static constexpr char h[]="0123456789abcdef";std::string s;s.reserve(36);
-  for(std::size_t i=0;i<16;++i){if(i==4||i==6||i==8||i==10)s.push_back('-');s.push_back(h[bytes[o+i]>>4]);s.push_back(h[bytes[o+i]&15]);}return s;
+core::platform::Uuid LiteralReadUuid(const CanonicalBytes& bytes, std::size_t offset) {
+  core::platform::Uuid identity;
+  if (offset > bytes.size() || bytes.size() - offset < identity.bytes.size()) return {};
+  std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(offset), identity.bytes.size(), identity.bytes.begin());
+  return identity;
 }
 
 bool IsExactDecimalLiteralSpelling(const std::string_view spelling) {
@@ -9814,7 +9544,7 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
     return false;
   std::copy_n(response.begin()+128,32,state->ordered_profiles_sha256.begin());
   context->literal_statement_descriptor_profiles.clear();
-  std::unordered_set<std::string> binding_descriptor_uuids;
+  std::set<core::platform::Uuid> binding_descriptor_uuids;
   std::vector<scratchbird::engine::sblr::SblrLiteralProfileMappingV1>
       profile_mappings;
   std::size_t mapping_offset = 160;
@@ -10089,8 +9819,8 @@ EncodeContextualTextPrebindRequestV2(
         !literal_descriptor->codec_id.empty() ||
         literal_descriptor->codec_version != 0 ||
         literal_descriptor->codec_generation != 0 ||
-        !literal_descriptor->statement_receipt_uuid.empty() ||
-        !literal_descriptor->datatype_catalog_snapshot_uuid.empty() ||
+        !literal_descriptor->statement_receipt_uuid.is_nil() ||
+        !literal_descriptor->datatype_catalog_snapshot_uuid.is_nil() ||
         literal_descriptor->datatype_catalog_generation != 0 ||
         literal_descriptor->datatype_registry_generation != 0 ||
         !literal_handles.insert(literal_descriptor->descriptor_id).second) {
@@ -10139,7 +9869,7 @@ EncodeContextualTextPrebindRequestV2(
         target->literal_kind.has_value() ||
         !target->child_expression_ids.empty() ||
         !target->bound_name_uuid.has_value() ||
-        target->bound_name_uuid->empty() || target->result_descriptor_id == 0 ||
+        target->bound_name_uuid->is_nil() || target->result_descriptor_id == 0 ||
         !exact_lowered_expression(*target))
       return std::nullopt;
 
@@ -10155,7 +9885,7 @@ EncodeContextualTextPrebindRequestV2(
             bound.native_relational.catalog_relation_sources.end() ||
         target_source->resolution_state !=
             NativeCatalogRelationResolutionState::kBound ||
-        target_source->object_uuid.empty()) {
+        target_source->object_uuid.is_nil()) {
       return std::nullopt;
     }
     const auto target_column = std::ranges::find_if(
@@ -10208,16 +9938,12 @@ EncodeContextualTextPrebindRequestV2(
     const auto projected_descriptor_fields =
         projected_column == projection.columns.end()
             ? std::optional<ExactProjectedDescriptorFields>{}
-            : ParseExactProjectedDescriptor(
-                  projected_column->encoded_type_descriptor,
-                  projected_column->collation_uuid,
-                  projected_column->nullable);
+            : ParseExactProjectedDescriptor(*projected_column);
     const auto canonical_datatype_descriptor_uuid =
         projected_column == projection.columns.end() ||
                 !projected_descriptor_fields.has_value()
-            ? std::string{}
-            : projected_descriptor_fields->datatype_descriptor_uuid.value_or(
-                  projected_column->type_descriptor_uuid);
+            ? core::platform::Uuid{}
+            : *projected_descriptor_fields->datatype_descriptor_uuid;
     const auto datatype_identity =
         projected_column == projection.columns.end()
             ? scratchbird::core::datatypes::DatatypeTypeCodecIdentityLookupV1{}
@@ -10250,7 +9976,7 @@ EncodeContextualTextPrebindRequestV2(
         projected_column->datatype_codec_generation != 1 ||
         projected_column->datatype_canonical_value_bytes != 0 ||
         projected_column->datatype_null_encoding != 1 ||
-        projected_column->collation_uuid.empty() ||
+        projected_column->collation_uuid.is_nil() ||
         !CanonicalUuidBytes(projected_column->collation_uuid) ||
         !datatype_identity.ok ||
         !scratchbird::core::datatypes::
@@ -10475,7 +10201,7 @@ bool ConsumeContextualTextPrebindResultV2(
     return false;
   }
 
-  const auto uuid_text = [](const auto& uuid) {
+  const auto native_uuid = [](const auto& uuid) {
     return LiteralReadUuid(CanonicalBytes(uuid.begin(), uuid.end()), 0);
   };
   struct StagedLiteralDescriptorPatch {
@@ -10576,11 +10302,11 @@ bool ConsumeContextualTextPrebindResultV2(
           return candidate.descriptor_id ==
                  occurrence.literal_descriptor_handle;
         });
-    const auto profile_descriptor_uuid = uuid_text(profile.descriptor_uuid);
-    const auto profile_type_uuid = uuid_text(profile.type_uuid);
+    const auto profile_descriptor_uuid = native_uuid(profile.descriptor_uuid);
+    const auto profile_type_uuid = native_uuid(profile.type_uuid);
     const auto profile_statement_receipt =
-        uuid_text(profile.statement_receipt_uuid);
-    const auto profile_catalog_snapshot = uuid_text(profile.catalog_snapshot_uuid);
+        native_uuid(profile.statement_receipt_uuid);
+    const auto profile_catalog_snapshot = native_uuid(profile.catalog_snapshot_uuid);
     if (target_count != 1 || literal_count != 1 ||
         target_descriptor == binding_context->descriptors.end() ||
         literal_descriptor == binding_context->descriptors.end() ||
@@ -10593,8 +10319,8 @@ bool ConsumeContextualTextPrebindResultV2(
         !literal_descriptor->codec_id.empty() ||
         literal_descriptor->codec_version != 0 ||
         literal_descriptor->codec_generation != 0 ||
-        !literal_descriptor->statement_receipt_uuid.empty() ||
-        !literal_descriptor->datatype_catalog_snapshot_uuid.empty() ||
+        !literal_descriptor->statement_receipt_uuid.is_nil() ||
+        !literal_descriptor->datatype_catalog_snapshot_uuid.is_nil() ||
         literal_descriptor->datatype_catalog_generation != 0 ||
         literal_descriptor->datatype_registry_generation != 0 ||
         occurrence.target_datatype_descriptor_uuid !=
@@ -10685,31 +10411,27 @@ bool PatchContextualTargetDescriptorOperandsV2(
         CanonicalBytes(profile.descriptor_uuid.begin(),
                        profile.descriptor_uuid.end()),
         0);
-    if (canonical_uuid.empty() ||
+    if (canonical_uuid.is_nil() ||
         canonical_uuid != occurrence.target_datatype_descriptor_uuid) {
       return false;
     }
-    const std::string handle =
-        std::to_string(occurrence.target_descriptor_handle);
-    auto operand = std::ranges::find_if(
-        lowered->operands, [&](const auto& candidate) {
-          return candidate.type == "relational_descriptor_v2" &&
-                 candidate.name == handle;
-        });
-    if (operand == lowered->operands.end() ||
-        std::ranges::count_if(lowered->operands, [&](const auto& candidate) {
-          return candidate.type == "relational_descriptor_v2" &&
-                 candidate.name == handle;
-        }) != 1) {
-      return false;
-    }
-    const auto fields = SplitCanonicalFields(operand->value);
-    const auto separator = operand->value.find('|');
-    if (fields.size() != 17 || separator == std::string::npos ||
-        fields[0] != occurrence.target_descriptor.descriptor_uuid) {
-      return false;
-    }
-    operand->value = canonical_uuid + operand->value.substr(separator);
+    const std::string handle = "slot_" + std::to_string(occurrence.target_descriptor_handle);
+    auto matches = [&](const auto& candidate) {
+      return candidate.type == "relational_descriptor_v3" && candidate.name == handle;
+    };
+    auto operand = std::ranges::find_if(lowered->operands, matches);
+    if (operand == lowered->operands.end() || std::ranges::count_if(lowered->operands, matches) != 1 ||
+        operand->canonical_value_kind != static_cast<std::uint16_t>(
+            scratchbird::engine::sblr::SblrValueKind::relational_type_descriptor) || !operand->value.empty()) return false;
+    scratchbird::engine::internal_api::RelationalTypeDescriptor descriptor;
+    if (!scratchbird::engine::sblr::DecodeRelationalTypeDescriptorV1(
+            operand->canonical_value_body.data(), operand->canonical_value_body.size(), &descriptor) ||
+        descriptor.descriptor_id != occurrence.target_descriptor_handle ||
+        descriptor.descriptor_uuid != occurrence.target_descriptor.descriptor_uuid) return false;
+    descriptor.descriptor_uuid = canonical_uuid;
+    std::vector<std::uint8_t> encoded;
+    if (!scratchbird::engine::sblr::EncodeRelationalTypeDescriptorV1(descriptor, &encoded)) return false;
+    operand->canonical_value_body = std::move(encoded);
   }
   return true;
 }
@@ -11393,7 +11115,7 @@ bool FinalizeLiteralSubmission(
       for (const auto& issued_profile :
            context.literal_statement_descriptor_profiles) {
         if (!issued_profile_bindings.empty()) issued_profile_bindings.push_back(',');
-        issued_profile_bindings.append(issued_profile.binding_descriptor_uuid);
+        issued_profile_bindings.append(core::uuid::IsEngineIdentityUuid(issued_profile.binding_descriptor_uuid) ? "valid" : "invalid");
       }
       std::string bound_literal_bindings;
       for (const auto* bound_expression : expressions) {
@@ -11414,7 +11136,7 @@ bool FinalizeLiteralSubmission(
         bound_literal_bindings.append(
             bound_descriptor == bound.native_relational.descriptors.end()
                 ? std::string{"absent"}
-                : bound_descriptor->descriptor_uuid);
+                : std::string{core::uuid::IsEngineIdentityUuid(bound_descriptor->descriptor_uuid) ? "valid" : "invalid"});
       }
       return refuse(
           "The bound literal descriptor differs from its engine-issued "
@@ -11447,10 +11169,10 @@ bool FinalizeLiteralSubmission(
           ":bound-uuid=" +
           (descriptor == bound.native_relational.descriptors.end()
                ? std::string{"absent"}
-               : descriptor->descriptor_uuid) +
-          ":profile-binding-uuid=" + profile.binding_descriptor_uuid +
-          ":profile-datatype-uuid=" + profile.descriptor_uuid +
-          ":profile-uuid=" + profile.profile_uuid +
+               : std::string{core::uuid::IsEngineIdentityUuid(descriptor->descriptor_uuid) ? "valid" : "invalid"}) +
+          ":profile-binding-uuid=" + std::to_string(core::uuid::IsEngineIdentityUuid(profile.binding_descriptor_uuid)) +
+          ":profile-datatype-uuid=" + std::to_string(core::uuid::IsEngineIdentityUuid(profile.descriptor_uuid)) +
+          ":profile-uuid=" + std::to_string(core::uuid::IsEngineIdentityUuid(profile.profile_uuid)) +
           ":issued-profile-bindings=" + issued_profile_bindings +
           ":bound-literal-bindings=" + bound_literal_bindings);
     }
@@ -11577,10 +11299,10 @@ bool FinalizeParameterSubmission(
   }
   scratchbird::engine::sblr::SblrParameterAdmissionV1 admission;
   std::string detail;
-  const auto projected_uuid = [](const std::string& text)
+  const auto projected_uuid = [](const core::platform::Uuid& identity)
       -> std::optional<std::array<std::uint8_t, 16>> {
-    if (text.empty()) return std::array<std::uint8_t, 16>{};
-    return CanonicalUuidBytes(text);
+    if (identity.is_nil()) return identity.bytes;
+    return CanonicalUuidBytes(identity);
   };
   const auto prepared_uuid = projected_uuid(
       statement_context.preliminary_prepared_statement_uuid);
@@ -15011,7 +14733,7 @@ bool AttachIssuedSourceMap(const ParserStatementContext& context,
   const auto artifact = CanonicalUuidBytes(session.admitted_parser_package_uuid);
   if (!receipt || !snapshot || !artifact ||
       issue_context.literal_catalog_generation == 0) {
-    if (messages) messages->diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "SOURCE_MAP context identity was incomplete.", "sbp_sbsql.wire", {{"receipt", issue_context.preliminary_receipt_uuid}, {"catalog_epoch", issue_context.catalog_epoch_uuid}, {"artifact", session.admitted_parser_package_uuid}, {"catalog_generation", std::to_string(issue_context.literal_catalog_generation)}}));
+    if (messages) messages->diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "SOURCE_MAP context identity was incomplete.", "sbp_sbsql.wire", {{"receipt_valid", std::to_string(core::uuid::IsEngineIdentityUuid(issue_context.preliminary_receipt_uuid))}, {"catalog_epoch_valid", std::to_string(core::uuid::IsEngineIdentityUuid(issue_context.catalog_epoch_uuid))}, {"artifact_valid", std::to_string(core::uuid::IsEngineIdentityUuid(session.admitted_parser_package_uuid))}, {"catalog_generation", std::to_string(issue_context.literal_catalog_generation)}}));
     return false;
   }
   namespace sm = scratchbird::engine::sblr;
@@ -15447,6 +15169,12 @@ std::string ParameterTypeShape(std::string_view sql) {
 // Parser-owned front-door lowering cache key. It reuses lowering artifacts only;
 // execution, authorization, storage access, and transaction finality remain with
 // the existing engine route and MGA/security authority.
+std::string BinaryIdentitySetKey(const std::vector<core::platform::Uuid>& identities) {
+  BinaryCacheKey key("sbsql-identity-set-v1");
+  key.UuidSet(identities);
+  return std::move(key).Finish();
+}
+
 CacheKey BuildFrontdoorLoweringCacheKey(const ParserConfig& config,
                                         const SessionContext& session,
                                         std::string_view sql) {
@@ -15482,8 +15210,8 @@ CacheKey BuildFrontdoorLoweringCacheKey(const ParserConfig& config,
   key.connection_uuid = session.connection_uuid;
   key.transaction_context_hash = std::to_string(Fnv1a64(session.transaction_context));
   key.dialect = config.dialect;
-  key.role_set_hash = std::to_string(Fnv1a64(JoinStable(session.effective_role_uuids)));
-  key.group_set_hash = std::to_string(Fnv1a64(JoinStable(session.effective_group_uuids)));
+  key.role_set_hash = std::to_string(Fnv1a64(BinaryIdentitySetKey(session.effective_role_uuids)));
+  key.group_set_hash = std::to_string(Fnv1a64(BinaryIdentitySetKey(session.effective_group_uuids)));
   key.search_path_hash = std::to_string(Fnv1a64(JoinStable(session.search_path)));
   key.language_profile = session.language_profile.empty()
                              ? session.default_language
@@ -15506,71 +15234,43 @@ CacheKey BuildFrontdoorLoweringCacheKey(const ParserConfig& config,
   return key;
 }
 
-std::string BuildNameResolutionCacheKey(const SessionContext& session,
-                                        std::string_view presented_name,
-                                        bool quoted,
-                                        std::string_view object_class) {
-  std::ostringstream key;
-  key << "db=" << session.database_uuid
-      << "|user=" << session.authenticated_user_uuid
-      << "|session=" << session.session_uuid
-      << "|connection=" << session.connection_uuid
-      << "|presented=" << presented_name
-      << "|quoted=" << (quoted ? "1" : "0")
-      << "|class=" << object_class
-      << "|catalog=" << session.catalog_epoch
-      << "|security=" << session.security_policy_epoch
-      << "|grant=" << session.grant_epoch
-      << "|descriptor=" << session.descriptor_epoch
-      << "|localized_name=" << session.localized_name_epoch
-      << "|language_resource=" << session.language_resource_epoch
-      << "|message_resource=" << session.message_resource_epoch
-      << "|roles=" << JoinStable(session.effective_role_uuids)
-      << "|groups=" << JoinStable(session.effective_group_uuids)
-      << "|search_path=" << JoinStable(session.search_path)
-      << "|language_profile=" << session.language_profile
-      << "|language_tag=" << session.language_tag
-      << "|input_syntax=" << session.input_syntax_profile
-      << "|input_fallback=" << session.input_language_fallback_tag
-      << "|common_resource=" << session.common_resource_hash
-      << "|policy_profile=" << session.policy_profile_uuid
-      << "|resource_compat=" << session.resource_compatibility_identity
-      << "|resource_version=" << session.resource_version_identity;
-  return key.str();
+std::string BuildBinaryNameResolutionCacheKey(const SessionContext& session,
+    std::string_view presented_name, bool quoted, std::string_view object_class, bool stable) {
+  BinaryCacheKey key(stable ? "sbsql-stable-name-v2" : "sbsql-name-v2");
+  key.Uuid(session.database_uuid);
+  key.Uuid(session.authenticated_user_uuid);
+  key.Uuid(session.session_uuid);
+  key.Uuid(session.connection_uuid);
+  key.Uuid(session.policy_profile_uuid);
+  key.Text(presented_name); key.Number(quoted); key.Text(object_class);
+  if (!stable) key.Number(session.catalog_epoch);
+  if (!stable) key.Number(session.descriptor_epoch);
+  key.Number(session.security_policy_epoch);
+  key.Number(session.grant_epoch);
+  key.Number(session.localized_name_epoch);
+  key.Number(session.language_resource_epoch);
+  key.Number(session.message_resource_epoch);
+  key.UuidSet(session.effective_role_uuids);
+  key.UuidSet(session.effective_group_uuids);
+  const bool qualified = stable && presented_name.find('.') != std::string_view::npos;
+  key.Number(qualified);
+  if (!qualified) key.Strings(session.search_path);
+  key.Text(session.language_profile);
+  key.Text(session.language_tag);
+  key.Text(session.input_syntax_profile);
+  key.Text(session.input_language_fallback_tag);
+  key.Text(session.common_resource_hash);
+  key.Text(session.resource_compatibility_identity);
+  key.Text(session.resource_version_identity);
+  return std::move(key).Finish();
 }
-
-std::string BuildStableRelationNameResolutionCacheKey(
-    const SessionContext& session,
-    std::string_view presented_name,
-    bool quoted,
-    std::string_view object_class) {
-  const bool qualified = presented_name.find('.') != std::string_view::npos;
-  std::ostringstream key;
-  key << "db=" << session.database_uuid
-      << "|user=" << session.authenticated_user_uuid
-      << "|session=" << session.session_uuid
-      << "|connection=" << session.connection_uuid
-      << "|presented=" << presented_name
-      << "|quoted=" << (quoted ? "1" : "0")
-      << "|class=" << object_class
-      << "|security=" << session.security_policy_epoch
-      << "|grant=" << session.grant_epoch
-      << "|localized_name=" << session.localized_name_epoch
-      << "|language_resource=" << session.language_resource_epoch
-      << "|message_resource=" << session.message_resource_epoch
-      << "|roles=" << JoinStable(session.effective_role_uuids)
-      << "|groups=" << JoinStable(session.effective_group_uuids)
-      << "|search_path=" << (qualified ? std::string("<qualified>")
-                                       : JoinStable(session.search_path))
-      << "|language_profile=" << session.language_profile
-      << "|language_tag=" << session.language_tag
-      << "|input_syntax=" << session.input_syntax_profile
-      << "|input_fallback=" << session.input_language_fallback_tag
-      << "|common_resource=" << session.common_resource_hash
-      << "|policy_profile=" << session.policy_profile_uuid
-      << "|resource_compat=" << session.resource_compatibility_identity
-      << "|resource_version=" << session.resource_version_identity;
-  return key.str();
+std::string BuildNameResolutionCacheKey(const SessionContext& session,
+    std::string_view presented_name, bool quoted, std::string_view object_class) {
+  return BuildBinaryNameResolutionCacheKey(session, presented_name, quoted, object_class, false);
+}
+std::string BuildStableRelationNameResolutionCacheKey(const SessionContext& session,
+    std::string_view presented_name, bool quoted, std::string_view object_class) {
+  return BuildBinaryNameResolutionCacheKey(session, presented_name, quoted, object_class, true);
 }
 
 std::mutex& SharedNameResolutionCacheMutex() {
@@ -15599,7 +15299,7 @@ std::optional<CachedPublicNameResolution> LookupSharedNameResolutionCache(
 void StoreSharedNameResolutionCacheEntry(
     const std::string& cache_key,
     const CachedPublicNameResolution& cached) {
-  if (cache_key.empty() || cached.object_uuid.empty()) return;
+  if (cache_key.empty() || cached.object_uuid.is_nil()) return;
   std::lock_guard<std::mutex> guard(SharedNameResolutionCacheMutex());
   auto& cache = SharedNameResolutionCache();
   auto& lru = SharedNameResolutionLru();
@@ -15618,31 +15318,6 @@ void ClearSharedNameResolutionCache() {
   SharedNameResolutionLru().clear();
 }
 
-std::optional<std::string> DdlResultRowField(std::string_view payload,
-                                             std::string_view field_name) {
-  std::istringstream in{std::string(payload)};
-  std::string line;
-  while (std::getline(in, line)) {
-    if (!line.starts_with("row[")) continue;
-    const auto eq = line.find("]=");
-    if (eq == std::string::npos) continue;
-    std::string_view body(line);
-    body.remove_prefix(eq + 2);
-    std::size_t start = 0;
-    while (start <= body.size()) {
-      const std::size_t end = body.find(';', start);
-      const std::string_view item =
-          body.substr(start, end == std::string_view::npos ? body.size() - start : end - start);
-      const std::size_t item_eq = item.find('=');
-      if (item_eq != std::string_view::npos && item.substr(0, item_eq) == field_name) {
-        return std::string(item.substr(item_eq + 1));
-      }
-      if (end == std::string_view::npos) break;
-      start = end + 1;
-    }
-  }
-  return std::nullopt;
-}
 
 bool IsNameNotFoundDiagnostic(const MessageVectorSet& messages) {
   if (messages.diagnostics.empty()) return false;
@@ -20204,7 +19879,9 @@ std::optional<ParserCanonicalSblrSubmission>
 BuildCanonicalRouteTextSubmission(
     std::string_view encoded,
     const ParserStatementContext& statement_context,
-    const SessionContext& session) {
+    const SessionContext& session,
+    const core::platform::Uuid& target_uuid = {},
+    const std::vector<WireOperationRow>& rows = {}) {
   const auto operation_id = RouteEnvelopeLineValue(encoded, "operation_id");
   const auto opcode = RouteEnvelopeLineValue(encoded, "opcode");
   if (!operation_id || !opcode || *operation_id == "dml.plan_import_rows") {
@@ -20243,6 +19920,53 @@ BuildCanonicalRouteTextSubmission(
     }
     if (end == std::string_view::npos) break;
     begin = end + 1;
+  }
+  if (!target_uuid.is_nil()) {
+    if (!core::uuid::IsEngineIdentityUuid(target_uuid) ||
+        std::ranges::any_of(envelope->operands, [](const auto& operand) {
+          return operand.name == "target_object_uuid";
+        })) return std::nullopt;
+    engine::sblr::SblrOperand target;
+    target.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
+    target.type = "uuid_ref";
+    target.name = "target_object_uuid";
+    target.value_kind = engine::sblr::SblrValueKind::uuid_ref;
+    target.value_body.assign(target_uuid.bytes.begin(), target_uuid.bytes.end());
+    envelope->operands.push_back(std::move(target));
+  }
+  for (const auto& row : rows) {
+    if (!core::uuid::IsEngineIdentityUuid(row.row_uuid) || row.fields.empty())
+      return std::nullopt;
+    const auto profile = std::ranges::find_if(
+        statement_context.descriptor_profiles, [](const auto& candidate) {
+          return candidate.profile_kind == 3 && candidate.slot == 0 &&
+                 !candidate.nullable;
+        });
+    if (profile == statement_context.descriptor_profiles.end())
+      return std::nullopt;
+    const auto type_uuid = CanonicalUuidBytes(profile->type_uuid);
+    if (!type_uuid) return std::nullopt;
+    for (std::size_t field_index = 0; field_index < row.fields.size(); ++field_index) {
+      const auto& [name, value] = row.fields[field_index];
+      const bool uuid_value = field_index < row.canonical_types.size() &&
+                              row.canonical_types[field_index] == "uuid";
+      if (uuid_value && value && value->size() != 16) return std::nullopt;
+      if (name.empty()) return std::nullopt;
+      engine::sblr::SblrOperand operand;
+      operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
+      operand.type = value ? "row_field_binary16." : "row_null_field_binary16.";
+      operand.type += uuid_value ? "uuid" : "text";
+      operand.name = name;
+      operand.value_kind = engine::sblr::SblrValueKind::literal_typed;
+      operand.value_body.assign(type_uuid->begin(), type_uuid->end());
+      CanonicalAppendU64(&operand.value_body,
+                         row.row_uuid.bytes.size() + (value ? value->size() : 0));
+      operand.value_body.insert(operand.value_body.end(),
+                               row.row_uuid.bytes.begin(), row.row_uuid.bytes.end());
+      if (value) operand.value_body.insert(operand.value_body.end(), value->begin(), value->end());
+      if (!engine::sblr::DecodeNativeRowField(operand)) return std::nullopt;
+      envelope->operands.push_back(std::move(operand));
+    }
   }
   return BuildCanonicalRegistryOperationSubmission(*envelope,
                                                     statement_context,
@@ -21692,8 +21416,7 @@ std::optional<FastInsertValuesRoutePlan> TryParseFastInsertValuesRoutePlan(
 }
 
 std::string BuildFastInsertNativeBulkEnvelope(
-    const FastInsertValuesRoutePlan& plan,
-    std::string_view target_object_uuid) {
+    const FastInsertValuesRoutePlan& plan) {
   std::string out;
   out += "operation_id=dml.insert_rows\n";
   out += "opcode=SBLR_DML_INSERT_ROWS\n";
@@ -21706,9 +21429,6 @@ std::string BuildFastInsertNativeBulkEnvelope(
   out += "requires_security_context=true\n";
   out += "requires_transaction_context=true\n";
   out += "requires_cluster_authority=false\n";
-  out += "target_object_uuid=";
-  out += target_object_uuid;
-  out += "\n";
   out += "target_object_kind=table\n";
   out += "dml_surface_variant=sbsql_insert_values_fast_native_bulk\n";
   out += "source_kind=sbsql_insert_values_compact_rowset\n";
@@ -21726,7 +21446,6 @@ std::string BuildFastInsertNativeBulkEnvelope(
   out += "checkpoint_mode=disabled\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
-  AppendRouteTextOperand(&out, "target_object_uuid", target_object_uuid);
   AppendRouteTextOperand(&out, "target_object_kind", "table");
   AppendRouteTextOperand(&out, "physical_mga_cow", "false");
   AppendRouteTextOperand(&out, "insert_trace.rows", "false");
@@ -22240,7 +21959,7 @@ std::string FinalityStreamParserJsonEnvelope(std::string_view mode,
   return out;
 }
 
-std::string RoutineCursorArgumentJsonEnvelope(std::string_view cursor_uuid) {
+std::string RoutineCursorArgumentJsonEnvelope() {
   std::string out = "{\"envelope\":\"SBLRExecutionEnvelope.v3\",";
   out += "\"operation_family\":\"sblr.routine.execute.v3\",";
   out += "\"operation_id\":\"routine.execute_cursor_argument\",";
@@ -22251,9 +21970,7 @@ std::string RoutineCursorArgumentJsonEnvelope(std::string_view cursor_uuid) {
   out += "\"resource_contract\":\"routine_cursor_argument.resource.v1\",";
   out += "\"trace_key\":\"ROUTINE-CURSOR-FULL-ROUTE\",";
   out += "\"source_payload_embedded\":false,";
-  out += "\"routine_cursor_uuid\":\"";
-  out += EscapeJson(cursor_uuid);
-  out += "\",\"routine_context_kind\":\"procedure\",";
+  out += "\"routine_context_kind\":\"procedure\",";
   out += "\"routine_cursor_action\":\"fetch\",";
   out += "\"routine_cursor_borrow_policy\":\"borrowed_read\",";
   out += "\"routine_cursor_argument_binding\":\"descriptor.cursor_handle.session_registry\",";
@@ -22380,11 +22097,59 @@ std::string EngineBackedCopyStreamImportEnvelope(std::string_view target_object_
   return out;
 }
 
-std::string Rcp073ProofUuid(const std::uint32_t value) {
-  std::string uuid_text = "00000000-0000-7000-8000-000000000000";
-  const auto suffix = std::to_string(value);
-  uuid_text.replace(uuid_text.size() - suffix.size(), suffix.size(), suffix);
-  return uuid_text;
+std::optional<engine::internal_api::RelationalTypeDescriptor> DecodeProofDescriptor(const SblrOperand& operand) {
+  engine::internal_api::RelationalTypeDescriptor descriptor;
+  if (operand.type != "relational_descriptor_v3" || !operand.value.empty() ||
+      operand.canonical_value_kind != static_cast<std::uint16_t>(engine::sblr::SblrValueKind::relational_type_descriptor) ||
+      !engine::sblr::DecodeRelationalTypeDescriptorV1(operand.canonical_value_body.data(), operand.canonical_value_body.size(), &descriptor) ||
+      operand.name != "slot_" + std::to_string(descriptor.descriptor_id)) return std::nullopt;
+  return descriptor;
+}
+
+std::optional<SblrOperand> EncodeProofDescriptor(const engine::internal_api::RelationalTypeDescriptor& descriptor) {
+  SblrOperand operand;
+  operand.type = "relational_descriptor_v3";
+  operand.name = "slot_" + std::to_string(descriptor.descriptor_id);
+  operand.canonical_value_kind = static_cast<std::uint16_t>(engine::sblr::SblrValueKind::relational_type_descriptor);
+  if (!engine::sblr::EncodeRelationalTypeDescriptorV1(descriptor, &operand.canonical_value_body)) return std::nullopt;
+  return operand;
+}
+
+template<class NativeDescriptor>
+std::optional<SblrOperand> ProofDescriptorFromNative(const NativeDescriptor& native) {
+  engine::internal_api::RelationalTypeDescriptor descriptor;
+  descriptor.descriptor_id = native.descriptor_id;
+  descriptor.descriptor_uuid = native.descriptor_uuid;
+  descriptor.type_uuid = native.type_uuid;
+  descriptor.nullability = native.nullability == BoundNullability::kNonNull
+      ? engine::internal_api::RelationalNullability::kNonNull
+      : native.nullability == BoundNullability::kNullable
+          ? engine::internal_api::RelationalNullability::kNullable
+          : engine::internal_api::RelationalNullability::kUnknown;
+  descriptor.collation_uuid = native.collation_uuid;
+  descriptor.timezone_profile_id = native.timezone_profile_id;
+  descriptor.width = native.width_precision_scale.width;
+  descriptor.precision = native.width_precision_scale.precision;
+  descriptor.scale = native.width_precision_scale.scale;
+  descriptor.datatype_identity_authoritative = native.descriptor_generation != 0;
+  descriptor.descriptor_generation = native.descriptor_generation;
+  descriptor.type_generation = native.type_generation;
+  descriptor.codec_id = native.codec_id;
+  descriptor.codec_version = native.codec_version;
+  descriptor.codec_generation = native.codec_generation;
+  descriptor.statement_receipt_uuid = native.statement_receipt_uuid;
+  descriptor.datatype_catalog_snapshot_uuid = native.datatype_catalog_snapshot_uuid;
+  descriptor.datatype_catalog_generation = native.datatype_catalog_generation;
+  descriptor.datatype_registry_generation = native.datatype_registry_generation;
+  return EncodeProofDescriptor(descriptor);
+}
+
+core::platform::Uuid Rcp073ProofUuid(const std::uint32_t value) {
+  // Deterministic fixture identity; never used as a runtime identity issuer.
+  core::platform::Uuid identity{{0,0,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0,0}};
+  for (unsigned i = 0; i != 4; ++i)
+    identity.bytes[12 + i] = static_cast<std::uint8_t>(value >> (24 - 8 * i));
+  return identity;
 }
 
 ParserStatementContext Rcp073ProofStatementContext() {
@@ -22439,18 +22204,10 @@ ParserStatementContext Rcp079ProofStatementContext() {
          Rcp073ProofUuid(5000 + ordinal), true});
   }
   const auto type_uuid = [](const std::string& type) {
-    const auto manifest =
-        scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
-    if (!manifest.ok()) return std::string{};
-    const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
-        manifest.manifest,
-        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
-    if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
-        !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
-      return std::string{};
-    }
-    return scratchbird::core::uuid::UuidToString(
-        row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    const auto manifest = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) return core::platform::Uuid{};
+    return LookupNativeCanonicalTypeIdentity(manifest.manifest,
+        core::datatypes::CanonicalTypeIdFromStableName(type)).value_or(core::platform::Uuid{});
   };
   const auto append_profile = [&](const std::uint8_t kind,
                                   const std::uint16_t slot,
@@ -22514,14 +22271,14 @@ ResolvedObjectReferenceSeed Rcp073ProofSeed(const ObjectReference& ref) {
     const auto type_uuid = Rcp073ProofUuid(4300 + ordinal);
     column.nullable = nullable;
     column.character_length = character_length;
+    column.datatype_type_uuid = type_uuid;
     column.encoded_type_descriptor =
-        "type_uuid=" + type_uuid + ";nullability=" +
+        std::string("nullability=") +
         (nullable ? "nullable" : "non_null");
     if (character_length != 0) {
       column.collation_uuid = Rcp073ProofUuid(4400 + ordinal);
-      column.encoded_type_descriptor +=
-          ";collation_uuid=" + column.collation_uuid +
-          ";width=" + std::to_string(character_length);
+      column.type_shape.width = character_length;
+      column.encoded_type_descriptor += ";width=" + std::to_string(character_length);
     }
     projection.columns.push_back(std::move(column));
   };
@@ -22555,7 +22312,7 @@ ResolvedObjectReferenceSeed Rcp074GraphProofSeed(const ObjectReference& ref) {
     column.type_descriptor_kind = "canonical_type_descriptor";
     column.canonical_type_name = std::string(kTypes[ordinal]);
     column.nullable = kNullable[ordinal];
-    std::string type_uuid;
+    core::platform::Uuid type_uuid;
     if (manifest.ok()) {
       const auto type_row =
           scratchbird::core::datatypes::LookupDatatypeCatalogRow(
@@ -22564,13 +22321,13 @@ ResolvedObjectReferenceSeed Rcp074GraphProofSeed(const ObjectReference& ref) {
                   std::string(kTypes[ordinal])));
       if (type_row.ok() && type_row.manifest.descriptor_rows.size() == 1 &&
           type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
-        type_uuid = scratchbird::core::uuid::UuidToString(
-            type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+        type_uuid = LookupNativeCanonicalTypeIdentity(
+        type_row.manifest, type_row.manifest.descriptor_rows.front().type_id).value_or(core::platform::Uuid{});
       }
     }
+    column.datatype_type_uuid = type_uuid;
     column.encoded_type_descriptor =
-        "type_uuid=" + type_uuid +
-        ";nullability=" +
+        std::string("nullability=") +
         (kNullable[ordinal] ? "nullable" : "non_null");
     projection.columns.push_back(std::move(column));
   }
@@ -22603,18 +22360,10 @@ ResolvedObjectReferenceSeed Rcp079ProofSeed(
   projection.descriptor_generation = 79;
   projection.validated_resource_epoch = 79;
   const auto type_uuid = [](const std::string& type) {
-    const auto manifest =
-        scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
-    if (!manifest.ok()) return std::string{};
-    const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
-        manifest.manifest,
-        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
-    if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
-        !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
-      return std::string{};
-    }
-    return scratchbird::core::uuid::UuidToString(
-        row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    const auto manifest = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) return core::platform::Uuid{};
+    return LookupNativeCanonicalTypeIdentity(manifest.manifest,
+        core::datatypes::CanonicalTypeIdFromStableName(type)).value_or(core::platform::Uuid{});
   };
   const auto add_column = [&](const std::uint32_t ordinal,
                               const std::string& name,
@@ -22628,8 +22377,9 @@ ResolvedObjectReferenceSeed Rcp079ProofSeed(
     column.type_descriptor_kind = "canonical_type_descriptor";
     column.canonical_type_name = type;
     column.nullable = nullable;
+    column.datatype_type_uuid = type_uuid(type);
     column.encoded_type_descriptor =
-        "type_uuid=" + type_uuid(type) + ";nullability=" +
+        std::string("nullability=") +
         (nullable ? "nullable" : "non_null");
     projection.columns.push_back(std::move(column));
   };
@@ -22671,15 +22421,12 @@ bool Rcp079BuildAndBind(const std::string_view sql,
   }
   auto statement = Rcp079ProofStatementContext();
   if (authoritative_text) {
-    constexpr std::string_view kTextDescriptorUuid =
-        "019d0000-0000-7000-8000-00000000d718";
-    constexpr std::string_view kTextTypeUuid =
-        "019d0000-0000-7000-8000-00000000d719";
-    constexpr std::string_view kCatalogSnapshotUuid =
-        "019d0000-0000-7000-8000-00000000d701";
+    constexpr core::platform::Uuid kTextDescriptorUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x18}};
+    constexpr core::platform::Uuid kTextTypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x19}};
+    constexpr core::platform::Uuid kCatalogSnapshotUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}};
     statement.literal_preliminary_receipt_uuid = Rcp073ProofUuid(8890);
     statement.literal_catalog_snapshot_uuid =
-        std::string(kCatalogSnapshotUuid);
+        kCatalogSnapshotUuid;
     statement.literal_catalog_generation = 1;
     const auto seed = std::ranges::find_if(seeds, [](const auto& candidate) {
       return std::ranges::any_of(
@@ -22699,28 +22446,28 @@ bool Rcp079BuildAndBind(const std::string_view sql,
         });
     const auto identity = scratchbird::core::datatypes::
         LookupDatatypeTypeCodecIdentityV1(
-            std::string(kCatalogSnapshotUuid), 1, 1,
-            std::string(kTextDescriptorUuid), 1);
+            kCatalogSnapshotUuid, 1, 1,
+            kTextDescriptorUuid, 1);
     if (column == projection.columns.end() || !identity.ok ||
         identity.row.type_uuid != kTextTypeUuid) {
       record_detail("authoritative_identity_fixture_invalid:column=" +
                     std::to_string(column != projection.columns.end()) +
                     ":lookup=" + std::to_string(identity.ok) +
-                    ":type=" + identity.row.type_uuid);
+                    ":type_valid=" + std::to_string(core::uuid::IsEngineIdentityUuid(identity.row.type_uuid)));
       return false;
     }
     projection.datatype_catalog_snapshot_uuid =
-        std::string(kCatalogSnapshotUuid);
+        kCatalogSnapshotUuid;
     projection.datatype_catalog_generation = 1;
     projection.datatype_registry_generation = 1;
-    column->type_descriptor_uuid = std::string(kTextDescriptorUuid);
+    column->type_descriptor_uuid = kTextDescriptorUuid;
     column->canonical_type_name = "text";
-    column->encoded_type_descriptor =
-        "type_uuid=" + std::string(kTextTypeUuid) +
-        ";nullability=nullable;character_length=256";
+    column->datatype_descriptor_uuid = kTextDescriptorUuid;
+    column->datatype_type_uuid = kTextTypeUuid;
+    column->encoded_type_descriptor = "nullability=nullable;character_length=256";
     if (authoritative_encoded_width.has_value()) {
-      column->encoded_type_descriptor +=
-          ";width=" + std::to_string(*authoritative_encoded_width);
+      column->type_shape.width = authoritative_encoded_width;
+      column->encoded_type_descriptor += ";width=" + std::to_string(*authoritative_encoded_width);
     }
     column->character_length = 256;
     column->nullable = true;
@@ -22797,7 +22544,7 @@ bool Rcp079BuildAndBind(const std::string_view sql,
       const bool columnar =
           source.source_kind == NativeRelationSourceAstKind::kColumnar;
       if (!spatial && !columnar) continue;
-      if (source.object_uuid.empty() || source.model_operation_ids.empty() ||
+      if (source.object_uuid.is_nil() || source.model_operation_ids.empty() ||
           source.model_operation_ids.size() !=
               source.model_operation_expression_ids.size()) {
         return false;
@@ -22850,14 +22597,14 @@ bool Rcp079BuildAndBind(const std::string_view sql,
     };
     auto missing = bound.native_relational;
     if (mutate_primary_source_name(
-            &missing, std::optional<std::string>{}) &&
+            &missing, std::optional<core::platform::Uuid>{}) &&
         !exact_source_operation_names(missing)) {
       *source_name_refusal_mask |= 1u << 0;
     }
     auto crossed = bound.native_relational;
     if (mutate_primary_source_name(
             &crossed,
-            std::optional<std::string>{Rcp073ProofUuid(8999)}) &&
+            std::optional<core::platform::Uuid>{Rcp073ProofUuid(8999)}) &&
         !exact_source_operation_names(crossed)) {
       *source_name_refusal_mask |= 1u << 1;
     }
@@ -22875,44 +22622,26 @@ bool Rcp079BuildAndBind(const std::string_view sql,
              return expression.operator_name == operation;
            });
          });
-  const bool exact_authoritative_text =
-      !authoritative_text ||
+  const bool exact_authoritative_text = !authoritative_text ||
       std::ranges::any_of(lowered.operands, [](const auto& operand) {
-        if (operand.type != "relational_descriptor_v2") return false;
-        const auto fields = SplitCanonicalFields(operand.value);
-        return fields.size() == 17 &&
-               fields[0] ==
-                   "019d0000-0000-7000-8000-00000000d718" &&
-               fields[1] == "1" &&
-               fields[2] ==
-                   "019d0000-0000-7000-8000-00000000d719" &&
-               fields[3] == "1" &&
-               fields[4] == "datatype.text.utf8.v1" && fields[5] == "1" &&
-               fields[6] == "1" && fields[10] == "256";
+        const auto descriptor = DecodeProofDescriptor(operand);
+        return descriptor && descriptor->datatype_identity_authoritative &&
+            descriptor->codec_id == "datatype.text.utf8.v1" && descriptor->codec_version == 1 &&
+            descriptor->codec_generation == 1 && descriptor->descriptor_generation == 1 &&
+            descriptor->type_generation == 1 && descriptor->width == 256;
       });
-  const bool exact_non_text_absent_width =
-      !authoritative_text || [&]() {
-        bool saw_non_text_descriptor = false;
-        for (const auto& operand : lowered.operands) {
-          if (operand.type != "relational_descriptor_v1" &&
-              operand.type != "relational_descriptor_v2") {
-            continue;
-          }
-          const auto fields = SplitCanonicalFields(operand.value);
-          if (fields.empty()) return false;
-          if (fields[0] ==
-              "019d0000-0000-7000-8000-00000000d718") {
-            continue;
-          }
-          saw_non_text_descriptor = true;
-          const bool absent =
-              operand.type == "relational_descriptor_v1"
-                  ? fields.size() == 8 && fields[5] == "-"
-                  : fields.size() == 17 && fields[10] == "-";
-          if (!absent) return false;
-        }
-        return saw_non_text_descriptor;
-      }();
+  const bool exact_non_text_absent_width = !authoritative_text || [&]() {
+    bool saw_non_text = false;
+    for (const auto& operand : lowered.operands) {
+      if (operand.type != "relational_descriptor_v3") continue;
+      const auto descriptor = DecodeProofDescriptor(operand);
+      if (!descriptor) return false;
+      if (descriptor->codec_id == "datatype.text.utf8.v1") continue;
+      saw_non_text = true;
+      if (descriptor->width) return false;
+    }
+    return saw_non_text;
+  }();
   if (descriptor_width_proof_mask != nullptr) {
     *descriptor_width_proof_mask = 0;
     if (exact_authoritative_text) {
@@ -22942,13 +22671,13 @@ bool Rcp079BuildAndBind(const std::string_view sql,
            << ":verify_messages="
            << ipc::MessageVectorToJson(verified.messages) << ":descriptors=";
     for (const auto& descriptor : context->descriptors) {
-      detail << '[' << descriptor.descriptor_uuid << '|'
-             << descriptor.descriptor_generation << '|' << descriptor.type_uuid
+      detail << '[' << core::uuid::IsEngineIdentityUuid(descriptor.descriptor_uuid) << '|'
+             << descriptor.descriptor_generation << '|' << core::uuid::IsEngineIdentityUuid(descriptor.type_uuid)
              << '|' << descriptor.type_generation << '|' << descriptor.codec_id
              << '|' << descriptor.codec_version << '|'
              << descriptor.codec_generation << '|'
-             << descriptor.statement_receipt_uuid << '|'
-             << descriptor.datatype_catalog_snapshot_uuid << '|'
+             << core::uuid::IsEngineIdentityUuid(descriptor.statement_receipt_uuid) << '|'
+             << core::uuid::IsEngineIdentityUuid(descriptor.datatype_catalog_snapshot_uuid) << '|'
              << descriptor.datatype_catalog_generation << '|'
              << descriptor.datatype_registry_generation << ']';
     }
@@ -23208,7 +22937,7 @@ std::uint64_t Rcp080MultimodelWireProofMaskImpl() {
   if (refused(std::move(unattached), seeds[2],
               Rcp079ProofStatementContext())) mask |= 1ull << 10;
   auto substituted_statement = Rcp079ProofStatementContext();
-  substituted_statement.transaction.transaction_uuid.clear();
+  substituted_statement.transaction.transaction_uuid = {};
   if (refused(asts[2], seeds[2], std::move(substituted_statement))) {
     mask |= 1ull << 11;
   }
@@ -23355,8 +23084,7 @@ std::uint64_t Rcp073DocumentFrontdoorProofMaskImpl() {
     mask |= 1ull << 9;
   }
   mutation = good_seed;
-  mutation.resolved.relation_descriptor.columns.front().type_descriptor_uuid =
-      "not-a-uuid";
+  mutation.resolved.relation_descriptor.columns.front().type_descriptor_uuid.bytes[6] = 0x40;
   messages = {};
   if (!BuildEngineProjectedNativeBindingContext(
            ordinary_ast.native_relational, Rcp073ProofStatementContext(),
@@ -23408,7 +23136,7 @@ std::uint64_t Rcp073DocumentFrontdoorProofMaskImpl() {
     }
   }
   auto incomplete_statement = Rcp073ProofStatementContext();
-  incomplete_statement.statement_metadata_snapshot_uuid.clear();
+  incomplete_statement.statement_metadata_snapshot_uuid = {};
   messages = {};
   if (!BuildEngineProjectedNativeBindingContext(
            ordinary_ast.native_relational, incomplete_statement, {good_seed},
@@ -23648,8 +23376,6 @@ std::uint64_t Rcp074GraphFrontdoorProofMaskImpl() {
   descriptor_mutation = graph_seed;
   descriptor_mutation.resolved.relation_descriptor.columns[3].collation_uuid =
       Rcp073ProofUuid(4990);
-  descriptor_mutation.resolved.relation_descriptor.columns[3]
-      .encoded_type_descriptor += ";collation_uuid=" + Rcp073ProofUuid(4990);
   if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 18;
   descriptor_mutation = graph_seed;
   descriptor_mutation.resolved.relation_descriptor.columns[0]
@@ -23776,12 +23502,9 @@ std::uint64_t Rcp079SpatialColumnarFrontdoorProofMaskImpl() {
 
 std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
   namespace contextual = scratchbird::engine::sblr;
-  constexpr std::string_view kTextDescriptorUuid =
-      "019d0000-0000-7000-8000-00000000d718";
-  constexpr std::string_view kTextTypeUuid =
-      "019d0000-0000-7000-8000-00000000d719";
-  constexpr std::string_view kTextCodecUuid =
-      "019d0000-0000-7000-8000-00000000d71a";
+  constexpr core::platform::Uuid kTextDescriptorUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x18}};
+  constexpr core::platform::Uuid kTextTypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x19}};
+  constexpr core::platform::Uuid kTextCodecUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x1a}};
 
   const auto uuid = [](const std::uint32_t seed) {
     return CanonicalUuidBytes(Rcp073ProofUuid(seed));
@@ -23791,19 +23514,19 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
   const auto text_codec_uuid = CanonicalUuidBytes(kTextCodecUuid);
   if (!text_descriptor_uuid || !text_type_uuid || !text_codec_uuid) return 0;
 
-  const std::string receipt = Rcp073ProofUuid(9101);
-  const std::string catalog = Rcp073ProofUuid(9102);
-  const std::string mga = Rcp073ProofUuid(9103);
-  const std::string relation = Rcp073ProofUuid(9104);
-  const std::string relation_descriptor = Rcp073ProofUuid(9105);
-  const std::string column = Rcp073ProofUuid(9106);
-  const std::string collation = Rcp073ProofUuid(9107);
+  const auto receipt = Rcp073ProofUuid(9101);
+  const auto catalog = Rcp073ProofUuid(9102);
+  const auto mga = Rcp073ProofUuid(9103);
+  const auto relation = Rcp073ProofUuid(9104);
+  const auto relation_descriptor = Rcp073ProofUuid(9105);
+  const auto column = Rcp073ProofUuid(9106);
+  const auto collation = Rcp073ProofUuid(9107);
 
   const auto make_target_descriptor = [&]() {
     NativeDescriptorBindingInput descriptor;
     descriptor.descriptor_id = 3;
-    descriptor.descriptor_uuid = std::string(kTextDescriptorUuid);
-    descriptor.type_uuid = std::string(kTextTypeUuid);
+    descriptor.descriptor_uuid = kTextDescriptorUuid;
+    descriptor.type_uuid = kTextTypeUuid;
     descriptor.nullability = BoundNullability::kNullable;
     descriptor.collation_uuid = collation;
     descriptor.width_precision_scale.width = 256;
@@ -23937,7 +23660,7 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
     occurrence.column_uuid = column;
     occurrence.column_ordinal = 2;
     occurrence.target_datatype_descriptor_uuid =
-        std::string(kTextDescriptorUuid);
+        kTextDescriptorUuid;
     occurrence.target_collation_uuid = collation;
     occurrence.target_character_length = 256;
     occurrence.raw_token = {'\'', 'x', '\''};
@@ -24070,7 +23793,7 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
         literal->descriptor_uuid == kTextDescriptorUuid &&
         literal->type_uuid == kTextTypeUuid &&
         literal->nullability == BoundNullability::kNonNull &&
-        literal->collation_uuid == std::optional<std::string>{collation} &&
+        literal->collation_uuid == std::optional<core::platform::Uuid>{collation} &&
         literal->width_precision_scale.width ==
             std::optional<std::uint32_t>{256} &&
         literal->codec_id == contextual::kContextualTextCodecIdentifierV2 &&
@@ -24108,8 +23831,9 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
   SblrEnvelope reserved_lowered;
   reserved_lowered.operation_id = "query.execute";
   reserved_lowered.descriptor_refs = reserved_bound.descriptor_refs;
-  reserved_lowered.operands.push_back(
-      {"relational_descriptor_v1", "9", "placeholder"});
+  const auto reserved_operand = ProofDescriptorFromNative(make_placeholder_descriptor());
+  if (!reserved_operand) return mask;
+  reserved_lowered.operands.push_back(*reserved_operand);
   const std::unordered_set<std::uint32_t> contextual_handles{9};
   const auto frozen = FreezeContextualReservationSkeletonV2(
       reserved_bound, reserved_lowered, contextual_handles);
@@ -24120,8 +23844,9 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
       patched_bound.native_relational.descriptors[1].descriptor_uuid;
   auto patched_lowered = reserved_lowered;
   patched_lowered.descriptor_refs = patched_bound.descriptor_refs;
-  patched_lowered.operands.front().type = "relational_descriptor_v2";
-  patched_lowered.operands.front().value = "issued";
+  const auto patched_operand = ProofDescriptorFromNative(positive_context.descriptors[1]);
+  if (!patched_operand) return mask;
+  patched_lowered.operands.front() = *patched_operand;
   const auto patched_frozen = FreezeContextualReservationSkeletonV2(
       patched_bound, patched_lowered, contextual_handles);
   auto crossed_bound = patched_bound;
@@ -24226,12 +23951,9 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
   package_lowered.diagnostic_shape_key = "diagnostic_vector";
   package_lowered.trace_key = "contextual.text.parser.proof";
   package_lowered.descriptor_epoch = 1;
-  package_lowered.operands.push_back({
-      "relational_descriptor_v2", "9",
-      std::string(kTextDescriptorUuid) + "|1|" +
-          std::string(kTextTypeUuid) +
-          "|1|datatype.text.utf8.v1|1|1|0|" + collation +
-          "|-|256|-|-|" + receipt + "|" + catalog + "|1|1"});
+  const auto package_descriptor_operand = ProofDescriptorFromNative(positive_context.descriptors[1]);
+  if (!package_descriptor_operand) return mask;
+  package_lowered.operands.push_back(*package_descriptor_operand);
   const auto package_literal_operand = MakeRelationalExpressionOperand(literal_expression);
   if (!package_literal_operand) return mask;
   package_lowered.operands.push_back(*package_literal_operand);
@@ -24269,10 +23991,10 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
   std::vector<contextual::SblrOperand> shared_encoder_operands;
   contextual::SblrOperand shared_operand;
   shared_operand.ordinal = 1;
-  shared_operand.type = "relational_descriptor_v2";
+  shared_operand.type = "relational_descriptor_v3";
   shared_operand.name = "slot_9";
-  shared_operand.value_kind = contextual::SblrValueKind::literal_typed;
-  shared_operand.value_body.assign(24, 1);
+  shared_operand.value_kind = contextual::SblrValueKind::relational_type_descriptor;
+  shared_operand.value_body = package_descriptor_operand->canonical_value_body;
   shared_encoder_operands.push_back(std::move(shared_operand));
   const auto shared_once =
       contextual::EncodeSblrCanonicalOperandRecords(shared_encoder_operands);
@@ -24346,12 +24068,9 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
 
 std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
   g_authoritative_multi_source_projection_proof_detail.clear();
-  constexpr std::string_view kTextDescriptorUuid =
-      "019d0000-0000-7000-8000-00000000d718";
-  constexpr std::string_view kTextTypeUuid =
-      "019d0000-0000-7000-8000-00000000d719";
-  constexpr std::string_view kCatalogSnapshotUuid =
-      "019d0000-0000-7000-8000-00000000d701";
+  constexpr core::platform::Uuid kTextDescriptorUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x18}};
+  constexpr core::platform::Uuid kTextTypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x19}};
+  constexpr core::platform::Uuid kCatalogSnapshotUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}};
   constexpr std::string_view kSql =
       "SELECT l.integer_value FROM app.left_table AS l CROSS JOIN "
       "app.right_table AS r WHERE r.join_limit_value >= 3 LIMIT ?;";
@@ -24363,7 +24082,7 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
 
   auto statement = Rcp079ProofStatementContext();
   statement.literal_preliminary_receipt_uuid = Rcp073ProofUuid(9900);
-  statement.literal_catalog_snapshot_uuid = std::string(kCatalogSnapshotUuid);
+  statement.literal_catalog_snapshot_uuid = kCatalogSnapshotUuid;
   statement.literal_catalog_generation = 1;
   ParserStatementContext::LiteralStatementDescriptorProfileV1
       literal_filter_profile;
@@ -24377,10 +24096,10 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
   literal_filter_profile.catalog_generation =
       statement.literal_catalog_generation;
   literal_filter_profile.descriptor_uuid =
-      "019d0000-0000-7000-8000-00000000d711";
+      scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x11}};
   literal_filter_profile.descriptor_generation = 1;
   literal_filter_profile.type_uuid =
-      "019d0000-0000-7000-8000-00000000d712";
+      scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x12}};
   literal_filter_profile.codec_id =
       std::string(scratchbird::engine::sblr::kSblrLiteralInt64LeCodecId);
   literal_filter_profile.codec_version = 1;
@@ -24391,8 +24110,8 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
 
   const auto make_column = [](const std::uint32_t ordinal,
                               const std::string& name,
-                              const std::string& descriptor_uuid,
-                              const std::string& type_uuid,
+                              const core::platform::Uuid& descriptor_uuid,
+                              const core::platform::Uuid& type_uuid,
                               const std::string& type_name,
                               const bool nullable) {
     ipc::PublicRelationColumnDescriptor column;
@@ -24402,8 +24121,9 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
     column.type_descriptor_uuid = descriptor_uuid;
     column.type_descriptor_kind = "canonical_type_descriptor";
     column.canonical_type_name = type_name;
+    column.datatype_type_uuid = type_uuid;
     column.encoded_type_descriptor =
-        "type_uuid=" + type_uuid + ";nullability=" +
+        std::string("nullability=") +
         (nullable ? "nullable" : "non_null");
     column.nullable = nullable;
     return column;
@@ -24412,8 +24132,8 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
     if (text == nullptr) return;
     const auto identity = scratchbird::core::datatypes::
         LookupDatatypeTypeCodecIdentityV1(
-            std::string(kCatalogSnapshotUuid), 1, 1,
-            std::string(kTextDescriptorUuid), 1);
+            kCatalogSnapshotUuid, 1, 1,
+            kTextDescriptorUuid, 1);
     if (!identity.ok) return;
     text->datatype_identity_present = true;
     text->datatype_descriptor_generation =
@@ -24449,29 +24169,29 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
     projection.descriptor_generation = 1;
     projection.validated_resource_epoch = 1;
     projection.datatype_catalog_snapshot_uuid =
-        std::string(kCatalogSnapshotUuid);
+        kCatalogSnapshotUuid;
     projection.datatype_catalog_generation = 1;
     projection.datatype_registry_generation = 1;
     if (source_ordinal == 0) {
       projection.columns.push_back(make_column(
           0, "integer_value",
-          "019d0000-0000-7000-8000-00000000d716",
-          "019d0000-0000-7000-8000-00000000d717", "int32", false));
+          core::platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x16}},
+          core::platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x17}}, "int32", false));
       projection.columns.push_back(make_column(
-          1, "text_value", std::string(kTextDescriptorUuid),
-          std::string(kTextTypeUuid), "text", true));
+          1, "text_value", kTextDescriptorUuid,
+          kTextTypeUuid, "text", true));
       auto& text = projection.columns.back();
       text.character_length = 256;
       apply_text_identity(&text);
     } else if (source_ordinal == 1) {
       projection.columns.push_back(make_column(
           0, "join_limit_value",
-          "019d0000-0000-7000-8000-00000000d711",
-          "019d0000-0000-7000-8000-00000000d712", "int64", false));
+          core::platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x11}},
+          core::platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x12}}, "int64", false));
       if (active_refs.size() == 2) {
         projection.columns.push_back(make_column(
-            1, "payload", std::string(kTextDescriptorUuid),
-            std::string(kTextTypeUuid), "text", false));
+            1, "payload", kTextDescriptorUuid,
+            kTextTypeUuid, "text", false));
         auto& text = projection.columns.back();
         text.column_uuid = Rcp073ProofUuid(9930);
         text.character_length = 128;
@@ -24479,8 +24199,8 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
       }
     } else {
       projection.columns.push_back(make_column(
-          0, "payload", std::string(kTextDescriptorUuid),
-          std::string(kTextTypeUuid), "text", false));
+          0, "payload", kTextDescriptorUuid,
+          kTextTypeUuid, "text", false));
       auto& text = projection.columns.back();
       text.column_uuid = Rcp073ProofUuid(9931);
       text.character_length = 128;
@@ -24556,8 +24276,8 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
     descriptor->codec_id.clear();
     descriptor->codec_version = 0;
     descriptor->codec_generation = 0;
-    descriptor->statement_receipt_uuid.clear();
-    descriptor->datatype_catalog_snapshot_uuid.clear();
+    descriptor->statement_receipt_uuid = {};
+    descriptor->datatype_catalog_snapshot_uuid = {};
     descriptor->datatype_catalog_generation = 0;
     descriptor->datatype_registry_generation = 0;
   };
@@ -24590,14 +24310,13 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
         text->datatype_catalog_snapshot_uuid == kCatalogSnapshotUuid &&
         text->datatype_catalog_generation == 1 &&
         text->datatype_registry_generation == 1;
-    const bool exact_text_operand =
-        std::ranges::count_if(lowered.operands, [](const auto& operand) {
-          return operand.type == "relational_descriptor_v2" &&
-                 operand.value.starts_with(
-                     "019d0000-0000-7000-8000-00000000d718|1|"
-                     "019d0000-0000-7000-8000-00000000d719|1|"
-                     "datatype.text.utf8.v1|1|1|");
-        }) == 2;
+    const bool exact_text_operand = std::ranges::count_if(lowered.operands, [&](const auto& operand) {
+      const auto descriptor = DecodeProofDescriptor(operand);
+      return descriptor && descriptor->descriptor_uuid == kTextDescriptorUuid && descriptor->type_uuid == kTextTypeUuid &&
+          descriptor->datatype_identity_authoritative && descriptor->descriptor_generation == 1 &&
+          descriptor->type_generation == 1 && descriptor->codec_id == "datatype.text.utf8.v1" &&
+          descriptor->codec_version == 1 && descriptor->codec_generation == 1;
+    }) == 2;
     if (exact_text_tuple && bound.bound && !bound.messages.has_errors() &&
         !lowered.messages.has_errors() && exact_text_operand) {
       mask |= 1ull << 0;
@@ -24610,14 +24329,14 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
              << ":lower_messages="
              << ipc::MessageVectorToJson(lowered.messages) << ":descriptors=";
       for (const auto& descriptor : projected.descriptors) {
-        detail << '[' << descriptor.descriptor_uuid << '|'
+        detail << '[' << core::uuid::IsEngineIdentityUuid(descriptor.descriptor_uuid) << '|'
                << descriptor.descriptor_generation << '|'
-               << descriptor.type_uuid << '|' << descriptor.type_generation
+               << core::uuid::IsEngineIdentityUuid(descriptor.type_uuid) << '|' << descriptor.type_generation
                << '|' << descriptor.codec_id << '|'
                << descriptor.codec_version << '|'
                << descriptor.codec_generation << '|'
-               << descriptor.statement_receipt_uuid << '|'
-               << descriptor.datatype_catalog_snapshot_uuid << '|'
+               << core::uuid::IsEngineIdentityUuid(descriptor.statement_receipt_uuid) << '|'
+               << core::uuid::IsEngineIdentityUuid(descriptor.datatype_catalog_snapshot_uuid) << '|'
                << descriptor.datatype_catalog_generation << '|'
                << descriptor.datatype_registry_generation << '|'
                << descriptor.canonical_type_name << ']';
@@ -24644,22 +24363,22 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
           });
       const auto emitted_left = std::ranges::find_if(
           lowered.operands, [&](const auto& operand) {
-            return operand.type == "relational_descriptor_v2" &&
-                   operand.name == std::to_string(left.descriptor_id);
+            return operand.type == "relational_descriptor_v3" &&
+                   operand.name == "slot_" + std::to_string(left.descriptor_id);
           });
       const auto emitted_right = std::ranges::find_if(
           lowered.operands, [&](const auto& operand) {
-            return operand.type == "relational_descriptor_v2" &&
-                   operand.name == std::to_string(right.descriptor_id);
+            return operand.type == "relational_descriptor_v3" &&
+                   operand.name == "slot_" + std::to_string(right.descriptor_id);
           });
       const auto emitted_left_fields =
           emitted_left == lowered.operands.end()
-              ? std::vector<std::string_view>{}
-              : SplitCanonicalFields(emitted_left->value);
+              ? std::optional<engine::internal_api::RelationalTypeDescriptor>{}
+              : DecodeProofDescriptor(*emitted_left);
       const auto emitted_right_fields =
           emitted_right == lowered.operands.end()
-              ? std::vector<std::string_view>{}
-              : SplitCanonicalFields(emitted_right->value);
+              ? std::optional<engine::internal_api::RelationalTypeDescriptor>{}
+              : DecodeProofDescriptor(*emitted_right);
       const bool exact_bound_slot_facets =
           bound_left != bound.native_relational.descriptors.end() &&
           bound_right != bound.native_relational.descriptors.end() &&
@@ -24674,12 +24393,11 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
           bound_right->width_precision_scale.width ==
               right.width_precision_scale.width;
       const bool exact_emitted_slot_facets =
-          emitted_left_fields.size() == 17 &&
-          emitted_right_fields.size() == 17 &&
-          emitted_left_fields[7] == "1" &&
-          emitted_left_fields[10] == "256" &&
-          emitted_right_fields[7] == "0" &&
-          emitted_right_fields[10] == "128";
+          emitted_left_fields && emitted_right_fields &&
+          emitted_left_fields->nullability == engine::internal_api::RelationalNullability::kNullable &&
+          emitted_left_fields->width == 256 &&
+          emitted_right_fields->nullability == engine::internal_api::RelationalNullability::kNonNull &&
+          emitted_right_fields->width == 128;
       const auto verified = VerifySblrEnvelope(lowered);
       repeated_slot_positive =
           left.descriptor_id != right.descriptor_id &&
@@ -24770,73 +24488,51 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
 
       std::vector<std::size_t> operand_text_indices;
       for (std::size_t index = 0; index < lowered.operands.size(); ++index) {
-        const auto& operand = lowered.operands[index];
-        const auto fields = SplitCanonicalFields(operand.value);
-        if (operand.type == "relational_descriptor_v2" &&
-            fields.size() == 17 && fields[0] == kTextDescriptorUuid) {
-          operand_text_indices.push_back(index);
-        }
+        const auto descriptor = DecodeProofDescriptor(lowered.operands[index]);
+        if (descriptor && descriptor->descriptor_uuid == kTextDescriptorUuid) operand_text_indices.push_back(index);
       }
-      const auto replace_operand_field =
-          [](SblrOperand* operand, const std::size_t field,
-             const std::string_view replacement) {
-            if (operand == nullptr) return false;
-            const auto fields = SplitCanonicalFields(operand->value);
-            if (fields.size() != 17 || field >= fields.size()) return false;
-            std::string rewritten;
-            for (std::size_t index = 0; index < fields.size(); ++index) {
-              if (index != 0) rewritten.push_back('|');
-              rewritten.append(index == field ? replacement : fields[index]);
-            }
-            operand->value = std::move(rewritten);
-            return true;
-          };
-      constexpr std::array<std::size_t, 10> kImmutableWireFields{
-          2, 1, 3, 4, 5, 6, 13, 14, 15, 16};
-      const std::array<std::string, 10> immutable_wire_replacements{
-          Rcp073ProofUuid(9990), "2", "2", "datatype.text.other.v1", "2",
-          "2", Rcp073ProofUuid(9991), Rcp073ProofUuid(9992), "2", "2"};
       decoder_negative_matrix = operand_text_indices.size() == 2;
-      for (std::size_t field = 0;
-           field < kImmutableWireFields.size() && decoder_negative_matrix;
-           ++field) {
+      for (unsigned field = 0; field < 10 && decoder_negative_matrix; ++field) {
         auto conflicting = lowered;
-        decoder_negative_matrix = replace_operand_field(
-            &conflicting.operands[operand_text_indices[1]],
-            kImmutableWireFields[field], immutable_wire_replacements[field]);
-        if (decoder_negative_matrix) {
-          const auto refused = VerifySblrEnvelope(conflicting);
-          decoder_negative_matrix =
-              !refused.admitted && refused.messages.has_errors();
+        auto descriptor = DecodeProofDescriptor(conflicting.operands[operand_text_indices[1]]);
+        if (!descriptor) { decoder_negative_matrix = false; break; }
+        switch (field) {
+          case 0: descriptor->type_uuid = Rcp073ProofUuid(9990); break;
+          case 1: ++descriptor->descriptor_generation; break;
+          case 2: ++descriptor->type_generation; break;
+          case 3: descriptor->codec_id = "datatype.text.other.v1"; break;
+          case 4: ++descriptor->codec_version; break;
+          case 5: ++descriptor->codec_generation; break;
+          case 6: descriptor->statement_receipt_uuid = Rcp073ProofUuid(9991); break;
+          case 7: descriptor->datatype_catalog_snapshot_uuid = Rcp073ProofUuid(9992); break;
+          case 8: ++descriptor->datatype_catalog_generation; break;
+          case 9: ++descriptor->datatype_registry_generation; break;
         }
+        const auto encoded = EncodeProofDescriptor(*descriptor);
+        if (!encoded) { decoder_negative_matrix = false; break; }
+        conflicting.operands[operand_text_indices[1]] = *encoded;
+        const auto refused = VerifySblrEnvelope(conflicting);
+        decoder_negative_matrix = !refused.admitted && refused.messages.has_errors();
       }
       if (operand_text_indices.size() == 2) {
         auto mixed_wire = lowered;
-        auto& mixed_operand = mixed_wire.operands[operand_text_indices[1]];
-        const auto fields = SplitCanonicalFields(mixed_operand.value);
-        if (fields.size() == 17) {
-          mixed_operand.type = "relational_descriptor_v1";
-          mixed_operand.value =
-              std::string(fields[0]) + "|" + std::string(fields[2]) + "|" +
-              (fields[7] == "0" ? "1" : "2") + "|" +
-              std::string(fields[8]) + "|" + std::string(fields[9]) + "|" +
-              std::string(fields[10]) + "|" + std::string(fields[11]) + "|" +
-              std::string(fields[12]);
+        auto descriptor = DecodeProofDescriptor(mixed_wire.operands[operand_text_indices[1]]);
+        if (descriptor) {
+          descriptor->datatype_identity_authoritative = false;
+          clear_authority(&*descriptor);
+          const auto encoded = EncodeProofDescriptor(*descriptor);
+          if (encoded) mixed_wire.operands[operand_text_indices[1]] = *encoded;
           const auto refused = VerifySblrEnvelope(mixed_wire);
-          decoder_negative_matrix =
-              decoder_negative_matrix && !refused.admitted &&
-              refused.messages.has_errors();
-        } else {
-          decoder_negative_matrix = false;
-        }
+          decoder_negative_matrix = decoder_negative_matrix && encoded && !refused.admitted && refused.messages.has_errors();
+        } else decoder_negative_matrix = false;
         auto partial_wire = lowered;
-        const bool rewrote_partial = replace_operand_field(
-            &partial_wire.operands[operand_text_indices[1]], 6, "0");
-        const auto partial_verified = VerifySblrEnvelope(partial_wire);
-        decoder_negative_matrix =
-            decoder_negative_matrix && rewrote_partial &&
-            !partial_verified.admitted &&
-            partial_verified.messages.has_errors();
+        auto& bytes = partial_wire.operands[operand_text_indices[1]].canonical_value_body;
+        // Corrupt codec generation in the canonical wire record. The encoder
+        // correctly refuses this malformed model, so mutate the test bytes.
+        const bool full = bytes.size() >= engine::sblr::kRelationalDescriptorFixedBytesV1;
+        if (full) std::fill_n(bytes.begin() + 104, 8, 0);
+        const auto refused = VerifySblrEnvelope(partial_wire);
+        decoder_negative_matrix = decoder_negative_matrix && full && !refused.admitted && refused.messages.has_errors();
       }
       if (decoder_negative_matrix) mask |= 1ull << 10;
     }
@@ -24846,7 +24542,7 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
   auto& missing_text = missing.front().resolved.relation_descriptor.columns[1];
   missing_text.datatype_identity_present = false;
   missing_text.datatype_descriptor_generation = 0;
-  missing_text.datatype_type_uuid.clear();
+  missing_text.datatype_type_uuid = {};
   missing_text.datatype_type_generation = 0;
   missing_text.datatype_codec_id.clear();
   missing_text.datatype_codec_version = 0;
@@ -24873,7 +24569,7 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
       .datatype_descriptor_generation = 1;
   crossed.back().resolved.relation_descriptor.columns.front()
       .datatype_type_uuid =
-          "019d0000-0000-7000-8000-00000000d712";
+          scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x12}};
   crossed.back().resolved.relation_descriptor.columns.front()
       .datatype_type_generation = 1;
   crossed.back().resolved.relation_descriptor.columns.front()
@@ -24910,7 +24606,7 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
   }
 
   auto missing_receipt = statement;
-  missing_receipt.literal_preliminary_receipt_uuid.clear();
+  missing_receipt.literal_preliminary_receipt_uuid = {};
   if (!build(missing_receipt, seeds, nullptr)) mask |= 1ull << 6;
 
   std::string three_source_detail;
@@ -25021,8 +24717,8 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
 
 PreparedParameterCanonicalValue CanonicalizePreparedParameterWireValue(
     const PreparedParameterWireValue& value,
-    std::string_view authenticated_descriptor_uuid,
-    std::string_view authenticated_type_uuid,
+    const core::platform::Uuid& authenticated_descriptor_uuid,
+    const core::platform::Uuid& authenticated_type_uuid,
     bool nullable) {
   PreparedParameterCanonicalValue result;
   if (value.is_null) {
@@ -25031,10 +24727,10 @@ PreparedParameterCanonicalValue CanonicalizePreparedParameterWireValue(
     result.diagnostic_code = result.accepted ? "" : "SBLR.PARAMETER.UNBOUND";
     return result;
   }
-  if (authenticated_descriptor_uuid !=
-          "019d0000-0000-7000-8000-00000000d711" ||
-      authenticated_type_uuid !=
-          "019d0000-0000-7000-8000-00000000d712") {
+  if (authenticated_descriptor_uuid != core::platform::Uuid{{
+          0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x11}} ||
+      authenticated_type_uuid != core::platform::Uuid{{
+          0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x12}}) {
     result.diagnostic_code = "DATATYPE.DESCRIPTOR.INVALID";
     return result;
   }
@@ -26535,7 +26231,7 @@ PipelineResult SbsqlTestWireSession::SealAndExecuteBulkImportStreamForWire() {
           std::vector<std::uint8_t>(result_bytes,
                                     result_bytes + executed.row_packet.size()) ||
       executed.operation_id != "engine.op.bulk_import_stream" ||
-      !executed.cursor_uuid.empty() || executed.messages.has_errors() ||
+      !executed.cursor_uuid.is_nil() || executed.messages.has_errors() ||
       result_stream != held.stream_uuid ||
       result_generation != held.stream_generation || !publication_present ||
       publication_generation == 0 || publication_uuid == held.stream_uuid ||
@@ -26619,11 +26315,11 @@ ServerExecutionResult SbsqlTestWireSession::ExecuteSblrOnRouteWithDataPacket(
       session_, encoded_sblr_envelope, data_packet, cursor_requested);
 }
 
-ServerFetchResult SbsqlTestWireSession::FetchCursorOnRoute(std::string_view cursor_uuid,
+ServerFetchResult SbsqlTestWireSession::FetchCursorOnRoute(const core::platform::Uuid& cursor_uuid,
                                                            std::uint64_t max_rows,
                                                            std::uint64_t max_bytes,
                                                            std::uint32_t fetch_flags) {
-  const auto descriptor = cursor_stream_descriptors_.find(std::string(cursor_uuid));
+  const auto descriptor = cursor_stream_descriptors_.find(cursor_uuid);
   if (descriptor == cursor_stream_descriptors_.end() ||
       !descriptor->second.complete()) {
     ServerFetchResult refused;
@@ -26655,13 +26351,13 @@ ServerFetchResult SbsqlTestWireSession::FetchCursorOnRoute(std::string_view curs
     // engine result and statement receipt exactly once, so the parser must
     // discard its matching stream capability instead of retaining a stale
     // local authority that could issue a second CLOSE.
-    cursor_stream_descriptors_.erase(std::string(cursor_uuid));
-    cursor_statement_contexts_.erase(std::string(cursor_uuid));
+    cursor_stream_descriptors_.erase(cursor_uuid);
+    cursor_statement_contexts_.erase(cursor_uuid);
   }
   return result;
 }
 
-ServerCloseCursorResult SbsqlTestWireSession::CloseCursorOnRoute(std::string_view cursor_uuid) {
+ServerCloseCursorResult SbsqlTestWireSession::CloseCursorOnRoute(const core::platform::Uuid& cursor_uuid) {
   ServerCloseCursorResult result;
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
     result = embedded_client_->CloseCursor(session_, cursor_uuid);
@@ -26669,13 +26365,13 @@ ServerCloseCursorResult SbsqlTestWireSession::CloseCursorOnRoute(std::string_vie
     result = server_client_->CloseCursor(session_, cursor_uuid);
   }
   if (result.accepted) {
-    cursor_stream_descriptors_.erase(std::string(cursor_uuid));
-    cursor_statement_contexts_.erase(std::string(cursor_uuid));
+    cursor_stream_descriptors_.erase(cursor_uuid);
+    cursor_statement_contexts_.erase(cursor_uuid);
   }
   return result;
 }
 
-ServerCloseCursorResult SbsqlTestWireSession::CancelCursorOnRoute(std::string_view cursor_uuid) {
+ServerCloseCursorResult SbsqlTestWireSession::CancelCursorOnRoute(const core::platform::Uuid& cursor_uuid) {
   ServerCloseCursorResult result;
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
     result = embedded_client_->CancelCursor(session_, cursor_uuid);
@@ -26683,8 +26379,8 @@ ServerCloseCursorResult SbsqlTestWireSession::CancelCursorOnRoute(std::string_vi
     result = server_client_->CancelCursor(session_, cursor_uuid);
   }
   if (result.accepted) {
-    cursor_stream_descriptors_.erase(std::string(cursor_uuid));
-    cursor_statement_contexts_.erase(std::string(cursor_uuid));
+    cursor_stream_descriptors_.erase(cursor_uuid);
+    cursor_statement_contexts_.erase(cursor_uuid);
   }
   return result;
 }
@@ -26710,7 +26406,7 @@ void SbsqlTestWireSession::RehydrateStableRelationNameResolutionCache() {
   stable_entries.reserve(stable_relation_name_resolution_cache_.size());
   for (const auto& [_, stable] : stable_relation_name_resolution_cache_) {
     if (stable.presented_name.empty() || stable.lookup_object_class.empty() ||
-        stable.resolved.object_uuid.empty()) {
+        stable.resolved.object_uuid.is_nil()) {
       continue;
     }
     stable_entries.push_back(stable);
@@ -26734,16 +26430,16 @@ void SbsqlTestWireSession::StoreNameResolutionCacheEntry(
     std::string_view presented_name,
     bool quoted,
     std::string_view object_class,
-    std::string_view object_uuid,
+    const core::platform::Uuid& object_uuid,
     std::string_view canonical_name,
     std::uint64_t catalog_epoch,
     std::uint64_t security_epoch,
     std::string_view resolved_object_class) {
-  if (presented_name.empty() || object_class.empty() || object_uuid.empty()) return;
+  if (presented_name.empty() || object_class.empty() || object_uuid.is_nil()) return;
   const std::string cache_key =
       BuildNameResolutionCacheKey(session_, presented_name, quoted, object_class);
   CachedPublicNameResolution cached;
-  cached.object_uuid = std::string(object_uuid);
+  cached.object_uuid = object_uuid;
   cached.canonical_name = canonical_name.empty() ? std::string(presented_name)
                                                  : std::string(canonical_name);
   cached.object_class = resolved_object_class.empty()
@@ -26792,61 +26488,34 @@ void SbsqlTestWireSession::StoreNameResolutionCacheEntry(
 }
 
 void SbsqlTestWireSession::SeedCreatedDdlNameResolutionCache(
-    const CstDocument& cst,
-    const PipelineResult& result) {
-  if (!result.accepted || result.server_result_payload.empty()) return;
-  auto object_uuid = DdlResultRowField(result.server_result_payload, "object_uuid");
-  auto object_kind = DdlResultRowField(result.server_result_payload, "object_kind");
-  std::string route_create_kind;
-  std::string result_name_field{"name"};
-  if (!object_uuid || object_uuid->empty()) {
-    if (result.server_operation_id == "security.role.create") {
-      object_uuid = DdlResultRowField(result.server_result_payload, "role_uuid");
-      route_create_kind = "ROLE";
-      result_name_field = "role_name";
-    } else if (result.server_operation_id == "security.group.create") {
-      object_uuid = DdlResultRowField(result.server_result_payload, "group_uuid");
-      route_create_kind = "GROUP";
-      result_name_field = "group_name";
-    } else if (result.server_operation_id == "security.principal.create") {
-      object_uuid = DdlResultRowField(result.server_result_payload, "principal_uuid");
-      route_create_kind = "PRINCIPAL";
-      result_name_field = "principal_name";
-    } else if (result.server_operation_id == "security.policy.create") {
-      object_uuid = DdlResultRowField(result.server_result_payload, "policy_uuid");
-      std::size_t index = 0;
-      if (ConsumeRouteKeyword(cst, &index, "CREATE")) {
-        if (ConsumeRouteKeyword(cst, &index, "POLICY")) {
-          route_create_kind = "POLICY";
-        } else if (ConsumeRouteKeyword(cst, &index, "MASK")) {
-          route_create_kind = "MASK";
-        } else if (ConsumeRouteKeyword(cst, &index, "RLS")) {
-          route_create_kind = "RLS";
-        }
-      }
-      result_name_field = "policy_name";
-    }
+    const CstDocument& cst, const PipelineResult& result) {
+  if (!result.accepted || !HasExecutionRoute()) return;
+  // Names come from the parsed CREATE statement. Identity and visibility come
+  // from the engine on the selected transaction, never from rendered row text.
+  std::optional<CreatedDdlName> created;
+  for (const auto kind : {"TABLE", "SCHEMA", "VIEW", "DOMAIN", "INDEX", "ROLE", "GROUP",
+                           "USER", "POLICY", "MASK", "RLS", "PROCEDURE", "FUNCTION", "TRIGGER", "FILESPACE"}) {
+    created = ExtractCreatedDdlNameFromCst(cst, kind);
+    if (created) break;
   }
-  if ((!object_kind || object_kind->empty()) && !route_create_kind.empty()) {
-    object_kind = route_create_kind;
-  }
-  if (!object_uuid || object_uuid->empty() || !object_kind || object_kind->empty()) return;
-  const auto created = ExtractCreatedDdlNameFromCst(cst, *object_kind);
   if (!created) return;
-  auto payload_name = DdlResultRowField(result.server_result_payload, result_name_field);
-  if (!payload_name || payload_name->empty()) {
-    payload_name = DdlResultRowField(result.server_result_payload, "name");
-  }
-  const std::string canonical_name =
-      payload_name && !payload_name->empty() ? *payload_name : created->presented_name;
+  const ParserTransactionSelector transaction{session_.local_transaction_id, session_.transaction_uuid};
   for (const auto& object_class : created->object_classes) {
-    StoreNameResolutionCacheEntry(created->presented_name,
-                                  created->quoted,
-                                  object_class,
-                                  *object_uuid,
-                                  canonical_name,
-                                  session_.catalog_epoch,
-                                  session_.security_policy_epoch);
+    PublicNameResolutionResult resolved;
+    if (config_.embedded_engine_direct && embedded_client_) {
+      resolved = embedded_client_->ResolveNamePublic(session_, created->presented_name,
+          created->quoted, object_class, config_);
+    } else if (server_client_) {
+      resolved = transaction.present()
+          ? server_client_->ResolveNamePublicOnTransaction(session_, created->presented_name,
+                created->quoted, object_class, config_, transaction)
+          : server_client_->ResolveNamePublicUncached(session_, created->presented_name,
+                created->quoted, object_class, config_);
+    }
+    if (!resolved.resolved || !core::uuid::IsEngineIdentityUuid(resolved.object_uuid)) continue;
+    StoreNameResolutionCacheEntry(created->presented_name, created->quoted, object_class,
+        resolved.object_uuid, resolved.canonical_name, resolved.catalog_epoch,
+        resolved.security_epoch, resolved.object_class);
   }
 }
 
@@ -27020,7 +26689,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                  bool parameter_prepare_only,
                                                  ipc::PreparedParameterReference*
                                                      prepared_parameter_output,
-                                                 std::string_view expected_prepared_uuid,
+                                                 const core::platform::Uuid& expected_prepared_uuid,
                                                  std::uint64_t expected_prepared_generation,
                                                  const ipc::VariableFrameCoordination*
                                                      variable_coordination,
@@ -27632,7 +27301,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         session_.security_policy_epoch =
             std::max(session_.security_policy_epoch, resolved.security_epoch);
         result.sblr_payload =
-            BuildFastInsertNativeBulkEnvelope(*fast_insert, resolved.object_uuid);
+            BuildFastInsertNativeBulkEnvelope(*fast_insert);
         mark_phase("fast_insert_build_sblr");
         const bool embedded_native_route =
             config_.embedded_engine_direct && embedded_client_ != nullptr;
@@ -27659,7 +27328,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           return result;
         }
         auto submission = BuildCanonicalRouteTextSubmission(
-            result.sblr_payload, acquired.context, session_);
+            result.sblr_payload, acquired.context, session_, resolved.object_uuid);
         if (!submission) {
           result.accepted = false;
           result.messages.diagnostics.push_back(MakeDiagnostic(
@@ -27800,7 +27469,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     return result;
   }
   mark_phase("build_ast");
-  std::vector<std::string> resolved_object_uuids;
+  std::vector<core::platform::Uuid> resolved_object_uuids;
   std::vector<ResolvedObjectReferenceSeed> resolved_object_reference_seeds;
   PipelineResult result;
   result.statement_family = StatementFamilyName(ast.family);
@@ -27938,7 +27607,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         resolved.object_class = ref.object_class;
         resolved.catalog_epoch = session_.catalog_epoch;
         resolved.security_epoch = session_.security_policy_epoch;
-        if (resolved.object_uuid.empty()) {
+        if (resolved.object_uuid.is_nil()) {
           result.messages.diagnostics.push_back(MakeDiagnostic(
               "SBSQL.NAME_RESOLUTION.CREATE_UUID_RESERVATION_FAILED",
               "ERROR",
@@ -28313,7 +27982,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             }
           }
         }
-        if (!expected_prepared_uuid.empty() &&
+        if (!expected_prepared_uuid.is_nil() &&
             (native_statement_context->preliminary_prepared_statement_uuid !=
                  expected_prepared_uuid ||
              native_statement_context->preliminary_prepared_generation !=
@@ -29318,8 +28987,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           if (offset == ast.native_relational.expressions.end() ||
               count_binding == native_binding_context->expressions.end() ||
               existing_offset_count != 0 || profile == nullptr ||
-              profile->binding_descriptor_uuid.empty() ||
-              profile->type_uuid.empty() || reserved_id == 0 ||
+              profile->binding_descriptor_uuid.is_nil() ||
+              profile->type_uuid.is_nil() || reserved_id == 0 ||
               std::ranges::any_of(
                   native_binding_context->expressions,
                   [&](const auto& expression) {
@@ -29493,7 +29162,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   }
   ParserConfig binding_config = config_;
   if (native_statement_context.has_value() &&
-      !session_.admitted_parser_package_uuid.empty()) {
+      !session_.admitted_parser_package_uuid.is_nil()) {
     binding_config.parser_uuid = session_.admitted_parser_package_uuid;
   }
   auto bound = BindAst(
@@ -30271,7 +29940,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   auto reseed_preserved_reference_names = [&](std::string_view operation_id) {
     if (!ExecutionPreservesReferencedRelationNames(operation_id)) return;
     for (const auto& seed : resolved_object_reference_seeds) {
-      if (!seed.resolved.resolved || seed.resolved.object_uuid.empty()) continue;
+      if (!seed.resolved.resolved || seed.resolved.object_uuid.is_nil()) continue;
       const std::string lookup_class =
           seed.ref.object_class.empty() ? std::string("relation") : seed.ref.object_class;
       const std::string resolved_class =
@@ -30771,6 +30440,11 @@ SbsqlTestWireSession::PrepareParameterizedNamedForWire(
     const std::vector<std::string>& declared_parameter_types,
     PipelineResult* named_prepare_result) {
   ipc::ServerPreparedParameterFinalizeResult result;
+  if (statement_name.empty() && next_anonymous_parameter_name_ == UINT64_MAX) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.PARAMETER.RESOURCE_LIMIT", "ERROR", "Anonymous prepared name capacity exhausted.", "sbp_sbsql.wire"));
+    return result;
+  }
   if (server_client_ == nullptr || !session_.authenticated) {
     result.messages.diagnostics.push_back(MakeDiagnostic(
         "PARSER_SERVER_IPC.AUTH.REQUIRED", "ERROR",
@@ -30834,7 +30508,7 @@ SbsqlTestWireSession::PrepareParameterizedNamedForWire(
   const bool use_public_name = !statement_name.empty();
   const std::string published_name =
       use_public_name ? std::string(statement_name)
-                      : prepared.prepared_statement_uuid;
+                      : "__sb_anonymous_parameter_" + std::to_string(next_anonymous_parameter_name_++);
   const bool published_name_quoted =
       use_public_name ? statement_name_quoted : true;
   const auto canonical_name = CanonicalPreparedStatementNameForWire(
@@ -31644,7 +31318,7 @@ PipelineResult SbsqlTestWireSession::RunProcedureInvokeForWire(
     invoke::SblrProcedureInvokeResultV1 terminal;
     std::string detail;
     if (executed.operation_id != "engine.op.procedure_invoke" ||
-        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        !executed.cursor_uuid.is_nil() || executed.row_count != 0 ||
         (executed.affected_rows_present && executed.affected_rows != 0) ||
         !ExactProcedureInvokeTerminal(
             held.descriptor_authority,
@@ -32586,7 +32260,7 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateTriggerForWire(
     ddl::SblrDdlCreateTriggerResultV1 terminal;
     std::string detail;
     if (executed.operation_id != "engine.op.ddl_create_trigger" ||
-        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        !executed.cursor_uuid.is_nil() || executed.row_count != 0 ||
         (executed.affected_rows_present && executed.affected_rows != 0) ||
         !ExactDdlCreateTriggerTerminal(
             held.descriptor,
@@ -32940,7 +32614,7 @@ PipelineResult SbsqlTestWireSession::RunDdlAlterTriggerForWire(
     ddl::SblrDdlAlterTriggerResultV1 terminal;
     std::string detail;
     if (executed.operation_id != "engine.op.ddl_alter_trigger" ||
-        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        !executed.cursor_uuid.is_nil() || executed.row_count != 0 ||
         (executed.affected_rows_present && executed.affected_rows != 0) ||
         !ExactDdlAlterTriggerTerminal(
             held.descriptor,
@@ -33276,7 +32950,7 @@ PipelineResult SbsqlTestWireSession::RunDdlDropTriggerForWire(
     ddl::SblrDdlDropTriggerResultV1 terminal;
     std::string detail;
     if (executed.operation_id != "engine.op.ddl_drop_trigger" ||
-        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        !executed.cursor_uuid.is_nil() || executed.row_count != 0 ||
         (executed.affected_rows_present && executed.affected_rows != 0) ||
         !ExactDdlDropTriggerTerminal(
             held.descriptor,
@@ -33608,7 +33282,7 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateProcedureForWire(
     ddl::SblrDdlCreateProcedureResultV1 terminal;
     std::string detail;
     if (executed.operation_id != "engine.op.ddl_create_procedure" ||
-        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        !executed.cursor_uuid.is_nil() || executed.row_count != 0 ||
         (executed.affected_rows_present && executed.affected_rows != 0) ||
         !ExactDdlCreateProcedureTerminal(
             held.descriptor_authority, held.descriptor.evidence,
@@ -33926,7 +33600,7 @@ PipelineResult SbsqlTestWireSession::RunDdlCreatePackageForWire() { PipelineResu
 PipelineResult SbsqlTestWireSession::RunDdlCreateSequenceForWire() { PipelineResult result;if(!server_client_||!session_.authenticated){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.DDL_CREATE_SEQUENCE.CLIENT_UNAVAILABLE","ERROR","authenticated parser IPC client unavailable.","sbp_sbsql.wire"));return result;}ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlCreatePackageRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.DDL_CREATE_SEQUENCE.RECEIPT","ERROR","statement context receipt was invalid.","sbp_sbsql.wire"));return result;}q.receipt=*receipt;q.occurrence=1;q.procedure_occurrence=1;auto coordinated=server_client_->CoordinateDdlCreatePackage(session_,c::EncodeSblrDdlCreatePackageRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.DDL_CREATE_SEQUENCE.COORDINATION","ERROR","sequence coordination failed through package-compatible IPC.","sbp_sbsql.wire"));return result;}c::SblrDdlCreateSequenceDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateSequenceDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false)){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.DDL_CREATE_SEQUENCE.DESCRIPTOR","ERROR",detail,"sbp_sbsql.wire"));return result;}auto operand=c::EncodeSblrDdlCreateSequenceDescriptorV1(d,true);if(operand.empty()){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.DDL_CREATE_SEQUENCE.OPERAND","ERROR","sequence descriptor operand encoding failed.","sbp_sbsql.wire"));return result;}BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_sequence";g_ddl_create_package_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_package_operand=nullptr;if(!submission){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.DDL_CREATE_SEQUENCE.SUBMISSION","ERROR","canonical sequence submission construction failed.","sbp_sbsql.wire"));return result;}auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlCreateSequenceResultV1 rr;if(!c::DecodeSblrDdlCreateSequenceResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
 
 PipelineResult SbsqlTestWireSession::RunPreparedParameterizedForWire(
-    std::string_view sql, std::string_view prepared_statement_uuid,
+    std::string_view sql, const core::platform::Uuid& prepared_statement_uuid,
     std::uint64_t prepared_generation,
     const std::vector<PreparedParameterWireValue>& parameter_values,
     bool cursor_requested) {
@@ -34011,6 +33685,15 @@ PipelineResult SbsqlTestWireSession::RunCanonicalRouteTextEnvelopeForWire(
     std::string_view encoded_route_envelope,
     const std::vector<std::uint8_t>& data_packet,
     bool cursor_requested) {
+  return RunCanonicalRouteTextEnvelopeForWire(
+      WireOperationDraft{std::string(encoded_route_envelope), {}, {}},
+      data_packet, cursor_requested);
+}
+
+PipelineResult SbsqlTestWireSession::RunCanonicalRouteTextEnvelopeForWire(
+    const WireOperationDraft& draft,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
   PipelineResult result;
   result.accepted = false;
   if (!HasExecutionRoute()) {
@@ -34050,7 +33733,7 @@ PipelineResult SbsqlTestWireSession::RunCanonicalRouteTextEnvelopeForWire(
   }
 
   auto submission = BuildCanonicalRouteTextSubmission(
-      encoded_route_envelope, acquired.context, session_);
+      draft.text, acquired.context, session_, draft.target_uuid, draft.rows);
   if (!submission) {
     result.messages.diagnostics.push_back(MakeDiagnostic(
         "SBSQL.NATIVE_SBLR.CANONICAL_ENCODING_FAILED", "ERROR",
@@ -34092,6 +33775,38 @@ PipelineResult SbsqlTestWireSession::RunCanonicalRouteTextEnvelopeForWire(
 }
 
 ServerPrepareSblrResult SbsqlTestWireSession::PrepareSblrForWire(
+    const WireOperationDraft& draft) {
+  ServerPrepareSblrResult result;
+  if (!HasExecutionRoute() || !session_.authenticated ||
+      config_.embedded_engine_direct || server_client_ == nullptr) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.PREPARE.UNAVAILABLE", "ERROR",
+        "Canonical prepare requires an authenticated SBPS server route",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  const ParserTransactionSelector selector{session_.local_transaction_id,
+                                           session_.transaction_uuid};
+  const auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = acquired.messages;
+    return result;
+  }
+  const auto submission = BuildCanonicalRouteTextSubmission(
+      draft.text, acquired.context, session_, draft.target_uuid, draft.rows);
+  if (!submission) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.NATIVE_SBLR.CANONICAL_ENCODING_FAILED", "ERROR",
+        "The operation draft could not be encoded as canonical SBLR",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  const auto& bytes = submission->canonical_operation_bytes;
+  return server_client_->PrepareSblr(session_, std::string_view(
+      reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+}
+
+ServerPrepareSblrResult SbsqlTestWireSession::PrepareSblrForWire(
     std::string_view encoded_sblr_envelope) {
   ServerPrepareSblrResult result;
   if (!HasExecutionRoute()) {
@@ -34117,7 +33832,7 @@ ServerPrepareSblrResult SbsqlTestWireSession::PrepareSblrForWire(
 }
 
 PipelineResult SbsqlTestWireSession::RunPreparedSblrEnvelopeForWire(
-    std::string_view prepared_statement_uuid,
+    const core::platform::Uuid& prepared_statement_uuid,
     std::string_view encoded_sblr_envelope,
     const std::vector<std::uint8_t>& data_packet,
     bool cursor_requested) {
@@ -34176,10 +33891,12 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
   if (upper == "QUIT" || upper == "EXIT") return {true, "OK BYE\n"};
   if (upper == "PING") return {false, "OK PONG\n"};
   if (upper == "HEARTBEAT") {
-    return {false, "HEARTBEAT " + metrics_->HeartbeatJson(config_, session_, *cache_, "idle") + "\n"};
+    const auto packet = metrics_->HeartbeatPacket(config_, session_, *cache_, "idle");
+    return {false, "HEARTBEAT_BINARY " + std::to_string(packet.size()) + "\n" + packet};
   }
   if (upper == "METRICS") {
-    return {false, "METRICS " + metrics_->SnapshotJson(config_, session_, *cache_) + "\n"};
+    const auto packet = metrics_->SnapshotPacket(config_, session_, *cache_);
+    return {false, "METRICS_BINARY " + std::to_string(packet.size()) + "\n" + packet};
   }
   if (upper == "FLUSH CACHE") {
     cache_->Flush();
@@ -34266,7 +33983,7 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
       stream_body = TrimAscii(end);
     }
     auto result = RunPipeline(stream_body, true, true, stream_rows);
-    if (result.accepted && !result.server_cursor_uuid.empty()) {
+    if (result.accepted && !result.server_cursor_uuid.is_nil()) {
       last_cursor_uuid_ = result.server_cursor_uuid;
     }
     return {false, RenderPipelineResult(result)};
@@ -34300,12 +34017,12 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
         "(VALUES (0, 10), (1, 11), (2, 12), (3, 13), (4, 14)) "
         "AS input(key_a, amount) GROUP BY key_a",
         true, true, 5);
-    if (!executed.accepted || executed.server_cursor_uuid.empty()) {
+    if (!executed.accepted || executed.server_cursor_uuid.is_nil()) {
       return {false, RenderMessageVectorSet(executed.messages)};
     }
     last_cursor_uuid_ = executed.server_cursor_uuid;
     std::ostringstream out;
-    out << "CURSOR " << executed.server_cursor_uuid << ' '
+    out << "CURSOR " << "last" << ' '
         << executed.server_row_count << " source=engine\n";
     return {false, out.str()};
   }
@@ -34430,7 +34147,7 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
     if (!executed.accepted) return {false, RenderMessageVectorSet(executed.messages)};
     last_cursor_uuid_ = executed.cursor_uuid;
     std::ostringstream out;
-    out << "MULTI_CURSOR " << executed.cursor_uuid << " events=" << executed.row_count << '\n';
+    out << "MULTI_CURSOR " << "last" << " events=" << executed.row_count << '\n';
     return {false, out.str()};
   }
   if (upper == "WARNING STREAM") {
@@ -34455,7 +34172,7 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
     if (!executed.accepted) return {false, RenderMessageVectorSet(executed.messages)};
     last_cursor_uuid_ = executed.cursor_uuid;
     std::ostringstream out;
-    out << "WARNING_CURSOR " << executed.cursor_uuid << " events=" << executed.row_count << '\n';
+    out << "WARNING_CURSOR " << "last" << " events=" << executed.row_count << '\n';
     return {false, out.str()};
   }
   if (upper == "TIMEOUT STREAM" || upper == "DRAIN STREAM" || upper == "CANCEL STREAM") {
@@ -34483,7 +34200,7 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
     if (!executed.accepted) return {false, RenderMessageVectorSet(executed.messages)};
     last_cursor_uuid_ = executed.cursor_uuid;
     std::ostringstream out;
-    out << ToUpperAscii(mode) << "_CURSOR " << executed.cursor_uuid
+    out << ToUpperAscii(mode) << "_CURSOR " << "last"
         << " events=" << executed.row_count << '\n';
     return {false, out.str()};
   }
@@ -34508,7 +34225,10 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
     const auto opened = ExecuteSblrOnRoute(MultiResultParserJsonEnvelope(2), true);
     if (!opened.accepted) return {false, RenderMessageVectorSet(opened.messages)};
     const auto routine =
-        ExecuteSblrOnRoute(RoutineCursorArgumentJsonEnvelope(opened.cursor_uuid), false);
+        ExecuteSblrOnRouteWithDataPacket(
+            RoutineCursorArgumentJsonEnvelope(),
+            std::vector<std::uint8_t>(opened.cursor_uuid.bytes.begin(),
+                                      opened.cursor_uuid.bytes.end()), false);
     if (!routine.accepted) {
       (void)CloseCursorOnRoute(opened.cursor_uuid);
       return {false, RenderMessageVectorSet(routine.messages)};
@@ -34522,7 +34242,7 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
         routine.row_packet.find("\"operation_id\":\"routine.execute_cursor_argument\"") !=
             std::string::npos;
     std::ostringstream out;
-    out << "ROUTINE_CURSOR " << opened.cursor_uuid
+    out << "ROUTINE_CURSOR " << "last"
         << " operation_id=" << routine.operation_id
         << " routine_rows=" << routine.row_count
         << " same_cursor=" << (same_cursor ? "true" : "false")
@@ -34532,7 +34252,7 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
   }
   if (upper.starts_with("FETCH")) {
     MessageVectorSet messages;
-    if (last_cursor_uuid_.empty()) {
+    if (last_cursor_uuid_.is_nil()) {
       messages.diagnostics.push_back(MakeDiagnostic(
           "PARSER_SERVER_IPC.CURSOR_REQUIRED",
           "ERROR",
@@ -34552,7 +34272,7 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
     const auto fetched = FetchCursorOnRoute(last_cursor_uuid_, max_rows);
     if (!fetched.accepted) return {false, RenderMessageVectorSet(fetched.messages)};
     std::ostringstream out;
-    out << "FETCH " << fetched.cursor_uuid << ' ' << fetched.row_count
+    out << "FETCH " << "last" << ' ' << fetched.row_count
         << " end=" << (fetched.end_of_cursor ? "true" : "false") << ' ';
     if (!fetched.detail.empty()) {
       out << "detail=" << fetched.detail << ' ';
@@ -34564,7 +34284,7 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
   }
   if (upper == "CLOSE CURSOR") {
     MessageVectorSet messages;
-    if (last_cursor_uuid_.empty()) {
+    if (last_cursor_uuid_.is_nil()) {
       messages.diagnostics.push_back(MakeDiagnostic(
           "PARSER_SERVER_IPC.CURSOR_REQUIRED",
           "ERROR",
@@ -34574,12 +34294,12 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
     }
     const auto closed = CloseCursorOnRoute(last_cursor_uuid_);
     if (!closed.accepted) return {false, RenderMessageVectorSet(closed.messages)};
-    last_cursor_uuid_.clear();
+    last_cursor_uuid_ = {};
     return {false, "OK CURSOR_CLOSED\n"};
   }
   if (upper == "CANCEL CURSOR") {
     MessageVectorSet messages;
-    if (last_cursor_uuid_.empty()) {
+    if (last_cursor_uuid_.is_nil()) {
       messages.diagnostics.push_back(MakeDiagnostic(
           "PARSER_SERVER_IPC.CURSOR_REQUIRED",
           "ERROR",
@@ -34589,7 +34309,7 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
     }
     const auto closed = CancelCursorOnRoute(last_cursor_uuid_);
     if (!closed.accepted) return {false, RenderMessageVectorSet(closed.messages)};
-    last_cursor_uuid_.clear();
+    last_cursor_uuid_ = {};
     return {false, "OK CURSOR_CANCELLED detail=" + closed.detail + "\n"};
   }
   MessageVectorSet messages;
@@ -35041,7 +34761,7 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
 
   ddl::SblrDdlCreateSchemaResultV1 terminal;
   if (executed.operation_id != "engine.op.ddl_create_schema" ||
-      !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+      !executed.cursor_uuid.is_nil() || executed.row_count != 0 ||
       (executed.affected_rows_present && executed.affected_rows != 0) ||
       !ExactDdlCreateSchemaTerminal(
           descriptor,
@@ -35440,7 +35160,7 @@ PipelineResult SbsqlTestWireSession::RunSecurityCreatePrivilegeTemplateForWire(
   c::SblrSecurityCreatePrivilegeTemplateResultV1 terminal;
   if (executed.operation_id !=
           "engine.op.security_create_privilege_template" ||
-      !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+      !executed.cursor_uuid.is_nil() || executed.row_count != 0 ||
       (executed.affected_rows_present && executed.affected_rows != 0) ||
       !c::DecodeSblrSecurityCreatePrivilegeTemplateResultV1(
           reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
@@ -35839,7 +35559,7 @@ PipelineResult SbsqlTestWireSession::RunShowObjectDetailForWire(
   }
   catalog::SblrCatalogIntrospectResultV1 terminal;
   if (executed.operation_id != "engine.op.catalog_introspect" ||
-      executed.cursor_uuid.empty() ||
+      executed.cursor_uuid.is_nil() ||
       !executed.cursor_stream_descriptor.complete() ||
       executed.row_count == 0 ||
       !catalog::DecodeSblrCatalogIntrospectResultV1(
@@ -37956,7 +37676,7 @@ PipelineResult SbsqlTestWireSession::RunSecurityAlterPolicyForWire(
     security::SblrSecAlterPolicyResultV1 terminal;
     std::string detail;
     if (executed.operation_id != "engine.op.sec_alter_policy" ||
-        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        !executed.cursor_uuid.is_nil() || executed.row_count != 0 ||
         (executed.affected_rows_present && executed.affected_rows != 0) ||
         !ExactSecurityAlterPolicyTerminal(
             held.descriptor,
@@ -39423,8 +39143,8 @@ PipelineResult SbsqlTestWireSession::RunNamedParameterBindForWire(
     }
     const auto canonical = CanonicalizePreparedParameterWireValue(
         parameter_values[index],
-        ParameterSlotUuidText(slot.datatype_descriptor_uuid),
-        ParameterSlotUuidText(slot.datatype_type_uuid), slot.nullable != 0);
+        core::platform::Uuid{slot.datatype_descriptor_uuid},
+        core::platform::Uuid{slot.datatype_type_uuid}, slot.nullable != 0);
     if (!canonical.accepted) {
       return refuse(canonical.diagnostic_code.empty()
                         ? "DATATYPE.CONVERSION_FAILED"
@@ -39690,7 +39410,7 @@ PipelineResult SbsqlTestWireSession::RunResultPageForWire() {
   namespace page = scratchbird::engine::sblr;
   auto opened = RunStmtExecuteForWire(true);
   if (!opened.accepted || opened.messages.has_errors() ||
-      opened.server_cursor_uuid.empty()) {
+      opened.server_cursor_uuid.is_nil()) {
     return opened;
   }
   PipelineResult result;

@@ -9,6 +9,8 @@
 // SEARCH_KEY: SB_SERVER_MAINTENANCE_RELOAD_SHUTDOWN
 
 #include "maintenance_coordinator.hpp"
+#include "management_request_codec.hpp"
+#include <algorithm>
 
 #include "database_lifecycle.hpp"
 #include "sbps.hpp"
@@ -73,20 +75,18 @@ void ApplyModeFences(ServerMaintenanceCoordinator* coordinator,
 }
 
 bool ContainsToken(const std::string& value, const std::string& token) {
-  return value.find(token) != std::string::npos;
+  std::vector<std::string> fields;
+  return scratchbird::wire::SplitManagementMode(value, &fields) &&
+         std::find(fields.begin(), fields.end(), token) != fields.end();
 }
 
 std::string ModeValue(const std::string& mode, const std::string& key) {
-  const std::string prefix = key + ":";
-  const std::string alt_prefix = key + "=";
-  std::size_t start = 0;
-  while (start <= mode.size()) {
-    const auto end = mode.find_first_of(";,\n", start);
-    const auto token = mode.substr(start, end == std::string::npos ? std::string::npos : end - start);
-    if (token.rfind(prefix, 0) == 0) return token.substr(prefix.size());
-    if (token.rfind(alt_prefix, 0) == 0) return token.substr(alt_prefix.size());
-    if (end == std::string::npos) break;
-    start = end + 1;
+  std::vector<std::string> fields;
+  if (!scratchbird::wire::SplitManagementMode(mode, &fields)) return {};
+  for (const auto& field : fields) {
+    const auto separator = field.find_first_of(":=");
+    if (separator != std::string::npos && field.substr(0, separator) == key)
+      return field.substr(separator+1);
   }
   return {};
 }
@@ -126,8 +126,8 @@ scratchbird::storage::database::DatabaseLifecycleOperationConfig DatabaseOperati
   operation.path = config.database_default_path.string();
   operation.cluster_authority_available = false;
   operation.decryption_available = ContainsToken(request.mode, "decryption_available:true");
-  operation.operation_uuid = TokenText(request.request_uuid);
-  operation.actor_uuid = TokenText(request.session_uuid);
+  operation.operation_uuid.bytes = request.request_uuid;
+  operation.actor_uuid.bytes = request.session_uuid;
   operation.write_evidence = true;
   return operation;
 }
@@ -139,8 +139,8 @@ scratchbird::storage::database::DatabaseLifecycleRepairConfig DatabaseRepairConf
   repair.path = config.database_default_path.string();
   repair.cluster_authority_available = false;
   repair.decryption_available = ContainsToken(request.mode, "decryption_available:true");
-  repair.operation_uuid = TokenText(request.request_uuid);
-  repair.actor_uuid = TokenText(request.session_uuid);
+  repair.operation_uuid.bytes = request.request_uuid;
+  repair.actor_uuid.bytes = request.session_uuid;
   repair.repair_plan_id = ModeValue(request.mode, "repair_plan_id");
   if (repair.repair_plan_id.empty()) repair.repair_plan_id = ModeValue(request.mode, "repair_plan");
   repair.expected_database_uuid = ModeValue(request.mode, "expected_database_uuid");
@@ -160,8 +160,8 @@ scratchbird::storage::database::DatabaseDropConfig DatabaseDropConfig(
   drop.path = config.database_default_path.string();
   drop.cluster_authority_available = false;
   drop.decryption_available = ContainsToken(request.mode, "decryption_available:true");
-  drop.operation_uuid = TokenText(request.request_uuid);
-  drop.actor_uuid = TokenText(request.session_uuid);
+  drop.operation_uuid.bytes = request.request_uuid;
+  drop.actor_uuid.bytes = request.session_uuid;
   drop.drop_mode = ModeValue(request.mode, "drop_mode");
   if (drop.drop_mode.empty()) drop.drop_mode = "logical";
   drop.expected_database_uuid = request.target_uuid.empty()
@@ -695,6 +695,14 @@ ServerMaintenanceOperationResult ApplyServerMaintenanceOperation(
     result.diagnostics.push_back(MaintenanceDiagnostic(
         "SERVER.MAINTENANCE.COORDINATOR_UNAVAILABLE",
         "The server maintenance coordinator is not available."));
+    return result;
+  }
+  std::vector<std::string> mode_fields;
+  if (!scratchbird::wire::SplitManagementMode(request.mode, &mode_fields)) {
+    result.ok = false;
+    result.outcome = "refused";
+    result.diagnostics.push_back(MaintenanceDiagnostic(
+        "SERVER.MAINTENANCE.MODE_INVALID", "Maintenance options contain malformed binary identity or duplicate fields."));
     return result;
   }
   result.state_before = coordinator->state;

@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -30,16 +31,16 @@ namespace exec = scratchbird::engine::executor;
 namespace wire = scratchbird::wire;
 
 exec::PhysicalMgaStatementContext CacheMgaContext(
-    const std::string& statement_uuid =
-        "019f0000-0000-7500-8000-000000006101") {
+    const scratchbird::core::platform::Uuid& statement_uuid =
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006101")) {
   exec::PhysicalMgaStatementContext context;
   context.statement_uuid = statement_uuid;
   context.owning_transaction_uuid =
-      "019f0000-0000-7500-8000-000000006102";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006102");
   context.statement_snapshot_uuid =
-      "019f0000-0000-7500-8000-000000006103";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006103");
   context.statement_metadata_snapshot_uuid =
-      "019f0000-0000-7500-8000-000000006104";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006104");
   context.owning_local_transaction_id = 7;
   context.visible_committed_high_watermark = 6;
   context.oldest_active_transaction_id = 7;
@@ -60,18 +61,18 @@ exec::TypedPhysicalNodeDag CacheSelectedDag(
     const exec::PhysicalMgaStatementContext& context) {
   exec::TypedPhysicalNodeDag dag;
   dag.abi_version = 2;
-  dag.selected_plan_uuid = "019f0000-0000-7500-8000-000000006120";
+  dag.selected_plan_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006120");
   dag.root_physical_node_id = 1;
   dag.local_transaction_id = context.owning_local_transaction_id;
   dag.statement_snapshot_id = context.visible_committed_high_watermark;
   dag.mga_statement_context = context;
-  dag.bound_sblr_tree_uuid = "019f0000-0000-7500-8000-000000006121";
-  dag.catalog_epoch_uuid = "019f0000-0000-7500-8000-000000006122";
-  dag.security_context_uuid = "019f0000-0000-7500-8000-000000006123";
-  dag.capability_snapshot_uuid = "019f0000-0000-7500-8000-000000006124";
-  dag.resource_snapshot_uuid = "019f0000-0000-7500-8000-000000006125";
-  dag.statistics_snapshot_uuid = "019f0000-0000-7500-8000-000000006126";
-  dag.route_snapshot_uuid = "019f0000-0000-7500-8000-000000006127";
+  dag.bound_sblr_tree_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006121");
+  dag.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006122");
+  dag.security_context_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006123");
+  dag.capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006124");
+  dag.resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006125");
+  dag.statistics_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006126");
+  dag.route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006127");
   dag.catalog_generation = 1;
   dag.security_epoch = 1;
   dag.policy_epoch = 1;
@@ -102,10 +103,10 @@ exec::TypedPhysicalNodeDag CacheSelectedDag(
   node.implementation_id = "values.materialize.v1";
   node.output_descriptor_ids = {1};
   node.causal_counter_id = 1;
-  node.selected_alternative_uuid = "019f0000-0000-7500-8000-000000006130";
-  node.executor_capability_uuid = "019f0000-0000-7500-8000-000000006131";
+  node.selected_alternative_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006130");
+  node.executor_capability_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006131");
   node.executor_capability_abi_version = 1;
-  node.cost_vector_uuid = "019f0000-0000-7500-8000-000000006132";
+  node.cost_vector_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006132");
   node.memory_bytes_required = 1;
   node.engine_capability_validated = true;
   node.mga_statement_context = context;
@@ -318,8 +319,8 @@ void ProveProfilerAndContentionClosure(std::vector<std::string>* evidence) {
 
 void ProveExtendedStatsClosure(std::vector<std::string>* evidence) {
   opt::ExtendedStatsSelectivityRequest request;
-  request.relation_uuid = "rel.odfr090";
-  request.column_uuids = {"col.a", "col.b"};
+  request.relation_uuid = scratchbird::tests::FixtureUuid(1487, 1);
+  request.column_uuids = {scratchbird::tests::FixtureUuid(1487, 2), scratchbird::tests::FixtureUuid(1487, 3)};
   request.value_encodings = {"1", "2"};
   request.children = {{0.10, opt::CostConfidence::kHigh, "a", false},
                       {0.20, opt::CostConfidence::kHigh, "b", false}};
@@ -380,7 +381,8 @@ void ProveCompressionVectorStreamingSnapshotClosure(
   exec::SnapshotSafeResultCache cache;
   exec::SnapshotSafeCacheLookupRequest lookup;
   lookup.cache_enabled = false;
-  lookup.key.normalized_operation = "select closure";
+  lookup.key.bound_sblr_tree_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006121");
+  lookup.key.security_context_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006123");
   lookup.key.safe_parameter_digest = "none";
   lookup.key.catalog_epoch = 1;
   lookup.key.statistics_epoch = 1;
@@ -393,11 +395,9 @@ void ProveCompressionVectorStreamingSnapshotClosure(
   lookup.key.result_contract_identity = "closure.rowset.v1";
   lookup.key.result_contract_hash = "sha256:closure-rowset";
   lookup.key.route_compatibility = "embedded";
-  lookup.key.dialect_compatibility = "sbsql";
   lookup.candidate_set_snapshot_safe = true;
   lookup.row_count = 1;
   lookup.recomputed_result_digest = "r";
-  lookup.recomputed_mga_security_digest = "m";
   const auto missing_authority = cache.Lookup(lookup);
   Require(missing_authority.action == exec::SnapshotSafeCacheAction::kRefuse &&
               !missing_authority.cache_hit,

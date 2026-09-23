@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "mga_relation_store/mga_relation_locator.hpp"
 #include "mga_relation_store/mga_row_version_reader.hpp"
 #include "hash_digest.hpp"
 #include "dml/test_optimization_profile.hpp"
@@ -38,29 +39,14 @@ std::string ScopedRelationStoreRoot(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_relation_scope";
 }
 
-std::string ScopedRelationSegmentName(const std::string& table_uuid) {
-  std::string name;
-  name.reserve(table_uuid.size());
-  for (const char ch : table_uuid) {
-    const bool safe = (ch >= 'a' && ch <= 'z') ||
-                      (ch >= 'A' && ch <= 'Z') ||
-                      (ch >= '0' && ch <= '9') ||
-                      ch == '-' || ch == '_';
-    name.push_back(safe ? ch : '_');
-  }
-  return name.empty() ? std::string("unknown") : name;
-}
-
 std::string ScopedRowStorePath(const EngineRequestContext& context,
-                               const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".rows";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".rows", false);
 }
 
 std::string ScopedRowBinaryStorePath(const EngineRequestContext& context,
-                                     const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".rows.sbnr";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".rows.sbnr", false);
 }
 
 bool InspectRowSegment(const std::string& path, bool* present) {
@@ -185,10 +171,10 @@ void UpdateScopedDecodedRowCacheAfterAppend(
 
 bool LoadDecodedScopedRowsForTable(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::vector<CrudRowVersionRecord>* rows,
     bool* used_segment) {
-  if (rows == nullptr) return false;
+  if (rows == nullptr || !core::uuid::IsEngineIdentityUuid(table_uuid)) return false;
   rows->clear();
   if (used_segment != nullptr) *used_segment = false;
   const std::string path = ScopedRowStorePath(context, table_uuid);
@@ -203,7 +189,6 @@ bool LoadDecodedScopedRowsForTable(
       !ReadCompleteMgaBinaryFile(binary_path, &binary_bytes)) return invalidate();
   // Cache reuse never substitutes for current complete read admission. Bind
   // both exact contents, not a summed size or timestamps which can be reused.
-  if (!text_bytes.empty() && text_bytes.back() != '\n') return invalidate();
   const auto text_digest = scratchbird::core::hash::ComputeSha256Digest(text_bytes);
   const auto binary_digest = scratchbird::core::hash::ComputeSha256Digest(binary_bytes);
   if (!text_digest.ok() || !binary_digest.ok()) return invalidate();
@@ -224,33 +209,9 @@ bool LoadDecodedScopedRowsForTable(
   }
   dml::RecordTestOptimizationBranch("decoded_rows_from_store");
   std::vector<CrudRowVersionRecord> decoded_rows;
-  std::unordered_map<std::string, std::string> row_value_key_cache;
-  row_value_key_cache.reserve(64);
-  const std::string_view text = text_bytes.empty() ? std::string_view{} :
-      std::string_view(reinterpret_cast<const char*>(text_bytes.data()), text_bytes.size());
-  std::size_t start = 0;
-  while (start < text.size()) {
-    const auto end = text.find('\n', start);
-    if (end == std::string_view::npos) return invalidate();
-    const auto fields = SplitTabs(std::string(text.substr(start, end - start)));
-    start = end + 1;
-    if ((fields.size() != 11 && fields.size() != 12) ||
-        fields[0] != kRowStoreMagic || fields[1] != "ROW_VERSION" ||
-        fields[4] != table_uuid || (fields[7] != "0" && fields[7] != "1")) return invalidate();
-    CrudRowVersionRecord row;
-    row.creator_tx = ParseU64(fields[2]);
-    row.event_sequence = ParseU64(fields[3]);
-    row.sequence = row.event_sequence;
-    row.table_uuid = fields[4];
-    row.row_uuid = fields[5];
-    row.version_uuid = fields[6];
-    row.deleted = fields[7] == "1";
-    row.previous_version_uuid = fields[8];
-    row.previous_sequence = ParseU64(fields[9]);
-    row.values = DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
-    if (fields.size() == 12) row.temporary_session_uuid = fields[11];
-    decoded_rows.push_back(std::move(row));
-  }
+  ScopedRelationSummary general_summary;
+  if (!DecodeScopedRowBinaryBytes(text_bytes, &decoded_rows, &general_summary) ||
+      general_summary.malformed) return invalidate();
   ScopedRelationSummary binary_summary;
   if (!DecodeScopedRowBinaryBytes(binary_bytes, &decoded_rows, &binary_summary) ||
       binary_summary.malformed) return invalidate();
@@ -271,11 +232,12 @@ bool LoadDecodedScopedRowsForTable(
 
 bool LoadDecodedScopedRowsForTableBounded(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     BoundedScopedRowReadControl* control,
     std::vector<CrudRowVersionRecord>* rows,
     bool* used_segment) {
   if (control == nullptr || rows == nullptr ||
+      !core::uuid::IsEngineIdentityUuid(table_uuid) ||
       control->maximum_row_versions == 0 || control->maximum_bytes == 0 ||
       control->cancellation_requested == nullptr ||
       !*control->cancellation_requested) {
@@ -291,7 +253,7 @@ bool LoadDecodedScopedRowsForTableBounded(
   if (!CheckedHeapReadMemoryAdd(
           static_cast<std::uint64_t>(context.database_path.size()),
           &path_character_bytes) ||
-      !CheckedHeapReadMemoryAdd(static_cast<std::uint64_t>(table_uuid.size()),
+      !CheckedHeapReadMemoryAdd(std::uint64_t{36},
                                 &path_character_bytes) ||
       !CheckedHeapReadMemoryMultiply(path_character_bytes, 2,
                                      &path_dynamic_bytes) ||
@@ -386,187 +348,18 @@ bool LoadDecodedScopedRowsForTableBounded(
     return bytes;
   };
   if (text_exists) {
-    constexpr std::uint64_t kMinimumTextRowRecordBytes = 27;
-    const std::uint64_t maximum_text_rows = std::min(
-        control->maximum_row_versions,
-        (authorized_text_bytes + kMinimumTextRowRecordBytes - 1) /
-            kMinimumTextRowRecordBytes);
-    std::uint64_t text_vector_bytes = 0;
-    std::uint64_t text_preflight_memory = initial_decode_memory;
-    if (!CheckedHeapReadMemoryMultiply(maximum_text_rows,
-                                       sizeof(CrudRowVersionRecord),
-                                       &text_vector_bytes) ||
-        !CheckedHeapReadMemoryAdd(sizeof(decoded_rows),
-                                  &text_preflight_memory) ||
-        !CheckedHeapReadMemoryAdd(text_vector_bytes,
-                                  &text_preflight_memory) ||
-        !CheckedHeapReadMemoryAdd(authorized_text_bytes,
-                                  &text_preflight_memory) ||
-        !ObserveBoundedHeapReadMemory(control, text_preflight_memory)) {
-      if (control->refusal_detail.empty()) {
-        control->refusal_detail =
-            "heap_read_text_memory_receipt_overflow";
-      }
-      return false;
-    }
-    decoded_rows.reserve(static_cast<std::size_t>(maximum_text_rows));
-    std::uint64_t retained_text_row_projection =
-        sizeof(decoded_rows) + text_vector_bytes;
-    std::ifstream input;
-    const auto open_started = std::chrono::steady_clock::now();
-    input.open(text_path, std::ios::binary);
-    if (!AccountHeapReadWait(control, open_started)) return false;
-    if (!input) {
-      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-      control->refusal_detail = "heap_read_scoped_text_open_failed";
-      return false;
-    }
-    const auto consume_line = [&](const std::string& line) {
-      std::uint64_t line_projection = 0;
-      std::uint64_t line_phase_memory = initial_decode_memory;
-      if (!CheckedHeapReadMemoryMultiply(
-              static_cast<std::uint64_t>(line.size()) + 1, 128,
-              &line_projection) ||
-          !CheckedHeapReadMemoryAdd(retained_text_row_projection,
-                                    &line_phase_memory) ||
-          !CheckedHeapReadMemoryAdd(line_projection,
-                                    &line_phase_memory) ||
-          !ObserveBoundedHeapReadMemory(control, line_phase_memory)) {
-        if (control->refusal_detail.empty()) {
-          control->refusal_detail =
-              "heap_read_text_memory_receipt_overflow";
-        }
-        return false;
-      }
-      const auto fields = SplitTabs(line);
-      if ((fields.size() != 11 && fields.size() != 12) || fields[0] != kRowStoreMagic ||
-          fields[1] != "ROW_VERSION" || fields[4] != table_uuid ||
-          (fields[7] != "0" && fields[7] != "1")) {
-        control->failure_category = MgaHeapReadFailureCategoryV1::kCorruptStorage;
-        control->refusal_detail = "heap_read_scoped_text_record_invalid";
-        return false;
-      }
-      CrudRowVersionRecord row;
-      row.creator_tx = ParseU64(fields[2]);
-      row.event_sequence = ParseU64(fields[3]);
-      row.sequence = row.event_sequence;
-      row.table_uuid = fields[4];
-      row.row_uuid = fields[5];
-      row.version_uuid = fields[6];
-      row.deleted = fields[7] == "1";
-      row.previous_version_uuid = fields[8];
-      row.previous_sequence = ParseU64(fields[9]);
-      row.values =
-          DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
-      if (fields.size() >= 12) { row.temporary_session_uuid = fields[11]; }
-      if (!AdmitBoundedScopedRow(control, row)) { return false; }
-      // line_projection is a conservative bound for the transient tab/hex
-      // decoder working set.  It is not retained once the decoded row has
-      // been materialized.  Charging that transient estimate for every row
-      // made the receipt grow by 128 times the complete relation payload and
-      // rejected small, bounded relations despite a much smaller live set.
-      // Account the exact owned row carriers instead; the vector's reserved
-      // structural storage is already included in
-      // retained_text_row_projection.
-      std::uint64_t retained_row_bytes = 0;
-      if (!AccountHeapReadRowDynamicMemoryBytes(row, &retained_row_bytes) ||
-          !CheckedHeapReadMemoryAdd(retained_row_bytes,
-                                    &retained_text_row_projection)) {
-        control->refusal_detail =
-            "heap_read_text_memory_receipt_overflow";
-        return false;
-      }
-      decoded_rows.push_back(std::move(row));
-      return true;
-    };
-    constexpr std::size_t kReadChunkBytes = 64 * 1024;
-    char chunk[kReadChunkBytes];
-    std::string line;
-    std::uint64_t actual_text_bytes = 0;
-    bool reached_eof = false;
-    while (!reached_eof) {
-      if (BoundedScopedReadCancelled(control)) { return false; }
-      std::uint64_t line_append_phase_memory = initial_decode_memory;
-      if (!CheckedHeapReadMemoryAdd(retained_text_row_projection,
-                                    &line_append_phase_memory) ||
-          !CheckedHeapReadMemoryAdd(authorized_text_bytes,
-                                    &line_append_phase_memory) ||
-          !ObserveBoundedHeapReadMemory(control,
-                                        line_append_phase_memory)) {
-        if (control->refusal_detail.empty()) {
-          control->refusal_detail =
-              "heap_read_text_memory_receipt_overflow";
-        }
-        return false;
-      }
-      const std::uint64_t remaining =
-          authorized_text_bytes - actual_text_bytes;
-      const std::size_t requested = remaining == 0
-                                        ? 1
-                                        : static_cast<std::size_t>(std::min<
-                                              std::uint64_t>(remaining,
-                                                             kReadChunkBytes));
-      const auto read_started = std::chrono::steady_clock::now();
-      input.read(chunk, static_cast<std::streamsize>(requested));
-      if (!AccountHeapReadWait(control, read_started)) return false;
-      const std::streamsize read_count = input.gcount();
-      if (read_count < 0 ||
-          static_cast<std::uint64_t>(read_count) > remaining) {
-        control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-        control->refusal_detail = "heap_read_scoped_text_grew_during_read";
-        return false;
-      }
-      actual_text_bytes += static_cast<std::uint64_t>(read_count);
-      if (!AccountHeapStorageBytes(
-              control, static_cast<std::uint64_t>(read_count))) {
-        return false;
-      }
-      std::size_t begin = 0;
-      const std::size_t count = static_cast<std::size_t>(read_count);
-      for (std::size_t index = 0; index < count; ++index) {
-        if (chunk[index] != '\n') { continue; }
-        line.append(chunk + begin, index - begin);
-        if (!consume_line(line)) { return false; }
-        line.clear();
-        begin = index + 1;
-      }
-      if (begin < count) { line.append(chunk + begin, count - begin); }
-      if (input.bad()) {
-        control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-        control->refusal_detail = "heap_read_scoped_text_read_failed";
-        return false;
-      }
-      if (read_count < static_cast<std::streamsize>(requested)) {
-        if (!input.eof()) {
-          control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-          control->refusal_detail = "heap_read_scoped_text_read_failed";
-          return false;
-        }
-        reached_eof = true;
-      }
-    }
-    if (actual_text_bytes != authorized_text_bytes) {
-      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-      control->refusal_detail = "heap_read_scoped_text_changed_during_read";
-      return false;
-    }
-    if (!line.empty()) {
-      control->failure_category = MgaHeapReadFailureCategoryV1::kCorruptStorage;
-      control->refusal_detail = "heap_read_scoped_text_record_unterminated";
-      return false;
-    }
     const auto parent_memory = decode_parent_memory();
-    const auto row_memory = HeapReadRowVectorMemoryBytes(decoded_rows);
-    std::uint64_t phase_memory = 0;
-    if (!parent_memory.has_value() || !row_memory.has_value() ||
-        !CheckedHeapReadMemoryAdd(*parent_memory, &phase_memory) ||
-        !CheckedHeapReadMemoryAdd(*row_memory, &phase_memory) ||
-        !AccountHeapReadOwnedString(line, &phase_memory) ||
-        !ObserveBoundedHeapReadMemory(control, phase_memory)) {
-      if (control->refusal_detail.empty()) {
-        control->refusal_detail =
-            "heap_read_text_memory_receipt_overflow";
-      }
+    const auto retained_row_memory = HeapReadRowVectorMemoryBytes(decoded_rows);
+    if (!parent_memory || !retained_row_memory) {
+      control->refusal_detail = "heap_read_general_parent_memory_overflow";
+      return false;
+    }
+    control->retained_parent_memory_bytes = *parent_memory;
+    control->retained_decode_row_memory_bytes = *retained_row_memory;
+    ScopedRelationSummary summary;
+    if (!DecodeScopedRowBinaryStore(text_path, &decoded_rows, &summary, control, authorized_text_bytes) || summary.malformed) {
+      if (summary.malformed) control->failure_category = MgaHeapReadFailureCategoryV1::kCorruptStorage;
+      if (control->refusal_detail.empty()) control->refusal_detail = "heap_read_general_binary_decode_failed";
       return false;
     }
   }

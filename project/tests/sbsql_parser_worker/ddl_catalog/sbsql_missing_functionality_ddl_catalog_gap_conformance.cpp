@@ -6,8 +6,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../support/binary_uuid_fixture.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/schema_tree_api.hpp"
+#include "catalog/schema_tree_codec.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/alter_api.hpp"
@@ -55,35 +57,25 @@ namespace txn = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kPrincipalUuid =
-    "019f0700-0000-7000-8000-000000000001";
-constexpr std::string_view kSchemaUuid =
-    "019f0700-0000-7000-8000-000000000101";
-constexpr std::string_view kLifecycleSchemaUuid =
-    "019f0700-0000-7000-8000-000000000102";
-constexpr std::string_view kUnionMemberUuid =
-    "019f0700-0000-7000-8000-000000000103";
-constexpr std::string_view kUnionMember2Uuid =
-    "019f0700-0000-7000-8000-000000000104";
-constexpr std::string_view kUdrUuid =
-    "019f0700-0000-7000-8000-000000000201";
-constexpr std::string_view kConstraintUuid =
-    "019f0700-0000-7000-8000-000000000202";
-constexpr std::string_view kColumnUuid =
-    "019f0700-0000-7000-8000-000000000203";
-constexpr std::string_view kGroupUuid =
-    "019f0700-0000-7000-8000-000000000204";
-constexpr std::string_view kFilespaceUuid =
-    "019f0700-0000-7000-8000-000000000205";
-constexpr std::string_view kClusterUuid =
-    "019f0700-0000-7000-8000-000000000206";
-constexpr std::string_view kNodeUuid =
-    "019f0700-0000-7000-8000-000000000207";
+constexpr auto kPrincipalUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000001");
+constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000101");
+constexpr auto kLifecycleSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000102");
+constexpr auto kUnionMemberUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000103");
+constexpr auto kUnionMember2Uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000104");
+constexpr auto kUdrUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000201");
+constexpr auto kConstraintUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000202");
+constexpr auto kColumnUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000203");
+constexpr auto kGroupUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000204");
+constexpr auto kFilespaceUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000205");
+constexpr auto kClusterUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000206");
+constexpr auto kNodeUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000207");
+
+constexpr auto kAuditUuid = scratchbird::tests::FixtureUuid(1578, 1);
 
 struct Fixture {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
   txn::LocalTransactionId typed_local_transaction_id;
   txn::LocalTransactionInventory inventory;
@@ -125,8 +117,49 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view value = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (value.empty() || evidence.evidence_id == value)) {
+        (value.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == value))) {
       return true;
+    }
+  }
+  return false;
+}
+
+std::string MetadataUuidBytes(const api::EngineUuid& identity) {
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
+}
+
+bool HasEvidence(const api::EngineApiResult& result, std::string_view kind,
+                 const api::EngineUuid& identity) {
+  for (const auto& evidence : result.evidence) {
+    const auto* value = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && value && *value == identity) return true;
+  }
+  return false;
+}
+
+bool SchemaHasIdentity(std::string_view payload, const std::string& key,
+                       const api::EngineUuid& identity) {
+  std::vector<api::EngineLocalizedName> names;
+  std::vector<std::pair<std::string, std::string>> comments;
+  api::BinaryCatalogMetadata metadata;
+  if (!api::DecodeSchemaTreeMetadata(payload, &names, &comments, &metadata)) return false;
+  const auto it = metadata.identities.find(key);
+  return it != metadata.identities.end() && it->second == identity;
+}
+
+bool AnySchemaIdentity(const api::EngineApiResult& result, const std::string& key,
+                       const api::EngineUuid& identity) {
+  for (const auto& row : result.result_shape.rows) {
+    for (const auto& [name, value] : row.fields) {
+      if (name != "payload" || value.is_null) continue;
+      // The behavior-row carrier currently stores serialized metadata in its
+      // byte-preserving string member. Decode the framed metadata, never UUID text.
+      if (!value.binary_value.empty() && !value.encoded_value.empty()) continue;
+      const std::string_view bytes = value.binary_value.empty()
+          ? std::string_view(value.encoded_value)
+          : std::string_view(reinterpret_cast<const char*>(value.binary_value.data()),
+                             value.binary_value.size());
+      if (SchemaHasIdentity(bytes, key, identity)) return true;
     }
   }
   return false;
@@ -170,16 +203,16 @@ api::EngineLocalizedName Name(std::string path, std::string name) {
 
 void Grant(api::EngineRequestContext* context,
            std::string right,
-           std::string target_uuid = {}) {
+           api::EngineUuid target_uuid = {}) {
   api::EngineAuthorizationSubject subject;
-  subject.subject_uuid.canonical = std::string(kPrincipalUuid);
+  subject.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000001");
   subject.subject_kind = "user";
   context->authorization_context.effective_subjects.push_back(subject);
 
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.subject_uuid.canonical = std::string(kPrincipalUuid);
+  grant.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000001");
   grant.subject_kind = "user";
-  grant.target_uuid.canonical = std::move(target_uuid);
+  grant.target_uuid = std::move(target_uuid);
   grant.right = std::move(right);
   context->authorization_context.grants.push_back(std::move(grant));
 }
@@ -187,10 +220,10 @@ void Grant(api::EngineRequestContext* context,
 api::EngineRequestContext Context(const Fixture& fixture, bool grant_catalog_mutate) {
   api::EngineRequestContext context;
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = std::string(kPrincipalUuid);
-  context.session_uuid.canonical = "019f0700-0000-7000-8000-000000000010";
-  context.transaction_uuid.canonical = fixture.transaction_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000001");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000010");
+  context.transaction_uuid = fixture.transaction_uuid;
   context.local_transaction_id = fixture.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       fixture.local_transaction_id;
@@ -199,10 +232,9 @@ api::EngineRequestContext Context(const Fixture& fixture, bool grant_catalog_mut
   context.resource_epoch = 79;
   context.security_context_present = true;
   context.authorization_context.present = true;
-  context.authorization_context.principal_uuid.canonical =
-      std::string(kPrincipalUuid);
-  context.authorization_context.authority_uuid.canonical =
-      "019f0700-0000-7000-8000-000000000020";
+  context.authorization_context.principal_uuid =
+      kPrincipalUuid;
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000020");
   context.authorization_context.security_epoch = context.security_epoch;
   context.authorization_context.policy_epoch = 80;
   context.authorization_context.catalog_generation_id =
@@ -245,8 +277,8 @@ Fixture CreateFixture() {
                                           1790700000004);
   Require(begun.ok(), "local transaction begin failed");
   fixture.inventory = std::move(begun.inventory);
-  fixture.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  fixture.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
+  fixture.database_uuid = database_uuid.value.value;
+  fixture.transaction_uuid = transaction_uuid.value.value;
   fixture.local_transaction_id = begun.entry.identity.local_id.value;
   fixture.typed_local_transaction_id = begun.entry.identity.local_id;
   Require(db::PersistLocalTransactionInventoryToDatabase(fixture.path.string(),
@@ -271,7 +303,7 @@ void CommitFixture(Fixture* fixture) {
   Require(reopened.ok(), "reopen transaction begin failed");
   fixture->inventory = std::move(reopened.inventory);
   fixture->transaction_uuid =
-      uuid::UuidToString(reopen_transaction_uuid.value.value);
+      reopen_transaction_uuid.value.value;
   fixture->local_transaction_id = reopened.entry.identity.local_id.value;
   fixture->typed_local_transaction_id = reopened.entry.identity.local_id;
   Require(db::PersistLocalTransactionInventoryToDatabase(fixture->path.string(),
@@ -396,20 +428,20 @@ void RequireAdmissionAndOpcodeRegistry() {
 void RequireCreateAndAlterSchema(api::EngineRequestContext context) {
   api::EngineCreateSchemaRequest create;
   create.context = context;
-  create.target_object.uuid.canonical = std::string(kSchemaUuid);
+  create.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000101");
   create.target_object.object_kind = "schema";
   create.localized_names.push_back(
       Name("users.public.ddl_gap_union", "ddl_gap_union"));
   create.option_envelopes = {
-      "schema_union_member:" + std::string(kUnionMemberUuid),
-      "schema_union_member:" + std::string(kUnionMember2Uuid),
+      "schema_union_member:" + MetadataUuidBytes(kUnionMemberUuid),
+      "schema_union_member:" + MetadataUuidBytes(kUnionMember2Uuid),
       "schema_union_policy:ordered_overlay",
       "schema_union_root:true",
       "lifecycle_transition:create_schema_descriptor",
       "mga_root_mutation_registry:local_node_catalog",
       "implementation_flavour:engine_internal_api",
       "filespace_diagnostic:default_filespace_ready",
-      "catalog_ddl_mutation_audit:SBSQL-MISS-GATE-007"};
+      "catalog_ddl_mutation_audit:" + MetadataUuidBytes(kAuditUuid)};
   const auto created = api::EngineCreateSchema(create);
   for (const auto& diagnostic : created.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
@@ -420,22 +452,21 @@ void RequireCreateAndAlterSchema(api::EngineRequestContext context) {
   Require(HasEvidence(created, "schema_union_policy", "ordered_overlay"),
           "create schema missing schema-union policy evidence");
   Require(HasEvidence(created, "catalog_ddl_mutation_audit",
-                      "SBSQL-MISS-GATE-007"),
+                      kAuditUuid),
           "create schema missing catalog DDL audit evidence");
   Require(HasEvidence(created, "ddl_mga_finality_authority",
                       "durable_transaction_inventory"),
           "create schema missing MGA finality evidence");
-  Require(AnyFieldContains(created, "payload",
-                           "schema_union_member=" + std::string(kUnionMemberUuid)),
+  Require(AnySchemaIdentity(created, "schema_union_member.0", kUnionMemberUuid),
           "create schema payload omitted schema-union member");
 
   api::EngineAlterObjectRequest alter;
   alter.context = context;
-  alter.target_object.uuid.canonical = std::string(kSchemaUuid);
+  alter.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000101");
   alter.target_object.object_kind = "schema";
   alter.option_envelopes = {"schema_union_policy:replace_on_match",
                             "implementation_flavour:engine_internal_api_alter",
-                            "catalog_ddl_mutation_audit:SBSQL-MISS-GATE-007"};
+                            "catalog_ddl_mutation_audit:" + MetadataUuidBytes(kAuditUuid)};
   const auto altered = api::EngineAlterObject(alter);
   for (const auto& diagnostic : altered.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
@@ -449,16 +480,16 @@ void RequireCreateAndAlterSchema(api::EngineRequestContext context) {
 
 api::EngineCatalogCreateObjectRequest CatalogCreateRequest(
     const api::EngineRequestContext& context,
-    std::string_view uuid_text,
+    api::EngineUuid identity,
     std::string kind,
     std::string path,
     std::string name,
-    std::string schema_uuid = {}) {
+    api::EngineUuid schema_uuid = {}) {
   api::EngineCatalogCreateObjectRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = std::string(uuid_text);
+  request.target_object.uuid = identity;
   request.target_object.object_kind = std::move(kind);
-  request.target_schema.uuid.canonical = std::move(schema_uuid);
+  request.target_schema.uuid = std::move(schema_uuid);
   request.localized_names.push_back(Name(std::move(path), std::move(name)));
   request.option_envelopes.push_back(
       "payload:implementation_flavour=engine_internal_api");
@@ -487,14 +518,14 @@ void RequireCatalogLifecycleExpansion(api::EngineRequestContext context) {
                            "udr",
                            "users.public.ddl_catalog_lifecycle.udr_gap",
                            "udr_gap",
-                           std::string(kLifecycleSchemaUuid)));
+                           kLifecycleSchemaUuid));
   Require(udr.ok, "generic catalog CREATE UDR failed");
   Require(HasEvidence(udr, "ddl_lifecycle_transition_registry"),
           "generic CREATE UDR missing lifecycle registry evidence");
 
   api::EngineCatalogAlterObjectRequest alter;
   alter.context = context;
-  alter.target_object.uuid.canonical = std::string(kUdrUuid);
+  alter.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000201");
   alter.target_object.object_kind = "udr";
   alter.option_envelopes.push_back(
       "payload:implementation_flavour=engine_internal_api_alter");
@@ -509,12 +540,12 @@ void RequireCatalogLifecycleExpansion(api::EngineRequestContext context) {
                            "constraint",
                            "users.public.ddl_catalog_lifecycle.ck_gap",
                            "ck_gap",
-                           std::string(kLifecycleSchemaUuid)));
+                           kLifecycleSchemaUuid));
   Require(constraint.ok, "catalog constraint create failed");
 
   api::EngineDropConstraintRequest drop_constraint;
   drop_constraint.context = context;
-  drop_constraint.target_object.uuid.canonical = std::string(kConstraintUuid);
+  drop_constraint.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000202");
   drop_constraint.target_object.object_kind = "constraint";
   const auto constraint_dropped = api::EngineDropConstraint(drop_constraint);
   for (const auto& diagnostic : constraint_dropped.diagnostics) {
@@ -526,7 +557,7 @@ void RequireCatalogLifecycleExpansion(api::EngineRequestContext context) {
 
   api::EngineCatalogDropObjectRequest drop_udr;
   drop_udr.context = context;
-  drop_udr.target_object.uuid.canonical = std::string(kUdrUuid);
+  drop_udr.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000201");
   drop_udr.target_object.object_kind = "udr";
   const auto udr_dropped = api::EngineCatalogDropObject(drop_udr);
   Require(udr_dropped.ok, "generic catalog DROP UDR failed");
@@ -537,7 +568,7 @@ void RequireCatalogLifecycleExpansion(api::EngineRequestContext context) {
 void RequireTopLevelDropForms(api::EngineRequestContext context) {
   struct DropCase {
     std::string_view kind;
-    std::string_view uuid_text;
+    api::EngineUuid identity;
     bool expect_ok;
   };
   const DropCase cases[] = {
@@ -551,7 +582,7 @@ void RequireTopLevelDropForms(api::EngineRequestContext context) {
   for (const auto& drop_case : cases) {
     api::EngineDropObjectRequest request;
     request.context = context;
-    request.target_object.uuid.canonical = std::string(drop_case.uuid_text);
+    request.target_object.uuid = drop_case.identity;
     request.target_object.object_kind = std::string(drop_case.kind);
     const auto dropped = api::EngineDropObject(request);
     if (drop_case.expect_ok) {
@@ -564,8 +595,7 @@ void RequireTopLevelDropForms(api::EngineRequestContext context) {
       if (drop_case.kind == std::string_view("filespace")) {
         Require(HasEvidence(dropped,
                             "ddl_filespace_diagnostic",
-                            "filespace_catalog_mutation_recorded:" +
-                                std::string(kFilespaceUuid)),
+                            kFilespaceUuid),
                 "DROP FILESPACE missing filespace diagnostic evidence");
       }
     } else {
@@ -606,10 +636,10 @@ int main() {
   authorized = Context(fixture, true);
   const auto schema = api::CheckedFindSchemaTreeRecord(
       authorized,
-      std::string(kSchemaUuid),
+      kSchemaUuid,
       fixture.local_transaction_id);
   Require(schema.has_value(), "committed schema metadata was not reopen-visible");
-  Require(Contains(schema->payload, "catalog_ddl_mutation_audit=SBSQL-MISS-GATE-007"),
+  Require(SchemaHasIdentity(schema->payload, "catalog_ddl_mutation_audit", kAuditUuid),
           "committed schema payload omitted catalog DDL audit marker");
   Cleanup(fixture.path);
   return EXIT_SUCCESS;

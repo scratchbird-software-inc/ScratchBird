@@ -112,7 +112,7 @@ std::size_t CanonicalPhysicalRegistrationRevalidationCountForTest();
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveMaterializedSourceRegistration(
     std::unordered_map<std::uint64_t, exec::DescriptorBatch> batches,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::string diagnostic_id,
     std::string operation_name,
     exec::PhysicalNodeKind node_kind,
@@ -123,7 +123,7 @@ MakeLiveMaterializedSourceRegistration(
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
     std::unordered_map<std::uint64_t, exec::DescriptorBatch> batches,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::string diagnostic_id,
     std::string operation_name,
     bool strict_dispatcher_memory = false);
@@ -133,7 +133,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
 // but cannot create or refresh that authority.
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveTableSubqueryRegistration(
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t maximum_input_row_count,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);
 

@@ -41,13 +41,17 @@ bool Output(const dt::DatatypeTypeCodecIdentityRowV1& row,
   node->output_codec_generation = row.codec_generation;
   return true;
 }
-// Persisted descriptor fields are not parser hints. Reject duplicates and
-// check every identity/generation/codec field against the live registry.
+// Persisted binary bindings are not parser hints. Reject duplicate metadata
+// and textual identity shadows; compare the binding and codec parameters with
+// the live registry before publishing the resolved row.
 bool ColumnType(const EngineRequestContext& context,
                 const MgaRelationColumnStorageDescriptor& column,
                 dt::DatatypeTypeCodecIdentityRowV1* row) {
-  if (column.column_uuid.is_nil() || !column.column_generation ||
-      column.value_descriptor.descriptor_uuid.is_nil()) return false;
+  const auto& binding = column.value_descriptor;
+  if (row == nullptr || column.column_uuid.is_nil() || !column.column_generation ||
+      binding.descriptor_uuid.is_nil() ||
+      !core::uuid::IsEngineIdentityUuid(binding.datatype_descriptor_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(binding.type_uuid)) return false;
   std::map<std::string, std::string> fields;
   std::string_view remaining(column.value_descriptor.encoded_descriptor);
   while (!remaining.empty()) {
@@ -68,24 +72,27 @@ bool ColumnType(const EngineRequestContext& context,
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
     return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && value == expected;
   };
-  const auto descriptor = fields.find("datatype_descriptor_uuid");
-  if (descriptor == fields.end()) return false;
+  if (fields.contains("datatype_descriptor_uuid") || fields.contains("type_uuid"))
+    return false;
   // The initial admitted builtin rows all have generation one. A future
   // generation is a new profile, not permission to infer registry identity.
-  if (!number("datatype_descriptor_generation", 1)) return false;
+  if (binding.datatype_descriptor_generation != 1 ||
+      !number("datatype_descriptor_generation", binding.datatype_descriptor_generation)) return false;
   const auto current = dt::LookupDatatypeTypeCodecIdentityV1(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
-      context.datatype_registry_generation, descriptor->second, 1);
+      context.datatype_registry_generation, binding.datatype_descriptor_uuid,
+      binding.datatype_descriptor_generation);
   if (!current.ok) return false;
-  *row = current.row;
-  const auto type = fields.find("type_uuid");
   const auto codec = fields.find("codec_id");
-  return type != fields.end() && type->second == row->type_uuid &&
-      codec != fields.end() && codec->second == row->codec_id &&
-      number("type_generation", row->type_generation) &&
-      number("codec_version", row->codec_version) &&
-      number("codec_generation", row->codec_generation) &&
-      number("null_encoding", row->null_encoding_code);
+  const auto& resolved = current.row;
+  if (binding.type_uuid != resolved.type_uuid || codec == fields.end() ||
+      codec->second != resolved.codec_id ||
+      !number("type_generation", resolved.type_generation) ||
+      !number("codec_version", resolved.codec_version) ||
+      !number("codec_generation", resolved.codec_generation) ||
+      !number("null_encoding", resolved.null_encoding_code)) return false;
+  *row = resolved;
+  return true;
 }
 }  // namespace
 

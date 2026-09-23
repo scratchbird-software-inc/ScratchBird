@@ -21,12 +21,12 @@ namespace scratchbird::engine::internal_api {
 // admit key authority and publish opaque handles, but it never returns or
 // persists plaintext secret material.
 struct EngineProtectedMaterialCacheEntry {
-  std::string database_uuid;
-  std::string key_uuid;
+  EngineUuid database_uuid;
+  EngineUuid key_uuid;
   std::string key_handle;
   std::string key_fingerprint;
   std::string key_label;
-  std::string filespace_uuid;
+  EngineUuid filespace_uuid;
   std::uint64_t generation = 0;
   std::uint64_t admitted_at_epoch_millis = 0;
   std::uint64_t expires_at_epoch_millis = 0;
@@ -36,25 +36,25 @@ struct EngineProtectedMaterialCacheEntry {
 };
 
 struct EngineProtectedMaterialPolicySet {
-  std::string retention_policy_uuid;
-  std::string access_policy_uuid;
-  std::string release_policy_uuid;
-  std::string purge_policy_uuid;
-  std::string audit_policy_uuid;
+  EngineUuid retention_policy_uuid;
+  EngineUuid access_policy_uuid;
+  EngineUuid release_policy_uuid;
+  EngineUuid purge_policy_uuid;
+  EngineUuid audit_policy_uuid;
   std::uint64_t retention_until_epoch_millis = 0;
   bool legal_hold = false;
   std::vector<std::string> release_purposes;
 };
 
 struct EngineProtectedMaterialCatalogEntry {
-  std::string database_uuid;
-  std::string protected_material_uuid;
+  EngineUuid database_uuid;
+  EngineUuid protected_material_uuid;
   std::string object_class;
-  std::string owner_scope_uuid;
+  EngineUuid owner_scope_uuid;
   std::string purpose_class;
   std::string storage_class;
   std::string lifecycle_state = "active";
-  std::string active_version_uuid;
+  EngineUuid active_version_uuid;
   EngineProtectedMaterialPolicySet policy;
   std::uint64_t catalog_generation_id = 0;
   std::uint64_t created_local_transaction_id = 0;
@@ -64,9 +64,9 @@ struct EngineProtectedMaterialCatalogEntry {
 };
 
 struct EngineProtectedMaterialVersionCatalogEntry {
-  std::string database_uuid;
-  std::string protected_material_uuid;
-  std::string protected_material_version_uuid;
+  EngineUuid database_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid protected_material_version_uuid;
   std::uint64_t version_number = 0;
   std::string protected_reference;
   std::string envelope_reference;
@@ -83,11 +83,11 @@ struct EngineProtectedMaterialVersionCatalogEntry {
 };
 
 struct EngineProtectedMaterialAuditEvent {
-  std::string audit_event_uuid;
-  std::string database_uuid;
-  std::string protected_material_uuid;
-  std::string protected_material_version_uuid;
-  std::string actor_uuid;
+  EngineUuid audit_event_uuid;
+  EngineUuid database_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid protected_material_version_uuid;
+  EngineUuid actor_uuid;
   std::string event_kind;
   std::string decision;
   std::string diagnostic_code;
@@ -99,9 +99,9 @@ struct EngineProtectedMaterialAuditEvent {
 };
 
 struct EngineAdmitEncryptionKeyRequest : EngineApiRequest {
-  std::string key_uuid;
+  EngineUuid key_uuid;
   std::string key_label;
-  std::string filespace_uuid;
+  EngineUuid filespace_uuid;
   std::string secret_evidence;
   std::uint64_t cache_ttl_millis = 300000;
 };
@@ -117,8 +117,8 @@ struct EngineAdmitEncryptionKeyResult : EngineApiResult {
 };
 
 struct EngineRotateEncryptionKeyRequest : EngineApiRequest {
-  std::string key_uuid;
-  std::string replacement_key_uuid;
+  EngineUuid key_uuid;
+  EngineUuid replacement_key_uuid;
   std::string replacement_secret_evidence;
   std::string rotation_reason;
   std::uint64_t cache_ttl_millis = 300000;
@@ -128,14 +128,14 @@ struct EngineRotateEncryptionKeyResult : EngineApiResult {
   bool rotated = false;
   bool rotation_metadata_persisted = false;
   bool plaintext_material_persisted = false;
-  std::string previous_key_uuid;
-  std::string active_key_uuid;
+  EngineUuid previous_key_uuid;
+  EngineUuid active_key_uuid;
   std::string active_key_handle;
   std::uint64_t active_generation = 0;
 };
 
 struct EngineInspectProtectedMaterialCacheRequest : EngineApiRequest {
-  std::string key_uuid;
+  EngineUuid key_uuid;
 };
 
 struct EngineInspectProtectedMaterialCacheResult : EngineApiResult {
@@ -163,9 +163,9 @@ struct EngineShutdownProtectedMaterialResult : EngineApiResult {
 };
 
 struct EngineOpenEncryptedFilespaceRequest : EngineApiRequest {
-  std::string database_uuid;
-  std::string filespace_uuid;
-  std::string key_uuid;
+  EngineUuid database_uuid;
+  EngineUuid filespace_uuid;
+  EngineUuid key_uuid;
   std::string key_handle;
   bool encrypted_filespace = true;
   bool decryption_required = true;
@@ -178,8 +178,8 @@ struct EngineOpenEncryptedFilespaceResult : EngineApiResult {
   bool key_cache_hit = false;
   bool key_expired = false;
   bool plaintext_material_returned = false;
-  std::string database_uuid;
-  std::string filespace_uuid;
+  EngineUuid database_uuid;
+  EngineUuid filespace_uuid;
   std::string key_handle;
   std::uint64_t key_generation = 0;
 };
@@ -196,13 +196,13 @@ struct EngineRequestProtectedMaterialResult : EngineApiResult {
 };
 
 struct EngineCreateProtectedMaterialRequest : EngineApiRequest {
-  std::string protected_material_uuid;
+  EngineUuid protected_material_uuid;
   std::string object_class = "protected_material";
-  std::string owner_scope_uuid;
+  EngineUuid owner_scope_uuid;
   std::string purpose_class;
   std::string storage_class = "wrapped";
   EngineProtectedMaterialPolicySet policy;
-  std::string initial_version_uuid;
+  EngineUuid initial_version_uuid;
   std::string protected_reference;
   std::string envelope_reference;
   std::string payload_hash;
@@ -213,14 +213,14 @@ struct EngineCreateProtectedMaterialResult : EngineApiResult {
   bool initial_version_created = false;
   bool plaintext_material_stored = false;
   bool protected_material_redacted = true;
-  std::string protected_material_uuid;
-  std::string active_version_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid active_version_uuid;
   std::uint64_t active_version_number = 0;
 };
 
 struct EngineAddProtectedMaterialVersionRequest : EngineApiRequest {
-  std::string protected_material_uuid;
-  std::string protected_material_version_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid protected_material_version_uuid;
   std::string protected_reference;
   std::string envelope_reference;
   std::string payload_hash;
@@ -234,13 +234,13 @@ struct EngineAddProtectedMaterialVersionResult : EngineApiResult {
   bool active_version_changed = false;
   bool plaintext_material_stored = false;
   bool protected_material_redacted = true;
-  std::string protected_material_uuid;
-  std::string active_version_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid active_version_uuid;
   std::uint64_t active_version_number = 0;
 };
 
 struct EngineResolveProtectedMaterialRequest : EngineApiRequest {
-  std::string protected_material_uuid;
+  EngineUuid protected_material_uuid;
   std::string purpose;
 };
 
@@ -248,15 +248,15 @@ struct EngineResolveProtectedMaterialResult : EngineApiResult {
   bool resolved = false;
   bool active_version_visible = false;
   bool protected_material_redacted = true;
-  std::string protected_material_uuid;
-  std::string protected_material_version_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid protected_material_version_uuid;
   std::uint64_t version_number = 0;
   std::string protected_material_ref;
 };
 
 struct EngineReleaseProtectedMaterialRequest : EngineApiRequest {
-  std::string protected_material_uuid;
-  std::string protected_material_version_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid protected_material_version_uuid;
   std::string purpose;
 };
 
@@ -265,15 +265,15 @@ struct EngineReleaseProtectedMaterialResult : EngineApiResult {
   bool policy_denied = false;
   bool redaction_applied = true;
   bool plaintext_material_returned = false;
-  std::string protected_material_uuid;
-  std::string protected_material_version_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid protected_material_version_uuid;
   std::string release_handle;
-  std::string audit_event_uuid;
+  EngineUuid audit_event_uuid;
 };
 
 struct EnginePurgeProtectedMaterialVersionRequest : EngineApiRequest {
-  std::string protected_material_uuid;
-  std::string protected_material_version_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid protected_material_version_uuid;
   std::string purge_reason;
   std::string physical_erase_path;
   bool physical_erase_requested = false;
@@ -290,13 +290,13 @@ struct EnginePurgeProtectedMaterialVersionResult : EngineApiResult {
   bool physical_erase_executed = false;
   bool physical_erase_verified = false;
   EngineApiU64 physical_erase_bytes = 0;
-  std::string protected_material_uuid;
-  std::string protected_material_version_uuid;
-  std::string audit_event_uuid;
+  EngineUuid protected_material_uuid;
+  EngineUuid protected_material_version_uuid;
+  EngineUuid audit_event_uuid;
 };
 
 struct EngineInspectProtectedMaterialCatalogRequest : EngineApiRequest {
-  std::string protected_material_uuid;
+  EngineUuid protected_material_uuid;
   bool include_versions = true;
   bool include_audit = true;
 };
@@ -309,7 +309,7 @@ struct EngineInspectProtectedMaterialCatalogResult : EngineApiResult {
 };
 
 struct EngineExportProtectedMaterialPackageRequest : EngineApiRequest {
-  std::string protected_material_uuid;
+  EngineUuid protected_material_uuid;
   bool include_versions = true;
   bool include_audit = false;
   bool include_purged_versions = false;
@@ -320,18 +320,18 @@ struct EngineExportProtectedMaterialPackageResult : EngineApiResult {
   bool exported = false;
   bool protected_material_redacted = true;
   bool plaintext_material_returned = false;
-  std::string package_format = "scratchbird.protected_material.reference_package.v1";
+  std::string package_format = "scratchbird.protected_material.reference_package.v2";
   std::string package_digest;
-  std::string encoded_package;
-  std::string source_database_uuid;
-  std::string protected_material_uuid;
+  std::vector<scratchbird::core::platform::byte> encoded_package;
+  EngineUuid source_database_uuid;
+  EngineUuid protected_material_uuid;
   EngineApiU64 material_count = 0;
   EngineApiU64 version_count = 0;
   EngineApiU64 audit_event_count = 0;
 };
 
 struct EngineImportProtectedMaterialPackageRequest : EngineApiRequest {
-  std::string encoded_package;
+  std::vector<scratchbird::core::platform::byte> encoded_package;
   std::string expected_package_digest;
   bool import_authorized = false;
   bool allow_uuid_conflict_replace = false;
@@ -342,7 +342,7 @@ struct EngineImportProtectedMaterialPackageResult : EngineApiResult {
   bool imported = false;
   bool protected_material_redacted = true;
   bool plaintext_material_returned = false;
-  std::string package_format = "scratchbird.protected_material.reference_package.v1";
+  std::string package_format = "scratchbird.protected_material.reference_package.v2";
   std::string package_digest;
   EngineApiU64 material_count = 0;
   EngineApiU64 version_count = 0;

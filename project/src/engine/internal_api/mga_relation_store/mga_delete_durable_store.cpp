@@ -143,21 +143,19 @@ struct MgaDmlDeleteDurableStoreV1::Impl {
   bool Matches(const w::TypedDeleteJournalRecord& value) const {
     return value.descriptor.descriptor_uuid == descriptor_uuid &&
         value.descriptor.descriptor_generation == descriptor_generation &&
-        detail::DmlUpdateDurableTypedUuidText(value.database_uuid) == context.database_uuid &&
-        detail::DmlUpdateDurableTypedUuidText(value.owning_transaction_uuid) == context.transaction_uuid &&
+        value.database_uuid == context.database_uuid.bytes &&
+        value.owning_transaction_uuid == context.transaction_uuid.bytes &&
         value.owning_local_transaction_id == context.local_transaction_id &&
-        detail::DmlUpdateDurableTypedUuidText(value.authenticated_statement_receipt_uuid) == context.statement_receipt_uuid;
+        value.authenticated_statement_receipt_uuid == context.statement_receipt_uuid.bytes;
   }
   bool ActiveInventory() const {
     const auto inventory = scratchbird::storage::database::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
     if (!inventory.ok()) return false;
     const auto transaction = mga::LookupLocalTransaction(inventory.snapshot->inventory,
         mga::MakeLocalTransactionId(context.local_transaction_id));
-    w::TypedUpdateUuid transaction_uuid{};
-    if (!detail::DmlUpdateDurableTypedUuid(context.transaction_uuid, &transaction_uuid)) return false;
+    if (context.transaction_uuid.is_nil()) return false;
     return transaction.ok() && transaction.entry.state == mga::TransactionState::active &&
-        std::equal(transaction_uuid.begin(), transaction_uuid.end(),
-                   transaction.entry.identity.transaction_uuid.value.bytes.begin()) &&
+        context.transaction_uuid == transaction.entry.identity.transaction_uuid.value &&
         scratchbird::storage::database::RevalidateLocalTransactionInventorySnapshot(*inventory.snapshot).ok();
   }
   Publication PublishNoAlloc() noexcept {
@@ -186,12 +184,10 @@ std::unique_ptr<MgaDmlDeleteDurableStoreV1> MgaDmlDeleteDurableStoreV1::Open(
   if (context.database_path.empty() || !context.local_transaction_id || !generation ||
       detail::DmlUpdateDurableZero(descriptor_uuid) || context.cluster_transaction_active || context.route_fence_present)
     return refuse("local_owned_descriptor_required");
-  w::TypedUpdateUuid checked_uuid{};
   for (const auto* identity : {&context.database_uuid, &context.transaction_uuid,
       &context.statement_receipt_uuid, &context.statement_snapshot_uuid,
       &context.statement_metadata_snapshot_uuid}) {
-    if (!detail::DmlUpdateDurableTypedUuid(identity->canonical, &checked_uuid) ||
-        detail::DmlUpdateDurableZero(checked_uuid)) return refuse("complete_UUID_owner_required");
+    if (identity->is_nil()) return refuse("complete_UUID_owner_required");
   }
   if (!context.catalog_generation_id || !context.datatype_registry_generation)
     return refuse("owner_generations_required");
@@ -199,8 +195,8 @@ std::unique_ptr<MgaDmlDeleteDurableStoreV1> MgaDmlDeleteDurableStoreV1::Open(
   if (!inventory.ok()) return refuse("owning_database_inventory_required");
   const auto owner = mga::LookupLocalTransaction(inventory.snapshot->inventory,
       mga::MakeLocalTransactionId(context.local_transaction_id));
-  if (!owner.ok() || !detail::DmlUpdateDurableTypedUuid(context.transaction_uuid, &checked_uuid) ||
-      !std::equal(checked_uuid.begin(), checked_uuid.end(), owner.entry.identity.transaction_uuid.value.bytes.begin()) ||
+  if (!owner.ok() ||
+      context.transaction_uuid != owner.entry.identity.transaction_uuid.value ||
       !scratchbird::storage::database::RevalidateLocalTransactionInventorySnapshot(*inventory.snapshot).ok())
     return refuse("owning_transaction_inventory_required");
   auto impl = std::make_unique<Impl>();
@@ -212,7 +208,8 @@ std::unique_ptr<MgaDmlDeleteDurableStoreV1> MgaDmlDeleteDurableStoreV1::Open(
   const auto parent = std::filesystem::path(directory).parent_path();
   if (!detail::DmlUpdateDurableEnsureDirectory(parent.empty() ? "." : parent.string()))
     return refuse("parent_directory_fence_failed");
-  impl->path = directory + "/" + detail::DmlUpdateDurableTypedUuidText(descriptor_uuid) +
+  impl->path = directory + "/" + scratchbird::core::uuid::UuidToString(
+      detail::DmlUpdateDurableTypedUuidValue(descriptor_uuid)) +
       "." + std::to_string(generation) + ".ddjr";
   impl->temporary = impl->path + ".writing";
   impl->pending = impl->path + ".publication";
@@ -393,7 +390,7 @@ MgaDmlDeletePublicationStatusV1 MgaDmlDeleteDurableStoreV1::ReleaseAndPublish() 
   const auto observed = ObserveDmlDeleteRecoveryAuthorityV1(p.context, p.chain);
   if (!observed.ok || observed.disposition != Disposition::rollback_statement || !p.ActiveInventory())
     return Publication::refused;
-  const auto key = MgaSavepointUuidKey(detail::DmlUpdateDurableTypedUuidText(p.head.statement_savepoint_uuid));
+  const auto key = MgaSavepointUuidKey(EngineUuid{p.head.statement_savepoint_uuid});
   // Release itself owns its MGA append/fence. Once it succeeds, nothing below
   // may encode, allocate, cancel or roll back the published statement.
   const auto released = ReleaseMgaSavepointMarker(p.context, key);
@@ -437,7 +434,7 @@ MgaDmlDeleteAbortStatusV1 MgaDmlDeleteDurableStoreV1::AbortBeforePublication() {
   aborted.prior_record_sha256 = p.head.record_evidence_sha256;
   aborted.prior_result.reset();
   if (p.head.statement_savepoint_generation) {
-    const auto key = MgaSavepointUuidKey(detail::DmlUpdateDurableTypedUuidText(p.head.statement_savepoint_uuid));
+    const auto key = MgaSavepointUuidKey(EngineUuid{p.head.statement_savepoint_uuid});
     if (observed.disposition == Disposition::rollback_statement &&
         RollbackToMgaSavepointMarker(p.context, key).error) {
       p.uncertain = true;

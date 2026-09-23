@@ -24,6 +24,8 @@
 #include "sblr_dispatch.hpp"
 
 #include "catalog/name_resolution_api.hpp"
+#include "crud_support/crud_store.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "engine/executor/executor_foundation.hpp"
 #include "engine/executor/model_family_executor.hpp"
@@ -697,48 +699,72 @@ bool IsCanonicalSpatialColumnarContextualRouteCandidate(
   return Rcp079ExactContextualTextDirectRouteCandidateV2(dag);
 }
 
+std::size_t NativeRetainedSize(const api::EngineUuid&) { return 16; }
+std::size_t NativeRetainedSize(std::string_view value) { return value.size(); }
+std::size_t NativeRetainedCapacity(const api::EngineUuid&) { return 16; }
+std::size_t NativeRetainedCapacity(const std::string& value) { return value.capacity(); }
+
+std::optional<api::EngineUuid> Rcp079NativeUuidCell(const std::string* bytes) {
+  if (!bytes || bytes->size() != 16) return std::nullopt;
+  api::EngineUuid value;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes->data()),16,value.bytes.begin());
+  if (!core::uuid::IsEngineIdentityUuid(value)) return std::nullopt;
+  return value;
+}
 struct Rcp079ColumnarJoinSourceV1 {
   std::uint32_t logical_node_id{0};
-  std::string object_uuid;
+  api::EngineUuid object_uuid;
   api::MgaRelationStorageDescriptor persisted;
   std::vector<exec::ExecutorColumnDescriptor> columns;
   std::vector<std::uint32_t> output_descriptor_ids;
   std::vector<std::uint32_t> output_expression_ids;
   std::string implementation_id{"physical_columnar_zone_scan_v1"};
-  std::string capability_uuid;
-  std::string provider_uuid;
-  std::string result_handle_uuid;
-  std::string property_uuid;
-  std::string security_receipt_uuid;
+  api::EngineUuid capability_uuid;
+  api::EngineUuid provider_uuid;
+  api::EngineUuid result_handle_uuid;
+  api::EngineUuid property_uuid;
+  api::EngineUuid security_receipt_uuid;
 };
 
-std::optional<std::map<std::string_view, std::string_view>>
-Rcp079ExactDescriptorFieldsV1(const api::EngineDescriptor& descriptor) {
-  std::map<std::string_view, std::string_view> fields;
-  const auto encoded = std::string_view(descriptor.encoded_descriptor);
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto separator = encoded.find(';', offset);
-    const auto field = encoded.substr(
-        offset, separator == std::string_view::npos
-                    ? std::string_view::npos
-                    : separator - offset);
-    const auto equal = field.find('=');
-    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
-        equal + 1 == field.size() ||
-        !fields.emplace(field.substr(0, equal), field.substr(equal + 1))
-             .second) {
-      return std::nullopt;
-    }
-    if (separator == std::string_view::npos) break;
-    offset = separator + 1;
+struct Rcp079DescriptorFields : api::CatalogColumnMetadata {
+  bool contains(std::string_view key) const {
+    return text.contains(std::string(key)) || identities.contains(std::string(key));
   }
+  std::size_t size() const { return text.size() + identities.size(); }
+  auto begin() const { return text.begin(); }
+  auto end() const { return text.end(); }
+  auto find(std::string_view key) const { return text.find(std::string(key)); }
+  std::optional<api::EngineUuid> identity(std::string_view key) const {
+    const auto it = identities.find(std::string(key));
+    return it == identities.end() ? std::nullopt : std::optional(it->second);
+  }
+  bool exact(std::string_view key, const api::EngineUuid& expected) const {
+    return identity(key) == std::optional(expected);
+  }
+  bool exact(std::string_view key, std::string_view expected) const {
+    const auto it = find(key);
+    return it != end() && it->second == expected;
+  }
+};
+std::optional<Rcp079DescriptorFields>
+Rcp079ExactDescriptorFieldsV1(const api::EngineDescriptor& descriptor) {
+  Rcp079DescriptorFields fields;
+  if (!api::DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)) return std::nullopt;
+  for (const auto& [key, value] : fields.text)
+    if (key.ends_with("uuid") || value.empty()) return std::nullopt;
+  for (const auto& [key, value] : fields.identities) {
+    if ((key != "column_uuid" && key != "type_uuid" && key != "datatype_descriptor_uuid" &&
+         key != "codec_uuid" && key != "charset_uuid" && key != "collation_uuid" && key != "crs_uuid") ||
+        !core::uuid::IsEngineIdentityUuid(value)) return std::nullopt;
+  }
+  std::string canonical;
+  if (!api::EncodeCatalogColumnMetadata(fields, &canonical) || canonical != descriptor.encoded_descriptor) return std::nullopt;
   return fields;
 }
 
 struct Rcp079ResolvedDatatypeAuthorityV1 {
-  std::string descriptor_uuid;
-  std::string type_uuid;
+  api::EngineUuid descriptor_uuid;
+  api::EngineUuid type_uuid;
   bool exact_canonical_text{false};
 };
 
@@ -746,7 +772,7 @@ std::optional<Rcp079ResolvedDatatypeAuthorityV1>
 Rcp079ResolvePersistedDatatypeAuthorityV1(
     const api::EngineRequestContext& context,
     const api::MgaRelationColumnStorageDescriptor& persisted,
-    const std::map<std::string_view, std::string_view>& fields) {
+    const Rcp079DescriptorFields& fields) {
   const auto field = [&](const std::string_view name)
       -> std::optional<std::string_view> {
     const auto found = fields.find(name);
@@ -775,8 +801,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
   }
   const auto& manifest_row =
       canonical_type.manifest.descriptor_rows.front();
-  const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
-      manifest_row.descriptor_uuid.value);
+  const auto descriptor_uuid = manifest_row.descriptor_uuid.value;
   constexpr std::array<std::string_view, 8> kRegistrySuffixFields{
       "datatype_descriptor_uuid", "datatype_descriptor_generation",
       "type_generation", "codec_uuid", "codec_id", "codec_version",
@@ -785,8 +810,8 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
     return key.starts_with("datatype_") || key == "type_generation" ||
            key.starts_with("codec_") || key == "null_encoding";
   };
-  const bool carries_registry_authority =
-      std::ranges::any_of(fields, [&](const auto& entry) {
+  const bool carries_registry_authority = fields.identities.contains("datatype_descriptor_uuid") ||
+      fields.identities.contains("codec_uuid") || std::ranges::any_of(fields, [&](const auto& entry) {
         return is_registry_suffix_key(entry.first);
       });
 
@@ -797,7 +822,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
       manifest_row.descriptor_epoch);
   if (!identity.ok) {
     const auto registered_identity = dt::LookupDatatypeTypeCodecIdentityV1(
-        "019d0000-0000-7000-8000-00000000d701",
+        scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
         datatype_manifest.manifest.catalog_epoch, 1, descriptor_uuid,
         manifest_row.descriptor_epoch);
     // A live registered identity may not be downgraded to a legacy
@@ -818,7 +843,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
           context.datatype_registry_generation ||
       identity.row.descriptor_uuid != descriptor_uuid ||
       identity.row.descriptor_generation != manifest_row.descriptor_epoch ||
-      !CanonicalUuidText(identity.row.type_uuid)) {
+      !core::uuid::IsEngineIdentityUuid(identity.row.type_uuid)) {
     return std::nullopt;
   }
 
@@ -840,7 +865,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
                               [&](const auto key) {
                                 return !fields.contains(key);
                               }) ||
-          fields.contains("codec_uuid") != !identity.row.codec_uuid.empty() ||
+          fields.contains("codec_uuid") != !identity.row.codec_uuid.is_nil() ||
           std::ranges::any_of(fields, [&](const auto& entry) {
             return is_registry_suffix_key(entry.first) &&
                    std::ranges::find(kRegistrySuffixFields, entry.first) ==
@@ -848,11 +873,9 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
           })) {
         return std::nullopt;
       }
-      const auto exact = [&](const std::string_view key,
-                             const std::string_view expected) {
-        const auto found = fields.find(key);
-        return found != fields.end() && found->second == expected;
-      };
+      const auto exact = [&](const std::string_view key, const auto& expected) {
+      return fields.exact(key, expected);
+    };
       const auto parse_u64 = [&](const std::string_view key,
                                  std::uint64_t* value) {
         const auto found = fields.find(key);
@@ -878,7 +901,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
           descriptor_generation != identity.row.descriptor_generation ||
           !parse_u64("type_generation", &type_generation) ||
           type_generation != identity.row.type_generation ||
-          (identity.row.codec_uuid.empty()
+          (identity.row.codec_uuid.is_nil()
                ? fields.contains("codec_uuid")
                : !exact("codec_uuid", identity.row.codec_uuid)) ||
           !exact("codec_id", identity.row.codec_id) ||
@@ -916,10 +939,8 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
     const auto spelling =
         type_spelling ? std::string_view("type")
                       : std::string_view("canonical");
-    const auto exact = [&](const std::string_view key,
-                           const std::string_view expected) {
-      const auto found = fields.find(key);
-      return found != fields.end() && found->second == expected;
+    const auto exact = [&](const std::string_view key, const auto& expected) {
+      return fields.exact(key, expected);
     };
     const auto parse_u64 = [&](const std::string_view key,
                                std::uint64_t* value) {
@@ -968,21 +989,6 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
         !exact("column_uuid", persisted.column_uuid)) {
       return std::nullopt;
     }
-    std::string canonical;
-    const auto append = [&](const std::string_view key,
-                            const std::string_view value) {
-      if (!canonical.empty()) canonical.push_back(';');
-      canonical.append(key);
-      canonical.push_back('=');
-      canonical.append(value);
-    };
-    append(spelling, identity.row.canonical_name);
-    for (const auto key : kRequiredPlainTextFields) {
-      append(key, fields.at(key));
-    }
-    if (canonical != persisted.value_descriptor.encoded_descriptor) {
-      return std::nullopt;
-    }
     return Rcp079ResolvedDatatypeAuthorityV1{
         descriptor_uuid, identity.row.type_uuid, true};
   }
@@ -1013,11 +1019,9 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
       return std::nullopt;
     }
   }
-  const auto exact = [&](const std::string_view key,
-                         const std::string_view expected) {
-    const auto found = fields.find(key);
-    return found != fields.end() && found->second == expected;
-  };
+  const auto exact = [&](const std::string_view key, const auto& expected) {
+      return fields.exact(key, expected);
+    };
   const auto parse_u64 = [&](const std::string_view key,
                              std::uint64_t* value) {
     const auto found = fields.find(key);
@@ -1071,8 +1075,8 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
       codec_version != identity.row.codec_version ||
       codec_generation != identity.row.codec_generation ||
       null_encoding != identity.row.null_encoding_code ||
-      !CanonicalUuidText(persisted.charset_uuid) ||
-      !CanonicalUuidText(persisted.collation_uuid)) {
+      !core::uuid::IsEngineIdentityUuid(persisted.charset_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(persisted.collation_uuid)) {
     return std::nullopt;
   }
 
@@ -1104,37 +1108,6 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
     return std::nullopt;
   }
 
-  std::string canonical;
-  canonical.reserve(persisted.value_descriptor.encoded_descriptor.size());
-  const auto append = [&](const std::string_view key,
-                          const std::string_view value) {
-    if (!canonical.empty()) canonical.push_back(';');
-    canonical.append(key);
-    canonical.push_back('=');
-    canonical.append(value);
-  };
-  append(spelling, identity.row.canonical_name);
-  append("character_length", fields.at("character_length"));
-  append("charset_uuid", fields.at("charset_uuid"));
-  append("collation_uuid", fields.at("collation_uuid"));
-  append("nullable", expected_nullable);
-  append("charset_generation", fields.at("charset_generation"));
-  append("collation_generation", fields.at("collation_generation"));
-  append("resource_epoch", fields.at("resource_epoch"));
-  append("datatype_descriptor_uuid", identity.row.descriptor_uuid);
-  append("datatype_descriptor_generation",
-         fields.at("datatype_descriptor_generation"));
-  append("type_uuid", identity.row.type_uuid);
-  append("type_generation", fields.at("type_generation"));
-  append("codec_uuid", identity.row.codec_uuid);
-  append("codec_id", identity.row.codec_id);
-  append("codec_version", fields.at("codec_version"));
-  append("codec_generation", fields.at("codec_generation"));
-  append("null_encoding", fields.at("null_encoding"));
-  append("column_uuid", fields.at("column_uuid"));
-  if (canonical != persisted.value_descriptor.encoded_descriptor) {
-    return std::nullopt;
-  }
   return Rcp079ResolvedDatatypeAuthorityV1{
       descriptor_uuid, identity.row.type_uuid, true};
 }
@@ -1218,11 +1191,11 @@ bool Rcp079ExactPersistedColumnDescriptorV1(
   const auto fields =
       Rcp079ExactDescriptorFieldsV1(persisted.value_descriptor);
   if (!fields.has_value() || persisted.canonical_name_key.empty() ||
-      !CanonicalUuidText(persisted.column_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(persisted.column_uuid) ||
       !api::QowCanonicalDescriptorIdentityV1(persisted.value_descriptor) ||
       persisted.value_descriptor.descriptor_kind !=
           "canonical_type_descriptor" ||
-      !CanonicalUuidText(
+      !core::uuid::IsEngineIdentityUuid(
           persisted.value_descriptor.descriptor_uuid) ||
       persisted.storage_class != "inline_row_value" ||
       persisted.max_inline_bytes != 4096 ||
@@ -1236,7 +1209,7 @@ bool Rcp079ExactPersistedColumnDescriptorV1(
                ? std::optional<std::string_view>{}
                : std::optional<std::string_view>{found->second};
   };
-  const auto type_uuid = field("type_uuid");
+  const auto type_uuid = fields->identity("type_uuid");
   std::optional<std::string_view> encoded_type_name;
   for (const auto alias :
        {std::string_view("type"), std::string_view("canonical"),
@@ -1253,7 +1226,7 @@ bool Rcp079ExactPersistedColumnDescriptorV1(
   const auto datatype_authority =
       Rcp079ResolvePersistedDatatypeAuthorityV1(context, persisted, *fields);
   if (!type_uuid.has_value() ||
-      !CanonicalUuidText(std::string(*type_uuid)) ||
+      !core::uuid::IsEngineIdentityUuid(*type_uuid) ||
       !datatype_authority.has_value() ||
       datatype_authority->type_uuid != *type_uuid ||
       persisted.value_descriptor.descriptor_uuid == *type_uuid ||
@@ -1304,19 +1277,19 @@ bool Rcp079ExactPersistedColumnDescriptorV1(
     return false;
   }
 
-  const auto encoded_collation = field("collation_uuid");
-  const auto encoded_charset = field("charset_uuid");
+  const auto encoded_collation = fields->identity("collation_uuid");
+  const auto encoded_charset = fields->identity("charset_uuid");
   if (encoded_collation.has_value() !=
-          !persisted.collation_uuid.empty() ||
+          !persisted.collation_uuid.is_nil() ||
       (encoded_collation.has_value() &&
        *encoded_collation != persisted.collation_uuid) ||
       (encoded_collation.has_value() &&
-       !CanonicalUuidText(std::string(*encoded_collation))) ||
-      encoded_charset.has_value() != !persisted.charset_uuid.empty() ||
+       !core::uuid::IsEngineIdentityUuid(*encoded_collation)) ||
+      encoded_charset.has_value() != !persisted.charset_uuid.is_nil() ||
       (encoded_charset.has_value() &&
        *encoded_charset != persisted.charset_uuid) ||
       (encoded_charset.has_value() &&
-       !CanonicalUuidText(std::string(*encoded_charset)))) {
+       !core::uuid::IsEngineIdentityUuid(*encoded_charset))) {
     return false;
   }
 
@@ -1376,11 +1349,11 @@ bool Rcp079ExactColumnarJoinColumnBindingV1(
                ? std::optional<std::string_view>{}
                : std::optional<std::string_view>{found->second};
   };
-  const auto type_uuid = field("type_uuid");
+  const auto type_uuid = fields->identity("type_uuid");
   const auto datatype_authority =
       Rcp079ResolvePersistedDatatypeAuthorityV1(context, persisted, *fields);
   if (!type_uuid.has_value() ||
-      !CanonicalUuidText(std::string(*type_uuid)) ||
+      !core::uuid::IsEngineIdentityUuid(*type_uuid) ||
       !datatype_authority.has_value() ||
       datatype_authority->type_uuid != *type_uuid ||
       (relational.descriptor_uuid !=
@@ -1418,27 +1391,27 @@ bool Rcp079ExactColumnarJoinColumnBindingV1(
                               : api::RelationalNullability::kNonNull)) {
     return false;
   }
-  const auto encoded_collation = field("collation_uuid");
+  const auto encoded_collation = fields->identity("collation_uuid");
   const auto persisted_collation =
-      persisted.collation_uuid.empty()
+      persisted.collation_uuid.is_nil()
           ? encoded_collation
-          : std::optional<std::string_view>{persisted.collation_uuid};
-  if ((!persisted.collation_uuid.empty() &&
+          : std::optional<api::EngineUuid>{persisted.collation_uuid};
+  if ((!persisted.collation_uuid.is_nil() &&
        encoded_collation != persisted_collation) ||
       (persisted_collation.has_value() &&
-       !CanonicalUuidText(std::string(*persisted_collation))) ||
+       !core::uuid::IsEngineIdentityUuid(*persisted_collation)) ||
       relational.collation_uuid !=
           (persisted_collation.has_value()
-               ? std::optional<std::string>{*persisted_collation}
-               : std::optional<std::string>{})) {
+               ? std::optional<api::EngineUuid>{*persisted_collation}
+               : std::optional<api::EngineUuid>{})) {
     return false;
   }
-  const auto encoded_charset = field("charset_uuid");
-  if ((!persisted.charset_uuid.empty() &&
+  const auto encoded_charset = fields->identity("charset_uuid");
+  if ((!persisted.charset_uuid.is_nil() &&
        encoded_charset !=
-           std::optional<std::string_view>{persisted.charset_uuid}) ||
+           std::optional<api::EngineUuid>{persisted.charset_uuid}) ||
       (encoded_charset.has_value() &&
-       !CanonicalUuidText(std::string(*encoded_charset)))) {
+       !core::uuid::IsEngineIdentityUuid(*encoded_charset))) {
     return false;
   }
   const auto parse_u32 = [&](const std::string_view name,
@@ -1535,7 +1508,7 @@ bool Rcp079ExactColumnarIdentifierBindingsV1(
       columnar_source->function_uuid.has_value() ||
       !columnar_source->child_expression_ids.empty() ||
       columnar_source->bound_name_uuid !=
-          std::optional<std::string>{object_uuid} ||
+          std::optional<api::EngineUuid>{object_uuid} ||
       columnar_source->literal_kind.has_value() ||
       columnar_source->literal_or_parameter_ref.has_value() ||
       columnar_source->operator_name != "COLUMNAR_SOURCE" ||
@@ -1577,7 +1550,7 @@ bool Rcp079ExactColumnarIdentifierBindingsV1(
             api::RelationalExpressionKind::kIdentifier ||
         !alias->child_expression_ids.empty() ||
         alias->function_uuid.has_value() ||
-        alias->bound_name_uuid != std::optional<std::string>{object_uuid} ||
+        alias->bound_name_uuid != std::optional<api::EngineUuid>{object_uuid} ||
         alias->literal_kind.has_value() ||
         alias->literal_or_parameter_ref.has_value() ||
         alias->operator_name.has_value() ||
@@ -1671,8 +1644,8 @@ std::optional<std::uint64_t> Rcp079VisibleRowsMemoryBytesV1(
                        &bytes)) {
     return std::nullopt;
   }
-  const auto account_string = [&](const std::string& value) {
-    return CheckedAdd(bytes, value.capacity(), &bytes) &&
+  const auto account_string = [&](const auto& value) {
+    return CheckedAdd(bytes, NativeRetainedCapacity(value), &bytes) &&
            CheckedAdd(bytes, 1, &bytes);
   };
   for (const auto& row : rows) {
@@ -1696,9 +1669,13 @@ std::optional<std::uint64_t> Rcp079VisibleRowsMemoryBytesV1(
   return bytes;
 }
 
+bool Rcp079AccountLogicalStringV1(const api::EngineUuid&,
+                                    std::uint64_t* bytes) {
+  return bytes && CheckedAdd(*bytes, 16, bytes);
+}
 bool Rcp079AccountLogicalStringV1(const std::string_view value,
                                   std::uint64_t* bytes) {
-  return bytes != nullptr && CheckedAdd(*bytes, value.size(), bytes) &&
+  return bytes != nullptr && CheckedAdd(*bytes, NativeRetainedSize(value), bytes) &&
          CheckedAdd(*bytes, 1, bytes);
 }
 
@@ -1778,7 +1755,7 @@ bool Rcp079AccountModelRowIdentityLogicalMemoryV1(
     const exec::ModelProviderRowIdentityV1& identity,
     std::uint64_t* bytes) {
   if (!Rcp079AccountLogicalArrayV1(1, sizeof(identity), bytes)) return false;
-  const std::array<std::string_view, 17> strings{
+  const std::array<std::variant<std::string_view, api::EngineUuid>, 17> strings{
       identity.document_uuid,
       identity.row_uuid,
       identity.vertex_uuid,
@@ -1797,7 +1774,7 @@ bool Rcp079AccountModelRowIdentityLogicalMemoryV1(
       identity.search_analyzer_uuid,
       identity.search_score};
   return std::ranges::all_of(strings, [&](const auto value) {
-    return Rcp079AccountLogicalStringV1(value, bytes);
+    return std::visit([&](const auto& field) { return Rcp079AccountLogicalStringV1(field, bytes); }, value);
   });
 }
 
@@ -1855,7 +1832,7 @@ Rcp079ProjectedModelSourceOutputLogicalMemoryBytesV1(
       !CheckedAdd(bytes, *descriptor_batch, &bytes)) {
     return std::nullopt;
   }
-  const std::array<std::string_view, 11> strings{
+  const std::array<std::variant<std::string_view, api::EngineUuid>, 11> strings{
       "SB_MODEL_SOURCE_OUTPUT_DESCRIPTOR_V1",
       input.family_id,
       input.operation_id,
@@ -1868,7 +1845,7 @@ Rcp079ProjectedModelSourceOutputLogicalMemoryBytesV1(
       input.provider_uuid,
       input.result_handle_uuid};
   if (!std::ranges::all_of(strings, [&](const auto value) {
-        return Rcp079AccountLogicalStringV1(value, &bytes);
+        return std::visit([&](const auto& field) { return Rcp079AccountLogicalStringV1(field, &bytes); }, value);
       }) ||
       !Rcp079AccountLogicalArrayV1(input.operation_ids.size(),
                                    sizeof(std::string), &bytes) ||
@@ -1902,7 +1879,7 @@ std::optional<std::uint64_t> Rcp079ColumnarUniquenessLogicalMemoryBytesV1(
       sizeof(std::string) + 4 * sizeof(void*) + 64;
   for (const auto& identity : identities) {
     std::uint64_t node = kSetNodeOverhead;
-    if (!CheckedAdd(node, identity.row_uuid.size(), &node) ||
+    if (!CheckedAdd(node, identity.row_uuid.bytes.size(), &node) ||
         !CheckedAdd(bytes, node, &bytes)) {
       return std::nullopt;
     }
@@ -2008,8 +1985,8 @@ Rcp079ContextualExecutionLogicalMemoryPlan(
       !CheckedAdd(route_bytes, sizeof(equalities), &route_bytes)) {
     return std::nullopt;
   }
-  const auto account_string = [&](const std::string& value) {
-    return Rcp079AccountLogicalArrayV1(value.capacity(), sizeof(char),
+  const auto account_string = [&](const auto& value) {
+    return Rcp079AccountLogicalArrayV1(NativeRetainedCapacity(value), sizeof(char),
                                        &route_bytes) &&
            CheckedAdd(route_bytes, 1, &route_bytes);
   };
@@ -2080,8 +2057,8 @@ Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
     const std::size_t row_count,
     const api::TypedRelationalDag& dag,
     const exec::ModelSourceInputDescriptorV1& source_input,
-    const std::string& property_uuid,
-    const std::string& security_receipt_uuid,
+    const api::EngineUuid& property_uuid,
+    const api::EngineUuid& security_receipt_uuid,
     const bool has_filter) {
   std::uint64_t bytes = sizeof(exec::DescriptorBatch);
   std::uint64_t allocation = 0;
@@ -2090,8 +2067,8 @@ Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
     return CheckedMultiply(count, element_bytes, &allocation) &&
            CheckedAdd(bytes, allocation, &bytes);
   };
-  const auto add_string = [&](const std::string& value) {
-    return CheckedAdd(bytes, value.capacity(), &bytes) &&
+  const auto add_string = [&](const auto& value) {
+    return CheckedAdd(bytes, NativeRetainedCapacity(value), &bytes) &&
            CheckedAdd(bytes, 1, &bytes);
   };
   if (!add_array(persisted.columns.size(),
@@ -2144,8 +2121,8 @@ Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
         !add_string(column.value_descriptor.encoded_descriptor)) {
       return std::nullopt;
     }
-    const auto account_per_cell = [&](const std::string& value) {
-      return CheckedAdd(per_cell_descriptor_bytes, value.capacity(),
+    const auto account_per_cell = [&](const auto& value) {
+      return CheckedAdd(per_cell_descriptor_bytes, NativeRetainedCapacity(value),
                         &per_cell_descriptor_bytes) &&
              CheckedAdd(per_cell_descriptor_bytes, 1,
                         &per_cell_descriptor_bytes);
@@ -2229,8 +2206,8 @@ Rcp079SpatialSourceMaterializationAdditionalBytesV1(
     return CheckedMultiply(count, element_bytes, &allocation) &&
            CheckedAdd(bytes, allocation, &bytes);
   };
-  const auto add_string = [&](const std::string_view value) {
-    return CheckedAdd(bytes, value.size(), &bytes) &&
+  const auto add_string = [&](const auto& value) {
+    return CheckedAdd(bytes, NativeRetainedSize(value), &bytes) &&
            CheckedAdd(bytes, 1, &bytes);
   };
   const auto operation_phase_bytes =
@@ -2238,8 +2215,8 @@ Rcp079SpatialSourceMaterializationAdditionalBytesV1(
           const std::string_view predicate,
           const bool query_point) -> std::optional<std::uint64_t> {
     std::uint64_t phase = 0;
-    const auto add_phase_string = [&](const std::string_view value) {
-      return CheckedAdd(phase, value.size(), &phase) &&
+    const auto add_phase_string = [&](const auto& value) {
+      return CheckedAdd(phase, NativeRetainedSize(value), &phase) &&
              CheckedAdd(phase, 1, &phase);
     };
     if (!add_phase_string(operation) ||
@@ -2319,7 +2296,7 @@ Rcp079SpatialSourceMaterializationAdditionalBytesV1(
     for (const auto& descriptor : dag.descriptors) {
       if (!add_string("geometry")) return std::nullopt;
       std::uint64_t encoded_descriptor_bytes =
-          std::string_view("type_uuid=").size() + descriptor.type_uuid.size() +
+          std::string_view("type_uuid=").size() + descriptor.type_uuid.bytes.size() +
           std::string_view(";nullability=").size();
       const std::string_view nullability =
           descriptor.nullability == api::RelationalNullability::kNonNull
@@ -2334,11 +2311,11 @@ Rcp079SpatialSourceMaterializationAdditionalBytesV1(
       }
       const auto add_optional_descriptor_string =
           [&](const std::string_view label,
-              const std::optional<std::string>& value) {
+              const auto& value) {
         return !value.has_value() ||
                (CheckedAdd(encoded_descriptor_bytes, label.size(),
                            &encoded_descriptor_bytes) &&
-                CheckedAdd(encoded_descriptor_bytes, value->size(),
+                CheckedAdd(encoded_descriptor_bytes, NativeRetainedSize(*value),
                            &encoded_descriptor_bytes));
       };
       const auto decimal_digits = [](std::uint32_t value) {
@@ -2399,8 +2376,8 @@ std::optional<std::uint64_t> Rcp079SpatialResultRowsLogicalMemoryBytesV1(
                        sizeof(api::nosql::SpatialResultRowV1), &bytes)) {
     return std::nullopt;
   }
-  const auto add_string = [&](const std::string& value) {
-    return CheckedAdd(bytes, value.capacity(), &bytes) &&
+  const auto add_string = [&](const auto& value) {
+    return CheckedAdd(bytes, NativeRetainedCapacity(value), &bytes) &&
            CheckedAdd(bytes, 1, &bytes);
   };
   for (const auto& row : rows) {
@@ -2417,8 +2394,8 @@ std::optional<std::uint64_t> Rcp079SpatialProviderBuildAdditionalBytesV1(
     const std::vector<api::nosql::SpatialResultRowV1>& rows,
     const std::vector<exec::ExecutorColumnDescriptor>& public_columns,
     const exec::ModelSourceInputDescriptorV1& source_input,
-    const std::string& property_uuid,
-    const std::string& security_receipt_uuid,
+    const api::EngineUuid& property_uuid,
+    const api::EngineUuid& security_receipt_uuid,
     const bool has_match,
     const bool has_nearest) {
   std::uint64_t bytes = sizeof(exec::ModelProviderBatchV1);
@@ -2428,8 +2405,8 @@ std::optional<std::uint64_t> Rcp079SpatialProviderBuildAdditionalBytesV1(
     return CheckedMultiply(count, element_bytes, &allocation) &&
            CheckedAdd(bytes, allocation, &bytes);
   };
-  const auto add_string = [&](const std::string_view value) {
-    return CheckedAdd(bytes, value.size(), &bytes) &&
+  const auto add_string = [&](const auto& value) {
+    return CheckedAdd(bytes, NativeRetainedSize(value), &bytes) &&
            CheckedAdd(bytes, 1, &bytes);
   };
   std::uint64_t cells = 0;
@@ -2463,8 +2440,8 @@ std::optional<std::uint64_t> Rcp079SpatialProviderBuildAdditionalBytesV1(
         !add_string(column.descriptor.encoded_descriptor)) {
       return std::nullopt;
     }
-    const auto add_cell_descriptor_string = [&](const std::string& value) {
-      return CheckedAdd(per_cell_descriptor_bytes, value.capacity(),
+    const auto add_cell_descriptor_string = [&](const auto& value) {
+      return CheckedAdd(per_cell_descriptor_bytes, NativeRetainedCapacity(value),
                         &per_cell_descriptor_bytes) &&
              CheckedAdd(per_cell_descriptor_bytes, 1,
                         &per_cell_descriptor_bytes);
@@ -2673,16 +2650,13 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                   "columnar composition statement context is invalid");
   }
 
-  const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
-  const auto shared_source_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "columnar-join.source.capability");
+  const auto shared_source_capability_uuid = api::GenerateCrudEngineUuid("object");
   std::vector<Rcp079ColumnarJoinSourceV1> prepared_sources;
   prepared_sources.reserve(2);
-  std::vector<std::string> object_uuids;
-  std::unordered_set<std::string> column_uuids;
-  std::unordered_set<std::string> descriptor_uuids;
-  std::unordered_set<std::string> type_uuids;
+  std::vector<api::EngineUuid> object_uuids;
+  std::set<api::EngineUuid> column_uuids;
+  std::set<api::EngineUuid> descriptor_uuids;
+  std::set<api::EngineUuid> type_uuids;
   for (const auto* source : sources) {
     if (!source->input_node_ids.empty() ||
         source->required_object_uuids.size() != 1 ||
@@ -2714,8 +2688,8 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
     if (prepared.persisted.relation_uuid != prepared.object_uuid ||
         prepared.persisted.database_uuid !=
             input.context.database_uuid ||
-        !CanonicalUuidText(prepared.persisted.schema_uuid) ||
-        !CanonicalUuidText(
+        !core::uuid::IsEngineIdentityUuid(prepared.persisted.schema_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(
             prepared.persisted.descriptor_uuid) ||
         prepared.persisted.relation_kind != "table" ||
         prepared.persisted.storage_profile != "local_mga_rowstore_v1" ||
@@ -2752,7 +2726,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               api::RelationalExpressionKind::kIdentifier ||
           expression->result_descriptor_id != descriptor->descriptor_id ||
           expression->bound_name_uuid !=
-              std::optional<std::string>(column.column_uuid) ||
+              std::optional<api::EngineUuid>(column.column_uuid) ||
           outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
           column.ordinal != ordinal ||
           !column_uuids.insert(column.column_uuid).second ||
@@ -2783,14 +2757,10 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
     prepared.output_descriptor_ids = source->output_descriptor_ids;
     const auto suffix = std::to_string(source->node_id);
     prepared.capability_uuid = shared_source_capability_uuid;
-    prepared.provider_uuid = DerivedCanonicalUuid(
-        identity_scope, "columnar-join.provider." + suffix);
-    prepared.result_handle_uuid = DerivedCanonicalUuid(
-        identity_scope, "columnar-join.result-handle." + suffix);
-    prepared.property_uuid = DerivedCanonicalUuid(
-        identity_scope, "columnar-join.property." + suffix);
-    prepared.security_receipt_uuid = DerivedCanonicalUuid(
-        identity_scope, "columnar-join.security-receipt." + suffix);
+    prepared.provider_uuid = api::GenerateCrudEngineUuid("object");
+    prepared.result_handle_uuid = api::GenerateCrudEngineUuid("object");
+    prepared.property_uuid = api::GenerateCrudEngineUuid("object");
+    prepared.security_receipt_uuid = api::GenerateCrudEngineUuid("object");
     object_uuids.push_back(prepared.object_uuid);
     prepared_sources.push_back(std::move(prepared));
   }
@@ -2953,8 +2923,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
     profile.compatibility_profile_id = "columnar.local.v1";
     profiles.push_back(std::move(profile));
   }
-  const auto join_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "columnar-join." + join_component + ".capability");
+  const auto join_capability_uuid = api::GenerateCrudEngineUuid("object");
   LivePhysicalNodeProfile join_profile;
   join_profile.logical_node_id = join->node_id;
   join_profile.implementation_id =
@@ -3031,7 +3000,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   source_registration.node_kind = exec::PhysicalNodeKind::kScan;
   source_registration.implementation_id =
       "physical_columnar_zone_scan_v1";
-  source_registration.executor_capability_uuid.clear();
+  source_registration.executor_capability_uuid = {};
   source_registration.executor_capability_abi_version = 1;
   source_registration.engine_owned = true;
   source_registration.accepts_optimizer_publication_v2 = true;
@@ -3270,7 +3239,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               }
               exec::DescriptorBatch logical_rows;
               logical_rows.columns = source_copy.columns;
-              std::vector<std::string> row_uuids;
+              std::vector<api::EngineUuid> row_uuids;
               logical_rows.rows.reserve(read.visible_rows.size());
               row_uuids.reserve(read.visible_rows.size());
               for (const auto& row : read.visible_rows) {
@@ -3279,8 +3248,8 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                               "columnar composition row reconstruction was cancelled");
                 }
                 if (row.table_uuid != source_input.object_uuid ||
-                    !CanonicalUuidText(row.row_uuid) ||
-                    !CanonicalUuidText(row.version_uuid) ||
+                    !core::uuid::IsEngineIdentityUuid(row.row_uuid) ||
+                    !core::uuid::IsEngineIdentityUuid(row.version_uuid) ||
                     row.values.size() != source_copy.persisted.columns.size()) {
                   return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                               "columnar row identity or width is invalid");
@@ -3673,16 +3642,9 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(identity_scope + ":" +
-                               input.context.current_monotonic_ns,
-                           "columnar-join.execution-attempt");
+      api::GenerateCrudEngineUuid("object");
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id) + ":" +
-              std::to_string(
-                  input.context.snapshot_visible_through_local_transaction_id),
-          "columnar-join.transaction-effect-unchanged");
+      api::GenerateCrudEngineUuid("object");
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.maximum_row_count = maximum_rows;
@@ -3913,7 +3875,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         columnar_source->function_uuid.has_value() ||
         !columnar_source->child_expression_ids.empty() ||
         columnar_source->bound_name_uuid !=
-            std::optional<std::string>(object_uuid) ||
+            std::optional<api::EngineUuid>(object_uuid) ||
         columnar_source->literal_kind.has_value() ||
         columnar_source->literal_or_parameter_ref.has_value()) {
       return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -3942,7 +3904,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   if (persisted.relation_uuid != object_uuid ||
       persisted.database_uuid !=
           input.context.database_uuid ||
-      !CanonicalUuidText(persisted.schema_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(persisted.schema_uuid) ||
       persisted.relation_kind != "table" ||
       persisted.storage_profile != "local_mga_rowstore_v1" ||
       persisted.row_identity_rule != "engine_uuid_v7_only" ||
@@ -3957,7 +3919,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           std::vector<std::string>{"relation_descriptor", "row_version",
                                    "transaction_inventory",
                                    "dirty_manifest"} ||
-      !CanonicalUuidText(persisted.descriptor_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(persisted.descriptor_uuid) ||
       persisted.descriptor_generation == 0 || persisted.columns.empty() ||
       (persisted.descriptor_status != "production_descriptor" &&
        persisted.descriptor_status !=
@@ -3970,29 +3932,29 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       "row_uuid", "spatial_value", "crs_uuid", "predicate_truth", "distance"};
   static constexpr std::array<std::string_view, 5> kSpatialTypes{
       "uuid", "geometry", "uuid", "boolean", "real64"};
-  std::array<std::string, 5> spatial_type_uuids;
+  std::array<api::EngineUuid, 5> spatial_type_uuids;
   if (spatial) {
     for (std::size_t ordinal = 0; ordinal < kSpatialTypes.size(); ++ordinal) {
       spatial_type_uuids[ordinal] =
           ExactCanonicalCoreDatatypeUuidV1(kSpatialTypes[ordinal]);
     }
     if (std::ranges::any_of(spatial_type_uuids,
-                            [](const auto& uuid) { return uuid.empty(); })) {
+                            [](const auto& uuid) { return uuid.is_nil(); })) {
       return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                     "spatial core datatype registry is unavailable");
     }
   }
   if (columnar) {
-    std::unordered_set<std::string> column_uuids;
+    std::set<api::EngineUuid> column_uuids;
     std::unordered_set<std::string> column_names;
-    std::unordered_set<std::string> descriptor_carrier_identities;
+    std::set<std::pair<api::EngineUuid, api::EngineUuid>> descriptor_carrier_identities;
     for (std::size_t ordinal = 0; ordinal < persisted.columns.size();
          ++ordinal) {
       const auto& column = persisted.columns[ordinal];
       const bool ordinal_exact = column.ordinal == ordinal;
       const bool name_present = !column.canonical_name_key.empty();
       const bool column_uuid_exact =
-          CanonicalUuidText(column.column_uuid);
+          core::uuid::IsEngineIdentityUuid(column.column_uuid);
       const bool column_uuid_unique =
           column_uuid_exact &&
           column_uuids.insert(column.column_uuid).second;
@@ -4007,8 +3969,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           Rcp079ExactPersistedColumnDescriptorV1(input.context, column);
       const bool descriptor_carrier_unique =
           descriptor_carrier_identities
-              .insert(column.value_descriptor.descriptor_uuid +
-                      ":" + column.column_uuid)
+              .insert({column.value_descriptor.descriptor_uuid, column.column_uuid})
               .second;
       const auto descriptor_fields =
           Rcp079ExactDescriptorFieldsV1(column.value_descriptor);
@@ -4043,23 +4004,23 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                << ";descriptor_carrier_unique="
                << descriptor_carrier_unique
                << ";descriptor_fields_exact=" << descriptor_fields_exact
-               << ";column_uuid=" << column.column_uuid
+               << ";column_uuid=" << "<binary16 UUID>"
                << ";descriptor_uuid="
-               << column.value_descriptor.descriptor_uuid
+               << "<binary16 UUID>"
                << ";descriptor_kind="
                << column.value_descriptor.descriptor_kind
                << ";canonical_type_name="
                << column.value_descriptor.canonical_type_name
-               << ";encoded_type_uuid=" << diagnostic_field("type_uuid")
-               << ";expected_core_type_uuid=" << expected_core_type_uuid
+               << ";encoded_type_uuid=" << "<binary16 UUID>"
+               << ";expected_core_type_uuid=" << "<binary16 UUID>"
                << ";encoded_type=" << diagnostic_field("type")
                << ";encoded_canonical=" << diagnostic_field("canonical")
                << ";nullable=" << column.nullable
                << ";storage_class=" << column.storage_class
                << ";max_inline_bytes=" << column.max_inline_bytes
                << ";overflow_policy=" << column.overflow_policy
-               << ";charset_uuid=" << column.charset_uuid
-               << ";collation_uuid=" << column.collation_uuid
+               << ";charset_uuid=" << "<binary16 UUID>"
+               << ";collation_uuid=" << "<binary16 UUID>"
                << ";character_length=" << column.character_length
                << ";encoded_descriptor="
                << column.value_descriptor.encoded_descriptor;
@@ -4093,16 +4054,15 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
     for (std::size_t ordinal = 0; ordinal < persisted.columns.size(); ++ordinal) {
       const auto& column = persisted.columns[ordinal];
       if (column.ordinal != ordinal ||
-          !CanonicalUuidText(column.column_uuid) ||
+          !core::uuid::IsEngineIdentityUuid(column.column_uuid) ||
           column.value_descriptor.descriptor_kind !=
               "canonical_type_descriptor" ||
           !api::QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
-          !CanonicalDescriptorFieldEqualsForComposition(
-              column.value_descriptor, "type_uuid",
-              std::string_view(spatial_type_uuids[ordinal])) ||
-          !column.collation_uuid.empty() ||
-          !CanonicalDescriptorFieldEqualsForComposition(column.value_descriptor,
-                                            "collation_uuid", std::nullopt) ||
+          (!Rcp079ExactDescriptorFieldsV1(column.value_descriptor) ||
+           Rcp079ExactDescriptorFieldsV1(column.value_descriptor)->identity("type_uuid") !=
+               std::optional(spatial_type_uuids[ordinal])) ||
+          !column.collation_uuid.is_nil() ||
+          Rcp079ExactDescriptorFieldsV1(column.value_descriptor)->identity("collation_uuid").has_value() ||
           !CanonicalDescriptorFieldEqualsForComposition(
               column.value_descriptor, "timezone_profile_id", std::nullopt)) {
         return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
@@ -4159,10 +4119,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           leg_capture == nullptr
               ? descriptor->descriptor_uuid ==
                     column.value_descriptor.descriptor_uuid
-              : CanonicalUuidText(descriptor->descriptor_uuid) &&
+              : core::uuid::IsEngineIdentityUuid(descriptor->descriptor_uuid) &&
                     descriptor->descriptor_uuid != descriptor->type_uuid;
       if (output_expression->bound_name_uuid !=
-              std::optional<std::string>(column.column_uuid) ||
+              std::optional<api::EngineUuid>(column.column_uuid) ||
           outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
           !exact_descriptor_identity ||
           descriptor->type_uuid != spatial_type_uuids[ordinal] ||
@@ -4179,7 +4139,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       }
       engine_descriptor.descriptor_kind = "scalar";
       engine_descriptor.encoded_descriptor =
-          "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
+          "nullability=non_null";
+      engine_descriptor.type_uuid = descriptor->type_uuid;
     } else if (persisted_column != nullptr && !spatial) {
       if (outputs[ordinal]->output_name_utf8 !=
               persisted_column->canonical_name_key ||
@@ -4220,7 +4181,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       engine_descriptor.descriptor_kind = "scalar";
       engine_descriptor.canonical_type_name = std::string(expected_type);
       engine_descriptor.encoded_descriptor =
-          "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
+          "nullability=non_null";
+      engine_descriptor.type_uuid = descriptor->type_uuid;
     }
     public_columns.push_back(
         {outputs[ordinal]->output_name_utf8, engine_descriptor,
@@ -4263,7 +4225,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                   "spatial/columnar statement context is invalid");
   }
 
-  std::string spatial_crs_uuid;
+  api::EngineUuid spatial_crs_uuid;
   std::uint64_t spatial_crs_generation = 0;
   if (spatial) {
     const auto operation = has_match
@@ -4288,12 +4250,13 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       spatial_crs_uuid = *crs->bound_name_uuid;
       spatial_crs_generation = input.context.catalog_generation_id;
     } else {
-      const auto crs = ExactEncodedDescriptorField(
-          persisted.columns[1].value_descriptor.encoded_descriptor,
-          "crs_uuid");
-      const auto generation = ExactEncodedDescriptorField(
-          persisted.columns[1].value_descriptor.encoded_descriptor,
-          "crs_generation");
+      const auto fields = Rcp079ExactDescriptorFieldsV1(persisted.columns[1].value_descriptor);
+      if (!fields) return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
+                                 "spatial source descriptor is not binary column metadata");
+      const auto crs = fields->identity("crs_uuid");
+      const auto found_generation = fields->text.find("crs_generation");
+      const auto generation = found_generation == fields->text.end()
+          ? std::optional<std::string>{} : std::optional(found_generation->second);
       if (!crs.has_value() || !generation.has_value()) {
         return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
                       "spatial source descriptor lacks CRS identity");
@@ -4307,7 +4270,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         spatial_crs_generation = 0;
       }
     }
-    if (!CanonicalUuidText(spatial_crs_uuid) || spatial_crs_generation == 0) {
+    if (!core::uuid::IsEngineIdentityUuid(spatial_crs_uuid) || spatial_crs_generation == 0) {
       return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
                     "spatial CRS identity or generation is invalid");
     }
@@ -4338,7 +4301,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
              crs != dag.expressions.end() &&
              alias->expression_kind ==
                  api::RelationalExpressionKind::kIdentifier &&
-             alias->bound_name_uuid == std::optional<std::string>(object_uuid) &&
+             alias->bound_name_uuid == std::optional<api::EngineUuid>(object_uuid) &&
              point->expression_kind ==
                  api::RelationalExpressionKind::kFunctionCall &&
              point->operator_name == "POINT" &&
@@ -4347,7 +4310,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
              crs->expression_kind ==
                  api::RelationalExpressionKind::kIdentifier &&
              crs->bound_name_uuid ==
-                 std::optional<std::string>(spatial_crs_uuid);
+                 std::optional<api::EngineUuid>(spatial_crs_uuid);
     };
     if ((has_match &&
          !validate_spatial_operation(operation_expression("SPATIAL_MATCH"),
@@ -4371,34 +4334,27 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   const std::string logical_operator_id =
       spatial ? "LOGICAL_SPATIAL_SOURCE_V1"
               : "LOGICAL_COLUMNAR_SOURCE_V1";
-  const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
-  const auto source_identity_scope =
-      identity_scope + ":" + std::to_string(source->node_id) + ":" +
-      object_uuid;
   const auto provider_uuid =
-      DerivedCanonicalUuid(source_identity_scope, family + ".provider");
+      api::GenerateCrudEngineUuid("object");
   const auto capability_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".capability");
+      api::GenerateCrudEngineUuid("object");
   const auto result_handle_uuid =
-      DerivedCanonicalUuid(source_identity_scope, family + ".result-handle");
+      api::GenerateCrudEngineUuid("object");
   const auto property_uuid =
-      DerivedCanonicalUuid(source_identity_scope, family + ".property");
+      api::GenerateCrudEngineUuid("object");
   const auto security_receipt_uuid =
-      DerivedCanonicalUuid(source_identity_scope, family + ".security-receipt");
+      api::GenerateCrudEngineUuid("object");
   const auto policy_snapshot_uuid =
-      DerivedCanonicalUuid(source_identity_scope, family + ".policy-snapshot");
+      api::GenerateCrudEngineUuid("object");
   const auto statistics_snapshot_uuid =
-      DerivedCanonicalUuid(source_identity_scope,
-                           family + ".statistics-snapshot");
+      api::GenerateCrudEngineUuid("object");
   const auto resource_contract_uuid =
-      DerivedCanonicalUuid(source_identity_scope,
-                           family + ".resource-contract");
+      api::GenerateCrudEngineUuid("object");
   const auto suffix = std::to_string(source->node_id) + "." + implementation_id;
   const auto alternative_uuid =
-      DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
+      api::GenerateCrudEngineUuid("object");
   const auto cost_uuid =
-      DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
+      api::GenerateCrudEngineUuid("object");
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
 
@@ -4436,12 +4392,12 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                                input.context.authorization_context.present;
   std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
   alternatives.push_back(MakeModelFamilyCapabilitySnapshotForCompositionV1(
-      planning, identity_scope + "." + family + ".fallback",
+      planning,
       opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
       provider_uuid, capability_uuid, persisted.descriptor_generation, true, 1,
       1, std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2)));
   const auto planned = PlanCanonicalModelFamilySourceForCompositionV1(
-      planning, identity_scope + "." + family + ".inventory",
+      planning,
       std::move(alternatives));
   if (!planned.accepted || !planned.selected ||
       !planned.data_access_allowed || !planned.optimizer_owned_enumeration ||
@@ -4864,8 +4820,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                         "model-family row validation was cancelled");
           }
           if (row.table_uuid != source_input.object_uuid ||
-              !CanonicalUuidText(row.row_uuid) ||
-              !CanonicalUuidText(row.version_uuid) ||
+              !core::uuid::IsEngineIdentityUuid(row.row_uuid) ||
+              !core::uuid::IsEngineIdentityUuid(row.version_uuid) ||
               row.values.size() != persisted.columns.size()) {
             return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                         "model-family row identity or width is invalid");
@@ -4987,15 +4943,15 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               const auto point = value_for(row, "spatial_value");
               const auto crs = value_for(row, "crs_uuid");
               if (row_uuid == nullptr || point == nullptr || crs == nullptr ||
-                  *row_uuid != row.row_uuid ||
-                  *crs != source_input.spatial_crs_uuid) {
+                  Rcp079NativeUuidCell(row_uuid) != std::optional(row.row_uuid) ||
+                  Rcp079NativeUuidCell(crs) != std::optional(source_input.spatial_crs_uuid)) {
                 return fail("SB_MODEL_SPATIAL_CRS_MISMATCH_V1",
                             "persistent spatial row identity or CRS changed");
               }
               source_rows.push_back(
                   {row.row_uuid,
                    std::vector<std::uint8_t>(point->begin(), point->end()),
-                   *crs});
+                   *Rcp079NativeUuidCell(crs)});
             }
           } catch (const std::bad_alloc&) {
             return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
@@ -5235,8 +5191,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               api::nosql::SpatialPoint2dV1 retained_decoded_point;
               if (retained_row_uuid == nullptr || retained_point == nullptr ||
                   retained_crs == nullptr ||
-                  retained_row.row_uuid != *retained_row_uuid ||
-                  *retained_crs != source_input.spatial_crs_uuid ||
+                  std::optional(retained_row.row_uuid) != Rcp079NativeUuidCell(retained_row_uuid) ||
+                  Rcp079NativeUuidCell(retained_crs) != std::optional(source_input.spatial_crs_uuid) ||
                   !api::nosql::DecodeSpatialPoint2dV1(
                       std::string_view(*retained_point),
                       &retained_decoded_point)) {
@@ -5261,7 +5217,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                         return actual_byte ==
                                static_cast<std::uint8_t>(retained_byte);
                       }) ||
-                  actual.crs_uuid != *retained_crs ||
+                  std::optional(actual.crs_uuid) != Rcp079NativeUuidCell(retained_crs) ||
                   actual.crs_uuid != source_input.spatial_crs_uuid ||
                   !actual.predicate_truth || actual.distance != 0.0 ||
                   std::signbit(actual.distance)) {
@@ -5606,7 +5562,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                           return actual_byte ==
                                  static_cast<std::uint8_t>(retained_byte);
                         }) ||
-                    actual.crs_uuid != *retained_crs ||
+                    std::optional(actual.crs_uuid) != Rcp079NativeUuidCell(retained_crs) ||
                     actual.crs_uuid != source_input.spatial_crs_uuid ||
                     actual.predicate_truth ||
                     actual.distance != expected.distance ||
@@ -5720,7 +5676,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               if (retained_row_uuid == nullptr || retained_point == nullptr ||
                   retained_crs == nullptr ||
                   actual.row_uuid != retained_row.row_uuid ||
-                  actual.row_uuid != *retained_row_uuid ||
+                  std::optional(actual.row_uuid) != Rcp079NativeUuidCell(retained_row_uuid) ||
                   actual.encoded_point.size() != retained_point->size() ||
                   !std::ranges::equal(
                       actual.encoded_point, *retained_point,
@@ -5729,7 +5685,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                         return actual_byte ==
                                static_cast<std::uint8_t>(retained_byte);
                       }) ||
-                  actual.crs_uuid != *retained_crs ||
+                  std::optional(actual.crs_uuid) != Rcp079NativeUuidCell(retained_crs) ||
                   actual.crs_uuid != source_input.spatial_crs_uuid ||
                   actual.predicate_truth || actual.distance != 0.0 ||
                   std::signbit(actual.distance)) {
@@ -5815,12 +5771,12 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                 api::EngineTypedValue value;
                 value.descriptor = public_columns[ordinal].descriptor;
                 value.setState(api::EngineValueState::value);
-                if (ordinal == 0) value.encoded_value = row.row_uuid;
+                if (ordinal == 0) value.binary_value.assign(row.row_uuid.bytes.begin(), row.row_uuid.bytes.end());
                 if (ordinal == 1) {
                   value.binary_value = std::move(row.encoded_point);
                 }
                 if (ordinal == 2) {
-                  value.encoded_value = std::move(row.crs_uuid);
+                  value.binary_value.assign(row.crs_uuid.bytes.begin(), row.crs_uuid.bytes.end());
                 }
                 if (ordinal == 3 && has_match) value.encoded_value = "true";
                 if ((ordinal == 3 && !has_match && has_nearest) ||
@@ -5861,8 +5817,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                   return expression.expression_kind ==
                              api::RelationalExpressionKind::kIdentifier &&
                          expression.bound_name_uuid ==
-                             std::optional<std::string>(
-                                 column.column_uuid);
+                             std::optional<api::EngineUuid>(column.column_uuid);
                 });
             const auto descriptor_id =
                 identifier == dag.expressions.end()
@@ -5887,7 +5842,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                  descriptor_id});
             logical_descriptor_ids.push_back(descriptor_id);
           }
-          std::vector<std::string> row_uuids;
+          std::vector<api::EngineUuid> row_uuids;
           row_uuids.reserve(read.visible_rows.size());
           for (const auto& row : read.visible_rows) {
             if (cancellation_requested()) {
@@ -6622,18 +6577,11 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(identity_scope + ":" +
-                               input.context.current_monotonic_ns,
-                           family + ".execution-attempt");
+      api::GenerateCrudEngineUuid("object");
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id) + ":" +
-              std::to_string(
-                  input.context.snapshot_visible_through_local_transaction_id),
-          family + ".transaction-effect-unchanged");
+      api::GenerateCrudEngineUuid("object");
   selected.result_publication_request.maximum_row_count =
       source_input.maximum_rows;
   selected.result_publication_request.column_bindings = result_bindings;

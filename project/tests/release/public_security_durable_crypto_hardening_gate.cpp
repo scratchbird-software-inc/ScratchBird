@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -99,7 +100,7 @@ api::EngineUuid MakeUuid(UuidKind kind, u64 offset) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, kBaseMillis + offset);
   api::EngineUuid out;
   Require(generated.ok(), "engine UUID generation failed");
-  out.canonical = uuid::UuidToString(generated.value.value);
+  out = generated.value.value;
   return out;
 }
 
@@ -140,7 +141,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
   }
@@ -202,7 +203,7 @@ void CreatePrincipalCredential(const Fixture& fixture,
   request.context = SecurityAdminContext(fixture, local_tx);
   request.target_object.uuid = principal_uuid;
   request.target_object.object_kind = "security_principal";
-  request.principal_uuid = principal_uuid.canonical;
+  request.principal_uuid = principal_uuid;
   request.principal_name = std::string(principal_name);
   request.credential_fingerprint = std::move(credential_fingerprint);
   const auto created = api::EngineSecurityCreatePrincipal(request);
@@ -219,7 +220,7 @@ void AlterPrincipalCredential(const Fixture& fixture,
   request.context = SecurityAdminContext(fixture, local_tx);
   request.target_object.uuid = principal_uuid;
   request.target_object.object_kind = "security_principal";
-  request.principal_uuid = principal_uuid.canonical;
+  request.principal_uuid = principal_uuid;
   request.principal_name = std::string(principal_name);
   request.credential_fingerprint = std::move(credential_fingerprint);
   const auto altered = api::EngineSecurityAlterPrincipal(request);
@@ -232,10 +233,10 @@ void GrantGlobalConnectPrivilege(const Fixture& fixture,
                                  std::uint64_t local_tx) {
   api::EngineSecurityGrantPrivilegeRequest request;
   request.context = SecurityAdminContext(fixture, local_tx);
-  request.grant_uuid = fixture.global_connect_grant.canonical;
-  request.grantee_uuid = principal_uuid.canonical;
+  request.grant_uuid = fixture.global_connect_grant;
+  request.grantee_uuid = principal_uuid;
   request.grantee_kind = "principal";
-  request.target_object_uuid.clear();
+  request.target_object_uuid = {};
   request.target_object_kind.clear();
   request.privilege = "CONNECT";
   request.grant_effect = "allow";
@@ -244,8 +245,8 @@ void GrantGlobalConnectPrivilege(const Fixture& fixture,
   const auto granted = api::EngineSecurityGrantPrivilege(request);
   Require(granted.ok && granted.privilege_granted,
           "failed to grant durable global CONNECT privilege");
-  Require(granted.primary_object.uuid.canonical ==
-              fixture.global_connect_grant.canonical &&
+  Require(granted.primary_object.uuid ==
+              fixture.global_connect_grant &&
               granted.primary_object.object_kind == "security_privilege_grant" &&
               granted.security_generation != 0,
           "global CONNECT grant result did not preserve exact durable identity");
@@ -254,7 +255,7 @@ void GrantGlobalConnectPrivilege(const Fixture& fixture,
   Require(loaded.ok, "global CONNECT grant durable state did not reload");
   const api::EngineSecurityPrivilegeGrantRecord* exact_grant = nullptr;
   for (const auto& grant : loaded.state.grants) {
-    if (grant.grant_uuid == fixture.global_connect_grant.canonical) {
+    if (grant.grant_uuid == fixture.global_connect_grant) {
       Require(exact_grant == nullptr,
               "global CONNECT durable grant identity was duplicated");
       exact_grant = &grant;
@@ -262,26 +263,23 @@ void GrantGlobalConnectPrivilege(const Fixture& fixture,
   }
   Require(exact_grant != nullptr && !exact_grant->revoked,
           "active global CONNECT durable grant was not reloaded");
-  Require(exact_grant->grantee_uuid == principal_uuid.canonical &&
+  Require(exact_grant->grantee_uuid == principal_uuid &&
               exact_grant->grantee_kind == "principal" &&
-              exact_grant->target_object_uuid.empty() &&
+              exact_grant->target_object_uuid.is_nil() &&
               exact_grant->target_object_kind.empty() &&
               exact_grant->privilege == "CONNECT" &&
               exact_grant->grant_effect == "allow" &&
               exact_grant->grantor_principal_uuid ==
-                  request.context.principal_uuid.canonical &&
+                  request.context.principal_uuid &&
               exact_grant->creator_tx == local_tx &&
               exact_grant->security_generation != 0,
           "reloaded global CONNECT grant did not preserve exact authority fields");
 }
 
 std::string StructuredVerifierClaim(std::string_view principal,
-                                    const api::EngineUuid& principal_uuid,
                                     std::string_view verifier) {
   std::string evidence = "scheme=local_password_v1;principal=";
   evidence += principal;
-  evidence += ";principal_uuid=";
-  evidence += principal_uuid.canonical;
   evidence += ";storage_authority=durable_security_catalog;verifier=";
   evidence += verifier;
   return evidence;
@@ -312,13 +310,18 @@ api::EngineAuthenticateRequest LocalPasswordRequest(
   request.option_envelopes.push_back("provider_generation_observed:7");
   request.option_envelopes.push_back("provider_lifecycle_state:healthy");
   request.option_envelopes.push_back("default_policy_installed:true");
-  if (include_durable_hint && !principal_uuid.canonical.empty()) {
-    request.option_envelopes.push_back("durable_principal_uuid:" + principal_uuid.canonical);
+  if (include_durable_hint && !principal_uuid.is_nil()) {
+    request.durable_principal_uuid = principal_uuid;
   }
   return request;
 }
 
-std::string TokenEvidence(std::string_view principal,
+struct TokenCredentialEvidence {
+  api::EngineUuid principal_uuid;
+  std::string payload;
+};
+
+TokenCredentialEvidence TokenEvidence(std::string_view principal,
                           const api::EngineUuid& principal_uuid,
                           std::string_view token,
                           std::string_view state = "active",
@@ -327,8 +330,6 @@ std::string TokenEvidence(std::string_view principal,
   std::string evidence =
       "scheme=security_database_temporary_token_v1;principal=";
   evidence += principal;
-  evidence += ";principal_uuid=";
-  evidence += principal_uuid.canonical;
   evidence += ";storage_authority=durable_security_catalog;token=";
   evidence += token;
   evidence += ";token_handle=token-handle-pcr091;token_digest=";
@@ -337,16 +338,17 @@ std::string TokenEvidence(std::string_view principal,
   evidence += state;
   evidence += ";expires_at_ms=";
   evidence += expires_at_ms;
-  return evidence;
+  return {principal_uuid, std::move(evidence)};
 }
 
 api::EngineAuthenticateRequest TokenRequest(const Fixture& fixture,
-                                            std::string evidence) {
+                                            TokenCredentialEvidence evidence) {
   api::EngineAuthenticateRequest request;
   request.context = Context(fixture);
   request.provider_family = "security_database_temporary_token";
   request.principal_claim = "alice";
-  request.credential_evidence = std::move(evidence);
+  request.durable_principal_uuid = evidence.principal_uuid;
+  request.credential_evidence = std::move(evidence.payload);
   request.credential_evidence_present = true;
   request.target_database.uuid = fixture.database;
   request.target_database.object_kind = "database";
@@ -410,7 +412,7 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
       fixture,
       "alice",
       fixture.principal,
-      StructuredVerifierClaim("alice", fixture.principal, kVerifier)));
+      StructuredVerifierClaim("alice", kVerifier)));
   Require(!structured_verifier_claim.ok &&
               HasDiagnosticDetail(structured_verifier_claim,
                                   "password_secret_required_for_pbkdf2_verification"),
@@ -427,8 +429,8 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
   const auto good = api::EngineAuthenticate(initial_good_request);
   Require(good.ok && good.authenticated,
           "durable PBKDF2 local-password verifier was rejected");
-  Require(good.connection_security_context.effective_user_uuid.canonical ==
-              fixture.principal.canonical,
+  Require(good.connection_security_context.effective_user_uuid ==
+              fixture.principal,
           "authenticated context did not use durable principal UUID");
   Require(HasEvidence(good,
                       "security_state_authority",
@@ -479,8 +481,8 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
       false));
   Require(raw_good.ok && raw_good.authenticated,
           "raw local-password credential was rejected");
-  Require(raw_good.connection_security_context.effective_user_uuid.canonical ==
-              fixture.principal.canonical,
+  Require(raw_good.connection_security_context.effective_user_uuid ==
+              fixture.principal,
           "raw password auth did not resolve the durable principal UUID from server state");
   Require(HasEvidence(raw_good,
                       "security_state_authority",
@@ -561,7 +563,7 @@ void TestSecurityLifecycleStableTokenUsesSha256(const Fixture& fixture) {
   request.context = SecurityAdminContext(fixture, 94);
   request.target_object.uuid = fixture.lifecycle_principal;
   request.target_object.object_kind = "security_principal";
-  request.principal_uuid = fixture.lifecycle_principal.canonical;
+  request.principal_uuid = fixture.lifecycle_principal;
   request.principal_name = "lifecycle-proof";
   request.credential_protected_material_ref =
       "protected-material-ref:v1:sha256:pcr091-local-password-verifier";
@@ -574,7 +576,7 @@ void TestSecurityLifecycleStableTokenUsesSha256(const Fixture& fixture) {
   Require(loaded.ok, "security lifecycle durable state did not reload");
   std::string fingerprint;
   for (const auto& principal : loaded.state.principals) {
-    if (principal.principal_uuid == fixture.lifecycle_principal.canonical) {
+    if (principal.principal_uuid == fixture.lifecycle_principal) {
       fingerprint = principal.credential_fingerprint;
       break;
     }

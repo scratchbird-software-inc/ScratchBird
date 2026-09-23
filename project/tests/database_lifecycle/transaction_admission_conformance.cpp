@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
@@ -158,7 +159,7 @@ std::string NewUuid(UuidKind kind, std::uint64_t millis) {
   return uuid::UuidToString(generated.value.value);
 }
 
-std::string CreateOpenDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateOpenDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, 1779100001000).value;
@@ -178,11 +179,11 @@ std::string CreateOpenDatabase(const std::filesystem::path& path) {
   Require(opened.ok(), "DBLC-008 first open tx2 activation failed");
   const auto clean = db::MarkDatabaseCleanShutdown(path.string());
   Require(clean.ok(), "DBLC-008 clean shutdown marker failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 void WriteAuthStore(const std::filesystem::path& database_path,
-                    const std::string& database_uuid) {
+                    const api::EngineUuid& database_uuid) {
   const auto bootstrap =
       scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
           database_path, "DBLC-008");
@@ -194,7 +195,7 @@ void WriteAuthStore(const std::filesystem::path& database_path,
       kVerifier,
       bootstrap.local_transaction_id,
       "DBLC-008",
-      bootstrap.transaction_uuid.canonical);
+      bootstrap.transaction_uuid);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
       database_path,
       database_uuid,
@@ -204,13 +205,13 @@ void WriteAuthStore(const std::filesystem::path& database_path,
       "CONNECT",
       bootstrap.local_transaction_id,
       "DBLC-008:connect",
-      bootstrap.transaction_uuid.canonical);
+      bootstrap.transaction_uuid);
   scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
       bootstrap);
 }
 
 HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
-                                  const std::string& database_uuid,
+                                  const api::EngineUuid& database_uuid,
                                   HostedDatabaseState state = HostedDatabaseState::kOpen) {
   HostedEngineState engine_state;
   engine_state.engine_context_active = true;
@@ -395,14 +396,14 @@ std::array<std::uint8_t, 16> ActiveSessionUuid(const ServerSessionRegistry& regi
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& database_path,
-                                        const std::string& database_uuid) {
+                                        const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "dblc-008-direct-engine";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = "019e0f08-a100-7000-8000-000000000101";
-  context.session_uuid.canonical = "019e0f08-a100-7000-8000-000000000102";
+  context.database_uuid = database_uuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e0f08-a100-7000-8000-000000000101");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e0f08-a100-7000-8000-000000000102");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -412,7 +413,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& database_pa
 }
 
 void TestDirectEngineAdmission(const std::filesystem::path& database_path,
-                               const std::string& database_uuid) {
+                               const api::EngineUuid& database_uuid) {
   api::EngineBeginTransactionRequest missing_security;
   missing_security.context = EngineContext(database_path, database_uuid);
   missing_security.context.security_context_present = false;
@@ -527,7 +528,7 @@ void TestCanonicalServerTransactionLifecycle(
 }
 
 void TestServerTransactionLifecycle(const std::filesystem::path& database_path,
-                                    const std::string& database_uuid) {
+                                    const api::EngineUuid& database_uuid) {
   ServerSessionRegistry registry;
   const auto engine_state = MakeEngineState(database_path, database_uuid);
   AttachAuthenticatedSession(&registry, engine_state);
@@ -577,7 +578,7 @@ void TestServerTransactionLifecycle(const std::filesystem::path& database_path,
 }
 
 void TestServerAdmissionFences(const std::filesystem::path& database_path,
-                               const std::string& database_uuid) {
+                               const api::EngineUuid& database_uuid) {
   {
     ServerSessionRegistry registry;
     const auto read_only_state = MakeEngineState(database_path, database_uuid, HostedDatabaseState::kReadOnly);
@@ -628,7 +629,7 @@ void TestServerAdmissionFences(const std::filesystem::path& database_path,
 }
 
 void TestServerResourceHooks(const std::filesystem::path& database_path,
-                             const std::string& database_uuid) {
+                             const api::EngineUuid& database_uuid) {
   const std::vector<std::pair<std::string, std::string>> hooks = {
       {"tx_admission:filespace_unavailable", "filespace_unavailable"},
       {"tx_admission:memory_denied", "memory_admission_denied"},
@@ -659,7 +660,7 @@ int main() {
       "database_lifecycle_transaction_admission_conformance");
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "dblc008_transaction_admission.sbdb";
-  const std::string database_uuid = CreateOpenDatabase(database_path);
+  const auto database_uuid = CreateOpenDatabase(database_path);
   WriteAuthStore(database_path, database_uuid);
 
   TestDirectEngineAdmission(database_path, database_uuid);

@@ -60,16 +60,16 @@ class TemporaryDirectory final {
   std::filesystem::path path_;
 };
 
-std::string NewUuid(UuidKind kind, std::uint64_t identity_time) {
+api::EngineUuid NewUuid(UuidKind kind, std::uint64_t identity_time) {
   const auto generated =
       uuid::GenerateDurableEngineIdentityV7(kind, identity_time);
   Require(generated.ok(), "durable provider UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 struct Fixture {
   std::filesystem::path database_path;
-  std::string database_uuid;
+  api::EngineUuid database_uuid;
   api::EngineRequestContext context;
 };
 
@@ -113,20 +113,19 @@ Fixture CreateFixture(const std::filesystem::path& path) {
 
   Fixture fixture;
   fixture.database_path = path;
-  fixture.database_uuid = uuid::UuidToString(database_uuid.value.value);
+  fixture.database_uuid = database_uuid.value.value;
   fixture.context.trust_mode = api::EngineTrustMode::server_isolated;
   fixture.context.database_path = path.string();
-  fixture.context.database_uuid.canonical = fixture.database_uuid;
+  fixture.context.database_uuid = fixture.database_uuid;
   fixture.context.database_page_size_bytes = create.page_size;
   fixture.context.local_transaction_id = begun.entry.identity.local_id.value;
-  fixture.context.transaction_uuid.canonical =
-      uuid::UuidToString(begun.entry.identity.transaction_uuid.value);
-  fixture.context.statement_receipt_uuid.canonical =
+  fixture.context.transaction_uuid = begun.entry.identity.transaction_uuid.value;
+  fixture.context.statement_receipt_uuid =
       NewUuid(UuidKind::object, 1788210000005ull);
-  fixture.context.statement_snapshot_uuid.canonical =
+  fixture.context.statement_snapshot_uuid =
       NewUuid(UuidKind::object, 1788210000006ull);
   fixture.context.statement_metadata_snapshot_engine_owned = true;
-  fixture.context.statement_metadata_snapshot_uuid.canonical =
+  fixture.context.statement_metadata_snapshot_uuid =
       NewUuid(UuidKind::object, 1788210000007ull);
   fixture.context.security_context_present = true;
   fixture.context.trace_tags.emplace_back("private_dml_update_rows_binder");
@@ -169,9 +168,9 @@ void TestReservationAuthority(Fixture* fixture) {
   Require(reserved.ok() &&
               reserved.outcome ==
                   api::MgaDmlUpdateDurableOperationOutcomeV1::committed &&
-              !reserved.identity.validated_durable_handle_uuid.empty() &&
+              !reserved.identity.validated_durable_handle_uuid.is_nil() &&
               reserved.identity.validated_durable_handle_generation == 1 &&
-              !reserved.identity.reserved_statement_barrier_uuid.empty() &&
+              !reserved.identity.reserved_statement_barrier_uuid.is_nil() &&
               reserved.identity.reserved_statement_barrier_generation == 1 &&
               reserved.identity.validated_durable_handle_uuid !=
                   reserved.identity.reserved_statement_barrier_uuid,
@@ -186,7 +185,7 @@ void TestReservationAuthority(Fixture* fixture) {
           "durable provider exact reservation retry was not idempotent");
 
   auto cross_receipt = request;
-  cross_receipt.context.statement_receipt_uuid.canonical =
+  cross_receipt.context.statement_receipt_uuid =
       NewUuid(UuidKind::object, 1788210000200ull);
   const auto denied =
       api::ReserveDmlUpdateDurableOperationAuthorityV1(cross_receipt);

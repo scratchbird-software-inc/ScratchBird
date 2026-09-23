@@ -241,8 +241,8 @@ bool ResourceBudgetExceeded(const EngineApiRequest& request, std::string* detail
   return false;
 }
 
-std::vector<std::string> DependencyUuids(const EngineApiRequest& request) {
-  std::vector<std::string> dependencies = OptionValues(request, "dependency:");
+std::vector<EngineUuid> DependencyUuids(const EngineApiRequest& request) {
+  std::vector<EngineUuid> dependencies;
   for (const auto& related : request.related_objects) {
     if (!related.uuid.is_nil()) { dependencies.push_back(related.uuid); }
   }
@@ -324,11 +324,13 @@ TResult RuntimeStatusFailure(const EngineRequestContext& context,
                              const std::string& operation_id,
                              const udr_runtime::UdrStatus& status,
                              const std::string& fallback_code) {
-  return MakeUdrFailure<TResult>(
-      context,
-      operation_id,
+  auto result = MakeUdrFailure<TResult>(context, operation_id,
       RuntimeFailureCode(status.diagnostic_code, fallback_code),
       status.detail.empty() ? status.diagnostic_code : status.detail);
+  if (!status.identity.is_nil()) {
+    result.diagnostics.front().identity_fields.push_back({"package_uuid", status.identity});
+  }
+  return result;
 }
 
 template <typename TResult>
@@ -456,6 +458,10 @@ TResult RequireVisibleUdr(const EngineApiRequest& request,
 
 template <typename TResult>
 TResult ValidateDependencies(const EngineApiRequest& request, const std::string& operation_id) {
+  if (!OptionValues(request, "dependency:").empty()) {
+    return MakeUdrFailure<TResult>(request.context, operation_id,
+        "SB_ENGINE_API_UDR_DEPENDENCY_INVALID", "bound_binary_dependency_required");
+  }
   for (const auto& dependency_uuid : DependencyUuids(request)) {
     EngineApiDiagnostic behavior_diagnostic;
     const auto dependency = FindVisibleApiBehaviorRecord(
@@ -465,11 +471,10 @@ TResult ValidateDependencies(const EngineApiRequest& request, const std::string&
     if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<TResult>(
         request.context, operation_id, behavior_diagnostic);
     if (!dependency || dependency->object_kind != kUdrKind || dependency->state == "failed" || dependency->state == "unloaded") {
-      return MakeUdrFailure<TResult>(
-          request.context,
-          operation_id,
-          "SB_ENGINE_API_UDR_DEPENDENCY_MISSING",
-          "dependency_not_registered_or_loaded:" + dependency_uuid);
+      auto failure = MakeUdrFailure<TResult>(request.context, operation_id,
+          "SB_ENGINE_API_UDR_DEPENDENCY_MISSING", "dependency_not_registered_or_loaded");
+      failure.diagnostics.front().identity_fields.push_back({"dependency_uuid", dependency_uuid});
+      return failure;
     }
   }
   return MakeApiBehaviorSuccess<TResult>(request.context, operation_id);
@@ -496,7 +501,7 @@ void EmitUdrMetric(const std::string& family,
                    const std::string& reason = {}) {
   auto& registry = scratchbird::core::metrics::DefaultMetricRegistry();
   (void)registry.IncrementCounter(family,
-                                  {{"object_uuid", request.target_object.uuid.is_nil() ? "none" : request.target_object.uuid},
+                                  {{"object_uuid", request.target_object.uuid},
                                    {"action", action},
                                    {"result", result},
                                    {"reason", reason.empty() ? "none" : reason}},
@@ -878,8 +883,15 @@ EngineInvokeUdrPackageResult EngineInvokeUdrPackage(const EngineInvokeUdrPackage
   const auto entrypoint = RequestedEntrypoint(request);
   const auto payload = RequestedInvocationPayload(request);
   const auto context_packet = RequestedContextPacket(request);
-  const auto invoked = udr_runtime::InvokePackage(
-      {existing.object_uuid, entrypoint, payload, context_packet});
+  udr_runtime::UdrCallInput input{existing.object_uuid, entrypoint, payload, context_packet};
+  input.identities.session_uuid = request.context.session_uuid;
+  input.identities.connection_uuid = request.connection_uuid;
+  input.identities.parser_uuid = request.parser_uuid;
+  input.identities.database_uuid = request.context.database_uuid;
+  for (const auto& object : request.related_objects) {
+    if (!object.uuid.is_nil()) input.identities.resolved_objects.push_back(object.uuid);
+  }
+  const auto invoked = udr_runtime::InvokePackage(input);
   if (!invoked.ok) {
     EmitUdrMetric("sb_udr_invocation_total", request, "refused", "invoke", "entrypoint_failed");
     return MakeUdrFailure<EngineInvokeUdrPackageResult>(

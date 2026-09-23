@@ -167,8 +167,8 @@ std::string RenderPipelineResult(const PipelineResult& result) {
   out << "PREPARED " << result.operation_family << ' ' << result.statement_hash << "\n";
   out << "SBLR " << (RequiresBinaryResultEncoding(result.sblr_payload)
       ? HexEncodeResultPayload(result.sblr_payload) : result.sblr_payload) << "\n";
-  if (!result.server_cursor_uuid.empty()) {
-    out << "CURSOR " << result.server_cursor_uuid << ' ' << result.server_row_count << "\n";
+  if (!result.server_cursor_uuid.is_nil()) {
+    out << "CURSOR last" << ' ' << result.server_row_count << "\n";
   }
   if (!result.server_result_payload.empty()) {
     const auto rendered_payload =

@@ -18,6 +18,7 @@
 #include "uuid.hpp"
 
 #include <cstdlib>
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -56,6 +57,17 @@ bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
 }
 
+std::string IdentityBytes(const platform::Uuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+platform::Uuid NativeIdentity(std::string_view bytes) {
+  Require(bytes.size() == 16, "UUID carrier must contain exactly 16 bytes");
+  platform::Uuid id;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), 16, id.bytes.begin());
+  Require(uuid::IsEngineIdentityUuid(id), "UUID carrier must be a valid engine identity");
+  return id;
+}
+
 std::string Id(platform::UuidKind kind, platform::u64 seed) {
   static std::map<std::pair<int, platform::u64>, std::string> generated_ids;
   const auto key = std::make_pair(static_cast<int>(kind), seed);
@@ -64,7 +76,7 @@ std::string Id(platform::UuidKind kind, platform::u64 seed) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, 1916017000000ull + seed);
   Require(generated.ok(), "fixture UUID generation failed");
   const auto [inserted, _] =
-      generated_ids.emplace(key, uuid::UuidToString(generated.value.value));
+      generated_ids.emplace(key, IdentityBytes(generated.value.value));
   return inserted->second;
 }
 
@@ -122,15 +134,22 @@ TestDatabase CreateActiveDatabase(const char* basename,
 
   TestDatabase database;
   database.path = path;
-  database.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  database.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
+  database.database_uuid = IdentityBytes(database_uuid.value.value);
+  database.transaction_uuid = IdentityBytes(transaction_uuid.value.value);
   database.local_transaction_id = begun.entry.identity.local_id.value;
   return database;
 }
 
 std::string Field(const api::EngineRowValue& row, std::string_view name) {
   for (const auto& field : row.fields) {
-    if (field.first == name) { return field.second.encoded_value; }
+    if (field.first == name) {
+      if (field.second.descriptor.canonical_type_name == "uuid") {
+        Require(field.second.encoded_value.empty() && field.second.binary_value.size() == 16,
+                "UUID result must use binary16 only");
+        return {reinterpret_cast<const char*>(field.second.binary_value.data()), 16};
+      }
+      return field.second.encoded_value;
+    }
   }
   return {};
 }
@@ -155,7 +174,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && (id.empty() || evidence.evidence_id == id)) {
+    if (evidence.evidence_kind == kind && (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -176,21 +195,15 @@ bool UnsafeValue(std::string_view value) {
 void RequireUuidFieldAuthority(const api::EngineApiResult& result) {
   for (const auto& row : result.result_shape.rows) {
     for (const auto& field : row.fields) {
-      if (field.first.size() >= 5 &&
-          field.first.substr(field.first.size() - 5) == "_uuid" &&
-          !field.second.encoded_value.empty() &&
-          field.second.encoded_value.rfind("<redacted", 0) != 0) {
-        Require(!Contains(field.second.encoded_value, "agent."),
-                "synthetic agent reference leaked in UUID field");
-        Require(!Contains(field.second.encoded_value, "policy."),
-                "synthetic policy reference leaked in UUID field");
-        Require(!Contains(field.second.encoded_value, "scope."),
-                "synthetic scope reference leaked in UUID field");
-        const auto kind = field.first == "filespace_uuid" ? platform::UuidKind::filespace
-                          : field.first == "actor_uuid"  ? platform::UuidKind::principal
-                                                         : platform::UuidKind::object;
-        Require(uuid::ParseDurableEngineIdentityUuid(kind, field.second.encoded_value).ok(),
-                "UUID field did not contain a typed durable engine UUID");
+      if (field.first.ends_with("_uuid")) {
+        const auto value = Field(row, field.first);
+        if (!value.empty() && !value.starts_with("<redacted")) {
+          const auto identity = NativeIdentity(value);
+          const auto kind = field.first == "filespace_uuid" ? platform::UuidKind::filespace
+                          : field.first == "actor_uuid" ? platform::UuidKind::principal
+                          : platform::UuidKind::object;
+          Require(uuid::MakeTypedUuid(kind, identity).ok(), "UUID field must contain typed binary identity");
+        }
       }
       Require(!UnsafeValue(field.second.encoded_value),
               "unsafe value leaked in evidence retention result payload");
@@ -205,11 +218,11 @@ api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
-  context.database_uuid.canonical = Id(platform::UuidKind::database, 1);
-  context.node_uuid.canonical = Id(platform::UuidKind::object, 2);
-  context.session_uuid.canonical = Id(platform::UuidKind::object, 3);
-  context.principal_uuid.canonical = Id(platform::UuidKind::principal, 4);
-  context.transaction_uuid.canonical = Id(platform::UuidKind::transaction, 5);
+  context.database_uuid = NativeIdentity(Id(platform::UuidKind::database, 1));
+  context.node_uuid = NativeIdentity(Id(platform::UuidKind::object, 2));
+  context.session_uuid = NativeIdentity(Id(platform::UuidKind::object, 3));
+  context.principal_uuid = NativeIdentity(Id(platform::UuidKind::principal, 4));
+  context.transaction_uuid = NativeIdentity(Id(platform::UuidKind::transaction, 5));
   context.trace_tags = {
       "right:OBS_AGENT_EVIDENCE_READ",
       "right:OBS_AGENT_STATE_READ",
@@ -224,8 +237,8 @@ api::EngineRequestContext DurableContext(const TestDatabase& database,
   auto context = Context();
   context.request_id = "pfar016a-evidence-retention-durable-agent-catalog";
   context.database_path = database.path.string();
-  context.database_uuid.canonical = database.database_uuid;
-  context.transaction_uuid.canonical = database.transaction_uuid;
+  context.database_uuid = NativeIdentity(database.database_uuid);
+  context.transaction_uuid = NativeIdentity(database.transaction_uuid);
   context.local_transaction_id = database.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       database.local_transaction_id;
@@ -379,9 +392,9 @@ void TestUserRedactionAndRetentionDecision() {
   render.client_dialect = "sbsql";
   render.correlation_uuid = Id(platform::UuidKind::object, 21);
   render.request_uuid = Id(platform::UuidKind::object, 22);
-  render.session_uuid = request.context.session_uuid.canonical;
-  render.database_uuid = request.context.database_uuid.canonical;
-  render.transaction_uuid = request.context.transaction_uuid.canonical;
+  render.session_uuid = IdentityBytes(request.context.session_uuid);
+  render.database_uuid = IdentityBytes(request.context.database_uuid);
+  render.transaction_uuid = IdentityBytes(request.context.transaction_uuid);
   const auto envelope = rendering::RenderEngineApiResultForParserPackage(result, std::move(render));
   std::vector<std::string> errors;
   Require(rendering::ValidateLegacyRenderedProjectionStructure(envelope, &errors),
@@ -508,10 +521,10 @@ void TestSupportBundleRetentionMetadata() {
   request.option_envelopes.push_back("engine_authorized_support_export:true");
   api::EngineSupportBundleAgentEvidenceSource source;
   source.agent_type_id = evidence.agent_type_id;
-  source.agent_uuid = evidence.agent_uuid;
-  source.filespace_uuid = evidence.filespace_uuid;
-  source.policy_uuid = evidence.policy_uuid;
-  source.evidence_uuid = evidence.evidence_uuid;
+  source.agent_uuid = NativeIdentity(evidence.agent_uuid);
+  source.filespace_uuid = NativeIdentity(evidence.filespace_uuid);
+  source.policy_uuid = NativeIdentity(evidence.policy_uuid);
+  source.evidence_uuid = NativeIdentity(evidence.evidence_uuid);
   source.evidence_kind = evidence.evidence_kind;
   source.result_state = evidence.result_state;
   source.diagnostic_code = evidence.diagnostic_code;

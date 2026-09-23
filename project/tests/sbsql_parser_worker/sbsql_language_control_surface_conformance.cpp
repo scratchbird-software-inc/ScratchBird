@@ -49,7 +49,7 @@ bool HasDiagnostic(const sbsql::MessageVectorSet& messages,
 
 sbsql::ParserConfig TestConfig() {
   sbsql::ParserConfig config;
-  config.parser_uuid = "parser.sml.language-control";
+  config.parser_uuid = scratchbird::tests::FixtureUuid(1365, 3);
   config.bundle_contract_id = "sbp_sbsql@sml-language-control";
   config.build_id = "sml-language-control-test";
   return config;

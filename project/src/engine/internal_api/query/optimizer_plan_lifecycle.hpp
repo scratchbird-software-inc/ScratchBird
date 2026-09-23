@@ -22,10 +22,10 @@ namespace scratchbird::engine::internal_api {
 namespace index_lifecycle = scratchbird::core::index;
 namespace plan_executor = scratchbird::engine::executor;
 
-inline constexpr const char* kOptimizerPlanLifecycleEventMagic = "SBPLANL2";
+inline constexpr const char* kOptimizerPlanLifecycleEventMagic = "SBPLANB3";
 inline constexpr const char* kOptimizerPlanLifecycleLegacyEventMagic =
     "SBPLANL1";
-inline constexpr std::uint32_t kOptimizerPlanLifecycleEventSchemaVersion = 2;
+inline constexpr std::uint32_t kOptimizerPlanLifecycleEventSchemaVersion = 3;
 
 inline constexpr const char* kOptimizerPlanDiagnosticOk = "OPTIMIZER.PLAN.OK";
 inline constexpr const char* kOptimizerPlanDiagnosticDatabasePathRequired =
@@ -55,13 +55,13 @@ inline constexpr const char* kOptimizerPlanDiagnosticWriteFailed =
 // exact statement snapshot, current resolver, visibility and finality remain
 // outside this structure and outside the durable event stream.
 struct EngineOptimizerPlanDependencyIdentity {
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
-  std::string capability_snapshot_uuid;
-  std::string resource_snapshot_uuid;
-  std::string statistics_snapshot_uuid;
-  std::string route_snapshot_uuid;
+  EngineUuid bound_sblr_tree_uuid;
+  EngineUuid catalog_epoch_uuid;
+  EngineUuid security_context_uuid;
+  EngineUuid capability_snapshot_uuid;
+  EngineUuid resource_snapshot_uuid;
+  EngineUuid statistics_snapshot_uuid;
+  EngineUuid route_snapshot_uuid;
   std::uint64_t catalog_generation_id = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t policy_epoch = 0;
@@ -69,19 +69,19 @@ struct EngineOptimizerPlanDependencyIdentity {
   std::uint64_t statistics_generation = 0;
   std::uint64_t route_epoch = 0;
   std::uint64_t route_generation = 0;
-  std::vector<std::string> object_dependency_uuids;
+  std::vector<EngineUuid> object_dependency_uuids;
 };
 
 struct EngineOptimizerPlanCacheEntry {
   std::uint32_t event_schema_version =
       kOptimizerPlanLifecycleEventSchemaVersion;
-  std::string event_uuid;
+  EngineUuid event_uuid;
   std::uint64_t event_sequence = 0;
   std::uint64_t plan_cache_epoch = 0;
-  std::string plan_uuid;
+  EngineUuid plan_uuid;
   std::string query_fingerprint;
-  std::string relation_uuid;
-  std::string index_uuid;
+  EngineUuid relation_uuid;
+  EngineUuid index_uuid;
   std::string catalog_physical_profile_key;
   std::string plan_shape_digest;
   std::uint64_t index_generation = 0;
@@ -106,7 +106,7 @@ struct EngineOptimizerPlanLifecycleState {
   std::uint64_t legacy_event_count = 0;
   std::uint64_t malformed_event_count = 0;
   bool recovered_from_persisted_evidence = false;
-  std::string recovery_snapshot_uuid;
+  EngineUuid recovery_snapshot_uuid;
 };
 
 struct EngineLoadOptimizerPlanLifecycleStateResult {
@@ -116,15 +116,15 @@ struct EngineLoadOptimizerPlanLifecycleStateResult {
 };
 
 struct EngineOptimizerCachePlanRequest : EngineApiRequest {
-  std::string plan_uuid;
+  EngineUuid plan_uuid;
   std::string query_fingerprint;
-  std::string relation_uuid;
-  std::string index_uuid;
+  EngineUuid relation_uuid;
+  EngineUuid index_uuid;
   std::string plan_shape_digest;
   plan_executor::CanonicalExecutionMgaAuthority mga_authority;
   plan_executor::TypedPhysicalNodeDag selected_physical_dag;
-  std::string selected_catalog_epoch_uuid;
-  std::vector<std::string> object_dependency_uuids;
+  EngineUuid selected_catalog_epoch_uuid;
+  std::vector<EngineUuid> object_dependency_uuids;
   index_lifecycle::IndexLifecycleDescriptor index_descriptor;
   index_lifecycle::IndexStatisticsSnapshot statistics;
   index_lifecycle::IndexStatisticsFreshnessPolicy freshness_policy =
@@ -141,13 +141,13 @@ EngineOptimizerCachePlanResult EngineOptimizerCachePlan(
     const EngineOptimizerCachePlanRequest& request);
 
 struct EngineOptimizerValidateCachedPlanRequest : EngineApiRequest {
-  std::string plan_uuid;
+  EngineUuid plan_uuid;
   std::string query_fingerprint;
-  std::string index_uuid;
+  EngineUuid index_uuid;
   plan_executor::CanonicalExecutionMgaAuthority mga_authority;
   plan_executor::TypedPhysicalNodeDag selected_physical_dag;
-  std::string selected_catalog_epoch_uuid;
-  std::vector<std::string> object_dependency_uuids;
+  EngineUuid selected_catalog_epoch_uuid;
+  std::vector<EngineUuid> object_dependency_uuids;
   std::uint64_t current_index_generation = 0;
   std::uint64_t current_statistics_generation = 0;
   std::uint64_t current_catalog_generation_id = 0;
@@ -180,9 +180,9 @@ struct EngineOptimizerValidateCachedPlanResult : EngineApiResult {
 // cache entry or a durable event and cannot be assembled from scalar fields.
 struct EngineOptimizerPlanStatementUseReceipt {
  public:
-  const std::string& receipt_id() const noexcept { return receipt_id_; }
-  const std::string& plan_uuid() const noexcept { return plan_uuid_; }
-  const std::string& catalog_epoch_uuid() const noexcept {
+  const EngineUuid& receipt_id() const noexcept { return receipt_id_; }
+  const EngineUuid& plan_uuid() const noexcept { return plan_uuid_; }
+  const EngineUuid& catalog_epoch_uuid() const noexcept {
     return dependencies_.catalog_epoch_uuid;
   }
   const plan_executor::PhysicalMgaStatementContext& statement_context()
@@ -211,8 +211,8 @@ struct EngineOptimizerPlanStatementUseReceipt {
 
   EngineOptimizerPlanStatementUseReceipt() = default;
 
-  std::string receipt_id_;
-  std::string plan_uuid_;
+  EngineUuid receipt_id_;
+  EngineUuid plan_uuid_;
   EngineOptimizerPlanDependencyIdentity dependencies_;
   plan_executor::PhysicalMgaStatementContext statement_context_;
   plan_executor::TypedPhysicalNodeDag selected_physical_dag_;
@@ -233,6 +233,7 @@ struct EngineOptimizerPlanUseValidationResult {
   std::string diagnostic_code;
   std::string detail;
   std::vector<std::string> evidence;
+  std::vector<std::pair<std::string, EngineUuid>> identity_evidence;
   std::shared_ptr<const EngineOptimizerPlanStatementUseReceipt>
       executable_receipt;
 };
@@ -243,7 +244,7 @@ EngineOptimizerPlanUseValidationResult RevalidateOptimizerPlanStatementUse(
         receipt);
 
 struct EngineOptimizerInvalidatePlanCacheRequest : EngineApiRequest {
-  std::string index_uuid;
+  EngineUuid index_uuid;
   std::string reason = "explicit_invalidation";
   std::uint64_t new_index_generation = 0;
   std::uint64_t new_statistics_generation = 0;
@@ -263,7 +264,7 @@ struct EngineOptimizerRecoverPlanCacheRequest : EngineApiRequest {};
 
 struct EngineOptimizerRecoverPlanCacheResult : EngineApiResult {
   EngineOptimizerPlanLifecycleState state;
-  std::string recovery_snapshot_uuid;
+  EngineUuid recovery_snapshot_uuid;
 };
 EngineOptimizerRecoverPlanCacheResult EngineOptimizerRecoverPlanCache(
     const EngineOptimizerRecoverPlanCacheRequest& request);

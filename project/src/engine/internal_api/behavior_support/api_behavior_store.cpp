@@ -9,6 +9,8 @@
 #include "behavior_support/api_behavior_store.hpp"
 
 #include "uuid.hpp"
+#include "api_behavior_record_codec.hpp"
+#include <filesystem>
 
 #include <algorithm>
 #include <fstream>
@@ -20,7 +22,7 @@ namespace {
 bool StartsWith(const std::string& value, const std::string& prefix) { return value.rfind(prefix, 0) == 0; }
 
 std::string ApiBehaviorEventPath(const EngineRequestContext& context) {
-  return context.database_path + ".sb.api_events";
+  return context.database_path + ".sb.api_events.v2";
 }
 
 std::string JoinOptions(const std::vector<std::string>& options) {
@@ -37,26 +39,25 @@ std::string JoinOptions(const std::vector<std::string>& options) {
 EngineApiDiagnostic AppendApiBehaviorEvent(const EngineRequestContext& context, const std::string& event) {
   const auto path_status = ValidateApiBehaviorContext(context, "api_behavior.append_event", false, true);
   if (path_status.error) { return path_status; }
+  ApiBehaviorRecord checked;
+  if(!DecodeApiBehaviorRecord({reinterpret_cast<const std::uint8_t*>(event.data()),event.size()},&checked))return MakeInvalidRequestDiagnostic("api_behavior.append_event","binary_record_invalid");
+  std::error_code error;
+  const bool native=std::filesystem::exists(ApiBehaviorEventPath(context),error);
+  if(error||(!native&&std::filesystem::exists(context.database_path+".sb.api_events",error))||error)return MakeInvalidRequestDiagnostic("api_behavior.append_event","legacy_format_unsupported");
   std::ofstream out(ApiBehaviorEventPath(context), std::ios::binary | std::ios::app);
   if (!out) { return MakeInvalidRequestDiagnostic("api_behavior.append_event", "database_path_unwritable"); }
-  out << event << '\n';
+  out.write(event.data(),static_cast<std::streamsize>(event.size()));
   out.flush();
   if (!out) { return MakeInvalidRequestDiagnostic("api_behavior.append_event", "database_write_failed"); }
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
 std::string MakeApiBehaviorRecordEvent(const ApiBehaviorRecord& record) {
-  return std::string(kApiBehaviorEventMagic) + "\tRECORD\t" + std::to_string(record.creator_tx) + "\t" +
-         record.operation_id + "\t" + record.object_uuid + "\t" + record.object_kind + "\t" +
-         EncodeCrudText(record.default_name) + "\t" + EncodeCrudText(record.payload) + "\t" + record.state + "\t" +
-         (record.deleted ? "1" : "0");
+  std::string encoded;return EncodeApiBehaviorRecord(record,&encoded)?encoded:std::string{};
 }
 
 std::string ApiBehaviorPayloadFromRequest(const EngineApiRequest& request) {
   std::vector<std::string> payload;
-  if (!request.target_database.uuid.is_nil()) { payload.push_back("database=" + request.target_database.uuid); }
-  if (!request.target_schema.uuid.is_nil()) { payload.push_back("schema=" + request.target_schema.uuid); }
-  if (!request.target_object.uuid.is_nil()) { payload.push_back("target=" + request.target_object.uuid); }
   if (!request.localized_names.empty()) {
     payload.push_back("localized_name_count=" + std::to_string(request.localized_names.size()));
     for (const auto& localized_name : request.localized_names) {
@@ -82,7 +83,7 @@ EngineDescriptor ApiBehaviorDescriptor(const ApiBehaviorRecord& record) {
   descriptor.descriptor_uuid = record.object_uuid;
   descriptor.descriptor_kind = record.object_kind;
   descriptor.canonical_type_name = record.default_name.empty() ? record.object_kind : record.default_name;
-  descriptor.encoded_descriptor = "object_uuid=" + record.object_uuid + ";object_kind=" + record.object_kind +
+  descriptor.encoded_descriptor = "object_kind=" + record.object_kind +
                                   ";state=" + record.state + ";payload=" + record.payload;
   return descriptor;
 }
@@ -117,6 +118,9 @@ ApiBehaviorPersistedRecord PersistApiBehaviorRecordWithPayload(const EngineApiRe
   record.operation_id = operation_id;
   record.object_uuid = ApiBehaviorObjectUuid(request, object_kind);
   record.object_kind = object_kind;
+  record.target_database_uuid=request.target_database.uuid;
+  record.target_schema_uuid=request.target_schema.uuid;
+  record.target_object_uuid=request.target_object.uuid;
   record.default_name = ApiBehaviorPrimaryName(request, "unnamed_" + object_kind);
   record.payload = std::move(payload_override);
   record.state = std::move(explicit_state);

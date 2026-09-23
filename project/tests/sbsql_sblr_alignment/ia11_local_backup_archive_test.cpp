@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_dispatch.hpp"
 #include "engine/sblr/sblr_local_backup_archive.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
@@ -30,8 +31,8 @@ SblrDispatchRequest RequestFor(std::uint16_t opcode, const std::vector<std::uint
   auto envelope = MakeSblrEnvelope(Operation(opcode), OpcodeName(opcode), "ia11");
   envelope.opcode_code = opcode;
   envelope.requires_transaction_context = opcode != 0x0a04;
-  envelope.parser_package_uuid = "11111111-1111-1111-1111-111111111111";
-  envelope.registry_snapshot_uuid = "22222222-2222-2222-2222-222222222222";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("11111111-1111-1111-1111-111111111111");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("22222222-2222-2222-2222-222222222222");
   SblrOperand operand;
   operand.type = OperandType(opcode);
   operand.name = "request";

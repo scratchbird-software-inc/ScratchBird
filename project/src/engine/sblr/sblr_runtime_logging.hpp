@@ -16,21 +16,21 @@
 namespace scratchbird::engine::sblr {
 
 struct SblrRuntimeLogRecord {
-  std::string cluster_uuid;
-  std::string node_uuid;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  SblrUuid cluster_uuid;
+  SblrUuid node_uuid;
+  SblrUuid database_uuid;
+  SblrUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
-  std::string statement_uuid;
-  std::string session_uuid;
-  std::string attachment_uuid;
-  std::string user_uuid;
-  std::string current_role_uuid;
-  std::string parser_profile_uuid;
-  std::string security_snapshot_uuid;
-  std::string package_object_uuid;
-  std::string routine_object_uuid;
-  std::string frame_uuid;
+  SblrUuid statement_uuid;
+  SblrUuid session_uuid;
+  SblrUuid attachment_uuid;
+  SblrUuid user_uuid;
+  SblrUuid current_role_uuid;
+  SblrUuid parser_profile_uuid;
+  SblrUuid security_snapshot_uuid;
+  SblrUuid package_object_uuid;
+  SblrUuid routine_object_uuid;
+  SblrUuid frame_uuid;
   std::string timestamp;
   std::string message;
 };
@@ -38,7 +38,9 @@ struct SblrRuntimeLogRecord {
 SblrRuntimeLogRecord MakeSblrRuntimeLogRecord(const SblrExecutionContext& context,
                                               const SblrFrameStack& stack,
                                               std::string message);
+// Opaque binary record; only client presentation may format UUID identities.
 std::string SerializeSblrRuntimeLogRecord(const SblrRuntimeLogRecord& record);
+bool DeserializeSblrRuntimeLogRecord(std::string_view bytes, SblrRuntimeLogRecord* record);
 SblrResult EmitSblrRuntimeLog(const SblrExecutionContext& context,
                               const SblrFrameStack& stack,
                               std::string message);

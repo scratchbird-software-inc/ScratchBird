@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../../support/binary_uuid_fixture.hpp"
 #include "cache/sblr_template_cache.hpp"
 #include "common/common.hpp"
 #include "diagnostics.hpp"
@@ -282,7 +283,7 @@ scratchbird::server::HostedEngineState MakeEngineState() {
   database.state = scratchbird::server::HostedDatabaseState::kOpen;
   database.database_open = true;
   database.database_path = "/tmp/sb_security_redaction_gate.sbdb";
-  database.database_uuid = "019e05df-f012-7000-8000-0000000000f6";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e05df-f012-7000-8000-0000000000f6");
   state.databases.push_back(database);
   return state;
 }
@@ -296,7 +297,7 @@ scratchbird::server::ServerSessionRegistry MakeRegistry(
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = "/tmp/sb_security_redaction_gate.sbdb";
-  session.database_uuid = "019e05df-f012-7000-8000-0000000000f6";
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e05df-f012-7000-8000-0000000000f6");
   session.catalog_generation = 1;
   session.security_epoch = 1;
   session.descriptor_epoch = 1;
@@ -377,7 +378,7 @@ std::array<std::uint8_t, 16> InstallMetadataCursor(
   cursor.row_descriptor_uuid = sbps::MakeUuidV7Bytes();
   cursor.snapshot_uuid = sbps::MakeUuidV7Bytes();
   cursor.statement_context_statement_uuid =
-      scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
+      scratchbird::core::platform::Uuid{sbps::MakeUuidV7Bytes()};
 
   scratchbird::server::ServerStatementContextRecord statement_context;
   statement_context.session_uuid = session_uuid;
@@ -459,7 +460,7 @@ sbsql::CacheKey BaseCacheKey() {
   key.group_set_hash = "groups/reporting";
   key.search_path_hash = "search_path/sys_public";
   key.language_profile = "en-US";
-  key.policy_profile = "policy/public";
+  key.policy_profile = scratchbird::tests::FixtureUuid(1453, 17);
   key.parser_profile = "sbsql/default";
   key.result_contract_hash = "result/rowset/v1";
   return key;
@@ -495,7 +496,7 @@ void ValidateCacheSideChannelDimensions(Harness* harness) {
   CheckMiss("language_profile",
             [](sbsql::CacheKey* key) { key->language_profile = "fr-CA"; });
   CheckMiss("policy_profile",
-            [](sbsql::CacheKey* key) { key->policy_profile = "policy/private"; });
+            [](sbsql::CacheKey* key) { key->policy_profile = scratchbird::tests::FixtureUuid(1481, 1); });
   CheckMiss("result_contract_hash",
             [](sbsql::CacheKey* key) { key->result_contract_hash = "result/secret/v1"; });
 
@@ -532,7 +533,7 @@ void ValidateCacheSideChannelDimensions(Harness* harness) {
     c->InvalidateLanguageProfile("fr-CA");
   });
   CheckInvalidator("policy_profile", [](sbsql::SblrTemplateCache* c) {
-    c->InvalidatePolicyProfile("policy/private");
+    c->InvalidatePolicyProfile(scratchbird::tests::FixtureUuid(1481, 1));
   });
   CheckInvalidator("result_contract_hash", [](sbsql::SblrTemplateCache* c) {
     c->InvalidateResultContractHash("result/secret/v1");
@@ -548,7 +549,7 @@ void ValidateRetiredPreparedIngressRefusal(Harness* harness) {
   session.local_transaction_id = 1;
   session.default_local_transaction_id = 1;
   session.snapshot_visible_through_local_transaction_id = 1;
-  session.transaction_uuid = "019e05df-f012-7000-8000-000000000001";
+  session.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e05df-f012-7000-8000-000000000001");
   scratchbird::server::ServerTransactionState transaction;
   transaction.local_transaction_id = session.local_transaction_id;
   transaction.snapshot_visible_through_local_transaction_id =

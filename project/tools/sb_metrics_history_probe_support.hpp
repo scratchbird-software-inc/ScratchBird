@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "../tests/support/binary_uuid_fixture.hpp"
 
 #include <cstdio>
 #include <iostream>
@@ -39,11 +40,11 @@ inline scratchbird::engine::internal_api::EngineRequestContext MetricsContext(bo
   scratchbird::engine::internal_api::EngineRequestContext context;
   context.security_context_present = true;
   context.cluster_authority_available = cluster;
-  context.database_uuid.canonical = "018f0000-0000-7000-8000-000000000001";
-  context.cluster_uuid.canonical = cluster ? "018f0000-0000-7000-8000-000000000002" : "";
-  context.session_uuid.canonical = "018f0000-0000-7000-8000-000000000003";
-  context.principal_uuid.canonical = "018f0000-0000-7000-8000-000000000004";
-  context.transaction_uuid.canonical = "018f0000-0000-7000-8000-000000000005";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1425, 1);
+  context.cluster_uuid = cluster ? scratchbird::tests::FixtureUuid(1425, 2) : scratchbird::core::platform::Uuid{};
+  context.session_uuid = scratchbird::tests::FixtureUuid(1425, 3);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1425, 4);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1425, 5);
   context.trace_tags = {"right:OBS_METRICS_READ_FAMILY"};
   if (retention_control) {
     context.trace_tags.push_back("right:OBS_METRICS_RETENTION_CONTROL");

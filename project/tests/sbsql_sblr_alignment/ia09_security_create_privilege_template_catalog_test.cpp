@@ -42,7 +42,7 @@ api::EngineUuid MakeUuid(platform::UuidKind kind, std::uint64_t offset) {
       uuid::GenerateEngineIdentityV7(kind, kBaseMillis + offset);
   Require(generated.ok(), "privilege-template UUID generation failed");
   api::EngineUuid result;
-  result.canonical = uuid::UuidToString(generated.value.value);
+  result = generated.value.value;
   return result;
 }
 
@@ -70,15 +70,10 @@ Fixture CreateFixture() {
   Fixture fixture;
   fixture.root = created_root;
   fixture.database_path = fixture.root / "privilege-template.sbdb";
-  const auto database_uuid = uuid::ParseUuid(fixture.database_uuid.canonical);
-  const auto filespace_uuid = uuid::ParseUuid(fixture.filespace_uuid.canonical);
-  Require(database_uuid.ok() && filespace_uuid.ok(),
-          "privilege-template database identity parse failed");
-
   database::DatabaseCreateConfig config;
   config.path = fixture.database_path.string();
-  config.database_uuid = {platform::UuidKind::database, database_uuid.value};
-  config.filespace_uuid = {platform::UuidKind::filespace, filespace_uuid.value};
+  config.database_uuid = {platform::UuidKind::database, fixture.database_uuid};
+  config.filespace_uuid = {platform::UuidKind::filespace, fixture.filespace_uuid};
   config.page_size = 16384;
   config.creation_unix_epoch_millis = kBaseMillis;
   config.allow_minimal_resource_bootstrap = true;
@@ -154,7 +149,7 @@ void Rollback(const api::EngineRequestContext& context) {
 
 const api::EngineSecurityPrivilegeTemplateRecord* FindTemplate(
     const api::EngineSecurityPrincipalLifecycleState& state,
-    std::string_view template_uuid) {
+    const api::EngineUuid& template_uuid) {
   const api::EngineSecurityPrivilegeTemplateRecord* found = nullptr;
   for (const auto& candidate : state.privilege_templates) {
     if (candidate.template_uuid != template_uuid) continue;
@@ -169,11 +164,11 @@ api::EngineSecurityCreatePrivilegeTemplateRequest CreateRequest(
     const api::EngineRequestContext& context,
     const api::EngineUuid& template_uuid,
     std::string name,
-    std::string grantee_uuid,
+    api::EngineUuid grantee_uuid,
     std::string idempotency_key) {
   api::EngineSecurityCreatePrivilegeTemplateRequest request;
   request.context = context;
-  request.template_uuid = template_uuid.canonical;
+  request.template_uuid = template_uuid;
   request.template_name = std::move(name);
   request.object_kinds = {"TABLES"};
   request.grantee_uuids = {std::move(grantee_uuid)};
@@ -206,7 +201,7 @@ int main() {
   const auto initial = api::LoadSecurityPrincipalLifecycleState(writer);
   Require(initial.ok && !initial.state.roles.empty(),
           "privilege-template bootstrap grantee authority missing");
-  const std::string grantee_uuid = initial.state.roles.front().role_uuid;
+  const api::EngineUuid grantee_uuid = initial.state.roles.front().role_uuid;
 
   auto create = CreateRequest(writer, template_uuid, "future_readers",
                               grantee_uuid, "create-future-readers-v1");
@@ -234,7 +229,7 @@ int main() {
           "privilege-template exact idempotent replay failed");
   const auto writer_state = api::LoadSecurityPrincipalLifecycleState(writer);
   Require(writer_state.ok &&
-              FindTemplate(writer_state.state, template_uuid.canonical) !=
+              FindTemplate(writer_state.state, template_uuid) !=
                   nullptr &&
               writer_state.state.privilege_templates.size() == 1,
           "privilege-template writer did not observe one durable row");
@@ -261,7 +256,7 @@ int main() {
 
   auto invalid_grantee = CreateRequest(
       writer, invalid_uuid, "invalid_grantee_template",
-      MakeUuid(platform::UuidKind::principal, 999).canonical,
+      MakeUuid(platform::UuidKind::principal, 999),
       "invalid-grantee-template-v1");
   const auto invalid_grantee_result =
       api::EngineSecurityCreatePrivilegeTemplate(invalid_grantee);
@@ -291,7 +286,7 @@ int main() {
   const auto before_commit =
       api::LoadSecurityPrincipalLifecycleState(concurrent_observer);
   Require(before_commit.ok &&
-              FindTemplate(before_commit.state, template_uuid.canonical) ==
+              FindTemplate(before_commit.state, template_uuid) ==
                   nullptr,
           "uncommitted privilege-template leaked to a concurrent session");
   Commit(writer);
@@ -301,11 +296,11 @@ int main() {
   const auto after_commit =
       api::LoadSecurityPrincipalLifecycleState(committed_observer);
   const auto* durable =
-      FindTemplate(after_commit.state, template_uuid.canonical);
+      FindTemplate(after_commit.state, template_uuid);
   Require(after_commit.ok && durable != nullptr && durable->enabled &&
               durable->template_name == "future_readers" &&
               durable->grantee_uuids ==
-                  std::vector<std::string>{grantee_uuid} &&
+                  std::vector<api::EngineUuid>{grantee_uuid} &&
               durable->creation_transaction_uuid ==
                   created.privilege_template.creation_transaction_uuid &&
               durable->source_catalog_generation == 1 &&
@@ -326,7 +321,7 @@ int main() {
       api::LoadSecurityPrincipalLifecycleState(rollback_writer);
   Require(own_uncommitted.ok &&
               FindTemplate(own_uncommitted.state,
-                           rolled_back_uuid.canonical) != nullptr,
+                           rolled_back_uuid) != nullptr,
           "writer did not observe its rollback candidate");
   Rollback(rollback_writer);
 
@@ -334,13 +329,13 @@ int main() {
   const auto restarted =
       api::LoadSecurityPrincipalLifecycleState(restart_observer);
   Require(restarted.ok &&
-              FindTemplate(restarted.state, template_uuid.canonical) !=
+              FindTemplate(restarted.state, template_uuid) !=
                   nullptr &&
-              FindTemplate(restarted.state, rolled_back_uuid.canonical) ==
+              FindTemplate(restarted.state, rolled_back_uuid) ==
                   nullptr &&
-              FindTemplate(restarted.state, cancelled_uuid.canonical) ==
+              FindTemplate(restarted.state, cancelled_uuid) ==
                   nullptr &&
-              FindTemplate(restarted.state, invalid_uuid.canonical) ==
+              FindTemplate(restarted.state, invalid_uuid) ==
                   nullptr &&
               restarted.state.privilege_templates.size() == 1,
           "privilege-template restart/rollback/no-mutation observation failed");

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../../support/binary_uuid_fixture.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "descriptor_value_runtime.hpp"
 #include "sblr_aggregate_window_runtime.hpp"
@@ -103,11 +104,11 @@ scratchbird::engine::sblr::SblrResult RunAggregate(std::string_view function_id,
                                                    const SblrAggregateOptions* aggregate_options = nullptr) {
   SblrAggregateWindowState state;
   SblrExecutionContext context;
-  context.database_uuid = "SBSFC-015-runtime-db";
-  context.transaction_uuid = "SBSFC-015-runtime-tx";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1156, 11);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 12);
   context.transaction_context_present = true;
 
-  auto init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), std::move(result_descriptor), context, &state);
+  auto init = InitializeSblrAggregateState(function_id, ResolveSblrCanonicalAggregateFunctionUuid(function_id), std::move(result_descriptor), context, &state);
   if (!init.ok()) return init;
 
   for (const auto& value : values) {
@@ -131,11 +132,11 @@ scratchbird::engine::sblr::SblrResult RunAggregateRows(std::string_view function
                                                        const std::vector<std::vector<SblrValue>>& rows) {
   SblrAggregateWindowState state;
   SblrExecutionContext context;
-  context.database_uuid = "SBSFC-015-runtime-db";
-  context.transaction_uuid = "SBSFC-015-runtime-tx";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1156, 11);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 12);
   context.transaction_context_present = true;
 
-  auto init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), std::move(result_descriptor), context, &state);
+  auto init = InitializeSblrAggregateState(function_id, ResolveSblrCanonicalAggregateFunctionUuid(function_id), std::move(result_descriptor), context, &state);
   if (!init.ok()) return init;
 
   for (const auto& row : rows) {
@@ -158,13 +159,13 @@ scratchbird::engine::sblr::SblrResult RunMergedAggregateRows(std::string_view fu
   SblrAggregateWindowState left_state;
   SblrAggregateWindowState right_state;
   SblrExecutionContext context;
-  context.database_uuid = "SBSFC-015-runtime-db";
-  context.transaction_uuid = "SBSFC-015-runtime-tx";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1156, 11);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 12);
   context.transaction_context_present = true;
 
-  auto left_init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), result_descriptor, context, &left_state);
+  auto left_init = InitializeSblrAggregateState(function_id, ResolveSblrCanonicalAggregateFunctionUuid(function_id), result_descriptor, context, &left_state);
   if (!left_init.ok()) return left_init;
-  auto right_init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), std::move(result_descriptor), context, &right_state);
+  auto right_init = InitializeSblrAggregateState(function_id, ResolveSblrCanonicalAggregateFunctionUuid(function_id), std::move(result_descriptor), context, &right_state);
   if (!right_init.ok()) return right_init;
 
   for (const auto& row : left_rows) {
@@ -199,13 +200,13 @@ scratchbird::engine::sblr::SblrResult RunMergedAggregate(std::string_view functi
   SblrAggregateWindowState left_state;
   SblrAggregateWindowState right_state;
   SblrExecutionContext context;
-  context.database_uuid = "SBSFC-015-runtime-db";
-  context.transaction_uuid = "SBSFC-015-runtime-tx";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1156, 11);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 12);
   context.transaction_context_present = true;
 
-  auto left_init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), result_descriptor, context, &left_state);
+  auto left_init = InitializeSblrAggregateState(function_id, ResolveSblrCanonicalAggregateFunctionUuid(function_id), result_descriptor, context, &left_state);
   if (!left_init.ok()) return left_init;
-  auto right_init = InitializeSblrAggregateState(function_id, std::string(ResolveSblrCanonicalAggregateFunctionUuid(function_id)), std::move(result_descriptor), context, &right_state);
+  auto right_init = InitializeSblrAggregateState(function_id, ResolveSblrCanonicalAggregateFunctionUuid(function_id), std::move(result_descriptor), context, &right_state);
   if (!right_init.ok()) return right_init;
 
   auto apply_value = [&](SblrAggregateWindowState* state, const SblrValue& value) {
@@ -235,7 +236,7 @@ scratchbird::engine::sblr::SblrResult RunMergedAggregate(std::string_view functi
   return FinalizeSblrAggregateState(left_state, finalize);
 }
 
-std::string CoreTypeUuid(const std::string_view stable_name) {
+api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) std::abort();
   const auto found = std::ranges::find_if(
@@ -245,15 +246,15 @@ std::string CoreTypeUuid(const std::string_view stable_name) {
       !found->descriptor_uuid.valid()) {
     std::abort();
   }
-  const auto descriptor_uuid = uuid::UuidToString(found->descriptor_uuid.value);
+  const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701",
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
       manifest.manifest.catalog_epoch, 1, descriptor_uuid,
       found->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
-std::string CoreAggregateTypeUuid(const std::string_view stable_name) {
+api::EngineUuid CoreAggregateTypeUuid(const std::string_view stable_name) {
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) std::abort();
   const auto found = std::ranges::find_if(
@@ -263,31 +264,27 @@ std::string CoreAggregateTypeUuid(const std::string_view stable_name) {
       !found->descriptor_uuid.valid()) {
     std::abort();
   }
-  const auto descriptor_uuid = uuid::UuidToString(found->descriptor_uuid.value);
+  const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701",
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
       manifest.manifest.catalog_epoch, 1, descriptor_uuid,
       found->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
-std::string FixtureUuid(const unsigned value) {
-  char buffer[37]{};
-  std::snprintf(buffer, sizeof(buffer),
-                "019f1500-0000-7600-8000-%012u", value);
-  return buffer;
+api::EngineUuid FixtureUuid(const unsigned value) {
+  return scratchbird::tests::FixtureUuid(1160, value);
 }
 
 api::EngineDescriptor CanonicalDescriptor(const unsigned identity,
                                           const std::string_view type_name,
                                           const bool nullable) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = FixtureUuid(identity);
+  descriptor.descriptor_uuid = FixtureUuid(identity);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::string(type_name);
-  descriptor.encoded_descriptor =
-      "type_uuid=" + CoreTypeUuid(type_name) +
-      ";nullability=" + (nullable ? "nullable" : "non_null");
+  descriptor.type_uuid = CoreTypeUuid(type_name);
+  descriptor.encoded_descriptor = std::string("nullability=") + (nullable ? "nullable" : "non_null");
   return descriptor;
 }
 
@@ -376,20 +373,20 @@ struct CanonicalWindowFixture {
   exec::CanonicalDescriptorOrderTerm order_term;
   exec::ExecutorColumnDescriptor result_column;
   exec::CanonicalExecutionMgaAuthority authority;
-  std::string ordering_property_uuid;
-  std::string window_property_uuid;
-  std::string order_term_binding_evidence_uuid;
-  std::string deterministic_order_evidence_uuid;
-  std::string window_frame_descriptor_uuid;
-  std::string frame_property_binding_evidence_uuid;
+  api::EngineUuid ordering_property_uuid;
+  api::EngineUuid window_property_uuid;
+  api::EngineUuid order_term_binding_evidence_uuid;
+  std::shared_ptr<const exec::CanonicalWindowOrderBindingReceipt> order_term_binding_receipt;
+  api::EngineUuid deterministic_order_evidence_uuid;
+  api::EngineUuid window_frame_descriptor_uuid;
+  api::EngineUuid frame_property_binding_evidence_uuid;
 };
 
 CanonicalWindowFixture MakeCanonicalWindowFixture(
     const std::vector<std::int64_t>& ordered_values,
     const std::string_view implementation_id,
     const std::string_view result_type,
-    const bool result_nullable,
-    const bool capability_is_order_term_receipt = true) {
+    const bool result_nullable) {
   constexpr std::uint32_t kInputDescriptorId = 15301;
   constexpr std::uint32_t kResultDescriptorId = 15302;
   constexpr std::uint64_t kValuesNodeId = 15311;
@@ -442,25 +439,6 @@ CanonicalWindowFixture MakeCanonicalWindowFixture(
       .direction = exec::CanonicalDescriptorOrderDirection::ascending,
       .null_placement = exec::CanonicalDescriptorNullPlacement::last,
   };
-  std::uint64_t planned_workspace = 0;
-  std::uint64_t actual_workspace = 0;
-  if (!exec::PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
-          fixture.order_term, fixture.ordering_property_uuid,
-          &planned_workspace)) {
-    std::abort();
-  }
-  fixture.order_term_binding_evidence_uuid =
-      exec::ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
-          fixture.order_term, fixture.ordering_property_uuid,
-          planned_workspace, &actual_workspace);
-  if (fixture.order_term_binding_evidence_uuid.empty() ||
-      actual_workspace != planned_workspace) {
-    std::abort();
-  }
-  if (capability_is_order_term_receipt) {
-    fixture.dag.nodes[2].executor_capability_uuid =
-        fixture.order_term_binding_evidence_uuid;
-  }
   fixture.batch.columns = {
       {"order_value", input_descriptor, false, kInputDescriptorId}};
   fixture.batch.rows.reserve(ordered_values.size());
@@ -470,6 +448,12 @@ CanonicalWindowFixture MakeCanonicalWindowFixture(
   }
   fixture.result_column = {"window_result", result_descriptor,
                            result_nullable, kResultDescriptorId};
+  fixture.order_term_binding_receipt = exec::CanonicalWindowOrderBindingReceipt::Issue(
+      fixture.dag, fixture.dag.root_physical_node_id, fixture.batch.columns.front(),
+      fixture.order_term, fixture.ordering_property_uuid, fixture.authority,
+      fixture.dag.nodes.back().memory_bytes_required);
+  if (!fixture.order_term_binding_receipt) std::abort();
+  fixture.order_term_binding_evidence_uuid = fixture.order_term_binding_receipt->identity();
   return fixture;
 }
 
@@ -544,10 +528,8 @@ scratchbird::engine::sblr::SblrResult RunCanonicalHypotheticalAggregate(
   const auto result_descriptor = CanonicalDescriptor(
       15422, integer_result ? "int64" : "real64", false);
   auto canonical_result_descriptor = result_descriptor;
-  canonical_result_descriptor.encoded_descriptor =
-      "type_uuid=" +
-      CoreAggregateTypeUuid(integer_result ? "int64" : "real64") +
-      ";nullability=non_null";
+  canonical_result_descriptor.type_uuid = CoreAggregateTypeUuid(integer_result ? "int64" : "real64");
+  canonical_result_descriptor.encoded_descriptor = "nullability=non_null";
 
   exec::CanonicalAggregateRuntimeRequest request;
   request.physical_dag.selected_plan_uuid = FixtureUuid(15430);
@@ -618,23 +600,23 @@ scratchbird::engine::sblr::SblrResult RunCanonicalPeerRanking(
     const std::vector<SblrValue>& values,
     const std::size_t current_row_index) {
   std::string_view implementation_id;
-  std::string_view function_uuid;
+  api::EngineUuid function_uuid;
   std::string_view result_type;
   if (builtin_id == "sb.window.rank") {
     implementation_id = "window.rank.v1";
-    function_uuid = "019de5fc-2400-7b94-870d-0dd789ca70ab";
+    function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7b94-870d-0dd789ca70ab");
     result_type = "int64";
   } else if (builtin_id == "sb.window.dense_rank") {
     implementation_id = "window.dense-rank.v1";
-    function_uuid = "019de5fc-2400-741d-bef0-f079fd3ba494";
+    function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-741d-bef0-f079fd3ba494");
     result_type = "int64";
   } else if (builtin_id == "sb.window.percent_rank") {
     implementation_id = "window.percent-rank.v1";
-    function_uuid = "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
+    function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7d86-86fe-96f3f27b5dd6");
     result_type = "real64";
   } else {
     implementation_id = "window.cume-dist.v1";
-    function_uuid = "019de5fc-2400-721c-be64-2568b64a02b9";
+    function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-721c-be64-2568b64a02b9");
     result_type = "real64";
   }
   std::vector<std::int64_t> ordered;
@@ -656,9 +638,10 @@ scratchbird::engine::sblr::SblrResult RunCanonicalPeerRanking(
   request.ranking_column = fixture.result_column;
   request.function_abi_version = 1;
   request.builtin_id = std::string(builtin_id);
-  request.function_uuid = std::string(function_uuid);
+  request.function_uuid = function_uuid;
   request.order_term_binding_evidence_uuid =
       fixture.order_term_binding_evidence_uuid;
+  request.order_term_binding_receipt = fixture.order_term_binding_receipt;
   request.deterministic_order_evidence_uuid =
       fixture.deterministic_order_evidence_uuid;
   request.maximum_peer_comparisons =
@@ -712,9 +695,10 @@ scratchbird::engine::sblr::SblrResult RunCanonicalNtile(
       bucket_descriptor, std::to_string(bucket_count));
   request.function_abi_version = 1;
   request.builtin_id = "sb.window.ntile";
-  request.function_uuid = "019de5fc-2400-7047-9474-232ca488c094";
+  request.function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7047-9474-232ca488c094");
   request.order_term_binding_evidence_uuid =
       fixture.order_term_binding_evidence_uuid;
+  request.order_term_binding_receipt = fixture.order_term_binding_receipt;
   request.deterministic_order_evidence_uuid =
       fixture.deterministic_order_evidence_uuid;
   request.mga_authority = std::move(fixture.authority);
@@ -798,25 +782,25 @@ scratchbird::engine::sblr::SblrResult RunCanonicalNavigation(
     proxy_values.push_back(static_cast<std::int64_t>(index));
   }
   std::string_view implementation_id;
-  std::string_view function_uuid;
+  api::EngineUuid function_uuid;
   if (lag) {
     implementation_id = "window.lag.v1";
-    function_uuid = "019de5fc-2400-782c-8436-9ac310301738";
+    function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-782c-8436-9ac310301738");
   } else if (lead) {
     implementation_id = "window.lead.v1";
-    function_uuid = "019de5fc-2400-7a06-bc3c-6747cf5be66f";
+    function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7a06-bc3c-6747cf5be66f");
   } else if (first) {
     implementation_id = "window.first-value.v1";
-    function_uuid = "019de5fc-2400-7264-90fb-d25bd0f806f2";
+    function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7264-90fb-d25bd0f806f2");
   } else if (last) {
     implementation_id = "window.last-value.v1";
-    function_uuid = "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
+    function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7d23-a5be-7ed3f1a5c3ec");
   } else {
     implementation_id = "window.nth-value.v1";
-    function_uuid = "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
+    function_uuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7dc9-80e6-9f2ccf08076f");
   }
   auto fixture = MakeCanonicalWindowFixture(
-      proxy_values, implementation_id, "int64", true, false);
+      proxy_values, implementation_id, "int64", true);
   exec::CanonicalDescriptorNavigationWindowRequest request;
   request.physical_dag = std::move(fixture.dag);
   request.selected_physical_node_id = request.physical_dag.root_physical_node_id;
@@ -833,11 +817,12 @@ scratchbird::engine::sblr::SblrResult RunCanonicalNavigation(
   }
   request.function_abi_version = 1;
   request.builtin_id = std::string(builtin_id);
-  request.function_uuid = std::string(function_uuid);
+  request.function_uuid = function_uuid;
   request.window_frame_descriptor_uuid =
       fixture.window_frame_descriptor_uuid;
   request.order_term_binding_evidence_uuid =
       fixture.order_term_binding_evidence_uuid;
+  request.order_term_binding_receipt = fixture.order_term_binding_receipt;
   request.deterministic_order_evidence_uuid =
       fixture.deterministic_order_evidence_uuid;
   request.frame_property_binding_evidence_uuid =

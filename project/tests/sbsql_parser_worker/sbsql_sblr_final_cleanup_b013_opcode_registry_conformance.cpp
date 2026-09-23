@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -235,9 +236,9 @@ void RequireClusterProviderBoundary(const OpcodeRow& row) {
   if (!row.requires_cluster_authority) return;
   sblr::SblrDispatchRequest request;
   request.context.security_context_present = true;
-  request.context.database_uuid.canonical = "opcode-registry-database";
-  request.context.session_uuid.canonical = "opcode-registry-session";
-  request.context.principal_uuid.canonical = "opcode-registry-principal";
+  request.context.database_uuid = scratchbird::tests::FixtureUuid(1208, 4801);
+  request.context.session_uuid = scratchbird::tests::FixtureUuid(1208, 4802);
+  request.context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 4803);
   request.context.local_transaction_id = 1;
   request.envelope = EnvelopeFor(row);
 

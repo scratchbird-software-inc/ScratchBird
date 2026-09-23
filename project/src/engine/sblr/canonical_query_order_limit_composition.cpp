@@ -18,6 +18,7 @@
 #include "canonical_relational_expression.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -149,12 +150,19 @@ ExecuteCanonicalObjectFreeLimitQuery(
                   "live LIMIT exceeds the admitted memory budget");
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
+  std::array<api::EngineUuid, 4> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live order_limit identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto limit_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "limit.capability");
+      owned_identities[1];
   std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
@@ -274,16 +282,9 @@ ExecuteCanonicalObjectFreeLimitQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "limit.execution-attempt");
+      owned_identities[2];
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(request.context.local_transaction_id) + ":" +
-              std::to_string(
-                  request.context.snapshot_visible_through_local_transaction_id),
-          "limit.transaction-effect-unchanged");
+      owned_identities[3];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -442,15 +443,20 @@ ExecuteCanonicalObjectFreeSortQuery(
                   "live SORT exceeds the admitted memory budget");
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
+  std::array<api::EngineUuid, 5> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live order_limit identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto sort_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "sort.capability");
-  const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" + prepared_root.ordering_property_uuid,
-      "sort.deterministic-tie");
+      owned_identities[1];
+  const auto deterministic_tie_evidence_uuid = owned_identities[2];
   const std::string sort_implementation_id =
       prepared_root.expression_ordering
           ? "sort.typed.expression-row.v1"
@@ -538,16 +544,9 @@ ExecuteCanonicalObjectFreeSortQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "sort.execution-attempt");
+      owned_identities[3];
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(request.context.local_transaction_id) + ":" +
-              std::to_string(
-                  request.context.snapshot_visible_through_local_transaction_id),
-          "sort.transaction-effect-unchanged");
+      owned_identities[4];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -791,21 +790,23 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
                   "composition exceeds the admitted memory budget");
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" +
-      request.context.statement_uuid;
+  std::array<api::EngineUuid, 7> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live order_limit identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto distinct_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "query-distinct.capability");
+      owned_identities[1];
   const auto sort_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "sort.capability");
-  const auto limit_capability_uuid = DerivedCanonicalUuid(
-      identity_scope,
-      fetch_first_rows_only ? "fetch.capability" : "limit.capability");
-  const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" + prepared_sort.ordering_property_uuid,
-      "sort.deterministic-tie");
+      owned_identities[2];
+  const auto limit_capability_uuid = owned_identities[3];
+  const auto deterministic_tie_evidence_uuid = owned_identities[4];
   const std::string limit_implementation_id =
       fetch_first_rows_only ? "fetch.native.rows-only.v1"
                             : "limit.typed.v1";
@@ -919,16 +920,9 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "distinct-sort-limit.execution-attempt");
+      owned_identities[5];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      "distinct-sort-limit.transaction-effect-unchanged");
+      .transaction_effect_evidence_uuid = owned_identities[6];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =

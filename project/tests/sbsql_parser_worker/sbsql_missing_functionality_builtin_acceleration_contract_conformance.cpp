@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -66,7 +67,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -179,10 +180,10 @@ void RequireLastDayRuntime() {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000012101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000012102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000012103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000012101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000012102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000012103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 120;
   session.security_policy_epoch = 121;
   session.descriptor_epoch = 122;
@@ -193,7 +194,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsql_missing_gate_012";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000012104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000012104");
   config.bundle_contract_id = "sbp_sbsql@sbsql-missing-gate-012";
   config.build_id = "sbsql-missing-functionality-gate-012";
   return config;
@@ -216,7 +217,7 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            {std::string(kStatementUuid)});
+                            {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000012013")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -243,7 +244,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+scratchbird::core::platform::Uuid CreateMinimalDatabase(const std::filesystem::path& path) {
   const auto database_uuid =
       uuid::GenerateEngineIdentityV7(UuidKind::database, 1779810120000);
   const auto filespace_uuid =
@@ -266,19 +267,19 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "Gate 012 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const scratchbird::core::platform::Uuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-missing-functionality-gate-012";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid.empty() ? std::string(kDatabaseUuidSeed)
+  context.database_uuid = database_uuid.is_nil() ? scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000012012")
                                                           : database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000012201";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000012202";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000012203";
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000012201");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000012202");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000012203");
   context.security_context_present = true;
   context.cluster_authority_available = false;
   context.catalog_generation_id = 1;

@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/insert_api.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <stdexcept>
 
 #include "crud_support/crud_store.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -56,6 +58,12 @@
 
 namespace scratchbird::engine::internal_api {
 namespace {
+const std::string& InsertEvidenceText(const EngineEvidenceValue& value) {
+  static const std::string absent;
+  const auto* text=std::get_if<std::string>(&value);
+  return text?*text:absent;
+}
+
 
 namespace opt = scratchbird::engine::optimizer;
 namespace plan = scratchbird::engine::planner;
@@ -115,18 +123,19 @@ std::string TrimAscii(std::string_view value) {
 }
 
 bool TableHasDeferredKeyConstraint(const CrudTableRecord& table) {
-  for (const auto& [column_name, descriptor] : table.columns) {
-    (void)column_name;
-    const std::string lower = LowerAscii(descriptor);
-    const bool key_like = lower.find("primary_key") != std::string::npos ||
-                          lower.find("unique_key") != std::string::npos ||
-                          lower.find("unique=true") != std::string::npos ||
-                          lower.find("pk=true") != std::string::npos;
-    const bool deferred = lower.find("deferrable=true") != std::string::npos ||
-                          lower.find("initially_deferred") != std::string::npos ||
-                          lower.find("enforcement_timing=deferred") != std::string::npos ||
-                          lower.find("enforcement_timing=transaction_end") != std::string::npos;
-    if (key_like && deferred) { return true; }
+  for(const auto& [name,descriptor]:table.columns) {
+    (void)name;
+    CatalogColumnMetadata fields;
+    if(!AdmitCatalogColumnMetadata(descriptor,&fields)) throw std::invalid_argument("insert_column_metadata_invalid");
+    const auto flag=[&](const char* key) {
+      const auto found=fields.text.find(key);
+      return found!=fields.text.end()&&(found->second=="true"||found->second=="1"||found->second=="yes"||found->second=="on");
+    };
+    const auto timing=fields.text.find("enforcement_timing");
+    const bool key_like=flag("primary_key")||flag("pk")||flag("unique")||flag("unique_key");
+    const bool deferred=flag("deferrable")||flag("initially_deferred")||
+        (timing!=fields.text.end()&&(timing->second=="deferred"||timing->second=="transaction_end"));
+    if(key_like&&deferred)return true;
   }
   return false;
 }
@@ -243,26 +252,25 @@ void AppendRowLocatorStreamEvidence(
 
 DmlTargetAccessPlanRequest BuildOnConflictLocatorPlanRequest(
     const EngineInsertRowsRequest& request,
-    const std::string& table_uuid,
-    const std::string& row_uuid) {
+    const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid) {
   DmlTargetAccessPlanRequest plan_request;
   plan_request.mutation_kind = "dml.insert_rows.on_conflict";
   plan_request.database_uuid = request.context.database_uuid;
   plan_request.relation_uuid = table_uuid;
   plan_request.relation_present = true;
   plan_request.predicate_kind = "row_uuid_match";
-  plan_request.predicate_descriptor_digest = "on_conflict_row_uuid:" + row_uuid;
+  plan_request.predicate_descriptor_digest = EncodeMgaMetadataFields({"on_conflict_row_identity.v2",MetadataUuidBytes(row_uuid)});
   plan_request.row_uuid = row_uuid;
   plan_request.access_descriptor_present = true;
   plan_request.security_policy_digest =
-      request.context.principal_uuid + ":" +
-      request.context.current_role_uuid + ":" +
-      std::to_string(request.context.security_epoch);
+      EncodeMgaMetadataFields({"insert.security.policy.v2",MetadataUuidBytes(request.context.principal_uuid),
+          MetadataUuidBytes(request.context.current_role_uuid),std::to_string(request.context.security_epoch)});
   plan_request.redaction_policy_digest =
       "resource_epoch:" + std::to_string(request.context.resource_epoch);
   plan_request.access_policy_digest =
-      request.context.session_uuid + ":" +
-      std::to_string(request.context.resource_epoch);
+      EncodeMgaMetadataFields({"insert.access.policy.v2",MetadataUuidBytes(request.context.session_uuid),
+          std::to_string(request.context.resource_epoch)});
   plan_request.collation_profile_digest =
       request.context.identifier_profile_uuid + ":" +
       request.context.language_context.language_tag;
@@ -302,8 +310,8 @@ DmlTargetAccessPlanRequest BuildOnConflictLocatorPlanRequest(
 
 DmlRowLocatorStreamResult BuildOnConflictRowLocatorStream(
     const EngineInsertRowsRequest& request,
-    const std::string& table_uuid,
-    const std::string& row_uuid) {
+    const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid) {
   const auto plan_request =
       BuildOnConflictLocatorPlanRequest(request, table_uuid, row_uuid);
   auto plan = BuildDmlTargetAccessPlan(plan_request);
@@ -433,13 +441,17 @@ std::optional<EngineApiU64> ParseInsertOptionU64(const EngineInsertRowsRequest& 
   }
 }
 
-std::vector<std::string> GeneratedInsertSelectSourceUuids(
+std::vector<EngineUuid> GeneratedInsertSelectSourceUuids(
     const EngineInsertRowsRequest& request) {
-  std::vector<std::string> source_uuids;
+  std::vector<EngineUuid> source_uuids;
   for (const auto prefix : {"insert_select_source_uuid_0:",
                             "insert_select_source_uuid_1:"}) {
     const std::string uuid = InsertOptionValue(request, prefix);
-    if (!uuid.empty()) { source_uuids.push_back(uuid); }
+    if (!uuid.empty()) {
+      EngineUuid identity;
+      if (!ReadMetadataUuid(uuid, &identity)) throw std::invalid_argument("insert_select_source_identity_invalid");
+      source_uuids.push_back(identity);
+    }
   }
   return source_uuids;
 }
@@ -453,13 +465,13 @@ std::optional<EngineApiU64> GeneratedCounterRowCount(EngineApiU64 start,
 
 struct InsertSelectSourceCapacitySnapshot {
   bool usable = false;
-  std::map<std::string, EngineApiU64> visible_row_counts;
+  std::map<EngineUuid, EngineApiU64> visible_row_counts;
   std::vector<EngineEvidenceReference> evidence;
 };
 
 InsertSelectSourceCapacitySnapshot TryBuildInsertSelectSourceCapacitySnapshot(
     const EngineInsertRowsRequest& request,
-    const std::vector<std::string>& source_uuids) {
+    const std::vector<EngineUuid>& source_uuids) {
   InsertSelectSourceCapacitySnapshot snapshot;
   if (source_uuids.empty() ||
       InsertOptionValue(request, "insert_select_source_kind:") !=
@@ -609,8 +621,12 @@ std::string GeneratedProjectionType(const std::string& descriptor,
   if (descriptor.rfind("cast_divide:", 0) == 0) return "decimal";
   if (descriptor.rfind("counter_multiply:", 0) == 0) return "decimal";
   if (descriptor.rfind("mod_equals:", 0) == 0) return "boolean";
-  if (target_descriptor.rfind("type=", 0) == 0) return target_descriptor.substr(5);
-  return target_descriptor.empty() ? "text" : target_descriptor;
+  CatalogColumnMetadata fields;
+  if(!AdmitCatalogColumnMetadata(target_descriptor,&fields)) throw std::invalid_argument("insert_projection_metadata_invalid");
+  for(const auto* key:{"type","canonical","canonical_type","source_type"}) {
+    const auto found=fields.text.find(key);if(found!=fields.text.end())return found->second;
+  }
+  return "text";
 }
 
 enum class GeneratedProjectionKind {
@@ -953,7 +969,7 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
     const EngineInsertRowsRequest& request,
     const CrudTableRecord& table,
     const MgaRelationReadView& state,
-    const std::map<std::string, EngineApiU64>* source_visible_row_counts,
+    const std::map<EngineUuid, EngineApiU64>* source_visible_row_counts,
     EngineApiDiagnostic* diagnostic,
     std::vector<EngineEvidenceReference>* evidence) {
   if (diagnostic != nullptr) {
@@ -991,7 +1007,7 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
     return {};
   }
 
-  const std::vector<std::string> source_uuids =
+  const std::vector<EngineUuid> source_uuids =
       GeneratedInsertSelectSourceUuids(request);
   if (!source_uuids.empty()) {
     EngineApiU64 visible_capacity = 1;
@@ -1269,7 +1285,7 @@ struct StagedInsertRow {
 
 struct UniqueConflictProbeResult {
   CrudRowVersionRecord row;
-  std::string index_uuid;
+  EngineUuid index_uuid;
   std::string key_value;
   std::string candidate_source;
   std::string physical_probe_path;
@@ -1288,12 +1304,12 @@ struct InsertExecutionControlDecision {
 };
 
 struct UniqueStatementOverlay {
-  std::map<std::string, CrudRowVersionRecord> rows_by_uuid;
-  std::map<std::string, std::map<std::string, std::set<std::string>>> key_rows_by_index_uuid;
+  std::map<EngineUuid, CrudRowVersionRecord> rows_by_uuid;
+  std::map<EngineUuid, std::map<std::string, std::set<EngineUuid>>> key_rows_by_index_uuid;
 };
 
 struct UniquePhysicalProbeCache {
-  std::map<std::string, std::map<std::string, std::set<std::string>>> key_rows_by_index_uuid;
+  std::map<EngineUuid, std::map<std::string, std::set<EngineUuid>>> key_rows_by_index_uuid;
   EngineApiU64 indexed_entry_count = 0;
   EngineApiU64 index_count = 0;
   mutable EngineApiU64 physical_probe_attempts = 0;
@@ -1305,11 +1321,11 @@ struct UniquePhysicalProbeCache {
 
 UniquePhysicalProbeCache BuildUniquePhysicalProbeCache(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EngineRequestContext& context,
     const std::vector<CrudIndexRecord>& indexes) {
   UniquePhysicalProbeCache cache;
-  std::set<std::string> unique_index_uuids;
+  std::set<EngineUuid> unique_index_uuids;
   for (const auto& index : indexes) {
     if (!IsUniqueIndexForConflict(index)) {
       continue;
@@ -1367,7 +1383,7 @@ bool IndexKeysChanged(const CrudIndexRecord& index,
 EngineApiDiagnostic PrepareTransactionalIndexVersionMutation(
     const EngineRequestContext& context,
     const std::vector<CrudIndexRecord>& indexes,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const CrudRowVersionRecord* old_row,
     const CrudRowVersionRecord& new_row,
     const std::vector<std::pair<std::string, std::string>>& logical_new_values,
@@ -1413,7 +1429,7 @@ EngineApiDiagnostic PrepareTransactionalIndexVersionMutation(
                            table_uuid,
                            new_row.row_uuid,
                            new_row.version_uuid,
-                           old_row == nullptr ? std::string{}
+                           old_row == nullptr ? EngineUuid{}
                                               : old_row->version_uuid,
                            key,
                            new_payload});
@@ -1671,36 +1687,11 @@ dml::DirectPhysicalBulkAppendRequest MakeDirectPhysicalInsertRequest(
   return direct;
 }
 
-std::string InsertColumnDescriptorField(std::string_view descriptor,
-                                        std::string_view requested_key) {
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const std::size_t next = descriptor.find(';', offset);
-    const std::string part = TrimAscii(
-        descriptor.substr(offset,
-                          next == std::string_view::npos
-                              ? std::string_view::npos
-                              : next - offset));
-    if (!part.empty()) {
-      const std::size_t equal = part.find('=');
-      if (equal == std::string::npos) {
-        if (LowerAscii(part) == requested_key) {
-          return "true";
-        }
-      } else {
-        const std::string key = LowerAscii(TrimAscii(
-            std::string_view(part).substr(0, equal)));
-        if (key == requested_key) {
-          return TrimAscii(std::string_view(part).substr(equal + 1));
-        }
-      }
-    }
-    if (next == std::string_view::npos) {
-      break;
-    }
-    offset = next + 1;
-  }
-  return {};
+std::string InsertColumnDescriptorField(std::string_view descriptor, std::string_view key) {
+  CatalogColumnMetadata fields;
+  if(!AdmitCatalogColumnMetadata(descriptor,&fields)) throw std::invalid_argument("insert_column_metadata_invalid");
+  const auto found=fields.text.find(std::string(key));
+  return found==fields.text.end()?std::string{}:found->second;
 }
 
 std::string InsertColumnTypeName(std::string_view descriptor) {
@@ -1723,8 +1714,7 @@ std::string InsertColumnTypeName(std::string_view descriptor) {
   if (!source_type.empty()) {
     return source_type;
   }
-  const std::string trimmed = TrimAscii(descriptor);
-  return trimmed.empty() ? "text" : trimmed;
+  return "text";
 }
 
 EngineTypedValue TypedValueFromStagedInsertField(
@@ -1913,10 +1903,10 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
           {"insert_runtime_security_recheck", evidence.evidence_id});
     }
     if (evidence.evidence_kind == "constraint_proof_store" &&
-        StartsWith(evidence.evidence_id, "unique_preflight:")) {
+        StartsWith(InsertEvidenceText(evidence.evidence_id), "unique_preflight:")) {
       result.evidence.push_back(
           {"constraint_key_unique_preflight",
-           evidence.evidence_id.substr(std::string("unique_preflight:").size())});
+           InsertEvidenceText(evidence.evidence_id).substr(std::string("unique_preflight:").size())});
     }
   }
   bool direct_unique_conflict = false;
@@ -1927,17 +1917,17 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
         direct_unique_conflict ||
         evidence.evidence_kind == "bulk_unique_proof_conflict_key" ||
         evidence.evidence_kind == "bulk_unique_proof_conflict_constraint" ||
-        evidence.evidence_id.find("bulk_unique_proof_persisted_conflict") !=
+        InsertEvidenceText(evidence.evidence_id).find("bulk_unique_proof_persisted_conflict") !=
             std::string::npos ||
-        evidence.evidence_id.find("bulk_unique_proof_duplicate_in_batch") !=
+        InsertEvidenceText(evidence.evidence_id).find("bulk_unique_proof_duplicate_in_batch") !=
             std::string::npos;
     direct_persisted_unique_conflict =
         direct_persisted_unique_conflict ||
-        evidence.evidence_id.find("bulk_unique_proof_persisted_conflict") !=
+        InsertEvidenceText(evidence.evidence_id).find("bulk_unique_proof_persisted_conflict") !=
             std::string::npos;
     direct_statement_duplicate =
         direct_statement_duplicate ||
-        evidence.evidence_id.find("bulk_unique_proof_duplicate_in_batch") !=
+        InsertEvidenceText(evidence.evidence_id).find("bulk_unique_proof_duplicate_in_batch") !=
             std::string::npos;
   }
   if (!result.ok && direct_unique_conflict) {
@@ -1953,10 +1943,10 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
     if (evidence.evidence_kind != "page_allocation_runtime_phase") {
       continue;
     }
-    if (evidence.evidence_id == "direct_physical_bulk.row_data") {
+    if (InsertEvidenceText(evidence.evidence_id) == "direct_physical_bulk.row_data") {
       result.evidence.push_back({"page_allocation_runtime_phase",
                                  "insert.row"});
-    } else if (evidence.evidence_id == "direct_physical_bulk.index") {
+    } else if (InsertEvidenceText(evidence.evidence_id) == "direct_physical_bulk.index") {
       result.evidence.push_back({"page_allocation_runtime_phase",
                                  "insert.index"});
     }
@@ -2165,7 +2155,7 @@ DirectPhysicalInsertAttempt TryDirectPhysicalInsertRoute(
 }
 
 bool RuntimeInsertPolicyApplies(const EngineMaterializedAuthorizationPolicy& policy,
-                                const std::string& table_uuid) {
+                                const EngineUuid& table_uuid) {
   if (!policy.requires_runtime_recheck) {
     return false;
   }
@@ -2227,7 +2217,7 @@ InsertRuntimeSecurityPolicyDecision EvaluateInsertRuntimeSecurityPolicyEnvelope(
 
 EngineEvaluateDeepSecurityResult EvaluateInsertRuntimeSecurityRecheck(
     const EngineInsertRowsRequest& request,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     std::vector<EngineEvidenceReference>* evidence) {
   std::string rls_policy = "allow";
@@ -2363,7 +2353,7 @@ EngineApiU64 AllocationEvidenceU64(
     if (item.evidence_kind != kind) {
       continue;
     }
-    std::istringstream in(item.evidence_id);
+    std::istringstream in(InsertEvidenceText(item.evidence_id));
     EngineApiU64 value = 0;
     in >> value;
     return in.fail() ? 0 : value;
@@ -2947,11 +2937,11 @@ EngineInsertRowsResult InsertDiagnosticResultWithEvidence(
         item.evidence_kind == "bulk_unique_proof_conflict_key") {
       bulk_unique_conflict = true;
     }
-    if (item.evidence_id.find("bulk_unique_proof_persisted_conflict") !=
+    if (InsertEvidenceText(item.evidence_id).find("bulk_unique_proof_persisted_conflict") !=
         std::string::npos) {
       persisted_conflict = true;
     }
-    if (item.evidence_id.find("bulk_unique_proof_duplicate_in_batch") !=
+    if (InsertEvidenceText(item.evidence_id).find("bulk_unique_proof_duplicate_in_batch") !=
         std::string::npos) {
       batch_duplicate = true;
     }
@@ -2976,8 +2966,8 @@ bool RowHasUniqueIndexKey(const CrudIndexRecord& index,
 
 std::optional<CrudRowVersionRecord> FindVisibleCrudRowUuidCandidate(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
-    const std::string& row_uuid,
+    const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid,
     const EngineRequestContext& context) {
   std::vector<CrudRowVersionRecord> versions;
   for (const auto& row : state.row_versions) {
@@ -3032,7 +3022,7 @@ void UpsertUniqueStatementOverlayRow(UniqueStatementOverlay* overlay,
   if (existing != overlay->rows_by_uuid.end()) {
     RemoveUniqueStatementOverlayKeysForRow(overlay, indexes, existing->second);
   }
-  const std::string row_uuid = row.row_uuid;
+  EngineUuid row_uuid = row.row_uuid;
   for (const auto& index : indexes) {
     if (!IsUniqueIndexForConflict(index)) {
       continue;
@@ -3048,7 +3038,7 @@ std::optional<UniqueConflictProbeResult> FindUniqueStatementOverlayConflict(
     const UniqueStatementOverlay& overlay,
     const CrudIndexRecord& index,
     const std::vector<std::string>& keys,
-    const std::string& exclude_row_uuid) {
+    const EngineUuid& exclude_row_uuid) {
   const auto found_index = overlay.key_rows_by_index_uuid.find(index.index_uuid);
   if (found_index == overlay.key_rows_by_index_uuid.end()) {
     return std::nullopt;
@@ -3080,15 +3070,15 @@ std::optional<UniqueConflictProbeResult> FindUniqueStatementOverlayConflict(
 
 std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EngineRequestContext& context,
     const UniquePhysicalProbeCache& physical_probe_cache,
     const CrudIndexRecord& index,
     const std::vector<std::string>& keys,
-    const std::string& exclude_row_uuid) {
+    const EngineUuid& exclude_row_uuid) {
   const auto visible_row_scan_fallback = [&]() -> std::optional<UniqueConflictProbeResult> {
     ++physical_probe_cache.scan_fallback_attempts;
-    std::set<std::string> candidate_row_uuids;
+    std::set<EngineUuid> candidate_row_uuids;
     for (const auto& row : state.row_versions) {
       if (row.table_uuid != table_uuid ||
           row.row_uuid == exclude_row_uuid) {
@@ -3150,7 +3140,7 @@ std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
   }
   ++physical_probe_cache.scan_fallback_attempts;
   for (const auto& key : keys) {
-    std::set<std::string> candidate_row_uuids;
+    std::set<EngineUuid> candidate_row_uuids;
     for (const auto& entry : state.index_entries) {
       if (entry.table_uuid != table_uuid ||
           entry.index_uuid != index.index_uuid ||
@@ -3181,12 +3171,12 @@ std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
 
 std::optional<UniqueConflictProbeResult> FindUniqueConflictByIndex(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EngineRequestContext& context,
     const UniqueStatementOverlay& overlay,
     const UniquePhysicalProbeCache& physical_probe_cache,
     const CrudIndexRecord& index,
-    const std::string& exclude_row_uuid,
+    const EngineUuid& exclude_row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values) {
   const auto keys = CrudIndexKeysForValues(index, values);
   if (keys.empty()) {
@@ -3212,7 +3202,7 @@ EngineApiDiagnostic ValidateIndexBackedUniquePreflightForRow(
     const UniqueStatementOverlay& overlay,
     const UniquePhysicalProbeCache& physical_probe_cache,
     const std::vector<CrudIndexRecord>& indexes,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     ConstraintDmlValidationCache* constraint_cache,
     std::vector<EngineEvidenceReference>* evidence) {
@@ -3262,7 +3252,7 @@ EngineApiDiagnostic ValidateIndexBackedUniquePreflightForRow(
 
 bool ApplyStatementOverlayUpdateToStagedInsert(
     std::vector<StagedInsertRow>* staged_insert_rows,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& update_values,
     bool toast_required) {
   for (auto& staged : *staged_insert_rows) {
@@ -3295,7 +3285,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> InsertDeltaEntries(
     input.values = values;
     input.delta_kind = scratchbird::core::index::SecondaryIndexDeltaKind::insert;
     input.source_evidence_reference =
-        "engine.dml.insert.secondary_index_delta:" + batch_context.statement_uuid;
+        EncodeMgaMetadataFields({"engine.dml.insert.secondary_index_delta:",MetadataUuidBytes(batch_context.statement_uuid)});
     entries.push_back(std::move(input));
   }
   return entries;
@@ -3304,7 +3294,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> InsertDeltaEntries(
 std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> ConflictUpdateDeltaEntries(
     const InsertBatchContext& batch_context,
     const CrudRowVersionRecord& old_row,
-    const std::string& new_version_uuid,
+    const EngineUuid& new_version_uuid,
     const std::vector<std::pair<std::string, std::string>>& new_values) {
   std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> entries;
   for (const auto& entry : batch_context.index_plan.entries) {
@@ -3320,8 +3310,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> ConflictUpdateDeltaEntries(
     before.values = old_row.values;
     before.delta_kind = scratchbird::core::index::SecondaryIndexDeltaKind::update_before;
     before.source_evidence_reference =
-        "engine.dml.insert.conflict_update.secondary_index_delta_before:" +
-        batch_context.statement_uuid;
+        EncodeMgaMetadataFields({"engine.dml.insert.conflict_update.secondary_index_delta_before:",MetadataUuidBytes(batch_context.statement_uuid)});
     entries.push_back(std::move(before));
 
     MgaSecondaryIndexDeltaLedgerEntryInput after;
@@ -3332,8 +3321,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> ConflictUpdateDeltaEntries(
     after.values = new_values;
     after.delta_kind = scratchbird::core::index::SecondaryIndexDeltaKind::update_after;
     after.source_evidence_reference =
-        "engine.dml.insert.conflict_update.secondary_index_delta_after:" +
-        batch_context.statement_uuid;
+        EncodeMgaMetadataFields({"engine.dml.insert.conflict_update.secondary_index_delta_after:",MetadataUuidBytes(batch_context.statement_uuid)});
     entries.push_back(std::move(after));
   }
   return entries;
@@ -3443,7 +3431,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       !generated_source_uuids.empty();
   const bool generated_source_capacity_ready =
       !generated_source_capacity_required || generated_source_capacity.usable;
-  std::vector<std::string> generated_insert_scope_uuids{
+  std::vector<EngineUuid> generated_insert_scope_uuids{
       request.target_table.uuid};
   generated_insert_scope_uuids.insert(generated_insert_scope_uuids.end(),
                                       generated_source_uuids.begin(),
@@ -4012,7 +4000,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           continue;
         }
         std::vector<std::pair<std::string, std::string>> storage_values = update_values;
-        const std::string version_uuid = GenerateCrudEngineUuid("row");
+        EngineUuid version_uuid = GenerateCrudEngineUuid("row");
         const auto row_allocation_start = InsertSteadyClock::now();
         const auto row_allocation = ReserveDmlPageAllocationRuntime(
             request.context,
@@ -4108,7 +4096,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         row_record.row_uuid = conflict_row.row_uuid;
         row_record.version_uuid = version_uuid;
         row_record.temporary_session_uuid =
-            table->temporary ? request.context.session_uuid : "";
+            table->temporary ? request.context.session_uuid : EngineUuid{};
         row_record.previous_version_uuid = conflict_row.version_uuid;
         row_record.previous_sequence = conflict_row.sequence;
         row_record.deleted = false;
@@ -4304,14 +4292,14 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     if (constraint_check.error) {
       return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", constraint_check);
     }
-    const std::string version_uuid = GenerateCrudEngineUuid("row");
+    EngineUuid version_uuid = GenerateCrudEngineUuid("row");
     CrudRowVersionRecord row_record;
     row_record.creator_tx = request.context.local_transaction_id;
     row_record.table_uuid = request.target_table.uuid;
     row_record.row_uuid = prepared.row_uuid;
     row_record.version_uuid = version_uuid;
     row_record.temporary_session_uuid =
-        table->temporary ? request.context.session_uuid : "";
+        table->temporary ? request.context.session_uuid : EngineUuid{};
     row_record.deleted = false;
     row_record.values = values;
     CrudRowVersionRecord overlay_row = row_record;

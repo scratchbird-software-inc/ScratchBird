@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -83,17 +84,17 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string filespace_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid filespace_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -124,7 +125,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, id)) {
       return true;
     }
   }
@@ -147,7 +148,7 @@ std::size_t EvidenceCount(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view id) {
   std::size_t count = 0;
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, id)) {
       ++count;
     }
   }
@@ -195,10 +196,10 @@ api::EngineRequestContext BaseContext(const Fixture& fixture, std::string reques
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.default_root_uuid.canonical = fixture.filespace_uuid;
-  context.principal_uuid.canonical = NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical = NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.default_root_uuid = fixture.filespace_uuid;
+  context.principal_uuid = NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -286,10 +287,10 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   }
   Require(created.ok(), "CDP-011 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.filespace_uuid = uuid::UuidToString(create.filespace_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.filespace_uuid = create.filespace_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "cdp011-metadata");
   const auto table_record = Table(fixture, metadata);
@@ -315,7 +316,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     api::EngineApiU64 reject_limit_rows = 10) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";
@@ -337,9 +338,9 @@ api::EngineRequestContext AttachPlanStatementReceipt(
     api::EngineRequestContext context) {
   const platform::u64 identity_salt =
       fixture.salt + context.local_transaction_id * 32;
-  context.statement_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, identity_salt + 1);
-  context.statement_snapshot_uuid.canonical.clear();
+  context.statement_uuid =
+      NewIdentity(platform::UuidKind::object, identity_salt + 1);
+  context.statement_snapshot_uuid = {};
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = context;
   const auto snapshot = api::EnginePublishStatementSnapshot(publish);
@@ -350,10 +351,10 @@ api::EngineRequestContext AttachPlanStatementReceipt(
           .publication_inventory_next_local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_receipt_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, identity_salt + 2);
-  context.statement_metadata_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, identity_salt + 3);
+  context.statement_receipt_uuid =
+      NewIdentity(platform::UuidKind::object, identity_salt + 2);
+  context.statement_metadata_snapshot_uuid =
+      NewIdentity(platform::UuidKind::object, identity_salt + 3);
   context.statement_metadata_snapshot_engine_owned = true;
   context.statement_metadata_snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
@@ -361,16 +362,16 @@ api::EngineRequestContext AttachPlanStatementReceipt(
       snapshot.snapshot_vector.active_excluded_local_transaction_ids;
   context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
       snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
-  context.transaction_policy_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, identity_salt + 4);
+  context.transaction_policy_snapshot_uuid =
+      NewIdentity(platform::UuidKind::object, identity_salt + 4);
   context.transaction_policy_snapshot_generation = 1;
-  context.resource_admission_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, identity_salt + 5);
+  context.resource_admission_uuid =
+      NewIdentity(platform::UuidKind::object, identity_salt + 5);
 
   auto& authorization = context.authorization_context;
   authorization.present = true;
-  authorization.authority_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, identity_salt + 6);
+  authorization.authority_uuid =
+      NewIdentity(platform::UuidKind::object, identity_salt + 6);
   authorization.security_context_generation = 1;
   authorization.principal_uuid = context.principal_uuid;
   authorization.security_epoch = context.security_epoch;
@@ -381,11 +382,11 @@ api::EngineRequestContext AttachPlanStatementReceipt(
   subject.subject_kind = "principal";
   authorization.effective_subjects.push_back(subject);
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, identity_salt + 7);
+  grant.grant_uuid =
+      NewIdentity(platform::UuidKind::object, identity_salt + 7);
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = fixture.table_uuid;
+  grant.target_uuid = fixture.table_uuid;
   grant.right = "INSERT";
   grant.security_epoch = context.security_epoch;
   authorization.grants.push_back(std::move(grant));
@@ -436,7 +437,7 @@ api::EngineCreateImportRowsPlanDescriptorRequestV1 PlanFactoryRequest(
   api::EngineCreateImportRowsPlanDescriptorRequestV1 request;
   request.context = binder_context;
   request.structural_occurrence_id = structural_occurrence_id;
-  request.target_table_uuid.canonical = fixture.table_uuid;
+  request.target_table_uuid = fixture.table_uuid;
   request.source_kind = sblr::PlanImportRowsSourceKindV1::csv_stream;
   request.format_family = sblr::PlanImportRowsFormatFamilyV1::csv;
   request.reject_mode = sblr::PlanImportRowsRejectModeV1::fail_fast;
@@ -470,7 +471,7 @@ api::EngineApiU64 SelectCount(const Fixture& fixture,
                               const api::EngineRequestContext& context) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
   const auto selected = api::EngineSelectRows(request);
@@ -484,10 +485,10 @@ bool NonzeroBytes(const std::array<std::uint8_t, N>& value) {
                      [](std::uint8_t byte) { return byte != 0; });
 }
 
-std::string PlanUuidText(const sblr::PlanImportRowsUuidV1& value) {
+api::EngineUuid PlanIdentity(const sblr::PlanImportRowsUuidV1& value) {
   platform::Uuid uuid_value;
   uuid_value.bytes = value;
-  return uuid::UuidToString(uuid_value);
+  return uuid_value;
 }
 
 void RequirePlanSuccess(
@@ -509,8 +510,8 @@ void RequirePlanSuccess(
                   static_cast<std::uint16_t>(
                       sblr::PlanImportRowsFormatFamilyV1::csv) &&
               result.mapped_column_count == 0 &&
-              result.validated_request_descriptor_uuid.canonical ==
-                  PlanUuidText(descriptor_ref.descriptor_uuid) &&
+              result.validated_request_descriptor_uuid ==
+                  PlanIdentity(descriptor_ref.descriptor_uuid) &&
               result.validated_request_descriptor_generation ==
                   descriptor_ref.descriptor_generation &&
               NonzeroBytes(result.validated_request_projection_sha256),
@@ -539,7 +540,7 @@ void RequirePlanRefusal(const api::EnginePlanImportRowsResult& result,
               !result.row_execution_completed &&
               !result.row_persistence_claimed &&
               result.mapped_column_count == 0 &&
-              result.validated_request_descriptor_uuid.canonical.empty() &&
+              result.validated_request_descriptor_uuid.is_nil() &&
               result.validated_request_descriptor_generation == 0 &&
               result.accepted_executor_evidence.exact_bytes.empty() &&
               result.evidence.empty(),
@@ -626,8 +627,8 @@ sblr::SblrOperationEnvelope ExecuteImportEnvelope(const Fixture& fixture) {
                                          "SBLR_DML_EXECUTE_IMPORT_ROWS",
                                          "CDP-011-SBLR-EXECUTE-IMPORT");
   envelope.opcode_code = 0x0316u;
-  envelope.parser_package_uuid = NewUuidText(platform::UuidKind::object, 7000);
-  envelope.registry_snapshot_uuid = NewUuidText(platform::UuidKind::object, 7001);
+  envelope.parser_package_uuid = NewIdentity(platform::UuidKind::object, 7000);
+  envelope.registry_snapshot_uuid = NewIdentity(platform::UuidKind::object, 7001);
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
@@ -642,7 +643,13 @@ sblr::SblrOperationEnvelope ExecuteImportEnvelope(const Fixture& fixture) {
                 static_cast<std::uint32_t>(envelope.operands.size() + 1),
                 text_descriptor_uuid));
   };
-  append_text("target_object_uuid", fixture.table_uuid);
+  sblr::SblrOperand target;
+  target.type = "uuid";
+  target.name = "target_object_uuid";
+  target.ordinal = 1;
+  target.value_kind = sblr::SblrValueKind::uuid_ref;
+  target.value_body.assign(fixture.table_uuid.bytes.begin(), fixture.table_uuid.bytes.end());
+  envelope.operands.push_back(std::move(target));
   append_text("target_object_kind", "table");
   append_text("source_kind", "csv_stream");
   append_text("format_family", "csv");
@@ -655,7 +662,7 @@ sblr::SblrOperationEnvelope ExecuteImportEnvelope(const Fixture& fixture) {
 api::EngineApiRequest SblrApiRequest(const Fixture& fixture,
                                      std::vector<api::EngineRowValue> rows) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.rows = std::move(rows);
   return request;
@@ -665,7 +672,7 @@ void SeedCommittedRow(const Fixture& fixture, std::string id, std::string note) 
   auto context = Begin(fixture, "cdp011-seed");
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), std::move(note)));
   request.estimated_row_count = 1;
@@ -788,13 +795,13 @@ void TestPlanContractIsCompleteAndExecutionBound() {
 
   auto missing_transaction = request;
   missing_transaction.context.local_transaction_id = 0;
-  missing_transaction.context.transaction_uuid.canonical.clear();
+  missing_transaction.context.transaction_uuid = {};
   RequirePlanRefusal(api::EnginePlanImportRows(missing_transaction),
                      "MGA.TRANSACTION_INVALID",
                      "CDP-011 missing plan transaction was not refused");
 
   auto stale_transaction = request;
-  stale_transaction.context.transaction_uuid.canonical = NewUuidText(
+  stale_transaction.context.transaction_uuid = NewIdentity(
       platform::UuidKind::transaction, fixture.salt + 900);
   RequirePlanRefusal(api::EnginePlanImportRows(stale_transaction),
                      "MGA.TRANSACTION_INVALID",
@@ -807,7 +814,7 @@ void TestPlanContractIsCompleteAndExecutionBound() {
                      "CDP-011 stale plan snapshot was not refused");
 
   auto stale_receipt = request;
-  stale_receipt.context.statement_receipt_uuid.canonical = NewUuidText(
+  stale_receipt.context.statement_receipt_uuid = NewIdentity(
       platform::UuidKind::object, fixture.salt + 901);
   RequirePlanRefusal(api::EnginePlanImportRows(stale_receipt),
                      "MGA.AUTHORITY_MISMATCH",
@@ -820,7 +827,7 @@ void TestPlanContractIsCompleteAndExecutionBound() {
       "CDP-011 unsupported source/format plan was not refused");
 
   auto invalid_target = PlanFactoryRequest(fixture, binder_context, 3);
-  invalid_target.target_table_uuid.canonical.clear();
+  invalid_target.target_table_uuid = {};
   const auto invalid_target_result =
       api::CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(
           invalid_target);

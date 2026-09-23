@@ -258,7 +258,7 @@ bool DmlIngestionPipeline::Start() {
 }
 
 bool DmlIngestionPipeline::PreallocatorShouldRun() const {
-  if (!config_.enable_preallocator || config_.target_table_uuid.empty()) {
+  if (!config_.enable_preallocator || config_.target_table_uuid.is_nil()) {
     return false;
   }
   if (config_.source_size_bytes != 0 || config_.source_preallocation_bytes != 0) {

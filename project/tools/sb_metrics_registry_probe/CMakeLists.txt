@@ -11,4 +11,4 @@ add_executable(sb_metrics_registry_probe
 )
 
 target_compile_features(sb_metrics_registry_probe PRIVATE cxx_std_17)
-target_link_libraries(sb_metrics_registry_probe PRIVATE sb_core_metrics)
+target_link_libraries(sb_metrics_registry_probe PRIVATE sb_client_metric_export)

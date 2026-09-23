@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -64,7 +65,7 @@ opt::EnterpriseJoinControlRequest Request(std::string join_policy) {
   return request;
 }
 
-opt::JoinRelationNode Relation(std::string uuid, std::uint64_t rows) {
+opt::JoinRelationNode Relation(scratchbird::core::platform::Uuid uuid, std::uint64_t rows) {
   opt::JoinRelationNode relation;
   relation.relation_uuid = std::move(uuid);
   relation.estimated_rows = rows;
@@ -75,7 +76,7 @@ opt::JoinRelationNode Relation(std::string uuid, std::uint64_t rows) {
   return relation;
 }
 
-opt::JoinPredicateEdge Edge(std::string left, std::string right) {
+opt::JoinPredicateEdge Edge(scratchbird::core::platform::Uuid left, scratchbird::core::platform::Uuid right) {
   opt::JoinPredicateEdge edge;
   edge.left_relation_uuid = std::move(left);
   edge.right_relation_uuid = std::move(right);
@@ -88,8 +89,8 @@ opt::JoinPredicateEdge Edge(std::string left, std::string right) {
 
 opt::JoinGraph Graph() {
   return opt::BuildJoinGraph(
-      {Relation("rel.a", 1000), Relation("rel.b", 100), Relation("rel.c", 10)},
-      {Edge("rel.a", "rel.b"), Edge("rel.b", "rel.c")},
+      {Relation(scratchbird::tests::FixtureUuid(1260, 5), 1000), Relation(scratchbird::tests::FixtureUuid(1260, 6), 100), Relation(scratchbird::tests::FixtureUuid(1260, 7), 10)},
+      {Edge(scratchbird::tests::FixtureUuid(1260, 5), scratchbird::tests::FixtureUuid(1260, 6)), Edge(scratchbird::tests::FixtureUuid(1260, 6), scratchbird::tests::FixtureUuid(1260, 7))},
       false,
       false);
 }

@@ -9,7 +9,8 @@
 #include <chrono>
 #include <fstream>
 #include <mutex>
-#include <unordered_map>
+#include <map>
+#include "mga_relation_store/mga_binary_fields.hpp"
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -17,21 +18,19 @@ std::mutex coordinator_mutex;
 struct OwnedCursorSnapshot : SblrCursorOpenSnapshot {
   scratchbird::core::platform::Uuid database_uuid;
 };
-std::unordered_map<std::string, OwnedCursorSnapshot> descriptors;
-std::unordered_map<std::string, OwnedCursorSnapshot> cursors;
-std::unordered_map<std::string, OwnedCursorSnapshot> retired_cursors;
+std::map<EngineUuid, OwnedCursorSnapshot> descriptors;
+std::map<EngineUuid, OwnedCursorSnapshot> cursors;
+std::map<EngineUuid, OwnedCursorSnapshot> retired_cursors;
 std::uint64_t next_generation = 0;
 
 auto DatabaseIdentity(const EngineRequestContext& context) {
-  // Adapt the existing text request context once. Registry ownership is binary;
-  // neither a filesystem path nor a UUID spelling is an ownership key. The
-  // legacy context and snapshot UUID fields still require boundary migration.
-  return scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
+  // Validate the native database identity without any text intermediary.
+  return scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
       scratchbird::core::platform::UuidKind::database,
       context.database_uuid);
 }
 
-void EraseDatabase(std::unordered_map<std::string, OwnedCursorSnapshot>& registry,
+void EraseDatabase(std::map<EngineUuid, OwnedCursorSnapshot>& registry,
                    const scratchbird::core::platform::Uuid& database_uuid) {
   for (auto entry = registry.begin(); entry != registry.end();) {
     if (entry->second.database_uuid == database_uuid) entry = registry.erase(entry);
@@ -40,7 +39,8 @@ void EraseDatabase(std::unordered_map<std::string, OwnedCursorSnapshot>& registr
 }
 
 EngineApiDiagnostic Diagnostic(std::string code, std::string key) {
-  return MakeEngineApiDiagnostic(std::move(code), std::move(key), {});
+  const bool error = code != "OK";
+  return MakeEngineApiDiagnostic(std::move(code), std::move(key), {}, error);
 }
 
 bool HasTag(const EngineRequestContext& context, const char* tag) {
@@ -49,7 +49,7 @@ bool HasTag(const EngineRequestContext& context, const char* tag) {
              context.trace_tags.end();
 }
 
-std::string NewIdentity() {
+EngineUuid NewIdentity() {
   const auto millis = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch())
@@ -58,8 +58,8 @@ std::string NewIdentity() {
       scratchbird::core::platform::UuidKind::object,
       millis + (++next_generation));
   return generated.ok()
-             ? scratchbird::core::uuid::UuidToString(generated.value.value)
-             : std::string{};
+             ? generated.value.value
+             : EngineUuid{};
 }
 
 std::string Hash(const std::string& material) {
@@ -70,20 +70,38 @@ std::string Hash(const std::string& material) {
   return "sha256:" + scratchbird::core::hash::HexLower(digest);
 }
 
+// Runtime cursor publication evidence only; transaction finality remains MGA
+// inventory authority. V2 records never contain a textual UUID representation.
 bool AppendJournal(const EngineRequestContext& context, char event,
                    const SblrCursorOpenSnapshot& snapshot) {
-  std::ofstream output(context.database_path + ".sb.sblr_cursor_open.v1",
-                       std::ios::app);
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(snapshot.descriptor_uuid) ||
+      (event != 'P' && !scratchbird::core::uuid::IsEngineIdentityUuid(snapshot.cursor_uuid))) return false;
+  std::string bytes("SBCUROP2");
+  bytes.push_back(event);
+  for (const auto& identity : {snapshot.descriptor_uuid, snapshot.cursor_uuid})
+    bytes.append(reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size());
+  AppendBinaryU64(&bytes, snapshot.cursor_generation);
+  std::ofstream output(context.database_path + ".sb.sblr_cursor_open.v2",
+                       std::ios::app | std::ios::binary);
   if (!output) return false;
-  output << event << '\t' << snapshot.descriptor_uuid << '\t'
-         << snapshot.cursor_uuid << '\t' << snapshot.cursor_generation << '\n';
+  output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
   output.flush();
   return static_cast<bool>(output);
+}
+
+std::string IdentityEvidence(std::string_view domain,
+    std::initializer_list<EngineUuid> identities, std::uint64_t generation = 0) {
+  std::string material(domain);
+  material.push_back('\0');
+  for (const auto& identity : identities)
+    material.append(reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size());
+  AppendBinaryU64(&material, generation);
+  return Hash(material);
 }
 }  // namespace
 
 SblrCursorOpenResult CompileAndPublishSblrExecutablePlanReceipt(
-    const EngineRequestContext& context, const std::string& receipt_uuid,
+    const EngineRequestContext& context, const EngineUuid& receipt_uuid,
     std::uint64_t occurrence, std::uint8_t mode, std::uint8_t hold,
     std::uint32_t fetch_size, std::uint64_t availability_generation) {
   std::lock_guard lock(coordinator_mutex);
@@ -122,13 +140,12 @@ SblrCursorOpenResult CompileAndPublishSblrExecutablePlanReceipt(
   snapshot.hold = hold;
   snapshot.fetch_size = fetch_size;
   snapshot.availability_generation = availability_generation;
-  snapshot.plan_evidence_sha256 = Hash(
-      "ScratchBird.SblrExecutablePlanReceipt.V1" + snapshot.plan_uuid);
+  snapshot.plan_evidence_sha256 = IdentityEvidence(
+      "ScratchBird.SblrExecutablePlanReceipt.V2", {snapshot.plan_uuid});
   scratchbird::engine::sblr::SblrCursorOpenDescriptorV1 wire;
-  const auto copy_uuid = [&](const std::string& text, auto* target) {
-    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-    if (!parsed.ok()) return false;
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), target->begin());
+  const auto copy_uuid = [&](const EngineUuid& identity, auto* target) {
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity)) return false;
+    std::copy(identity.bytes.begin(), identity.bytes.end(), target->begin());
     return true;
   };
   const auto copy_sha = [](const std::string& text, auto* target) {
@@ -141,7 +158,7 @@ SblrCursorOpenResult CompileAndPublishSblrExecutablePlanReceipt(
   if (!copy_uuid(snapshot.descriptor_uuid, &wire.descriptor) ||
       !copy_uuid(snapshot.plan_uuid, &wire.plan) ||
       !copy_uuid(snapshot.row_shape_uuid, &wire.row_shape) ||
-      (!snapshot.transaction_uuid.empty() &&
+      (!snapshot.transaction_uuid.is_nil() &&
        !copy_uuid(snapshot.transaction_uuid, &wire.transaction)) ||
       !copy_uuid(snapshot.session_uuid, &wire.session) ||
       !copy_uuid(snapshot.security_uuid, &wire.security) ||
@@ -184,7 +201,7 @@ SblrCursorOpenResult CompileAndPublishSblrExecutablePlanReceipt(
 }
 
 SblrCursorOpenResult OpenSblrCursor(
-    const EngineRequestContext& context, const std::string& descriptor_uuid,
+    const EngineRequestContext& context, const EngineUuid& descriptor_uuid,
     std::uint64_t descriptor_generation,
     const std::string& descriptor_evidence_sha256,
     std::uint64_t availability_generation) {
@@ -212,9 +229,9 @@ SblrCursorOpenResult OpenSblrCursor(
   snapshot.cursor_uuid = NewIdentity();
   snapshot.cursor_generation = ++next_generation;
   snapshot.position_generation = 1;
-  snapshot.cursor_evidence_sha256 = Hash(
-      "ScratchBird.SblrCursorHandle.V1" + snapshot.cursor_uuid +
-      snapshot.plan_uuid + std::to_string(snapshot.cursor_generation));
+  snapshot.cursor_evidence_sha256 = IdentityEvidence(
+      "ScratchBird.SblrCursorHandle.V2", {snapshot.cursor_uuid, snapshot.plan_uuid},
+      snapshot.cursor_generation);
   if (!AppendJournal(context, 'O', snapshot)) {
     result.diagnostic =
         Diagnostic("CURSOR.OPEN_FAILED", "sblr.cursor.open_publish_failed");
@@ -251,7 +268,7 @@ EngineApiDiagnostic RecoverSblrOpenCursors(
 }
 
 SblrCursorOpenResult FetchSblrCursor(
-    const EngineRequestContext& context, const std::string& cursor_uuid,
+    const EngineRequestContext& context, const EngineUuid& cursor_uuid,
     std::uint64_t cursor_generation, std::uint64_t position_generation,
     const std::string& admitted_evidence, std::uint64_t availability_generation,
     std::uint32_t maximum_rows) {
@@ -283,9 +300,9 @@ SblrCursorOpenResult FetchSblrCursor(
   }
   snapshot.position_generation++;
   snapshot.availability_generation = availability_generation;
-  snapshot.cursor_evidence_sha256 = Hash(
-      "ScratchBird.SblrCursorFetchEvidence.V1" + snapshot.cursor_uuid +
-      std::to_string(snapshot.position_generation));
+  snapshot.cursor_evidence_sha256 = IdentityEvidence(
+      "ScratchBird.SblrCursorFetchEvidence.V2", {snapshot.cursor_uuid},
+      snapshot.position_generation);
   if (!AppendJournal(context, 'F', snapshot)) {
     result.diagnostic = Diagnostic("CURSOR.FETCH_FAILED", "sblr.cursor.fetch_publish_failed");
     return result;
@@ -298,7 +315,7 @@ SblrCursorOpenResult FetchSblrCursor(
 }
 
 SblrCursorOpenResult CloseSblrCursor(
-    const EngineRequestContext& context, const std::string& cursor_uuid,
+    const EngineRequestContext& context, const EngineUuid& cursor_uuid,
     std::uint64_t cursor_generation, std::uint64_t position_generation,
     const std::string& admitted_evidence, std::uint64_t availability_generation,
     std::uint8_t close_reason) {
@@ -343,9 +360,12 @@ SblrCursorOpenResult CloseSblrCursor(
     return result;
   }
   snapshot.availability_generation = availability_generation;
-  snapshot.cursor_evidence_sha256 = Hash(
-      "ScratchBird.SblrCursorCloseEvidence.V1" + snapshot.cursor_uuid +
-      std::to_string(snapshot.position_generation) + std::to_string(close_reason));
+  std::string close_material("ScratchBird.SblrCursorCloseEvidence.V2");
+  close_material.push_back('\0');
+  close_material.append(reinterpret_cast<const char*>(snapshot.cursor_uuid.bytes.data()), 16);
+  AppendBinaryU64(&close_material, snapshot.position_generation);
+  AppendBinaryU8(&close_material, close_reason);
+  snapshot.cursor_evidence_sha256 = Hash(close_material);
   if (!AppendJournal(context, 'C', snapshot)) {
     result.diagnostic = Diagnostic("CURSOR.CLOSE_FAILED", "sblr.cursor.close_publish_failed");
     return result;

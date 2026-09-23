@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../../support/binary_uuid_fixture.hpp"
 #include "dispatch/function_dispatch.hpp"
 #include "registry/function_seed_registry.hpp"
 
@@ -66,9 +67,9 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
   request.context.sblr_context.statement_timestamp = "2026-05-12T14:23:45Z";
   request.context.sblr_context.transaction_timestamp = "2026-05-12T13:00:00Z";
   request.context.sblr_context.current_timestamp = "2026-05-12T14:23:46Z";
-  request.context.sblr_context.user_uuid = "019e2f00-0000-7000-8000-000000000001";
-  request.context.sblr_context.database_uuid = "019e2f00-0000-7000-8000-000000000002";
-  request.context.sblr_context.current_schema_uuid = "019e2f00-0000-7000-8000-000000000003";
+  request.context.sblr_context.user_uuid = scratchbird::tests::FixtureUuidLiteral("019e2f00-0000-7000-8000-000000000001");
+  request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e2f00-0000-7000-8000-000000000002");
+  request.context.sblr_context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019e2f00-0000-7000-8000-000000000003");
   request.context.sblr_context.deterministic_uuid_text =
       "550e8400-e29b-41d4-a716-446655440000";
   request.context.sblr_context.transaction_context_present = true;

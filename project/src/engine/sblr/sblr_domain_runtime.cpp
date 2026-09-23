@@ -41,12 +41,12 @@ api::EngineRequestContext ToEngineContext(const SblrExecutionContext& context) {
   return out;
 }
 
-api::EngineDescriptor DomainDescriptorFromUuid(std::string domain_uuid) {
+api::EngineDescriptor DomainDescriptorFromUuid(SblrUuid domain_uuid) {
   api::EngineDescriptor descriptor;
   descriptor.descriptor_uuid = std::move(domain_uuid);
   descriptor.descriptor_kind = "domain";
   descriptor.canonical_type_name = "domain";
-  descriptor.encoded_descriptor = "domain_uuid=" + descriptor.descriptor_uuid;
+  descriptor.encoded_descriptor = api::DomainColumnDescriptor(descriptor.descriptor_uuid);
   return descriptor;
 }
 
@@ -54,16 +54,10 @@ api::EngineDescriptor DescriptorFromSblrValue(const SblrValue& value) {
   api::EngineDescriptor descriptor;
   descriptor.canonical_type_name = value.descriptor_id.empty() ? "character" : value.descriptor_id;
   descriptor.descriptor_kind = LooksLikeSblrDomainDescriptor(value.descriptor_id) ? "domain" : "scalar";
-  descriptor.encoded_descriptor = descriptor.descriptor_kind == "domain"
-                                      ? "domain_uuid=" + std::string(value.descriptor_id.rfind("domain:", 0) == 0
-                                                                        ? value.descriptor_id.substr(7)
-                                                                        : value.descriptor_id)
-                                      : "canonical=" + descriptor.canonical_type_name;
-  if (descriptor.descriptor_kind == "domain") {
-    descriptor.descriptor_uuid = value.descriptor_id.rfind("domain:", 0) == 0
-                                               ? value.descriptor_id.substr(7)
-                                               : value.descriptor_id;
-  }
+  if(descriptor.descriptor_kind=="domain"){
+    descriptor.descriptor_uuid=api::DomainUuidFromColumnDescriptor(value.descriptor_id);
+    descriptor.canonical_type_name="domain";descriptor.encoded_descriptor=value.descriptor_id;
+  }else descriptor.encoded_descriptor="canonical="+descriptor.canonical_type_name;
   return descriptor;
 }
 
@@ -90,7 +84,7 @@ api::EngineTypedValue ToEngineValue(const SblrValue& value) {
 SblrValue FromEngineValue(const api::EngineTypedValue& value) {
   SblrValue out;
   out.descriptor_id = value.descriptor.descriptor_kind == "domain" && !value.descriptor.descriptor_uuid.is_nil()
-                          ? "domain:" + value.descriptor.descriptor_uuid
+                          ? api::DomainColumnDescriptor(value.descriptor.descriptor_uuid)
                           : value.descriptor.canonical_type_name;
   out.is_null = value.is_null || value.encoded_value == "<NULL>";
   if (out.is_null) return out;
@@ -103,7 +97,7 @@ SblrValue FromEngineValue(const api::EngineTypedValue& value) {
 SblrResult SblrDomainFailure(std::string operation_id,
                              const SblrExecutionContext& context,
                              const api::EngineApiDiagnostic& api_diagnostic,
-                             std::string domain_uuid) {
+                             SblrUuid domain_uuid) {
   auto diagnostic = MakeSblrRefusalDiagnostic(api_diagnostic.code.empty() ? "SB_DIAG_DOMAIN_RUNTIME_FAILED"
                                                                           : api_diagnostic.code,
                                               context,
@@ -151,8 +145,7 @@ SblrResult ValidateViaEngine(const SblrDomainRequest& request, std::string opera
 }  // namespace
 
 bool LooksLikeSblrDomainDescriptor(std::string_view descriptor_id) {
-  return descriptor_id.rfind("domain:", 0) == 0 ||
-         (descriptor_id.size() >= 32 && descriptor_id.find('-') != std::string_view::npos);
+  return descriptor_id.starts_with("SBDOMID2");
 }
 
 SblrResult CastSblrValueToDomain(const SblrDomainRequest& request) {
@@ -175,7 +168,7 @@ SblrResult ValidateSblrDomainValue(const SblrDomainRequest& request) {
 
 SblrResult ApplySblrDomainReadPolicy(const SblrDomainRequest& request) {
   const auto engine_context = ToEngineContext(request.context);
-  const std::vector<std::pair<std::string, std::string>> columns = {{"value", "domain:" + request.domain_uuid}};
+  const std::vector<std::pair<std::string, std::string>> columns = {{"value", api::DomainColumnDescriptor(request.domain_uuid)}};
   const std::vector<std::pair<std::string, std::string>> values = {{"value", ValueText(request.value)}};
   const auto result = api::ApplyDomainReadPoliciesToCrudValues(engine_context,
                                                                columns,
@@ -190,7 +183,7 @@ SblrResult ApplySblrDomainReadPolicy(const SblrDomainRequest& request) {
       out.is_null = value == "<NULL>";
       out.encoded_value = out.is_null ? "" : value;
       out.text_value = out.encoded_value;
-      out.descriptor_id = "domain:" + request.domain_uuid;
+      out.descriptor_id = api::DomainColumnDescriptor(request.domain_uuid);
       out.payload_kind = out.is_null ? SblrValuePayloadKind::none : SblrValuePayloadKind::text;
       break;
     }
@@ -221,9 +214,7 @@ SblrAssignmentDomainValidator MakeSblrDomainAssignmentValidator() {
   return [](const SblrAssignmentSlot& slot, const SblrValue& value, const SblrExecutionContext& context) {
     SblrDomainRequest request;
     request.context = context;
-    request.domain_uuid = slot.domain_descriptor_id.rfind("domain:", 0) == 0
-                              ? slot.domain_descriptor_id.substr(7)
-                              : slot.domain_descriptor_id;
+    request.domain_uuid=api::DomainUuidFromColumnDescriptor(slot.domain_descriptor_id);
     request.value = value;
     const auto validation = ValidateSblrDomainValue(request);
     SblrAssignmentValidationResult out;

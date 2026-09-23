@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "cache/sblr_template_cache.hpp"
+#include "cache/binary_cache_key.hpp"
 
 #include <array>
 #include <sstream>
@@ -83,74 +84,52 @@ std::optional<CacheStoreResult> ValidateEntryForStore(
 } // namespace
 
 std::string CacheKey::StableKey() const {
-  std::ostringstream out;
-  out << "sbsql-cache-v8:" << shape_hash << ':' << registry_version << ':'
-      << catalog_epoch << ':'
-      << security_policy_epoch << ':' << grant_epoch << ':' << descriptor_epoch
-      << ':' << udr_epoch << ':' << name_resolution_epoch << ':' << resource_epoch
-      << ':' << parser_package_generation << ':' << protocol_version
-      << ':' << parser_package_version_hash << ':' << disclosure_policy_generation
-      << ':' << redaction_policy_generation
-      << ':' << security_authority_epoch << ':' << cluster_policy_generation
-      << ':' << ttl_generation << ':' << memory_pressure_generation
-      << ':' << normalized_statement_hash << ':' << parameter_type_shape_hash
-      << ':' << connection_uuid << ':' << transaction_context_hash
-      << ':' << dialect
-      << ':' << role_set_hash << ':' << group_set_hash
-      << ':' << search_path_hash << ':' << language_profile << ':'
-      << language_tag << ':' << input_syntax_profile << ':'
-      << input_language_fallback_tag << ':' << common_resource_hash
-      << ':' << language_resource_epoch << ':' << localized_name_epoch
-      << ':' << policy_profile << ':' << parser_profile << ':'
-      << message_resource_epoch << ':' << resource_compatibility_identity
-      << ':' << resource_version_identity << ':'
-      << result_contract_hash;
-  return out.str();
+  BinaryCacheKey out("sbsql-cache-v9");
+  out.Number(shape_hash);
+  out.Number(registry_version);
+  out.Number(catalog_epoch);
+  out.Number(security_policy_epoch);
+  out.Number(grant_epoch);
+  out.Number(descriptor_epoch);
+  out.Number(udr_epoch);
+  out.Number(name_resolution_epoch);
+  out.Number(resource_epoch);
+  out.Number(parser_package_generation);
+  out.Number(protocol_version);
+  out.Number(parser_package_version_hash);
+  out.Number(disclosure_policy_generation);
+  out.Number(redaction_policy_generation);
+  out.Number(security_authority_epoch);
+  out.Number(cluster_policy_generation);
+  out.Number(ttl_generation);
+  out.Number(memory_pressure_generation);
+  out.Number(normalized_statement_hash);
+  out.Number(parameter_type_shape_hash);
+  out.Number(language_resource_epoch);
+  out.Number(localized_name_epoch);
+  out.Number(message_resource_epoch);
+  out.Uuid(connection_uuid);
+  out.Text(transaction_context_hash);
+  out.Text(dialect);
+  out.Text(role_set_hash);
+  out.Text(group_set_hash);
+  out.Text(search_path_hash);
+  out.Text(language_profile);
+  out.Text(language_tag);
+  out.Text(input_syntax_profile);
+  out.Text(input_language_fallback_tag);
+  out.Text(common_resource_hash);
+  out.Uuid(policy_profile);
+  out.Text(parser_profile);
+  out.Text(resource_compatibility_identity);
+  out.Text(resource_version_identity);
+  out.Text(result_contract_hash);
+  return std::move(out).Finish();
 }
 
 std::string CacheKey::CompactKey() const {
-  std::uint64_t hash = kFnvOffset;
-  hash = MixString(hash, "sbsql-cache-v8");
-  hash = MixUint64(hash, shape_hash);
-  hash = MixUint64(hash, registry_version);
-  hash = MixUint64(hash, catalog_epoch);
-  hash = MixUint64(hash, security_policy_epoch);
-  hash = MixUint64(hash, grant_epoch);
-  hash = MixUint64(hash, descriptor_epoch);
-  hash = MixUint64(hash, udr_epoch);
-  hash = MixUint64(hash, name_resolution_epoch);
-  hash = MixUint64(hash, resource_epoch);
-  hash = MixUint64(hash, parser_package_generation);
-  hash = MixUint64(hash, protocol_version);
-  hash = MixUint64(hash, parser_package_version_hash);
-  hash = MixUint64(hash, disclosure_policy_generation);
-  hash = MixUint64(hash, redaction_policy_generation);
-  hash = MixUint64(hash, security_authority_epoch);
-  hash = MixUint64(hash, cluster_policy_generation);
-  hash = MixUint64(hash, ttl_generation);
-  hash = MixUint64(hash, memory_pressure_generation);
-  hash = MixUint64(hash, normalized_statement_hash);
-  hash = MixUint64(hash, parameter_type_shape_hash);
-  hash = MixString(hash, connection_uuid);
-  hash = MixString(hash, transaction_context_hash);
-  hash = MixString(hash, dialect);
-  hash = MixString(hash, role_set_hash);
-  hash = MixString(hash, group_set_hash);
-  hash = MixString(hash, search_path_hash);
-  hash = MixString(hash, language_profile);
-  hash = MixString(hash, language_tag);
-  hash = MixString(hash, input_syntax_profile);
-  hash = MixString(hash, input_language_fallback_tag);
-  hash = MixString(hash, common_resource_hash);
-  hash = MixUint64(hash, language_resource_epoch);
-  hash = MixUint64(hash, localized_name_epoch);
-  hash = MixString(hash, policy_profile);
-  hash = MixString(hash, parser_profile);
-  hash = MixUint64(hash, message_resource_epoch);
-  hash = MixString(hash, resource_compatibility_identity);
-  hash = MixString(hash, resource_version_identity);
-  hash = MixString(hash, result_contract_hash);
-  return CompactKeyFromHash(hash);
+  // Hash indexes the cache; StableKey equality guards collisions on lookup.
+  return CompactKeyFromHash(MixString(kFnvOffset, StableKey()));
 }
 
 SblrTemplateCache::SblrTemplateCache(std::size_t max_entries) : max_entries_(max_entries) {}
@@ -369,8 +348,8 @@ void SblrTemplateCache::InvalidateParameterTypeShapeHash(std::uint64_t new_hash)
   ++invalidation_count_;
 }
 
-void SblrTemplateCache::InvalidateConnection(std::string_view connection_uuid) {
-  const std::string stable(connection_uuid);
+void SblrTemplateCache::InvalidateConnection(const core::platform::Uuid& connection_uuid) {
+  const auto stable = connection_uuid;
   std::lock_guard lock(mutex_);
   EraseMatchingLocked([&stable](const CacheKey& key) {
     return key.connection_uuid != stable;
@@ -486,8 +465,8 @@ void SblrTemplateCache::InvalidateLocalizedNameEpoch(std::uint64_t new_epoch) {
   ++invalidation_count_;
 }
 
-void SblrTemplateCache::InvalidatePolicyProfile(std::string_view new_policy_profile) {
-  const std::string stable(new_policy_profile);
+void SblrTemplateCache::InvalidatePolicyProfile(const core::platform::Uuid& new_policy_profile) {
+  const auto stable = new_policy_profile;
   std::lock_guard lock(mutex_);
   EraseMatchingLocked([&stable](const CacheKey& key) {
     return key.policy_profile != stable;
@@ -588,7 +567,7 @@ std::string SblrTemplateCache::SnapshotJson() const {
     if (it == entries_.end()) continue;
     if (!first) out << ',';
     first = false;
-    out << '\"' << EscapeJson(it->second.stable_key) << '\"';
+    out << '\"' << EscapeJson(it->second.entry.key.CompactKey()) << '\"';
   }
   out << "]}";
   return out.str();

@@ -27,10 +27,10 @@ namespace scratchbird::engine::internal_api {
 // SEARCH_KEY: DPC_MANAGEMENT_SUPPORT_BUNDLE_OBSERVABILITY
 struct EngineSupportBundleAgentEvidenceSource {
   std::string agent_type_id;
-  std::string agent_uuid;
-  std::string filespace_uuid;
-  std::string policy_uuid;
-  std::string evidence_uuid;
+  EngineUuid agent_uuid;
+  EngineUuid filespace_uuid;
+  EngineUuid policy_uuid;
+  EngineUuid evidence_uuid;
   std::string evidence_kind;
   std::string result_state;
   std::string diagnostic_code;

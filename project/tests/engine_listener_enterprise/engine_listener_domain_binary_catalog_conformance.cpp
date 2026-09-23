@@ -88,12 +88,12 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string UuidText(TypedUuid typed_uuid) {
-  return uuid::UuidToString(typed_uuid.value);
+api::EngineUuid NativeIdentity(TypedUuid typed_uuid) {
+  return typed_uuid.value;
 }
 
-std::string UuidText(UuidKind kind, u64 offset) {
-  return UuidText(MakeUuid(kind, offset));
+api::EngineUuid NativeIdentity(UuidKind kind, u64 offset) {
+  return NativeIdentity(MakeUuid(kind, offset));
 }
 
 memory::AllocationPolicy MemoryPolicy() {
@@ -147,10 +147,10 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = UuidText(fixture.database_uuid);
-  context.node_uuid.canonical = UuidText(UuidKind::object, 312);
-  context.principal_uuid.canonical = UuidText(UuidKind::principal, 313);
-  context.session_uuid.canonical = UuidText(UuidKind::object, 314);
+  context.database_uuid = NativeIdentity(fixture.database_uuid);
+  context.node_uuid = NativeIdentity(UuidKind::object, 312);
+  context.principal_uuid = NativeIdentity(UuidKind::principal, 313);
+  context.session_uuid = NativeIdentity(UuidKind::object, 314);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -181,17 +181,17 @@ void Commit(api::EngineRequestContext* context) {
   const auto committed = api::EngineCommitTransaction(request);
   RequireApiOk(committed, "transaction commit failed");
   context->local_transaction_id = 0;
-  context->transaction_uuid.canonical.clear();
+  context->transaction_uuid = {};
 }
 
-api::DomainRecord Domain(std::uint64_t creator_tx, std::string domain_uuid) {
+api::DomainRecord Domain(std::uint64_t creator_tx, api::EngineUuid domain_uuid) {
   api::DomainRecord record;
   record.creator_tx = creator_tx;
   record.domain_uuid = std::move(domain_uuid);
-  record.catalog_row_uuid = UuidText(UuidKind::object, 320 + creator_tx);
-  record.schema_uuid = UuidText(UuidKind::schema, 330 + creator_tx);
+  record.catalog_row_uuid = NativeIdentity(UuidKind::object, 320 + creator_tx);
+  record.schema_uuid = NativeIdentity(UuidKind::schema, 330 + creator_tx);
   record.default_name = "eler031_customer_profile";
-  record.base_descriptor_uuid = UuidText(UuidKind::object, 340 + creator_tx);
+  record.base_descriptor_uuid = NativeIdentity(UuidKind::object, 340 + creator_tx);
   record.base_descriptor_kind = "scalar";
   record.base_canonical_type_name = "character";
   record.base_encoded_descriptor = "canonical=character;length=4096";
@@ -280,7 +280,7 @@ void DomainBinaryCatalogProof() {
 
   auto writer = Context(fixture, "eler031-domain-writer");
   Begin(&writer);
-  const auto domain_uuid = UuidText(UuidKind::object, 350);
+  const auto domain_uuid = NativeIdentity(UuidKind::object, 350);
   const auto domain = Domain(writer.local_transaction_id, domain_uuid);
 
   auto bad_domain = domain;

@@ -40,7 +40,8 @@ int main(int argc, char** argv) {
     const auto object = uuid::GenerateEngineIdentityV7(UuidKind::object, millis);
     Setup(database.ok() && filespace.ok() && object.ok(), "UUID generation failed");
     root = fs::temp_directory_path() /
-        ("scratchbird_name_read_" + uuid::UuidToString(database.value.value));
+        ("scratchbird_name_read_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
     Setup(fs::create_directory(root), "unique fixture directory not created");
     std::cout << "fixture=" << root << '\n';
     db::DatabaseCreateConfig create;
@@ -54,16 +55,16 @@ int main(int argc, char** argv) {
     Setup(db::CreateDatabaseFile(create).ok(), "real database initialization failed");
     api::EngineRequestContext context;
     context.database_path = create.path;
-    context.database_uuid.canonical = uuid::UuidToString(database.value.value);
+    context.database_uuid = database.value.value;
     const fs::path journal = create.path + ".sb.api_events";
     Setup(!fs::exists(journal), "unexpected preexisting catalog fixture journal");
-    const std::string identity = uuid::UuidToString(object.value.value);
-    // Exercise the real existing writer and reader. The textual carrier and
-    // profile label here are current-format regression data, not migration proof.
+    const auto identity = object.value.value;
+    // Exercise the real writer and reader with the issued binary identities.
     api::NameRegistryEntry entry;
     entry.creator_tx = 1; // Real committed database bootstrap transaction.
-    entry.name_entry_uuid = uuid::UuidToString(
-        uuid::GenerateEngineIdentityV7(UuidKind::object, millis).value.value);
+    const auto name_entry = uuid::GenerateEngineIdentityV7(UuidKind::object, millis);
+    Setup(name_entry.ok(), "name entry identity generation failed");
+    entry.name_entry_uuid = name_entry.value.value;
     entry.object_uuid = identity;
     entry.object_class = "table";
     entry.raw_name_text = entry.display_name = "READ_AUTHORITY_PROBE";

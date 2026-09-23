@@ -57,7 +57,7 @@ bridge::StatementDdlAlterTriggerBindRequestV1 AlterTriggerDemand(
 
 sblr::SblrOperationEnvelope AlterTriggerMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const bridge::StatementDdlAlterTriggerAuthorityV1& authority) {
   auto operand_bytes = authority.canonical_descriptor_bytes;
   Require(operand_bytes.size() ==
@@ -98,7 +98,7 @@ void RequireAlterCancellation(
     const Fixture& fixture, PublicSession& session,
     const bridge::StatementContextReceiptView& view,
     bridge::StatementContextReceiptHandle receipt,
-    std::string_view parser_uuid, const Submission& submission,
+    const platform::Uuid& parser_uuid, const Submission& submission,
     std::atomic<unsigned>* probes, std::atomic<unsigned>* cancel_on_probe,
     unsigned expected_probe, std::string_view expected_key) {
   probes->store(0, std::memory_order_relaxed);
@@ -155,13 +155,13 @@ int main() {
     return target != 0 && ordinal == target;
   };
   (void)PrepareTriggerTarget(fixture, &context);
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 26283));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 26283));
+  context.current_package_uuid = parser_uuid;
   PublishBaselineTrigger(fixture, session, &context, parser_uuid);
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;

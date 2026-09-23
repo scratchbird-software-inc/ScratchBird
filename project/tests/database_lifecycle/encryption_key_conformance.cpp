@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -22,19 +23,19 @@ namespace {
 
 namespace engine_api = scratchbird::engine::internal_api;
 
-constexpr std::string_view kDatabaseA = "019e18d0-013a-7000-8000-000000000013";
-constexpr std::string_view kDatabaseB = "019e18d0-013b-7000-8000-000000000013";
-constexpr std::string_view kFilespaceA = "019e18d0-013c-7000-8000-000000000013";
-constexpr std::string_view kFilespaceB = "019e18d0-013d-7000-8000-000000000013";
+constexpr auto kDatabaseA = scratchbird::tests::FixtureUuidLiteral("019e18d0-013a-7000-8000-000000000013");
+constexpr auto kDatabaseB = scratchbird::tests::FixtureUuidLiteral("019e18d0-013b-7000-8000-000000000013");
+constexpr auto kFilespaceA = scratchbird::tests::FixtureUuidLiteral("019e18d0-013c-7000-8000-000000000013");
+constexpr auto kFilespaceB = scratchbird::tests::FixtureUuidLiteral("019e18d0-013d-7000-8000-000000000013");
 constexpr std::string_view kPlaintextSecret = "CorrectHorseBatteryStaple-DBLC013Z";
-constexpr std::string_view kProtectedMaterialUuid = "019e18d0-0140-7000-8000-000000000013";
-constexpr std::string_view kProtectedMaterialVersionA = "019e18d0-0141-7000-8000-000000000013";
-constexpr std::string_view kProtectedMaterialVersionB = "019e18d0-0142-7000-8000-000000000013";
-constexpr std::string_view kPolicyRetention = "019e18d0-0143-7000-8000-000000000013";
-constexpr std::string_view kPolicyAccess = "019e18d0-0144-7000-8000-000000000013";
-constexpr std::string_view kPolicyRelease = "019e18d0-0145-7000-8000-000000000013";
-constexpr std::string_view kPolicyPurge = "019e18d0-0146-7000-8000-000000000013";
-constexpr std::string_view kPolicyAudit = "019e18d0-0147-7000-8000-000000000013";
+constexpr auto kProtectedMaterialUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-0140-7000-8000-000000000013");
+constexpr auto kProtectedMaterialVersionA = scratchbird::tests::FixtureUuidLiteral("019e18d0-0141-7000-8000-000000000013");
+constexpr auto kProtectedMaterialVersionB = scratchbird::tests::FixtureUuidLiteral("019e18d0-0142-7000-8000-000000000013");
+constexpr auto kPolicyRetention = scratchbird::tests::FixtureUuidLiteral("019e18d0-0143-7000-8000-000000000013");
+constexpr auto kPolicyAccess = scratchbird::tests::FixtureUuidLiteral("019e18d0-0144-7000-8000-000000000013");
+constexpr auto kPolicyRelease = scratchbird::tests::FixtureUuidLiteral("019e18d0-0145-7000-8000-000000000013");
+constexpr auto kPolicyPurge = scratchbird::tests::FixtureUuidLiteral("019e18d0-0146-7000-8000-000000000013");
+constexpr auto kPolicyAudit = scratchbird::tests::FixtureUuidLiteral("019e18d0-0147-7000-8000-000000000013");
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -53,13 +54,13 @@ std::filesystem::path MakeTempDir() {
 }
 
 engine_api::EngineRequestContext Context(const std::filesystem::path& database_path,
-                                         std::string_view database_uuid = kDatabaseA,
+                                         engine_api::EngineUuid database_uuid = kDatabaseA,
                                          std::uint64_t epoch = 1000,
                                          std::uint64_t local_transaction_id = 1) {
   engine_api::EngineRequestContext context;
   context.trust_mode = engine_api::EngineTrustMode::embedded_in_process;
   context.database_path = database_path.string();
-  context.database_uuid.canonical = std::string(database_uuid);
+  context.database_uuid = database_uuid;
   context.security_context_present = true;
   context.trace_tags.push_back("security.bootstrap");
   context.trace_tags.push_back("security.fixture_trace_authority");
@@ -77,7 +78,7 @@ engine_api::EngineRequestContext NoAuthorityContext(const std::filesystem::path&
   engine_api::EngineRequestContext context;
   context.trust_mode = engine_api::EngineTrustMode::server_isolated;
   context.database_path = database_path.string();
-  context.database_uuid.canonical = std::string(kDatabaseA);
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-013a-7000-8000-000000000013");
   context.resource_epoch = 1000;
   return context;
 }
@@ -104,11 +105,19 @@ std::string FlattenResult(const engine_api::EngineApiResult& result) {
     out << diagnostic.code << '\n' << diagnostic.message_key << '\n' << diagnostic.detail << '\n';
   }
   for (const auto& evidence : result.evidence) {
-    out << evidence.evidence_kind << '\n' << evidence.evidence_id << '\n';
+    out << evidence.evidence_kind << '\n';
+    if (const auto* text = std::get_if<std::string>(&evidence.evidence_id)) out << *text;
+    else {
+      const auto& id = std::get<engine_api::EngineUuid>(evidence.evidence_id);
+      out.write(reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size());
+    }
+    out << '\n';
   }
   for (const auto& row : result.result_shape.rows) {
     for (const auto& field : row.fields) {
       out << field.first << '=' << field.second.encoded_value << '\n';
+      out.write(reinterpret_cast<const char*>(field.second.binary_value.data()),
+                field.second.binary_value.size());
     }
   }
   return out.str();
@@ -148,15 +157,15 @@ bool FileAllZero(const std::filesystem::path& path) {
 }
 
 engine_api::EngineAdmitEncryptionKeyResult Admit(const engine_api::EngineRequestContext& context,
-                                                 std::string_view key_uuid,
-                                                 std::string_view filespace_uuid = kFilespaceA,
+                                                 engine_api::EngineUuid key_uuid,
+                                                 engine_api::EngineUuid filespace_uuid = kFilespaceA,
                                                  std::uint64_t ttl = 300000,
                                                  std::string_view label = "primary database key") {
   engine_api::EngineAdmitEncryptionKeyRequest request;
   request.context = context;
-  request.key_uuid = std::string(key_uuid);
+  request.key_uuid = key_uuid;
   request.key_label = std::string(label);
-  request.filespace_uuid = std::string(filespace_uuid);
+  request.filespace_uuid = filespace_uuid;
   request.secret_evidence = "kms-ref:v1:tenant-a-key-proof";
   request.cache_ttl_millis = ttl;
   request.option_envelopes.push_back("key_authority:engine");
@@ -166,14 +175,14 @@ engine_api::EngineAdmitEncryptionKeyResult Admit(const engine_api::EngineRequest
 engine_api::EngineOpenEncryptedFilespaceResult OpenEncrypted(
     const engine_api::EngineRequestContext& context,
     std::string_view key_handle,
-    std::string_view database_uuid = kDatabaseA,
-    std::string_view filespace_uuid = kFilespaceA,
-    std::string_view key_uuid = {}) {
+    engine_api::EngineUuid database_uuid = kDatabaseA,
+    engine_api::EngineUuid filespace_uuid = kFilespaceA,
+    engine_api::EngineUuid key_uuid = {}) {
   engine_api::EngineOpenEncryptedFilespaceRequest request;
   request.context = context;
-  request.database_uuid = std::string(database_uuid);
-  request.filespace_uuid = std::string(filespace_uuid);
-  request.key_uuid = std::string(key_uuid);
+  request.database_uuid = database_uuid;
+  request.filespace_uuid = filespace_uuid;
+  request.key_uuid = key_uuid;
   request.key_handle = std::string(key_handle);
   request.option_envelopes.push_back("filespace_open_authority:engine");
   return engine_api::EngineOpenEncryptedFilespace(request);
@@ -192,7 +201,7 @@ void TestAdmissionInspectAndEncryptedOpen(const std::filesystem::path& database_
   auto context = Context(database_path);
   Purge(context);
 
-  const auto admitted = Admit(context, "key-dblc013z-admit", kFilespaceA, 300000,
+  const auto admitted = Admit(context, scratchbird::tests::FixtureUuid(1415, 1), kFilespaceA, 300000,
                               "password=label-must-redact");
   Require(admitted.ok && admitted.key_admitted && admitted.cache_entry_active,
           "DBLC-013Z key admission failed");
@@ -202,7 +211,7 @@ void TestAdmissionInspectAndEncryptedOpen(const std::filesystem::path& database_
 
   engine_api::EngineInspectProtectedMaterialCacheRequest inspect;
   inspect.context = context;
-  inspect.key_uuid = "key-dblc013z-admit";
+  inspect.key_uuid = scratchbird::tests::FixtureUuid(1415, 1);
   inspect.option_envelopes.push_back("protected_material_authority:engine");
   const auto inspected = engine_api::EngineInspectProtectedMaterialCache(inspect);
   Require(inspected.ok && inspected.protected_material_redacted,
@@ -216,7 +225,7 @@ void TestAdmissionInspectAndEncryptedOpen(const std::filesystem::path& database_
           "DBLC-013Z inspect leaked redacted key label");
 
   const auto opened = OpenEncrypted(context, admitted.key_handle, kDatabaseA, kFilespaceA,
-                                    "key-dblc013z-admit");
+                                    scratchbird::tests::FixtureUuid(1415, 1));
   Require(opened.ok && opened.open_admitted && opened.key_cache_hit,
           "DBLC-013Z encrypted filespace open was not admitted with active key");
   Require(!opened.plaintext_material_returned,
@@ -226,14 +235,14 @@ void TestAdmissionInspectAndEncryptedOpen(const std::filesystem::path& database_
 void TestScopeAndMissingAuthorityRefusals(const std::filesystem::path& database_path) {
   auto context = Context(database_path);
   Purge(context);
-  const auto admitted = Admit(context, "key-dblc013z-scope");
+  const auto admitted = Admit(context, scratchbird::tests::FixtureUuid(1415, 8));
   Require(admitted.ok, "DBLC-013Z scope setup admission failed");
 
   const auto wrong_database = OpenEncrypted(Context(database_path, kDatabaseB),
                                             admitted.key_handle,
                                             kDatabaseB,
                                             kFilespaceA,
-                                            "key-dblc013z-scope");
+                                            scratchbird::tests::FixtureUuid(1415, 8));
   Require(!wrong_database.ok && HasDiagnostic(wrong_database, "SECURITY.KEY.SCOPE_MISMATCH"),
           "DBLC-013Z wrong database scope was not refused");
 
@@ -241,14 +250,14 @@ void TestScopeAndMissingAuthorityRefusals(const std::filesystem::path& database_
                                              admitted.key_handle,
                                              kDatabaseA,
                                              kFilespaceB,
-                                             "key-dblc013z-scope");
+                                             scratchbird::tests::FixtureUuid(1415, 8));
   Require(!wrong_filespace.ok && HasDiagnostic(wrong_filespace, "SECURITY.KEY.SCOPE_MISMATCH"),
           "DBLC-013Z wrong filespace scope was not refused");
 
   engine_api::EngineAdmitEncryptionKeyRequest no_auth;
   no_auth.context = NoAuthorityContext(database_path);
-  no_auth.key_uuid = "key-dblc013z-no-auth";
-  no_auth.filespace_uuid = std::string(kFilespaceA);
+  no_auth.key_uuid = scratchbird::tests::FixtureUuid(1415, 3);
+  no_auth.filespace_uuid = kFilespaceA;
   no_auth.secret_evidence = "kms-ref:v1:no-authority";
   const auto refused = engine_api::EngineAdmitEncryptionKey(no_auth);
   Require(!refused.ok && HasDiagnostic(refused, "SECURITY.PROTECTED_MATERIAL.AUTHORITY_DENIED"),
@@ -256,8 +265,8 @@ void TestScopeAndMissingAuthorityRefusals(const std::filesystem::path& database_
 
   engine_api::EngineAdmitEncryptionKeyRequest parser_auth;
   parser_auth.context = context;
-  parser_auth.key_uuid = "key-dblc013z-parser";
-  parser_auth.filespace_uuid = std::string(kFilespaceA);
+  parser_auth.key_uuid = scratchbird::tests::FixtureUuid(1415, 4);
+  parser_auth.filespace_uuid = kFilespaceA;
   parser_auth.secret_evidence = "kms-ref:v1:parser";
   parser_auth.option_envelopes.push_back("key_authority:parser");
   const auto parser_refused = engine_api::EngineAdmitEncryptionKey(parser_auth);
@@ -270,13 +279,13 @@ void TestScopeAndMissingAuthorityRefusals(const std::filesystem::path& database_
 void TestRotationExpiryPurgeAndShutdown(const std::filesystem::path& database_path) {
   auto context = Context(database_path);
   Purge(context);
-  const auto admitted = Admit(context, "key-dblc013z-rotate-old");
+  const auto admitted = Admit(context, scratchbird::tests::FixtureUuid(1415, 7));
   Require(admitted.ok, "DBLC-013Z rotation setup admission failed");
 
   engine_api::EngineRotateEncryptionKeyRequest rotate;
   rotate.context = context;
-  rotate.key_uuid = "key-dblc013z-rotate-old";
-  rotate.replacement_key_uuid = "key-dblc013z-rotate-new";
+  rotate.key_uuid = scratchbird::tests::FixtureUuid(1415, 7);
+  rotate.replacement_key_uuid = scratchbird::tests::FixtureUuid(1415, 6);
   rotate.replacement_secret_evidence = "kms-ref:v1:rotated-proof";
   rotate.rotation_reason = "password=rotation-secret";
   rotate.option_envelopes.push_back("key_authority:engine");
@@ -289,34 +298,34 @@ void TestRotationExpiryPurgeAndShutdown(const std::filesystem::path& database_pa
           "DBLC-013Z rotation diagnostic/result leaked protected reason");
 
   const auto old_open = OpenEncrypted(context, admitted.key_handle, kDatabaseA, kFilespaceA,
-                                      "key-dblc013z-rotate-old");
+                                      scratchbird::tests::FixtureUuid(1415, 7));
   Require(!old_open.ok && HasDiagnostic(old_open, "SECURITY.KEY.UNAVAILABLE"),
           "DBLC-013Z rotated-out key handle remained active");
   const auto new_open = OpenEncrypted(context, rotated.active_key_handle, kDatabaseA, kFilespaceA,
-                                      "key-dblc013z-rotate-new");
+                                      scratchbird::tests::FixtureUuid(1415, 6));
   Require(new_open.ok && new_open.open_admitted,
           "DBLC-013Z rotated-in key handle was not admitted");
 
   auto short_context = Context(database_path, kDatabaseA, 2000);
-  const auto short_lived = Admit(short_context, "key-dblc013z-expire", kFilespaceA, 2);
+  const auto short_lived = Admit(short_context, scratchbird::tests::FixtureUuid(1415, 2), kFilespaceA, 2);
   Require(short_lived.ok, "DBLC-013Z short-lived admission failed");
   auto expired_context = Context(database_path, kDatabaseA, 2003);
   const auto expired_open = OpenEncrypted(expired_context,
                                           short_lived.key_handle,
                                           kDatabaseA,
                                           kFilespaceA,
-                                          "key-dblc013z-expire");
+                                          scratchbird::tests::FixtureUuid(1415, 2));
   Require(!expired_open.ok && expired_open.key_expired &&
               HasDiagnostic(expired_open, "SECURITY.KEY.EXPIRED"),
           "DBLC-013Z expired key cache entry was not refused");
 
   Purge(context);
   const auto purged_open = OpenEncrypted(context, rotated.active_key_handle, kDatabaseA, kFilespaceA,
-                                         "key-dblc013z-rotate-new");
+                                         scratchbird::tests::FixtureUuid(1415, 6));
   Require(!purged_open.ok && HasDiagnostic(purged_open, "SECURITY.KEY.UNAVAILABLE"),
           "DBLC-013Z purged key remained usable");
 
-  const auto shutdown_key = Admit(context, "key-dblc013z-shutdown");
+  const auto shutdown_key = Admit(context, scratchbird::tests::FixtureUuid(1415, 9));
   Require(shutdown_key.ok, "DBLC-013Z shutdown setup admission failed");
   engine_api::EngineShutdownProtectedMaterialRequest shutdown;
   shutdown.context = context;
@@ -331,7 +340,7 @@ void TestRotationExpiryPurgeAndShutdown(const std::filesystem::path& database_pa
                                             shutdown_key.key_handle,
                                             kDatabaseA,
                                             kFilespaceA,
-                                            "key-dblc013z-shutdown");
+                                            scratchbird::tests::FixtureUuid(1415, 9));
   Require(!after_shutdown.ok && HasDiagnostic(after_shutdown, "SECURITY.KEY.UNAVAILABLE"),
           "DBLC-013Z shutdown did not purge protected-material cache");
 }
@@ -341,8 +350,8 @@ void TestPlaintextRefusalAndNoDiagnosticLeak(const std::filesystem::path& databa
   Purge(context);
   engine_api::EngineAdmitEncryptionKeyRequest request;
   request.context = context;
-  request.key_uuid = "key-dblc013z-plaintext";
-  request.filespace_uuid = std::string(kFilespaceA);
+  request.key_uuid = scratchbird::tests::FixtureUuid(1415, 5);
+  request.filespace_uuid = kFilespaceA;
   request.secret_evidence = std::string("password=") + std::string(kPlaintextSecret);
   request.option_envelopes.push_back("key_authority:engine");
   const auto refused = engine_api::EngineAdmitEncryptionKey(request);
@@ -353,11 +362,11 @@ void TestPlaintextRefusalAndNoDiagnosticLeak(const std::filesystem::path& databa
 
 engine_api::EngineProtectedMaterialPolicySet MaterialPolicy(std::uint64_t retain_until = 0) {
   engine_api::EngineProtectedMaterialPolicySet policy;
-  policy.retention_policy_uuid = std::string(kPolicyRetention);
-  policy.access_policy_uuid = std::string(kPolicyAccess);
-  policy.release_policy_uuid = std::string(kPolicyRelease);
-  policy.purge_policy_uuid = std::string(kPolicyPurge);
-  policy.audit_policy_uuid = std::string(kPolicyAudit);
+  policy.retention_policy_uuid = kPolicyRetention;
+  policy.access_policy_uuid = kPolicyAccess;
+  policy.release_policy_uuid = kPolicyRelease;
+  policy.purge_policy_uuid = kPolicyPurge;
+  policy.audit_policy_uuid = kPolicyAudit;
   policy.retention_until_epoch_millis = retain_until;
   policy.release_purposes = {"filespace.open"};
   return policy;
@@ -368,13 +377,13 @@ void TestProtectedMaterialCatalogLifecycle(const std::filesystem::path& database
 
   engine_api::EngineCreateProtectedMaterialRequest create;
   create.context = create_context;
-  create.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  create.protected_material_uuid = kProtectedMaterialUuid;
   create.object_class = "filespace_encryption_key";
-  create.owner_scope_uuid = std::string(kFilespaceA);
+  create.owner_scope_uuid = kFilespaceA;
   create.purpose_class = "encryption_use";
   create.storage_class = "wrapped";
   create.policy = MaterialPolicy();
-  create.initial_version_uuid = std::string(kProtectedMaterialVersionA);
+  create.initial_version_uuid = kProtectedMaterialVersionA;
   create.protected_reference = "kms-ref:v1:wrapped-material-a";
   create.envelope_reference = "kms-envelope:v1:wrapped-material-a";
   create.payload_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -389,8 +398,8 @@ void TestProtectedMaterialCatalogLifecycle(const std::filesystem::path& database
 
   engine_api::EngineAddProtectedMaterialVersionRequest add;
   add.context = Context(database_path, kDatabaseA, 3500, 20);
-  add.protected_material_uuid = std::string(kProtectedMaterialUuid);
-  add.protected_material_version_uuid = std::string(kProtectedMaterialVersionB);
+  add.protected_material_uuid = kProtectedMaterialUuid;
+  add.protected_material_version_uuid = kProtectedMaterialVersionB;
   add.protected_reference = "kms-ref:v1:wrapped-material-b";
   add.envelope_reference = "kms-envelope:v1:wrapped-material-b";
   add.payload_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -410,7 +419,7 @@ void TestProtectedMaterialCatalogLifecycle(const std::filesystem::path& database
 
   engine_api::EngineResolveProtectedMaterialRequest resolve;
   resolve.context = Context(database_path, kDatabaseA, 3600, 20);
-  resolve.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  resolve.protected_material_uuid = kProtectedMaterialUuid;
   resolve.purpose = "filespace.open";
   const auto resolved = engine_api::EngineResolveProtectedMaterial(resolve);
   Require(resolved.ok && resolved.resolved && resolved.active_version_visible,
@@ -423,7 +432,7 @@ void TestProtectedMaterialCatalogLifecycle(const std::filesystem::path& database
 
   engine_api::EngineReleaseProtectedMaterialRequest release;
   release.context = Context(database_path, kDatabaseA, 3700, 20);
-  release.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  release.protected_material_uuid = kProtectedMaterialUuid;
   release.purpose = "filespace.open";
   const auto released = engine_api::EngineReleaseProtectedMaterial(release);
   Require(released.ok && released.released && !released.policy_denied,
@@ -441,7 +450,7 @@ void TestProtectedMaterialCatalogLifecycle(const std::filesystem::path& database
 
   engine_api::EngineExportProtectedMaterialPackageRequest export_package;
   export_package.context = Context(database_path, kDatabaseA, 3800, 21);
-  export_package.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  export_package.protected_material_uuid = kProtectedMaterialUuid;
   export_package.include_versions = true;
   export_package.include_audit = true;
   export_package.export_reason = "reference-package-transfer";
@@ -492,7 +501,7 @@ void TestProtectedMaterialCatalogLifecycle(const std::filesystem::path& database
 
   engine_api::EngineInspectProtectedMaterialCatalogRequest inspect_import;
   inspect_import.context = Context(import_database_path, kDatabaseB, 4000, 22);
-  inspect_import.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  inspect_import.protected_material_uuid = kProtectedMaterialUuid;
   inspect_import.include_versions = true;
   inspect_import.include_audit = true;
   const auto imported_catalog =
@@ -505,8 +514,8 @@ void TestProtectedMaterialCatalogLifecycle(const std::filesystem::path& database
 
   engine_api::EnginePurgeProtectedMaterialVersionRequest purge_retained;
   purge_retained.context = Context(database_path, kDatabaseA, 4000, 30);
-  purge_retained.protected_material_uuid = std::string(kProtectedMaterialUuid);
-  purge_retained.protected_material_version_uuid = std::string(kProtectedMaterialVersionB);
+  purge_retained.protected_material_uuid = kProtectedMaterialUuid;
+  purge_retained.protected_material_version_uuid = kProtectedMaterialVersionB;
   purge_retained.purge_reason = "retention-check";
   const auto retained = engine_api::EnginePurgeProtectedMaterialVersion(purge_retained);
   Require(!retained.ok && retained.refused_by_retention && retained.audit_preserved,
@@ -557,7 +566,7 @@ void TestProtectedMaterialCatalogLifecycle(const std::filesystem::path& database
 
   engine_api::EngineInspectProtectedMaterialCatalogRequest inspect;
   inspect.context = Context(database_path, kDatabaseA, 6100, 40);
-  inspect.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  inspect.protected_material_uuid = kProtectedMaterialUuid;
   inspect.include_versions = true;
   inspect.include_audit = true;
   const auto inspected = engine_api::EngineInspectProtectedMaterialCatalog(inspect);

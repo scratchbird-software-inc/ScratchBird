@@ -80,12 +80,12 @@ EngineDmlUpdateTextPreparationResultV2 PrepareDmlUpdateTextValueV2(
       tag.purpose = "dml.update_rows.text_canonical_value";
       tag.category = memory::MemoryCategory::datatype_payload;
       tag.lifetime = memory::MemoryLifetime::statement;
-      tag.owner = context.principal_uuid;
-      tag.context_id = context.statement_receipt_uuid;
-      tag.database_id = context.database_uuid;
-      tag.session_id = context.session_uuid;
-      tag.transaction_id = context.transaction_uuid;
-      tag.statement_id = context.statement_uuid;
+      tag.binary_ownership[memory::MemoryBinaryScopeKind::owner] = context.principal_uuid.bytes;
+      tag.binary_ownership[memory::MemoryBinaryScopeKind::context] = context.statement_receipt_uuid.bytes;
+      tag.binary_ownership[memory::MemoryBinaryScopeKind::database] = context.database_uuid.bytes;
+      tag.binary_ownership[memory::MemoryBinaryScopeKind::session] = context.session_uuid.bytes;
+      tag.binary_ownership[memory::MemoryBinaryScopeKind::transaction] = context.transaction_uuid.bytes;
+      tag.binary_ownership[memory::MemoryBinaryScopeKind::statement] = context.statement_uuid.bytes;
       tag.callsite = "PrepareDmlUpdateTextValueV2";
       auto allocated = memory::DefaultMemoryManager().AllocateScoped(
           bytes.size(), alignof(std::max_align_t), std::move(tag));

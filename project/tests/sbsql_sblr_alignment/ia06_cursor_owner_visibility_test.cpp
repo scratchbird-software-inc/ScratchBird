@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_cursor_open_coordinator.hpp"
 #include "hash_digest.hpp"
 
@@ -45,7 +46,7 @@ struct FixtureDirectory {
 };
 
 std::string ReadJournal(const api::EngineRequestContext& context) {
-  std::ifstream stream(context.database_path + ".sb.sblr_cursor_open.v1",
+  std::ifstream stream(context.database_path + ".sb.sblr_cursor_open.v2",
                        std::ios::binary);
   Require(stream.is_open(), "journal missing");
   const std::string bytes{std::istreambuf_iterator<char>(stream), {}};
@@ -73,7 +74,7 @@ void RequireHidden(const api::SblrCursorOpenResult& result) {
   Require(!result.ok && result.diagnostic.error &&
               result.diagnostic.code == "SECURITY.ACCESS_DENIED" &&
               result.diagnostic.message_key == "sblr.cursor.hidden" &&
-              result.snapshot.cursor_uuid.empty() &&
+              result.snapshot.cursor_uuid.is_nil() &&
               result.snapshot.cursor_evidence_sha256.empty() &&
               result.snapshot.cursor_generation == 0,
           "foreign caller distinguished a retired cursor from hidden identity");
@@ -82,11 +83,11 @@ void RequireHidden(const api::SblrCursorOpenResult& result) {
 void OwnerVisibility(std::uint8_t reason, const fs::path& directory) {
   api::EngineRequestContext owner;
   owner.database_path = (directory / ("database-" + std::to_string(reason))).string();
-  owner.database_uuid.canonical = "019d0000-0000-7000-8000-000000006001";
-  owner.statement_uuid.canonical = "019d0000-0000-7000-8000-000000006002";
-  owner.session_uuid.canonical = "019d0000-0000-7000-8000-000000006003";
-  owner.principal_uuid.canonical = "019d0000-0000-7000-8000-000000006004";
-  owner.transaction_uuid.canonical = "019d0000-0000-7000-8000-000000006005";
+  owner.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006001");
+  owner.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006002");
+  owner.session_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006003");
+  owner.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006004");
+  owner.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006005");
   owner.security_context_present = true;
   owner.statement_metadata_snapshot_engine_owned = true;
   owner.trace_tags = {"private_executable_plan_receipt_compiler",
@@ -95,7 +96,7 @@ void OwnerVisibility(std::uint8_t reason, const fs::path& directory) {
   // Known legacy synthetic-plan constructor: this fixture tests the actual
   // coordinator's ownership/refusal behavior, not public SBsql or real rows.
   const auto descriptor = api::CompileAndPublishSblrExecutablePlanReceipt(
-      owner, owner.statement_uuid.canonical, reason, 1, 1, 64, 1);
+      owner, owner.statement_uuid, reason, 1, 1, 64, 1);
   Require(descriptor.ok, "fixture descriptor publication failed");
   const auto opened = api::OpenSblrCursor(owner,
       descriptor.snapshot.descriptor_uuid,
@@ -104,7 +105,7 @@ void OwnerVisibility(std::uint8_t reason, const fs::path& directory) {
   Require(opened.ok, "fixture cursor open failed");
 
   auto foreign = owner;
-  foreign.session_uuid.canonical = "019d0000-0000-7000-8000-000000006006";
+  foreign.session_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006006");
   unsigned foreign_cancellation_checks = 0;
   foreign.query_cancellation_requested = [&] {
     ++foreign_cancellation_checks;
@@ -118,21 +119,23 @@ void OwnerVisibility(std::uint8_t reason, const fs::path& directory) {
   const auto closed = Close(owner, opened.snapshot, reason);
   Require(closed.ok, "foreign live probe consumed the owner's cursor");
   const auto after_close = ReadJournal(owner);
-  const auto expected_event = "C\t" + opened.snapshot.descriptor_uuid + "\t" +
-      opened.snapshot.cursor_uuid + "\t" +
-      std::to_string(opened.snapshot.cursor_generation) + "\n";
+  std::string expected_event("SBCUROP2C");
+  for (const auto& identity : {opened.snapshot.descriptor_uuid, opened.snapshot.cursor_uuid})
+    expected_event.append(reinterpret_cast<const char*>(identity.bytes.data()), 16);
+  for (unsigned n = 0; n < 8; ++n)
+    expected_event.push_back(static_cast<char>((opened.snapshot.cursor_generation >> (n * 8)) & 255));
   Require(after_close == before_close + expected_event,
           "owning close did not append its real journal event");
 
   auto unknown = opened.snapshot;
-  unknown.cursor_uuid = "019d0000-0000-7000-8000-00000000ffff";
+  unknown.cursor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000ffff");
   RequireHidden(Close(owner, unknown, reason));
   RequireHidden(Close(foreign, unknown, reason));
   for (unsigned probe = 0; probe != 32; ++probe) {
     // Both same-principal and different-principal foreign sessions stay hidden.
-    foreign.principal_uuid.canonical = (probe % 2 == 0)
-        ? owner.principal_uuid.canonical
-        : "019d0000-0000-7000-8000-000000006007";
+    foreign.principal_uuid = (probe % 2 == 0)
+        ? owner.principal_uuid
+        : scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006007");
     RequireHidden(Close(foreign, opened.snapshot, reason));
     Require(ReadJournal(owner) == after_close,
             "foreign retired probe modified the journal");
@@ -147,7 +150,7 @@ void OwnerVisibility(std::uint8_t reason, const fs::path& directory) {
   const auto replay = Close(owner, opened.snapshot, reason);
   Require(!replay.ok && replay.diagnostic.code == "CURSOR.STALE" &&
               replay.diagnostic.message_key == "sblr.cursor.stale" &&
-              replay.snapshot.cursor_uuid.empty() &&
+              replay.snapshot.cursor_uuid.is_nil() &&
               ReadJournal(owner) == after_close,
           "owned retired replay changed state or lost its stale diagnostic");
   Require(foreign_cancellation_checks == 0,

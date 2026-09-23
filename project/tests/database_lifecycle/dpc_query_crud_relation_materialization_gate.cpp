@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -72,8 +73,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue Int64Value(std::int64_t value) {
@@ -97,7 +98,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) return true;
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) return true;
   }
   return false;
 }
@@ -117,10 +118,10 @@ std::int64_t FieldI64ByName(const api::EngineRowValue& row, std::string_view nam
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string left_table_uuid;
-  std::string right_table_uuid;
-  std::string window_table_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid left_table_uuid;
+  api::EngineUuid right_table_uuid;
+  api::EngineUuid window_table_uuid;
   api::EngineRequestContext context;
 
   ~Fixture() {
@@ -134,9 +135,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture, std::string reques
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = NewUuidText(platform::UuidKind::principal, 1000);
-  context.session_uuid.canonical = NewUuidText(platform::UuidKind::object, 1001);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = NewIdentity(platform::UuidKind::principal, 1000);
+  context.session_uuid = NewIdentity(platform::UuidKind::object, 1001);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -164,7 +165,7 @@ api::EngineRequestContext Begin(Fixture& fixture, std::string request_id) {
 }
 
 api::CrudTableRecord Table(const Fixture& fixture,
-                           const std::string& table_uuid,
+                           const api::EngineUuid& table_uuid,
                            std::string default_name) {
   api::CrudTableRecord table;
   table.creator_tx = fixture.context.local_transaction_id;
@@ -177,7 +178,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
 }
 
 void InsertRows(Fixture& fixture,
-                const std::string& table_uuid,
+                const api::EngineUuid& table_uuid,
                 std::int64_t row_count,
                 bool duplicate_keys) {
   std::vector<api::EngineRowValue> rows;
@@ -190,7 +191,7 @@ void InsertRows(Fixture& fixture,
   api::EngineInsertRowsRequest insert;
   insert.context = fixture.context;
   insert.context.request_id = "dpc065-query-relation-insert";
-  insert.target_table.uuid.canonical = table_uuid;
+  insert.target_table.uuid = table_uuid;
   insert.target_table.object_kind = "table";
   insert.input_rows = std::move(rows);
   insert.estimated_row_count = insert.input_rows.size();
@@ -210,20 +211,20 @@ api::EnginePredicateEnvelope ComparisonPredicate(std::string kind,
 }
 
 api::EngineSelectRowsResult SelectComparison(Fixture& fixture,
-                                             const std::string& table_uuid,
+                                             const api::EngineUuid& table_uuid,
                                              std::string kind,
                                              std::int64_t bound) {
   api::EngineSelectRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = "dpc065-neutral-comparison-select-" + kind;
-  request.source_object.uuid.canonical = table_uuid;
+  request.source_object.uuid = table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate = ComparisonPredicate(std::move(kind), bound);
   return api::EngineSelectRows(request);
 }
 
 api::EngineUpdateRowsResult UpdateComparison(Fixture& fixture,
-                                             const std::string& table_uuid,
+                                             const api::EngineUuid& table_uuid,
                                              std::string kind,
                                              std::int64_t bound,
                                              std::string assignment_column,
@@ -231,7 +232,7 @@ api::EngineUpdateRowsResult UpdateComparison(Fixture& fixture,
   api::EngineUpdateRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = "dpc065-neutral-comparison-update-" + kind;
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = ComparisonPredicate(std::move(kind), bound);
   request.assignments.push_back(
@@ -240,38 +241,38 @@ api::EngineUpdateRowsResult UpdateComparison(Fixture& fixture,
 }
 
 api::EngineDeleteRowsResult DeleteComparison(Fixture& fixture,
-                                             const std::string& table_uuid,
+                                             const api::EngineUuid& table_uuid,
                                              std::string kind,
                                              std::int64_t bound) {
   api::EngineDeleteRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = "dpc065-neutral-comparison-delete-" + kind;
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate = ComparisonPredicate(std::move(kind), bound);
   return api::EngineDeleteRows(request);
 }
 
 api::EngineSelectRowsResult SelectAll(Fixture& fixture,
-                                      const std::string& table_uuid,
+                                      const api::EngineUuid& table_uuid,
                                       std::string request_id) {
   api::EngineSelectRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = std::move(request_id);
-  request.source_object.uuid.canonical = table_uuid;
+  request.source_object.uuid = table_uuid;
   request.source_object.object_kind = "table";
   return api::EngineSelectRows(request);
 }
 
 api::EngineUpdateRowsResult UpdateComparisonWindow(
     Fixture& fixture,
-    const std::string& table_uuid,
+    const api::EngineUuid& table_uuid,
     api::EngineApiU64 limit,
     api::EngineApiU64 offset) {
   api::EngineUpdateRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = "dpc065-neutral-update-row-window";
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = ComparisonPredicate("column_greater", 0);
   request.assignments.push_back({"payload", Int64Value(-300)});
@@ -282,13 +283,13 @@ api::EngineUpdateRowsResult UpdateComparisonWindow(
 
 api::EngineDeleteRowsResult DeleteComparisonWindow(
     Fixture& fixture,
-    const std::string& table_uuid,
+    const api::EngineUuid& table_uuid,
     api::EngineApiU64 limit,
     api::EngineApiU64 offset) {
   api::EngineDeleteRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = "dpc065-neutral-delete-row-window";
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate = ComparisonPredicate("column_greater", 0);
   request.limit = limit;
@@ -318,10 +319,10 @@ Fixture MakeFixture() {
   }
   Require(created.ok(), "DPC-065 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.left_table_uuid = NewUuidText(platform::UuidKind::object, 20);
-  fixture.right_table_uuid = NewUuidText(platform::UuidKind::object, 21);
-  fixture.window_table_uuid = NewUuidText(platform::UuidKind::object, 22);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.left_table_uuid = NewIdentity(platform::UuidKind::object, 20);
+  fixture.right_table_uuid = NewIdentity(platform::UuidKind::object, 21);
+  fixture.window_table_uuid = NewIdentity(platform::UuidKind::object, 22);
   fixture.context = Begin(fixture, "dpc065-query-relation-metadata");
 
   const auto left_table =
@@ -360,10 +361,10 @@ int main() {
   request.execute = true;
   request.query_operation = "inner_join";
   request.join_algorithm = "hash";
-  request.target_object.uuid.canonical = fixture.left_table_uuid;
+  request.target_object.uuid = fixture.left_table_uuid;
   request.target_object.object_kind = "table";
   api::EngineObjectReference right;
-  right.uuid.canonical = fixture.right_table_uuid;
+  right.uuid = fixture.right_table_uuid;
   right.object_kind = "table";
   request.related_objects.push_back(std::move(right));
   request.left_key_field = "id";
@@ -415,7 +416,7 @@ int main() {
   api::EngineSelectRowsRequest projected_count;
   projected_count.context = fixture.context;
   projected_count.context.request_id = "dpc065-neutral-count-projection";
-  projected_count.source_object.uuid.canonical = fixture.left_table_uuid;
+  projected_count.source_object.uuid = fixture.left_table_uuid;
   projected_count.source_object.object_kind = "table";
   projected_count.select_predicate = ComparisonPredicate("column_less", 4);
   projected_count.option_envelopes.push_back("result_projection:count");
@@ -436,7 +437,7 @@ int main() {
   api::EngineSelectRowsRequest select;
   select.context = fixture.context;
   select.context.request_id = "dpc065-bounded-predicate-order-select";
-  select.source_object.uuid.canonical = fixture.left_table_uuid;
+  select.source_object.uuid = fixture.left_table_uuid;
   select.source_object.object_kind = "table";
   select.select_predicate.predicate_kind = "column_equals";
   select.select_predicate.canonical_predicate_envelope = "id";
@@ -473,7 +474,7 @@ int main() {
   api::EngineSelectRowsRequest select_always_false;
   select_always_false.context = fixture.context;
   select_always_false.context.request_id = "dpc065-neutral-always-false-select";
-  select_always_false.source_object.uuid.canonical = fixture.left_table_uuid;
+  select_always_false.source_object.uuid = fixture.left_table_uuid;
   select_always_false.source_object.object_kind = "table";
   select_always_false.select_predicate.predicate_kind = "always_false";
   const auto selected_always_false = api::EngineSelectRows(select_always_false);
@@ -487,7 +488,7 @@ int main() {
   api::EngineUpdateRowsRequest update_always_false;
   update_always_false.context = fixture.context;
   update_always_false.context.request_id = "dpc065-neutral-always-false-update";
-  update_always_false.target_table.uuid.canonical = fixture.left_table_uuid;
+  update_always_false.target_table.uuid = fixture.left_table_uuid;
   update_always_false.target_table.object_kind = "table";
   update_always_false.update_predicate.predicate_kind = "always_false";
   update_always_false.assignments.push_back({"payload", Int64Value(-1)});
@@ -504,7 +505,7 @@ int main() {
   api::EngineDeleteRowsRequest delete_always_false;
   delete_always_false.context = fixture.context;
   delete_always_false.context.request_id = "dpc065-neutral-always-false-delete";
-  delete_always_false.target_table.uuid.canonical = fixture.left_table_uuid;
+  delete_always_false.target_table.uuid = fixture.left_table_uuid;
   delete_always_false.target_table.object_kind = "table";
   delete_always_false.delete_predicate.predicate_kind = "always_false";
   const auto deleted_always_false = api::EngineDeleteRows(delete_always_false);
@@ -567,10 +568,10 @@ int main() {
   RequireOk(window_baseline, "DPC-065 neutral mutation window baseline failed");
   Require(window_baseline.result_shape.rows.size() == 10,
           "DPC-065 neutral mutation window baseline row count mismatch");
-  std::vector<std::string> stable_row_uuids;
+  std::vector<api::EngineUuid> stable_row_uuids;
   stable_row_uuids.reserve(window_baseline.result_shape.rows.size());
   for (const auto& row : window_baseline.result_shape.rows) {
-    stable_row_uuids.push_back(row.requested_row_uuid.canonical);
+    stable_row_uuids.push_back(row.requested_row_uuid);
   }
 
   const auto update_window = UpdateComparisonWindow(fixture,
@@ -588,7 +589,7 @@ int main() {
   Require(update_window.result_shape.rows.size() == 3,
           "DPC-065 neutral update row window result count mismatch");
   for (std::size_t index = 0; index < 3; ++index) {
-    Require(update_window.result_shape.rows[index].requested_row_uuid.canonical ==
+    Require(update_window.result_shape.rows[index].requested_row_uuid ==
                 stable_row_uuids[index + 2],
             "DPC-065 neutral update row window selected an unstable row");
   }
@@ -608,7 +609,7 @@ int main() {
   Require(delete_window.result_shape.rows.size() == 2,
           "DPC-065 neutral delete row window result count mismatch");
   for (std::size_t index = 0; index < 2; ++index) {
-    Require(delete_window.result_shape.rows[index].requested_row_uuid.canonical ==
+    Require(delete_window.result_shape.rows[index].requested_row_uuid ==
                 stable_row_uuids[index + 4],
             "DPC-065 neutral delete row window selected an unstable row");
   }
@@ -630,7 +631,7 @@ int main() {
   api::EngineDeleteRowsRequest conflicting_window;
   conflicting_window.context = fixture.context;
   conflicting_window.context.request_id = "dpc065-neutral-window-batch-conflict";
-  conflicting_window.target_table.uuid.canonical = fixture.window_table_uuid;
+  conflicting_window.target_table.uuid = fixture.window_table_uuid;
   conflicting_window.target_table.object_kind = "table";
   conflicting_window.delete_predicate = ComparisonPredicate("column_greater", 0);
   conflicting_window.delete_surface_variant = "batch_delete";

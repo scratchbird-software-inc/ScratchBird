@@ -198,7 +198,7 @@ BindCanonicalCorrelatedComparisonAuthorityV1(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveCorrelatedSubqueryRegistration(
     const LiveCorrelatedSubqueryRegistrationProfile prepared,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     CanonicalRelationalExpressionRuntimeServices expression_services,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
@@ -256,7 +256,7 @@ MakeLiveCorrelatedSubqueryRegistration(
             });
         if (cancellation_policy_count != 1 ||
             cancellation_policy == dag.admission_evidence.end() ||
-            cancellation_policy->evidence_uuid.empty()) {
+            cancellation_policy->evidence_uuid.is_nil()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
@@ -494,7 +494,7 @@ MakeLiveCorrelatedSubqueryRegistration(
 exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
     const LiveCorrelatedSubqueryRegistrationProfile prepared,
     const LiveLateralSubqueryProfile profile,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     CanonicalRelationalExpressionRuntimeServices expression_services,
     api::EngineRequestContext mga_context,
     const bool runtime_bounded_inputs,
@@ -614,7 +614,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
             });
         if (cancellation_policy_count != 1 ||
             cancellation_policy == operator_dag.admission_evidence.end() ||
-            cancellation_policy->evidence_uuid.empty()) {
+            cancellation_policy->evidence_uuid.is_nil()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";

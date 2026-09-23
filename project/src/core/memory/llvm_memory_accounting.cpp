@@ -106,6 +106,10 @@ void AddBaseEvidence(std::vector<std::string>* evidence,
                       BoolText(request.provider_available));
   evidence->push_back("llvm_memory.owner_id=" + request.owner_id);
   evidence->push_back("llvm_memory.owning_scope=" + request.owning_scope);
+  evidence->push_back("llvm_memory.binary_owner_present=" +
+                      BoolText(MemoryUuidPresent(request.binary_owner_uuid)));
+  evidence->push_back("llvm_memory.binary_scope_present=" +
+                      BoolText(MemoryUuidPresent(request.binary_owning_scope_uuid)));
   evidence->push_back("llvm_memory.operation_id=" + request.operation_id);
   evidence->push_back("llvm_memory.native_callsite=" + request.native_callsite);
   evidence->push_back("llvm_memory.provider_label=" + request.provider_label);
@@ -199,12 +203,21 @@ bool ValidateShape(const LlvmMemoryAccountingRequest& request,
     return false;
   }
   for (const auto& scope : request.scope_chain) {
-    if (Blank(scope.scope_id)) {
+    if (MemoryUuidPresent(scope.binary_scope_uuid)
+            ? !scope.scope_id.empty() || !MemorySystemUuidValid(scope.binary_scope_uuid)
+            : Blank(scope.scope_id)) {
       *reason = "scope_id_required";
       return false;
     }
   }
-  if (Blank(request.owner_id) || Blank(request.owning_scope) ||
+  const auto valid_identity = [](const std::string& label,
+                                 const MemoryBinaryUuid& identity) {
+    return MemoryUuidPresent(identity)
+               ? label.empty() && MemorySystemUuidValid(identity)
+               : !Blank(label);
+  };
+  if (!valid_identity(request.owner_id, request.binary_owner_uuid) ||
+      !valid_identity(request.owning_scope, request.binary_owning_scope_uuid) ||
       Blank(request.operation_id) || Blank(request.native_callsite)) {
     *reason = "owner_scope_operation_and_callsite_required";
     return false;
@@ -313,6 +326,8 @@ ForeignMemoryReservationRequest ForeignRequestForPhase(
   foreign.estimated_bytes = phase.bytes;
   foreign.observed_bytes = 0;
   foreign.owner_id = request.owner_id;
+  foreign.binary_owner_uuid = request.binary_owner_uuid;
+  foreign.binary_owning_scope_uuid = request.binary_owning_scope_uuid;
   foreign.owning_scope = request.owning_scope;
   foreign.operation_id = request.operation_id;
   foreign.native_callsite =

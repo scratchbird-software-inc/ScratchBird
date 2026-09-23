@@ -319,8 +319,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus Neo4jLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuNeo4jPackageUuid) {
+scratchbird::udr::runtime::UdrStatus Neo4jLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuNeo4jPackageIdentity) {
     return {false, "UDR.NEO4J.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -533,7 +533,7 @@ UdrResult sbu_neo4j_debug_capabilities(std::string_view render_policy) {
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_neo4j_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuNeo4jPackageUuid);
+  descriptor.package_uuid = kSbuNeo4jPackageIdentity;
   descriptor.package_name = std::string(kSbuNeo4jPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "neo4j-parser-support-beta-closure";

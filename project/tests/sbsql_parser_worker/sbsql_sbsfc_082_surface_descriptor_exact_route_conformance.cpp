@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -123,7 +124,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -131,10 +132,10 @@ bool HasEvidence(const api::EngineApiResult& result,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000082101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000082102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000082103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 82;
   session.security_policy_epoch = 83;
   session.descriptor_epoch = 84;
@@ -145,7 +146,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_082_surface_descriptor";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000082104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082104");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-082-surface-descriptor";
   config.build_id = "sbsql-sbsfc-082-surface-descriptor";
   return config;
@@ -255,7 +256,7 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.cluster.provider_dispatch_not_required"),
           "SBSFC-082 cluster provider exclusion authority missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs, row.descriptor_ref),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, row.descriptor_ref),
           "SBSFC-082 descriptor ref missing");
   Require(Contains(artifacts.envelope.payload, row.surface_id),
           "SBSFC-082 payload missing row surface id");
@@ -293,19 +294,19 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsql-sbsfc-082-surface-descriptor";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000082201";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000082202";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000082203";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000082204";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000082205";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000082206";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082201");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082202");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082203");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082204");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082205");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082206");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
   context.current_sqlstate = "00000";
-  context.current_diagnostic_uuid.canonical = "019f0000-0000-7000-8000-000000082207";
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082207");
   context.trace_tags.push_back("sbsfc082.surface_descriptor");
   return context;
 }
@@ -332,7 +333,7 @@ sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
 
 api::EngineApiRequest ApiRequestFor(const CaseRow& row) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::string(kTargetUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000082001");
   request.target_object.object_kind = "sbsfc082_surface_descriptor";
   request.option_envelopes.push_back(std::string("sbsfc082_surface_id:") + std::string(row.surface_id));
   request.option_envelopes.push_back("sbsfc082_runtime_evidence_kind:sbsfc082_surface_descriptor_route");

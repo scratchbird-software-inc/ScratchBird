@@ -15,6 +15,7 @@
 #include "metric_registry.hpp"
 #include "observability/agent_observability_api.hpp"
 #include "observability/cluster_support_bundle_redaction_api.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "observability/optimizer_metric_support_bundle.hpp"
 #include "observability/performance_metric_event.hpp"
 #include "observability/performance_optimization_surface.hpp"
@@ -124,7 +125,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view evidence_id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == evidence_kind &&
-        (evidence_id.empty() || evidence.evidence_id == evidence_id)) {
+        (evidence_id.empty() || (std::get_if<std::string>(&evidence.evidence_id) && *std::get_if<std::string>(&evidence.evidence_id) == evidence_id))) {
       return true;
     }
   }
@@ -136,10 +137,10 @@ api::EngineRequestContext Context(std::vector<std::string> rights,
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "public-observability-schema-gate";
-  context.database_uuid.canonical = "database:public-observability-schema-gate";
-  context.cluster_uuid.canonical = "cluster:public-observability-schema-gate";
-  context.node_uuid.canonical = "node:public-observability-schema-gate";
-  context.principal_uuid.canonical = "principal:public-observability-schema-gate";
+  context.database_uuid = scratchbird::tests::FixtureUuid(107, 1);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(107, 2);
+  context.node_uuid = scratchbird::tests::FixtureUuid(107, 3);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(107, 4);
   context.security_context_present = true;
   context.cluster_authority_available = cluster_authority;
   context.catalog_generation_id = 1;
@@ -148,7 +149,7 @@ api::EngineRequestContext Context(std::vector<std::string> rights,
   context.trace_tags.push_back("public_observability_schema_gate");
   api::EngineMaterializedAuthorizationContext authz;
   authz.present = true;
-  authz.authority_uuid.canonical = "authority:public-observability-schema-gate";
+  authz.authority_uuid = scratchbird::tests::FixtureUuid(107, 5);
   authz.principal_uuid = context.principal_uuid;
   authz.security_epoch = context.security_epoch;
   authz.policy_epoch = 1;
@@ -156,7 +157,7 @@ api::EngineRequestContext Context(std::vector<std::string> rights,
   authz.effective_subjects.push_back({context.principal_uuid, "principal"});
   for (const auto& right : rights) {
     context.trace_tags.push_back("right:" + right);
-    authz.grants.push_back({api::EngineUuid{"grant:public-observability-schema-gate:" + right},
+    authz.grants.push_back({scratchbird::tests::FixtureUuid(107, 100 + static_cast<unsigned>(authz.grants.size())),
                             context.principal_uuid,
                             "principal",
                             {},
@@ -304,7 +305,11 @@ bool CheckMetricRegistrySurface() {
         *event_descriptor, value, false);
     std::map<std::string, std::string> labels;
     for (const auto& label : safe.labels) {
-      labels[label.key] = label.value;
+      if (const auto* text = std::get_if<std::string>(&label.value)) {
+        labels[label.key] = *text;
+      } else {
+        return Expect(false, "metrics", "redaction", "text_label_required");
+      }
     }
     redacted = labels["session_uuid"] == "<redacted>" &&
                labels["principal_uuid"] == "<redacted>" &&
@@ -627,9 +632,7 @@ api::ClusterSupportBundleProjectionSource BundleProjection(
   source.projection_source =
       "cluster.sys.catalog." +
       std::string(api::ClusterProjectionRedactionSensitivityName(sensitivity));
-  source.target_uuid =
-      "bundle-target:" +
-      std::string(api::ClusterProjectionRedactionSensitivityName(sensitivity));
+  source.target_uuid = scratchbird::tests::FixtureUuid(107, 20 + static_cast<unsigned>(sensitivity));
   source.retention_policy_ref = "retention.cluster.projection.90d";
   source.support_bundle_policy_ref = "support.cluster.projection.redacted";
   source.retention_evidence_present = true;
@@ -697,7 +700,7 @@ bool CheckClusterSupportBundleRedaction() {
 
 obs::OptimizerMetricSupportBundleRequest OptimizerBundleRequest() {
   obs::OptimizerMetricSupportBundleRequest request;
-  request.scope_uuid = DurableUuid(UuidKind::database, 201);
+  request.scope_uuid = scratchbird::tests::FixtureUuid(1485, 201);
   request.support_bundle_id = "support-bundle:pcr137-optimizer";
   request.capture_generation = "generation:1";
   request.evidence_digest = "sha256:public-observability-schema-gate";

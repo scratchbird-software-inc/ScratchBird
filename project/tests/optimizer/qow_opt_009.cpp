@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <stdexcept>
 #include <utility>
 
 namespace {
@@ -73,7 +74,7 @@ cache::CanonicalPreparedPlanParameterDescriptor Parameter009() {
   descriptor.type_uuid = Uuid(961);
   descriptor.type_modifier_digest = std::string(64, 'a');
   descriptor.encoded_descriptor =
-      "type_uuid=" + descriptor.type_uuid + ";nullability=non_null";
+      "nullability=non_null";
   descriptor.nullable = false;
   return descriptor;
 }
@@ -88,7 +89,7 @@ cache::CanonicalPreparedPlanResultDescriptor ResultDescriptor009(
   descriptor.type_uuid = Uuid(981);
   descriptor.type_modifier_digest = std::string(64, 'b');
   descriptor.encoded_descriptor =
-      "type_uuid=" + descriptor.type_uuid + ";nullability=non_null";
+      "nullability=non_null";
   descriptor.nullable = false;
   return descriptor;
 }
@@ -444,8 +445,9 @@ struct Fixture009 {
       }
       return;
     }
-    parameter_value.descriptor.descriptor_uuid.canonical =
+    parameter_value.descriptor.descriptor_uuid =
         prepared_plan->parameters.front().descriptor_uuid;
+    parameter_value.descriptor.type_uuid = prepared_plan->parameters.front().type_uuid;
     parameter_value.descriptor.descriptor_kind = "scalar";
     parameter_value.descriptor.canonical_type_name = "int64";
     parameter_value.descriptor.encoded_descriptor =
@@ -470,14 +472,15 @@ exec::DescriptorBatch NodeBatch009(const exec::PhysicalNodeRecord& node,
     if (root) {
       const auto& stored = plan.result_descriptors.at(index);
       stable_name = stored.name_utf8;
-      descriptor.descriptor_uuid.canonical = stored.descriptor_uuid;
+      descriptor.descriptor_uuid = stored.descriptor_uuid;
+      descriptor.type_uuid = stored.type_uuid;
+      descriptor.collation_uuid = stored.collation_uuid;
       descriptor.encoded_descriptor = stored.encoded_descriptor;
     } else {
-      descriptor.descriptor_uuid.canonical =
+      descriptor.descriptor_uuid =
           Uuid(3000 + node.output_descriptor_ids[index]);
-      descriptor.encoded_descriptor =
-          "type_uuid=" + Uuid(4000 + node.output_descriptor_ids[index]) +
-          ";nullability=non_null";
+      descriptor.type_uuid = Uuid(4000 + node.output_descriptor_ids[index]);
+      descriptor.encoded_descriptor = "nullability=non_null";
     }
     columns.push_back({std::move(stable_name), descriptor, false,
                        node.output_descriptor_ids[index]});
@@ -532,11 +535,11 @@ exec::CanonicalResultPublicationRequest Publication009(
     descriptor.nullability =
         stored.nullable ? exec::CanonicalResultNullability::kNullable
                         : exec::CanonicalResultNullability::kNonNull;
-    if (!stored.collation_uuid.empty()) {
+    if (!stored.collation_uuid.is_nil()) {
       descriptor.collation_uuid = stored.collation_uuid;
     }
-    if (!stored.timezone_uuid.empty()) {
-      descriptor.timezone_profile_id = stored.timezone_uuid;
+    if (!stored.timezone_uuid.is_nil()) {
+      throw std::invalid_argument("fixture_requires_native_timezone_publication_binding");
     }
     publication.column_bindings.push_back(
         {stored.ordinal - 1, true, std::move(descriptor)});
@@ -1022,7 +1025,7 @@ bool ValidateAuthorityParameterAndSchemaRefusals009() {
       "missing current authorization receipt reached cache hit");
   passed &= expect_refusal(
       [](auto& request) {
-        request.lookup.authorization_revalidation_receipt_uuid.clear();
+        request.lookup.authorization_revalidation_receipt_uuid = {};
       },
       "malformed authorization receipt reached cache hit");
   passed &= expect_refusal(

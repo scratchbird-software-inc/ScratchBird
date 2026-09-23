@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -51,19 +53,23 @@ platform::TypedUuid MakeUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string MakeUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(MakeUuid(kind, salt).value);
+platform::Uuid MakeIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return MakeUuid(kind, salt).value;
+}
+
+std::string IdentityBytes(const platform::Uuid& identity) {
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string filespace_uuid;
-  std::string transaction_uuid;
-  std::string policy_uuid;
-  std::string agent_uuid;
-  std::string principal_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid filespace_uuid;
+  platform::Uuid transaction_uuid;
+  platform::Uuid policy_uuid;
+  platform::Uuid agent_uuid;
+  platform::Uuid principal_uuid;
 
   ~Fixture() {
     std::error_code ignored;
@@ -78,12 +84,12 @@ Fixture MakeFixture(std::string_view name, platform::u64 salt) {
                  std::to_string(NowMillis() + salt));
   std::filesystem::create_directories(fixture.dir);
   fixture.database_path = fixture.dir / "pfar013.sbdb";
-  fixture.database_uuid = MakeUuidText(platform::UuidKind::database, salt + 1);
-  fixture.filespace_uuid = MakeUuidText(platform::UuidKind::filespace, salt + 2);
-  fixture.transaction_uuid = MakeUuidText(platform::UuidKind::transaction, salt + 3);
-  fixture.policy_uuid = MakeUuidText(platform::UuidKind::object, salt + 4);
-  fixture.agent_uuid = MakeUuidText(platform::UuidKind::object, salt + 5);
-  fixture.principal_uuid = MakeUuidText(platform::UuidKind::principal, salt + 6);
+  fixture.database_uuid = MakeIdentity(platform::UuidKind::database, salt + 1);
+  fixture.filespace_uuid = MakeIdentity(platform::UuidKind::filespace, salt + 2);
+  fixture.transaction_uuid = MakeIdentity(platform::UuidKind::transaction, salt + 3);
+  fixture.policy_uuid = MakeIdentity(platform::UuidKind::object, salt + 4);
+  fixture.agent_uuid = MakeIdentity(platform::UuidKind::object, salt + 5);
+  fixture.principal_uuid = MakeIdentity(platform::UuidKind::principal, salt + 6);
   return fixture;
 }
 
@@ -91,10 +97,10 @@ api::EngineRequestContext Context(const Fixture& fixture, std::string request_id
   api::EngineRequestContext context;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = fixture.principal_uuid;
-  context.session_uuid.canonical = "session-pfar-013";
-  context.transaction_uuid.canonical = fixture.transaction_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = fixture.principal_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 2401);
+  context.transaction_uuid = fixture.transaction_uuid;
   context.local_transaction_id = 9001;
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
@@ -112,7 +118,7 @@ void SeedFilespaceCatalogDescriptor(const Fixture& fixture) {
   api::EngineFilespaceLifecycleRequest request;
   request.context = Context(fixture, "seed-filespace-catalog-descriptor");
   request.operation_id = "filespace.create";
-  request.target_object.uuid.canonical = fixture.filespace_uuid;
+  request.target_object.uuid = fixture.filespace_uuid;
   request.target_object.object_kind = "filespace";
   request.option_envelopes.push_back("filespace.path:" +
                                      (fixture.dir / "fixture.filespace").string());
@@ -126,7 +132,7 @@ void SeedFilespaceCatalogDescriptor(const Fixture& fixture) {
 
 api::EngineObjectReference FilespaceTarget(const Fixture& fixture) {
   api::EngineObjectReference target;
-  target.uuid.canonical = fixture.filespace_uuid;
+  target.uuid = fixture.filespace_uuid;
   target.object_kind = "filespace";
   return target;
 }
@@ -137,8 +143,8 @@ void AddCommonAgentFields(api::EngineAgentActionHookRequest* request,
                           std::string action_class) {
   request->agent_type = std::move(agent_type);
   request->action_class = std::move(action_class);
-  request->agent_uuid.canonical = fixture.agent_uuid;
-  request->policy_snapshot_uuid.canonical = fixture.policy_uuid;
+  request->agent_uuid = fixture.agent_uuid;
+  request->policy_snapshot_uuid = fixture.policy_uuid;
   request->target_filespace = FilespaceTarget(fixture);
   request->safety_fence_result = "passed";
   request->policy_authorized = true;
@@ -150,7 +156,7 @@ void AddCommonAgentFields(api::EngineAgentActionHookRequest* request,
   request->option_envelopes.push_back("agent_metric_snapshot_trusted:true");
   request->option_envelopes.push_back("agent_metric_snapshot_source_quality:trusted");
   request->option_envelopes.push_back("agent_metric_snapshot_trust_provenance:test_metric_registry");
-  request->option_envelopes.push_back("agent_metric_snapshot_scope_uuid:" + fixture.database_uuid);
+  request->option_envelopes.push_back("agent_metric_snapshot_scope_uuid:" + IdentityBytes(fixture.database_uuid));
   request->option_envelopes.push_back("agent_metric_snapshot_source_count:2");
   request->option_envelopes.push_back("agent_metric_snapshot_source_id:sblr-agent-route-source:" +
                                       agent_type);
@@ -172,7 +178,7 @@ void AddCommonAgentFields(api::EngineAgentActionHookRequest* request,
   request->option_envelopes.push_back("agent_metric_snapshot_id:sblr-agent-route:" +
                                       agent_type);
   request->option_envelopes.push_back("agent_metric_snapshot_evidence_uuid:" +
-                                      fixture.agent_uuid);
+                                      IdentityBytes(fixture.agent_uuid));
 }
 
 void AddObservedMetricSnapshotFields(api::EngineApiRequest* request,
@@ -183,7 +189,7 @@ void AddObservedMetricSnapshotFields(api::EngineApiRequest* request,
   request->option_envelopes.push_back("agent_metric_snapshot_source_quality:trusted");
   request->option_envelopes.push_back("agent_metric_snapshot_trust_provenance:test_metric_registry");
   request->option_envelopes.push_back("agent_metric_snapshot_scope_uuid:" +
-                                      fixture.database_uuid);
+                                      IdentityBytes(fixture.database_uuid));
   request->option_envelopes.push_back("agent_metric_snapshot_source_count:2");
   request->option_envelopes.push_back("agent_metric_snapshot_source_id:sblr-agent-route-source:" +
                                       std::string(agent_type));
@@ -206,7 +212,7 @@ void AddObservedMetricSnapshotFields(api::EngineApiRequest* request,
   request->option_envelopes.push_back("agent_metric_snapshot_id:sblr-agent-route:" +
                                       std::string(agent_type));
   request->option_envelopes.push_back("agent_metric_snapshot_evidence_uuid:" +
-                                      fixture.agent_uuid);
+                                      IdentityBytes(fixture.agent_uuid));
 }
 
 api::EngineRequestPagePreallocationRequest PageRequest(const Fixture& fixture,
@@ -240,7 +246,7 @@ bool HasEvidence(const api::EngineApiResult& result,
     if (evidence.evidence_kind != kind) {
       continue;
     }
-    if (id.empty() || evidence.evidence_id == id) {
+    if (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
   }
@@ -300,8 +306,8 @@ sblr::SblrDispatchResult DispatchWithContext(api::EngineRequestContext context,
   Require(registry->opcode == envelope.opcode,
           "SBLR agent route canonical opcode mismatch");
   envelope.opcode_code = registry->code;
-  envelope.parser_package_uuid = MakeUuidText(platform::UuidKind::object, 97);
-  envelope.registry_snapshot_uuid = MakeUuidText(platform::UuidKind::object, 98);
+  envelope.parser_package_uuid = MakeIdentity(platform::UuidKind::object, 97);
+  envelope.registry_snapshot_uuid = MakeIdentity(platform::UuidKind::object, 98);
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_transaction_context = requires_transaction;
   envelope.requires_security_context = requires_security;
@@ -329,8 +335,8 @@ sblr::SblrDispatchResult Dispatch(const Fixture& fixture,
 api::EngineApiRequest PageSblrApiRequest(const Fixture& fixture) {
   api::EngineApiRequest request;
   request.related_objects.push_back(FilespaceTarget(fixture));
-  request.option_envelopes.push_back("agent_uuid:" + fixture.agent_uuid);
-  request.option_envelopes.push_back("policy_snapshot_uuid:" + fixture.policy_uuid);
+  request.option_envelopes.push_back("agent_uuid:" + IdentityBytes(fixture.agent_uuid));
+  request.option_envelopes.push_back("policy_snapshot_uuid:" + IdentityBytes(fixture.policy_uuid));
   request.option_envelopes.push_back("policy_authorized:true");
   request.option_envelopes.push_back("evidence_sink_available:true");
   request.option_envelopes.push_back("metrics_fresh:true");
@@ -347,8 +353,8 @@ api::EngineApiRequest PageSblrApiRequest(const Fixture& fixture) {
 api::EngineApiRequest FilespaceSblrApiRequest(const Fixture& fixture) {
   api::EngineApiRequest request;
   request.related_objects.push_back(FilespaceTarget(fixture));
-  request.option_envelopes.push_back("agent_uuid:" + fixture.agent_uuid);
-  request.option_envelopes.push_back("policy_snapshot_uuid:" + fixture.policy_uuid);
+  request.option_envelopes.push_back("agent_uuid:" + IdentityBytes(fixture.agent_uuid));
+  request.option_envelopes.push_back("policy_snapshot_uuid:" + IdentityBytes(fixture.policy_uuid));
   request.option_envelopes.push_back("policy_authorized:true");
   request.option_envelopes.push_back("evidence_sink_available:true");
   request.option_envelopes.push_back("metrics_fresh:true");
@@ -367,8 +373,8 @@ api::EngineApiRequest FilespaceSblrApiRequest(const Fixture& fixture) {
 api::EngineApiRequest FilespaceSblrPagesApiRequest(const Fixture& fixture) {
   api::EngineApiRequest request;
   request.related_objects.push_back(FilespaceTarget(fixture));
-  request.option_envelopes.push_back("agent_uuid:" + fixture.agent_uuid);
-  request.option_envelopes.push_back("policy_snapshot_uuid:" + fixture.policy_uuid);
+  request.option_envelopes.push_back("agent_uuid:" + IdentityBytes(fixture.agent_uuid));
+  request.option_envelopes.push_back("policy_snapshot_uuid:" + IdentityBytes(fixture.policy_uuid));
   request.option_envelopes.push_back("policy_authorized:true");
   request.option_envelopes.push_back("evidence_sink_available:true");
   request.option_envelopes.push_back("metrics_fresh:true");

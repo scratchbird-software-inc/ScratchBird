@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../tests/support/binary_uuid_fixture.hpp"
 #include "api_unsupported.hpp"
 #include "server/diagnostic_rendering/diagnostic_rendering.hpp"
 
@@ -63,7 +64,7 @@ EngineApiResult MakeSuccessResult() {
   column.encoded_descriptor = "name=answer;type=text";
   result.result_shape.columns.push_back(column);
   EngineRowValue row;
-  row.requested_row_uuid.canonical = "00000000-0000-7000-8000-000000001711";
+  row.requested_row_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000001711");
   row.fields.push_back({"answer", TextValue("forty_two")});
   result.result_shape.rows.push_back(row);
   result.evidence.push_back({"canonical_result_shape", "engine_api"});
@@ -98,7 +99,7 @@ bool HasRenderedDiagnosticCode(const EngineRenderedResultEnvelope& envelope, con
 
 bool HasRenderedEvidence(const EngineRenderedResultEnvelope& envelope, const std::string& kind, const std::string& id = {}) {
   for (const auto& evidence : envelope.evidence) {
-    if (evidence.evidence_kind == kind && (id.empty() || evidence.evidence_id == id)) { return true; }
+    if (evidence.evidence_kind == kind && (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) { return true; }
   }
   return false;
 }

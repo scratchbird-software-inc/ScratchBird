@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog_record_codec.hpp"
+#include "catalog_metric_current_value.hpp"
 #include "catalog_schema_definition.hpp"
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_metric_descriptor.hpp"
@@ -121,6 +122,11 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
     }
   }
 
+  if ((record.header.kind == CatalogRecordKind::metric_current_value ||
+       IsCatalogMetricCurrentValuePayload(record.payload)) &&
+      !CatalogMetricCurrentValueMatchesHeader(record))
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_current_value.invalid",
+                      "current_value_binary_payload_or_header_invalid");
   if ((record.header.kind == CatalogRecordKind::metric_series || IsCatalogMetricSeriesPayload(record.payload)) &&
       !CatalogMetricSeriesMatchesHeader(record))
     return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_series.invalid",

@@ -48,24 +48,24 @@ struct MgaRelationStoreState {
 // provide or persist a partially assembled constraint mutation.
 struct MgaConstraintMutationBatch {
   std::string format_version{"neutral_fk_mutation_batch_v1"};
-  std::string batch_uuid;
+  EngineUuid batch_uuid;
   std::string batch_hash;
   std::uint32_t mutation_count{0};
-  std::string database_uuid;
-  std::string constraint_uuid;
-  std::string owner_table_uuid;
-  std::string child_schema_uuid;
-  std::string child_relation_descriptor_uuid;
+  EngineUuid database_uuid;
+  EngineUuid constraint_uuid;
+  EngineUuid owner_table_uuid;
+  EngineUuid child_schema_uuid;
+  EngineUuid child_relation_descriptor_uuid;
   std::uint64_t child_relation_descriptor_generation{0};
-  std::string child_column_uuid;
-  std::string parent_table_uuid;
-  std::string parent_schema_uuid;
-  std::string parent_relation_descriptor_uuid;
+  EngineUuid child_column_uuid;
+  EngineUuid parent_table_uuid;
+  EngineUuid parent_schema_uuid;
+  EngineUuid parent_relation_descriptor_uuid;
   std::uint64_t parent_relation_descriptor_generation{0};
-  std::string parent_column_uuid;
-  std::string parent_candidate_key_constraint_uuid;
-  std::string key_descriptor_uuid;
-  std::string support_uuid;
+  EngineUuid parent_column_uuid;
+  EngineUuid parent_candidate_key_constraint_uuid;
+  EngineUuid key_descriptor_uuid;
+  EngineUuid support_uuid;
   std::string support_family;
   std::string support_policy;
   std::string match_policy;
@@ -94,15 +94,15 @@ std::string ComputeMgaConstraintMutationBatchHash(
 // an exact visible metadata generation before the single sealed record is
 // appended.
 struct MgaBigintIdentityMigrationRow {
-  std::string object_uuid;
-  std::string column_uuid;
+  EngineUuid object_uuid;
+  EngineUuid column_uuid;
   std::uint64_t old_row_generation{0};
 };
 
 struct MgaBigintIdentityMigrationRequest {
   std::string migration_id{"core.datatype.bigint.identity.v1"};
-  std::string prior_catalog_snapshot_uuid;
-  std::string new_catalog_snapshot_uuid;
+  EngineUuid prior_catalog_snapshot_uuid;
+  EngineUuid new_catalog_snapshot_uuid;
   std::uint64_t prior_catalog_generation{0};
   std::uint64_t new_catalog_generation{0};
   std::vector<MgaBigintIdentityMigrationRow> rows;
@@ -121,15 +121,15 @@ struct MgaBigintIdentityMigrationResult {
 // descriptor and the type.  The sealed MGA record therefore replaces both
 // identities as one catalog mutation; it is never interpreted as an alias.
 struct MgaInt32IdentityMigrationRow {
-  std::string object_uuid;
-  std::string column_uuid;
+  EngineUuid object_uuid;
+  EngineUuid column_uuid;
   std::uint64_t old_row_generation{0};
 };
 
 struct MgaInt32IdentityMigrationRequest {
   std::string migration_id{"core.datatype.int32.identity.v1"};
-  std::string prior_catalog_snapshot_uuid;
-  std::string new_catalog_snapshot_uuid;
+  EngineUuid prior_catalog_snapshot_uuid;
+  EngineUuid new_catalog_snapshot_uuid;
   std::uint64_t prior_catalog_generation{0};
   std::uint64_t new_catalog_generation{0};
   std::vector<MgaInt32IdentityMigrationRow> rows;
@@ -150,15 +150,15 @@ struct MgaInt32IdentityMigrationResult {
 // never invoked by query admission and never treats the provisional UUID as an
 // alias.
 struct MgaTextIdentityMigrationRow {
-  std::string object_uuid;
-  std::string column_uuid;
+  EngineUuid object_uuid;
+  EngineUuid column_uuid;
   std::uint64_t old_row_generation{0};
 };
 
 struct MgaTextIdentityMigrationRequest {
   std::string migration_id{"core.datatype.text.identity.v1"};
-  std::string prior_catalog_snapshot_uuid;
-  std::string new_catalog_snapshot_uuid;
+  EngineUuid prior_catalog_snapshot_uuid;
+  EngineUuid new_catalog_snapshot_uuid;
   std::uint64_t prior_catalog_generation{0};
   std::uint64_t new_catalog_generation{0};
   std::vector<MgaTextIdentityMigrationRow> rows;
@@ -614,9 +614,9 @@ struct MgaRelationHotAppendCounters {
 };
 
 struct MgaLargeValuePersistBatchRowInput {
-  std::string table_uuid;
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid table_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
   bool force_large_value = false;
   std::vector<std::pair<std::string, std::string>>* values = nullptr;
 };
@@ -667,14 +667,14 @@ class MgaRelationHotAppendContext {
       std::span<const std::string> shared_field_order);
   EngineApiDiagnostic AppendRowVersionIdentitiesReadOnlyScopedOnlyTyped(
       const std::vector<CrudRowVersionRecord>& row_identities,
-      const std::string& table_uuid,
-      const std::string& temporary_session_uuid,
+      const EngineUuid& table_uuid,
+      const EngineUuid& temporary_session_uuid,
       std::span<const EngineRowValue> typed_rows,
       std::span<const std::string> shared_field_order);
   EngineApiDiagnostic AppendRowVersionIdentitiesReadOnlyScopedOnlyNativePacket(
       const std::vector<CrudRowVersionRecord>& row_identities,
-      const std::string& table_uuid,
-      const std::string& temporary_session_uuid,
+      const EngineUuid& table_uuid,
+      const EngineUuid& temporary_session_uuid,
       const EngineNativeRowPacketFrame& frame);
   EngineApiDiagnostic FlushRowVersions();
   void SetDecodedRowCacheAutoWarm(bool enabled);
@@ -696,9 +696,9 @@ class MgaRelationHotAppendContext {
 // DPC_DEFERRED_INDEX_WRITE_PATH
 struct MgaSecondaryIndexDeltaLedgerEntryInput {
   CrudIndexRecord index;
-  std::string table_uuid;
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid table_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
   std::vector<std::pair<std::string, std::string>> values;
   scratchbird::core::index::SecondaryIndexDeltaKind delta_kind =
       scratchbird::core::index::SecondaryIndexDeltaKind::insert;
@@ -714,8 +714,8 @@ struct MgaSecondaryIndexDeltaLedgerResult {
 
 // DPC_SECONDARY_INDEX_DELTA_MERGE_AGENT_GATE
 struct MgaSecondaryIndexDeltaMergeAgentRequest {
-  std::string index_uuid;
-  std::string table_uuid;
+  EngineUuid index_uuid;
+  EngineUuid table_uuid;
   std::uint64_t authoritative_cleanup_horizon_local_transaction_id = 0;
   bool cleanup_horizon_authoritative = false;
   std::uint64_t max_records_to_scan = 1024;
@@ -733,16 +733,16 @@ struct MgaSecondaryIndexDeltaMergeAgentResult {
   std::uint64_t cleaned_count = 0;
   std::uint64_t scanned_count = 0;
   std::uint64_t authoritative_cleanup_horizon_local_transaction_id = 0;
-  std::string index_uuid;
-  std::string table_uuid;
+  EngineUuid index_uuid;
+  EngineUuid table_uuid;
   std::string throttle_or_refusal_reason;
   std::vector<EngineEvidenceReference> evidence;
 };
 
 // DPC_SECONDARY_INDEX_DELTA_RECOVERY_REPAIR
 struct MgaSecondaryIndexDeltaRecoveryRepairRequest {
-  std::string index_uuid;
-  std::string table_uuid;
+  EngineUuid index_uuid;
+  EngineUuid table_uuid;
   std::uint64_t max_records_to_scan = 1024;
   bool repair_enabled = false;
   bool require_authoritative_base = true;
@@ -767,8 +767,8 @@ struct MgaSecondaryIndexDeltaRecoveryRepairResult {
 
 // DPC_SECONDARY_INDEX_GARBAGE_CLEANUP_AGENT
 struct MgaSecondaryIndexGarbageCleanupRequest {
-  std::string index_uuid;
-  std::string table_uuid;
+  EngineUuid index_uuid;
+  EngineUuid table_uuid;
   std::uint64_t max_records_to_scan = 1024;
   std::uint64_t max_records_to_clean = 256;
   bool engine_mga_authoritative = true;
@@ -838,38 +838,38 @@ struct MgaIndexedRowsLookupResult {
 MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& context);
 MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 MgaRelationStoreResult LoadMgaRelationStoreIndexesOnlyForInsertTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 MgaRelationStoreResult LoadMgaRelationStoreMetadataOnlyForInsertTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTargets(
     const EngineRequestContext& context,
-    const std::vector<std::string>& table_uuids);
+    const std::vector<EngineUuid>& table_uuids);
 MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTargets(
     const EngineRequestContext& context,
-    const std::vector<std::string>& table_uuids);
+    const std::vector<EngineUuid>& table_uuids);
 MgaRelationStoreResult LoadMgaRelationStoreRowsForPointLookup(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
-    const std::string& row_uuid);
+    const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid);
 MgaRelationStoreResult LoadMgaRelationStoreStateForRelationScans(
     const EngineRequestContext& context,
-    const std::vector<std::string>& table_uuids);
+    const std::vector<EngineUuid>& table_uuids);
 MgaRelationStoreResult LoadMgaRelationStoreIndexesForRelation(
     const EngineRequestContext& context,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 MgaRelationStoreResult LoadMgaRelationStoreMetadataForRelation(
     const EngineRequestContext& context,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 std::uint64_t CurrentMgaRelationMetadataEventSequence(
     const EngineRequestContext& context);
 std::uint64_t CurrentMgaSavepointAuthorityGeneration(
@@ -877,7 +877,7 @@ std::uint64_t CurrentMgaSavepointAuthorityGeneration(
 MgaRelationIndexOnlyProofEligibilityResult
 CanUseMgaRelationIndexOnlyProofForInsertTarget(
     const EngineRequestContext& context,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 MgaMetadataWorkPresenceResult HasVisibleMgaDeferredConstraintMetadata(
     const EngineRequestContext& context);
 MgaMetadataWorkPresenceResult HasMgaTemporaryCleanupMetadataWork(
@@ -896,7 +896,7 @@ MgaTemporaryTableDropResult DropMgaTemporaryTable(
     const EngineRequestContext& context,
     const EngineUuid& table_uuid);
 MgaRelationStatisticsResult EstimateMgaRelationStatistics(const EngineRequestContext& context,
-                                                          const std::string& table_uuid,
+                                                          const EngineUuid& table_uuid,
                                                           bool include_indexes);
 MgaRelationStatisticsResult EstimateMgaCatalogStatistics(const EngineRequestContext& context,
                                                          bool include_indexes);
@@ -979,25 +979,25 @@ EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
 
 EngineApiDiagnostic AppendMgaIndexEntriesForRow(const EngineRequestContext& context,
                                                 const RelationReadSnapshot& state,
-                                                const std::string& table_uuid,
-                                                const std::string& row_uuid,
-                                                const std::string& version_uuid,
+                                                const EngineUuid& table_uuid,
+                                                const EngineUuid& row_uuid,
+                                                const EngineUuid& version_uuid,
                                                 const std::vector<std::pair<std::string, std::string>>& values);
 EngineApiDiagnostic AppendMgaIndexEntriesForRows(const EngineRequestContext& context,
                                                  const RelationReadSnapshot& state,
-                                                 const std::string& table_uuid,
+                                                 const EngineUuid& table_uuid,
                                                  const std::vector<MgaIndexEntryRowInput>& rows);
 EngineApiDiagnostic AppendMgaIndexEntriesForRowsWithIndexes(const EngineRequestContext& context,
                                                             const std::vector<CrudIndexRecord>& indexes,
-                                                            const std::string& table_uuid,
+                                                            const EngineUuid& table_uuid,
                                                             const std::vector<MgaIndexEntryRowInput>& rows);
 EngineApiDiagnostic AppendMgaExactIndexEntryBatches(
     const EngineRequestContext& context,
     const std::vector<MgaExactIndexEntryAppendBatch>& batches);
 EngineApiDiagnostic AppendMgaIndexEntriesForIndex(const EngineRequestContext& context,
                                                   const CrudIndexRecord& index,
-                                                  const std::string& row_uuid,
-                                                  const std::string& version_uuid,
+                                                  const EngineUuid& row_uuid,
+                                                  const EngineUuid& version_uuid,
                                                   const std::vector<std::pair<std::string, std::string>>& values);
 
 MgaSecondaryIndexDeltaLedgerResult LoadMgaSecondaryIndexDeltaLedger(
@@ -1025,15 +1025,15 @@ MgaRelationPhysicalSweepResult ApplyMgaRelationPhysicalSweepToState(
     const MgaRelationPhysicalSweepRequest& request);
 MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
     const RelationReadSnapshot& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EnginePredicateEnvelope& predicate,
     const EngineRequestContext& context,
     std::uint64_t limit);
 
 EngineApiDiagnostic PersistMgaLargeValuesForRow(const EngineRequestContext& context,
-                                                const std::string& table_uuid,
-                                                const std::string& row_uuid,
-                                                const std::string& version_uuid,
+                                                const EngineUuid& table_uuid,
+                                                const EngineUuid& row_uuid,
+                                                const EngineUuid& version_uuid,
                                                 bool force_large_value,
                                                 std::vector<std::pair<std::string, std::string>>* values,
                                                 std::vector<EngineEvidenceReference>* evidence);
@@ -1078,21 +1078,21 @@ enum class MgaDmlUpdateDurableOperationOutcomeV1 : std::uint8_t {
 };
 
 struct MgaDmlUpdateDurableOperationIdentityV1 {
-  std::string database_uuid;
-  std::string owning_transaction_uuid;
+  EngineUuid database_uuid;
+  EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string authenticated_statement_receipt_uuid;
-  std::string operation_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
+  EngineUuid operation_uuid;
   std::uint64_t operation_generation = 0;
-  std::string descriptor_uuid;
+  EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation = 0;
-  std::string recovery_token_uuid;
+  EngineUuid recovery_token_uuid;
   std::uint64_t recovery_generation = 0;
   // Exact private MGA durable-registry identity carried by DURC.  It is not
   // a parser/public handle and is never inferred from another UUID.
-  std::string validated_durable_handle_uuid;
+  EngineUuid validated_durable_handle_uuid;
   std::uint64_t validated_durable_handle_generation = 0;
-  std::string reserved_statement_barrier_uuid;
+  EngineUuid reserved_statement_barrier_uuid;
   std::uint64_t reserved_statement_barrier_generation = 0;
 
   bool operator==(
@@ -1100,7 +1100,7 @@ struct MgaDmlUpdateDurableOperationIdentityV1 {
 };
 
 struct MgaDmlUpdateDurableOperationLookupV1 {
-  std::string descriptor_uuid;
+  EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation = 0;
   std::uint64_t structural_occurrence_id = 0;
 };
@@ -1147,11 +1147,11 @@ struct MgaDmlUpdateDurablePublishBoundRequestV1 {
 };
 
 struct MgaDmlUpdateDurableAuthorityReservationRequestV1 {
-  std::string operation_uuid;
+  EngineUuid operation_uuid;
   std::uint64_t operation_generation = 0;
-  std::string descriptor_uuid;
+  EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation = 0;
-  std::string recovery_token_uuid;
+  EngineUuid recovery_token_uuid;
   std::uint64_t recovery_generation = 0;
 };
 
@@ -1417,14 +1417,14 @@ enum class MgaDmlUpdateStatementSavepointLifecycleV1 : std::uint8_t {
 };
 
 struct MgaDmlUpdateStatementSavepointBindingV1 {
-  std::string database_uuid;
-  std::string owning_transaction_uuid;
+  EngineUuid database_uuid;
+  EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string authenticated_statement_receipt_uuid;
-  std::string operation_uuid;
-  std::string descriptor_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
+  EngineUuid operation_uuid;
+  EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation = 0;
-  std::string recovery_token_uuid;
+  EngineUuid recovery_token_uuid;
   std::uint64_t recovery_generation = 0;
 
   bool operator==(
@@ -1433,11 +1433,11 @@ struct MgaDmlUpdateStatementSavepointBindingV1 {
 
 struct MgaDmlUpdateStatementSavepointAuthorityV1 {
   MgaDmlUpdateStatementSavepointBindingV1 binding;
-  std::string savepoint_uuid;
+  EngineUuid savepoint_uuid;
   std::uint64_t savepoint_generation = 0;
   MgaDmlUpdateStatementSavepointLifecycleV1 lifecycle =
       MgaDmlUpdateStatementSavepointLifecycleV1::active;
-  std::string publication_barrier_uuid;
+  EngineUuid publication_barrier_uuid;
   std::uint64_t publication_barrier_generation = 0;
   // The identity is reserved durably at savepoint creation so a complete
   // DURS can be encoded before the statement barrier.  Presence becomes true
@@ -1463,13 +1463,13 @@ MgaDmlUpdateStatementSavepointAuthorityResultV1
 CreateMgaDmlUpdateStatementSavepointAuthorityWithReservedBarrierV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateStatementSavepointBindingV1& binding,
-    const std::string& reserved_publication_barrier_uuid,
+    const EngineUuid& reserved_publication_barrier_uuid,
     std::uint64_t reserved_publication_barrier_generation);
 MgaDmlUpdateStatementSavepointAuthorityResultV1
 RecoverMgaDmlUpdateStatementSavepointAuthorityV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateStatementSavepointBindingV1& binding,
-    const std::string& savepoint_uuid,
+    const EngineUuid& savepoint_uuid,
     std::uint64_t savepoint_generation);
 MgaDmlUpdateStatementSavepointAuthorityResultV1
 RevalidateMgaDmlUpdateStatementSavepointAuthorityV1(
@@ -1511,8 +1511,8 @@ MgaBulkImportPublicationResultV1 RecoverMgaBulkImportPublicationV1(
     const EngineRequestContext& context,
     const MgaBulkImportSha256V1& recovery_idempotency_key);
 MgaBulkImportRowLineageResultV1 ProbeMgaBulkImportRowIdentityLineageV1(
-    const EngineRequestContext& context, const std::string& table_uuid,
-    const std::string& row_uuid);
+    const EngineRequestContext& context, const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid);
 MgaBulkImportImportedRowEventResultV1 StoreMgaBulkImportImportedRowEventsV1(
     const EngineRequestContext& context,
     const std::vector<MgaBulkImportImportedRowEventV1>& events);

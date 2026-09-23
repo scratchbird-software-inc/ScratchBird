@@ -20,7 +20,7 @@ namespace scratchbird::engine::internal_api {
 // Engine-owned executable database object lifecycle. Parsers supply resolved
 // UUID/SBLR operations; this API owns catalog-visible executable state.
 
-inline constexpr const char* kExecutableObjectLifecycleEventMagic = "SBEXECOBJ1";
+inline constexpr const char* kExecutableObjectLifecycleEventMagic = "SBEXE002";
 
 inline constexpr const char* kExecutableObjectDiagnosticDatabasePathRequired =
     "EXECUTABLE.OBJECT.DATABASE_PATH_REQUIRED";
@@ -88,7 +88,8 @@ inline constexpr const char* kExecutableObjectDiagnosticPreparedMetadataVersionM
 // Canonical engine-owned instruction descriptor for the bounded procedure
 // vertical slice. The encoded descriptor is positional and contains no SQL:
 //
-//   <tag>|<table_uuid>|<column_uuid>|<lower_in_slot>|<upper_in_slot>|
+//   <tag>| followed by raw16 table and column UUIDs, then four LE32 slot indices.
+//   Legacy text UUID/slot envelopes are rejected.
 //   <affected_rows_out_slot>|<yield_out_slot>
 //
 // The current v1 instruction admits exactly two INTEGER input slots and one
@@ -101,10 +102,11 @@ struct EngineExecutableObjectRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
   EngineUuid object_uuid;
+  EngineUuid catalog_row_uuid;
   std::string object_kind;
-  std::string schema_uuid;
-  std::string owner_principal_uuid;
-  std::string package_uuid;
+  EngineUuid schema_uuid;
+  EngineUuid owner_principal_uuid;
+  EngineUuid package_uuid;
   std::string lifecycle_state = "active";
   std::uint64_t executable_generation = 0;
   std::uint64_t metadata_epoch = 0;
@@ -117,16 +119,16 @@ struct EngineExecutableObjectRecord {
   std::string payload;
   bool invalidated = false;
   std::uint64_t invalidated_generation = 0;
-  std::string invalidation_reason_uuid;
+  EngineUuid invalidation_reason_uuid;
   bool deleted = false;
 };
 
 struct EngineExecutableDependencyRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string source_uuid;
+  EngineUuid source_uuid;
   std::string source_kind;
-  std::string dependency_uuid;
+  EngineUuid dependency_uuid;
   std::string dependency_kind;
   std::uint64_t dependency_generation = 0;
   std::uint64_t metadata_epoch = 0;
@@ -136,11 +138,29 @@ struct EngineExecutableDependencyRecord {
 struct EngineExecutableInvocationRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string invocation_lease_uuid;
-  std::string object_uuid;
+  EngineUuid invocation_lease_uuid;
+  EngineUuid object_uuid;
   std::uint64_t executable_generation = 0;
   std::string lifecycle_state = "active";
   std::uint64_t metadata_epoch = 0;
+};
+
+struct EngineExecutableInvalidationRecord {
+  std::uint64_t creator_tx=0, event_sequence=0;
+  EngineUuid object_uuid, reason_uuid;
+  std::uint64_t dependency_generation=0, metadata_epoch=0;
+};
+struct EngineExecutableCacheRecord {
+  std::uint64_t creator_tx=0, event_sequence=0;
+  EngineUuid object_uuid;
+  std::string operation_id;
+  std::uint64_t metadata_epoch=0, security_epoch=0, resource_epoch=0;
+};
+struct EngineExecutableTriggerFireRecord {
+  std::uint64_t creator_tx=0, event_sequence=0;
+  EngineUuid object_uuid;
+  std::string event_name, command_tag;
+  std::uint64_t metadata_epoch=0;
 };
 
 struct EngineExecutableObjectLifecycleState {
@@ -162,7 +182,7 @@ struct EngineExecutableObjectLifecycleResult : EngineApiResult {
   std::uint64_t executable_generation = 0;
   std::uint64_t metadata_cache_epoch = 0;
   std::uint64_t active_invocation_count = 0;
-  std::string invocation_lease_uuid;
+  EngineUuid invocation_lease_uuid;
 };
 
 struct EngineCreateExecutableObjectRequest : EngineApiRequest {

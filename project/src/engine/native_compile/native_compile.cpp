@@ -10,6 +10,7 @@
 
 #include "metric_registry.hpp"
 #include "runtime_capabilities.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -122,13 +123,51 @@ std::string RuntimeTargetTriple() {
   return platform::CurrentRuntimeArchitecture() + "-scratchbird-" + std::string(os);
 }
 
-std::string DescriptorSetDigest(const NativeCompileRequest& request) {
-  std::ostringstream out;
-  for (const auto& descriptor : request.descriptors) {
-    out << descriptor.descriptor_uuid << ':' << descriptor.descriptor_kind << ':'
-        << descriptor.canonical_type_name << ':' << HashText(descriptor.encoded_descriptor) << ';';
+// Binary cache preimage: type byte, LE64 key length, key, LE64 value
+// length, value. UUID values always occupy exactly sixteen bytes. The digest
+// is a content key, never an identity issuer or authorization authority.
+void AppendCacheU64(std::string* out, std::uint64_t value) {
+  for (unsigned i = 0; i < 8; ++i) {
+    out->push_back(static_cast<char>((value >> (i * 8)) & 0xff));
   }
-  return HashText(out.str());
+}
+void AppendCacheField(std::string* out, char type, std::string_view key,
+                      std::string_view value) {
+  out->push_back(type);
+  AppendCacheU64(out, key.size());
+  out->append(key);
+  AppendCacheU64(out, value.size());
+  out->append(value);
+}
+void AppendCacheField(std::string* out, std::string_view key,
+                      std::string_view value) {
+  AppendCacheField(out, 's', key, value);
+}
+void AppendCacheField(std::string* out, std::string_view key,
+                      const platform::Uuid& value) {
+  AppendCacheField(out, 'u', key, std::string_view(
+      reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()));
+}
+void AppendCacheField(std::string* out, std::string_view key,
+                      std::uint64_t value) {
+  std::string encoded;
+  AppendCacheU64(&encoded, value);
+  AppendCacheField(out, 'n', key, encoded);
+}
+void AppendDescriptorFields(std::string* out,
+                            const NativeCompileDescriptorDependency& descriptor) {
+  AppendCacheField(out, "descriptor_uuid", descriptor.descriptor_uuid);
+  AppendCacheField(out, "descriptor_kind", descriptor.descriptor_kind);
+  AppendCacheField(out, "canonical_type_name", descriptor.canonical_type_name);
+  AppendCacheField(out, "descriptor_digest", HashText(descriptor.encoded_descriptor));
+}
+std::string DescriptorSetDigest(const NativeCompileRequest& request) {
+  std::string out("SBNCDS02");
+  AppendCacheField(&out, "descriptor_count", request.descriptors.size());
+  for (const auto& descriptor : request.descriptors) {
+    AppendDescriptorFields(&out, descriptor);
+  }
+  return HashText(out);
 }
 
 NativeCompilePolicyProfile SelectPolicy(const NativeCompileRequest& request) {
@@ -200,6 +239,10 @@ struct BackendInfo {
 };
 
 struct NativeCompileDefaultMemoryLedgers {
+  // Actual lifetime identity of this process-local ledger owner. A failed
+  // issuance leaves nil and the reservation validators refuse it.
+  const platform::Uuid process_uuid =
+      core::uuid::IssueRuntimeIdentityV7().value_or(platform::Uuid{});
   memory::HierarchicalMemoryBudgetLedger reservation_ledger;
   memory::ForeignMemoryReservationLedger foreign_ledger;
 };
@@ -381,49 +424,49 @@ Lowerability ClassifyLowerability(const NativeCompileRequest& request) {
 std::string CacheKeyMaterial(const NativeCompileRequest& request,
                              const BackendInfo& backend,
                              const Lowerability& lowerability) {
-  std::ostringstream out;
-  out << "sblr_hash=" << HashText(request.module_payload);
-  out << ";sblr_version=" << request.sblr_version;
-  out << ";opcode_registry_epoch=" << request.opcode_registry_epoch;
-  out << ";target_object_uuid=" << request.target_object_uuid;
-  out << ";principal_uuid=" << request.principal_uuid;
-  out << ";catalog_generation_id=" << request.catalog_generation_id;
-  out << ";security_epoch=" << request.security_epoch;
-  out << ";policy_epoch=" << request.policy_epoch;
-  out << ";resource_epoch=" << request.resource_epoch;
-  out << ";engine_abi_id=" << request.engine_abi_id;
-  out << ";numeric_backend_profile=" << request.numeric_backend_profile;
-  out << ";backend_provider=" << backend.provider;
-  out << ";backend_version=" << backend.version;
-  out << ";llvm_load_mode=" << backend.load_mode;
-  out << ";llvm_library_path_digest=" << backend.library_path_digest;
-  out << ";llvm_source_root_digest=" << backend.source_root_digest;
-  out << ";llvm_tools_root_digest=" << backend.tools_root_digest;
-  out << ";llvm_staging_build_dir_digest=" << backend.staging_build_dir_digest;
-  out << ";target_triple=" << backend.target_triple;
-  out << ";target_feature_set=" << backend.target_feature_set;
-  out << ";mode=" << (request.requested_mode == NativeCompileMode::aot ? "aot" : "jit");
-  out << ";unit_kind=" << lowerability.unit_kind;
+  std::string out("SBNCCK02");
+  AppendCacheField(&out, "sblr_hash", HashText(request.module_payload));
+  AppendCacheField(&out, "sblr_version", request.sblr_version);
+  AppendCacheField(&out, "opcode_registry_epoch", request.opcode_registry_epoch);
+  AppendCacheField(&out, "target_object_uuid", request.target_object_uuid);
+  AppendCacheField(&out, "principal_uuid", request.principal_uuid);
+  AppendCacheField(&out, "catalog_generation_id", request.catalog_generation_id);
+  AppendCacheField(&out, "security_epoch", request.security_epoch);
+  AppendCacheField(&out, "policy_epoch", request.policy_epoch);
+  AppendCacheField(&out, "resource_epoch", request.resource_epoch);
+  AppendCacheField(&out, "engine_abi_id", request.engine_abi_id);
+  AppendCacheField(&out, "numeric_backend_profile", request.numeric_backend_profile);
+  AppendCacheField(&out, "backend_provider", backend.provider);
+  AppendCacheField(&out, "backend_version", backend.version);
+  AppendCacheField(&out, "llvm_load_mode", backend.load_mode);
+  AppendCacheField(&out, "llvm_library_path_digest", backend.library_path_digest);
+  AppendCacheField(&out, "llvm_source_root_digest", backend.source_root_digest);
+  AppendCacheField(&out, "llvm_tools_root_digest", backend.tools_root_digest);
+  AppendCacheField(&out, "llvm_staging_build_dir_digest", backend.staging_build_dir_digest);
+  AppendCacheField(&out, "target_triple", backend.target_triple);
+  AppendCacheField(&out, "target_feature_set", backend.target_feature_set);
+  AppendCacheField(&out, "mode", (request.requested_mode == NativeCompileMode::aot ? "aot" : "jit"));
+  AppendCacheField(&out, "unit_kind", lowerability.unit_kind);
+  AppendCacheField(&out, "descriptor_count", request.descriptors.size());
   for (const auto& descriptor : request.descriptors) {
-    out << ";descriptor=" << descriptor.descriptor_uuid << ':' << descriptor.descriptor_kind << ':'
-        << descriptor.canonical_type_name << ':' << HashText(descriptor.encoded_descriptor);
+    AppendDescriptorFields(&out, descriptor);
   }
   for (const auto& profile : request.policy_profiles) {
-    out << ";policy_profile=" << profile;
+    AppendCacheField(&out, "policy_profile", profile);
   }
   for (const auto& profile : request.physical_profiles) {
-    out << ";physical_profile=" << profile;
+    AppendCacheField(&out, "physical_profile", profile);
   }
   for (const auto& option : request.option_envelopes) {
-    out << ";option_envelope_hash=" << HashText(option);
+    AppendCacheField(&out, "option_envelope_hash", HashText(option));
   }
-  return out.str();
+  return out;
 }
 
 bool CacheKeyComplete(const NativeCompileRequest& request, const BackendInfo& backend) {
   return !request.module_payload.empty() &&
-         !request.target_object_uuid.empty() &&
-         !request.principal_uuid.empty() &&
+         core::uuid::IsEngineIdentityUuid(request.target_object_uuid) &&
+         core::uuid::IsEngineIdentityUuid(request.principal_uuid) &&
          !request.engine_abi_id.empty() &&
          !request.sblr_version.empty() &&
          !request.opcode_registry_epoch.empty() &&
@@ -434,6 +477,9 @@ bool CacheKeyComplete(const NativeCompileRequest& request, const BackendInfo& ba
          request.resource_epoch != 0 &&
          request.security_context_present &&
          !request.descriptors.empty() &&
+         std::ranges::all_of(request.descriptors, [](const auto& descriptor) {
+           return core::uuid::IsEngineIdentityUuid(descriptor.descriptor_uuid);
+         }) &&
          !backend.provider.empty() &&
          !backend.target_triple.empty();
 }
@@ -529,32 +575,29 @@ memory::LlvmMemoryAccountingRequest BuildLlvmMemoryAccountingRequest(
   }
   if (accounting.scope_chain.empty()) {
     accounting.scope_chain = {
-        {memory::HierarchicalMemoryScopeKind::process,
-         "native_compile.process"},
-        {memory::HierarchicalMemoryScopeKind::database,
-         request.database_path.empty() ? "native_compile.database"
-                                       : request.database_path},
-        {memory::HierarchicalMemoryScopeKind::session,
-         request.principal_uuid.empty() ? "native_compile.session"
-                                        : "native_compile.session." +
-                                              request.principal_uuid},
-        {memory::HierarchicalMemoryScopeKind::statement,
-         request.target_object_uuid.empty() ? "native_compile.statement"
-                                            : "native_compile.statement." +
-                                                  request.target_object_uuid}};
+        {memory::HierarchicalMemoryScopeKind::process, {},
+         default_ledgers.process_uuid.bytes},
+        {memory::HierarchicalMemoryScopeKind::database, {},
+         request.database_uuid.bytes},
+        {memory::HierarchicalMemoryScopeKind::session, {},
+         request.session_uuid.bytes},
+        {memory::HierarchicalMemoryScopeKind::statement, {},
+         request.statement_uuid.bytes}};
   }
   accounting.linkage_mode = LinkageModeFromConfig(backend.load_mode);
   accounting.provider_available = provider_available;
   accounting.aot = request.requested_mode == NativeCompileMode::aot;
-  if (accounting.owner_id.empty()) {
-    accounting.owner_id = request.principal_uuid.empty()
-                              ? "native_compile.unknown_principal"
-                              : "native_compile." + request.principal_uuid;
+  if (accounting.owner_id.empty() &&
+      !memory::MemoryUuidPresent(accounting.binary_owner_uuid)) {
+    if (request.principal_uuid.is_nil()) {
+      accounting.owner_id = "native_compile.unknown_principal";
+    } else {
+      accounting.binary_owner_uuid = request.principal_uuid.bytes;
+    }
   }
-  if (accounting.owning_scope.empty()) {
-    accounting.owning_scope = request.target_object_uuid.empty()
-                                  ? "native_compile.unknown_target"
-                                  : "native_compile." + request.target_object_uuid;
+  if (accounting.owning_scope.empty() &&
+      !memory::MemoryUuidPresent(accounting.binary_owning_scope_uuid)) {
+    accounting.binary_owning_scope_uuid = request.statement_uuid.bytes;
   }
   if (accounting.operation_id.empty()) {
     accounting.operation_id =
@@ -851,18 +894,49 @@ NativeCompileResult CompileNativeUnit(const NativeCompileRequest& request) {
   return finalize(std::move(result));
 }
 
+namespace {
+bool CacheDependencyMatches(std::string_view material, std::string_view family,
+                            char wanted_type, std::string_view value) {
+  if (!material.starts_with("SBNCCK02") || family.empty() || value.empty()) return true;
+  std::size_t offset = 8;
+  const auto read_field = [&](std::string_view* field) {
+    if (material.size() - offset < 8) return false;
+    std::uint64_t length = 0;
+    for (unsigned i = 0; i < 8; ++i) {
+      length |= static_cast<std::uint64_t>(
+          static_cast<unsigned char>(material[offset++])) << (i * 8);
+    }
+    if (length > material.size() - offset) return false;
+    *field = material.substr(offset, static_cast<std::size_t>(length));
+    offset += static_cast<std::size_t>(length);
+    return true;
+  };
+  bool found = false;
+  while (offset < material.size()) {
+    const auto type = material[offset++];
+    std::string_view key, encoded;
+    if (!read_field(&key) || !read_field(&encoded) || key.empty() ||
+        (type != 's' && type != 'u' && type != 'n') ||
+        (type == 'u' && encoded.size() != 16) ||
+        (type == 'n' && encoded.size() != 8)) return true;
+    found |= type == wanted_type && key == family && encoded == value;
+  }
+  return found;
+}
+}  // namespace
+
 bool NativeArtifactInvalidatedByDependency(const std::string& cache_key_material,
                                            const std::string& dependency_family,
                                            const std::string& dependency_value) {
-  if (cache_key_material.empty() || dependency_family.empty()) {
-    return true;
-  }
-  if (dependency_value.empty()) {
-    return true;
-  }
-  const std::string token = dependency_family + "=" + dependency_value;
-  return cache_key_material.find(token) != std::string::npos ||
-         cache_key_material.find(dependency_value) != std::string::npos;
+  return CacheDependencyMatches(cache_key_material, dependency_family, 's', dependency_value);
+}
+bool NativeArtifactInvalidatedByDependency(const std::string& cache_key_material,
+                                           const std::string& dependency_family,
+                                           const platform::Uuid& dependency_uuid) {
+  if (!core::uuid::IsEngineIdentityUuid(dependency_uuid)) return true;
+  return CacheDependencyMatches(cache_key_material, dependency_family, 'u',
+      std::string_view(reinterpret_cast<const char*>(dependency_uuid.bytes.data()),
+                       dependency_uuid.bytes.size()));
 }
 
 std::string NativeCompileEffectiveModeName(NativeCompileEffectiveMode mode) {

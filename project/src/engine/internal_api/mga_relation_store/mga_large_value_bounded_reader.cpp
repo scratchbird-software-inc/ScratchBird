@@ -5,7 +5,7 @@
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
 #include "api_diagnostics.hpp"
-#include "uuid.hpp"
+#include "mga_relation_store/mga_large_value_codec.hpp"
 #include <array>
 #include <charconv>
 #include <fstream>
@@ -19,21 +19,10 @@ bool Number(std::string_view text, std::uint64_t* value) {
   const auto parsed = std::from_chars(text.data(), text.data() + text.size(), *value);
   return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
 }
-bool Uuid(std::string_view text) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-      scratchbird::core::uuid::UuidToString(parsed.value) == text;
-}
 std::uint64_t Checksum(std::string_view bytes) {
   std::uint64_t result = 1469598103934665603ull;
   for (unsigned char byte : bytes) { result ^= byte; result *= 1099511628211ull; }
   return result;
-}
-int Hex(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
 }
 struct Requested {
   const CrudRowVersionRecord* row = nullptr;
@@ -60,31 +49,27 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
         "mga.large_value.bounded_read", std::move(detail), true);
   };
   if (!rows || !control || !creator_visible) return refuse("large_value_read_authority_missing");
-  constexpr std::string_view prefix = "SBMGA_LARGE_VALUE:";
   // Fixed record and stream buffers plus map/string bookkeeping are reserved
   // before reading. Payload and destination copies are charged separately.
   std::uint64_t memory = retained_memory;
   if (!HeapReadMemoryAdd(65536, &memory) || !ObserveBoundedHeapReadMemory(control, memory))
     return refuse("large_value_read_memory_limit", true);
-  std::map<std::string, Requested> requested;
+  std::map<EngineUuid, Requested> requested;
   for (auto& row : *rows) for (auto& [field, value] : row.values) {
-    if (!value.starts_with(prefix)) {
-      if (CrudValueIsLargeValueLocator(value)) return refuse("large_value_locator_encoding_unadmitted");
+    if (!IsMgaLargeValueLocator(value)) {
+      if (CrudValueIsLargeValueLocator(value) || value.starts_with("SBMGA_LARGE_VALUE:")) return refuse("large_value_locator_encoding_unadmitted");
       continue;
     }
-    const std::string_view tail(value.data() + prefix.size(), value.size() - prefix.size());
-    const auto first = tail.find(':');
-    const auto second = first == tail.npos ? tail.npos : tail.find(':', first + 1);
+    EngineUuid overflow_uuid;
     std::uint64_t bytes = 0, checksum = 0;
-    if (first != 36 || second == tail.npos || !Uuid(tail.substr(0, first)) ||
-        !Number(tail.substr(first + 1, second - first - 1), &checksum) ||
-        !Number(tail.substr(second + 1), &bytes)) return refuse("large_value_locator_invalid");
+    if (!ReadMgaLargeValueLocator(value, &overflow_uuid, &checksum, &bytes))
+      return refuse("large_value_locator_invalid");
     std::uint64_t charge = 0;
     if (!HeapReadMemoryMultiply(bytes, 4, &charge) || !HeapReadMemoryAdd(4096, &charge) ||
         !HeapReadMemoryAdd(field.size(), &charge) ||
         !HeapReadMemoryAdd(charge, &memory) || !ObserveBoundedHeapReadMemory(control, memory))
       return refuse("large_value_payload_memory_limit", true);
-    auto [entry, inserted] = requested.try_emplace(std::string(tail.substr(0, first)));
+    auto [entry, inserted] = requested.try_emplace(overflow_uuid);
     auto& target = entry->second;
     if (inserted) {
       target.row = &row; target.field = field; target.bytes = bytes; target.checksum = checksum;
@@ -112,14 +97,20 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
     if (control->decoded_bytes >= control->maximum_bytes)
       return refuse("large_value_read_byte_limit", true);
     const auto remaining = control->maximum_bytes - control->decoded_bytes;
-    const auto extent = static_cast<std::streamsize>(std::min<std::uint64_t>(buffer.size(), remaining));
-    if (extent < 2) return refuse("large_value_read_byte_limit", true);
-    input.getline(buffer.data(), extent);
-    const auto consumed = static_cast<std::uint64_t>(input.gcount());
-    if (input.fail() || input.eof() || consumed == 0)
-      return refuse(extent < static_cast<std::streamsize>(buffer.size())
-          ? "large_value_read_byte_limit" : "large_value_record_truncated_or_oversized",
-          extent < static_cast<std::streamsize>(buffer.size()));
+    if (remaining < 16) return refuse("large_value_read_byte_limit", true);
+    input.read(buffer.data(), 16);
+    if (input.gcount() != 16) return refuse("large_value_record_truncated");
+    const std::span<const std::uint8_t> header(reinterpret_cast<const std::uint8_t*>(buffer.data()), 16);
+    std::size_t cursor = 8;
+    std::uint64_t payload_bytes = 0;
+    if (!std::string_view(buffer.data(), 8).starts_with(kMgaMetadataRecordMagic) ||
+        !ReadBinaryU64(header, &cursor, &payload_bytes) || payload_bytes > buffer.size() - 48)
+      return refuse("large_value_record_extent_invalid");
+    const auto consumed = payload_bytes + 48;
+    if (consumed > remaining) return refuse("large_value_read_byte_limit", true);
+    input.read(buffer.data() + 16, static_cast<std::streamsize>(consumed - 16));
+    if (input.gcount() != static_cast<std::streamsize>(consumed - 16))
+      return refuse("large_value_record_truncated");
     if (control->decoded_bytes > control->maximum_bytes ||
         consumed > control->maximum_bytes - control->decoded_bytes)
       return refuse("large_value_read_byte_limit", true);
@@ -128,26 +119,25 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
       if (!HeapReadMemoryAdd(consumed, &control->runtime_observation->storage_bytes_read))
         return refuse("large_value_read_byte_counter_overflow", true);
     }
-    std::string_view line(buffer.data(), static_cast<std::size_t>(consumed - 1));
-    std::array<std::string_view, 12> fields{};
-    std::size_t count = 0;
-    while (true) {
-      if (count == fields.size()) return refuse("large_value_record_field_count_invalid");
-      const auto tab = line.find('\t');
-      fields[count++] = line.substr(0, tab);
-      if (tab == line.npos) break;
-      line.remove_prefix(tab + 1);
-    }
-    if (count < 4 || fields[0] != "SBMGA1") return refuse("large_value_record_header_invalid");
-    const auto found = requested.find(std::string(fields[3]));
+    std::vector<std::string> fields;
+    if (!DecodeMgaMetadataFields(std::string_view(buffer.data(), consumed), &fields) ||
+        !ValidateMgaLargeValueFields(fields)) return refuse("large_value_record_invalid");
+    const auto count = fields.size();
+    EngineUuid overflow_uuid;
+    if (!ReadMetadataUuid(fields[3], &overflow_uuid)) return refuse("large_value_identity_invalid");
+    const auto found = requested.find(overflow_uuid);
     if (found == requested.end()) continue;  // no unrelated payload materialization
     auto& target = found->second;
     std::uint64_t creator = 0;
     if (!Number(fields[2], &creator) || creator == 0) return refuse("large_value_creator_invalid");
+    EngineUuid table_uuid, row_uuid, version_uuid;
+    if (fields[1] != "LARGE_VALUE_CHUNK" &&
+        (!ReadMetadataUuid(fields[4], &table_uuid) || !ReadMetadataUuid(fields[5], &row_uuid) ||
+         !ReadMetadataUuid(fields[6], &version_uuid))) return refuse("large_value_owner_invalid");
     if (fields[1] == "LARGE_VALUE") {
       std::uint64_t bytes = 0, checksum = 0;
-      if (count != 11 || target.header || fields[4] != target.row->table_uuid ||
-          fields[5] != target.row->row_uuid || !Uuid(fields[6]) || fields[7] != target.field ||
+      if (count != 11 || target.header || table_uuid != target.row->table_uuid ||
+          row_uuid != target.row->row_uuid || fields[7] != target.field ||
           !Number(fields[8], &bytes) || !Number(fields[9], &checksum) ||
           bytes != target.bytes || checksum != target.checksum || fields[10] != "durable_uncommitted")
         return refuse("large_value_header_owner_or_extent_mismatch");
@@ -156,21 +146,14 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
       std::uint64_t ordinal = 0, checksum = 0;
       if (count != 7 || !target.header || creator != target.creator ||
           !Number(fields[4], &ordinal) || ordinal != target.next_chunk ||
-          !Number(fields[6], &checksum) || fields[5].size() % 2 != 0 || fields[5].size() > 4096 ||
-          fields[5].size() / 2 > target.bytes - target.payload.size())
+          !Number(fields[6], &checksum) || fields[5].size() > 2048 ||
+          fields[5].size() > target.bytes - target.payload.size())
         return refuse("large_value_chunk_shape_or_order_invalid");
-      std::array<char, 2048> chunk{};
-      const auto size = fields[5].size() / 2;
-      for (std::size_t i = 0; i < size; ++i) {
-        const int high = Hex(fields[5][2 * i]), low = Hex(fields[5][2 * i + 1]);
-        if (high < 0 || low < 0) return refuse("large_value_chunk_encoding_invalid");
-        chunk[i] = static_cast<char>((high << 4) | low);
-      }
-      if (Checksum({chunk.data(), size}) != checksum) return refuse("large_value_chunk_checksum_mismatch");
-      target.payload.append(chunk.data(), size);
+      if (Checksum(fields[5]) != checksum) return refuse("large_value_chunk_checksum_mismatch");
+      target.payload.append(fields[5]);
       ++target.next_chunk;
     } else if (fields[1] == "LARGE_VALUE_RECLAIMED") {
-      if (count < 9 || fields[4] != target.row->table_uuid || fields[5] != target.row->row_uuid)
+      if (count < 9 || table_uuid != target.row->table_uuid || row_uuid != target.row->row_uuid)
         return refuse("large_value_reclaim_owner_invalid");
       if (creator_visible(creator)) target.reclaimed = true;
     } else return refuse("large_value_record_kind_invalid");

@@ -66,7 +66,7 @@ struct ParserConfig : ipc::ParserClientConfig {
   std::intptr_t listener_control_fd{-1};
   std::string listener_control_socket;
   std::uint64_t worker_numeric_id{1};
-  std::string parser_uuid;
+  scratchbird::core::platform::Uuid parser_uuid;
   std::string listener_uuid;
   bool embedded_engine_direct{false};
   // Programmatic fixture-only escape hatch. Production clients never set it.
@@ -129,7 +129,7 @@ struct PipelineResult {
   std::uint64_t statement_hash{0};
   std::string sblr_payload;
   std::string server_operation_id;
-  std::string server_cursor_uuid;
+  core::platform::Uuid server_cursor_uuid;
   std::uint64_t server_row_count{0};
   std::uint64_t server_affected_rows{0};
   bool server_affected_rows_present{false};

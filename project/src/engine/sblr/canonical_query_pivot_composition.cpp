@@ -20,6 +20,7 @@
 #include "engine/executor/descriptor_value_runtime.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -777,12 +778,19 @@ ExecuteCanonicalObjectFreePivotQuery(
                   "PIVOT live cost or resource bound is invalid");
   }
 
-  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid;
+  std::array<api::EngineUuid, 4> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live pivot identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto pivot_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "pivot.capability");
+      owned_identities[1];
   const std::string pivot_implementation_id =
       include_nulls ? "pivot.canonical.include-nulls.typed.v1"
                     : "pivot.canonical.exclude-nulls.typed.v1";
@@ -952,16 +960,9 @@ ExecuteCanonicalObjectFreePivotQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(identity_scope + ":" +
-                               request.context.current_monotonic_ns,
-                           "pivot.execution-attempt");
+      owned_identities[2];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      "pivot.transaction-effect-unchanged");
+      .transaction_effect_evidence_uuid = owned_identities[3];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -1384,12 +1385,19 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
                   "UNPIVOT live cost or resource bound is invalid");
   }
 
-  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid;
+  std::array<api::EngineUuid, 4> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live pivot identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto unpivot_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "unpivot.capability");
+      owned_identities[1];
   const std::string unpivot_implementation_id =
       include_nulls ? "unpivot.canonical.include-nulls.typed.v1"
                     : "unpivot.canonical.exclude-nulls.typed.v1";
@@ -1524,16 +1532,9 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(identity_scope + ":" +
-                               request.context.current_monotonic_ns,
-                           "unpivot.execution-attempt");
+      owned_identities[2];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      "unpivot.transaction-effect-unchanged");
+      .transaction_effect_evidence_uuid = owned_identities[3];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =

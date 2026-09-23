@@ -37,11 +37,8 @@ bool HasTraceTag(const EngineRequestContext& context, std::string_view tag) {
          context.trace_tags.end();
 }
 
-bool ExactUuid(std::string_view text) {
-  if (text.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == text;
+bool ExactUuid(const EngineUuid& value) {
+  return !value.is_nil() && scratchbird::core::uuid::IsValidUuidVariant(value);
 }
 
 enum class DurableProviderPhaseV1 : std::uint8_t {
@@ -81,7 +78,7 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& context,
                       "sblr.dml_update_rows.durable_operation_invalid",
                       "authenticated_context_invalid");
   }
-  const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
+  const auto parsed_transaction = scratchbird::core::uuid::MakeTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
       context.transaction_uuid);
   if (!parsed_transaction.ok()) {

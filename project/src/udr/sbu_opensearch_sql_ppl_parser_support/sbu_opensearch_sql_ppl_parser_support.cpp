@@ -326,8 +326,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus OpensearchSqlPplLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuOpensearchSqlPplPackageUuid) {
+scratchbird::udr::runtime::UdrStatus OpensearchSqlPplLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuOpensearchSqlPplPackageIdentity) {
     return {false, "UDR.OPENSEARCH_SQL_PPL.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -615,7 +615,7 @@ UdrResult sbu_opensearch_sql_ppl_debug_capabilities(std::string_view render_poli
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_opensearch_sql_ppl_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuOpensearchSqlPplPackageUuid);
+  descriptor.package_uuid = kSbuOpensearchSqlPplPackageIdentity;
   descriptor.package_name = std::string(kSbuOpensearchSqlPplPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "opensearch_sql_ppl-parser-support-enterprise-closure";

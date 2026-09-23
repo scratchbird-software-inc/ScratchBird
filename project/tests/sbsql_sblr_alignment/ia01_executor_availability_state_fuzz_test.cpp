@@ -17,10 +17,10 @@ int main(){
   const auto id=uuid::GenerateEngineIdentityV7(UuidKind::database,1786831000777ull);Require(id.ok(),"database UUID failed");
   const auto base=(std::filesystem::temp_directory_path()/"sb_executor_availability_state_fuzz_53424c52").string();
   const auto store=base+".sb.sblr_executor_availability_registry.v1";std::error_code ignored;std::filesystem::remove(store,ignored);
-  api::EngineRequestContext context;context.database_path=base;context.database_uuid.canonical=uuid::UuidToString(id.value.value);context.security_context_present=true;context.trace_tags.push_back("right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
+  api::EngineRequestContext context;context.database_path=base;context.database_uuid = id.value.value;context.security_context_present=true;context.trace_tags.push_back("right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
   auto loaded=api::LoadSblrExecutorAvailabilitySnapshot(context);Require(loaded.ok&&loaded.snapshot.generation==1,"bootstrap failed");auto current=loaded.snapshot;std::uint64_t state=kSeed;
   for(unsigned step=0;step!=128;++step){
-    api::SblrExecutorAvailabilitySetRequest request;request.database_uuid=context.database_uuid.canonical;request.expected_snapshot_uuid=current.snapshot_uuid;request.expected_generation=current.generation;
+    api::SblrExecutorAvailabilitySetRequest request;request.database_uuid=context.database_uuid;request.expected_snapshot_uuid=current.snapshot_uuid;request.expected_generation=current.generation;
     switch(Next(&state)%3){case 0:request.requested_state=api::SblrExecutorAvailabilityState::installed;break;case 1:request.requested_state=api::SblrExecutorAvailabilityState::revoked;break;default:request.requested_state=api::SblrExecutorAvailabilityState::unavailable;}
     request.reason_code="fuzz.step."+std::to_string(step);const auto prior=current;auto changed=api::SetSblrExecutorAvailability(context,request);Require(changed.ok&&changed.snapshot.generation==prior.generation+1,"valid transition failed");current=changed.snapshot;
     auto stale=request;stale.reason_code="fuzz.stale."+std::to_string(step);Require(!api::SetSblrExecutorAvailability(context,stale).ok,"stale CAS admitted");

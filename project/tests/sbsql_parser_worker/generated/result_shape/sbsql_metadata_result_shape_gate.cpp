@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "common/common.hpp"
@@ -56,7 +57,7 @@ std::size_t CountOccurrences(std::string_view haystack, std::string_view needle)
 sbsql::ParserConfig ParserConfig() {
   sbsql::ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "00000000-0000-7000-8000-0000000012f6";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-0000000012f6");
   config.bundle_contract_id = "sbp_sbsql@metadata-result-shape-gate";
   config.build_id = "fspe-012f";
   config.server_endpoint = "unix:/tmp/fspe012f-result-shape-resolver.sock";
@@ -66,9 +67,9 @@ sbsql::ParserConfig ParserConfig() {
 sbsql::SessionContext AuthenticatedSession() {
   sbsql::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "00000000-0000-7000-8000-0000000012f0";
-  session.connection_uuid = "00000000-0000-7000-8000-0000000012f1";
-  session.database_uuid = "00000000-0000-7000-8000-0000000012f2";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-0000000012f0");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-0000000012f1");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-0000000012f2");
   session.catalog_epoch = 12;
   session.security_policy_epoch = 13;
   session.descriptor_epoch = 14;
@@ -77,7 +78,7 @@ sbsql::SessionContext AuthenticatedSession() {
 
 sbsql::BoundStatement BindSql(
     std::string_view sql,
-    const std::vector<std::string>& resolved_object_uuids = {}) {
+    const std::vector<scratchbird::core::platform::Uuid>& resolved_object_uuids = {}) {
   const auto cst = sbsql::BuildCst(sql);
   const auto ast = sbsql::BuildAst(cst);
   return sbsql::BindAst(ast, cst, ParserConfig(), AuthenticatedSession(),
@@ -109,7 +110,7 @@ void ValidateBinderResultShapes(Harness* harness) {
     std::string_view sql;
     std::string_view expected_result_shape;
     std::string_view expected_right;
-    std::vector<std::string> resolved_object_uuids;
+    std::vector<scratchbird::core::platform::Uuid> resolved_object_uuids;
     bool requires_native_engine_context{false};
   };
 
@@ -118,13 +119,13 @@ void ValidateBinderResultShapes(Harness* harness) {
       {"VALUES (1)", "result.shape.rowset", "right.read", {}, true},
       {"SHOW METRICS", "result.shape.management_report", "right.observe", {}},
       {"CALL p()", "result.shape.routine_result", "right.execute",
-       {"00000000-0000-7000-8000-00000000d000"}},
+       {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000d000")}},
       {"INSERT INTO t VALUES (1)", "result.shape.command_status", "right.write",
-       {"00000000-0000-7000-8000-00000000d001"}},
+       {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000d001")}},
       {"CREATE TABLE t (id int)", "result.shape.command_status", "right.catalog_mutate",
-       {"00000000-0000-7000-8000-00000000d002"}},
+       {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000d002")}},
       {"GRANT SELECT ON t TO r", "result.shape.command_status", "right.security_admin",
-       {"00000000-0000-7000-8000-00000000d003"}},
+       {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000d003")}},
   };
 
   for (const auto& item : cases) {
@@ -164,7 +165,7 @@ scratchbird::server::ServerSessionRegistry MakeRegistry(
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = "/tmp/sb_metadata_result_shape_gate.sbdb";
-  session.database_uuid = "019e05df-f012-7000-8000-0000000000f6";
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e05df-f012-7000-8000-0000000000f6");
   *session_uuid = session.session_uuid;
   scratchbird::server::ServerSessionRegistry registry;
   registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] =
@@ -235,7 +236,7 @@ std::array<std::uint8_t, 16> InstallMetadataCursor(
   cursor.row_descriptor_uuid = sbps::MakeUuidV7Bytes();
   cursor.snapshot_uuid = sbps::MakeUuidV7Bytes();
   cursor.statement_context_statement_uuid =
-      scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
+      scratchbird::core::platform::Uuid{sbps::MakeUuidV7Bytes()};
 
   scratchbird::server::ServerStatementContextRecord statement_context;
   statement_context.session_uuid = session_uuid;

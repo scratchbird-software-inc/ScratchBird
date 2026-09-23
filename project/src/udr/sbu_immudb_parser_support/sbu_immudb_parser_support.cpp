@@ -320,8 +320,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus ImmudbLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuImmudbPackageUuid) {
+scratchbird::udr::runtime::UdrStatus ImmudbLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuImmudbPackageIdentity) {
     return {false, "UDR.IMMUDB.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -534,7 +534,7 @@ UdrResult sbu_immudb_debug_capabilities(std::string_view render_policy) {
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_immudb_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuImmudbPackageUuid);
+  descriptor.package_uuid = kSbuImmudbPackageIdentity;
   descriptor.package_name = std::string(kSbuImmudbPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "immudb-parser-support-beta-closure";

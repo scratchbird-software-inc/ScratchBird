@@ -13,6 +13,7 @@
 #include "mga_relation_store/mga_heap_memory.hpp"
 #include "mga_relation_store/mga_binary_identity_codec.hpp"
 #include "mga_relation_store/mga_binary_fields.hpp"
+#include "mga_relation_store/mga_scoped_index_codec.hpp"
 #include "secondary_index_delta_merge.hpp"
 
 #include <chrono>
@@ -30,14 +31,12 @@
 namespace scratchbird::engine::internal_api {
 
 inline constexpr std::string_view kScopedRowBinaryBatchMagic = "SBMRBIN1";
-inline constexpr std::uint16_t kScopedRowBinaryVersion = 3;
-inline constexpr std::uint16_t kScopedRowBinaryLegacyTypedVersion = 2;
-inline constexpr std::uint16_t kScopedRowBinaryNativePacketVersion = 4;
-inline constexpr std::string_view kScopedIndexBinaryBatchMagic = "SBMIBIN1";
-inline constexpr std::uint16_t kScopedIndexBinaryVersion = 1;
+inline constexpr std::uint16_t kScopedRowBinaryVersion = 6;
+inline constexpr std::uint16_t kScopedRowBinaryGeneralVersion = 5;
+inline constexpr std::uint16_t kScopedRowBinaryNativePacketVersion = 7;
 
 // SEARCH_KEY: SB_ENGINE_MGA_ROW_CODEC_INTERFACE
-// Row framing converts persisted bytes/text to version records and back. It
+// Row framing converts binary persisted records to version records and back. It
 // validates format/resource bounds but never decides MGA visibility/finality.
 struct ScopedRelationSummary {
   bool trusted = false;
@@ -70,11 +69,6 @@ bool ReadCompleteMgaBinaryFile(
     const std::string& path,
     std::vector<scratchbird::core::index::byte>* bytes,
     std::uint64_t maximum_bytes = std::numeric_limits<std::uint64_t>::max());
-void AppendBinaryU8(std::string* out, std::uint8_t value);
-void AppendBinaryU16(std::string* out, std::uint16_t value);
-void AppendBinaryU32(std::string* out, std::uint32_t value);
-void AppendBinaryU64(std::string* out, std::uint64_t value);
-bool AppendBinaryString(std::string* out, std::string_view value);
 std::string ScopedRowBinaryMaterializeValue(std::string_view type_name,
                                             std::string_view payload);
 std::string_view ScopedRowNativePacketTypeName(std::uint8_t tag);
@@ -87,8 +81,8 @@ bool AppendScopedRowBinaryBatch(
 bool AppendScopedRowIdentityBinaryBatch(
     std::string* out,
     const std::vector<CrudRowVersionRecord>& row_identities,
-    const std::string& table_uuid,
-    const std::string& temporary_session_uuid,
+    const EngineUuid& table_uuid,
+    const EngineUuid& temporary_session_uuid,
     std::span<const EngineRowValue> typed_rows,
     std::span<const std::string> field_order,
     std::uint64_t creator_tx,
@@ -96,8 +90,8 @@ bool AppendScopedRowIdentityBinaryBatch(
 bool AppendScopedRowIdentityNativePacketBatch(
     std::string* out,
     const std::vector<CrudRowVersionRecord>& row_identities,
-    const std::string& table_uuid,
-    const std::string& temporary_session_uuid,
+    const EngineUuid& table_uuid,
+    const EngineUuid& temporary_session_uuid,
     const EngineNativeRowPacketFrame& frame,
     std::uint64_t creator_tx,
     std::uint64_t first_event_sequence);

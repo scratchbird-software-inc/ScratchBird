@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -12,6 +13,7 @@
 #include "cache/sblr_template_cache.hpp"
 #include "compression_policy.hpp"
 #include "database_lifecycle.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "direct_binary_result_frame.hpp"
 #include "dml/dml_target_access_plan.hpp"
 #include "hot_point_lookup_cache.hpp"
@@ -50,16 +52,16 @@ namespace db = scratchbird::storage::database;
 namespace exec = scratchbird::engine::executor;
 
 exec::PhysicalMgaStatementContext CacheMgaContext(
-    const std::string& statement_uuid =
-        "019f0000-0000-7500-8000-000000006101") {
+    const api::EngineUuid& statement_uuid =
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006101")) {
   exec::PhysicalMgaStatementContext context;
   context.statement_uuid = statement_uuid;
   context.owning_transaction_uuid =
-      "019f0000-0000-7500-8000-000000006102";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006102");
   context.statement_snapshot_uuid =
-      "019f0000-0000-7500-8000-000000006103";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006103");
   context.statement_metadata_snapshot_uuid =
-      "019f0000-0000-7500-8000-000000006104";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006104");
   context.owning_local_transaction_id = 7;
   context.visible_committed_high_watermark = 6;
   context.oldest_active_transaction_id = 7;
@@ -80,18 +82,18 @@ exec::TypedPhysicalNodeDag CacheSelectedDag(
     const exec::PhysicalMgaStatementContext& context) {
   exec::TypedPhysicalNodeDag dag;
   dag.abi_version = 2;
-  dag.selected_plan_uuid = "019f0000-0000-7500-8000-000000006120";
+  dag.selected_plan_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006120");
   dag.root_physical_node_id = 1;
   dag.local_transaction_id = context.owning_local_transaction_id;
   dag.statement_snapshot_id = context.visible_committed_high_watermark;
   dag.mga_statement_context = context;
-  dag.bound_sblr_tree_uuid = "019f0000-0000-7500-8000-000000006121";
-  dag.catalog_epoch_uuid = "019f0000-0000-7500-8000-000000006122";
-  dag.security_context_uuid = "019f0000-0000-7500-8000-000000006123";
-  dag.capability_snapshot_uuid = "019f0000-0000-7500-8000-000000006124";
-  dag.resource_snapshot_uuid = "019f0000-0000-7500-8000-000000006125";
-  dag.statistics_snapshot_uuid = "019f0000-0000-7500-8000-000000006126";
-  dag.route_snapshot_uuid = "019f0000-0000-7500-8000-000000006127";
+  dag.bound_sblr_tree_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006121");
+  dag.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006122");
+  dag.security_context_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006123");
+  dag.capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006124");
+  dag.resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006125");
+  dag.statistics_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006126");
+  dag.route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006127");
   dag.catalog_generation = 1;
   dag.security_epoch = 1;
   dag.policy_epoch = 1;
@@ -122,10 +124,10 @@ exec::TypedPhysicalNodeDag CacheSelectedDag(
   node.implementation_id = "values.materialize.v1";
   node.output_descriptor_ids = {1};
   node.causal_counter_id = 1;
-  node.selected_alternative_uuid = "019f0000-0000-7500-8000-000000006130";
-  node.executor_capability_uuid = "019f0000-0000-7500-8000-000000006131";
+  node.selected_alternative_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006130");
+  node.executor_capability_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006131");
   node.executor_capability_abi_version = 1;
-  node.cost_vector_uuid = "019f0000-0000-7500-8000-000000006132";
+  node.cost_vector_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000006132");
   node.memory_bytes_required = 1;
   node.engine_capability_validated = true;
   node.mga_statement_context = context;
@@ -291,8 +293,8 @@ SemanticCapture RefusedCapture(std::string diagnostic,
   return capture;
 }
 
-opt::OptimizerStatsIdentity StatsIdentity(const std::string& relation_uuid,
-                                          const std::string& statistic_uuid) {
+opt::OptimizerStatsIdentity StatsIdentity(const api::EngineUuid& relation_uuid,
+                                          const api::EngineUuid& statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = relation_uuid;
   identity.statistic_uuid = statistic_uuid;
@@ -315,12 +317,12 @@ opt::SelectivityEstimate Child(double selectivity) {
 }
 
 opt::ExtendedOptimizerStatistic ExtendedStat(
-    const std::string& relation_uuid) {
+    const api::EngineUuid& relation_uuid) {
   opt::ExtendedOptimizerStatistic stats;
-  stats.identity = StatsIdentity(relation_uuid, "orh120.extended");
+  stats.identity = StatsIdentity(relation_uuid, scratchbird::tests::FixtureUuid(1586, 1));
   stats.kind = opt::ExtendedOptimizerStatisticKind::kJointMcv;
   stats.relation_uuid = relation_uuid;
-  stats.column_uuids = {"col.tenant", "col.status"};
+  stats.column_uuids = {scratchbird::tests::FixtureUuid(1586, 10), scratchbird::tests::FixtureUuid(1586, 11)};
   stats.joint_mcv.push_back({{"tenant-7", "active"}, 0.07});
   return stats;
 }
@@ -347,14 +349,14 @@ parser::CacheKey ParserCacheKey() {
   key.memory_pressure_generation = 134;
   key.normalized_statement_hash = 135;
   key.parameter_type_shape_hash = 136;
-  key.connection_uuid = "orh120-connection";
+  key.connection_uuid = scratchbird::tests::FixtureUuid(1453, 9);
   key.transaction_context_hash = "mga-snapshot:orh120";
   key.dialect = "sbsql_v3";
   key.role_set_hash = "role.reader";
   key.group_set_hash = "group.reader";
   key.search_path_hash = "schema.public";
   key.language_profile = "en";
-  key.policy_profile = "policy.orh120";
+  key.policy_profile = scratchbird::tests::FixtureUuid(1453, 10);
   key.parser_profile = "parser.orh120";
   key.result_contract_hash = "rowset.orh120.v1";
   return key;
@@ -495,7 +497,8 @@ agents::VectorMaintenanceJobRequest VectorJobRequest(
 
 exec::SnapshotSafeCacheKey SnapshotKey() {
   exec::SnapshotSafeCacheKey key;
-  key.normalized_operation = "select orh120 where tenant=?";
+  key.bound_sblr_tree_uuid = CacheSelectedDag(CacheMgaContext()).bound_sblr_tree_uuid;
+  key.security_context_uuid = CacheSelectedDag(CacheMgaContext()).security_context_uuid;
   key.safe_parameter_digest = "tenant:stable";
   key.catalog_epoch = 120;
   key.statistics_epoch = 121;
@@ -508,8 +511,23 @@ exec::SnapshotSafeCacheKey SnapshotKey() {
   key.result_contract_identity = "orh120.rowset.v1";
   key.result_contract_hash = "sha256:orh120-rowset-contract";
   key.route_compatibility = "embedded";
-  key.dialect_compatibility = "sbsql_v3";
   return key;
+}
+
+exec::SnapshotSafeCachePayload CachePayload() {
+  const auto binding = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"), 1, 1,
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"), 1);
+  Require(binding.ok, "ORH-120 int64 fixture binding unavailable");
+  auto value = exec::EncodeInt64Value(42);
+  value.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1586, 501);
+  value.descriptor.type_uuid = binding.row.type_uuid;
+  value.descriptor.descriptor_kind = "scalar";
+  value.descriptor.encoded_descriptor = "nullability=non_null";
+  exec::SnapshotSafeCachePayload payload;
+  payload.final_result.columns = {{"value", value.descriptor, false, 1}};
+  payload.final_result.rows = {{{value}}, {{value}}};
+  return payload;
 }
 
 exec::SnapshotSafeCacheStoreRequest SnapshotStoreRequest() {
@@ -517,8 +535,8 @@ exec::SnapshotSafeCacheStoreRequest SnapshotStoreRequest() {
   request.entry.key = SnapshotKey();
   request.entry.payload_kind = exec::SnapshotSafeCachePayloadKind::kSmallFinalResult;
   request.entry.row_count = 2;
-  request.entry.cached_result_digest = "sha256:orh120-result";
-  request.entry.cached_mga_security_digest = "sha256:orh120-mga-security";
+  request.entry.payload = CachePayload();
+  request.entry.cached_result_digest = exec::SnapshotSafeCachePayloadDigest(*request.entry.payload, request.entry.payload_kind);
   request.read_only_operation = true;
   request.small_final_result = true;
   request.max_small_result_rows = 16;
@@ -534,8 +552,8 @@ exec::SnapshotSafeCacheLookupRequest SnapshotLookupRequest() {
   request.small_final_result = true;
   request.row_count = 2;
   request.max_small_result_rows = 16;
-  request.recomputed_result_digest = "sha256:orh120-result";
-  request.recomputed_mga_security_digest = "sha256:orh120-mga-security";
+  request.recomputed_payload = CachePayload();
+  request.recomputed_result_digest = exec::SnapshotSafeCachePayloadDigest(*request.recomputed_payload, request.payload_kind);
   BindCacheRequest(&request);
   return request;
 }
@@ -734,7 +752,9 @@ mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
 void CreateDatabaseFixture(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
-  create.database_uuid = NewUuid(platform::UuidKind::database, 1);
+  const auto database_id = uuid::MakeTypedUuid(platform::UuidKind::database, scratchbird::tests::FixtureUuid(1208, 3001));
+  Require(database_id.ok(), "ORH-120 database identity invalid");
+  create.database_uuid = database_id.value;
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 2);
   create.creation_unix_epoch_millis = 1779540000000ull;
   create.require_resource_seed_pack = false;
@@ -776,10 +796,10 @@ api::EngineRequestContext DocumentContext(const std::filesystem::path& path,
                                           std::uint64_t tx) {
   api::EngineRequestContext context;
   context.database_path = path.string();
-  context.database_uuid.canonical = "orh120-db";
-  context.current_schema_uuid.canonical = "orh120-documents";
-  context.transaction_uuid.canonical =
-      uuid::UuidToString(TransactionUuid(tx).value);
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 3001);
+  context.current_schema_uuid = scratchbird::tests::FixtureUuid(1208, 3002);
+  context.transaction_uuid =
+      TransactionUuid(tx).value;
   context.local_transaction_id = tx;
   context.security_context_present = true;
   context.resource_epoch = 120;
@@ -852,7 +872,7 @@ api::EngineDocumentPhysicalProof DocumentProof(
   contract.index_generation.covers_predicate = true;
   contract.index_generation.required_generation = generation.generation_id;
   contract.index_generation.available_generation = generation.generation_id;
-  contract.index_generation.index_uuid = "orh120-document-path-index";
+  contract.index_generation.index_uuid = scratchbird::tests::FixtureUuid(1274, 1201);
   contract.policy.proof_present = true;
   contract.policy.allowed = true;
   contract.provider_generation.required = true;
@@ -870,7 +890,7 @@ api::EngineDocumentPhysicalProof DocumentProof(
   contract.provider_generation.catalog_epoch = context.catalog_generation_id;
   contract.provider_generation.generation_uuid = generation.generation_uuid;
   contract.provider_generation.provider_id = generation.provider_id;
-  contract.provider_generation.database_uuid = context.database_uuid.canonical;
+  contract.provider_generation.database_uuid = context.database_uuid;
   contract.provider_generation.collection_uuid = generation.collection_uuid;
   contract.provider_generation.publish_state = "published";
   contract.provider_generation.validation_state = "validated";
@@ -892,7 +912,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
                       std::string_view id) {
   for (const auto& item : result.evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -966,8 +986,8 @@ void ProveOptimizerDifferentialCorpus() {
 
 void ProveExtendedStatsDoNotChangeResultSemantics() {
   opt::ExtendedStatsSelectivityRequest request;
-  request.relation_uuid = "rel.orh120.extended";
-  request.column_uuids = {"col.tenant", "col.status"};
+  request.relation_uuid = scratchbird::tests::FixtureUuid(1586, 2);
+  request.column_uuids = {scratchbird::tests::FixtureUuid(1586, 10), scratchbird::tests::FixtureUuid(1586, 11)};
   request.value_encodings = {"tenant-7", "active"};
   request.children = {Child(0.10), Child(0.20)};
   request.minimum_confidence = opt::CostConfidence::kMedium;
@@ -975,8 +995,8 @@ void ProveExtendedStatsDoNotChangeResultSemantics() {
       request, {ExtendedStat(request.relation_uuid)});
   Require(estimate.used_kind == opt::ExtendedOptimizerStatisticKind::kJointMcv,
           "extended stats optimized path did not consume joint MCV");
-  Require(Has(estimate.evidence,
-              "extended_stats_selected_uuid=orh120.extended"),
+  Require(estimate.selected_statistic_uuids ==
+              std::vector<api::EngineUuid>{scratchbird::tests::FixtureUuid(1586, 1)},
           "extended stats selected UUID evidence missing");
   CompareSemanticEquivalent(
       "extended_stats_result_semantics",
@@ -1030,11 +1050,11 @@ void ProveParserFrontDoorCacheEquivalence() {
 void ProveDmlAndHotPointEquivalence() {
   api::DmlTargetAccessPlanRequest request;
   request.mutation_kind = "dml.merge_rows";
-  request.database_uuid = "orh120-db";
-  request.relation_uuid = "orh120-table";
+  request.database_uuid = scratchbird::tests::FixtureUuid(1586, 3);
+  request.relation_uuid = scratchbird::tests::FixtureUuid(1586, 4);
   request.predicate_kind = "row_uuid_match";
   request.predicate_descriptor_digest = "row_uuid_match:row-120";
-  request.row_uuid = "row-120";
+  request.row_uuid = scratchbird::tests::FixtureUuid(1586, 5);
   request.security_policy_digest = "security:orh120";
   request.redaction_policy_digest = "redaction:orh120";
   request.access_policy_digest = "access:orh120";
@@ -1211,7 +1231,7 @@ void ProveNoSqlProviderEquivalenceAndDocumentPathRuntime() {
   SeedCrudTransaction(writer);
   api::EngineDocumentInsertRequest insert;
   insert.context = writer;
-  insert.target_object.uuid.canonical = "orh120-doc-a";
+  insert.target_object.uuid = scratchbird::tests::FixtureUuid(1586, 6);
   AddFragment(&insert, "tenant.id", "T1");
   AddFragment(&insert, "status", "active");
   auto inserted = api::EngineDocumentInsert(insert);

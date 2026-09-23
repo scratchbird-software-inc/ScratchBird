@@ -58,8 +58,8 @@ bool IndexTouchesOpaqueColumn(const EngineIndexDefinition& definition,
 }
 
 CrudIndexRecord BuildCrudIndexRecord(const EngineIndexDefinition& definition,
-                                     const std::string& table_uuid,
-                                     const std::string& index_uuid,
+                                     const EngineUuid& table_uuid,
+                                     const EngineUuid& index_uuid,
                                      const std::string& index_name) {
   CrudIndexRecord index;
   const std::string requested_profile = !definition.index_kind.empty() ? definition.index_kind : definition.physical_profile;
@@ -120,12 +120,12 @@ std::vector<CrudRowVersionRecord> RowsVisibleForCreateIndexBuild(
     return VisibleCrudRowsForContext(state, table.table_uuid, context);
   }
 
-  std::set<std::string> sessions;
+  std::set<EngineUuid> sessions;
   if (!context.session_uuid.is_nil()) {
     sessions.insert(context.session_uuid);
   }
   for (const auto& row : state.row_versions) {
-    if (row.table_uuid == table.table_uuid && !row.temporary_session_uuid.empty()) {
+    if (row.table_uuid == table.table_uuid && !row.temporary_session_uuid.is_nil()) {
       sessions.insert(row.temporary_session_uuid);
     }
   }
@@ -147,9 +147,9 @@ bool ExistingRowsHaveDuplicateKeys(const RelationReadSnapshot& state,
                                    const CrudIndexRecord& index,
                                    const EngineRequestContext& context) {
   if (table.temporary && table.temporary_scope == "global") {
-    std::map<std::string, std::set<std::string>> seen_by_session;
+    std::map<EngineUuid, std::set<std::string>> seen_by_session;
     for (const auto& row : RowsVisibleForCreateIndexBuild(state, table, context)) {
-      const std::string session_key = row.temporary_session_uuid.empty()
+      const EngineUuid session_key = row.temporary_session_uuid.is_nil()
                                           ? context.session_uuid
                                           : row.temporary_session_uuid;
       for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
@@ -173,11 +173,19 @@ TResult PersistedCreateWithNameRegistry(const TRequest& request,
                                         const std::string& operation_id,
                                         const std::string& object_kind,
                                         bool require_transaction,
-                                        const std::string& state) {
-  auto result = PersistedRecordResult<TResult>(request, operation_id, object_kind, require_transaction, state);
+                                        const std::string& state,
+                                        std::optional<std::string> binary_payload = std::nullopt) {
+  if (binary_payload && binary_payload->empty()) {
+    return MakeApiBehaviorDiagnostic<TResult>(request.context, operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,"binary_descriptor_payload_required"));
+  }
+  auto result = binary_payload
+      ? PersistedRecordResultWithPayload<TResult>(request, operation_id, object_kind,
+          require_transaction, state, false, std::move(*binary_payload))
+      : PersistedRecordResult<TResult>(request, operation_id, object_kind, require_transaction, state);
   if (!result.ok) { return result; }
   const std::string fallback_name = ApiBehaviorPrimaryName(request, object_kind);
-  const std::string scope_uuid = request.target_schema.uuid.is_nil()
+  const EngineUuid scope_uuid = request.target_schema.uuid.is_nil()
                                      ? request.target_object.uuid
                                      : request.target_schema.uuid;
   const auto name_appended = PersistNameRegistryEntriesForObject(request.context,
@@ -202,7 +210,7 @@ TResult PersistedCreateWithNameRegistry(const TRequest& request,
                           object_kind,
                           result.primary_object.uuid,
                           result.catalog_row_uuid,
-                          scope_uuid.empty() ? object_kind : scope_uuid);
+                          scope_uuid.is_nil() ? object_kind : "schema");
   return result;
 }
 
@@ -222,7 +230,7 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
   if (context_status.error) {
     return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(request.context, "ddl.create_schema", context_status);
   }
-  const std::string schema_uuid = ApiBehaviorObjectUuid(request, "schema");
+  const EngineUuid schema_uuid = ApiBehaviorObjectUuid(request, "schema");
   const bool any_recovery_identity =
       !request.recovery_operation_uuid.is_nil() ||
       !request.requested_catalog_row_uuid.is_nil() ||
@@ -239,13 +247,13 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
         "ddl.create_schema",
         MakeInvalidRequestDiagnostic("ddl.create_schema", "recovery_identity_tuple_incomplete"));
   }
-  const std::string parent_schema_uuid = request.target_schema.uuid;
+  const EngineUuid parent_schema_uuid = request.target_schema.uuid;
   EngineApiDiagnostic schema_diagnostic;
   const auto parent_schema = FindVisibleSchemaTreeRecord(request.context, parent_schema_uuid,
       request.context.local_transaction_id, schema_diagnostic);
   if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
       request.context, "ddl.create_schema", schema_diagnostic);
-  if (!parent_schema_uuid.empty() && !parent_schema) {
+  if (!parent_schema_uuid.is_nil() && !parent_schema) {
     return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
         request.context,
         "ddl.create_schema",
@@ -253,7 +261,7 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
   }
   std::vector<EngineLocalizedName> names = request.localized_names;
   if (names.empty()) {
-    const std::string fallback = schema_uuid.empty() ? "unnamed_schema" : schema_uuid;
+    const std::string fallback = "unnamed_schema";
     names.push_back({"en", "default", fallback, fallback, true});
   }
   const auto conflict = SchemaTreePathConflict(request.context, schema_uuid, parent_schema_uuid,
@@ -272,8 +280,7 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
   record.parent_schema_uuid = parent_schema_uuid;
   record.localized_names = names;
   record.default_name = SchemaTreeDefaultName(names, "unnamed_schema");
-  std::vector<std::string> schema_extension_payload;
-  std::string mutation_audit_recovery_uuid;
+  BinaryCatalogMetadata schema_extensions;
   for (const auto& option : request.option_envelopes) {
     if (StartsWithLocal(option, "unresolved_schema_parent_path:")) {
       return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
@@ -293,24 +300,6 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
             MakeInvalidRequestDiagnostic("ddl.create_schema", "localized_comment_requires_language_and_text"));
       }
       record.localized_comments.push_back({rest.substr(0, pos), rest.substr(pos + 1)});
-    } else if (StartsWithLocal(option, "schema_union_member:")) {
-      schema_extension_payload.push_back("schema_union_member=" + option.substr(20));
-    } else if (StartsWithLocal(option, "schema_union_policy:")) {
-      schema_extension_payload.push_back("schema_union_policy=" + option.substr(20));
-    } else if (StartsWithLocal(option, "schema_union_root:")) {
-      schema_extension_payload.push_back("schema_union_root=" + option.substr(18));
-    } else if (StartsWithLocal(option, "lifecycle_transition:")) {
-      schema_extension_payload.push_back("lifecycle_transition=" + option.substr(21));
-    } else if (StartsWithLocal(option, "mga_root_mutation_registry:")) {
-      schema_extension_payload.push_back("mga_root_mutation_registry=" + option.substr(27));
-    } else if (StartsWithLocal(option, "implementation_flavour:")) {
-      schema_extension_payload.push_back("implementation_flavour=" + option.substr(22));
-    } else if (StartsWithLocal(option, "filespace_diagnostic:")) {
-      schema_extension_payload.push_back("filespace_diagnostic=" + option.substr(21));
-    } else if (StartsWithLocal(option, "catalog_ddl_mutation_audit:")) {
-      mutation_audit_recovery_uuid = option.substr(27);
-      schema_extension_payload.push_back(
-          "catalog_ddl_mutation_audit=" + mutation_audit_recovery_uuid);
-    } else {
+    } else if (!AddSchemaTreeExtension(option,&schema_extensions)) {
       return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
           request.context,

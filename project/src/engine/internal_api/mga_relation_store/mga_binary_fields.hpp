@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
+#include <limits>
 #include <type_traits>
 
 namespace scratchbird::engine::internal_api {
@@ -25,6 +27,41 @@ bool ReadUnsigned(std::span<const std::uint8_t> bytes,
   return true;
 }
 }  // namespace mga_binary_fields_detail
+
+inline void AppendBinaryU8(std::string* out, std::uint8_t value) {
+  if (out == nullptr) { return; }
+  out->push_back(static_cast<char>(value));
+}
+
+inline void AppendBinaryU16(std::string* out, std::uint16_t value) {
+  if (out == nullptr) { return; }
+  out->push_back(static_cast<char>(value & 0xffu));
+  out->push_back(static_cast<char>((value >> 8u) & 0xffu));
+}
+
+inline void AppendBinaryU32(std::string* out, std::uint32_t value) {
+  if (out == nullptr) { return; }
+  for (std::size_t index = 0; index < 4; ++index) {
+    out->push_back(static_cast<char>((value >> (index * 8u)) & 0xffu));
+  }
+}
+
+inline void AppendBinaryU64(std::string* out, std::uint64_t value) {
+  if (out == nullptr) { return; }
+  for (std::size_t index = 0; index < 8; ++index) {
+    out->push_back(static_cast<char>((value >> (index * 8u)) & 0xffu));
+  }
+}
+
+inline bool AppendBinaryString(std::string* out, std::string_view value) {
+  if (out == nullptr ||
+      value.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return false;
+  }
+  AppendBinaryU32(out, static_cast<std::uint32_t>(value.size()));
+  out->append(value.data(), value.size());
+  return true;
+}
 
 // Fixed little-endian fields; malformed input never changes cursor/output.
 inline bool ReadBinaryU8(std::span<const std::uint8_t> bytes, std::size_t* offset, std::uint8_t* out) {

@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -50,12 +51,12 @@ api::EngineRequestContext SupportContext() {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "pcr073-transaction-support-bundle";
-  context.database_uuid.canonical =
-      uuid::UuidToString(MakeUuid(UuidKind::database, 1).value);
-  context.principal_uuid.canonical =
-      uuid::UuidToString(MakeUuid(UuidKind::principal, 2).value);
-  context.session_uuid.canonical =
-      uuid::UuidToString(MakeUuid(UuidKind::object, 3).value);
+  context.database_uuid =
+      MakeUuid(UuidKind::database, 1).value;
+  context.principal_uuid =
+      MakeUuid(UuidKind::principal, 2).value;
+  context.session_uuid =
+      MakeUuid(UuidKind::object, 3).value;
   context.security_context_present = true;
   context.catalog_generation_id = 7;
   context.security_epoch = 11;
@@ -203,7 +204,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
   }

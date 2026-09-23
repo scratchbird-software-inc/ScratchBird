@@ -18,9 +18,7 @@ EngineResolveSecurityAuthorityResult EngineResolveSecurityAuthority(
   SecurityAuthorityDescriptor descriptor = request.candidate;
   if (descriptor.authority_class.empty()) { descriptor = SecurityAuthorityDescriptorFromRequest(request); }
   if (descriptor.authority_uuid.is_nil()) {
-    descriptor.authority_uuid = request.context.database_uuid.is_nil()
-        ? "00000000-0000-7000-8000-0000000sec01"
-        : request.context.database_uuid;
+    descriptor.authority_uuid = request.context.database_uuid;
   }
   if (!IsSupportedSecurityAuthorityClass(descriptor.authority_class)) {
     return SecurityFailure<EngineResolveSecurityAuthorityResult>(
@@ -42,6 +40,13 @@ EngineResolveSecurityAuthorityResult EngineResolveSecurityAuthority(
         request.context,
         "security.resolve_authority",
         MakeSecurityDiagnostic("SECURITY.AUTHORITY.UNAVAILABLE", "database_path_required"));
+  }
+
+  if (descriptor.authority_uuid.is_nil()) {
+    return SecurityFailure<EngineResolveSecurityAuthorityResult>(
+        request.context,
+        "security.resolve_authority",
+        MakeSecurityDiagnostic("SECURITY.AUTHORITY.INVALID", "authority_uuid_required"));
   }
 
   auto result = SecuritySuccess<EngineResolveSecurityAuthorityResult>(request.context, "security.resolve_authority");

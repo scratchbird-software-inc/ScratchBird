@@ -26,10 +26,12 @@ namespace scratchbird::engine::internal_api {
 struct EngineNoSqlProviderGenerationMetadata {
   EngineNoSqlProviderFamily family = EngineNoSqlProviderFamily::kUnknown;
   std::string provider_id;
+  EngineUuid provider_uuid;
+  bool persistence_valid = true;
   std::string database_identity;
-  std::string database_uuid;
-  std::string collection_uuid;
-  std::string generation_uuid;
+  EngineUuid database_uuid;
+  EngineUuid collection_uuid;
+  EngineUuid generation_uuid;
   std::uint64_t generation_id = 0;
   std::uint64_t descriptor_epoch = 0;
   std::uint64_t security_epoch = 0;
@@ -47,19 +49,20 @@ struct EngineNoSqlProviderGenerationMetadata {
   // candidate-admission evidence only.  MGA visibility/finality remains
   // owned by the engine transaction inventory.
   bool time_series_rollup_candidate_present = false;
-  std::string time_series_rollup_capability_uuid;
+  EngineUuid time_series_rollup_capability_uuid;
+  std::string time_series_rollup_binding_digest; // Raw SHA-256 bytes, never a UUID.
   std::uint64_t time_series_rollup_generation = 0;
   std::uint64_t time_series_visible_late_arrival_generation = 0;
   std::int64_t time_series_rollup_interval_ns = 0;
   std::string time_series_rollup_exactness_attestation_state;
-  std::string time_series_rollup_statement_snapshot_uuid;
-  std::string time_series_rollup_statement_metadata_snapshot_uuid;
-  std::string time_series_rollup_owning_transaction_uuid;
+  EngineUuid time_series_rollup_statement_snapshot_uuid;
+  EngineUuid time_series_rollup_statement_metadata_snapshot_uuid;
+  EngineUuid time_series_rollup_owning_transaction_uuid;
   std::uint64_t time_series_rollup_local_transaction_id = 0;
   std::uint64_t
       time_series_rollup_snapshot_visible_through_local_transaction_id = 0;
-  std::string time_series_rollup_security_context_uuid;
-  std::string time_series_rollup_catalog_epoch_uuid;
+  EngineUuid time_series_rollup_security_context_uuid;
+  EngineUuid time_series_rollup_catalog_epoch_uuid;
   bool time_series_rollup_exact_residual_recheck_required = false;
   bool time_series_rollup_base_row_mga_recheck_required = false;
   bool time_series_rollup_security_recheck_required = false;
@@ -67,15 +70,16 @@ struct EngineNoSqlProviderGenerationMetadata {
   // candidate-admission evidence only. ANN never owns final rows, ordering,
   // visibility, transaction finality, or recovery authority.
   bool vector_ann_candidate_present = false;
-  std::string vector_ann_capability_uuid;
-  std::string vector_ann_index_uuid;
-  std::string vector_ann_base_relation_uuid;
+  EngineUuid vector_ann_capability_uuid;
+  std::string vector_ann_binding_digest; // Raw SHA-256 bytes, never a UUID.
+  EngineUuid vector_ann_index_uuid;
+  EngineUuid vector_ann_base_relation_uuid;
   std::uint64_t vector_ann_base_relation_generation = 0;
-  std::string vector_ann_relation_descriptor_uuid;
+  EngineUuid vector_ann_relation_descriptor_uuid;
   std::uint64_t vector_ann_relation_descriptor_generation = 0;
-  std::string vector_ann_embedding_column_uuid;
-  std::string vector_ann_embedding_descriptor_uuid;
-  std::string vector_ann_embedding_type_uuid;
+  EngineUuid vector_ann_embedding_column_uuid;
+  EngineUuid vector_ann_embedding_descriptor_uuid;
+  EngineUuid vector_ann_embedding_type_uuid;
   std::uint64_t vector_ann_dimension = 0;
   std::string vector_ann_element_profile;
   std::string vector_ann_metric_id;
@@ -89,15 +93,15 @@ struct EngineNoSqlProviderGenerationMetadata {
   std::uint64_t vector_ann_required_recall_ppm = 0;
   std::uint64_t vector_ann_observed_recall_ppm = 0;
   bool vector_ann_recall_sample_deterministic = false;
-  std::string vector_ann_recall_evidence_uuid;
-  std::string vector_ann_statement_uuid;
-  std::string vector_ann_statement_snapshot_uuid;
-  std::string vector_ann_statement_metadata_snapshot_uuid;
-  std::string vector_ann_owning_transaction_uuid;
+  EngineUuid vector_ann_recall_evidence_uuid;
+  EngineUuid vector_ann_statement_uuid;
+  EngineUuid vector_ann_statement_snapshot_uuid;
+  EngineUuid vector_ann_statement_metadata_snapshot_uuid;
+  EngineUuid vector_ann_owning_transaction_uuid;
   std::uint64_t vector_ann_local_transaction_id = 0;
   std::uint64_t vector_ann_snapshot_visible_through_local_transaction_id = 0;
-  std::string vector_ann_security_context_uuid;
-  std::string vector_ann_catalog_epoch_uuid;
+  EngineUuid vector_ann_security_context_uuid;
+  EngineUuid vector_ann_catalog_epoch_uuid;
   bool vector_ann_exact_fallback_available = false;
   bool vector_ann_full_base_exact_recheck_required = false;
   bool vector_ann_base_row_mga_recheck_required = false;
@@ -116,33 +120,34 @@ struct EngineNoSqlProviderGenerationMetadata {
   // candidate-admission evidence only. A segment never owns final rows,
   // token identity, score/rank, visibility, transaction finality, or recovery.
   bool search_segment_candidate_present = false;
-  std::string search_segment_capability_uuid;
-  std::string search_segment_index_uuid;
-  std::string search_segment_uuid;
-  std::string search_segment_base_relation_uuid;
+  EngineUuid search_segment_capability_uuid;
+  std::string search_segment_binding_digest; // Raw SHA-256 bytes, never a UUID.
+  EngineUuid search_segment_index_uuid;
+  EngineUuid search_segment_uuid;
+  EngineUuid search_segment_base_relation_uuid;
   std::uint64_t search_segment_base_relation_generation = 0;
-  std::string search_segment_relation_descriptor_uuid;
+  EngineUuid search_segment_relation_descriptor_uuid;
   std::uint64_t search_segment_relation_descriptor_generation = 0;
-  std::string search_segment_body_column_uuid;
-  std::string search_segment_body_descriptor_uuid;
-  std::string search_segment_body_type_uuid;
-  std::string search_segment_category_column_uuid;
-  std::string search_segment_category_descriptor_uuid;
-  std::string search_segment_category_type_uuid;
-  std::string search_segment_search_type_descriptor_uuid;
+  EngineUuid search_segment_body_column_uuid;
+  EngineUuid search_segment_body_descriptor_uuid;
+  EngineUuid search_segment_body_type_uuid;
+  EngineUuid search_segment_category_column_uuid;
+  EngineUuid search_segment_category_descriptor_uuid;
+  EngineUuid search_segment_category_type_uuid;
+  EngineUuid search_segment_search_type_descriptor_uuid;
   std::uint64_t search_segment_search_type_descriptor_generation = 0;
-  std::string search_segment_analyzer_uuid;
+  EngineUuid search_segment_analyzer_uuid;
   std::uint64_t search_segment_analyzer_generation = 0;
   std::string search_segment_analyzer_pipeline_sha256;
-  std::string search_segment_tokenizer_uuid;
+  EngineUuid search_segment_tokenizer_uuid;
   std::uint64_t search_segment_tokenizer_generation = 0;
-  std::string search_segment_language_profile_uuid;
+  EngineUuid search_segment_language_profile_uuid;
   std::uint64_t search_segment_language_profile_generation = 0;
-  std::string search_segment_ranking_model_uuid;
+  EngineUuid search_segment_ranking_model_uuid;
   std::uint64_t search_segment_ranking_model_generation = 0;
-  std::string search_segment_phrase_profile_uuid;
+  EngineUuid search_segment_phrase_profile_uuid;
   std::uint64_t search_segment_phrase_profile_generation = 0;
-  std::string search_segment_query_syntax_profile_uuid;
+  EngineUuid search_segment_query_syntax_profile_uuid;
   std::uint64_t search_segment_query_syntax_profile_generation = 0;
   std::string search_segment_index_profile_id;
   std::uint64_t search_segment_generation = 0;
@@ -150,15 +155,15 @@ struct EngineNoSqlProviderGenerationMetadata {
   bool search_segment_checksum_valid = false;
   bool search_segment_sealed_generation = false;
   std::string search_segment_publish_attestation_state;
-  std::string search_segment_statement_uuid;
-  std::string search_segment_statement_snapshot_uuid;
-  std::string search_segment_statement_metadata_snapshot_uuid;
-  std::string search_segment_owning_transaction_uuid;
+  EngineUuid search_segment_statement_uuid;
+  EngineUuid search_segment_statement_snapshot_uuid;
+  EngineUuid search_segment_statement_metadata_snapshot_uuid;
+  EngineUuid search_segment_owning_transaction_uuid;
   std::uint64_t search_segment_local_transaction_id = 0;
   std::uint64_t
       search_segment_snapshot_visible_through_local_transaction_id = 0;
-  std::string search_segment_security_context_uuid;
-  std::string search_segment_catalog_epoch_uuid;
+  EngineUuid search_segment_security_context_uuid;
+  EngineUuid search_segment_catalog_epoch_uuid;
   bool search_segment_exact_fallback_available = false;
   bool search_segment_full_corpus_exact_recheck_required = false;
   bool search_segment_residual_recheck_required = false;
@@ -181,42 +186,45 @@ struct EngineNoSqlProviderGenerationResult {
   EngineApiDiagnostic diagnostic;
   EngineNoSqlProviderGenerationMetadata metadata;
   std::vector<std::string> evidence;
+  std::vector<EngineEvidenceReference> identity_evidence;
 };
 
 struct EngineNoSqlProviderGenerationRepairRequest {
   EngineNoSqlProviderFamily family = EngineNoSqlProviderFamily::kUnknown;
   std::string provider_id;
-  std::string collection_uuid;
+  EngineUuid collection_uuid;
   bool repair_admitted = false;
   std::vector<EngineNoSqlProviderGenerationMetadata>
       authoritative_source_generations;
 };
 
-// QOW-RCP-076-TIME-SERIES-ROLLUP-CAPABILITY-BINDING-V1. The existing
-// capability field is an integrity binding over the authoritative persisted
-// carrier. It remains candidate-admission evidence only; MGA
+// QOW-RCP-076-TIME-SERIES-ROLLUP-CAPABILITY-BINDING-V1. An issued capability UUID identifies the binding; a separate raw SHA-256
+// digest protects the complete persisted carrier. It remains candidate-admission evidence only; MGA
 // visibility/finality stays with the engine transaction inventory.
-std::string DeriveTimeSeriesRollupCapabilityUuidV1(
+std::string ComputeTimeSeriesRollupBindingDigestV2(
     const EngineNoSqlProviderGenerationMetadata& metadata);
+bool SealTimeSeriesRollupCapabilityV2(EngineNoSqlProviderGenerationMetadata* metadata);
 
 bool ValidateTimeSeriesRollupCapabilityBindingV1(
     const EngineNoSqlProviderGenerationMetadata& metadata);
 
-// QOW-RCP-077-VECTOR-ANN-CAPABILITY-BINDING-V1. The capability UUID is an
-// integrity binding over the complete active persisted carrier. It confers no
+// QOW-RCP-077-VECTOR-ANN-CAPABILITY-BINDING-V1. An issued capability UUID and separate SHA-256 digest bind the complete
+// active persisted carrier. It confers no
 // candidate correctness, visibility, finality, security, or recovery authority.
-std::string DeriveVectorAnnCapabilityUuidV1(
+std::string ComputeVectorAnnBindingDigestV2(
     const EngineNoSqlProviderGenerationMetadata& metadata);
+bool SealVectorAnnCapabilityV2(EngineNoSqlProviderGenerationMetadata* metadata);
 
 bool ValidateVectorAnnCapabilityBindingV1(
     const EngineNoSqlProviderGenerationMetadata& metadata);
 
-// QOW-RCP-078-SEARCH-SEGMENT-CAPABILITY-BINDING-V1. The capability UUID is
-// an integrity binding over the complete active persisted carrier. It grants
+// QOW-RCP-078-SEARCH-SEGMENT-CAPABILITY-BINDING-V1. An issued capability UUID and separate SHA-256 digest bind the complete
+// active persisted carrier. It grants
 // no candidate correctness, visibility, finality, security, or recovery
 // authority.
-std::string DeriveSearchSegmentCapabilityUuidV1(
+std::string ComputeSearchSegmentBindingDigestV2(
     const EngineNoSqlProviderGenerationMetadata& metadata);
+bool SealSearchSegmentCapabilityV2(EngineNoSqlProviderGenerationMetadata* metadata);
 
 bool ValidateSearchSegmentCapabilityBindingV1(
     const EngineNoSqlProviderGenerationMetadata& metadata);
@@ -234,7 +242,7 @@ std::string EngineNoSqlProviderDatabaseIdentity(
 EngineNoSqlProviderGenerationMetadata MakeDocumentProviderGenerationMetadata(
     const EngineRequestContext& context,
     const std::string& provider_id,
-    const std::string& collection_uuid,
+    const EngineUuid& collection_uuid,
     std::uint64_t generation_id);
 
 EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
@@ -245,7 +253,13 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
     const EngineRequestContext& context,
     EngineNoSqlProviderFamily family,
     const std::string& provider_id,
-    const std::string& collection_uuid);
+    const EngineUuid& collection_uuid);
+
+EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
+    const EngineRequestContext& context,
+    EngineNoSqlProviderFamily family,
+    const EngineUuid& provider_uuid,
+    const EngineUuid& collection_uuid);
 
 EngineNoSqlProviderGenerationResult ValidateNoSqlProviderGeneration(
     const EngineRequestContext& context,
@@ -259,7 +273,7 @@ EngineNoSqlProviderGenerationResult DropNoSqlProviderGeneration(
     const EngineRequestContext& context,
     EngineNoSqlProviderFamily family,
     const std::string& provider_id,
-    const std::string& collection_uuid);
+    const EngineUuid& collection_uuid);
 
 std::vector<EngineNoSqlProviderGenerationMetadata> ListNoSqlProviderGenerations(
     const EngineRequestContext& context);

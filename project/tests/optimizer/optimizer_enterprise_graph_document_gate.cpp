@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -32,10 +33,10 @@ bool ContainsPrefix(const std::vector<std::string>& values, const std::string& p
   });
 }
 
-opt::OptimizerStatsIdentity Identity(const std::string& object_uuid) {
+opt::OptimizerStatsIdentity Identity(std::uint64_t fixture_ordinal) {
   opt::OptimizerStatsIdentity identity;
-  identity.object_uuid = object_uuid;
-  identity.statistic_uuid = "stats:" + object_uuid;
+  identity.object_uuid = scratchbird::tests::FixtureUuid(63, fixture_ordinal);
+  identity.statistic_uuid = scratchbird::tests::FixtureUuid(63, 100 + fixture_ordinal);
   identity.stats_epoch = 6301;
   identity.catalog_epoch = 6300;
   identity.transaction_visibility_epoch = 6302;
@@ -47,9 +48,11 @@ opt::OptimizerStatsIdentity Identity(const std::string& object_uuid) {
 
 opt::IndexStats Index(const std::string& family) {
   opt::IndexStats index;
-  index.identity = Identity("idx." + family + ".063");
-  index.index_uuid = "idx." + family + ".063";
-  index.relation_uuid = "rel.mixed.063";
+  if (family != "document_path" && family != "graph") std::abort();
+  const std::uint64_t ordinal = family == "document_path" ? 1 : 2;
+  index.identity = Identity(ordinal);
+  index.index_uuid = scratchbird::tests::FixtureUuid(63, ordinal);
+  index.relation_uuid = scratchbird::tests::FixtureUuid(63, 3);
   index.index_family = family;
   index.height = 3;
   index.leaf_pages = 2048;
@@ -68,7 +71,7 @@ opt::IndexStats Index(const std::string& family) {
 
 opt::TableCardinalityStats Table() {
   opt::TableCardinalityStats table;
-  table.identity = Identity("rel.mixed.063");
+  table.identity = Identity(3);
   table.row_count = 500'000;
   table.visible_row_count = 490'000;
   table.page_count = 12'000;

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 
@@ -133,18 +134,12 @@ void AppendExpression(sblr::SblrOperationEnvelope* envelope,
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sblr-scalar-octet-projection";
-  context.database_uuid.canonical =
-      "019f0000-0000-70c1-8a00-00000000b001";
-  context.node_uuid.canonical =
-      "019f0000-0000-70c1-8a00-00000000b002";
-  context.session_uuid.canonical =
-      "019f0000-0000-70c1-8a00-00000000b003";
-  context.principal_uuid.canonical =
-      "019f0000-0000-70c1-8a00-00000000b004";
-  context.transaction_uuid.canonical =
-      "019f0000-0000-70c1-8a00-00000000b005";
-  context.statement_uuid.canonical =
-      "019f0000-0000-70c1-8a00-00000000b006";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-70c1-8a00-00000000b001");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-70c1-8a00-00000000b002");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-70c1-8a00-00000000b003");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-70c1-8a00-00000000b004");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-70c1-8a00-00000000b005");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-70c1-8a00-00000000b006");
   context.local_transaction_id = 73;
   context.snapshot_visible_through_local_transaction_id = 73;
   context.transaction_isolation_level = "snapshot";
@@ -161,9 +156,9 @@ sblr::SblrDispatchResult Dispatch(
   envelope.result_shape = "scalar_projection_row_v1";
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
-      "019f0000-0000-70c1-8a00-00000000b101";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-70c1-8a00-00000000b101");
   envelope.registry_snapshot_uuid =
-      "019f0000-0000-70c1-8a00-00000000b102";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-70c1-8a00-00000000b102");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;
@@ -195,7 +190,7 @@ bool HasEvidence(const sblr::SblrDispatchResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.api_result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) {
       return true;
     }
   }

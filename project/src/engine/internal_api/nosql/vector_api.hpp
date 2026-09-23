@@ -78,7 +78,7 @@ struct EngineVectorMetadataField {
 };
 
 struct EngineVectorCorpusRow {
-  std::string row_uuid;
+  EngineUuid row_uuid;
   std::vector<double> vector;
   std::vector<EngineVectorSparseTerm> sparse_terms;
   std::vector<EngineVectorMetadataField> metadata;
@@ -149,12 +149,12 @@ struct EngineBoundVectorFilterV1 {
 
 struct EngineBoundVectorReadRequestV1 {
   EngineRequestContext context;
-  std::string collection_uuid;
-  std::string expected_descriptor_uuid;
+  EngineUuid collection_uuid;
+  EngineUuid expected_descriptor_uuid;
   std::uint64_t expected_descriptor_generation = 0;
-  std::string selected_alternative_uuid;
-  std::string selected_provider_uuid;
-  std::string selected_capability_uuid;
+  EngineUuid selected_alternative_uuid;
+  EngineUuid selected_provider_uuid;
+  EngineUuid selected_capability_uuid;
   std::string selected_implementation_id;
   EngineBoundVectorReadOperationV1 operation =
       EngineBoundVectorReadOperationV1::kUnknown;
@@ -176,7 +176,7 @@ struct EngineBoundVectorReadRequestV1 {
 };
 
 struct EngineBoundVectorRowV1 {
-  std::string row_uuid;
+  EngineUuid row_uuid;
   double distance = 0.0;
   double score = 0.0;
   std::string encoded_distance;
@@ -212,7 +212,7 @@ struct EngineBoundVectorReadResultV1 {
 // transaction-finality decisions.
 bool ExactBoundVectorStorageDescriptorV1(
     const MgaRelationStorageDescriptor& descriptor,
-    std::string_view collection_uuid);
+    const EngineUuid& collection_uuid);
 
 EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
     const EngineBoundVectorReadRequestV1& request);

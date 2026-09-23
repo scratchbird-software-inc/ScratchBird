@@ -20,9 +20,14 @@ EngineApiDiagnostic AppendCrudEvent(const EngineRequestContext& context, const s
   if (path_status.error) { return path_status; }
   const auto authority_status = ValidateCrudMutatingTransactionAuthority(context);
   if (authority_status.error) { return authority_status; }
+  std::vector<std::string> fields;
+  std::vector<std::vector<std::string>> existing;
+  if (!DecodeMgaMetadataFields(event, &fields) || !ValidateCrudBinaryEvent(fields) ||
+      !ReadCrudBinaryEvents(CrudEventPath(context), &existing))
+    return MakeInvalidRequestDiagnostic("crud.append_event", "binary_event_store_invalid");
   std::ofstream out(CrudEventPath(context), std::ios::binary | std::ios::app);
   if (!out) { return MakeInvalidRequestDiagnostic("crud.append_event", "database_path_unwritable"); }
-  out << '\n' << event << '\n';
+  out.write(event.data(), static_cast<std::streamsize>(event.size()));
   out.flush();
   if (!out) { return MakeInvalidRequestDiagnostic("crud.append_event", "database_write_failed"); }
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);

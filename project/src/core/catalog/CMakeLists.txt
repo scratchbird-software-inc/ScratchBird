@@ -37,3 +37,6 @@ add_library(sb_core_catalog
 target_compile_features(sb_core_catalog PUBLIC cxx_std_17)
 target_include_directories(sb_core_catalog PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(sb_core_catalog PUBLIC sb_core_platform sb_core_uuid sb_core_hash sb_core_datatypes sb_storage_page)
+
+# Native metric catalog observations use the shared typed value codec.
+target_link_libraries(sb_core_catalog PUBLIC sb_core_metrics)

@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -81,8 +82,8 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
-  request.context.sblr_context.database_uuid = "SBSFC-014-fuzzy-runtime-db";
-  request.context.sblr_context.transaction_uuid = "SBSFC-014-fuzzy-runtime-tx";
+  request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuid(1156, 7);
+  request.context.sblr_context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 8);
   request.context.sblr_context.transaction_context_present = true;
   for (std::size_t i = 0; i < values.size(); ++i) {
     request.arguments.push_back(FunctionArgument{"arg" + std::to_string(i), std::move(values[i])});

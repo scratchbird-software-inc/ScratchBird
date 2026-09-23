@@ -24,8 +24,8 @@ namespace scratchbird::engine::internal_api {
 inline constexpr std::string_view
     kDatabaseLocalSecurityLifecycleBootstrapAuthorityTagV1 =
         "engine.private.database_security_lifecycle_bootstrap.v1";
-inline constexpr std::string_view kDatabaseLocalSecurityRelationUuidV1 =
-    "018f7a10-1280-7000-8000-000000000107";
+inline constexpr EngineUuid kDatabaseLocalSecurityRelationUuidV1{{
+    0x01,0x8f,0x7a,0x10,0x12,0x80,0x70,0,0x80,0,0,0,0,0,0x01,0x07}};
 
 inline constexpr const char*
     kDatabaseLocalSecurityDiagnosticAuthorityRequired =
@@ -53,18 +53,18 @@ enum class DatabaseLocalSecurityEventVisibilityV1 : std::uint8_t {
 struct DatabaseLocalSecurityBootstrapAuthorityV1 {
   bool authenticated = false;
   bool principal_present = false;
-  std::string principal_uuid;
+  EngineUuid principal_uuid;
   std::string principal_name;
   std::string credential_fingerprint;
-  std::string sysarch_role_uuid;
-  std::string membership_uuid;
+  EngineUuid sysarch_role_uuid;
+  EngineUuid membership_uuid;
   std::uint64_t creator_tx = 0;
   std::uint64_t policy_generation = 0;
   std::uint64_t security_context_generation = 0;
 };
 
 struct DatabaseLocalSecurityEventStoreStateV1 {
-  // These are only the page-backed SBSECPL1 lifecycle rows. Bootstrap catalog
+  // These are only the page-backed SBSECPL2 lifecycle rows. Bootstrap catalog
   // rows remain owned by ReadDatabaseBootstrapSecurityCatalog and are not
   // synthesized into this vector. AUTH_CONTEXT_SUCCESSOR rows are included.
   std::vector<std::string> events;

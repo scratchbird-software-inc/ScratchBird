@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "native_sblr_specialization.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <algorithm>
 #include <exception>
@@ -159,8 +160,8 @@ NativeSblrSpecializationResult NativeSuccess(
   Add(&result.evidence, "native_sblr.route=native");
   Add(&result.evidence, std::string("native_sblr.kind=") +
                             NativeSblrSpecializationKindName(request.kind));
-  Add(&result.evidence, "native_sblr.stable_template_id=" +
-                            request.identity.stable_template_id);
+  result.identity_evidence.emplace_back("native_sblr.stable_template_id",
+                                        request.identity.stable_template_id);
   Add(&result.evidence, "native_sblr.template_generation=" +
                             std::to_string(request.identity.template_generation));
   Add(&result.evidence, "native_sblr.provider_id=" +
@@ -256,7 +257,7 @@ NativeSblrSpecializationResult ValidateInput(
     return Refuse("SB_NATIVE_SBLR.CORRUPT_INPUT_REFUSED",
                   "corrupt_or_unknown_specialization_kind");
   }
-  if (request.identity.stable_template_id.empty() ||
+  if (!core::uuid::IsEngineIdentityUuid(request.identity.stable_template_id) ||
       request.identity.sblr_digest.empty() ||
       request.identity.template_generation == 0 ||
       request.identity.expected_template_generation == 0 ||

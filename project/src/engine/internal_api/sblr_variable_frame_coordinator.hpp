@@ -23,21 +23,21 @@ struct SblrVariableFrameDemand {
 struct SblrVariableFrameMapping {
   std::uint64_t declaration_occurrence_id{0};
   SblrVariableDescriptorRow descriptor;
-  std::string datatype_type_uuid;
+  EngineUuid datatype_type_uuid;
 };
 struct SblrVariableFrameSnapshot {
-  std::string public_coordination_uuid;
-  std::string operation_uuid;
-  std::string database_uuid;
-  std::string session_uuid;
-  std::string transaction_uuid;
-  std::string statement_receipt_uuid;
-  std::string scope_uuid;
+  EngineUuid public_coordination_uuid;
+  EngineUuid operation_uuid;
+  EngineUuid database_uuid;
+  EngineUuid session_uuid;
+  EngineUuid transaction_uuid;
+  EngineUuid statement_receipt_uuid;
+  EngineUuid scope_uuid;
   std::uint64_t scope_generation{0};
-  std::string frame_uuid;
+  EngineUuid frame_uuid;
   std::uint64_t frame_generation{0};
   std::uint64_t coordinator_generation{0};
-  std::string registry_snapshot_uuid;
+  EngineUuid registry_snapshot_uuid;
   std::uint64_t registry_generation{0};
   std::uint64_t private_handle{0};
   SblrVariableFrameState state{SblrVariableFrameState::revoked};
@@ -53,26 +53,26 @@ struct SblrVariableFrameResult {
 };
 
 SblrVariableFrameResult BeginSblrVariableFrame(
-    const EngineRequestContext& context, const std::string& operation_uuid,
+    const EngineRequestContext& context, const EngineUuid& operation_uuid,
     std::uint64_t expires_after_ns,
     const std::vector<SblrVariableFrameDemand>& demands);
 SblrVariableFrameResult AcquireSblrVariableFrame(
     const EngineRequestContext& context,
-    const std::string& public_coordination_uuid,
-    const std::string& operation_uuid,
+    const EngineUuid& public_coordination_uuid,
+    const EngineUuid& operation_uuid,
     std::uint64_t expected_coordinator_generation);
 SblrVariableFrameResult AssignSblrVariableFrameValues(
     const EngineRequestContext& context,
-    const std::string& public_coordination_uuid,
-    const std::string& operation_uuid,
-    const std::string& preliminary_receipt_uuid,
+    const EngineUuid& public_coordination_uuid,
+    const EngineUuid& operation_uuid,
+    const EngineUuid& preliminary_receipt_uuid,
     std::uint64_t expected_coordinator_generation,
     std::uint64_t expected_registry_generation,
     const std::vector<SblrVariableAssignment>& assignments);
 SblrVariableFrameResult CloseSblrVariableFrame(
     const EngineRequestContext& context,
-    const std::string& public_coordination_uuid,
-    const std::string& operation_uuid,
+    const EngineUuid& public_coordination_uuid,
+    const EngineUuid& operation_uuid,
     std::uint64_t expected_frame_generation,
     const std::string& reason_code);
 EngineApiDiagnostic RecoverSblrVariableFrameCoordinator(

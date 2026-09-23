@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,8 +7,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "catalog/name_registry.hpp"
+#include "catalog/name_registry_codec.hpp"
+#include "behavior_support/api_behavior_record_codec.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
@@ -67,11 +71,11 @@ void RequireOk(const TResult& result, std::string_view message) {
   }
 }
 
-std::string NewUuid(platform::UuidKind kind, std::uint64_t salt) {
+platform::Uuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
   const auto generated =
       uuid::GenerateEngineIdentityV7(kind, 1950000000000ull + salt);
   Require(generated.ok(), "routine vertical-slice UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 platform::TypedUuid NewTypedUuid(platform::UuidKind kind,
@@ -85,13 +89,13 @@ platform::TypedUuid NewTypedUuid(platform::UuidKind kind,
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string principal_uuid;
-  std::string session_uuid;
-  std::string schema_uuid;
-  std::string table_uuid;
-  std::string procedure_uuid;
-  std::string column_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid principal_uuid;
+  platform::Uuid session_uuid;
+  platform::Uuid schema_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid procedure_uuid;
+  platform::Uuid column_uuid;
   std::uint64_t salt = 0;
 
   ~Fixture() {
@@ -124,7 +128,7 @@ Fixture CreateFixture() {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "routine vertical-slice database creation failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   fixture.principal_uuid =
       NewUuid(platform::UuidKind::principal, fixture.salt + 4);
   fixture.session_uuid =
@@ -142,13 +146,12 @@ api::EngineRequestContext Begin(Fixture& fixture, std::uint64_t ordinal) {
   begin.context.request_id =
       "routine-delete-range-begin-" + std::to_string(ordinal);
   begin.context.database_path = fixture.database_path.string();
-  begin.context.database_uuid.canonical = fixture.database_uuid;
-  begin.context.principal_uuid.canonical = fixture.principal_uuid;
-  begin.context.session_uuid.canonical = fixture.session_uuid;
+  begin.context.database_uuid = fixture.database_uuid;
+  begin.context.principal_uuid = fixture.principal_uuid;
+  begin.context.session_uuid = fixture.session_uuid;
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
-  begin.context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  begin.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   begin.context.datatype_catalog_generation = 1;
   begin.context.datatype_registry_generation = 1;
   begin.context.security_epoch = 1;
@@ -166,7 +169,7 @@ api::EngineRequestContext Begin(Fixture& fixture, std::uint64_t ordinal) {
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
+  context.current_schema_uuid = fixture.schema_uuid;
   return context;
 }
 
@@ -208,7 +211,7 @@ void CreateTableAndRows(Fixture& fixture,
                         const api::EngineRequestContext& context) {
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
-  schema.target_object.uuid.canonical = fixture.schema_uuid;
+  schema.target_object.uuid = fixture.schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("routine_slice"));
   RequireOk(api::EngineCreateSchema(schema),
@@ -216,9 +219,9 @@ void CreateTableAndRows(Fixture& fixture,
 
   api::EngineCreateTableRequest table;
   table.context = context;
-  table.target_schema.uuid.canonical = fixture.schema_uuid;
+  table.target_schema.uuid = fixture.schema_uuid;
   table.target_schema.object_kind = "schema";
-  table.requested_table_uuid.canonical = fixture.table_uuid;
+  table.requested_table_uuid = fixture.table_uuid;
   table.table_names.push_back(Name("test_values"));
   api::EngineColumnDefinition column;
   column.names.push_back(Name("a"));
@@ -233,7 +236,7 @@ void CreateTableAndRows(Fixture& fixture,
 
   api::EngineInsertRowsRequest insert;
   insert.context = context;
-  insert.target_table.uuid.canonical = fixture.table_uuid;
+  insert.target_table.uuid = fixture.table_uuid;
   insert.target_table.object_kind = "table";
   for (std::int64_t value = 1; value <= 10; ++value) {
     api::EngineRowValue row;
@@ -261,9 +264,9 @@ void CreateTableAndRows(Fixture& fixture,
   Require(!descriptor_ready.error,
           "routine vertical-slice relation descriptor is unavailable");
   Require(descriptor.columns.size() == 1 &&
-              !descriptor.columns.front().column_uuid.canonical.empty(),
+              !descriptor.columns.front().column_uuid.is_nil(),
           "routine vertical-slice column UUID binding is unavailable");
-  fixture.column_uuid = descriptor.columns.front().column_uuid.canonical;
+  fixture.column_uuid = descriptor.columns.front().column_uuid;
 }
 
 void AddText(sblr::SblrOperationEnvelope* envelope,
@@ -271,6 +274,18 @@ void AddText(sblr::SblrOperationEnvelope* envelope,
              std::string value) {
   envelope->operands.push_back(
       {"text", std::move(name), std::move(value)});
+}
+
+std::string CompiledRangeDescriptor(const Fixture& fixture, bool valid) {
+  std::string out = std::string(api::kRoutineDeleteColumnRangeCountDescriptorV1) + "|";
+  out.append(reinterpret_cast<const char*>(fixture.table_uuid.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(fixture.column_uuid.bytes.data()), 16);
+  for (std::uint32_t slot : {0u, 1u, 2u, valid ? 2u : 9u}) {
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+      out.push_back(static_cast<char>((slot >> shift) & 0xff));
+    }
+  }
+  return out;
 }
 
 api::EngineCreateProcedureResult ExecuteCreateOrAlter(
@@ -282,10 +297,10 @@ api::EngineCreateProcedureResult ExecuteCreateOrAlter(
   request.context = context;
   request.operation_id = "ddl.create_procedure";
   request.target_object.object_kind = "procedure";
-  if (include_published_uuid && !fixture.procedure_uuid.empty()) {
-    request.target_object.uuid.canonical = fixture.procedure_uuid;
+  if (include_published_uuid && !fixture.procedure_uuid.is_nil()) {
+    request.target_object.uuid = fixture.procedure_uuid;
   }
-  request.target_schema.uuid.canonical = fixture.schema_uuid;
+  request.target_schema.uuid = fixture.schema_uuid;
   request.target_schema.object_kind = "schema";
   request.localized_names.push_back(Name("delete_between_values"));
   request.option_envelopes = {
@@ -295,9 +310,7 @@ api::EngineCreateProcedureResult ExecuteCreateOrAlter(
       "side_effect_class:data_mutation",
       "executable_descriptor_kind:create_or_alter_procedure",
       "compiled_body_descriptor:" +
-          std::string(api::kRoutineDeleteColumnRangeCountDescriptorV1) + "|" +
-          fixture.table_uuid + "|" + fixture.column_uuid +
-          (valid_compiled_descriptor ? "|0|1|2|2" : "|0|1|2|9"),
+          CompiledRangeDescriptor(fixture, valid_compiled_descriptor),
       "routine_parameter_count:2",
       "routine_parameter_0_mode:in",
       "routine_parameter_0_type:integer",
@@ -306,7 +319,7 @@ api::EngineCreateProcedureResult ExecuteCreateOrAlter(
       "routine_return_count:1",
       "routine_return_0_type:integer"};
   api::EngineObjectReference related;
-  related.uuid.canonical = fixture.table_uuid;
+  related.uuid = fixture.table_uuid;
   related.object_kind = "table";
   request.related_objects.push_back(std::move(related));
   return api::EngineCreateProcedure(request);
@@ -325,7 +338,13 @@ sblr::SblrOperationEnvelope MakeInvokeEnvelope(
   envelope.requires_transaction_context = true;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  AddText(&envelope, "target_object_uuid", fixture.procedure_uuid);
+  sblr::SblrOperand target;
+  target.type = "uuid";
+  target.name = "target_object_uuid";
+  target.value_kind = sblr::SblrValueKind::uuid_ref;
+  target.value_body.assign(fixture.procedure_uuid.bytes.begin(),
+                           fixture.procedure_uuid.bytes.end());
+  envelope.operands.push_back(std::move(target));
   AddText(&envelope, "target_object_kind", "procedure");
   AddText(&envelope, "routine_argument_count", "2");
   AddText(&envelope, "routine_argument_0_type", "integer");
@@ -348,7 +367,7 @@ api::EngineInvokeExecutableObjectResult ExecuteInvoke(
   api::EngineInvokeExecutableObjectRequest request;
   request.context = context;
   request.operation_id = "routine.procedure_invoke";
-  request.target_object.uuid.canonical = fixture.procedure_uuid;
+  request.target_object.uuid = fixture.procedure_uuid;
   request.target_object.object_kind = "procedure";
   request.option_envelopes = {
       "routine_argument_count:2",
@@ -377,12 +396,10 @@ std::vector<std::uint8_t> PublicInvokeEnvelope(const Fixture& fixture,
       .encode();
 }
 
-sb_engine_uuid_t PublicUuid(std::string_view text) {
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  Require(parsed.ok(), "routine private bridge UUID parse failed");
+sb_engine_uuid_t PublicUuid(const platform::Uuid& identity) {
   sb_engine_uuid_t result{};
-  static_assert(sizeof(result.bytes) == sizeof(parsed.value.bytes));
-  std::memcpy(result.bytes, parsed.value.bytes.data(), sizeof(result.bytes));
+  static_assert(sizeof(result.bytes) == sizeof(identity.bytes));
+  std::memcpy(result.bytes, identity.bytes.data(), sizeof(result.bytes));
   return result;
 }
 
@@ -484,7 +501,7 @@ class PrivatePreparedMetadataSession {
 
   std::string Bind(const std::vector<std::uint8_t>& envelope,
                    std::uint64_t prepare_transaction_ref,
-                   std::string_view sealed_prepare_transaction_uuid) {
+                   const platform::Uuid& sealed_prepare_transaction_uuid) {
     const auto context = Context(prepare_transaction_ref);
     auto dispatch = DispatchParams(envelope);
     sb_engine_result_t result = nullptr;
@@ -508,7 +525,7 @@ class PrivatePreparedMetadataSession {
   std::pair<sb_engine_status_t, std::string> RejectMismatchedPrepareSelector(
       const std::vector<std::uint8_t>& envelope,
       std::uint64_t prepare_transaction_ref,
-      std::string_view mismatched_prepare_transaction_uuid) {
+      const platform::Uuid& mismatched_prepare_transaction_uuid) {
     Require(binding_ == nullptr,
             "routine private bridge mismatch probe already has a binding");
     const auto context = Context(prepare_transaction_ref);
@@ -636,9 +653,19 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) {
       return true;
     }
+  }
+  return false;
+}
+
+bool HasEvidence(const api::EngineApiResult& result,
+                 std::string_view kind,
+                 const platform::Uuid& identity) {
+  for (const auto& evidence : result.evidence) {
+    const auto* actual = std::get_if<platform::Uuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && actual && *actual == identity) return true;
   }
   return false;
 }
@@ -653,24 +680,28 @@ struct DurableRoutineIdentityCounts {
 DurableRoutineIdentityCounts DurableRoutineIdentityState(
     const Fixture& fixture) {
   DurableRoutineIdentityCounts counts;
-  std::ifstream events(fixture.database_path.string() + ".sb.api_events",
-                       std::ios::binary);
-  std::string line;
-  const std::string create_record =
-      "\tddl.create_procedure\t" + fixture.procedure_uuid +
-      "\tprocedure\t";
-  const std::string name_entry =
-      "\t" + fixture.procedure_uuid + "\tprocedure\t" +
-      fixture.schema_uuid + "\t";
-  while (std::getline(events, line)) {
-    if (line.starts_with("SBAPI1\tRECORD\t") &&
-        line.find(create_record) != std::string::npos) {
-      ++counts.create_records;
+  for (const auto& suffix : {".sb.api_events.v2", ".sb.name_events.v2"}) {
+    std::ifstream events(fixture.database_path.string() + suffix, std::ios::binary);
+    Require(events.is_open(), "routine durable binary identity store unavailable");
+    while (events.peek() != std::char_traits<char>::eof()) {
+      api::ApiBehaviorRecord record;
+      Require(api::ReadApiBehaviorRecord(events, &record),
+              "routine durable identity record failed framing/checksum validation");
+      if (record.operation_id == "ddl.create_procedure" &&
+          record.object_kind == "procedure" && record.object_uuid == fixture.procedure_uuid) {
+        ++counts.create_records;
+      }
+      if (record.object_kind == "name_registry.entry") {
+        api::NameRegistryEntry entry;
+        Require(api::DecodeNameRegistryEntry(record.payload, &entry),
+                "routine durable name identity record invalid");
+        if (entry.object_uuid == fixture.procedure_uuid &&
+            entry.object_class == "procedure" && entry.scope_uuid == fixture.schema_uuid) {
+          ++counts.name_entries;
+        }
+      }
     }
-    if (line.starts_with("SBNAME1\tENTRY\t") &&
-        line.find(name_entry) != std::string::npos) {
-      ++counts.name_entries;
-    }
+    Require(!events.bad(), "routine durable identity store read failed");
   }
   return counts;
 }
@@ -716,7 +747,7 @@ int main() {
   fixture.procedure_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 1000);
   const auto invented_uuid = ExecuteCreateOrAlter(fixture, setup);
-  fixture.procedure_uuid.clear();
+  fixture.procedure_uuid = {};
   Require(!invented_uuid.ok &&
               !invented_uuid.diagnostics.empty() &&
               invented_uuid.diagnostics.front().detail ==
@@ -732,7 +763,7 @@ int main() {
           "routine create preflight admitted an invalid compiled descriptor");
   api::EngineApiRequest failed_create_lookup;
   failed_create_lookup.context = setup;
-  failed_create_lookup.target_schema.uuid.canonical = fixture.schema_uuid;
+  failed_create_lookup.target_schema.uuid = fixture.schema_uuid;
   failed_create_lookup.target_schema.object_kind = "schema";
   failed_create_lookup.localized_names.push_back(
       Name("delete_between_values"));
@@ -744,8 +775,8 @@ int main() {
 
   const auto created = ExecuteCreateOrAlter(fixture, setup);
   RequireApiOk(created, "routine CREATE OR ALTER create route failed");
-  fixture.procedure_uuid = created.primary_object.uuid.canonical;
-  Require(!fixture.procedure_uuid.empty(),
+  fixture.procedure_uuid = created.primary_object.uuid;
+  Require(!fixture.procedure_uuid.is_nil(),
           "routine create route did not publish an engine-owned UUID");
   Require(HasEvidence(created,
                       "create_or_alter_resolution",
@@ -791,7 +822,7 @@ int main() {
               !HasEvidence(altered_then_rolled_back,
                            "name_registry",
                            fixture.procedure_uuid) &&
-              altered_then_rolled_back.catalog_row_uuid.canonical.empty() &&
+              altered_then_rolled_back.catalog_row_uuid.is_nil() &&
               HasEvidence(altered_then_rolled_back,
                           "create_or_alter_catalog_mutation",
                           "no_create_or_name_append_on_alter") &&
@@ -839,7 +870,7 @@ int main() {
           "routine old data snapshot unexpectedly adopted later metadata");
 
   auto stale_context = old_data_context;
-  stale_context.transaction_uuid.canonical =
+  stale_context.transaction_uuid =
       NewUuid(platform::UuidKind::transaction, fixture.salt + 1000);
   const auto stale = ExecuteInvoke(fixture, stale_context, "4", "7");
   Require(!stale.ok && !stale.diagnostics.empty() &&
@@ -894,7 +925,7 @@ int main() {
           "routine concurrent ALTER did not publish generation four");
   api::EngineSelectRowsRequest select;
   select.context = reader;
-  select.source_object.uuid.canonical = fixture.table_uuid;
+  select.source_object.uuid = fixture.table_uuid;
   select.source_object.object_kind = "table";
   const auto remaining = api::EngineSelectRows(select);
   RequireOk(remaining, "routine post-commit row read failed");

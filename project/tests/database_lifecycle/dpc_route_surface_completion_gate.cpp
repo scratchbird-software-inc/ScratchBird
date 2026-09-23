@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -66,9 +68,6 @@ struct UuidFactory {
     return generated.value;
   }
 
-  std::string Text(platform::UuidKind kind, platform::u64 salt) const {
-    return uuid::UuidToString(Typed(kind, salt).value);
-  }
 };
 
 sb_engine_uuid_t EngineUuid(const platform::TypedUuid& typed) {
@@ -97,20 +96,15 @@ RouteIds MakeRouteIds(const UuidFactory& uuids) {
   return ids;
 }
 
-std::string Text(const platform::TypedUuid& typed) {
-  return uuid::UuidToString(typed.value);
-}
-
 api::EngineUuid ApiUuid(const platform::TypedUuid& typed) {
-  return {Text(typed)};
+  return typed.value;
 }
 
 api::EngineMaterializedAuthorizationGrant GrantForIndex(const RouteIds& ids,
                                                         std::string right,
                                                         std::uint64_t salt) {
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = Text(ids.generation) + ":dpc060-grant-" +
-                               std::to_string(salt);
+  grant.grant_uuid = scratchbird::tests::FixtureUuid(1536, salt);
   grant.subject_uuid = ApiUuid(ids.principal);
   grant.subject_kind = "principal";
   grant.target_uuid = ApiUuid(ids.index);
@@ -123,7 +117,7 @@ api::EngineMaterializedAuthorizationContext AuthorizationContextFor(
     const RouteIds& ids) {
   api::EngineMaterializedAuthorizationContext authorization;
   authorization.present = true;
-  authorization.authority_uuid.canonical = Text(ids.database) + ":dpc060-authority";
+  authorization.authority_uuid = scratchbird::tests::FixtureUuid(1536, 100);
   authorization.principal_uuid = ApiUuid(ids.principal);
   authorization.security_epoch = 1;
   authorization.policy_epoch = 1;
@@ -144,6 +138,17 @@ void AddOperand(engine_sblr::SblrOperationEnvelope* envelope,
   envelope->operands.push_back({"text", std::move(name), std::move(value)});
 }
 
+void AddOperand(engine_sblr::SblrOperationEnvelope* envelope,
+                std::string name,
+                const api::EngineUuid& identity) {
+  engine_sblr::SblrOperand operand;
+  operand.type = "uuid";
+  operand.name = std::move(name);
+  operand.value_kind = engine_sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
+  envelope->operands.push_back(std::move(operand));
+}
+
 const char* OpcodeFor(std::string_view operation_id) {
   const auto* entry = engine_sblr::LookupSblrOperation(operation_id);
   Require(entry != nullptr, "DPC-060 SBLR opcode registry entry missing");
@@ -159,11 +164,11 @@ engine_sblr::SblrOperationEnvelope MakeIndexEnvelope(std::string operation_id,
                                                 "dpc060.route_surface");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
-  AddOperand(&envelope, "database_uuid", Text(ids.database));
-  AddOperand(&envelope, "table_uuid", Text(ids.table));
-  AddOperand(&envelope, "index_uuid", Text(ids.index));
-  AddOperand(&envelope, "target_object_uuid", Text(ids.index));
-  AddOperand(&envelope, "generation_uuid", Text(ids.generation));
+  AddOperand(&envelope, "database_uuid", ApiUuid(ids.database));
+  AddOperand(&envelope, "table_uuid", ApiUuid(ids.table));
+  AddOperand(&envelope, "index_uuid", ApiUuid(ids.index));
+  AddOperand(&envelope, "target_object_uuid", ApiUuid(ids.index));
+  AddOperand(&envelope, "generation_uuid", ApiUuid(ids.generation));
   AddOperand(&envelope, "index_family", "btree");
   AddOperand(&envelope, "validation_family", std::move(validation_family));
   AddOperand(&envelope, "policy_allows_mutation",
@@ -178,10 +183,10 @@ api::EngineRequestContext MakeContext(const RouteIds& ids) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "dpc060-route-surface";
-  context.database_uuid.canonical = Text(ids.database);
-  context.principal_uuid.canonical = Text(ids.principal);
-  context.session_uuid.canonical = Text(ids.session);
-  context.transaction_uuid.canonical = "transaction:dpc060-local";
+  context.database_uuid = ApiUuid(ids.database);
+  context.principal_uuid = ApiUuid(ids.principal);
+  context.session_uuid = ApiUuid(ids.session);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 1401);
   context.local_transaction_id = 60;
   context.snapshot_visible_through_local_transaction_id = 60;
   context.security_context_present = true;
@@ -200,7 +205,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) {
       return true;
     }
   }

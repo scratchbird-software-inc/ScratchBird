@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -105,8 +106,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -118,11 +119,11 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineRowValue Row(std::string row_uuid,
+api::EngineRowValue Row(api::EngineUuid row_uuid,
                         std::string key,
                         std::string payload) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"key_value", TextValue(std::move(key))});
   row.fields.push_back({"payload", TextValue(std::move(payload))});
   return row;
@@ -238,9 +239,9 @@ api::EnginePredicateEnvelope PredicateFor(const FamilyCase& test_case,
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -259,11 +260,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -354,9 +355,9 @@ Fixture MakeFixture(const FamilyCase& test_case, platform::u64 salt) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), family, "database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
+  fixture.index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
 
   auto context = Begin(fixture, "matrix-metadata");
   api::CrudTableRecord table;
@@ -388,9 +389,9 @@ api::EngineApiResult DispatchDml(const api::EngineRequestContext& context,
           "sblr", "canonical DML opcode is not registered");
   envelope.opcode_code = registered->code;
   envelope.parser_package_uuid =
-      "12340000-0000-7000-8000-000000000031";
+      scratchbird::tests::FixtureUuidLiteral("12340000-0000-7000-8000-000000000031");
   envelope.registry_snapshot_uuid =
-      "12340000-0000-7000-8000-000000000032";
+      scratchbird::tests::FixtureUuidLiteral("12340000-0000-7000-8000-000000000032");
   envelope.requires_transaction_context = true;
   request.context = context;
   request.operation_id = operation_id;
@@ -407,12 +408,12 @@ api::EngineApiResult DispatchDml(const api::EngineRequestContext& context,
 
 api::EngineApiResult Insert(const Fixture& fixture,
                             const api::EngineRequestContext& context,
-                            std::string row_uuid,
+                            api::EngineUuid row_uuid,
                             std::string key,
                             std::string payload) {
   api::EngineApiRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.rows.push_back(
       Row(std::move(row_uuid), std::move(key), std::move(payload)));
@@ -422,14 +423,14 @@ api::EngineApiResult Insert(const Fixture& fixture,
 
 api::EngineApiResult Update(const Fixture& fixture,
                             const api::EngineRequestContext& context,
-                            std::string row_uuid,
+                            api::EngineUuid row_uuid,
                             std::string key) {
   api::EngineApiRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.predicate.predicate_kind = "row_uuid_match";
-  request.predicate.canonical_predicate_envelope = std::move(row_uuid);
+  request.predicate.row_uuid = row_uuid;
   request.assignments.push_back({"key_value", TextValue(std::move(key))});
   return DispatchDml(context, "dml.update_rows", "SBLR_DML_UPDATE_ROWS",
                      std::move(request));
@@ -437,13 +438,13 @@ api::EngineApiResult Update(const Fixture& fixture,
 
 api::EngineApiResult Delete(const Fixture& fixture,
                             const api::EngineRequestContext& context,
-                            std::string row_uuid) {
+                            api::EngineUuid row_uuid) {
   api::EngineApiRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.predicate.predicate_kind = "row_uuid_match";
-  request.predicate.canonical_predicate_envelope = std::move(row_uuid);
+  request.predicate.row_uuid = row_uuid;
   request.option_envelopes.push_back("delete_mode:tombstone_only");
   return DispatchDml(context, "dml.delete_rows", "SBLR_DML_DELETE_ROWS",
                      std::move(request));
@@ -481,7 +482,7 @@ bool HasMutation(const api::LocalCommitPublicationResult& publication,
   if (!found) {
     for (const auto& mutation : publication.mutations) {
       std::cerr << "manifest=" << mutation.mutation_domain << ':'
-                << mutation.mutation_kind << ':' << mutation.object_identity
+                << mutation.mutation_kind << ":identity_present=" << !mutation.object_identity.is_nil()
                 << ':' << mutation.finality_authority << '\n';
     }
   }
@@ -494,8 +495,8 @@ void ValidateAdmittedFamily(const FamilyCase& test_case,
   auto fixture = MakeFixture(test_case, salt);
 
   auto seed = Begin(fixture, "matrix-seed");
-  const std::string row_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 200);
+  const api::EngineUuid row_uuid =
+      NewNativeUuid(platform::UuidKind::object, salt + 200);
   const auto inserted =
       Insert(fixture, seed, row_uuid, test_case.old_key, "seed");
   RequireOk(inserted, family, "insert failed");
@@ -548,7 +549,7 @@ void ValidateAdmittedFamily(const FamilyCase& test_case,
     RequireDiagnosticOk(api::RollbackToMgaSavepointMarker(savepoint_writer, "matrix_outer"),
                         family, "outer update rewind failed");
     verify_savepoint_rows(savepoint_writer, 1, test_case.old_key);
-    const auto extra_row = NewUuidText(platform::UuidKind::object, salt + 210 + repeat);
+    const auto extra_row = NewNativeUuid(platform::UuidKind::object, salt + 210 + repeat);
     RequireOk(Insert(fixture, savepoint_writer, extra_row, test_case.new_key, "later"),
               family, "savepoint key reuse after rewind failed");
     RequireDiagnosticOk(api::RollbackToMgaSavepointMarker(savepoint_writer, "matrix_outer"),
@@ -567,7 +568,7 @@ void ValidateAdmittedFamily(const FamilyCase& test_case,
     const auto rejected = Insert(
         fixture,
         duplicate,
-        NewUuidText(platform::UuidKind::object, salt + 201),
+        NewNativeUuid(platform::UuidKind::object, salt + 201),
         test_case.old_key,
         "duplicate");
     Require(!rejected.ok, family, "unique duplicate was accepted");
@@ -669,7 +670,7 @@ void ValidateAdmittedFamily(const FamilyCase& test_case,
   const auto rolled_back_insert =
       Insert(fixture,
              rollback_writer,
-             NewUuidText(platform::UuidKind::object, salt + 202),
+             NewNativeUuid(platform::UuidKind::object, salt + 202),
              test_case.rollback_key,
              "rollback");
   RequireOk(rolled_back_insert, family, "rollback insert failed");
@@ -732,13 +733,13 @@ void ValidateMutationAdmissionRefusals() {
   const auto test_case = BuildCase(*family.descriptor);
   auto fixture = MakeFixture(test_case, 90000);
   auto seed = Begin(fixture, "admission-seed");
-  const auto row_uuid = NewUuidText(platform::UuidKind::object, 90200);
+  const auto row_uuid = NewNativeUuid(platform::UuidKind::object, 90200);
   RequireOk(Insert(fixture, seed, row_uuid, test_case.old_key, "seed"),
             "admission", "admission baseline insert failed");
   api::EngineSequenceCreateGeneratorRequest create_sequence;
   create_sequence.context = seed;
-  create_sequence.definition.generator_uuid = NewUuidText(platform::UuidKind::object, 90201);
-  create_sequence.definition.database_uuid = seed.database_uuid.canonical;
+  create_sequence.definition.generator_uuid = NewNativeUuid(platform::UuidKind::object, 90201);
+  create_sequence.definition.database_uuid = seed.database_uuid;
   RequireOk(api::EngineSequenceCreateGenerator(create_sequence), "admission", "sequence fixture create failed");
   Commit(seed, "admission");
   // Test-only byte oracle, not transaction authority. Include every companion
@@ -772,7 +773,7 @@ void ValidateMutationAdmissionRefusals() {
     Require(!read.ok && read.active && read.diagnostic.code == "SBLR.OPERATION_UNSUPPORTED",
             "admission", "query-invoked serializable producer bypassed boundary");
     const auto write = Insert(fixture, serializable,
-        NewUuidText(platform::UuidKind::object, 90400), test_case.new_key, "refused-serializable");
+        NewNativeUuid(platform::UuidKind::object, 90400), test_case.new_key, "refused-serializable");
     Require(!write.ok && !write.diagnostics.empty() &&
                 write.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED" && durable_bytes() == before,
             "admission", "serializable mutation was not refused before durable writes");
@@ -785,12 +786,12 @@ void ValidateMutationAdmissionRefusals() {
             "admission", "savepoint restriction leaked beyond released boundary");
     Rollback(serializable, "admission");
   }
-  for (const auto& reference : {"foreign_key=" + fixture.table_uuid + ":key_value",
+  for (const auto& reference : {std::string("foreign_key=legacy_table:key_value"),
                                 std::string("foreign_key=unresolved_reference"),
-                                std::string("referenced_table_uuid=") + fixture.table_uuid}) {
+                                std::string("referenced_table_uuid=legacy_table")}) {
     auto owner = Begin(fixture, "delete-inbound-profile");
     api::CrudTableRecord child;
-    child.table_uuid = NewUuidText(platform::UuidKind::object, 90404);
+    child.table_uuid = NewNativeUuid(platform::UuidKind::object, 90404);
     child.default_name = "delete_profile_child";
     child.columns = {{"key_value", "canonical=text;" + reference}};
     RequireDiagnosticOk(api::AppendMgaTableMetadata(owner, child), "admission", "inbound fixture metadata failed");
@@ -841,10 +842,10 @@ void ValidateMutationAdmissionRefusals() {
                 sequence_refused.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
             "admission", "direct sequence producer bypassed savepoint admission");
     const std::vector<api::EngineRowValue> direct_rows{
-        Row(NewUuidText(platform::UuidKind::object, 90402), test_case.new_key, "direct-refused")};
+        Row(NewNativeUuid(platform::UuidKind::object, 90402), test_case.new_key, "direct-refused")};
     api::dml::DirectPhysicalBulkAppendRequest direct;
     direct.context = writer;
-    direct.target_table.uuid.canonical = fixture.table_uuid;
+    direct.target_table.uuid = fixture.table_uuid;
     direct.borrowed_input_rows = direct_rows;
     direct.direct_lane_enabled = true;
     const auto direct_refused = api::dml::ExecuteDirectPhysicalBulkAppend(direct);
@@ -860,7 +861,7 @@ void ValidateMutationAdmissionRefusals() {
     api::EngineCatalogDescriptorMutationRequest catalog;
     catalog.context = writer;
     catalog.operation_id = "catalog.mutation.descriptor";
-    catalog.target_object.uuid.canonical = fixture.table_uuid;
+    catalog.target_object.uuid = fixture.table_uuid;
     const auto catalog_refused = api::EngineCatalogDescriptorMutation(catalog);
     Require(!catalog_refused.ok && !catalog_refused.diagnostics.empty() &&
                 catalog_refused.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
@@ -884,7 +885,7 @@ void ValidateMutationAdmissionRefusals() {
       api::MgaIndexEntryAppendBatch admitted_batch;
       admitted_batch.index = IndexRecord(fixture, test_case, writer);
       admitted_batch.table_uuid = fixture.table_uuid;
-      const auto version = NewUuidText(platform::UuidKind::row, 90403);
+      const auto version = NewNativeUuid(platform::UuidKind::row, 90403);
       admitted_batch.rows.push_back({row_uuid, version, {{"key_value", test_case.new_key}}});
       auto unregistered = admitted_batch;
       unregistered.index.family = "unregistered_savepoint_test_family";
@@ -925,13 +926,13 @@ void ValidateMutationAdmissionRefusals() {
     admin.right = "SEC_IDENTITY_ADMIN";
     admin.security_epoch = writer.security_epoch;
     authorization.grants.push_back(std::move(admin));
-    security.role_uuid = NewUuidText(platform::UuidKind::object, 90401);
+    security.role_uuid = NewNativeUuid(platform::UuidKind::object, 90401);
     security.role_name = "savepoint_refused_role";
     const auto security_refused = api::EngineSecurityCreateRole(security);
     Require(!security_refused.ok && !security_refused.diagnostics.empty() &&
                 security_refused.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
             "admission", "direct security producer bypassed savepoint admission");
-    std::set<std::string> reclaimed;
+    std::set<api::EngineUuid> reclaimed;
     std::uint64_t reclaimed_count = 0;
     api::CrudRowVersionRecord reclaim_row;
     reclaim_row.table_uuid = fixture.table_uuid; reclaim_row.row_uuid = row_uuid;
@@ -941,7 +942,7 @@ void ValidateMutationAdmissionRefusals() {
                 reclaimed.empty() && reclaimed_count == 0 && durable_bytes() == before,
             "admission", "direct reclamation or another rejected producer changed state");
     const auto rejected = Insert(fixture, writer,
-        NewUuidText(platform::UuidKind::object, 90300), test_case.new_key, "refused");
+        NewNativeUuid(platform::UuidKind::object, 90300), test_case.new_key, "refused");
     Require(!rejected.ok && !rejected.diagnostics.empty() &&
                 rejected.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
             "admission", "unproven default provider was not refused by engine DML");
@@ -988,8 +989,8 @@ void ValidateNonAdmittedFamily(const FamilyCase& test_case,
                                platform::u64 salt) {
   const std::string& family = test_case.descriptor->id;
   api::CrudIndexRecord index;
-  index.index_uuid = "non-admitted-index";
-  index.table_uuid = "non-admitted-table";
+  index.index_uuid = scratchbird::tests::FixtureUuid(1274, 401);
+  index.table_uuid = scratchbird::tests::FixtureUuid(1419, 1);
   index.family = test_case.crud_family;
   index.profile = test_case.descriptor->default_semantic_profile;
   index.key_envelopes.push_back("key_value");
@@ -997,13 +998,13 @@ void ValidateNonAdmittedFamily(const FamilyCase& test_case,
           "non-admitted family was exposed by the transactional provider");
   api::EngineRequestContext context;
   context.local_transaction_id = 1;
-  context.transaction_uuid.canonical = "non-admitted-transaction";
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 2701);
   api::MgaTransactionalIndexProvider provider(context, nullptr);
   api::DmlTransactionalIndexEntryRequest request;
   request.index = index;
   request.table_uuid = index.table_uuid;
-  request.row_uuid = "row";
-  request.version_uuid = "version";
+  request.row_uuid = scratchbird::tests::FixtureUuid(1419, 2);
+  request.version_uuid = scratchbird::tests::FixtureUuid(1419, 3);
   request.key_value = "key";
   const auto refused = provider.PrepareInsertEntry(request);
   Require(!refused.ok &&
@@ -1016,7 +1017,7 @@ void ValidateNonAdmittedFamily(const FamilyCase& test_case,
   const auto dml_refused =
       Insert(fixture,
              writer,
-             NewUuidText(platform::UuidKind::object, salt + 203),
+             NewNativeUuid(platform::UuidKind::object, salt + 203),
              test_case.old_key,
              "must-not-publish");
   Require(!dml_refused.ok, family,

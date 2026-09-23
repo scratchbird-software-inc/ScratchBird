@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "local_transaction_store.hpp"
 #include "nosql/document_api.hpp"
@@ -39,21 +41,12 @@ void Require(bool condition, std::string_view message) {
   if (!condition) { Fail(message); }
 }
 
-std::string TransactionUuidText(std::uint64_t local_id) {
-  if (local_id == 77) {
-    return "019df072-0000-7000-8000-00000000004d";
-  }
-  Require(local_id == 90, "ODF-072 unexpected transaction identity");
-  return "019df072-0000-7000-8000-00000000005a";
-}
-
 platform::TypedUuid TransactionUuid(std::uint64_t local_id) {
-  const auto parsed = uuid::ParseUuid(TransactionUuidText(local_id));
-  Require(parsed.ok(), "ODF-072 transaction UUID parse failed");
-  const auto typed =
-      uuid::MakeTypedUuid(platform::UuidKind::transaction, parsed.value);
-  Require(typed.ok(), "ODF-072 transaction UUID typing failed");
-  return typed.value;
+  Require(local_id == 77 || local_id == 90, "ODF-072 unexpected transaction identity");
+  return {platform::UuidKind::transaction,
+          local_id == 77
+              ? scratchbird::tests::FixtureUuidLiteral("019df072-0000-7000-8000-00000000004d")
+              : scratchbird::tests::FixtureUuidLiteral("019df072-0000-7000-8000-00000000005a")};
 }
 
 api::EngineRequestContext Context(const std::string& database_path,
@@ -62,8 +55,8 @@ api::EngineRequestContext Context(const std::string& database_path,
   context.database_path = database_path;
   context.local_transaction_id = tx;
   context.snapshot_visible_through_local_transaction_id = tx;
-  context.database_uuid.canonical = "019df072-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical = TransactionUuidText(tx);
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019df072-0000-7000-8000-000000000001");
+  context.transaction_uuid = TransactionUuid(tx).value;
   context.security_context_present = true;
   return context;
 }
@@ -169,7 +162,7 @@ api::EngineDocumentPhysicalProof DocumentProof() {
   proof.provider_contract.index_generation.covers_predicate = true;
   proof.provider_contract.index_generation.required_generation = 11;
   proof.provider_contract.index_generation.available_generation = 11;
-  proof.provider_contract.index_generation.index_uuid = "odf072-document-path-index";
+  proof.provider_contract.index_generation.index_uuid = scratchbird::tests::FixtureUuid(72, 1);
   proof.provider_contract.policy.proof_present = true;
   proof.provider_contract.policy.allowed = true;
   proof.provider_contract.mga_recheck.proof_present = true;
@@ -185,7 +178,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
                       std::string_view id) {
   for (const auto& item : result.evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -232,19 +225,19 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
           "parser_transaction_finality_authority=true",
           "client_autocommit_authority=true"}) {
       Require(item.evidence_kind.find(forbidden) == std::string::npos &&
-                  item.evidence_id.find(forbidden) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFind(item.evidence_id, forbidden) == std::string::npos,
               "ODF-072 evidence leaked forbidden authority or document token");
     }
   }
 }
 
 void InsertDocument(const std::string& database_path,
-                    const std::string& uuid,
+                    const api::EngineUuid& uuid,
                     const std::string& name,
                     const std::vector<std::pair<std::string, std::string>>& fragments) {
   api::EngineDocumentInsertRequest insert;
   insert.context = Context(database_path, 77);
-  insert.target_object.uuid.canonical = uuid;
+  insert.target_object.uuid = uuid;
   insert.localized_names.push_back({"en", "primary", "", name, true});
   for (const auto& [path, value] : fragments) {
     AddFragment(&insert, path, value);
@@ -260,7 +253,7 @@ void ExactWildcardProjectionAndShapeEvidence() {
   const std::string database_path = "/tmp/sb_odf_072_gate_api.sbdb";
   SeedCrudTransaction(database_path);
   InsertDocument(database_path,
-                 "doc-customer-a",
+                 scratchbird::tests::FixtureUuid(72, 2),
                  "customer-a",
                  {{"customer.id", "A1"},
                   {"customer.tier", "gold"},
@@ -268,7 +261,7 @@ void ExactWildcardProjectionAndShapeEvidence() {
                   {"line_items.1.sku", "SKU-2"},
                   {"private.ssn", "redacted"}});
   InsertDocument(database_path,
-                 "doc-customer-b",
+                 scratchbird::tests::FixtureUuid(72, 3),
                  "customer-b",
                  {{"customer.id", "B1"},
                   {"customer.tier", "silver"},
@@ -344,7 +337,7 @@ void FailClosedCasesPreserveAuthority() {
   const std::string database_path = "/tmp/sb_odf_072_fail_closed.sbdb";
   SeedCrudTransaction(database_path);
   InsertDocument(database_path,
-                 "doc-closed",
+                 scratchbird::tests::FixtureUuid(72, 4),
                  "closed",
                  {{"customer.id", "C1"}, {"line_items.0.sku", "SKU-C"}});
   CommitCrudTransaction(database_path);

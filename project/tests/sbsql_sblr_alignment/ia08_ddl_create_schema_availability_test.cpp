@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 
 #include <chrono>
@@ -63,10 +64,8 @@ int main() {
   const auto fixture = MakeFixture();
   api::EngineRequestContext context;
   context.database_path = fixture.database_path;
-  context.database_uuid.canonical =
-      "019d0000-0000-7000-8000-000000002571";
-  context.statement_uuid.canonical =
-      "019d0000-0000-7000-8000-000000002595";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002571");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002595");
   context.security_context_present = true;
   context.trace_tags = {"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};
 

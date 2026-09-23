@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -34,8 +35,8 @@ bool HasStatus(const std::vector<opt::StatisticsContractStatus>& statuses,
   });
 }
 
-opt::OptimizerStatsIdentity Identity(std::string object,
-                                     std::string statistic,
+opt::OptimizerStatsIdentity Identity(scratchbird::core::platform::Uuid object,
+                                     scratchbird::core::platform::Uuid statistic,
                                      std::uint64_t epoch = 5) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = std::move(object);
@@ -53,18 +54,20 @@ bool StatisticsAnalyzeParityCoversSampleHllAndExtendedStats() {
   // SEARCH_KEY: OPCH_STATISTICS_ANALYZE_PARITY
   opt::OptimizerStatisticsStore store;
   opt::AnalyzeSampleInput input;
-  input.relation_uuid = "rel.stats";
+  input.relation_uuid = scratchbird::tests::FixtureUuid(1543, 13);
   input.sampled_rows = 1000;
   input.total_rows_estimate = 10000;
   input.page_count = 80;
   input.average_row_bytes = 128;
   input.stats_epoch = 5;
   input.catalog_epoch = 7;
-  store.UpsertTable(opt::BuildTableStatsFromAnalyzeSample(input));
+  const auto analyzed = opt::BuildTableStatsFromAnalyzeSample(input);
+  if (!Require(analyzed.has_value(), "analyze sample failed to issue native statistic identity")) return false;
+  store.UpsertTable(*analyzed);
 
   opt::ColumnStats column;
-  column.identity = Identity("rel.stats", "stats.column");
-  column.column_uuid = "col.stats";
+  column.identity = Identity(scratchbird::tests::FixtureUuid(1543, 13), scratchbird::tests::FixtureUuid(1543, 14));
+  column.column_uuid = scratchbird::tests::FixtureUuid(1543, 2);
   column.descriptor_digest = "desc:col.stats";
   column.sample_method = "vitter_algorithm_s";
   column.sample_provenance_digest = "sample:stats:epoch5";
@@ -80,24 +83,24 @@ bool StatisticsAnalyzeParityCoversSampleHllAndExtendedStats() {
   store.UpsertColumn(column);
 
   opt::HistogramStats histogram;
-  histogram.identity = Identity("rel.stats", "stats.histogram");
+  histogram.identity = Identity(scratchbird::tests::FixtureUuid(1543, 13), scratchbird::tests::FixtureUuid(1543, 16));
   histogram.column_uuid = column.column_uuid;
   histogram.buckets.push_back({"a", "m", 0.5, 5000});
   histogram.buckets.push_back({"n", "z", 0.5, 5000});
   store.UpsertHistogram(histogram);
 
   opt::MostCommonValueStats mcv;
-  mcv.identity = Identity("rel.stats", "stats.mcv");
+  mcv.identity = Identity(scratchbird::tests::FixtureUuid(1543, 13), scratchbird::tests::FixtureUuid(1543, 17));
   mcv.column_uuid = column.column_uuid;
   mcv.value_encoded = "value:hot";
   mcv.frequency = 0.12;
   store.UpsertMcv(mcv);
 
   opt::ExtendedOptimizerStatistic extended;
-  extended.identity = Identity("rel.stats", "stats.extended");
+  extended.identity = Identity(scratchbird::tests::FixtureUuid(1543, 13), scratchbird::tests::FixtureUuid(1543, 15));
   extended.kind = opt::ExtendedOptimizerStatisticKind::kMultiColumnNdv;
-  extended.relation_uuid = "rel.stats";
-  extended.column_uuids = {"col.stats", "col.other"};
+  extended.relation_uuid = scratchbird::tests::FixtureUuid(1543, 13);
+  extended.column_uuids = {scratchbird::tests::FixtureUuid(1543, 2), scratchbird::tests::FixtureUuid(1543, 1)};
   extended.multi_column_distinct_count = 8400;
   extended.functional_dependency_strength = 0.2;
   extended.correlation_coefficient = 0.4;
@@ -108,14 +111,15 @@ bool StatisticsAnalyzeParityCoversSampleHllAndExtendedStats() {
   extended.security_recheck_required = true;
   store.UpsertExtendedStatistic(extended);
 
-  const auto snapshot = store.Snapshot("snapshot:stats");
+  const auto snapshot = store.Snapshot(scratchbird::tests::FixtureUuid(1543, 250));
   const auto statuses = opt::ValidateOptimizerStatsSnapshot(snapshot);
   const auto legacy = store.ToLegacyCatalog();
+  if (!Require(legacy.has_value(), "typed statistic catalog projection failed")) return false;
   return Require(HasStatus(statuses, "SB_OPT_STATS_OK"),
                  "valid stats snapshot was not accepted") &&
-         Require(legacy.Find("column_hll_estimated_distinct", column.column_uuid).has_value(),
+         Require(legacy->Find("column_hll_estimated_distinct", opt::OptimizerStatisticTarget::Object(column.column_uuid)).has_value(),
                  "HLL distinct estimate not exported") &&
-         Require(legacy.Find("column_sample_rows", column.column_uuid).has_value(),
+         Require(legacy->Find("column_sample_rows", opt::OptimizerStatisticTarget::Object(column.column_uuid)).has_value(),
                  "sample row provenance not exported") &&
          Require(opt::EstimateRangeSelectivityFromHistogram(histogram) == 1.0,
                  "histogram selectivity changed");
@@ -124,27 +128,27 @@ bool StatisticsAnalyzeParityCoversSampleHllAndExtendedStats() {
 bool BenchmarkCleanRejectsUnsafeStatistics() {
   // SEARCH_KEY: OPCH_STATISTICS_FRESHNESS_BENCHMARK_CLEAN_GATE
   opt::OptimizerStatisticsCatalog catalog;
-  catalog.Add(opt::MakeStatistic("row_count", "relation", "rel.safe", 100.0,
+  catalog.Add(opt::MakeStatistic("row_count", "relation", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 11)), 100.0,
                                  opt::StatisticSource::kCatalogExact, 9, 0,
                                  opt::CostConfidence::kExact));
-  catalog.Add(opt::MakeStatistic("page_count", "relation", "rel.stale", 10.0,
+  catalog.Add(opt::MakeStatistic("page_count", "relation", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 12)), 10.0,
                                  opt::StatisticSource::kCatalogSample, 9,
                                  120000000, opt::CostConfidence::kHigh));
-  catalog.Add(opt::MakeStatistic("visible_row_count", "relation", "rel.policy",
+  catalog.Add(opt::MakeStatistic("visible_row_count", "relation", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 10)),
                                  90.0, opt::StatisticSource::kPolicyDefault, 9,
                                  0, opt::CostConfidence::kLow));
-  catalog.Add(opt::MakeStatistic("index_depth", "index", "rel.cluster", 3.0,
+  catalog.Add(opt::MakeStatistic("index_depth", "index", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 7)), 3.0,
                                  opt::StatisticSource::kClusterMetric, 9, 0,
                                  opt::CostConfidence::kHigh, true, true));
-  catalog.Add(opt::MakeStatistic("index_leaf_pages", "index", "local.default",
+  catalog.Add(opt::MakeStatistic("index_leaf_pages", "index", opt::OptimizerStatisticTarget::LocalDefault(),
                                  8.0, opt::StatisticSource::kPolicyDefault, 1,
                                  0, opt::CostConfidence::kLow));
 
-  const auto safe = catalog.ValidateBenchmarkCleanInputs({"row_count"}, "rel.safe");
-  const auto stale = catalog.ValidateBenchmarkCleanInputs({"page_count"}, "rel.stale");
-  const auto policy = catalog.ValidateBenchmarkCleanInputs({"visible_row_count"}, "rel.policy");
-  const auto cluster = catalog.ValidateBenchmarkCleanInputs({"index_depth"}, "rel.cluster");
-  const auto local = catalog.ValidateBenchmarkCleanInputs({"index_leaf_pages"}, "rel.missing");
+  const auto safe = catalog.ValidateBenchmarkCleanInputs({"row_count"}, opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 11)));
+  const auto stale = catalog.ValidateBenchmarkCleanInputs({"page_count"}, opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 12)));
+  const auto policy = catalog.ValidateBenchmarkCleanInputs({"visible_row_count"}, opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 10)));
+  const auto cluster = catalog.ValidateBenchmarkCleanInputs({"index_depth"}, opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 7)));
+  const auto local = catalog.ValidateBenchmarkCleanInputs({"index_leaf_pages"}, opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 9)));
   return Require(HasStatus(safe, "SB_OPTIMIZER_BENCHMARK_CLEAN.OK"),
                  "safe catalog stat rejected") &&
          Require(HasStatus(stale, "SB_OPTIMIZER_BENCHMARK_CLEAN.STALE_STATS"),
@@ -157,12 +161,12 @@ bool BenchmarkCleanRejectsUnsafeStatistics() {
                  "local default fallback accepted");
 }
 
-opt::IndexStats Index(std::string family, std::string uuid) {
+opt::IndexStats Index(std::string family, scratchbird::core::platform::Uuid uuid) {
   opt::IndexStats index;
-  index.identity = Identity("rel.index", uuid + ":stats");
+  index.identity = Identity(scratchbird::tests::FixtureUuid(1543, 8), scratchbird::tests::FixtureUuid(1543, 100 + uuid.bytes[15]));
   index.index_family = std::move(family);
   index.index_uuid = std::move(uuid);
-  index.relation_uuid = "rel.index";
+  index.relation_uuid = scratchbird::tests::FixtureUuid(1543, 8);
   index.descriptor_digest = "desc:index";
   index.height = 2;
   index.leaf_pages = 8;
@@ -179,19 +183,19 @@ opt::IndexStats Index(std::string family, std::string uuid) {
 
 bool IndexFamilyCoverageRequiresRouteAndRecheckSemantics() {
   // SEARCH_KEY: OPCH_INDEX_FAMILY_COST_STATISTICS_COVERAGE
-  auto btree = Index("btree", "idx.btree");
+  auto btree = Index("btree", scratchbird::tests::FixtureUuid(1543, 4));
   btree.equality_lookup_supported = true;
   btree.ordered_range_supported = true;
 
-  auto hash = Index("hash", "idx.hash");
+  auto hash = Index("hash", scratchbird::tests::FixtureUuid(1543, 5));
   hash.equality_lookup_supported = true;
 
-  auto bloom = Index("bloom", "idx.bloom");
+  auto bloom = Index("bloom", scratchbird::tests::FixtureUuid(1543, 3));
   bloom.negative_prune_supported = true;
   bloom.candidate_set_producer = true;
   bloom.false_positive_ratio = 0.01;
 
-  auto missing_recheck = Index("vector_hnsw", "idx.vector");
+  auto missing_recheck = Index("vector_hnsw", scratchbird::tests::FixtureUuid(1543, 6));
   missing_recheck.candidate_set_producer = true;
   missing_recheck.exact_recheck_required = false;
 

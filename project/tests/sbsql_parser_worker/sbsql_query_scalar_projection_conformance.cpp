@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -15,6 +16,7 @@
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "engine/sblr/relational_descriptor_codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -49,7 +51,7 @@ inline SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
 }  // namespace canonical_test_sblr
 namespace sblr = canonical_test_sblr;
 
-constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000003101";
+constexpr auto kTargetUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101");
 
 struct ScalarLiteralGrammarRowEvidence {
   std::string_view surface_id;
@@ -1055,9 +1057,9 @@ void RequireLogicalExpressionGrammarRegistryEvidence() {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000003111";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000003112";
-  session.database_uuid = "019f0000-0000-7000-8000-000000003113";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003111");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003112");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003113");
   session.catalog_epoch = 7;
   session.security_policy_epoch = 11;
   session.descriptor_epoch = 13;
@@ -1067,7 +1069,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-000000003114";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003114");
   config.bundle_contract_id = "sbp_sbsql@scalar-projection-route-test";
   config.build_id = "sbsql-scalar-projection-route-test";
   return config;
@@ -1083,14 +1085,14 @@ struct PipelineArtifacts {
 
 NativeRelationalBindingContext TableSelectBindingContext() {
   NativeRelationalBindingContext context;
-  context.bound_ast_uuid = "019f0000-0000-7000-8000-000000003181";
-  context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000003182";
-  context.security_context_uuid = "019f0000-0000-7110-8000-000000003183";
-  context.statement_uuid = "019f0000-0000-7120-8000-000000003184";
-  context.owning_transaction_uuid = "019f0000-0000-7130-8000-000000003185";
-  context.statement_snapshot_uuid = "019f0000-0000-7140-8000-000000003186";
+  context.bound_ast_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003181");
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000003182");
+  context.security_context_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7110-8000-000000003183");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000003184");
+  context.owning_transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000003185");
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000003186");
   context.statement_metadata_snapshot_uuid =
-      "019f0000-0000-7150-8000-000000003187";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000003187");
   context.local_transaction_id = 42;
   context.snapshot_visible_through_local_transaction_id = 42;
   auto& authority = context.engine_statement_authority;
@@ -1106,31 +1108,31 @@ NativeRelationalBindingContext TableSelectBindingContext() {
 
   NativeDescriptorBindingInput text;
   text.descriptor_id = 1;
-  text.descriptor_uuid = "019f0000-0000-7200-8000-000000003188";
-  text.type_uuid = "019f0000-0000-7300-8000-000000003189";
+  text.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000003188");
+  text.type_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000003189");
   text.nullability = BoundNullability::kNullable;
   text.width_precision_scale.width = 128;
-  text.collation_uuid = "019f0000-0000-7400-8000-00000000318a";
+  text.collation_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7400-8000-00000000318a");
   context.descriptors.push_back(std::move(text));
 
   NativeCatalogRelationBindingInput relation;
   relation.source_id = 1;
   relation.resolution_state = NativeCatalogRelationResolutionState::kBound;
-  relation.object_uuid = std::string(kTargetUuid);
+  relation.object_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101");
   relation.resolved_object_type = "relation";
-  relation.resolved_schema_uuid = "019f0000-0000-7500-8000-00000000318b";
-  relation.parent_object_uuid = "019f0000-0000-7500-8000-00000000318c";
+  relation.resolved_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-00000000318b");
+  relation.parent_object_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-00000000318c");
   relation.catalog_generation_id = 7;
   relation.security_epoch = 11;
   relation.resource_epoch = 13;
   relation.columns = {
-      {0, "019f0000-0000-7600-8000-00000000318d", 1, "value"},
+      {0, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7600-8000-00000000318d"), 1, "value"},
   };
   context.catalog_relations.push_back(std::move(relation));
   return context;
 }
 
-PipelineArtifacts RunPipeline(std::string_view sql, std::vector<std::string> resolved = {}) {
+PipelineArtifacts RunPipeline(std::string_view sql, std::vector<api::EngineUuid> resolved = {}) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
@@ -1144,6 +1146,22 @@ PipelineArtifacts RunPipeline(std::string_view sql, std::vector<std::string> res
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
+}
+
+api::RelationalTypeDescriptor DecodeDescriptor(const SblrOperand& operand) {
+  api::RelationalTypeDescriptor value;
+  Require(operand.value.empty() && scratchbird::engine::sblr::DecodeRelationalTypeDescriptorV1(
+      operand.canonical_value_body.data(), operand.canonical_value_body.size(), &value),
+      "canonical binary relational descriptor required");
+  return value;
+}
+void EncodeDescriptor(SblrOperand* operand, const api::RelationalTypeDescriptor& value) {
+  operand->type = "relational_descriptor_v3";
+  operand->value.clear();
+  operand->canonical_value_kind = static_cast<std::uint16_t>(
+      scratchbird::engine::sblr::SblrValueKind::relational_type_descriptor);
+  Require(scratchbird::engine::sblr::EncodeRelationalTypeDescriptorV1(value, &operand->canonical_value_body),
+      "canonical binary relational descriptor encoding failed");
 }
 
 NativeRelationalBindingContext GroupedSumBindingContext(
@@ -1175,29 +1193,20 @@ NativeRelationalBindingContext GroupedSumBindingContext(
               aggregate_relation->aggregate_expression_ids.front() == 3,
           "grouped SUM AST expression handle profile changed");
 
-  constexpr std::string_view kBigintDescriptorUuid =
-      "019d0000-0000-7000-8000-00000000d711";
-  constexpr std::string_view kBigintTypeUuid =
-      "019d0000-0000-7000-8000-00000000d712";
-  constexpr std::string_view kInt128DescriptorUuid =
-      "019d0000-0000-7000-8000-00000000d714";
-  constexpr std::string_view kInt128TypeUuid =
-      "019d0000-0000-7000-8000-00000000d715";
-  constexpr std::string_view kSumFunctionUuid =
-      "019de5fc-2400-72e4-8549-82b2eef5a777";
-  constexpr std::string_view kStatementReceiptUuid =
-      "019f0000-0000-7160-8000-000000003190";
-  constexpr std::string_view kDatatypeCatalogSnapshotUuid =
-      "019d0000-0000-7000-8000-00000000d701";
-  constexpr std::string_view kKeyColumnUuid =
-      "019f0000-0000-7600-8000-00000000318d";
-  constexpr std::string_view kValueColumnUuid =
-      "019f0000-0000-7600-8000-00000000318e";
+  constexpr auto kBigintDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
+  constexpr auto kBigintTypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
+  constexpr auto kInt128DescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714");
+  constexpr auto kInt128TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d715");
+  constexpr auto kSumFunctionUuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-72e4-8549-82b2eef5a777");
+  constexpr auto kStatementReceiptUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003190");
+  constexpr auto kDatatypeCatalogSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+  constexpr auto kKeyColumnUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7600-8000-00000000318d");
+  constexpr auto kValueColumnUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7600-8000-00000000318e");
 
   NativeDescriptorBindingInput key_descriptor;
   key_descriptor.descriptor_id = 1;
-  key_descriptor.descriptor_uuid = kBigintDescriptorUuid;
-  key_descriptor.type_uuid = kBigintTypeUuid;
+  key_descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
+  key_descriptor.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
   key_descriptor.nullability = BoundNullability::kNonNull;
   key_descriptor.canonical_type_name = "int64";
   key_descriptor.descriptor_generation = 1;
@@ -1205,7 +1214,7 @@ NativeRelationalBindingContext GroupedSumBindingContext(
   key_descriptor.codec_id = "datatype.int64.le.v1";
   key_descriptor.codec_version = 1;
   key_descriptor.codec_generation = 1;
-  key_descriptor.statement_receipt_uuid = kStatementReceiptUuid;
+  key_descriptor.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003190");
   key_descriptor.datatype_catalog_snapshot_uuid =
       kDatatypeCatalogSnapshotUuid;
   key_descriptor.datatype_catalog_generation = 1;
@@ -1218,8 +1227,8 @@ NativeRelationalBindingContext GroupedSumBindingContext(
 
   NativeDescriptorBindingInput result_descriptor;
   result_descriptor.descriptor_id = 3;
-  result_descriptor.descriptor_uuid = kInt128DescriptorUuid;
-  result_descriptor.type_uuid = kInt128TypeUuid;
+  result_descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714");
+  result_descriptor.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d715");
   result_descriptor.nullability = BoundNullability::kNullable;
   result_descriptor.canonical_type_name = "int128";
   result_descriptor.descriptor_generation = 1;
@@ -1227,7 +1236,7 @@ NativeRelationalBindingContext GroupedSumBindingContext(
   result_descriptor.codec_id = "datatype.int128.le.v1";
   result_descriptor.codec_version = 1;
   result_descriptor.codec_generation = 1;
-  result_descriptor.statement_receipt_uuid = kStatementReceiptUuid;
+  result_descriptor.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003190");
   result_descriptor.datatype_catalog_snapshot_uuid =
       kDatatypeCatalogSnapshotUuid;
   result_descriptor.datatype_catalog_generation = 1;
@@ -1235,11 +1244,11 @@ NativeRelationalBindingContext GroupedSumBindingContext(
   context.descriptors.push_back(result_descriptor);
 
   context.expressions.push_back(
-      {1, 1, std::nullopt, std::string(kKeyColumnUuid)});
+      {1, 1, std::nullopt, kKeyColumnUuid});
   context.expressions.push_back(
-      {2, 2, std::nullopt, std::string(kValueColumnUuid)});
+      {2, 2, std::nullopt, kValueColumnUuid});
   context.expressions.push_back(
-      {3, 3, std::string(kSumFunctionUuid), std::nullopt});
+      {3, 3, kSumFunctionUuid, std::nullopt});
 
   context.outputs.push_back(
       {1, 1, "customer_id", 1, true, 0, source_relation->relation_id});
@@ -1257,37 +1266,31 @@ NativeRelationalBindingContext GroupedSumBindingContext(
   relation.source_id =
       ast.native_relational.catalog_relation_sources.front().source_id;
   relation.resolution_state = NativeCatalogRelationResolutionState::kBound;
-  relation.object_uuid = std::string(kTargetUuid);
+  relation.object_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101");
   relation.resolved_object_type = "relation";
   relation.resolved_schema_uuid =
-      "019f0000-0000-7500-8000-00000000318b";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-00000000318b");
   relation.parent_object_uuid =
-      "019f0000-0000-7500-8000-00000000318c";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-00000000318c");
   relation.catalog_generation_id = 7;
   relation.security_epoch = 11;
   relation.resource_epoch = 13;
   relation.columns = {
-      {0, std::string(kKeyColumnUuid), 1, "customer_id"},
-      {1, std::string(kValueColumnUuid), 2, "total_amount"},
+      {0, kKeyColumnUuid, 1, "customer_id"},
+      {1, kValueColumnUuid, 2, "total_amount"},
   };
   context.catalog_relations.push_back(std::move(relation));
   return context;
 }
 
-constexpr std::string_view kAuthoritativeTextDescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d718";
-constexpr std::string_view kAuthoritativeTextTypeUuid =
-    "019d0000-0000-7000-8000-00000000d719";
+constexpr auto kAuthoritativeTextDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
+constexpr auto kAuthoritativeTextTypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719");
 constexpr std::string_view kAuthoritativeTextCodecId =
     "datatype.text.utf8.v1";
-constexpr std::string_view kAuthoritativeTextStatementReceiptUuid =
-    "019f0000-0000-7160-8000-000000003192";
-constexpr std::string_view kAuthoritativeTextCatalogSnapshotUuid =
-    "019d0000-0000-7000-8000-00000000d701";
-constexpr std::string_view kOrdinaryJoinDescriptorUuid =
-    "019f0000-0000-7200-8000-000000003193";
-constexpr std::string_view kOrdinaryJoinTypeUuid =
-    "019f0000-0000-7300-8000-000000003194";
+constexpr auto kAuthoritativeTextStatementReceiptUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003192");
+constexpr auto kAuthoritativeTextCatalogSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+constexpr auto kOrdinaryJoinDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000003193");
+constexpr auto kOrdinaryJoinTypeUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000003194");
 
 NativeRelationalBindingContext AuthoritativeTextJoinBindingContext(
     const AstDocument& ast) {
@@ -1323,8 +1326,8 @@ NativeRelationalBindingContext AuthoritativeTextJoinBindingContext(
 
   NativeDescriptorBindingInput text;
   text.descriptor_id = 1;
-  text.descriptor_uuid = kAuthoritativeTextDescriptorUuid;
-  text.type_uuid = kAuthoritativeTextTypeUuid;
+  text.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
+  text.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719");
   text.nullability = BoundNullability::kNullable;
   text.width_precision_scale.width = 0;
   text.canonical_type_name = "text";
@@ -1333,7 +1336,7 @@ NativeRelationalBindingContext AuthoritativeTextJoinBindingContext(
   text.codec_id = kAuthoritativeTextCodecId;
   text.codec_version = 1;
   text.codec_generation = 1;
-  text.statement_receipt_uuid = kAuthoritativeTextStatementReceiptUuid;
+  text.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003192");
   text.datatype_catalog_snapshot_uuid =
       kAuthoritativeTextCatalogSnapshotUuid;
   text.datatype_catalog_generation = 1;
@@ -1342,21 +1345,21 @@ NativeRelationalBindingContext AuthoritativeTextJoinBindingContext(
 
   NativeDescriptorBindingInput ordinary;
   ordinary.descriptor_id = 2;
-  ordinary.descriptor_uuid = kOrdinaryJoinDescriptorUuid;
-  ordinary.type_uuid = kOrdinaryJoinTypeUuid;
+  ordinary.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000003193");
+  ordinary.type_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000003194");
   ordinary.nullability = BoundNullability::kNonNull;
   ordinary.canonical_type_name = "int32";
   context.descriptors.push_back(std::move(ordinary));
 
-  constexpr std::array<std::string_view, 2> kObjectUuids = {
-      "019f0000-0000-7000-8000-000000003195",
-      "019f0000-0000-7000-8000-000000003196"};
-  constexpr std::array<std::string_view, 2> kSchemaUuids = {
-      "019f0000-0000-7500-8000-000000003197",
-      "019f0000-0000-7500-8000-000000003198"};
-  constexpr std::array<std::string_view, 2> kColumnUuids = {
-      "019f0000-0000-7600-8000-000000003199",
-      "019f0000-0000-7600-8000-00000000319a"};
+  constexpr std::array<api::EngineUuid, 2> kObjectUuids = {
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003195"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003196")};
+  constexpr std::array<api::EngineUuid, 2> kSchemaUuids = {
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000003197"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000003198")};
+  constexpr std::array<api::EngineUuid, 2> kColumnUuids = {
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7600-8000-000000003199"),
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7600-8000-00000000319a")};
   constexpr std::array<std::string_view, 2> kColumnNames = {
       "text_value", "integer_value"};
   for (std::size_t ordinal = 0; ordinal < source_relations.size(); ++ordinal) {
@@ -1371,12 +1374,12 @@ NativeRelationalBindingContext AuthoritativeTextJoinBindingContext(
     relation.catalog_generation_id = 7;
     relation.security_epoch = 11;
     relation.resource_epoch = 13;
-    relation.columns = {{0, std::string(kColumnUuids[ordinal]), expression_id,
+    relation.columns = {{0, kColumnUuids[ordinal], expression_id,
                          std::string(kColumnNames[ordinal])}};
     context.catalog_relations.push_back(std::move(relation));
     context.expressions.push_back(
         {expression_id, expression_id, std::nullopt,
-         std::string(kColumnUuids[ordinal])});
+         kColumnUuids[ordinal]});
     context.outputs.push_back(
         {expression_id, expression_id, std::string(kColumnNames[ordinal]),
          expression_id, true, 0, source_relations[ordinal]->relation_id});
@@ -1420,7 +1423,7 @@ PipelineArtifacts RunGroupedSumPipeline() {
   artifacts.ast = BuildAst(artifacts.cst);
   auto native_context = GroupedSumBindingContext(artifacts.ast);
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(),
-                            session, {std::string(kTargetUuid)},
+                            session, {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101")},
                             &native_context);
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
@@ -1430,19 +1433,19 @@ PipelineArtifacts RunGroupedSumPipeline() {
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsql-query-scalar-projection";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000003121";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000003120";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000003122";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000003123";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000003124";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000003125";
-  context.current_diagnostic_uuid.canonical = "019f0000-0000-7000-8000-000000003128";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003121");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003120");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003122");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003123");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003124");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003125");
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003128");
   context.transaction_isolation_level = "snapshot";
   context.current_sqlstate = "00000";
-  context.client_protocol_uuid = "019e1600-0000-7000-8000-0000000000ee";
+  context.client_protocol_uuid = scratchbird::tests::FixtureUuidLiteral("019e1600-0000-7000-8000-0000000000ee");
   context.application_name = "sbsql_conformance";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000003126";
-  context.current_role_uuid.canonical = "019f0000-0000-7000-8000-000000003127";
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003126");
+  context.current_role_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003127");
   context.local_transaction_id = 42;
   context.last_row_count = 7;
   context.last_row_count_present = true;
@@ -1457,12 +1460,10 @@ api::EngineRequestContext EngineContext() {
   context.catalog_generation_id = 11;
   context.security_epoch = 7;
   context.resource_epoch = 13;
-  context.transaction_policy_snapshot_uuid.canonical =
-      "019f0000-0000-7000-8000-000000003129";
+  context.transaction_policy_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003129");
   context.transaction_policy_snapshot_generation = 3;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f0000-0000-7000-8000-00000000312a";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000312a");
   context.authorization_context.security_context_generation = 2;
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
@@ -3387,7 +3388,7 @@ void RequireScalarLowering() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           "parser no-SQL-execution authority step missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.query.scalar_projection_descriptor"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.query.scalar_projection_descriptor"),
           "scalar projection descriptor ref missing");
   Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"scalar_projection\""),
           "scalar projection payload marker missing");
@@ -8134,9 +8135,9 @@ void RequireGroupedSumInt128Lowering() {
   Require(int128_descriptor !=
                   artifacts.bound.native_relational.descriptors.end() &&
               int128_descriptor->descriptor_uuid ==
-                  "019d0000-0000-7000-8000-00000000d714" &&
+                  scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714") &&
               int128_descriptor->type_uuid ==
-                  "019d0000-0000-7000-8000-00000000d715" &&
+                  scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d715") &&
               int128_descriptor->canonical_type_name == "int128" &&
               int128_descriptor->nullability == BoundNullability::kNullable,
           "catalog grouped SUM result descriptor is not exact nullable INT128");
@@ -8159,20 +8160,22 @@ void RequireGroupedSumInt128Lowering() {
           "catalog grouped SUM lowered an explicit grouping-set record");
   Require(std::ranges::any_of(
               artifacts.envelope.operands, [](const auto& operand) {
-                return operand.type == "relational_descriptor_v2" &&
-                       operand.name == "3" &&
-                       operand.value.starts_with(
-                           "019d0000-0000-7000-8000-00000000d714|"
-                           "1|019d0000-0000-7000-8000-00000000d715|1|"
-                           "datatype.int128.le.v1|1|1|1|");
+                if (operand.type != "relational_descriptor_v3" || operand.name != "slot_3") return false;
+                const auto value = DecodeDescriptor(operand);
+                return value.descriptor_uuid == scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714") &&
+                    value.type_uuid == scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d715") &&
+                    value.descriptor_generation == 1 && value.type_generation == 1 &&
+                    value.codec_id == "datatype.int128.le.v1" && value.codec_version == 1 &&
+                    value.codec_generation == 1 && value.nullability == api::RelationalNullability::kNullable;
               }),
           "catalog grouped SUM SBLR omitted its exact INT128 descriptor");
   Require(std::ranges::any_of(
               artifacts.envelope.operands, [](const auto& operand) {
+                scratchbird::engine::sblr::RelationalNodeBindingRecord value;
                 return operand.type == "relational_node_binding_v1" &&
-                       operand.value.starts_with(
-                           "6167677265676174652e67726f757065642d696e7436342d6b65792d"
-                           "73756d2e7631|");
+                    scratchbird::engine::sblr::DecodeRelationalNodeBindingV1(
+                        operand.canonical_value_body.data(), operand.canonical_value_body.size(), &value) &&
+                    value.semantic_variant_id == "aggregate.grouped-int64-key-sum.v1";
               }),
           "catalog grouped SUM SBLR omitted its canonical semantic identity");
 
@@ -8183,10 +8186,10 @@ void RequireGroupedSumInt128Lowering() {
   const auto ast = BuildAst(cst);
   auto malformed_context = GroupedSumBindingContext(ast);
   malformed_context.descriptors.back().type_uuid =
-      "019d0000-0000-7000-8000-00000000d712";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
   const auto malformed =
       BindAst(ast, cst, ParserConfigForTest(), ParserSession(),
-              {std::string(kTargetUuid)}, &malformed_context);
+              {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101")}, &malformed_context);
   Require(!malformed.bound &&
               std::ranges::any_of(
                   malformed.messages.diagnostics, [](const auto& diagnostic) {
@@ -8198,16 +8201,16 @@ void RequireGroupedSumInt128Lowering() {
   stale_generation_context.descriptors.front().descriptor_generation = 2;
   const auto stale_generation =
       BindAst(ast, cst, ParserConfigForTest(), ParserSession(),
-              {std::string(kTargetUuid)}, &stale_generation_context);
+              {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101")}, &stale_generation_context);
   Require(!stale_generation.bound,
           "catalog grouped SUM accepted a stale source descriptor generation");
 
   auto cross_receipt_context = GroupedSumBindingContext(ast);
   cross_receipt_context.descriptors.back().statement_receipt_uuid =
-      "019f0000-0000-7160-8000-000000003191";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003191");
   const auto cross_receipt =
       BindAst(ast, cst, ParserConfigForTest(), ParserSession(),
-              {std::string(kTargetUuid)}, &cross_receipt_context);
+              {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101")}, &cross_receipt_context);
   Require(!cross_receipt.bound,
           "catalog grouped SUM accepted cross-receipt result identity");
 }
@@ -8260,8 +8263,8 @@ void RequireAuthoritativeTextJoinDescriptorTransport() {
               ordinary_descriptor->codec_id.empty() &&
               ordinary_descriptor->codec_version == 0 &&
               ordinary_descriptor->codec_generation == 0 &&
-              ordinary_descriptor->statement_receipt_uuid.empty() &&
-              ordinary_descriptor->datatype_catalog_snapshot_uuid.empty() &&
+              ordinary_descriptor->statement_receipt_uuid.is_nil() &&
+              ordinary_descriptor->datatype_catalog_snapshot_uuid.is_nil() &&
               ordinary_descriptor->datatype_catalog_generation == 0 &&
               ordinary_descriptor->datatype_registry_generation == 0,
           "ordinary JOIN descriptor unexpectedly acquired receipt authority");
@@ -8271,76 +8274,61 @@ void RequireAuthoritativeTextJoinDescriptorTransport() {
           "authoritative TEXT CROSS JOIN did not lower through canonical query.execute");
 
   std::vector<const SblrOperand*> descriptor_operands;
-  for (const auto& operand : artifacts.envelope.operands) {
-    if (operand.type == "relational_descriptor_v1" ||
-        operand.type == "relational_descriptor_v2") {
-      descriptor_operands.push_back(&operand);
-    }
-  }
-  Require(descriptor_operands.size() == 2 &&
-              descriptor_operands[0]->name == "1" &&
-              descriptor_operands[0]->type == "relational_descriptor_v2" &&
-              descriptor_operands[0]->value ==
-                  std::string(kAuthoritativeTextDescriptorUuid) + "|1|" +
-                      std::string(kAuthoritativeTextTypeUuid) + "|1|" +
-                      std::string(kAuthoritativeTextCodecId) +
-                      "|1|1|1|-|-|0|-|-|" +
-                      std::string(kAuthoritativeTextStatementReceiptUuid) +
-                      "|" +
-                      std::string(kAuthoritativeTextCatalogSnapshotUuid) +
-                      "|1|1" &&
-              descriptor_operands[1]->name == "2" &&
-              descriptor_operands[1]->type == "relational_descriptor_v1",
-          "mixed JOIN descriptors did not preserve order and select v2 per authoritative occurrence");
+  for (const auto& operand : artifacts.envelope.operands)
+    if (operand.type == "relational_descriptor_v3") descriptor_operands.push_back(&operand);
+  Require(descriptor_operands.size() == 2 && descriptor_operands[0]->name == "slot_1" &&
+      descriptor_operands[1]->name == "slot_2", "mixed JOIN descriptor order changed");
+  const auto text_wire = DecodeDescriptor(*descriptor_operands[0]);
+  Require(text_wire.datatype_identity_authoritative && text_wire.descriptor_uuid == kAuthoritativeTextDescriptorUuid &&
+      text_wire.type_uuid == kAuthoritativeTextTypeUuid && text_wire.descriptor_generation == 1 &&
+      text_wire.type_generation == 1 && text_wire.codec_id == kAuthoritativeTextCodecId &&
+      text_wire.codec_version == 1 && text_wire.codec_generation == 1 &&
+      text_wire.statement_receipt_uuid == kAuthoritativeTextStatementReceiptUuid &&
+      text_wire.datatype_catalog_snapshot_uuid == kAuthoritativeTextCatalogSnapshotUuid &&
+      text_wire.datatype_catalog_generation == 1 && text_wire.datatype_registry_generation == 1 &&
+      text_wire.nullability == api::RelationalNullability::kNullable && text_wire.width == 0 &&
+      !text_wire.collation_uuid && !text_wire.timezone_profile_id && !text_wire.precision && !text_wire.scale &&
+      !DecodeDescriptor(*descriptor_operands[1]).datatype_identity_authoritative,
+      "mixed JOIN descriptors changed per-occurrence authority");
 
   auto two_authoritative = artifacts.envelope;
   const auto second_authoritative = std::ranges::find_if(
       two_authoritative.operands, [](const auto& operand) {
-        return operand.type == "relational_descriptor_v1" &&
-               operand.name == "2";
+        return operand.type == "relational_descriptor_v3" &&
+               operand.name == "slot_2";
       });
   Require(second_authoritative != two_authoritative.operands.end(),
           "ordinary JOIN descriptor operand is absent");
-  second_authoritative->type = "relational_descriptor_v2";
-  second_authoritative->value =
-      std::string(kOrdinaryJoinDescriptorUuid) + "|1|" +
-      std::string(kOrdinaryJoinTypeUuid) +
-      "|1|datatype.test.int32.le.v1|1|1|0|-|-|-|-|-|" +
-      std::string(kAuthoritativeTextStatementReceiptUuid) + "|" +
-      std::string(kAuthoritativeTextCatalogSnapshotUuid) + "|1|1";
+  auto authoritative = DecodeDescriptor(*second_authoritative);
+  authoritative.datatype_identity_authoritative = true;
+  authoritative.descriptor_generation = 1; authoritative.type_generation = 1;
+  authoritative.codec_id = "datatype.test.int32.le.v1";
+  authoritative.codec_version = 1; authoritative.codec_generation = 1;
+  authoritative.statement_receipt_uuid = kAuthoritativeTextStatementReceiptUuid;
+  authoritative.datatype_catalog_snapshot_uuid = kAuthoritativeTextCatalogSnapshotUuid;
+  authoritative.datatype_catalog_generation = 1; authoritative.datatype_registry_generation = 1;
+  EncodeDescriptor(&*second_authoritative, authoritative);
   Require(VerifySblrEnvelope(two_authoritative).admitted,
           "ordinary JOIN verifier rejected two consistently anchored v2 descriptors");
 
   const auto require_crossed_authority_refusal =
-      [&](const std::size_t field_index, const std::string_view replacement,
+      [&](const std::size_t field_index, const api::EngineUuid& replacement,
           const std::string_view detail) {
         auto forged = two_authoritative;
         const auto operand = std::ranges::find_if(
             forged.operands, [](const auto& candidate) {
-              return candidate.type == "relational_descriptor_v2" &&
-                     candidate.name == "2";
+              return candidate.type == "relational_descriptor_v3" &&
+                     candidate.name == "slot_2";
             });
         Require(operand != forged.operands.end(),
                 "forged JOIN descriptor operand is absent");
-        std::vector<std::string> fields;
-        std::size_t start = 0;
-        while (start <= operand->value.size()) {
-          const auto separator = operand->value.find('|', start);
-          fields.push_back(operand->value.substr(
-              start, separator == std::string::npos
-                         ? std::string::npos
-                         : separator - start));
-          if (separator == std::string::npos) break;
-          start = separator + 1;
-        }
-        Require(fields.size() == 17 && field_index < fields.size(),
-                "authoritative JOIN descriptor fixture field count changed");
-        fields[field_index] = replacement;
-        operand->value.clear();
-        for (std::size_t index = 0; index < fields.size(); ++index) {
-          if (index != 0) operand->value.push_back('|');
-          operand->value.append(fields[index]);
-        }
+        auto wire = DecodeDescriptor(*operand);
+        if (field_index == 13) wire.statement_receipt_uuid = replacement;
+        else if (field_index == 14) wire.datatype_catalog_snapshot_uuid = replacement;
+        else if (field_index == 15) wire.datatype_catalog_generation = 2;
+        else if (field_index == 16) wire.datatype_registry_generation = 2;
+        else Require(false, "unexpected authority mutation field");
+        EncodeDescriptor(&*operand, wire);
         const auto verification = VerifySblrEnvelope(forged);
         Require(!verification.admitted &&
                     HasDiagnosticCode(verification.messages,
@@ -8348,16 +8336,16 @@ void RequireAuthoritativeTextJoinDescriptorTransport() {
                 std::string(detail));
       };
   require_crossed_authority_refusal(
-      13, "019f0000-0000-7160-8000-00000000319b",
+      13, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-00000000319b"),
       "generic JOIN verifier accepted crossed statement receipt authority");
   require_crossed_authority_refusal(
-      14, "019f0000-0000-7170-8000-00000000319c",
+      14, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7170-8000-00000000319c"),
       "generic JOIN verifier accepted crossed datatype snapshot authority");
   require_crossed_authority_refusal(
-      15, "2",
+      15, {},
       "generic JOIN verifier accepted crossed datatype catalog generation");
   require_crossed_authority_refusal(
-      16, "2",
+      16, {},
       "generic JOIN verifier accepted crossed datatype registry generation");
 
   const auto require_lowering_refusal =
@@ -8371,14 +8359,14 @@ void RequireAuthoritativeTextJoinDescriptorTransport() {
         Require(std::ranges::none_of(
                     envelope.operands, [](const auto& operand) {
                       return operand.type == "relational_descriptor_v1" ||
-                             operand.type == "relational_descriptor_v2";
+                             operand.type == "relational_descriptor_v3";
                     }),
                 std::string(detail) + " published a descriptor operand");
       };
 
   auto missing_receipt = artifacts.bound;
   missing_receipt.native_relational.descriptors.front()
-      .statement_receipt_uuid.clear();
+      .statement_receipt_uuid = {};
   require_lowering_refusal(
       std::move(missing_receipt),
       "authoritative TEXT JOIN accepted a missing receipt UUID");
@@ -8396,7 +8384,7 @@ void RequireAuthoritativeTextJoinDescriptorTransport() {
   stale.codec_id = "datatype.test.int32.le.v1";
   stale.codec_version = 1;
   stale.codec_generation = 1;
-  stale.statement_receipt_uuid = kAuthoritativeTextStatementReceiptUuid;
+  stale.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003192");
   stale.datatype_catalog_snapshot_uuid =
       kAuthoritativeTextCatalogSnapshotUuid;
   stale.datatype_catalog_generation = 2;
@@ -8416,7 +8404,7 @@ void RequireAuthoritativeTextJoinDescriptorTransport() {
 }
 
 void RequireTableSelectDoesNotUseScalarProjection() {
-  const auto artifacts = RunPipeline("SELECT * FROM customer", {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline("SELECT * FROM customer", {kTargetUuid});
   if (!artifacts.bound.bound) {
     for (const auto& diagnostic : artifacts.bound.messages.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';

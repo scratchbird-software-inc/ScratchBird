@@ -1,3 +1,4 @@
+#include "wire/binary_status_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -34,6 +35,17 @@
 
 namespace scratchbird::server {
 namespace {
+
+std::string IdentityBytes(const scratchbird::core::platform::Uuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()),id.bytes.size()};
+}
+scratchbird::core::platform::Uuid BinaryIdentity(std::string_view bytes) {
+  scratchbird::core::platform::Uuid id;
+  if (bytes.size()!=id.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()),id.bytes.size(),id.bytes.begin());
+  return scratchbird::core::uuid::IsEngineIdentityUuid(id) ? id : scratchbird::core::platform::Uuid{};
+}
+
 
 namespace engine_api = scratchbird::engine::internal_api;
 namespace agents = scratchbird::core::agents;
@@ -181,7 +193,7 @@ std::optional<ServerAgentActionTestHook> TryParseServerAgentActionTestHook(
   return hook;
 }
 
-std::string NewTypedUuidText(platform::UuidKind kind,
+std::string NewTypedUuidBytes(platform::UuidKind kind,
                              const std::string& key,
                              std::uint64_t salt) {
   std::uint64_t folded = salt + CurrentUnixMillis();
@@ -190,13 +202,13 @@ std::string NewTypedUuidText(platform::UuidKind kind,
     folded *= 1099511628211ull;
   }
   const auto generated = uuid::GenerateEngineIdentityV7(kind, folded);
-  return generated.ok() ? uuid::UuidToString(generated.value.value) : std::string{};
+  return generated.ok() ? IdentityBytes(generated.value.value) : std::string{};
 }
 
 std::string ServerAgentRuntimeUuid(const std::string& database_uuid,
                                    const std::string& purpose,
                                    std::uint64_t salt) {
-  return NewTypedUuidText(platform::UuidKind::object,
+  return NewTypedUuidBytes(platform::UuidKind::object,
                           database_uuid + "|server_agent_runtime|" + purpose,
                           salt);
 }
@@ -425,7 +437,8 @@ std::string EvidenceValue(const engine_api::EngineApiResult& result,
                           std::string_view evidence_kind) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == evidence_kind) {
-      return evidence.evidence_id;
+      if (const auto* id = std::get_if<platform::Uuid>(&evidence.evidence_id)) return IdentityBytes(*id);
+      return std::get<std::string>(evidence.evidence_id);
     }
   }
   return {};
@@ -441,14 +454,14 @@ engine_api::EngineRequestContext ServerAgentBaseContext(
   context.trust_mode = engine_api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = database_path;
-  context.database_uuid = database_uuid;
+  context.database_uuid = BinaryIdentity(database_uuid);
   context.principal_uuid =
-      agents::DeterministicAgentRuntimePrincipalUuidFromKey(
-          database_uuid + "|server_agent_runtime");
+      BinaryIdentity(agents::DeterministicAgentRuntimePrincipalUuidFromKey(
+          database_uuid + "|server_agent_runtime"));
   context.session_uuid =
-      ServerAgentRuntimeUuid(database_uuid,
+      BinaryIdentity(ServerAgentRuntimeUuid(database_uuid,
                              "session|" + std::to_string(generation),
-                             102 + generation);
+                             102 + generation));
   context.security_context_present = true;
   context.catalog_generation_id = epochs.catalog_generation_id;
   context.security_epoch = epochs.security_epoch;
@@ -471,7 +484,8 @@ engine_api::EngineRequestContext ServerAgentBaseContext(
            "OBS_AGENT_CONTROL",
        }) {
     engine_api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid = "server-agent-engine-grant:" + std::string(right);
+    grant.grant_uuid = BinaryIdentity(NewTypedUuidBytes(platform::UuidKind::object,
+        database_uuid + std::string(right), generation));
     grant.subject_uuid = context.principal_uuid;
     grant.subject_kind = "principal";
     grant.right = right;
@@ -563,9 +577,9 @@ agents::AgentRuntimeContext CapacityPlanningContext(const std::string& database_
   context.private_features_available = true;
   context.standalone_edition = true;
   context.cluster_authority_available = false;
-  context.database_uuid = database_uuid;
+  context.database_uuid = BinaryIdentity(database_uuid);
   context.principal_uuid =
-      agents::DeterministicAgentRuntimePrincipalUuidFromKey(database_uuid + "|server_agent_runtime");
+      BinaryIdentity(agents::DeterministicAgentRuntimePrincipalUuidFromKey(database_uuid + "|server_agent_runtime"));
   context.monotonic_now_microseconds = CurrentMonotonicNs() / 1000;
   context.wall_now_microseconds = CurrentUnixMillis() * 1000;
   context.groups.push_back("OPS");
@@ -583,11 +597,11 @@ void AddCommonActionFields(engine_api::EngineAgentActionHookRequest* request,
                            const std::string& action_class) {
   request->agent_type = agent_type;
   request->action_class = action_class;
-  request->agent_uuid = NewTypedUuidText(
-      platform::UuidKind::object, database_uuid + "|" + agent_type + "|instance", 201 + generation);
-  request->policy_snapshot_uuid = NewTypedUuidText(
-      platform::UuidKind::object, database_uuid + "|" + agent_type + "|policy", 301 + generation);
-  request->target_filespace.uuid = filespace_uuid;
+  request->agent_uuid = BinaryIdentity(NewTypedUuidBytes(
+      platform::UuidKind::object, database_uuid + "|" + agent_type + "|instance", 201 + generation));
+  request->policy_snapshot_uuid = BinaryIdentity(NewTypedUuidBytes(
+      platform::UuidKind::object, database_uuid + "|" + agent_type + "|policy", 301 + generation));
+  request->target_filespace.uuid = BinaryIdentity(filespace_uuid);
   request->target_filespace.object_kind = "filespace";
   request->safety_fence_result = "passed";
   request->policy_authorized = true;
@@ -634,7 +648,7 @@ void AddCommonActionFields(engine_api::EngineAgentActionHookRequest* request,
       agent_type + ":" + std::to_string(generation));
   request->option_envelopes.push_back(
       "agent_metric_snapshot_evidence_uuid:" +
-      NewTypedUuidText(platform::UuidKind::object,
+      NewTypedUuidBytes(platform::UuidKind::object,
                        database_uuid + "|" + agent_type + "|metric-evidence",
                        401 + generation));
 }
@@ -655,7 +669,7 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
   if (config.embedded_direct_mode) {
     return true;
   }
-  if (database->database_uuid.empty() || database->filespace_uuid.empty()) {
+  if (database->database_uuid.is_nil() || database->filespace_uuid.is_nil()) {
     if (diagnostics != nullptr) {
       diagnostics->push_back(RuntimeDiagnostic(
           "SERVER.AGENT_RUNTIME.IDENTITY_MISSING",
@@ -691,7 +705,7 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
   capacity_config.cluster_authority_available = false;
   const auto capacity = agents::PlanAgentWorkerCapacity(
       capacity_config,
-      CapacityPlanningContext(database->database_uuid),
+      CapacityPlanningContext(IdentityBytes(database->database_uuid)),
       agents::DefaultDmlPreworkAgentWorkerCandidates(1));
   const std::uint32_t planned_worker_count = std::max<std::uint32_t>(
       2, static_cast<std::uint32_t>(capacity.background_worker_slots));
@@ -711,8 +725,8 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       return true;
     }
     database_path_ = database->database_path;
-    database_uuid_ = database->database_uuid;
-    filespace_uuid_ = database->filespace_uuid;
+    database_uuid_ = IdentityBytes(database->database_uuid);
+    filespace_uuid_ = IdentityBytes(database->filespace_uuid);
     catalog_generation_id_ = authority_epochs.catalog_generation_id;
     security_epoch_ = authority_epochs.security_epoch;
     resource_epoch_ = authority_epochs.resource_epoch;
@@ -742,13 +756,13 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       evidence.role = "database_local_agent_worker";
       evidence.agent_type_id = selected_agents_[i % selected_agents_.size()];
       evidence.instance_uuid =
-          ServerAgentInstanceUuid(database->database_uuid, evidence.agent_type_id);
+          ServerAgentInstanceUuid(IdentityBytes(database->database_uuid), evidence.agent_type_id);
       evidence.lease_uuid = ServerAgentRuntimeUuid(
-          database->database_uuid,
+          IdentityBytes(database->database_uuid),
           "lease|" + evidence.name + "|" + evidence.agent_type_id,
           1500 + i);
       evidence.lease_owner_uuid = ServerAgentRuntimeUuid(
-          database->database_uuid,
+          IdentityBytes(database->database_uuid),
           "lease_owner|" + evidence.name,
           1600 + i);
       worker_evidence_.push_back(std::move(evidence));
@@ -1748,7 +1762,7 @@ void ServerAgentRuntime::WriteStatusSnapshot() const {
   const auto json = StatusJson();
   const auto tmp = path.string() + ".tmp";
   {
-    std::ofstream out(tmp, std::ios::trunc);
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
     if (!out) {
       return;
     }
@@ -1810,13 +1824,13 @@ std::string ServerAgentRuntime::StatusJson() const {
     }
   }
 
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "{\"server_agent_runtime\":{"
       << "\"started\":" << (started_ ? "true" : "false") << ','
       << "\"stopping\":" << (stopping_.load() ? "true" : "false") << ','
       << "\"database_path\":\"" << JsonEscape(database_path_) << "\","
-      << "\"database_uuid\":\"" << JsonEscape(database_uuid_) << "\","
-      << "\"filespace_uuid\":\"" << JsonEscape(filespace_uuid_) << "\","
+      << "\"database_uuid\":\"" << scratchbird::wire::binary_status::Identity(database_uuid_) << "\","
+      << "\"filespace_uuid\":\"" << scratchbird::wire::binary_status::Identity(filespace_uuid_) << "\","
       << "\"hardware_concurrency\":" << hardware_concurrency_ << ','
       << "\"effective_cpu_count\":" << effective_cpu_count_ << ','
       << "\"foreground_reserved_capacity\":" << foreground_reserved_capacity_ << ','
@@ -1870,8 +1884,8 @@ std::string ServerAgentRuntime::StatusJson() const {
     out << "{\"name\":\"" << JsonEscape(worker.name) << "\","
         << "\"role\":\"" << JsonEscape(worker.role) << "\","
         << "\"agent_type_id\":\"" << JsonEscape(worker.agent_type_id) << "\","
-        << "\"instance_uuid\":\"" << JsonEscape(worker.instance_uuid) << "\","
-        << "\"lease_uuid\":\"" << JsonEscape(worker.lease_uuid) << "\","
+        << "\"instance_uuid\":\"" << scratchbird::wire::binary_status::Identity(worker.instance_uuid) << "\","
+        << "\"lease_uuid\":\"" << scratchbird::wire::binary_status::Identity(worker.lease_uuid) << "\","
         << "\"native_thread_id\":\"" << JsonEscape(worker.native_thread_id) << "\","
         << "\"ticks\":" << worker.ticks << ','
         << "\"actions_accepted\":" << worker.actions_accepted << ','

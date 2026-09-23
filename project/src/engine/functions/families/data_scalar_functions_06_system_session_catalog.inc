@@ -45,8 +45,8 @@
   if (IdIs(id, {"data.scalar.session_id", "sb.session.session_id", "session_id",
                 "current_session_id", "current_session_uuid"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "session_id expects no arguments");
-    if (request.context.sblr_context.session_uuid.empty()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.session_uuid)});
+    if (request.context.sblr_context.session_uuid.is_nil()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.session_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.transaction_id", "sb.session.transaction_id", "transaction_id",
@@ -155,17 +155,17 @@
 
   if (IdIs(id, {"data.scalar.transaction_uuid", "sb.session.transaction_uuid", "transaction_uuid"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "transaction_uuid expects no arguments");
-    if (!request.context.sblr_context.transaction_context_present || request.context.sblr_context.transaction_uuid.empty()) {
+    if (!request.context.sblr_context.transaction_context_present || request.context.sblr_context.transaction_uuid.is_nil()) {
       return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
     }
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.transaction_uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.transaction_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.current_statement_uuid", "sb.session.current_statement_uuid",
                 "current_statement_uuid"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "current_statement_uuid expects no arguments");
-    if (request.context.sblr_context.statement_uuid.empty()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.statement_uuid)});
+    if (request.context.sblr_context.statement_uuid.is_nil()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.statement_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.server_version", "sb.scalar.server_version", "server_version"})) {
@@ -268,7 +268,8 @@
                 "pg_advisory_lock(key)"})) {
     if (request.arguments.empty()) {
       AppendAdvisoryLockEvidence(request.context.sblr_context,
-                                 "pg_advisory_lock.marker:no_key");
+                                 MakeAdvisoryLockEvidence("pg_advisory_lock", "marker:no_key", 0,
+                                     SessionAdvisoryLockOwnerEvidence(request.context.sblr_context)));
       return MakeFunctionSuccess(
           request,
           {MakeTextValue("character", "session_advisory_lock.local_context.route")});
@@ -304,7 +305,8 @@
                 "pg_try_advisory_lock(key)"})) {
     if (request.arguments.empty()) {
       AppendAdvisoryLockEvidence(request.context.sblr_context,
-                                 "pg_try_advisory_lock.marker:no_key");
+                                 MakeAdvisoryLockEvidence("pg_try_advisory_lock", "marker:no_key", 0,
+                                     SessionAdvisoryLockOwnerEvidence(request.context.sblr_context)));
       return MakeFunctionSuccess(request, {MakeBooleanValue(false)});
     }
     if (request.arguments.size() != 1) {
@@ -338,7 +340,8 @@
                 "pg_advisory_unlock(key)"})) {
     if (request.arguments.empty()) {
       AppendAdvisoryLockEvidence(request.context.sblr_context,
-                                 "pg_advisory_unlock.marker:no_key");
+                                 MakeAdvisoryLockEvidence("pg_advisory_unlock", "marker:no_key", 0,
+                                     SessionAdvisoryLockOwnerEvidence(request.context.sblr_context)));
       return MakeFunctionSuccess(request, {MakeBooleanValue(false)});
     }
     if (request.arguments.size() != 1) {
@@ -396,9 +399,10 @@
           "get_lock requires SBLR session runtime state");
     }
     if (!acquired) {
-      AppendAdvisoryLockEvidence(request.context.sblr_context,
-                                 "get_lock.timeout:" + std::to_string(key) +
-                                     ":seconds=" + std::to_string(timeout));
+      auto evidence = MakeAdvisoryLockEvidence("get_lock", "timeout", key,
+          SessionAdvisoryLockOwnerEvidence(request.context.sblr_context));
+      evidence.timeout_seconds = timeout;
+      AppendAdvisoryLockEvidence(request.context.sblr_context, std::move(evidence));
     }
     return MakeFunctionSuccess(request, {MakeInt64Value("int64", acquired ? 1 : 0)});
   }
@@ -438,7 +442,9 @@
                 "pg_advisory_xact_lock(key)"})) {
     if (request.arguments.empty()) {
       AppendTransactionAdvisoryLockEvidence(request.context.sblr_context,
-                                            "pg_advisory_xact_lock.marker:no_key");
+                                            MakeAdvisoryLockEvidence("pg_advisory_xact_lock", "marker:no_key", 0,
+          TransactionAdvisoryLockOwnerEvidence({0, request.context.sblr_context.transaction_uuid, 0,
+            request.context.sblr_context.transaction_uuid.is_nil() ? request.context.sblr_context.local_transaction_id : 0})));
       return MakeFunctionSuccess(
           request,
           {MakeTextValue("character", "transaction_advisory_lock.local_context.route")});
@@ -611,10 +617,10 @@
     if (request.arguments.empty()) {
       object = CatalogObjectForName(request.context.sblr_context, "current_database", "database");
     } else if (!IsSqlNull(request.arguments[0].value)) {
-      object = CatalogObjectForUuid(request.context.sblr_context, ValueAsText(request.arguments[0].value));
+      object = CatalogObjectForUuid(request.context.sblr_context, request.arguments[0].value);
     }
-    if (!object || object->owner_uuid.empty()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", object->owner_uuid)});
+    if (!object || object->owner_uuid.is_nil()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(object->owner_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.catalog_object_uuid",
@@ -624,10 +630,10 @@
       return RefuseFunctionInvalidInput(request, "catalog_object_uuid expects zero, one, or two arguments");
     }
     if (request.arguments.empty()) {
-      if (request.context.sblr_context.database_uuid.empty()) {
+      if (request.context.sblr_context.database_uuid.is_nil()) {
         return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
       }
-      return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.database_uuid)});
+      return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.database_uuid)});
     }
     if (IsSqlNull(request.arguments[0].value) ||
         (request.arguments.size() == 2 && IsSqlNull(request.arguments[1].value))) {
@@ -640,7 +646,7 @@
         ValueAsText(request.arguments[0].value),
         class_filter);
     if (!object) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", object->uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(object->uuid)});
   }
 
   if (IdIs(id, {"data.scalar.catalog_object_name",
@@ -653,7 +659,7 @@
     if (request.arguments.empty()) {
       object = CatalogObjectForName(request.context.sblr_context, "current_database", "database");
     } else if (!IsSqlNull(request.arguments[0].value)) {
-      object = CatalogObjectForUuid(request.context.sblr_context, ValueAsText(request.arguments[0].value));
+      object = CatalogObjectForUuid(request.context.sblr_context, request.arguments[0].value);
     }
     if (!object) return MakeFunctionSuccess(request, {MakeNullValue("character")});
     return MakeFunctionSuccess(request, {MakeTextValue("character", object->name)});
@@ -669,7 +675,7 @@
     if (request.arguments.empty()) {
       object = CatalogObjectForName(request.context.sblr_context, "current_database", "database");
     } else if (!IsSqlNull(request.arguments[0].value)) {
-      object = CatalogObjectForUuid(request.context.sblr_context, ValueAsText(request.arguments[0].value));
+      object = CatalogObjectForUuid(request.context.sblr_context, request.arguments[0].value);
     }
     if (!object) return MakeFunctionSuccess(request, {MakeNullValue("character")});
     return MakeFunctionSuccess(request, {MakeTextValue("character", object->object_class)});
@@ -836,8 +842,8 @@
                 "sb.scalar.descriptor_snapshot_id",
                 "descriptor_snapshot_id"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "descriptor_snapshot_id expects no arguments");
-    if (request.context.sblr_context.security_snapshot_uuid.empty()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.security_snapshot_uuid)});
+    if (request.context.sblr_context.security_snapshot_uuid.is_nil()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.security_snapshot_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.execution_type_descriptor",
@@ -900,8 +906,12 @@
       if (IsSqlNull(request.arguments[0].value)) {
         return MakeFunctionSuccess(request, {MakeNullValue("uint64")});
       }
+      std::vector<std::uint8_t> relation_uuid_bytes;
+      if (!scratchbird::engine::sblr::CopySblrUuidPayload(request.arguments[0].value, &relation_uuid_bytes) ||
+          !scratchbird::core::uuid::IsEngineIdentityUuid(request.arguments[0].value.uuid_value))
+        return RefuseFunctionInvalidInput(request, "relation statistics require a binary system UUID");
       const auto statistics = scratchbird::engine::internal_api::EstimateMgaRelationStatistics(
-          api_context, TrimAscii(ValueAsText(request.arguments[0].value)), false);
+          api_context, request.arguments[0].value.uuid_value, false);
       if (!statistics.ok) {
         const std::string detail = statistics.diagnostic.detail.empty()
                                        ? statistics.diagnostic.message_key
@@ -950,8 +960,12 @@
       if (IsSqlNull(request.arguments[0].value)) {
         return MakeFunctionSuccess(request, {MakeNullValue("uint64")});
       }
+      std::vector<std::uint8_t> relation_uuid_bytes;
+      if (!scratchbird::engine::sblr::CopySblrUuidPayload(request.arguments[0].value, &relation_uuid_bytes) ||
+          !scratchbird::core::uuid::IsEngineIdentityUuid(request.arguments[0].value.uuid_value))
+        return RefuseFunctionInvalidInput(request, "relation statistics require a binary system UUID");
       const auto statistics = scratchbird::engine::internal_api::EstimateMgaRelationStatistics(
-          api_context, TrimAscii(ValueAsText(request.arguments[0].value)), include_indexes);
+          api_context, request.arguments[0].value.uuid_value, include_indexes);
       if (!statistics.ok) {
         const std::string detail = statistics.diagnostic.detail.empty()
                                        ? statistics.diagnostic.message_key
@@ -1422,8 +1436,8 @@
 
   if (IdIs(id, {"data.scalar.client_protocol", "sb.scalar.client_protocol", "client_protocol"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "client_protocol expects no arguments");
-    if (request.context.sblr_context.client_protocol_uuid.empty()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.client_protocol_uuid)});
+    if (request.context.sblr_context.client_protocol_uuid.is_nil()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.client_protocol_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.private_profile_active",
@@ -1630,8 +1644,8 @@
                 "sb.scalar.current_request_uuid",
                 "current_request_uuid"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "current_request_uuid expects no arguments");
-    if (request.context.sblr_context.statement_uuid.empty()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.statement_uuid)});
+    if (request.context.sblr_context.statement_uuid.is_nil()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.statement_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.current_dialect_version",
@@ -1775,8 +1789,8 @@
                 "sb.scalar.evidence_chain_uuid",
                 "evidence_chain_uuid"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "evidence_chain_uuid expects no arguments");
-    if (request.context.sblr_context.statement_uuid.empty()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.statement_uuid)});
+    if (request.context.sblr_context.statement_uuid.is_nil()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.statement_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.parameter_marker", "sb.scalar.parameter_marker", "parameter_marker"})) {
@@ -2050,10 +2064,10 @@
                 "sb.scalar.error_diagnostic_uuid",
                 "error_diagnostic_uuid"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "error_diagnostic_uuid expects no arguments");
-    if (request.context.sblr_context.current_diagnostic_uuid.empty()) {
+    if (request.context.sblr_context.current_diagnostic_uuid.is_nil()) {
       return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
     }
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.current_diagnostic_uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.current_diagnostic_uuid)});
   }
 
   struct ContextualKeywordCatalogScalar {
@@ -2212,43 +2226,43 @@
 
   if (IdIs(id, {"data.scalar.current_user", "sb.session.current_user", "current_user"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "current_user expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.user_uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.user_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.session_user", "sb.session.session_user", "session_user",
                 "data.scalar.system_user", "sb.session.system_user", "system_user",
                 "data.scalar.user", "sb.session.user", "user"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "session user identity scalars expect no arguments");
-    if (request.context.sblr_context.user_uuid.empty()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.user_uuid)});
+    if (request.context.sblr_context.user_uuid.is_nil()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.user_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.current_catalog", "sb.session.current_catalog", "current_catalog"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "current_catalog expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.database_uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.database_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.current_schema", "sb.session.current_schema", "current_schema"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "current_schema expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.current_schema_uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.current_schema_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.current_database", "sb.session.current_database", "current_database"})) {
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.database_uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.database_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.current_role", "sb.session.current_role", "current_role"})) {
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.current_role_uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.current_role_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.current_server", "sb.session.current_server", "current_server"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "current_server expects no arguments");
-    if (request.context.sblr_context.node_uuid.empty()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.node_uuid)});
+    if (request.context.sblr_context.node_uuid.is_nil()) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.node_uuid)});
   }
 
   if (id == "data.scalar.current_transaction") {
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.transaction_uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.transaction_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.statement_timestamp", "sb.temporal.statement_timestamp", "statement_timestamp"})) {

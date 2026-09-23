@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "metrics/parser_metrics.hpp"
+#include "wire/parser_server_ipc/parser_metric_snapshot.hpp"
 
 #include <sstream>
 
@@ -17,12 +18,7 @@
 namespace scratchbird::parser::sbsql {
 namespace {
 
-// Parser-side JSON presentation only. Retained session/connection ownership
-// stays binary; these strings are never written back into execution context.
-std::string DisplayUuid(const scratchbird::core::platform::Uuid& identity) {
-  return identity.is_nil() ? std::string{}
-                           : scratchbird::core::uuid::UuidToString(identity);
-}
+// JSON carries nonidentity metric attributes; identities use the binary packet.
 
 std::string ResourceBudgetJson(const ParserResourceBudget& budget) {
   std::ostringstream out;
@@ -77,9 +73,7 @@ std::string ParserMetrics::SnapshotJson(const ParserConfig& config,
   std::ostringstream out;
   out.exceptions(std::ios::badbit | std::ios::failbit);
   out << "{\"namespace\":\"sys.metrics.parsers\","
-      << "\"parser_uuid\":\"" << EscapeJson(config.parser_uuid) << "\","
       << "\"dialect\":\"" << EscapeJson(config.dialect) << "\","
-      << "\"session_uuid\":\"" << (session.authenticated ? DisplayUuid(session.session_uuid) : "") << "\","
       << "\"state\":\"" << StateName(state_) << "\","
       << "\"resource_budgets\":" << ResourceBudgetJson(config.resource_budget) << ','
       << "\"cache\":" << cache.SnapshotJson() << ",\"counters\":{";
@@ -109,15 +103,13 @@ std::string ParserMetrics::HeartbeatJson(const ParserConfig& config,
   std::lock_guard lock(mutex_);
   std::ostringstream out;
   out.exceptions(std::ios::badbit | std::ios::failbit);
-  out << "{\"parser_uuid\":\"" << EscapeJson(config.parser_uuid) << "\","
+  out << "{"
 #ifndef _WIN32
       << "\"parser_pid\":" << static_cast<long long>(::getpid()) << ','
 #else
       << "\"parser_pid\":0,"
 #endif
       << "\"dialect\":\"" << EscapeJson(config.dialect) << "\","
-      << "\"connection_uuid\":\"" << DisplayUuid(session.connection_uuid) << "\","
-      << "\"session_uuid\":\"" << (session.authenticated ? DisplayUuid(session.session_uuid) : "") << "\","
       << "\"state\":\"" << StateName(state_) << "\","
       << "\"uptime_ms\":" << uptime_ms << ','
       << "\"last_client_activity_ms\":0,\"last_server_activity_ms\":0,"
@@ -127,6 +119,22 @@ std::string ParserMetrics::HeartbeatJson(const ParserConfig& config,
       << "\"resource_budgets\":" << ResourceBudgetJson(config.resource_budget) << ','
       << "\"redaction_state\":\"" << EscapeJson(session.metric_redaction_policy) << "\"}";
   return out.str();
+}
+
+std::string ParserMetrics::SnapshotPacket(const ParserConfig& config,
+    const SessionContext& session, const SblrTemplateCache& cache) const {
+  return scratchbird::wire::EncodeParserMetricSnapshotV1(
+      {config.parser_uuid, session.connection_uuid,
+       session.authenticated ? session.session_uuid : scratchbird::core::platform::Uuid{},
+       SnapshotJson(config, session, cache)});
+}
+std::string ParserMetrics::HeartbeatPacket(const ParserConfig& config,
+    const SessionContext& session, const SblrTemplateCache& cache,
+    std::string_view operation) const {
+  return scratchbird::wire::EncodeParserMetricSnapshotV1(
+      {config.parser_uuid, session.connection_uuid,
+       session.authenticated ? session.session_uuid : scratchbird::core::platform::Uuid{},
+       HeartbeatJson(config, session, cache, operation)});
 }
 
 } // namespace scratchbird::parser::sbsql

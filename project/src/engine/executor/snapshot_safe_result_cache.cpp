@@ -475,11 +475,11 @@ const char* SnapshotSafeCachePayloadKindName(
     SnapshotSafeCachePayloadKind kind) {
   switch (kind) {
     case SnapshotSafeCachePayloadKind::kCandidateSet:
-      return "invalid";
+      return "candidate_set";
     case SnapshotSafeCachePayloadKind::kSmallFinalResult:
       return "small_final_result";
   }
-  return "candidate_set";
+  return "invalid";
 }
 
 const char* SnapshotSafeCacheActionName(SnapshotSafeCacheAction action) {

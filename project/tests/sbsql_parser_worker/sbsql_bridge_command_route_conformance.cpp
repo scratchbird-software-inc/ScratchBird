@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -95,7 +96,7 @@ std::string DiagnosticCodes(const MessageVectorSet& messages) {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019e14c0-0000-7000-8000-00000000c001";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019e14c0-0000-7000-8000-00000000c001");
   config.listener_uuid = "019e14c0-0000-7000-8000-00000000c002";
   config.bundle_contract_id = "sbp_sbsql@bridge-route-proof";
   config.build_id = "sbsql_bridge_command_route_conformance";
@@ -105,13 +106,13 @@ ParserConfig ParserConfigForTest() {
 SessionContext SessionForTest() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019e14c0-0000-7000-8000-00000000d001";
-  session.connection_uuid = "019e14c0-0000-7000-8000-00000000d002";
-  session.database_uuid = "019e14c0-0000-7000-8000-00000000d003";
-  session.authenticated_user_uuid = "019e14c0-0000-7000-8000-00000000d004";
-  session.dialect_profile_uuid = "sbsql.default";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e14c0-0000-7000-8000-00000000d001");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019e14c0-0000-7000-8000-00000000d002");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e14c0-0000-7000-8000-00000000d003");
+  session.authenticated_user_uuid = scratchbird::tests::FixtureUuidLiteral("019e14c0-0000-7000-8000-00000000d004");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1213, 1);
   session.transaction_context = "mga.local.transaction.context";
-  session.transaction_uuid = "019e14c0-0000-7000-8000-00000000d005";
+  session.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e14c0-0000-7000-8000-00000000d005");
   session.local_transaction_id = 42;
   session.snapshot_visible_through_local_transaction_id = 42;
   session.catalog_epoch = 101;
@@ -202,14 +203,14 @@ void RequireParserPipeline(const PipelineArtifacts& artifacts, const BridgeRoute
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.udr.no_transaction_finality"),
           std::string(row.label) + " missing UDR no-finality authority step");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.bridge.connection") &&
-              HasValue(artifacts.envelope.descriptor_refs, "sys.bridge.policy") &&
-              HasValue(artifacts.envelope.descriptor_refs, "sys.udr_package_registry"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.bridge.connection") &&
+              HasValue(artifacts.envelope.descriptor_requirements, "sys.bridge.policy") &&
+              HasValue(artifacts.envelope.descriptor_requirements, "sys.udr_package_registry"),
           std::string(row.label) + " missing bridge descriptor evidence");
   if (row.requires_transaction_context) {
     Require(HasValue(artifacts.envelope.required_authority_steps,
                      "authority.engine.mga_transaction_context_required") &&
-                HasValue(artifacts.envelope.descriptor_refs,
+                HasValue(artifacts.envelope.descriptor_requirements,
                          "sys.mga.transaction_inventory"),
             std::string(row.label) + " missing local MGA transaction evidence");
   }
@@ -217,7 +218,7 @@ void RequireParserPipeline(const PipelineArtifacts& artifacts, const BridgeRoute
     Require(HasValue(artifacts.envelope.required_authority_steps,
                      "authority.cluster.provider_compile_time_gate_required") &&
                 HasValue(artifacts.envelope.required_rights, "right.cluster_control") &&
-                HasValue(artifacts.envelope.descriptor_refs, "sys.cluster.provider"),
+                HasValue(artifacts.envelope.descriptor_requirements, "sys.cluster.provider"),
             std::string(row.label) + " missing cluster compile-gate evidence");
   } else {
     Require(HasValue(artifacts.envelope.required_rights, "right.bridge.use") &&

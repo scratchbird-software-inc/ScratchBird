@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -59,6 +60,8 @@ memory::TempWorkspacePolicy Policy(const std::filesystem::path& root,
                                    memory::TempWorkspaceDiskReservationMode mode) {
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "MMCH_TEMP_DISK_RESERVATION_SEMANTICS";
+  policy.database_uuid = scratchbird::tests::FixtureUuid(1458, 1);
+  policy.engine_uuid = scratchbird::tests::FixtureUuid(1458, 2);
   policy.root_path = root;
   policy.filespace_quota_bytes = std::numeric_limits<std::uint64_t>::max();
   policy.session_quota_bytes = std::numeric_limits<std::uint64_t>::max();
@@ -74,25 +77,27 @@ memory::TempWorkspacePolicy Policy(const std::filesystem::path& root,
   return policy;
 }
 
-memory::TempWorkspaceOwner Owner(std::string suffix) {
+memory::TempWorkspaceOwner Owner(std::uint32_t ordinal) {
   memory::TempWorkspaceOwner owner;
-  owner.temp_object_uuid = "disk-" + std::move(suffix);
-  owner.database_id = "database-mmch041";
-  owner.engine_id = "engine-mmch041";
-  owner.session_id = "session-mmch041";
-  owner.transaction_id = "txn-mmch041";
-  owner.statement_id = "stmt-mmch041";
-  owner.operation_id = "op-mmch041";
+  owner.temp_object_uuid = scratchbird::tests::FixtureUuid(1458, 1000 + ordinal);
+  owner.database_id = scratchbird::tests::FixtureUuid(1458, 1);
+  owner.engine_id = scratchbird::tests::FixtureUuid(1458, 2);
+  owner.session_id = scratchbird::tests::FixtureUuid(1458, 3);
+  owner.transaction_id = scratchbird::tests::FixtureUuid(1458, 4);
+  owner.statement_id = scratchbird::tests::FixtureUuid(1458, 5);
+  owner.operation_id = scratchbird::tests::FixtureUuid(1458, 6);
+  owner.snapshot_boundary = scratchbird::tests::FixtureUuid(1458, 7);
+  owner.metadata_boundary = scratchbird::tests::FixtureUuid(1458, 8);
   owner.policy_generation = 41;
   owner.security_generation = 410;
-  owner.resource_budget_reference = "disk-reservation-semantics";
+  owner.resource_budget_reference = scratchbird::tests::FixtureUuid(1458, 9);
   return owner;
 }
 
-memory::TempWorkspaceAllocationRequest Request(std::string suffix,
+memory::TempWorkspaceAllocationRequest Request(std::uint32_t ordinal,
                                                std::uint64_t bytes) {
   memory::TempWorkspaceAllocationRequest request;
-  request.owner = Owner(std::move(suffix));
+  request.owner = Owner(ordinal);
   request.lifetime = memory::TempWorkspaceLifetime::statement_lifetime;
   request.bytes = bytes;
   request.purpose = "MMCH_TEMP_DISK_RESERVATION_SEMANTICS focused gate";
@@ -128,7 +133,7 @@ void LogicalQuotaOnlyIsDistinct() {
   const auto root = MakeTempDir("sb_mmch041_logical");
   memory::TempWorkspaceLifecycleManager manager(
       Policy(root, memory::TempWorkspaceDiskReservationMode::logical_quota_only));
-  auto allocated = manager.AllocateSpillFile(Request("logical", 4096));
+  auto allocated = manager.AllocateSpillFile(Request(1, 4096));
   Require(allocated.ok() && allocated.record.has_value(),
           "MMCH-041 logical quota allocation failed");
   const auto& record = *allocated.record;
@@ -155,7 +160,7 @@ void SparseReservationIsExplicitlyNotPhysical() {
   const auto root = MakeTempDir("sb_mmch041_sparse");
   memory::TempWorkspaceLifecycleManager manager(
       Policy(root, memory::TempWorkspaceDiskReservationMode::sparse_file));
-  auto allocated = manager.AllocateSpillFile(Request("sparse", 8192));
+  auto allocated = manager.AllocateSpillFile(Request(2, 8192));
   Require(allocated.ok() && allocated.record.has_value(),
           "MMCH-041 sparse allocation failed");
   const auto& record = *allocated.record;
@@ -177,7 +182,7 @@ void PhysicalPreallocationIsExplicitAndRequired() {
   const auto root = MakeTempDir("sb_mmch041_physical");
   memory::TempWorkspaceLifecycleManager manager(
       Policy(root, memory::TempWorkspaceDiskReservationMode::physical_preallocate));
-  auto allocated = manager.AllocateSpillFile(Request("physical", 4096));
+  auto allocated = manager.AllocateSpillFile(Request(3, 4096));
   Require(allocated.ok() && allocated.record.has_value(),
           "MMCH-041 physical preallocation failed");
   const auto& record = *allocated.record;
@@ -202,7 +207,7 @@ void PhysicalReservationFailureFailsClosed() {
   memory::TempWorkspaceLifecycleManager manager(
       Policy(root, memory::TempWorkspaceDiskReservationMode::physical_preallocate));
   auto refused = manager.AllocateSpillFile(
-      Request("physical-failure", std::numeric_limits<std::uint64_t>::max()));
+      Request(4, std::numeric_limits<std::uint64_t>::max()));
   Require(!refused.ok(), "MMCH-041 impossible physical preallocation was accepted");
   Require(!refused.record.has_value(),
           "MMCH-041 failed physical preallocation returned a record");

@@ -97,14 +97,14 @@ EngineDmlUpdateTextTargetCaptureResultV2 CaptureDmlUpdateTextTargetV2(
     return result;
   }
   const auto relation = LoadMgaRelationStorageDescriptor(
-      context, ContextualUuidTextV2(key.relation_uuid));
+      context, ContextualUuidNativeV2(key.relation_uuid));
   if (!relation.ok) {
     result.diagnostic = relation.diagnostic;
     return result;
   }
   const auto column = std::find_if(relation.descriptor.columns.begin(),
       relation.descriptor.columns.end(), [&](const auto& c) {
-        return c.column_uuid == ContextualUuidTextV2(key.column_uuid) &&
+        return c.column_uuid == ContextualUuidNativeV2(key.column_uuid) &&
                c.ordinal == key.column_ordinal &&
                c.column_generation == expected_column_generation;
       });
@@ -119,7 +119,7 @@ EngineDmlUpdateTextTargetCaptureResultV2 CaptureDmlUpdateTextTargetV2(
   }
   MgaContextualTextSidecarLookupResultV2 sidecar;
   MgaContextualTextSidecarSetDiagnosticV2 error;
-  const bool contextual = !column->charset_uuid.empty() || !column->collation_uuid.empty();
+  const bool contextual = !column->charset_uuid.is_nil() || !column->collation_uuid.is_nil();
   if (contextual && !LookupMgaContextualTextSidecarV2(selected.selection.sidecar_owner,
           selected.selection.base_descriptor_fields, selected.selection.projected_columns,
           selected.selection.sealed_sidecar_set, key.column_ordinal, key.column_uuid,
@@ -132,10 +132,10 @@ EngineDmlUpdateTextTargetCaptureResultV2 CaptureDmlUpdateTextTargetV2(
   EngineResolvedResourceDescriptor co;
   if (contextual) {
     const auto charset = LookupEngineResourceDescriptorByUuid(
-        context, EngineUuid{ContextualUuidTextV2(descriptor.charset_uuid)}, "charset");
+        context, EngineUuid{ContextualUuidNativeV2(descriptor.charset_uuid)}, "charset");
     if (!charset.ok) { result.diagnostic = charset.diagnostic; return result; }
     const auto collation = LookupEngineResourceDescriptorByUuid(
-        context, EngineUuid{ContextualUuidTextV2(descriptor.collation_uuid)}, "collation");
+        context, EngineUuid{ContextualUuidNativeV2(descriptor.collation_uuid)}, "collation");
     if (!collation.ok) { result.diagnostic = collation.diagnostic; return result; }
     cs = charset.resource_descriptor;
     co = collation.resource_descriptor;
@@ -158,8 +158,8 @@ EngineDmlUpdateTextTargetCaptureResultV2 CaptureDmlUpdateTextTargetV2(
   if (contextual && (descriptor.resource_epoch != context.resource_epoch ||
       !cs.present || !co.present || cs.resource_family != "charset" ||
       co.resource_family != "collation" ||
-      cs.resource_uuid != ContextualUuidTextV2(descriptor.charset_uuid) ||
-      co.resource_uuid != ContextualUuidTextV2(descriptor.collation_uuid) ||
+      cs.resource_uuid != ContextualUuidNativeV2(descriptor.charset_uuid) ||
+      co.resource_uuid != ContextualUuidNativeV2(descriptor.collation_uuid) ||
       cs.resource_epoch != context.resource_epoch ||
       co.resource_epoch != context.resource_epoch ||
       cs.family_epoch != descriptor.charset_generation ||

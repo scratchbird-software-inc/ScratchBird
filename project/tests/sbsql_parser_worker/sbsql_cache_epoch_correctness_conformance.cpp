@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -7,6 +8,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "cache/sblr_template_cache.hpp"
+#include "cache/binary_cache_key.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -49,7 +51,7 @@ sbsql::CacheKey BaseKey() {
   key.memory_pressure_generation = 133;
   key.normalized_statement_hash = 144;
   key.parameter_type_shape_hash = 155;
-  key.connection_uuid = "connection/abc";
+  key.connection_uuid = scratchbird::tests::FixtureUuid(1453, 1);
   key.transaction_context_hash = "txn/read_committed";
   key.dialect = "sbsql";
   key.role_set_hash = "roles/app_reader";
@@ -62,7 +64,7 @@ sbsql::CacheKey BaseKey() {
   key.common_resource_hash = "common.hash.en-US";
   key.language_resource_epoch = 66;
   key.localized_name_epoch = 55;
-  key.policy_profile = "policy/default";
+  key.policy_profile = scratchbird::tests::FixtureUuid(1453, 2);
   key.parser_profile = "sbsql/default";
   key.message_resource_epoch = 166;
   key.resource_compatibility_identity = "sbsql.resource.compat.v1";
@@ -74,17 +76,28 @@ sbsql::CacheKey BaseKey() {
 void VerifyKeyDimensions() {
   const auto key = BaseKey();
   const auto stable = key.StableKey();
-  for (const auto token : {"sbsql-cache-v8", "1001", "3", "11", "22", "23", "33", "44",
-                           "55", "66", "77", "1", "78", "88", "89", "99", "111",
-                           "122", "133", "144", "155", "166",
-                           "connection/abc", "txn/read_committed", "sbsql",
-                           "roles/app_reader", "groups/reporting",
-                           "public_hash", "en-US", "sbsql.syntax.standard",
-                           "common.hash.en-US", "policy/default",
-                           "sbsql/default", "sbsql.resource.compat.v1",
-                           "sbsql.resource-pack.v1", "result/default"}) {
+  for (const auto token : {"sbsql-cache-v9", "txn/read_committed", "sbsql",
+                           "roles/app_reader", "groups/reporting", "public_hash", "en-US",
+                           "sbsql.syntax.standard", "common.hash.en-US", "sbsql/default",
+                           "sbsql.resource.compat.v1", "sbsql.resource-pack.v1", "result/default"}) {
     Require(Contains(stable, token), std::string("stable key missing ") + token);
   }
+}
+
+void VerifyBinaryKeyFraming() {
+  sbsql::BinaryCacheKey left("test"), right("test");
+  left.Strings({"a|b", "c"}); right.Strings({"a", "b|c"});
+  Require(std::move(left).Finish() != std::move(right).Finish(), "delimiter text collided in exact cache key");
+  const auto first = scratchbird::tests::FixtureUuid(1453, 101);
+  const auto second = scratchbird::tests::FixtureUuid(1453, 102);
+  sbsql::BinaryCacheKey one("set"), two("set"), different("set");
+  one.UuidSet({first, second, first}); two.UuidSet({second, first}); different.UuidSet({first});
+  const auto bytes = std::move(one).Finish();
+  Require(bytes == std::move(two).Finish() && bytes != std::move(different).Finish(), "native UUID set key lost set identity");
+  Require(bytes.find(std::string(reinterpret_cast<const char*>(first.bytes.data()), 16)) != std::string::npos,
+          "UUID cache key did not retain all binary identity bytes");
+  auto key = BaseKey(); auto changed = key; changed.connection_uuid.bytes[15] ^= 1;
+  Require(key.StableKey() != changed.StableKey(), "exact key lost connection UUID bytes");
 }
 
 template <typename Mutator>
@@ -134,7 +147,7 @@ void VerifyLookupMisses() {
   VerifyDimensionMiss("memory pressure generation", [](sbsql::CacheKey& key) { key.memory_pressure_generation = 134; });
   VerifyDimensionMiss("normalized statement", [](sbsql::CacheKey& key) { key.normalized_statement_hash = 145; });
   VerifyDimensionMiss("parameter type shape", [](sbsql::CacheKey& key) { key.parameter_type_shape_hash = 156; });
-  VerifyDimensionMiss("connection", [](sbsql::CacheKey& key) { key.connection_uuid = "connection/def"; });
+  VerifyDimensionMiss("connection", [](sbsql::CacheKey& key) { key.connection_uuid = scratchbird::tests::FixtureUuid(1453, 3); });
   VerifyDimensionMiss("transaction context", [](sbsql::CacheKey& key) { key.transaction_context_hash = "txn/snapshot"; });
   VerifyDimensionMiss("dialect", [](sbsql::CacheKey& key) { key.dialect = "postgres"; });
   VerifyDimensionMiss("role set", [](sbsql::CacheKey& key) { key.role_set_hash = "roles/app_writer"; });
@@ -147,7 +160,7 @@ void VerifyLookupMisses() {
   VerifyDimensionMiss("common resource hash", [](sbsql::CacheKey& key) { key.common_resource_hash = "common.hash.fr-CA"; });
   VerifyDimensionMiss("language resource epoch", [](sbsql::CacheKey& key) { key.language_resource_epoch = 68; });
   VerifyDimensionMiss("localized name epoch", [](sbsql::CacheKey& key) { key.localized_name_epoch = 57; });
-  VerifyDimensionMiss("policy profile", [](sbsql::CacheKey& key) { key.policy_profile = "policy/restricted"; });
+  VerifyDimensionMiss("policy profile", [](sbsql::CacheKey& key) { key.policy_profile = scratchbird::tests::FixtureUuid(1453, 4); });
   VerifyDimensionMiss("parser profile", [](sbsql::CacheKey& key) { key.parser_profile = "postgres/profile"; });
   VerifyDimensionMiss("message resource epoch", [](sbsql::CacheKey& key) { key.message_resource_epoch = 167; });
   VerifyDimensionMiss("resource compatibility identity", [](sbsql::CacheKey& key) { key.resource_compatibility_identity = "sbsql.resource.compat.v2"; });
@@ -252,7 +265,7 @@ void VerifyInvalidations() {
                        cache.InvalidateParameterTypeShapeHash(key.parameter_type_shape_hash);
                      });
   VerifyInvalidation("connection",
-                     [](sbsql::CacheKey& key) { key.connection_uuid = "connection/def"; },
+                     [](sbsql::CacheKey& key) { key.connection_uuid = scratchbird::tests::FixtureUuid(1453, 3); },
                      [](sbsql::SblrTemplateCache& cache, const sbsql::CacheKey& key) {
                        cache.InvalidateConnection(key.connection_uuid);
                      });
@@ -317,7 +330,7 @@ void VerifyInvalidations() {
                        cache.InvalidateLocalizedNameEpoch(key.localized_name_epoch);
                      });
   VerifyInvalidation("policy profile",
-                     [](sbsql::CacheKey& key) { key.policy_profile = "policy/restricted"; },
+                     [](sbsql::CacheKey& key) { key.policy_profile = scratchbird::tests::FixtureUuid(1453, 4); },
                      [](sbsql::SblrTemplateCache& cache, const sbsql::CacheKey& key) {
                        cache.InvalidatePolicyProfile(key.policy_profile);
                      });
@@ -381,6 +394,7 @@ void VerifyFlushAndMetrics() {
 } // namespace
 
 int main() {
+  VerifyBinaryKeyFraming();
   VerifyKeyDimensions();
   VerifyLookupMisses();
   VerifyInvalidations();

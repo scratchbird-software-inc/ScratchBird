@@ -38,7 +38,7 @@ inline constexpr const char* kSearchQueryTextRequired =
     "SB_SEARCH_QUERY_TEXT_REQUIRED";
 
 struct EngineSearchDocumentInput {
-  std::string document_uuid;
+  EngineUuid document_uuid;
   std::string text;
   bool sealed_segment = true;
 };
@@ -89,12 +89,12 @@ struct EngineBoundSearchFilterV1 {
 
 struct EngineBoundSearchReadRequestV1 {
   EngineRequestContext context;
-  std::string collection_uuid;
-  std::string expected_descriptor_uuid;
+  EngineUuid collection_uuid;
+  EngineUuid expected_descriptor_uuid;
   std::uint64_t expected_descriptor_generation = 0;
-  std::string selected_alternative_uuid;
-  std::string selected_provider_uuid;
-  std::string selected_capability_uuid;
+  EngineUuid selected_alternative_uuid;
+  EngineUuid selected_provider_uuid;
+  EngineUuid selected_capability_uuid;
   std::string selected_implementation_id;
   EngineBoundSearchOperationV1 operation =
       EngineBoundSearchOperationV1::kUnknown;
@@ -104,7 +104,7 @@ struct EngineBoundSearchReadRequestV1 {
   std::uint32_t fuzzy_maximum_edits = 0;
   std::uint32_t top_k = 0;
   EngineBoundSearchFilterV1 filter;
-  std::string analyzer_uuid;
+  EngineUuid analyzer_uuid;
   std::uint64_t analyzer_generation = 0;
   std::string analyzer_pipeline_sha256;
   // document_uuid, analyzer_uuid, analyzer_generation, score, rank.
@@ -121,8 +121,8 @@ struct EngineBoundSearchReadRequestV1 {
 };
 
 struct EngineBoundSearchRowV1 {
-  std::string document_uuid;
-  std::string analyzer_uuid;
+  EngineUuid document_uuid;
+  EngineUuid analyzer_uuid;
   std::uint64_t analyzer_generation = 0;
   double score = 0.0;
   std::uint64_t rank = 0;
@@ -160,7 +160,7 @@ struct EngineBoundSearchReadResultV1 {
 // transaction-finality decisions.
 bool ExactBoundSearchStorageDescriptorV1(
     const MgaRelationStorageDescriptor& descriptor,
-    std::string_view collection_uuid);
+    const EngineUuid& collection_uuid);
 
 EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
     const EngineBoundSearchReadRequestV1& request);

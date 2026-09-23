@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/import_execution_api.hpp"
 #include "dml/insert_api.hpp"
@@ -64,16 +65,16 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -104,7 +105,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextFields(item.evidence_id) == id) {
       return true;
     }
   }
@@ -115,7 +116,7 @@ std::string EvidenceValue(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view kind) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind) {
-      return item.evidence_id;
+      return scratchbird::tests::EvidenceTextFields(item.evidence_id);
     }
   }
   return {};
@@ -147,7 +148,7 @@ std::string FieldValue(const api::EngineResultShape& result,
 
 void RequireNoPathLeak(const std::vector<api::EngineEvidenceReference>& evidence) {
   for (const auto& item : evidence) {
-    const std::string combined = item.evidence_kind + ":" + item.evidence_id;
+    const std::string combined = item.evidence_kind + ":" + scratchbird::tests::EvidenceTextFields(item.evidence_id);
     Require(combined.find("docs" "/execution-plans") == std::string::npos,
             "ODF-037 evidence leaked private execution_plan token");
     Require(combined.find("findings") == std::string::npos,
@@ -164,11 +165,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture, std::string reques
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -252,9 +253,9 @@ Fixture MakeFixture() {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-037 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 10);
+  fixture.index_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 11);
 
   auto metadata = Begin(fixture, "odf037-metadata");
   Require(!api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)).error,
@@ -271,7 +272,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     std::vector<api::EngineRowValue> rows) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";
@@ -291,7 +292,7 @@ api::EngineApiU64 SelectCount(const Fixture& fixture,
                               const api::EngineRequestContext& context) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
   const auto selected = api::EngineSelectRows(request);
@@ -303,7 +304,7 @@ void SeedCommittedRow(const Fixture& fixture) {
   auto context = Begin(fixture, "odf037-seed");
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row("duplicate-id", "seed"));
   request.estimated_row_count = 1;

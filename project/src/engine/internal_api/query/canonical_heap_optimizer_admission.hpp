@@ -36,7 +36,7 @@ struct CanonicalHeapOptimizerAdmissionResult {
   bool built{false};
   scratchbird::engine::optimizer::CanonicalOptimizerAdmissionRequest request;
   scratchbird::engine::optimizer::CanonicalOptimizerAdmissionResult admission;
-  std::string current_relation_descriptor_uuid;
+  EngineUuid current_relation_descriptor_uuid;
   std::uint64_t current_relation_descriptor_generation{0};
   std::vector<std::string> current_relation_projection_type_names;
   std::vector<EngineDescriptor> current_relation_projection_descriptors;

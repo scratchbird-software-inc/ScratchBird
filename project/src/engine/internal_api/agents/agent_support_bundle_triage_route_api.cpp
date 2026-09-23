@@ -9,6 +9,7 @@
 #include "agents/agent_support_bundle_triage_route_api.hpp"
 
 #include <utility>
+#include "uuid.hpp"
 
 namespace scratchbird::engine::internal_api {
 // SEARCH_KEY: AEIC_SUPPORT_BUNDLE_TRIAGE_ROUTE_API
@@ -64,8 +65,8 @@ AgentSupportBundleTriageRouteResult ApplySupportBundleTriageAgentRoute(
       !request.redaction_profile_authoritative ||
       !request.support_export_authorized_by_engine ||
       request.sidecar_authority ||
-      request.agent_uuid.empty() ||
-      request.evidence_uuid.empty()) {
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.agent_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.evidence_uuid)) {
     return Refuse("SB_AGENT_SUPPORT_TRIAGE_ROUTE.UNSAFE_AUTHORITY",
                   "durable evidence tamper chain redaction and engine support-export authority are required");
   }

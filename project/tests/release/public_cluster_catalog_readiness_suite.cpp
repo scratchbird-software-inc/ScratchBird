@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -639,10 +640,10 @@ api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.cluster_authority_available = true;
-  context.database_uuid.canonical = "database:public-cluster-readiness-pcr098";
-  context.cluster_uuid.canonical = "cluster:public-cluster-readiness-pcr098";
-  context.principal_uuid.canonical =
-      "principal:public-cluster-readiness-pcr098";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 3401);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(1438, 1);
+  context.principal_uuid =
+      scratchbird::tests::FixtureUuid(1438, 2);
   context.trace_tags.push_back("public_cluster_catalog_readiness_suite");
   return context;
 }
@@ -667,9 +668,9 @@ agents::AgentRuntimeContext AgentContext() {
   context.security_context_present = true;
   context.cluster_authority_available = true;
   context.standalone_edition = false;
-  context.principal_uuid = "principal:public-cluster-readiness-pcr098";
-  context.database_uuid = "database:public-cluster-readiness-pcr098";
-  context.cluster_uuid = "cluster:public-cluster-readiness-pcr098";
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 3402);
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 3401);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(1438, 1);
   context.trace_tags.push_back("public_cluster_catalog_readiness_suite");
   return context;
 }
@@ -755,7 +756,7 @@ void TestExternalProviderFailClosedClosure() {
   agents::AgentClusterLeaseRequest lease_request;
   lease_request.surface = agents::AgentClusterLeaseSurface::acquire_lease;
   lease_request.agent_type_id = "cluster_scheduler_manager";
-  lease_request.instance_uuid = "public-cluster-readiness-instance";
+  lease_request.instance_uuid = scratchbird::tests::FixtureUuid(1438, 3);
   lease_request.now_microseconds = 100;
   lease_request.lease_duration_microseconds = 500;
   lease_request.production_live_path = true;

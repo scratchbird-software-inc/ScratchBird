@@ -272,7 +272,7 @@ struct DatabaseLifecycleState {
   std::string engine_agent_health_json;
   bool cache_checkpoint_present = false;
   scratchbird::storage::page::PageCacheCheckpointPublication cache_checkpoint;
-  std::string cache_checkpoint_json;
+  std::string cache_checkpoint_binary;
 };
 
 struct DatabaseLifecycleResult {
@@ -294,8 +294,8 @@ struct DatabaseLifecycleOperationConfig {
   std::string path;
   bool cluster_authority_available = false;
   bool decryption_available = false;
-  std::string operation_uuid;
-  std::string actor_uuid;
+  scratchbird::core::platform::Uuid operation_uuid;
+  scratchbird::core::platform::Uuid actor_uuid;
   bool write_evidence = true;
 };
 
@@ -303,9 +303,10 @@ struct DatabaseLifecycleRepairConfig {
   std::string path;
   bool cluster_authority_available = false;
   bool decryption_available = false;
-  std::string operation_uuid;
-  std::string actor_uuid;
+  scratchbird::core::platform::Uuid operation_uuid;
+  scratchbird::core::platform::Uuid actor_uuid;
   std::string repair_plan_id;
+  // Optional binary16 identity proofs; human-readable UUID spellings do not match.
   std::string expected_database_uuid;
   std::string expected_filespace_uuid;
   bool repair_admission_proven = false;
@@ -317,9 +318,10 @@ struct DatabaseDropConfig {
   std::string path;
   bool cluster_authority_available = false;
   bool decryption_available = false;
-  std::string operation_uuid;
-  std::string actor_uuid;
+  scratchbird::core::platform::Uuid operation_uuid;
+  scratchbird::core::platform::Uuid actor_uuid;
   std::string drop_mode = "logical";
+  // Optional binary16 identity proofs; human-readable UUID spellings do not match.
   std::string expected_database_uuid;
   std::string expected_filespace_uuid;
   bool drop_safety_preconditions = false;

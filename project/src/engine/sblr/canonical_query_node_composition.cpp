@@ -691,11 +691,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::optional<std::size_t> prepared_navigation_value_column;
   std::optional<api::EngineTypedValue>
       prepared_navigation_nth_value_position_operand;
-  std::string prepared_navigation_frame_descriptor_uuid;
+  api::EngineUuid prepared_navigation_frame_descriptor_uuid;
   GlobalRankingWindowProfile prepared_navigation_profile;
-  std::string navigation_order_term_binding_evidence_uuid;
-  std::string navigation_frame_property_binding_evidence_uuid;
-  std::string navigation_capability_uuid;
+  api::EngineUuid navigation_frame_property_binding_evidence_uuid;
+  api::EngineUuid navigation_capability_uuid;
   std::size_t navigation_maximum_pair_comparisons = 0;
   std::size_t navigation_maximum_effective_row_references = 0;
   std::optional<exec::ExecutorColumnDescriptor> prepared_aggregate_window;
@@ -703,16 +702,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       prepared_aggregate_window_order_term;
   std::optional<std::size_t> prepared_aggregate_window_value_column;
   exec::CanonicalAggregateDescriptor prepared_aggregate_window_descriptor;
-  std::string prepared_aggregate_window_frame_descriptor_uuid;
-  std::string aggregate_window_order_term_binding_evidence_uuid;
-  std::string aggregate_window_frame_property_binding_evidence_uuid;
-  std::string aggregate_window_capability_uuid;
+  api::EngineUuid prepared_aggregate_window_frame_descriptor_uuid;
+  api::EngineUuid aggregate_window_frame_property_binding_evidence_uuid;
+  api::EngineUuid aggregate_window_capability_uuid;
   std::size_t aggregate_window_maximum_pair_comparisons = 0;
   std::size_t aggregate_window_maximum_effective_row_references = 0;
   std::size_t aggregate_window_maximum_transition_count = 0;
-  std::string row_number_order_evidence_uuid;
-  std::string ntile_order_term_binding_evidence_uuid;
-  std::string peer_ranking_order_term_binding_evidence_uuid;
+  api::EngineUuid row_number_order_evidence_uuid;
+  api::EngineUuid ntile_capability_uuid;
+  api::EngineUuid peer_ranking_capability_uuid;
   std::size_t peer_ranking_maximum_peer_comparisons = 0;
   std::size_t sort_input_row_count = 0;
   std::size_t sort_comparison_bound = 0;
@@ -736,48 +734,49 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::string limit_implementation_id;
   bool planning_values_exact = true;
 
-  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid;
+  std::array<api::EngineUuid, 23> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "composition execution identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "composition.values.capability");
+      owned_identities[0];
   const auto join_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "composition.join.capability");
-  std::unordered_map<std::string, std::string> set_capability_uuids;
+      owned_identities[1];
+  std::unordered_map<std::string, api::EngineUuid> set_capability_uuids;
   for (const auto& [node_id, profile] : set_profiles) {
     (void)node_id;
-    set_capability_uuids.try_emplace(
-        profile.implementation_id,
-        DerivedCanonicalUuid(
-            identity_scope,
-            "composition.set." + profile.implementation_id +
-                ".capability"));
+    if (set_capability_uuids.contains(profile.implementation_id)) continue;
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "composition SET capability allocation failed");
+    }
+    set_capability_uuids.emplace(profile.implementation_id, *issued);
   }
   const auto filter_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "composition.filter.capability");
+      owned_identities[2];
   const auto project_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "composition.project.capability");
+      owned_identities[3];
   const auto distinct_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "composition.distinct.capability");
-  const auto count_star_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "composition.count-star.capability");
-  const auto registry_aggregate_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "composition.aggregate-registry.capability");
-  const auto grouped_aggregate_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "composition.grouped-aggregate.capability");
+      owned_identities[4];
+  const auto count_star_capability_uuid = owned_identities[5];
+  const auto registry_aggregate_capability_uuid = owned_identities[6];
+  const auto grouped_aggregate_capability_uuid = owned_identities[7];
   const auto sort_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "composition.sort.capability");
-  const auto window_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "composition.window.integer-ranking.capability");
-  const auto subquery_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "composition.subquery.capability");
+      owned_identities[8];
+  const auto window_capability_uuid = owned_identities[9];
+  const auto subquery_capability_uuid = owned_identities[10];
   const auto cte_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "composition.cte.capability");
-  const auto recursive_term_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "composition.recursive-cte-term.capability");
-  const auto recursive_root_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "composition.recursive-cte-root.capability");
+      owned_identities[11];
+  const auto recursive_term_capability_uuid = owned_identities[12];
+  const auto recursive_root_capability_uuid = owned_identities[13];
   const auto limit_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "composition.limit.capability");
+      owned_identities[14];
 
   std::vector<LivePhysicalNodeProfile> profiles;
   std::uint64_t total_work = 0;
@@ -1263,11 +1262,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           ExactCanonicalCoreDatatypeTypeUuidV1("boolean");
       std::unordered_set<std::uint32_t> anchor_descriptor_ids;
       std::unordered_set<std::uint32_t> generated_descriptor_ids;
-      std::unordered_set<std::string_view> anchor_descriptor_uuids;
-      std::unordered_set<std::string_view> generated_descriptor_uuids;
-      std::unordered_set<std::string_view> generated_type_uuids;
-      if (!CanonicalUuidText(int64_type_uuid) ||
-          !CanonicalUuidText(boolean_type_uuid)) {
+      std::set<api::EngineUuid> anchor_descriptor_uuids;
+      std::set<api::EngineUuid> generated_descriptor_uuids;
+      std::set<api::EngineUuid> generated_type_uuids;
+      if (!core::uuid::IsEngineIdentityUuid(int64_type_uuid) ||
+          !core::uuid::IsEngineIdentityUuid(boolean_type_uuid)) {
         return refuse(std::string(kPayloadDiagnostic),
                       "recursive SEARCH/CYCLE core type identity is not exact");
       }
@@ -1279,8 +1278,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               return candidate.descriptor_id == anchor_column.descriptor_id;
             });
         if (descriptor == request.relational_dag.descriptors.end() ||
-            !CanonicalUuidText(descriptor->descriptor_uuid) ||
-            !CanonicalUuidText(descriptor->type_uuid)) {
+            !core::uuid::IsEngineIdentityUuid(descriptor->descriptor_uuid) ||
+            !core::uuid::IsEngineIdentityUuid(descriptor->type_uuid)) {
           return refuse(
               std::string(kPayloadDiagnostic),
               "recursive SEARCH/CYCLE anchor identity is not exact");
@@ -1292,7 +1291,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       const auto make_generated_column =
           [&](const std::uint32_t descriptor_id,
               const std::string_view type_name,
-              const std::string& type_uuid,
+              const api::EngineUuid& type_uuid,
               const std::string_view column_name,
               const std::uint32_t result_ordinal,
               exec::ExecutorColumnDescriptor* column,
@@ -1303,9 +1302,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   return candidate.descriptor_id == descriptor_id;
                 });
             if (descriptor == request.relational_dag.descriptors.end() ||
-                type_uuid.empty() ||
+                type_uuid.is_nil() ||
                 descriptor->type_uuid != type_uuid ||
-                !CanonicalUuidText(descriptor->descriptor_uuid) ||
+                !core::uuid::IsEngineIdentityUuid(descriptor->descriptor_uuid) ||
                 anchor_descriptor_ids.contains(descriptor_id) ||
                 !generated_descriptor_ids.insert(descriptor_id).second ||
                 anchor_descriptor_uuids.contains(
@@ -1329,9 +1328,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             engine_descriptor.descriptor_kind = "scalar";
             engine_descriptor.canonical_type_name =
                 std::string(type_name);
-            engine_descriptor.encoded_descriptor =
-                "type_uuid=" + descriptor->type_uuid +
-                ";nullability=non_null";
+            engine_descriptor.type_uuid = descriptor->type_uuid;
+            engine_descriptor.encoded_descriptor = "nullability=non_null";
             *column = {std::string(column_name), engine_descriptor, false,
                        descriptor_id};
             binding->physical_column_ordinal = result_ordinal;
@@ -2121,13 +2119,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     }
 
     std::string implementation_id;
-    std::string capability_uuid;
+    api::EngineUuid capability_uuid;
     std::string transformation_rule;
     exec::PhysicalNodeKind physical_kind = exec::PhysicalNodeKind::kValues;
     std::uint64_t auxiliary_memory = 0;
     std::uint64_t registry_aggregate_distinct_peak_memory = 0;
-    std::vector<std::string> required_property_uuids;
-    std::vector<std::string> delivered_property_uuids;
+    std::vector<api::EngineUuid> required_property_uuids;
+    std::vector<api::EngineUuid> delivered_property_uuids;
     std::vector<plan::CanonicalLogicalPropertyKind> property_kinds;
 
     switch (node.node_kind) {
@@ -4316,7 +4314,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         const auto result_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1(
             ranking_profile.result_type_name);
-        const std::array<std::string, 4> bounded_signed_type_uuids = {
+        const std::array<api::EngineUuid, 4> bounded_signed_type_uuids = {
             ExactCanonicalCoreDatatypeTypeUuidV1("int8"),
             ExactCanonicalCoreDatatypeTypeUuidV1("int16"),
             ExactCanonicalCoreDatatypeTypeUuidV1("int32"),
@@ -4570,9 +4568,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               output_descriptor->descriptor_uuid;
           descriptor.descriptor_kind = "scalar";
           descriptor.canonical_type_name = "int64";
-          descriptor.encoded_descriptor =
-              "type_uuid=" + output_descriptor->type_uuid +
-              ";nullability=non_null";
+          descriptor.type_uuid = output_descriptor->type_uuid;
+            descriptor.encoded_descriptor = "nullability=non_null";
         } else if (value_window) {
           for (const auto& row : input_batch.rows) {
             const auto& value =
@@ -4634,9 +4631,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 output_descriptor->descriptor_uuid;
             descriptor.descriptor_kind = "scalar";
             descriptor.canonical_type_name = "int64";
-            descriptor.encoded_descriptor =
-                "type_uuid=" + output_descriptor->type_uuid +
-                ";nullability=nullable";
+            descriptor.type_uuid = output_descriptor->type_uuid;
+            descriptor.encoded_descriptor = "nullability=nullable";
           } else if (!aggregate_count_window) {
             descriptor = input_batch
                              .columns[*ranking.navigation_value_column]
@@ -4651,9 +4647,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                         .nullable,
                     descriptor, true) ||
                 (aggregate_boolean_window &&
-                 descriptor.encoded_descriptor !=
-                     "type_uuid=" + boolean_type_uuid +
-                         ";nullability=nullable")) {
+                 (descriptor.type_uuid != boolean_type_uuid ||
+                  descriptor.encoded_descriptor != "nullability=nullable"))) {
               return refuse(std::string(kPayloadDiagnostic),
                             "composition " + std::string(ranking_name) +
                                 " nullable result descriptor does not "
@@ -4664,9 +4659,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 output_descriptor->descriptor_uuid;
             descriptor.descriptor_kind = "scalar";
             descriptor.canonical_type_name = "int64";
-            descriptor.encoded_descriptor =
-                "type_uuid=" + output_descriptor->type_uuid +
-                ";nullability=non_null";
+            descriptor.type_uuid = output_descriptor->type_uuid;
+            descriptor.encoded_descriptor = "nullability=non_null";
           }
         } else {
           descriptor.descriptor_uuid =
@@ -4674,9 +4668,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           descriptor.descriptor_kind = "scalar";
           descriptor.canonical_type_name =
               std::string(ranking_profile.result_type_name);
-          descriptor.encoded_descriptor =
-              "type_uuid=" + output_descriptor->type_uuid +
-              ";nullability=non_null";
+          descriptor.type_uuid = output_descriptor->type_uuid;
+            descriptor.encoded_descriptor = "nullability=non_null";
         }
         exec::ExecutorColumnDescriptor ranking_column{
             ranking.outputs.back()->output_name_utf8, descriptor,
@@ -4808,7 +4801,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 rank_request.builtin_id =
                     std::string(ranking_profile.builtin_id);
                 rank_request.function_uuid =
-                    std::string(ranking_profile.function_uuid);
+                    ranking_profile.function_uuid;
                 rank_request.output_descriptor = descriptor;
                 rank_request.cumulative_row_count = peer_end_exclusive;
                 rank_request.partition_row_count = input_row_count;
@@ -4952,7 +4945,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             ntile_request.builtin_id =
                 std::string(ranking_profile.builtin_id);
             ntile_request.function_uuid =
-                std::string(ranking_profile.function_uuid);
+                ranking_profile.function_uuid;
             ntile_request.output_descriptor = descriptor;
             ntile_request.zero_based_partition_position = row;
             ntile_request.partition_row_count = input_row_count;
@@ -4968,7 +4961,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             rank_request.function_abi_version = 1;
             rank_request.builtin_id = std::string(ranking_profile.builtin_id);
             rank_request.function_uuid =
-                std::string(ranking_profile.function_uuid);
+                ranking_profile.function_uuid;
             rank_request.output_descriptor = descriptor;
             rank_request.one_based_rank = current_rank;
             rank_request.partition_row_count = input_row_count;
@@ -4984,7 +4977,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             rank_request.function_abi_version = 1;
             rank_request.builtin_id = std::string(ranking_profile.builtin_id);
             rank_request.function_uuid =
-                std::string(ranking_profile.function_uuid);
+                ranking_profile.function_uuid;
             rank_request.output_descriptor = descriptor;
             rank_request.one_based_rank = current_rank;
             auto rank =
@@ -5082,9 +5075,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         } else {
           prepared_row_number = std::move(ranking_column);
         }
-        row_number_order_evidence_uuid = DerivedCanonicalUuid(
-            identity_scope + ":" + prepared_sort->ordering_property_uuid,
-            "node-composition.window.deterministic-order");
+        row_number_order_evidence_uuid = owned_identities[15];
         if (peer_ranking_window || ntile_window || value_window) {
           std::uint64_t planned_receipt_workspace_bytes = 0;
           std::uint64_t actual_receipt_workspace_bytes = 0;
@@ -5099,13 +5090,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "composition " + std::string(ranking_name) +
                     " order-term receipt exceeds its memory budget");
           }
-          const auto order_term_binding_evidence_uuid =
+          const auto order_term_binding_digest =
               exec::ComputeCanonicalDescriptorOrderTermBindingDigest(
                   prepared_sort->order_terms.front(),
                   prepared_sort->ordering_property_uuid,
                   planned_receipt_workspace_bytes,
                   &actual_receipt_workspace_bytes);
-          if (order_term_binding_evidence_uuid.empty() ||
+          if (!order_term_binding_digest.has_value() ||
               actual_receipt_workspace_bytes !=
                   planned_receipt_workspace_bytes) {
             return refuse(
@@ -5116,10 +5107,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           auxiliary_memory =
               std::max(auxiliary_memory, actual_receipt_workspace_bytes);
           if (value_window) {
-            auto& bound_order_evidence =
-                aggregate_window
-                    ? aggregate_window_order_term_binding_evidence_uuid
-                    : navigation_order_term_binding_evidence_uuid;
             auto& bound_frame_evidence =
                 aggregate_window
                     ? aggregate_window_frame_property_binding_evidence_uuid
@@ -5127,36 +5114,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             auto& bound_capability =
                 aggregate_window ? aggregate_window_capability_uuid
                                  : navigation_capability_uuid;
-            const auto function_bound_identity_scope =
-                aggregate_window
-                    ? identity_scope + ":" +
-                          std::string(ranking_profile.function_uuid)
-                    : identity_scope;
-            bound_order_evidence = order_term_binding_evidence_uuid;
-            bound_frame_evidence = DerivedCanonicalUuid(
-                function_bound_identity_scope + ":" +
-                    ranking.window_property_uuid + ":" +
-                    ranking.window_frame_descriptor_uuid,
-                aggregate_window
-                    ? "node-composition.window.aggregate-sum.frame-property-binding"
-                    : "node-composition.window.frame-property-binding");
-            bound_capability = DerivedCanonicalUuid(
-                function_bound_identity_scope + ":" +
-                    ranking.result_descriptor->descriptor_uuid + ":" +
-                    bound_order_evidence + ":" + bound_frame_evidence,
-                aggregate_window
-                    ? "node-composition.window.aggregate-sum.capability"
-                    : first_value_window
-                    ? "node-composition.window.first-value.capability"
-                    : (last_value_window
-                           ? "node-composition.window.last-value.capability"
-                           : (nth_value_window
-                                  ? "node-composition.window.nth-value.capability"
-                                  : (lag_window
-                                         ? "node-composition.window.lag.capability"
-                                         : "node-composition.window.lead.capability"))));
-            if (bound_capability.empty() ||
-                bound_capability == bound_order_evidence ||
+            bound_frame_evidence = owned_identities[16];
+            bound_capability = owned_identities[17];
+            if (bound_capability.is_nil() ||
                 bound_capability == bound_frame_evidence) {
               return refuse(
                   std::string(kPayloadDiagnostic),
@@ -5335,11 +5295,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "composition NTILE operand receipt size overflowed");
             }
-            ntile_order_term_binding_evidence_uuid =
-                order_term_binding_evidence_uuid;
+            ntile_capability_uuid = owned_identities[21];
           } else {
-            peer_ranking_order_term_binding_evidence_uuid =
-                order_term_binding_evidence_uuid;
+            peer_ranking_capability_uuid = owned_identities[22];
           }
           if (real_ranking_window) {
             auxiliary_memory = std::max(
@@ -5369,9 +5327,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 : value_window
                 ? navigation_capability_uuid
                 : (ntile_window
-                ? ntile_order_term_binding_evidence_uuid
+                ? ntile_capability_uuid
                 : (peer_ranking_window
-                       ? peer_ranking_order_term_binding_evidence_uuid
+                       ? peer_ranking_capability_uuid
                        : window_capability_uuid));
         transformation_rule =
             aggregate_window
@@ -5464,14 +5422,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           const bool exists =
               prepared.kind == LivePredicateSubqueryKind::kExists;
           const auto canonical_boolean_type_uuid =
-              ExactCanonicalCoreDatatypeUuidV1("boolean");
+              ExactCanonicalCoreDatatypeTypeUuidV1("boolean");
           if (prepared.result_column.descriptor.canonical_type_name !=
                   "boolean" ||
               prepared.result_column.nullable == exists ||
-              canonical_boolean_type_uuid.empty() ||
-              !CanonicalDescriptorFieldEqualsForComposition(
-                  prepared.result_column.descriptor, "type_uuid",
-                  std::string_view(canonical_boolean_type_uuid)) ||
+              canonical_boolean_type_uuid.is_nil() ||
+              prepared.result_column.descriptor.type_uuid != canonical_boolean_type_uuid ||
               prepared.result_column.descriptor.descriptor_uuid ==
                   canonical_boolean_type_uuid) {
             return refuse(
@@ -5746,27 +5702,25 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         exec::DescriptorBatch output;
         output.columns = input_batch.columns;
         auto result_bindings = state.result_bindings;
-        std::unordered_set<std::string> cardinality_result_identity_domain;
-        if (!CanonicalUuidText(subquery_capability_uuid)) {
+        std::set<api::EngineUuid> cardinality_result_identity_domain;
+        if (!core::uuid::IsEngineIdentityUuid(subquery_capability_uuid)) {
           return refuse(
               std::string(kPayloadDiagnostic),
               "cardinality subquery capability identity is unresolved");
         }
         cardinality_result_identity_domain.insert(subquery_capability_uuid);
         for (const auto& source_column : input_batch.columns) {
-          const auto source_type_uuid = ExactEncodedDescriptorField(
-              source_column.descriptor.encoded_descriptor, "type_uuid");
-          if (!CanonicalUuidText(
+          const auto source_type_uuid = source_column.descriptor.type_uuid;
+          if (!core::uuid::IsEngineIdentityUuid(
                   source_column.descriptor.descriptor_uuid) ||
-              !source_type_uuid.has_value() ||
-              !CanonicalUuidText(*source_type_uuid)) {
+              !core::uuid::IsEngineIdentityUuid(source_type_uuid)) {
             return refuse(
                 std::string(kPayloadDiagnostic),
                 "cardinality subquery source identity domain is unresolved");
           }
           cardinality_result_identity_domain.insert(
               source_column.descriptor.descriptor_uuid);
-          cardinality_result_identity_domain.insert(*source_type_uuid);
+          cardinality_result_identity_domain.insert(source_type_uuid);
         }
         for (std::size_t column = 0; column < output.columns.size(); ++column) {
           if (!output.columns[column].nullable) {
@@ -5778,15 +5732,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   "cardinality subquery result lacks a nullable descriptor carrier");
             }
           }
-          const auto result_descriptor_uuid = DerivedCanonicalUuid(
-              identity_scope,
-              "composition.subquery.cardinality.result." +
-                  std::to_string(node.logical_node_id) + "." +
-                  node.semantic_variant_id + "." + std::to_string(column) +
-                  "." +
-                  input_batch.columns[column]
-                      .descriptor.descriptor_uuid);
-          if (!CanonicalUuidText(result_descriptor_uuid) ||
+          const auto issued_result_descriptor = core::uuid::IssueRuntimeIdentityV7();
+          if (!issued_result_descriptor) {
+            return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                          "nullable result descriptor allocation failed");
+          }
+          const auto result_descriptor_uuid = *issued_result_descriptor;
+          if (!core::uuid::IsEngineIdentityUuid(result_descriptor_uuid) ||
               !cardinality_result_identity_domain
                    .insert(result_descriptor_uuid)
                    .second) {
@@ -6246,9 +6198,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             grouped_aggregate_output_row_bound, request.context));
   }
   if (prepared_sort.has_value()) {
-    const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
-        identity_scope + ":" + prepared_sort->ordering_property_uuid,
-        "node-composition.deterministic-tie");
+    const auto deterministic_tie_evidence_uuid = owned_identities[18];
     if (prepared_sort->expression_ordering) {
       execution_request.available_executors.push_back(
           MakeLiveExpressionSortRegistration(
@@ -6278,9 +6228,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         MakeLiveNtileRegistration(
             *prepared_ntile, *prepared_ntile_order_term,
             *prepared_ntile_bucket_count_operand,
-            std::string(kGlobalNtileProfile.function_uuid),
+            kGlobalNtileProfile.function_uuid,
             row_number_order_evidence_uuid,
-            ntile_order_term_binding_evidence_uuid, sort_input_row_count,
+            ntile_capability_uuid, sort_input_row_count,
             request.context));
   }
   if (prepared_navigation_window.has_value() &&
@@ -6324,7 +6274,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         MakeLivePeerRankingRegistration(
             *prepared_peer_ranking, *prepared_peer_ranking_order_term,
             row_number_order_evidence_uuid,
-            peer_ranking_order_term_binding_evidence_uuid,
+            peer_ranking_capability_uuid,
             sort_input_row_count, peer_ranking_maximum_peer_comparisons,
             prepared_peer_ranking_profile,
             request.context));
@@ -6387,16 +6337,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "node-composition.execution-attempt");
+      owned_identities[19];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      "node-composition.transaction-effect-unchanged");
+      .transaction_effect_evidence_uuid = owned_identities[20];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =

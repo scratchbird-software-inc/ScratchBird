@@ -1,3 +1,7 @@
+#include "../agents/agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +10,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "backup_archive/backup_archive_api.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
@@ -85,7 +90,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        evidence.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(evidence.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -120,12 +125,12 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string UuidText(TypedUuid typed_uuid) {
-  return uuid::UuidToString(typed_uuid.value);
+std::string UuidBytes(TypedUuid typed_uuid) {
+  return BinaryFixtureIdentity(typed_uuid.value);
 }
 
-std::string UuidText(UuidKind kind, u64 offset) {
-  return UuidText(MakeUuid(kind, offset));
+std::string UuidBytes(UuidKind kind, u64 offset) {
+  return UuidBytes(MakeUuid(kind, offset));
 }
 
 DatabaseFixture CreateDatabaseFixture(const std::filesystem::path& path,
@@ -157,10 +162,10 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = UuidText(fixture.database_uuid);
-  context.current_schema_uuid.canonical = UuidText(UuidKind::schema, 22);
-  context.principal_uuid.canonical = UuidText(UuidKind::principal, 20);
-  context.session_uuid.canonical = UuidText(UuidKind::object, 21);
+  context.database_uuid = NativeFixtureIdentity(UuidBytes(fixture.database_uuid));
+  context.current_schema_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::schema, 22));
+  context.principal_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::principal, 20));
+  context.session_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::object, 21));
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -168,8 +173,7 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
@@ -191,8 +195,8 @@ api::EngineRequestContext RestoreContext(const DatabaseFixture& fixture,
   scratchbird::tests::release::GrantMaterializedRight(
       &context, "BACKUP_RESTORE");
   context.local_transaction_id = local_transaction_id;
-  context.transaction_uuid.canonical =
-      UuidText(UuidKind::transaction, 100 + local_transaction_id);
+  context.transaction_uuid =
+      NativeFixtureIdentity(UuidBytes(UuidKind::transaction, 100 + local_transaction_id));
   return context;
 }
 
@@ -219,7 +223,7 @@ bool Commit(api::EngineRequestContext* context) {
     return false;
   }
   context->local_transaction_id = 0;
-  context->transaction_uuid.canonical.clear();
+  context->transaction_uuid = {};
   return true;
 }
 
@@ -295,7 +299,7 @@ txn::RowVersionMetadata RetainedHistoryMetadata() {
 api::EngineArchiveRetainedHistoryRecord RetainedHistoryRecord() {
   api::EngineArchiveRetainedHistoryRecord record;
   record.metadata = RetainedHistoryMetadata();
-  record.table_uuid = UuidText(UuidKind::object, 310);
+  record.table_uuid = UuidBytes(UuidKind::object, 310);
   record.payload_digest = "fnv1a64:ipar-p5-10-retained-history";
   record.retention_class = "history_archive";
   record.retention_policy_ref = "retention.history.local.v1";
@@ -398,18 +402,18 @@ bool BackupRestoreSnapshotCoordinationProof(const std::filesystem::path& work_di
 
   auto tx1 = Context(source, "ipar-p5-10-source-tx1");
   ok = Expect(Begin(&tx1), "IPAR-P5-10 source tx1 should begin") && ok;
-  const std::string schema_uuid = UuidText(UuidKind::schema, 500);
+  const auto schema_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::schema, 500));
   api::EngineCreateSchemaRequest schema;
   schema.context = tx1;
-  schema.target_object.uuid.canonical = schema_uuid;
+  schema.target_object.uuid = schema_uuid;
   schema.localized_names.push_back({"en", "primary", "", "ipar", true});
   const auto created_schema = api::EngineCreateSchema(schema);
   ok = ExpectApiOk(created_schema,
                    "IPAR-P5-10 source schema should create") && ok;
-  tx1.current_schema_uuid.canonical = schema_uuid;
+  tx1.current_schema_uuid = schema_uuid;
   api::EngineCreateTableRequest create;
   create.context = tx1;
-  create.target_schema.uuid.canonical = schema_uuid;
+  create.target_schema.uuid = schema_uuid;
   create.table_names.push_back({"en", "primary", "", "ipar_items", true});
   api::EngineColumnDefinition payload_col;
   payload_col.names.push_back({"en", "primary", "", "payload", true});
@@ -428,7 +432,7 @@ bool BackupRestoreSnapshotCoordinationProof(const std::filesystem::path& work_di
   backup_request.option_envelopes.push_back("target_uri:" +
                                             backup_manifest.string());
   backup_request.option_envelopes.push_back("filespace_uuid:" +
-                                            UuidText(source.filespace_uuid));
+                                            UuidBytes(source.filespace_uuid));
   const auto backup = api::EngineStartLogicalBackup(backup_request);
   ok = ExpectApiOk(backup, "IPAR-P5-10 logical backup should pass") && ok;
   ok = Expect(backup.row_count == 1 &&

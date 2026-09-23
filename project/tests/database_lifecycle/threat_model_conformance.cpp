@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "agent_feature_gates.hpp"
 #include "agent_workload_resource_quota.hpp"
 #include "backup_archive/backup_archive_api.hpp"
@@ -297,7 +298,7 @@ void TestForceShutdownRuntimeGate(const std::filesystem::path& temp_dir) {
 std::array<std::uint8_t, 16> AddSession(server::ServerSessionRegistry* registry,
                                         std::string_view principal,
                                         const std::filesystem::path& database_path,
-                                        std::string database_uuid) {
+                                        scratchbird::core::platform::Uuid database_uuid) {
   server::ServerSessionRecord session;
   session.connection_uuid = sbps::MakeUuidV7Bytes();
   session.session_uuid = sbps::MakeUuidV7Bytes();
@@ -332,7 +333,7 @@ sbps::Frame ManagementFrame(const std::array<std::uint8_t, 16>& session_uuid,
 
 void TestManagementIpcHealthAuthGate(const std::filesystem::path& temp_dir) {
   const auto database_path = temp_dir / "management.sbdb";
-  const std::string database_uuid = "019e13d0-0000-7000-8000-000000000002";
+  const auto database_uuid = scratchbird::tests::FixtureUuidLiteral("019e13d0-0000-7000-8000-000000000002");
   server::ServerBootstrapConfig config;
   config.database_default_path = database_path;
   config.control_dir = temp_dir / "control";
@@ -413,9 +414,9 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& database_pa
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.database_path = database_path.string();
-  context.database_uuid.canonical = "019e13d0-0000-7000-8000-000000000003";
-  context.principal_uuid.canonical = "019e13d0-0000-7000-8000-000000000004";
-  context.session_uuid.canonical = "019e13d0-0000-7000-8000-000000000005";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e13d0-0000-7000-8000-000000000003");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e13d0-0000-7000-8000-000000000004");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e13d0-0000-7000-8000-000000000005");
   context.security_context_present = true;
   context.trace_tags.push_back("security.bootstrap");
   return context;

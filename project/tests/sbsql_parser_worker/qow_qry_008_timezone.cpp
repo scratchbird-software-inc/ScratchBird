@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "api_types.hpp"
 #include "datatype_temporal_wire.hpp"
 
@@ -39,8 +40,7 @@ bool Require(const bool condition, const std::string_view message) {
 
 api::EngineDescriptor TimestampDescriptor() {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical =
-      "019f0000-0000-7200-8000-000000000861";
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000861");
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "timestamp";
   descriptor.encoded_descriptor =

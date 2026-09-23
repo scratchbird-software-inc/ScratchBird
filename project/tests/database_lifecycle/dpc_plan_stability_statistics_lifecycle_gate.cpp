@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -81,8 +83,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind) {
-  return uuid::UuidToString(NewUuid(kind).value);
+platform::Uuid NewIdentity(platform::UuidKind kind) {
+  return NewUuid(kind).value;
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
@@ -94,18 +96,28 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) {
       return true;
     }
   }
   return false;
 }
 
+bool HasIdentityEvidence(const api::EngineApiResult& result,
+                         std::string_view kind, const platform::Uuid& identity) {
+  return std::any_of(result.evidence.begin(), result.evidence.end(), [&](const auto& item) {
+    const auto* value = std::get_if<platform::Uuid>(&item.evidence_id);
+    return item.evidence_kind == kind && value != nullptr && *value == identity;
+  });
+}
+
 std::string EvidenceValue(const api::EngineApiResult& result,
                           std::string_view kind) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind) {
-      return evidence.evidence_id;
+      const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+      Require(text != nullptr, "expected scalar text evidence");
+      return *text;
     }
   }
   return {};
@@ -153,16 +165,16 @@ api::EngineTypedValue TextValue(std::string value) {
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const std::string& database_uuid,
-                                      const std::string& principal_uuid,
+                                      const platform::Uuid& database_uuid,
+                                      const platform::Uuid& principal_uuid,
                                       std::string request_id) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = principal_uuid;
-  context.session_uuid.canonical = NewUuidText(platform::UuidKind::object);
+  context.database_uuid = database_uuid;
+  context.principal_uuid = principal_uuid;
+  context.session_uuid = NewIdentity(platform::UuidKind::object);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -175,8 +187,8 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext Begin(const std::filesystem::path& path,
-                                const std::string& database_uuid,
-                                const std::string& principal_uuid,
+                                const platform::Uuid& database_uuid,
+                                const platform::Uuid& principal_uuid,
                                 std::string request_id) {
   api::EngineBeginTransactionRequest request;
   request.context =
@@ -205,7 +217,7 @@ void Rollback(const api::EngineRequestContext& context) {
   RequireOk(api::EngineRollbackTransaction(request), "DPC-010 rollback failed");
 }
 
-std::string CreateDatabase(const std::filesystem::path& path) {
+platform::Uuid CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = NewUuid(platform::UuidKind::database);
@@ -221,44 +233,44 @@ std::string CreateDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "DPC-010 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineCatalogCreateObjectRequest CreateObjectRequest(
     const api::EngineRequestContext& context,
-    const std::string& object_uuid,
+    const platform::Uuid& object_uuid,
     std::string object_kind,
-    const std::string& schema_uuid,
+    const platform::Uuid& schema_uuid,
     std::string name) {
   api::EngineCatalogCreateObjectRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = object_uuid;
+  request.target_object.uuid = object_uuid;
   request.target_object.object_kind = std::move(object_kind);
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.localized_names.push_back(Name(std::move(name)));
   return request;
 }
 
 api::EngineResolveNameRequest ResolveRequest(
     const api::EngineRequestContext& context,
-    const std::string& schema_uuid,
+    const platform::Uuid& schema_uuid,
     std::string object_kind,
     std::string name) {
   api::EngineResolveNameRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.target_object.object_kind = std::move(object_kind);
   request.localized_names.push_back(Name(std::move(name)));
   return request;
 }
 
-api::EngineQueryRelation InlineCountRelation(const std::string& table_uuid,
+api::EngineQueryRelation InlineCountRelation(const platform::Uuid& table_uuid,
                                              const std::string& relation_name) {
   api::EngineQueryRelation relation;
   relation.relation_name = relation_name;
-  relation.source_object.uuid.canonical = table_uuid;
+  relation.source_object.uuid = table_uuid;
   relation.source_object.object_kind = "table";
-  relation.descriptor_digest = "generated-descriptor:" + table_uuid;
+  relation.descriptor_digest = "dpc010-inline-id-int64-v1";
   for (int value : {1, 2, 3}) {
     api::EngineRowValue row;
     row.fields.push_back({"id", Int64Value(value)});
@@ -269,7 +281,7 @@ api::EngineQueryRelation InlineCountRelation(const std::string& table_uuid,
 
 api::EnginePlanOperationRequest CachedCountRequest(
     api::EngineRequestContext context,
-    const std::string& table_uuid,
+    const platform::Uuid& table_uuid,
     const std::string& relation_name,
     const std::string& sblr_digest,
     const std::string& statistics_snapshot_id) {
@@ -277,7 +289,7 @@ api::EnginePlanOperationRequest CachedCountRequest(
   request.context = std::move(context);
   request.execute = true;
   request.query_operation = "count";
-  request.target_object.uuid.canonical = table_uuid;
+  request.target_object.uuid = table_uuid;
   request.target_object.object_kind = "table";
   request.relations.push_back(InlineCountRelation(table_uuid, relation_name));
   request.option_envelopes.push_back("optimizer_plan_cache:enabled");
@@ -305,10 +317,10 @@ void RequireSameCountResult(const api::EnginePlanOperationResult& lhs,
 struct CatalogFixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string principal_uuid;
-  std::string schema_uuid;
-  std::string table_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid principal_uuid;
+  platform::Uuid schema_uuid;
+  platform::Uuid table_uuid;
   std::string table_name;
   std::string renamed_table_name;
   api::EngineApiU64 table_catalog_epoch = 0;
@@ -326,9 +338,9 @@ CatalogFixture MakeCatalogFixture() {
   std::filesystem::create_directories(fixture.dir);
   fixture.database_path = fixture.dir / "dpc010_catalog.sbdb";
   fixture.database_uuid = CreateDatabase(fixture.database_path);
-  fixture.principal_uuid = NewUuidText(platform::UuidKind::principal);
-  fixture.schema_uuid = NewUuidText(platform::UuidKind::schema);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object);
+  fixture.principal_uuid = NewIdentity(platform::UuidKind::principal);
+  fixture.schema_uuid = NewIdentity(platform::UuidKind::schema);
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object);
   fixture.table_name = "dpc010_plan_table_" + std::to_string(UniqueMillis());
   fixture.renamed_table_name = fixture.table_name + "_renamed";
 
@@ -378,16 +390,13 @@ void TestPlanCacheStabilityAndInvalidation() {
                                             "table",
                                             fixture.table_name));
   RequireOk(resolved, "DPC-010 resolver lookup failed");
-  Require(resolved.bound_object_identity.object_uuid.canonical ==
+  Require(resolved.bound_object_identity.object_uuid ==
               fixture.table_uuid,
           "DPC-010 resolver did not bind generated table UUID");
 
-  const std::string sblr_digest = std::string(kSearchKey) + ":sblr:" +
-                                  NewUuidText(platform::UuidKind::object);
-  const std::string stats_a = std::string(kSearchKey) + ":stats:" +
-                              NewUuidText(platform::UuidKind::object);
-  const std::string stats_b = std::string(kSearchKey) + ":stats:" +
-                              NewUuidText(platform::UuidKind::object);
+  const std::string sblr_digest = "dpc010-count-bound-sblr-v1";
+  const std::string stats_a = "dpc010-statistics-generation-a";
+  const std::string stats_b = "dpc010-statistics-generation-b";
 
   const auto first = api::EnginePlanOperation(
       CachedCountRequest(read_context,
@@ -398,9 +407,7 @@ void TestPlanCacheStabilityAndInvalidation() {
   RequireOk(first, "DPC-010 first cached plan failed");
   Require(HasEvidence(first, "optimizer_live_plan_cache", "miss"),
           "DPC-010 first cached plan did not miss");
-  Require(HasEvidence(first,
-                      "optimizer_live_plan_cache_binding",
-                      "descriptor:" + fixture.table_uuid),
+  Require(HasIdentityEvidence(first, "optimizer_live_plan_cache_binding", fixture.table_uuid),
           "DPC-010 plan cache did not bind descriptor UUID");
   Require(CountValue(first) == "3", "DPC-010 first count result drifted");
   const auto first_key = EvidenceValue(first, "optimizer_live_plan_cache_key");
@@ -446,7 +453,7 @@ void TestPlanCacheStabilityAndInvalidation() {
   rename_context.name_resolution_epoch = fixture.table_catalog_epoch;
   api::EngineCatalogRenameObjectRequest rename;
   rename.context = rename_context;
-  rename.target_object.uuid.canonical = fixture.table_uuid;
+  rename.target_object.uuid = fixture.table_uuid;
   rename.target_object.object_kind = "table";
   rename.localized_names.push_back(Name(fixture.renamed_table_name));
   const auto renamed = api::EngineCatalogRenameObject(rename);
@@ -482,10 +489,10 @@ void TestPlanCacheStabilityAndInvalidation() {
 struct CrudFixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string principal_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid principal_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid index_uuid;
   api::EngineRequestContext context;
 
   ~CrudFixture() {
@@ -533,9 +540,9 @@ CrudFixture MakeCrudFixture() {
   std::filesystem::create_directories(fixture.dir);
   fixture.database_path = fixture.dir / "dpc010_crud.sbdb";
   fixture.database_uuid = CreateDatabase(fixture.database_path);
-  fixture.principal_uuid = NewUuidText(platform::UuidKind::principal);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object);
+  fixture.principal_uuid = NewIdentity(platform::UuidKind::principal);
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object);
+  fixture.index_uuid = NewIdentity(platform::UuidKind::object);
   fixture.context = Begin(fixture.database_path,
                           fixture.database_uuid,
                           fixture.principal_uuid,
@@ -558,7 +565,7 @@ CrudFixture MakeCrudFixture() {
   api::EngineInsertRowsRequest insert;
   insert.context = fixture.context;
   insert.context.request_id = "dpc010-insert-fixture";
-  insert.target_table.uuid.canonical = fixture.table_uuid;
+  insert.target_table.uuid = fixture.table_uuid;
   insert.target_table.object_kind = "table";
   insert.input_rows = std::move(rows);
   insert.estimated_row_count = insert.input_rows.size();
@@ -585,7 +592,7 @@ api::EnginePlanOperationResult PlanCrud(CrudFixture& fixture,
   api::EnginePlanOperationRequest request;
   request.context = fixture.context;
   request.context.request_id = "dpc010-crud-plan";
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.predicate = std::move(predicate);
   request.option_envelopes = std::move(options);
@@ -593,8 +600,8 @@ api::EnginePlanOperationResult PlanCrud(CrudFixture& fixture,
 }
 
 opt::OptimizerStatsIdentity DpcFreshIdentity(
-    const std::string& object_uuid,
-    const std::string& statistic_uuid,
+    const platform::Uuid& object_uuid,
+    const platform::Uuid& statistic_uuid,
     api::EngineApiU64 transaction_visibility_epoch) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = object_uuid;
@@ -614,7 +621,7 @@ opt::AccessPathPlanningRequest DpcCanonicalAccessRequest(
         opt::OptimizerStatsFreshnessState::kFresh) {
   opt::TableCardinalityStats table;
   table.identity = DpcFreshIdentity(fixture.table_uuid,
-                                    fixture.table_uuid + ":table-statistics",
+                                    scratchbird::tests::FixtureUuid(1570, 1),
                                     fixture.context.local_transaction_id);
   table.row_count = 128;
   table.visible_row_count = 128;
@@ -623,15 +630,15 @@ opt::AccessPathPlanningRequest DpcCanonicalAccessRequest(
 
   opt::IndexStats index;
   index.identity = DpcFreshIdentity(fixture.index_uuid,
-                                    fixture.index_uuid + ":index-statistics",
+                                    scratchbird::tests::FixtureUuid(1570, 2),
                                     fixture.context.local_transaction_id);
   index.identity.freshness = freshness;
   index.index_uuid = fixture.index_uuid;
   index.relation_uuid = fixture.table_uuid;
   index.index_family = "btree";
-  index.key_column_uuids = {fixture.table_uuid + ":id"};
-  index.covered_column_uuids = {fixture.table_uuid + ":id",
-                                fixture.table_uuid + ":note"};
+  index.key_column_uuids = {scratchbird::tests::FixtureUuid(1570, 3)};
+  index.covered_column_uuids = {scratchbird::tests::FixtureUuid(1570, 3),
+                                scratchbird::tests::FixtureUuid(1570, 4)};
   index.unique = true;
   index.covering = true;
   index.height = 2;
@@ -661,10 +668,10 @@ opt::AccessPathPlanningRequest DpcCanonicalAccessRequest(
 
 const opt::PlanCandidate* DpcFindCandidate(
     const std::vector<opt::PlanCandidate>& candidates,
-    std::string_view candidate_id) {
+    std::string_view candidate_id, const platform::Uuid& index_uuid) {
   const auto candidate = std::find_if(
       candidates.begin(), candidates.end(), [&](const auto& current) {
-        return current.candidate_id == candidate_id;
+        return current.candidate_id == candidate_id && current.index_uuid == index_uuid;
       });
   return candidate == candidates.end() ? nullptr : &*candidate;
 }
@@ -699,7 +706,7 @@ void TestStatisticsFallbackAndSelectionEvidence(CrudFixture& fixture) {
   const auto fresh_candidates = opt::GenerateFullAccessPathCandidates(
       DpcCanonicalAccessRequest(fixture));
   const auto* lookup = DpcFindCandidate(
-      fresh_candidates, "CAND-OPT-INDEX:" + fixture.index_uuid);
+      fresh_candidates, "CAND-OPT-INDEX", fixture.index_uuid);
   Require(lookup != nullptr && lookup->cost.selectable,
           "DPC-010 exact catalog statistics did not admit btree lookup");
   Require(lookup->access_kind == plan::PhysicalAccessKind::kScalarBtreeLookup,
@@ -711,7 +718,7 @@ void TestStatisticsFallbackAndSelectionEvidence(CrudFixture& fixture) {
       DpcCanonicalAccessRequest(fixture,
                                 opt::OptimizerStatsFreshnessState::kStale));
   const auto* stale_index = DpcFindCandidate(
-      stale_candidates, "CAND-OPT-INDEX-REFUSED:" + fixture.index_uuid);
+      stale_candidates, "CAND-OPT-INDEX-REFUSED", fixture.index_uuid);
   Require(stale_index != nullptr && !stale_index->cost.selectable,
           "DPC-010 stale canonical index statistics were selectable");
   Require(std::find(stale_index->refusal_reasons.begin(),
@@ -748,7 +755,7 @@ void TestExplainAndOptimizerEvidence(CrudFixture& fixture) {
   explain.context = fixture.context;
   explain.context.request_id = "dpc010-explain";
   explain.operation_id = "query.scan";
-  explain.target_object.uuid.canonical = fixture.table_uuid;
+  explain.target_object.uuid = fixture.table_uuid;
   explain.target_object.object_kind = "table";
   explain.predicate = Predicate("column_equals", {"id-11"});
   const auto explained = api::EngineExplainOperation(explain);
@@ -765,17 +772,15 @@ void TestExplainAndOptimizerEvidence(CrudFixture& fixture) {
           "DPC-010 EXPLAIN claimed parser finality authority");
 
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = NewUuidText(platform::UuidKind::object);
+  request.context.request_uuid = "dpc010-optimizer-request";
   request.context.operation_id = "query.scan";
   request.context.sblr_digest =
-      std::string(kSearchKey) + ":bound-sblr:" + fixture.table_uuid;
-  request.context.descriptor_set_digest = "descriptor:" + fixture.table_uuid;
+      "dpc010-bound-sblr-v1";
+  request.context.descriptor_set_digest = "dpc010-table-descriptor-v1";
   request.context.statistics_snapshot_id =
-      std::string(kSearchKey) + ":snapshot:" +
-      NewUuidText(platform::UuidKind::object);
+      "dpc010-statistics-snapshot";
   request.context.metric_snapshot_id =
-      std::string(kSearchKey) + ":metric:" +
-      NewUuidText(platform::UuidKind::object);
+      "dpc010-metric-snapshot";
   request.context.executor_capability_set_id = "local_noncluster_executor";
   request.context.catalog_epoch = 23;
   request.context.security_epoch = 29;
@@ -790,13 +795,13 @@ void TestExplainAndOptimizerEvidence(CrudFixture& fixture) {
 
   request.logical_plan.ok = true;
   request.logical_plan.plan_id =
-      std::string(kSearchKey) + ":logical-plan:" + fixture.table_uuid;
+      "dpc010-logical-plan-v1";
   auto node = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
                                         plan::PhysicalAccessKind::kTableScan,
                                         "dpc_plan_stability_statistics_lifecycle_gate",
                                         "scan");
   node.required_object_uuids.push_back(fixture.table_uuid);
-  node.required_descriptors.push_back("descriptor:" + fixture.table_uuid);
+  node.required_descriptors.push_back("dpc010-table-descriptor-v1");
   request.logical_plan.nodes.push_back(std::move(node));
   request.statistics = opt::DefaultLocalStatisticsCatalog();
 
@@ -834,8 +839,7 @@ void TestExplainAndOptimizerEvidence(CrudFixture& fixture) {
           "DPC-010 optimizer explain exposed parser finality authority");
 
   auto parser_claim_request = request;
-  parser_claim_request.context.request_uuid =
-      NewUuidText(platform::UuidKind::object);
+  parser_claim_request.context.request_uuid = "dpc010-parser-claim-request";
   parser_claim_request.context.parser_owned_claims_present = true;
   const auto refused = opt::OptimizeBoundRequest(parser_claim_request);
   Require(!refused.ok, "DPC-010 parser-owned optimizer claim was accepted");

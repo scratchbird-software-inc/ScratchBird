@@ -36,9 +36,9 @@ struct EngineDeleteRowsResult : EngineApiResult {
 // datatype, relation or execution authority. The DELETE binder resolves them
 // against the live engine-owned descriptor; no UPDATE assignment is implied.
 struct EngineDmlDeleteRowsBindingDemandV1 {
-  std::string authenticated_statement_receipt_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
   std::uint64_t structural_occurrence_id = 0;
-  std::string target_relation_uuid_hint;
+  EngineUuid target_relation_uuid_hint;
   std::string predicate_kind;
   std::string predicate_column_spelling;
   std::string predicate_literal_spelling;

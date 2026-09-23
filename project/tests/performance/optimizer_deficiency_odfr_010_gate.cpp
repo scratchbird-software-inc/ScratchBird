@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -30,8 +31,8 @@ bool Near(double actual, double expected) {
   return std::abs(actual - expected) < 0.000001;
 }
 
-opt::OptimizerStatsIdentity Identity(const std::string& relation_uuid,
-                                     const std::string& statistic_uuid,
+opt::OptimizerStatsIdentity Identity(const scratchbird::core::platform::Uuid& relation_uuid,
+                                     const scratchbird::core::platform::Uuid& statistic_uuid,
                                      opt::CostConfidence confidence = opt::CostConfidence::kHigh,
                                      opt::OptimizerStatsFreshnessState freshness =
                                          opt::OptimizerStatsFreshnessState::kFresh) {
@@ -57,20 +58,20 @@ opt::SelectivityEstimate Child(double selectivity,
   return estimate;
 }
 
-opt::ExtendedOptimizerStatistic BaseExtended(const std::string& relation_uuid,
+opt::ExtendedOptimizerStatistic BaseExtended(const scratchbird::core::platform::Uuid& relation_uuid,
                                              opt::ExtendedOptimizerStatisticKind kind) {
   opt::ExtendedOptimizerStatistic stats;
-  stats.identity = Identity(relation_uuid, relation_uuid + ":extended");
+  stats.identity = Identity(relation_uuid, scratchbird::tests::FixtureUuid(1528, 100 + relation_uuid.bytes[15]));
   stats.kind = kind;
   stats.relation_uuid = relation_uuid;
-  stats.column_uuids = {"col.region", "col.postal"};
+  stats.column_uuids = {scratchbird::tests::FixtureUuid(1528, 3), scratchbird::tests::FixtureUuid(1528, 2)};
   return stats;
 }
 
-opt::ExtendedStatsSelectivityRequest BaseRequest(const std::string& relation_uuid) {
+opt::ExtendedStatsSelectivityRequest BaseRequest(const scratchbird::core::platform::Uuid& relation_uuid) {
   opt::ExtendedStatsSelectivityRequest request;
   request.relation_uuid = relation_uuid;
-  request.column_uuids = {"col.postal", "col.region"};
+  request.column_uuids = {scratchbird::tests::FixtureUuid(1528, 2), scratchbird::tests::FixtureUuid(1528, 3)};
   request.value_encodings = {"CA", "94105"};
   request.children = {Child(0.10), Child(0.10)};
   request.minimum_confidence = opt::CostConfidence::kMedium;
@@ -78,15 +79,15 @@ opt::ExtendedStatsSelectivityRequest BaseRequest(const std::string& relation_uui
 }
 
 bool JointMcvAndNdvImproveCorrelatedEquality() {
-  auto joint = BaseExtended("rel.customer", opt::ExtendedOptimizerStatisticKind::kJointMcv);
+  auto joint = BaseExtended(scratchbird::tests::FixtureUuid(1528, 7), opt::ExtendedOptimizerStatisticKind::kJointMcv);
   joint.multi_column_distinct_count = 20;
   joint.joint_mcv.push_back({{"CA", "94105"}, 0.075});
 
   opt::OptimizerStatisticsStore store;
   store.UpsertExtendedStatistic(joint);
-  const auto stats = store.FindExtendedStatisticsForRelation("rel.customer");
+  const auto stats = store.FindExtendedStatisticsForRelation(scratchbird::tests::FixtureUuid(1528, 7));
   const auto result = opt::EstimateCorrelatedConjunctionSelectivity(
-      BaseRequest("rel.customer"),
+      BaseRequest(scratchbird::tests::FixtureUuid(1528, 7)),
       stats);
 
   return Require(result.used_extended_stats, "joint MCV extended stats were not used") &&
@@ -101,18 +102,18 @@ bool JointMcvAndNdvImproveCorrelatedEquality() {
 }
 
 bool DependencyAndCorrelationPreventOverReduction() {
-  auto dependency = BaseExtended("rel.address",
+  auto dependency = BaseExtended(scratchbird::tests::FixtureUuid(1528, 5),
                                  opt::ExtendedOptimizerStatisticKind::kFunctionalDependency);
   dependency.functional_dependency_strength = 0.95;
   const auto dep_result = opt::EstimateCorrelatedConjunctionSelectivity(
-      BaseRequest("rel.address"),
+      BaseRequest(scratchbird::tests::FixtureUuid(1528, 5)),
       {dependency});
 
-  auto correlation = BaseExtended("rel.metric",
+  auto correlation = BaseExtended(scratchbird::tests::FixtureUuid(1528, 11),
                                   opt::ExtendedOptimizerStatisticKind::kCrossColumnCorrelation);
   correlation.correlation_coefficient = 0.90;
   const auto corr_result = opt::EstimateCorrelatedConjunctionSelectivity(
-      BaseRequest("rel.metric"),
+      BaseRequest(scratchbird::tests::FixtureUuid(1528, 11)),
       {correlation});
 
   return Require(dep_result.used_extended_stats, "functional dependency was not used") &&
@@ -124,21 +125,21 @@ bool DependencyAndCorrelationPreventOverReduction() {
 }
 
 bool StaleMissingAndShapeMismatchFallbacksAreExact() {
-  auto stale = BaseExtended("rel.stale", opt::ExtendedOptimizerStatisticKind::kMultiColumnNdv);
+  auto stale = BaseExtended(scratchbird::tests::FixtureUuid(1528, 16), opt::ExtendedOptimizerStatisticKind::kMultiColumnNdv);
   stale.identity.freshness = opt::OptimizerStatsFreshnessState::kStale;
   stale.multi_column_distinct_count = 10;
   const auto stale_result = opt::EstimateCorrelatedConjunctionSelectivity(
-      BaseRequest("rel.stale"),
+      BaseRequest(scratchbird::tests::FixtureUuid(1528, 16)),
       {stale});
 
   const auto missing_result = opt::EstimateCorrelatedConjunctionSelectivity(
-      BaseRequest("rel.missing"),
+      BaseRequest(scratchbird::tests::FixtureUuid(1528, 12)),
       {});
 
-  auto shape = BaseExtended("rel.shape", opt::ExtendedOptimizerStatisticKind::kMultiColumnNdv);
-  shape.column_uuids = {"col.other", "col.shape"};
+  auto shape = BaseExtended(scratchbird::tests::FixtureUuid(1528, 15), opt::ExtendedOptimizerStatisticKind::kMultiColumnNdv);
+  shape.column_uuids = {scratchbird::tests::FixtureUuid(1528, 1), scratchbird::tests::FixtureUuid(1528, 4)};
   const auto shape_result = opt::EstimateCorrelatedConjunctionSelectivity(
-      BaseRequest("rel.shape"),
+      BaseRequest(scratchbird::tests::FixtureUuid(1528, 15)),
       {shape});
 
   return Require(!stale_result.used_extended_stats, "stale extended stats were used") &&
@@ -158,12 +159,12 @@ bool StaleMissingAndShapeMismatchFallbacksAreExact() {
 }
 
 bool FkPkShortcutRemainsAdvisory() {
-  auto fkpk = BaseExtended("rel.order_items",
+  auto fkpk = BaseExtended(scratchbird::tests::FixtureUuid(1528, 13),
                            opt::ExtendedOptimizerStatisticKind::kFkPkJoinCardinality);
   fkpk.fk_pk_shortcut = true;
   fkpk.fk_pk_estimated_rows = 1200;
 
-  auto request = BaseRequest("rel.order_items");
+  auto request = BaseRequest(scratchbird::tests::FixtureUuid(1528, 13));
   request.join_cardinality_request = true;
   const auto result = opt::EstimateCorrelatedConjunctionSelectivity(request, {fkpk});
 
@@ -179,14 +180,14 @@ bool FkPkShortcutRemainsAdvisory() {
 
 bool DocumentPathBridgeUsesSameModel() {
   opt::ExtendedOptimizerStatistic bridge;
-  bridge.identity = Identity("rel.document", "rel.document:path_bridge");
+  bridge.identity = Identity(scratchbird::tests::FixtureUuid(1528, 8), scratchbird::tests::FixtureUuid(1528, 9));
   bridge.kind = opt::ExtendedOptimizerStatisticKind::kDocumentPathBridge;
-  bridge.relation_uuid = "rel.document";
+  bridge.relation_uuid = scratchbird::tests::FixtureUuid(1528, 8);
   bridge.document_path_digests = {"sha256:tenant_path", "sha256:state_path"};
   bridge.sampled_dependency_selectivity = 0.12;
 
   opt::ExtendedStatsSelectivityRequest request;
-  request.relation_uuid = "rel.document";
+  request.relation_uuid = scratchbird::tests::FixtureUuid(1528, 8);
   request.document_path_digests = {"sha256:state_path", "sha256:tenant_path"};
   request.value_encodings = {"tenant-7", "active"};
   request.children = {Child(0.10), Child(0.10)};
@@ -212,18 +213,18 @@ bool DocumentPathBridgeUsesSameModel() {
 }
 
 bool HistogramAndSampledDependencyAreSelectedDirectly() {
-  auto histogram = BaseExtended("rel.histogram",
+  auto histogram = BaseExtended(scratchbird::tests::FixtureUuid(1528, 10),
                                 opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram);
   histogram.histogram_selectivity = 0.025;
   const auto histogram_result = opt::EstimateCorrelatedConjunctionSelectivity(
-      BaseRequest("rel.histogram"),
+      BaseRequest(scratchbird::tests::FixtureUuid(1528, 10)),
       {histogram});
 
-  auto sampled = BaseExtended("rel.sampled",
+  auto sampled = BaseExtended(scratchbird::tests::FixtureUuid(1528, 14),
                               opt::ExtendedOptimizerStatisticKind::kSampledDependency);
   sampled.sampled_dependency_selectivity = 0.035;
   const auto sampled_result = opt::EstimateCorrelatedConjunctionSelectivity(
-      BaseRequest("rel.sampled"),
+      BaseRequest(scratchbird::tests::FixtureUuid(1528, 14)),
       {sampled});
 
   return Require(histogram_result.used_extended_stats,
@@ -256,16 +257,16 @@ bool HistogramAndSampledDependencyAreSelectedDirectly() {
 
 bool SnapshotValidationCoversExtendedStats() {
   opt::OptimizerStatisticsStore store;
-  auto histogram = BaseExtended("rel.histogram",
+  auto histogram = BaseExtended(scratchbird::tests::FixtureUuid(1528, 10),
                                 opt::ExtendedOptimizerStatisticKind::kMultiColumnHistogram);
   histogram.histogram_selectivity = 0.025;
-  auto sampled = BaseExtended("rel.sampled",
+  auto sampled = BaseExtended(scratchbird::tests::FixtureUuid(1528, 14),
                               opt::ExtendedOptimizerStatisticKind::kSampledDependency);
   sampled.sampled_dependency_selectivity = 0.035;
   store.UpsertExtendedStatistic(histogram);
   store.UpsertExtendedStatistic(sampled);
 
-  const auto snapshot = store.Snapshot("odfr010-snapshot");
+  const auto snapshot = store.Snapshot(scratchbird::tests::FixtureUuid(1528, 201));
   const auto statuses = opt::ValidateOptimizerStatsSnapshot(snapshot);
   return Require(snapshot.extended_stats.size() == 2,
                  "snapshot did not retain extended statistics") &&
@@ -275,10 +276,10 @@ bool SnapshotValidationCoversExtendedStats() {
 
 bool SnapshotValidationRejectsBadJointMcvFrequency() {
   opt::OptimizerStatisticsStore store;
-  auto joint = BaseExtended("rel.bad_mcv", opt::ExtendedOptimizerStatisticKind::kJointMcv);
+  auto joint = BaseExtended(scratchbird::tests::FixtureUuid(1528, 6), opt::ExtendedOptimizerStatisticKind::kJointMcv);
   joint.joint_mcv.push_back({{"CA", "94105"}, 1.25});
   store.UpsertExtendedStatistic(joint);
-  const auto statuses = opt::ValidateOptimizerStatsSnapshot(store.Snapshot("bad-mcv"));
+  const auto statuses = opt::ValidateOptimizerStatsSnapshot(store.Snapshot(scratchbird::tests::FixtureUuid(1528, 202)));
   for (const auto& status : statuses) {
     if (status.diagnostic_code == "SB_OPT_EXTENDED_STATS_JOINT_MCV_FREQUENCY_INVALID") {
       return true;

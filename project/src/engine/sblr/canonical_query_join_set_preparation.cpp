@@ -461,7 +461,7 @@ bool ExactCanonicalBooleanJoinAliasDescriptorV1(
       (descriptor.nullability != api::RelationalNullability::kNonNull &&
        descriptor.nullability != api::RelationalNullability::kNullable) ||
       descriptor.descriptor_uuid != descriptor.type_uuid ||
-      !CanonicalUuidText(descriptor.statement_receipt_uuid)) {
+      !core::uuid::IsEngineIdentityUuid(descriptor.statement_receipt_uuid)) {
     return false;
   }
   const auto identity = dt::LookupCanonicalBooleanTypeCodecIdentityV1(
@@ -492,10 +492,9 @@ std::string ExactCanonicalBooleanJoinAliasRuntimeCarrierV1(
                    api::RelationalNullability::kNullable)) {
     return {};
   }
-  return "datatype_descriptor_uuid=" + descriptor.descriptor_uuid +
-         ";datatype_descriptor_generation=" +
+  return "datatype_descriptor_generation=" +
          std::to_string(descriptor.descriptor_generation) +
-         ";type_uuid=" + descriptor.type_uuid + ";type_generation=" +
+         ";type_generation=" +
          std::to_string(descriptor.type_generation) + ";codec_id=" +
          descriptor.codec_id + ";codec_version=" +
          std::to_string(descriptor.codec_version) + ";codec_generation=" +
@@ -550,14 +549,19 @@ bool ProjectCanonicalBooleanJoinAliasRuntimeCarriersV1(
               column.descriptor.descriptor_kind ||
           row.values[ordinal].descriptor.canonical_type_name !=
               column.descriptor.canonical_type_name ||
-          row.values[ordinal].descriptor.encoded_descriptor !=
-              column.descriptor.encoded_descriptor) {
+          row.values[ordinal].descriptor != column.descriptor) {
         *detail = "join canonical boolean row carrier differs from its column";
         return false;
       }
       row.values[ordinal].descriptor.encoded_descriptor = encoded;
+      row.values[ordinal].descriptor.type_uuid = descriptor->second->type_uuid;
+      row.values[ordinal].descriptor.datatype_descriptor_uuid = descriptor->second->descriptor_uuid;
+      row.values[ordinal].descriptor.datatype_descriptor_generation = descriptor->second->descriptor_generation;
     }
     column.descriptor.encoded_descriptor = encoded;
+    column.descriptor.type_uuid = descriptor->second->type_uuid;
+    column.descriptor.datatype_descriptor_uuid = descriptor->second->descriptor_uuid;
+    column.descriptor.datatype_descriptor_generation = descriptor->second->descriptor_generation;
   }
   return true;
 }
@@ -604,13 +608,13 @@ PreparedJoinRoot PrepareJoinRoot(
   for (const auto& descriptor : dag.descriptors) {
     descriptors.emplace(descriptor.descriptor_id, &descriptor);
   }
-  std::unordered_set<std::string_view> join_descriptor_uuids;
-  std::unordered_set<std::string_view> join_type_uuids;
+  std::set<api::EngineUuid> join_descriptor_uuids;
+  std::set<api::EngineUuid> join_type_uuids;
   for (const auto descriptor_id : predicate_descriptors) {
     const auto descriptor = descriptors.find(descriptor_id);
     if (descriptor == descriptors.end() ||
-        descriptor->second->descriptor_uuid.empty() ||
-        descriptor->second->type_uuid.empty()) {
+        descriptor->second->descriptor_uuid.is_nil() ||
+        descriptor->second->type_uuid.is_nil()) {
       result.detail = "join input descriptor or type identity is unresolved";
       return result;
     }
@@ -870,11 +874,11 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
   for (const auto& descriptor : dag.descriptors) {
     descriptors.emplace(descriptor.descriptor_id, &descriptor);
   }
-  std::unordered_set<std::string_view> set_operation_type_uuids;
+  std::set<api::EngineUuid> set_operation_type_uuids;
   const auto collect_type_uuid = [&](const std::uint32_t descriptor_id) {
     const auto descriptor = descriptors.find(descriptor_id);
     if (descriptor == descriptors.end() ||
-        descriptor->second->type_uuid.empty()) {
+        descriptor->second->type_uuid.is_nil()) {
       return false;
     }
     set_operation_type_uuids.insert(descriptor->second->type_uuid);
@@ -926,10 +930,8 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
   }
 
   const auto descriptor_has_type_uuid = [](const api::EngineDescriptor& value,
-                                           const std::string_view type_uuid) {
-    const auto token = "type_uuid=" + std::string(type_uuid);
-    return value.encoded_descriptor == token ||
-           value.encoded_descriptor.starts_with(token + ";");
+                                           const api::EngineUuid& type_uuid) {
+    return value.type_uuid == type_uuid;
   };
   std::size_t published_ordinal = 0;
   for (std::size_t column = 0; column < root.output_descriptor_ids.size();
@@ -979,8 +981,9 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
         descriptor->second->descriptor_uuid;
     engine_descriptor.descriptor_kind = "scalar";
     engine_descriptor.canonical_type_name = result_type_name;
+    engine_descriptor.type_uuid = descriptor->second->type_uuid;
     engine_descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor->second->type_uuid + ";nullability=" +
+        std::string("nullability=") +
         (descriptor->second->nullability ==
                  api::RelationalNullability::kNullable
              ? "nullable"
@@ -1011,7 +1014,11 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
     }
     if (profile.type_profile ==
             exec::CanonicalSetOperationTypeProfile::kExact &&
-        (engine_descriptor.canonical_type_name !=
+        (engine_descriptor.type_uuid != left_column.descriptor.type_uuid ||
+         engine_descriptor.type_uuid != right_column.descriptor.type_uuid ||
+         engine_descriptor.collation_uuid != left_column.descriptor.collation_uuid ||
+         engine_descriptor.collation_uuid != right_column.descriptor.collation_uuid ||
+         engine_descriptor.canonical_type_name !=
              left_column.descriptor.canonical_type_name ||
          engine_descriptor.canonical_type_name !=
              right_column.descriptor.canonical_type_name ||

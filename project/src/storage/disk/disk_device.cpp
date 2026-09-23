@@ -1156,7 +1156,7 @@ void FileDevice::ObserveIoLatency(LatencyOperation operation,double micros,const
     const auto name=operation==LatencyOperation::read?"read_at":operation==LatencyOperation::write?"write_at":"sync";
     bool accepted=metrics::ObserveHistogram(family,metrics::Labels({{"component","storage.disk"},{"operation",name},
       {"result",result},{"device_class",path_.empty()?"unopened":"file"}}),micros,"storage_disk").ok;
-    if(!metric_filespace_uuid_.empty()){
+    if(!metric_filespace_uuid_.is_nil()){
       const auto observe=operation==LatencyOperation::read?metrics::ObserveFilespaceDeviceReadLatency:
         operation==LatencyOperation::write?metrics::ObserveFilespaceDeviceWriteLatency:metrics::ObserveFilespaceFsyncLatency;
       const auto scoped=observe(micros,metric_database_uuid_,metric_filespace_uuid_,metric_node_uuid_,metric_filespace_role_,
@@ -1847,9 +1847,9 @@ IoResult FileDevice::Sync() {
   return result;
 }
 
-void FileDevice::SetMetricContext(std::string database_uuid,
-                                  std::string filespace_uuid,
-                                  std::string node_uuid,
+void FileDevice::SetMetricContext(scratchbird::core::platform::Uuid database_uuid,
+                                  scratchbird::core::platform::Uuid filespace_uuid,
+                                  scratchbird::core::platform::Uuid node_uuid,
                                   std::string filespace_role,
                                   std::string device_class) {
   metric_database_uuid_ = std::move(database_uuid);
@@ -1921,7 +1921,7 @@ IoResult FileDevice::MakeIoError(std::string diagnostic_code,
                                  std::string detail,
                                  usize bytes_transferred) const {
   RecordDiskError(diagnostic_code.c_str(), path_);
-  if (!metric_filespace_uuid_.empty()) {
+  if (!metric_filespace_uuid_.is_nil()) {
     (void)scratchbird::core::metrics::RecordFilespaceDeviceError(
         diagnostic_code,
         metric_database_uuid_,

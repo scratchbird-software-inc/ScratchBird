@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -179,7 +180,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -201,10 +202,10 @@ void PrintMessages(const MessageVectorSet& messages) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000066101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000066102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000066103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000066101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000066102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000066103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 566;
   session.security_policy_epoch = 567;
   session.descriptor_epoch = 568;
@@ -215,7 +216,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_066_case_grammar_route";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000066104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000066104");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-066-case-grammar-route-test";
   config.build_id = "sbsql-sbsfc-066-case-grammar-route-test";
   return config;
@@ -355,12 +356,12 @@ void RequireParsedEnvelopeRuntime(std::string_view sql,
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsql-sbsfc-066-case-grammar-exact-route";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000066201";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000066202";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000066203";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000066204";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000066205";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000066206";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000066201");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000066202");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000066203");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000066204");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000066205");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000066206");
   context.local_transaction_id = 66;
   context.security_context_present = true;
   context.trace_tags.push_back("right:QUERY_PROJECTION_TEST");

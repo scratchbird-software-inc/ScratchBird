@@ -71,12 +71,12 @@ struct UpdateBatchMemoryPolicy {
 struct UpdateBatchTraceEvent {
   std::string event_name;
   std::string phase;
-  std::string detail;
+  EngineEvidenceValue detail;
 };
 
 struct BoundUpdateAssignmentTemplate {
   std::string template_id;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   std::vector<std::pair<std::string, std::string>> columns;
   std::vector<std::string> assigned_columns;
   std::size_t assignment_count = 0;
@@ -94,7 +94,7 @@ struct UpdateIndexMaintenancePlanEntry {
 
 struct UpdateIndexMaintenancePlan {
   std::string plan_id;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   std::vector<UpdateIndexMaintenancePlanEntry> entries;
   bool has_affected_unique_exact = false;
   bool has_delta_eligible = false;
@@ -123,18 +123,18 @@ struct UpdateSecondaryIndexDeltaLedgerPolicy {
 };
 
 struct UpdateBatchContext {
-  std::string statement_uuid;
+  EngineUuid statement_uuid;
   std::uint64_t local_transaction_id = 0;
-  std::string transaction_uuid;
-  std::string database_uuid;
-  std::string target_object_uuid;
+  EngineUuid transaction_uuid;
+  EngineUuid database_uuid;
+  EngineUuid target_object_uuid;
   std::uint64_t estimated_match_count = 0;
   std::uint64_t actual_match_count = 0;
   std::uint64_t actual_update_count = 0;
   UpdateBatchMode update_mode = UpdateBatchMode::predicate_scan;
   std::string predicate_kind;
-  std::string security_context_uuid;
-  std::string policy_snapshot_uuid;
+  EngineUuid security_context_uuid;
+  EngineUuid policy_snapshot_uuid;
   UpdateFeatureGates feature_gates;
   UpdateBatchMemoryPolicy memory_policy;
   BoundUpdateAssignmentTemplate assignment_template;
@@ -182,8 +182,8 @@ EngineApiDiagnostic ValidateUpdateBatchMemoryBudget(const UpdateBatchContext& co
                                                     std::uint64_t projected_bytes);
 EngineApiDiagnostic ValidateUpdateBatchUniquePreflight(UpdateBatchContext* context,
                                                        const std::vector<std::pair<std::string, std::string>>& values,
-                                                       const std::string& row_uuid);
-void AddUpdateTrace(UpdateBatchContext* context, std::string event_name, std::string phase, std::string detail = {});
+                                                       const EngineUuid& row_uuid);
+void AddUpdateTrace(UpdateBatchContext* context, std::string event_name, std::string phase, EngineEvidenceValue detail = {});
 void AddUpdateBatchEvidenceToResult(const UpdateBatchContext& context, EngineApiResult* result);
 void RecordUpdateBatchMetric(const UpdateBatchContext& context, std::string metric, double value, std::string result, std::string reason = {});
 

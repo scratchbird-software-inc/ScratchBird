@@ -1,3 +1,7 @@
+#include "agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -47,7 +51,7 @@ platform::u64 NowMillis() {
 std::string Id(platform::UuidKind kind, platform::u64 salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, 1917019000000ull + salt);
   Require(generated.ok(), "PFAR-017A UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return BinaryFixtureIdentity(generated.value.value);
 }
 
 void RequireTypedUuid(platform::UuidKind kind,
@@ -57,7 +61,7 @@ void RequireTypedUuid(platform::UuidKind kind,
   Require(value.rfind("agent.", 0) != 0 && value.rfind("policy.", 0) != 0 &&
               value.rfind("scope.", 0) != 0,
           std::string(field_name) + " used fake catalog label");
-  Require(uuid::ParseDurableEngineIdentityUuid(kind, std::string(value)).ok(),
+  Require(uuid::MakeTypedUuid(kind, NativeFixtureIdentity(value)).ok(),
           std::string(field_name) + " is not a typed durable engine UUID");
 }
 
@@ -91,12 +95,12 @@ api::EngineRequestContext Context(const Fixture& fixture,
   api::EngineRequestContext context;
   context.request_id = "pfar-017a-open-state-mode";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = fixture.principal_uuid;
-  context.transaction_uuid.canonical = fixture.transaction_uuid;
-  context.session_uuid.canonical = Id(platform::UuidKind::object, 7);
-  context.node_uuid.canonical = Id(platform::UuidKind::object, 8);
-  context.cluster_uuid.canonical = Id(platform::UuidKind::object, 9);
+  context.database_uuid = NativeFixtureIdentity(fixture.database_uuid);
+  context.principal_uuid = NativeFixtureIdentity(fixture.principal_uuid);
+  context.transaction_uuid = NativeFixtureIdentity(fixture.transaction_uuid);
+  context.session_uuid = NativeFixtureIdentity(Id(platform::UuidKind::object, 7));
+  context.node_uuid = NativeFixtureIdentity(Id(platform::UuidKind::object, 8));
+  context.cluster_uuid = NativeFixtureIdentity(Id(platform::UuidKind::object, 9));
   context.local_transaction_id = 17017;
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
@@ -131,7 +135,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) {
       return true;
     }
   }
@@ -160,7 +164,7 @@ agents::AgentRuntimeActivationEvidence ValidEvidence(const Fixture& fixture) {
 
 api::EngineObjectReference FilespaceTarget(const Fixture& fixture) {
   api::EngineObjectReference target;
-  target.uuid.canonical = fixture.filespace_uuid;
+  target.uuid = NativeFixtureIdentity(fixture.filespace_uuid);
   target.object_kind = "filespace";
   return target;
 }
@@ -180,8 +184,8 @@ api::EngineRequestPagePreallocationRequest PageHookRequest(const Fixture& fixtur
   request.context = Context(fixture, {"OBS_AGENT_CONTROL"});
   request.agent_type = "page_allocation_manager";
   request.action_class = "page_preallocation_request";
-  request.agent_uuid.canonical = fixture.agent_uuid;
-  request.policy_snapshot_uuid.canonical = fixture.policy_uuid;
+  request.agent_uuid = NativeFixtureIdentity(fixture.agent_uuid);
+  request.policy_snapshot_uuid = NativeFixtureIdentity(fixture.policy_uuid);
   request.target_filespace = FilespaceTarget(fixture);
   request.page_family = "data";
   request.page_type = "relation";
@@ -262,8 +266,8 @@ sblr::SblrDispatchResult DispatchCommand(const Fixture& fixture,
   api_request.option_envelopes.push_back(std::move(lifecycle_option));
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "pfar-017a");
   envelope.opcode_code = registry->code;
-  envelope.parser_package_uuid = Id(platform::UuidKind::object, 13);
-  envelope.registry_snapshot_uuid = Id(platform::UuidKind::object, 14);
+  envelope.parser_package_uuid = NativeFixtureIdentity(Id(platform::UuidKind::object, 13));
+  envelope.registry_snapshot_uuid = NativeFixtureIdentity(Id(platform::UuidKind::object, 14));
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;

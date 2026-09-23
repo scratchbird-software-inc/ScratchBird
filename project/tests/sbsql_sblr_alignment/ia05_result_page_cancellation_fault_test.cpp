@@ -20,7 +20,7 @@ namespace {
 Submission PackageWithMember(
     const Fixture& fixture,
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     sblr::SblrOperationEnvelope member) {
   auto submission = BuildSubmission(fixture, view, parser_uuid);
   const auto validation = sblr::ValidateSblrEnvelope(member);
@@ -84,18 +84,14 @@ Submission PackageWithMember(
   return submission;
 }
 
-std::string UuidText(const std::array<std::uint8_t, 16>& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string text;
-  text.reserve(36);
-  for (std::size_t index = 0; index != value.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      text.push_back('-');
-    }
-    text.push_back(kHex[value[index] >> 4U]);
-    text.push_back(kHex[value[index] & 0x0fU]);
-  }
-  return text;
+sblr::SblrOperand UuidQueryOperand(std::uint32_t ordinal, std::string type,
+                                  std::string name, const platform::Uuid& value) {
+  Require(type == "uuid", "UUID operand type required");
+  sblr::SblrOperand operand;
+  operand.ordinal = ordinal; operand.type = std::move(type); operand.name = std::move(name);
+  operand.value_kind = sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(value.bytes.begin(), value.bytes.end());
+  return operand;
 }
 
 sblr::SblrOperand TypedQueryOperand(std::uint32_t ordinal, std::string type,
@@ -107,7 +103,7 @@ sblr::SblrOperand TypedQueryOperand(std::uint32_t ordinal, std::string type,
   operand.name = std::move(name);
   operand.value_kind = sblr::SblrValueKind::literal_typed;
   const auto carrier_type_uuid =
-      RawUuid("019d0000-0000-7000-8000-00000000d712");
+      RawUuid(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712"));
   operand.value_body.assign(carrier_type_uuid.begin(),
                             carrier_type_uuid.end());
   U64(&operand.value_body, value.size());
@@ -118,17 +114,23 @@ sblr::SblrOperand TypedQueryOperand(std::uint32_t ordinal, std::string type,
 
 sblr::SblrOperationEnvelope ValuesQueryMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const literal_fixture::Binding& literal_binding,
     const api::EngineRequestContext& admitted_context) {
-  const auto descriptor_uuid = UuidText(literal_binding.descriptor_uuid);
-  const std::string descriptor_record =
-      descriptor_uuid + "|" +
-      std::to_string(literal_binding.descriptor_generation) +
-      "|019d0000-0000-7000-8000-00000000d712|1|datatype.int64.le.v1|1|1|0|-|-|-|-|-|" +
-      view.receipt_uuid + "|" + admitted_context.datatype_catalog_snapshot_uuid.canonical +
-      "|" + std::to_string(admitted_context.datatype_catalog_generation) +
-      "|" + std::to_string(admitted_context.datatype_registry_generation);
+  api::RelationalTypeDescriptor descriptor_record;
+  descriptor_record.descriptor_id = 1;
+  descriptor_record.descriptor_uuid.bytes = literal_binding.descriptor_uuid;
+  descriptor_record.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
+  descriptor_record.nullability = api::RelationalNullability::kNonNull;
+  descriptor_record.datatype_identity_authoritative = true;
+  descriptor_record.descriptor_generation = literal_binding.descriptor_generation;
+  descriptor_record.type_generation = 1;
+  descriptor_record.codec_id = "datatype.int64.le.v1";
+  descriptor_record.codec_version = 1; descriptor_record.codec_generation = 1;
+  descriptor_record.statement_receipt_uuid = view.receipt_uuid;
+  descriptor_record.datatype_catalog_snapshot_uuid = admitted_context.datatype_catalog_snapshot_uuid;
+  descriptor_record.datatype_catalog_generation = admitted_context.datatype_catalog_generation;
+  descriptor_record.datatype_registry_generation = admitted_context.datatype_registry_generation;
 
   auto member = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
@@ -145,24 +147,24 @@ sblr::SblrOperationEnvelope ValuesQueryMember(
   std::uint32_t ordinal = 1;
   member.operands.push_back(TypedQueryOperand(
       ordinal++, "uint16", "relational_wire_version", "2"));
-  member.operands.push_back(TypedQueryOperand(
+  member.operands.push_back(UuidQueryOperand(
       ordinal++, "uuid", "relational_bound_sblr_tree_uuid",
       view.bound_ast_uuid));
-  member.operands.push_back(TypedQueryOperand(
+  member.operands.push_back(UuidQueryOperand(
       ordinal++, "uuid", "relational_catalog_epoch_uuid",
       view.catalog_epoch_uuid));
-  member.operands.push_back(TypedQueryOperand(
+  member.operands.push_back(UuidQueryOperand(
       ordinal++, "uuid", "relational_security_context_uuid",
       view.security_context_uuid));
-  member.operands.push_back(TypedQueryOperand(
+  member.operands.push_back(UuidQueryOperand(
       ordinal++, "uuid", "relational_statement_uuid", view.statement_uuid));
-  member.operands.push_back(TypedQueryOperand(
+  member.operands.push_back(UuidQueryOperand(
       ordinal++, "uuid", "relational_owning_transaction_uuid",
       view.owning_transaction_uuid));
-  member.operands.push_back(TypedQueryOperand(
+  member.operands.push_back(UuidQueryOperand(
       ordinal++, "uuid", "relational_statement_snapshot_uuid",
       view.statement_snapshot_uuid));
-  member.operands.push_back(TypedQueryOperand(
+  member.operands.push_back(UuidQueryOperand(
       ordinal++, "uuid", "relational_statement_metadata_snapshot_uuid",
       view.statement_metadata_snapshot_uuid));
   member.operands.push_back(TypedQueryOperand(
@@ -174,9 +176,14 @@ sblr::SblrOperationEnvelope ValuesQueryMember(
       std::to_string(view.visible_committed_high_watermark)));
   member.operands.push_back(TypedQueryOperand(
       ordinal++, "uint32", "relational_root_node_id", "1"));
-  member.operands.push_back(TypedQueryOperand(
-      ordinal++, "relational_descriptor_v2", "slot_1",
-      descriptor_record));
+  sblr::SblrOperand descriptor_operand;
+  descriptor_operand.ordinal = ordinal++;
+  descriptor_operand.type = "relational_descriptor_v3";
+  descriptor_operand.name = "slot_1";
+  descriptor_operand.value_kind = sblr::SblrValueKind::relational_type_descriptor;
+  Require(sblr::EncodeRelationalTypeDescriptorV1(descriptor_record, &descriptor_operand.value_body),
+          "relational descriptor encode failed");
+  member.operands.push_back(std::move(descriptor_operand));
 
   const auto table_sha = scratchbird::core::hash::ComputeSha256Digest(
       literal_binding.sbxn);
@@ -223,7 +230,7 @@ sblr::SblrOperationEnvelope ValuesQueryMember(
 
 sblr::SblrOperationEnvelope ResultPageMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const bridge::StatementQueryExecuteResultHandleView& source_handle,
     const std::array<std::uint8_t, 16>& cursor_uuid) {
   sblr::SblrResultPageDescriptorV1 descriptor;
@@ -280,7 +287,7 @@ bridge::StatementContextDispatchRequest Admit(
     PublicSession& session,
     const bridge::StatementContextReceiptView& view,
     bridge::StatementContextReceiptHandle receipt,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const Submission& submission,
     bridge::StatementPackageAdmissionReservationHandle* reservation) {
   bridge::StatementPackageAdmissionReservationRequest request;
@@ -302,7 +309,7 @@ bridge::StatementContextDispatchRequest Admit(
   admission.admitted_parser_package_uuid = parser_uuid;
   admission.admitted_parser_package_version_major = 1;
   admission.admitted_registry_snapshot_uuid = view.catalog_epoch_uuid;
-  admission.authenticated_principal_uuid = Text(fixture.principal_uuid);
+  admission.authenticated_principal_uuid = Identity(fixture.principal_uuid);
   admission.catalog_snapshot_uuid = view.statement_metadata_snapshot_uuid;
   admission.engine_mga_statement_uuid = view.statement_uuid;
   admission.engine_mga_snapshot_uuid = view.statement_snapshot_uuid;
@@ -382,7 +389,7 @@ int main() {
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;
@@ -393,7 +400,7 @@ int main() {
   if (result != nullptr) (void)sb_engine_result_release(result);
 
   const auto parser_uuid =
-      Text(NewUuid(platform::UuidKind::object, 36003));
+      Identity(NewUuid(platform::UuidKind::object, 36003));
   auto literal_binding = literal_fixture::FinalizeLiteral(receipt, view);
   api::EngineRequestContext admitted_context;
   Require(bridge::CopyStatementContextEngineContextV1(receipt, &admitted_context, nullptr) ==
@@ -444,7 +451,7 @@ int main() {
           "003600 source query did not publish an engine result handle");
 
   const auto cursor_uuid = RawUuid(
-      Text(NewUuid(platform::UuidKind::object, 36004)));
+      Identity(NewUuid(platform::UuidKind::object, 36004)));
   const auto page_submission = PackageWithMember(
       fixture, view, parser_uuid,
       ResultPageMember(view, parser_uuid, source_handle, cursor_uuid));

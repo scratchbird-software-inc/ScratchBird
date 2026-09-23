@@ -20,7 +20,7 @@ namespace scratchbird::udr::builtin_packages {
 struct BuiltinUdrPackageSpec {
   std::string_view family_id;
   std::string_view category;
-  std::string_view package_uuid;
+  runtime::UdrUuid package_uuid;
   std::string_view package_name;
   std::string_view capability_role;
   std::string_view release_policy;
@@ -32,7 +32,7 @@ struct BuiltinUdrPackageSpec {
 };
 
 struct BuiltinUdrPackageDeploymentManifestRow {
-  std::string package_uuid;
+  runtime::UdrUuid package_uuid;
   std::string package_name;
   std::string family_id;
   std::string category;
@@ -50,12 +50,11 @@ struct BuiltinUdrPackageDeploymentManifestRow {
 };
 
 std::span<const BuiltinUdrPackageSpec> BuiltinUdrPackageSpecs();
-const BuiltinUdrPackageSpec* FindBuiltinUdrPackageSpec(std::string_view package_uuid);
+const BuiltinUdrPackageSpec* FindBuiltinUdrPackageSpec(const runtime::UdrUuid& package_uuid);
 runtime::UdrPackageDescriptor BuiltinUdrPackageDescriptor(
     const BuiltinUdrPackageSpec& spec);
 std::vector<runtime::UdrPackageDescriptor> BuiltinUdrPackageDescriptors();
 std::vector<BuiltinUdrPackageDeploymentManifestRow>
 BuiltinUdrPackageDeploymentManifest();
-std::string BuiltinUdrPackageDeploymentManifestJson();
 
 }  // namespace scratchbird::udr::builtin_packages

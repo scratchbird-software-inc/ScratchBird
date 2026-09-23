@@ -53,11 +53,11 @@ inline constexpr const char* kDocumentPathPhysicalProviderRepairSourceRequired =
     "SB_DOCUMENT_PATH_PHYSICAL_PROVIDER.REPAIR_SOURCE_REQUIRED";
 
 struct DocumentPathProviderIdentity {
-  std::string database_uuid;
-  std::string relation_uuid;
-  std::string index_uuid;
+  EngineUuid database_uuid;
+  EngineUuid relation_uuid;
+  EngineUuid index_uuid;
   std::string provider_id = kDocumentPathPhysicalProviderId;
-  std::string segment_uuid;
+  EngineUuid segment_uuid;
   std::uint64_t provider_generation = 0;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
@@ -76,9 +76,9 @@ struct DocumentPathValueEvidence {
 };
 
 struct DocumentPathRowEvidence {
-  std::string document_uuid;
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid document_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
   std::uint64_t row_ordinal = 0;
   std::vector<DocumentPathValueEvidence> values;
   bool authoritative_document_row_path_evidence = true;
@@ -132,9 +132,9 @@ struct DocumentPathProviderPosting {
   std::uint64_t path_id = 0;
   std::string scalar_type;
   std::string encoded_value;
-  std::string document_uuid;
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid document_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
   std::uint64_t row_ordinal = 0;
   std::string concrete_path;
   std::int64_t array_position = -1;
@@ -189,9 +189,9 @@ struct DocumentPathProviderProjectedValue {
 };
 
 struct DocumentPathProviderCandidate {
-  std::string document_uuid;
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid document_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
   std::string shape_id;
   std::uint64_t shape_ref_count = 0;
   std::uint64_t row_ordinal = 0;
@@ -220,7 +220,7 @@ std::string DocumentPathPhysicalProviderPath(const EngineRequestContext& context
 DocumentPathProviderIdentity DocumentPathProviderIdentityForContext(
     const EngineRequestContext& context,
     std::uint64_t provider_generation,
-    const std::string& index_uuid = {});
+    const EngineUuid& index_uuid = {});
 DocumentPathScalar DocumentPathScalarFromTypedValue(const EngineTypedValue& value);
 
 DocumentPathProviderResult BuildDocumentPathPhysicalProvider(

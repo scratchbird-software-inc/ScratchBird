@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -148,7 +149,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -158,13 +159,21 @@ bool IsExactCoreCase(const CaseRow& row) {
          row.operation_id == "engine.op.ddl_create_type";
 }
 
+bool HasEvidence(const api::EngineApiResult& result, std::string_view kind, const api::EngineUuid& id) {
+  for(const auto& evidence:result.evidence) {
+    if(evidence.evidence_kind==kind && std::holds_alternative<api::EngineUuid>(evidence.evidence_id) &&
+       std::get<api::EngineUuid>(evidence.evidence_id)==id)return true;
+  }
+  return false;
+}
+
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000075101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000075102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000075103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000075101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000075102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000075103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 75;
   session.security_policy_epoch = 76;
   session.descriptor_epoch = 77;
@@ -175,7 +184,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_075_catalog_descriptor_mutation";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000075104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000075104");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-075-catalog-descriptor-mutation";
   config.build_id = "sbsql-sbsfc-075-catalog-descriptor-mutation";
   return config;
@@ -189,11 +198,8 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
-std::string TargetUuidFor(std::size_t index) {
-  char buffer[64];
-  std::snprintf(buffer, sizeof(buffer),
-                "019f0000-0000-7000-8000-%012zu", static_cast<std::size_t>(750000 + index));
-  return buffer;
+api::EngineUuid TargetUuidFor(std::size_t index) {
+  return scratchbird::tests::FixtureUuid(1437, static_cast<std::uint32_t>(index));
 }
 
 PipelineArtifacts RunPipeline(const CaseRow& row, std::size_t index) {
@@ -201,7 +207,7 @@ PipelineArtifacts RunPipeline(const CaseRow& row, std::size_t index) {
   const auto session = ParserSession();
   artifacts.cst = BuildCst(std::string(row.sql));
   artifacts.ast = BuildAst(artifacts.cst);
-  std::vector<std::string> resolved;
+  std::vector<api::EngineUuid> resolved;
   if (row.needs_uuid || row.operation_id == "engine.op.ddl_create_materialized_view") {
     resolved.push_back(TargetUuidFor(index));
   }
@@ -253,8 +259,9 @@ void RequireExactLowering(const CaseRow& row,
               artifacts.envelope.resolved_object_uuids.empty() &&
               artifacts.envelope.required_rights.empty(),
           "SBSFC-075 refusal retained executable authority");
-  Require(artifacts.envelope.descriptor_refs.size() == 1 &&
-              artifacts.envelope.descriptor_refs.front() ==
+  Require(artifacts.envelope.descriptor_refs.empty() &&
+                artifacts.envelope.descriptor_requirements.size() == 1 &&
+              artifacts.envelope.descriptor_requirements.front() ==
                   "sys.sbsql.surface_registry",
           "SBSFC-075 refusal retained a bound catalog descriptor");
   Require(HasValue(artifacts.envelope.required_authority_steps,
@@ -334,7 +341,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -348,24 +355,22 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "SBSFC-075 database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-sbsfc-075-catalog-descriptor-mutation";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000075201";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000075202";
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000075201");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000075202");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000075001");
   context.security_context_present = true;
   context.authorization_context.present = true;
-  context.authorization_context.principal_uuid.canonical =
-      context.principal_uuid.canonical;
-  context.authorization_context.authority_uuid.canonical =
-      "019f0000-0000-7000-8000-000000075203";
+  context.authorization_context.principal_uuid = context.principal_uuid;
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000075203");
   api::EngineAuthorizationSubject subject;
   subject.subject_uuid = context.principal_uuid;
   subject.subject_kind = "user";
@@ -373,7 +378,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   api::EngineMaterializedAuthorizationGrant type_ddl;
   type_ddl.subject_uuid = context.principal_uuid;
   type_ddl.subject_kind = "user";
-  type_ddl.target_uuid.canonical = "*";
+  type_ddl.target_uuid = {};
   type_ddl.right = "TYPE_DDL";
   context.authorization_context.grants.push_back(std::move(type_ddl));
   context.catalog_generation_id = 1;
@@ -386,7 +391,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid) {
+                                                 const api::EngineUuid& database_uuid) {
   auto context = EngineContext(path, database_uuid);
   auto envelope = scratchbird::test::sbsql::
       BuildCanonicalEngineSblrEnvelopeForTest(
@@ -454,9 +459,9 @@ sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
 
 api::EngineApiRequest EngineMutationRequest(const CaseRow& row, std::size_t index) {
   api::EngineApiRequest request;
-  request.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000075001");
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = TargetUuidFor(index + 200);
+  request.target_object.uuid = TargetUuidFor(index + 200);
   request.target_object.object_kind =
       row.operation_id == "engine.op.ddl_create_type"
           ? "structured_type_descriptor"
@@ -474,7 +479,7 @@ api::EngineApiRequest EngineMutationRequest(const CaseRow& row, std::size_t inde
 }
 
 void RequireEngineDispatch(const std::filesystem::path& path,
-                           const std::string& database_uuid) {
+                           const api::EngineUuid& database_uuid) {
   auto context = BeginEngineTransaction(path, database_uuid);
   for (std::size_t index = 0; index < std::size(kCases); ++index) {
     const auto& row = kCases[index];
@@ -515,7 +520,7 @@ void RequireEngineDispatch(const std::filesystem::path& path,
     Require(HasEvidence(result.api_result, "catalog_descriptor_mutation", row.operation_id),
             "EngineCatalogDescriptorMutation missing descriptor mutation evidence");
     Require(HasEvidence(result.api_result, "name_registry",
-                        result.api_result.primary_object.uuid.canonical),
+                        result.api_result.primary_object.uuid),
             "EngineCatalogDescriptorMutation missing name registry evidence");
     Require(HasEvidence(result.api_result, "mga_catalog_commit",
                         std::to_string(context.local_transaction_id)),

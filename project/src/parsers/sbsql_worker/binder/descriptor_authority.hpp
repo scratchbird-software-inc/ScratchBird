@@ -24,7 +24,15 @@ inline std::optional<core::platform::Uuid> LookupNativeCanonicalTypeIdentity(
       !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) return std::nullopt;
   const auto identity = row.manifest.descriptor_rows.front().descriptor_uuid.value;
   if (!core::uuid::IsEngineIdentityUuid(identity)) return std::nullopt;
-  return identity;
+  std::optional<core::platform::Uuid> type_identity;
+  for (const auto& candidate : core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (candidate.descriptor_uuid != identity || candidate.descriptor_generation !=
+        row.manifest.descriptor_rows.front().descriptor_epoch) continue;
+    if (!core::uuid::IsEngineIdentityUuid(candidate.type_uuid) ||
+        (type_identity && *type_identity != candidate.type_uuid)) return std::nullopt;
+    type_identity = candidate.type_uuid;
+  }
+  return type_identity;
 }
 
 // This is a consistency projection of an already acquired engine context,

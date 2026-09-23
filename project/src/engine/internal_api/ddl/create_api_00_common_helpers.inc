@@ -12,6 +12,7 @@
 
 #include "api_unsupported.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/name_registry.hpp"
@@ -63,66 +64,30 @@ std::string TrimAsciiLocal(std::string value) {
   return value;
 }
 
-std::map<std::string, std::string> DescriptorFieldsLocal(const std::string& descriptor) {
-  std::map<std::string, std::string> fields;
-  std::string part;
-  for (char ch : descriptor) {
-    if (ch == ';') {
-      const std::string trimmed = TrimAsciiLocal(part);
-      if (!trimmed.empty()) {
-        const auto pos = trimmed.find('=');
-        if (pos == std::string::npos) {
-          fields[LowerAsciiLocal(trimmed)] = "true";
-        } else {
-          fields[LowerAsciiLocal(TrimAsciiLocal(trimmed.substr(0, pos)))] =
-              TrimAsciiLocal(trimmed.substr(pos + 1));
-        }
-      }
-      part.clear();
-      continue;
-    }
-    part.push_back(ch);
-  }
-  const std::string trimmed = TrimAsciiLocal(part);
-  if (!trimmed.empty()) {
-    const auto pos = trimmed.find('=');
-    if (pos == std::string::npos) {
-      fields[LowerAsciiLocal(trimmed)] = "true";
-    } else {
-      fields[LowerAsciiLocal(TrimAsciiLocal(trimmed.substr(0, pos)))] =
-          TrimAsciiLocal(trimmed.substr(pos + 1));
-    }
-  }
-  return fields;
-}
-
 std::optional<std::map<std::string, std::string>>
 StrictDescriptorFieldsLocal(const std::string& descriptor) {
-  std::map<std::string, std::string> fields;
-  std::size_t start = 0;
-  while (start <= descriptor.size()) {
-    const auto end = descriptor.find(';', start);
-    const std::string trimmed = TrimAsciiLocal(descriptor.substr(
-        start, end == std::string::npos ? descriptor.size() - start
-                                        : end - start));
-    if (!trimmed.empty()) {
-      const auto separator = trimmed.find('=');
-      const std::string key = LowerAsciiLocal(TrimAsciiLocal(
-          separator == std::string::npos
-              ? trimmed
-              : trimmed.substr(0, separator)));
-      const std::string value = separator == std::string::npos
-                                    ? "true"
-                                    : TrimAsciiLocal(
-                                          trimmed.substr(separator + 1));
-      if (key.empty() || !fields.emplace(key, value).second) {
-        return std::nullopt;
-      }
-    }
-    if (end == std::string::npos) break;
-    start = end + 1;
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor, &fields)) return std::nullopt;
+  return fields.text;
+}
+std::map<std::string, std::string> DescriptorFieldsLocal(const std::string& descriptor) {
+  const auto fields = StrictDescriptorFieldsLocal(descriptor);
+  return fields.value_or(std::map<std::string, std::string>{});
+}
+EngineUuid DescriptorUuidLocal(const std::string& descriptor,
+                               std::initializer_list<const char*> names) {
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor, &fields)) return {};
+  for (const auto* name : names) {
+    const auto found = fields.identities.find(name);
+    if (found != fields.identities.end()) return found->second;
   }
-  return fields;
+  return {};
+}
+bool DescriptorHasFieldLocal(const std::string& descriptor, const std::string& key) {
+  CatalogColumnMetadata fields;
+  return AdmitCatalogColumnMetadata(descriptor, &fields) &&
+      (fields.text.contains(key) || fields.identities.contains(key));
 }
 
 std::string DescriptorFieldLocal(const std::map<std::string, std::string>& fields,
@@ -137,39 +102,21 @@ std::string DescriptorFieldLocal(const std::map<std::string, std::string>& field
 std::string SetDescriptorFieldLocal(std::string descriptor,
                                     const std::string& field,
                                     const std::string& value) {
-  std::vector<std::string> parts;
-  bool replaced = false;
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto delimiter = descriptor.find(';', offset);
-    const auto length = delimiter == std::string::npos
-                            ? descriptor.size() - offset
-                            : delimiter - offset;
-    const std::string part =
-        TrimAsciiLocal(descriptor.substr(offset, length));
-    if (!part.empty()) {
-      const auto equals = part.find('=');
-      const std::string key = LowerAsciiLocal(TrimAsciiLocal(
-          equals == std::string::npos ? part : part.substr(0, equals)));
-      if (key == LowerAsciiLocal(field)) {
-        if (!replaced) {
-          parts.push_back(field + "=" + value);
-          replaced = true;
-        }
-      } else {
-        parts.push_back(part);
-      }
-    }
-    if (delimiter == std::string::npos) break;
-    offset = delimiter + 1;
-  }
-  if (!replaced) parts.push_back(field + "=" + value);
-  std::string canonical;
-  for (const auto& part : parts) {
-    if (!canonical.empty()) canonical.push_back(';');
-    canonical += part;
-  }
-  return canonical;
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor, &fields) ||
+      field.ends_with("uuid") || fields.identities.contains(field)) return {};
+  fields.text[field] = value;
+  std::string encoded;
+  return EncodeCatalogColumnMetadata(fields, &encoded) ? encoded : std::string{};
+}
+std::string SetDescriptorFieldLocal(std::string descriptor,
+                                    const std::string& field,
+                                    const EngineUuid& value) {
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor, &fields) || fields.text.contains(field)) return {};
+  fields.identities[field] = value;
+  std::string encoded;
+  return EncodeCatalogColumnMetadata(fields, &encoded) ? encoded : std::string{};
 }
 
 std::string DescriptorTypeNameLocal(
@@ -278,10 +225,10 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
         "ddl.create_table", "column_descriptor_required");
   }
   const auto fields = DescriptorFieldsLocal(*column_descriptor);
-  const std::string charset_uuid =
-      DescriptorFieldLocal(fields, {"charset_uuid"});
-  std::string collation_uuid =
-      DescriptorFieldLocal(fields, {"collation_uuid"});
+  const EngineUuid charset_uuid =
+      DescriptorUuidLocal(*column_descriptor, {"charset_uuid"});
+  EngineUuid collation_uuid =
+      DescriptorUuidLocal(*column_descriptor, {"collation_uuid"});
   const std::string charset_generation_text =
       DescriptorFieldLocal(fields, {"charset_generation"});
   const std::string collation_generation_text =
@@ -295,7 +242,7 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
   const bool large_object_text_resource =
       text_resource_storage == "large_object";
   const bool has_resource_modifier =
-      !charset_uuid.empty() || !collation_uuid.empty();
+      !charset_uuid.is_nil() || !collation_uuid.is_nil();
   const bool has_resource_authority =
       !charset_generation_text.empty() ||
       !collation_generation_text.empty() || !resource_epoch_text.empty();
@@ -347,7 +294,7 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
         "ddl.create_table",
         "text_resource_descriptor_requires_character_length");
   }
-  if (!collation_uuid.empty() && charset_uuid.empty()) {
+  if (!collation_uuid.is_nil() && charset_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic(
         "ddl.create_table", "collation_uuid_requires_charset_uuid");
   }
@@ -356,17 +303,17 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
         "ddl.create_table", "orphan_text_resource_authority");
   }
 
-  if (!charset_uuid.empty()) {
+  if (!charset_uuid.is_nil()) {
     EngineUuid requested_charset;
     requested_charset = charset_uuid;
     const auto charset = LookupEngineResourceDescriptorByUuid(
         context, requested_charset, "charset");
     if (!charset.ok) return charset.diagnostic;
 
-    if (collation_uuid.empty()) {
+    if (collation_uuid.is_nil()) {
       collation_uuid =
           charset.resource_descriptor.default_collation_uuid;
-      if (collation_uuid.empty()) {
+      if (collation_uuid.is_nil()) {
         return MakeInvalidRequestDiagnostic(
             "ddl.create_table", "charset_default_collation_uuid_required");
       }
@@ -490,7 +437,7 @@ bool SchemaRecordMatchesSegmentLocal(const EngineRequestContext& context,
   return false;
 }
 
-std::optional<std::string> ResolveVisibleSchemaPathUuidLocal(
+std::optional<EngineUuid> ResolveVisibleSchemaPathUuidLocal(
     const EngineRequestContext& context,
     const std::vector<std::string>& schema_parts,
     std::uint64_t observer_tx, EngineApiDiagnostic& diagnostic) {
@@ -498,9 +445,9 @@ std::optional<std::string> ResolveVisibleSchemaPathUuidLocal(
   if (schema_parts.empty()) { return std::nullopt; }
   const auto schemas = VisibleSchemaTreeRecords(context, observer_tx, diagnostic);
   if (diagnostic.error) return {};
-  std::vector<std::string> current_matches;
-  auto push_unique = [](std::vector<std::string>* values, const std::string& value) {
-    if (value.empty()) { return; }
+  std::vector<EngineUuid> current_matches;
+  auto push_unique = [](std::vector<EngineUuid>* values, const EngineUuid& value) {
+    if (value.is_nil()) { return; }
     if (std::find(values->begin(), values->end(), value) == values->end()) {
       values->push_back(value);
     }
@@ -512,7 +459,7 @@ std::optional<std::string> ResolveVisibleSchemaPathUuidLocal(
     }
   }
   for (std::size_t index = 1; index < schema_parts.size(); ++index) {
-    std::vector<std::string> next_matches;
+    std::vector<EngineUuid> next_matches;
     for (const auto& parent_uuid : current_matches) {
       for (const auto& schema : schemas) {
         if (schema.parent_schema_uuid == parent_uuid &&
@@ -528,7 +475,7 @@ std::optional<std::string> ResolveVisibleSchemaPathUuidLocal(
   return current_matches.front();
 }
 
-std::string ResolveDomainTypeUuidWithSchemaTreeFallback(
+EngineUuid ResolveDomainTypeUuidWithSchemaTreeFallback(
     const EngineApiRequest& request,
     const std::vector<std::string>& parts, EngineApiDiagnostic& diagnostic) {
   if (parts.size() < 2) { return {}; }
@@ -555,7 +502,7 @@ std::string ResolveDomainTypeUuidWithSchemaTreeFallback(
   return resolved.matches.front().object_uuid;
 }
 
-std::string ResolveDomainTypeUuidWithVisibleDomainFallback(
+EngineUuid ResolveDomainTypeUuidWithVisibleDomainFallback(
     const EngineApiRequest& request,
     const std::vector<std::string>& parts, EngineApiDiagnostic& diagnostic) {
   if (parts.size() < 2) { return {}; }
@@ -569,7 +516,7 @@ std::string ResolveDomainTypeUuidWithVisibleDomainFallback(
 
   const auto domains = LoadDomainState(request.context);
   if (!domains.ok) { return {}; }
-  std::vector<std::string> matches;
+  std::vector<EngineUuid> matches;
   for (const auto& domain : domains.domains) {
     const auto visible =
         FindVisibleDomain(request.context,
@@ -585,10 +532,10 @@ std::string ResolveDomainTypeUuidWithVisibleDomainFallback(
       matches.push_back(visible->domain_uuid);
     }
   }
-  return matches.size() == 1 ? matches.front() : std::string{};
+  return matches.size() == 1 ? matches.front() : EngineUuid{};
 }
 
-std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& request,
+EngineUuid ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& request,
                                                       const std::string& column_descriptor,
                                                       bool* lookup_required,
                                                       std::string* requested_type_name,
@@ -598,7 +545,7 @@ std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& re
   if (requested_type_name != nullptr) { requested_type_name->clear(); }
   const auto descriptor_fields = DescriptorFieldsLocal(column_descriptor);
   const std::string type_name =
-      DescriptorFieldLocal(descriptor_fields, {"domain_uuid", "domain", "source_type", "type", "canonical"});
+      DescriptorFieldLocal(descriptor_fields, {"domain", "source_type", "type", "canonical"});
   if (type_name.empty() || type_name.find('.') == std::string::npos) { return {}; }
   if (type_name.find('(') != std::string::npos ||
       type_name.find(')') != std::string::npos) {
@@ -606,7 +553,7 @@ std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& re
   }
   if (requested_type_name != nullptr) { *requested_type_name = type_name; }
   if (lookup_required != nullptr) { *lookup_required = true; }
-  if (StartsWithLocal(type_name, "019")) { return type_name; }
+
   const auto parts = SplitQualifiedIdentifierLocal(type_name);
   if (parts.empty()) { return {}; }
 
@@ -626,9 +573,9 @@ std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& re
 
   const auto resolved = ResolveNameRegistryPublic(resolve_request, "domain");
   if (!resolved.ok || resolved.matches.size() != 1) {
-    std::string domain_uuid = ResolveDomainTypeUuidWithSchemaTreeFallback(request, parts, diagnostic);
+    EngineUuid domain_uuid = ResolveDomainTypeUuidWithSchemaTreeFallback(request, parts, diagnostic);
     if (diagnostic.error) return {};
-    if (domain_uuid.empty()) {
+    if (domain_uuid.is_nil()) {
       domain_uuid = ResolveDomainTypeUuidWithVisibleDomainFallback(request, parts, diagnostic);
       if (diagnostic.error) return {};
     }
@@ -769,7 +716,7 @@ struct CreateIndexSortedBuildResult {
 CreateIndexSortedBuildResult BuildCreateIndexSortedBulkArtifact(
     const EngineRequestContext& context,
     const CrudIndexRecord& index,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<CrudRowVersionRecord>& rows) {
   CreateIndexSortedBuildResult result;
   const auto family = CoreIndexFamilyForCreateIndex(index);
@@ -782,10 +729,10 @@ CreateIndexSortedBuildResult BuildCreateIndexSortedBulkArtifact(
     return result;
   }
   result.selected = true;
-  const auto parsed_index = scratchbird::core::uuid::ParseTypedUuid(
+  const auto parsed_index = scratchbird::core::uuid::MakeTypedUuid(
       scratchbird::core::platform::UuidKind::object,
       index.index_uuid);
-  const auto parsed_table = scratchbird::core::uuid::ParseTypedUuid(
+  const auto parsed_table = scratchbird::core::uuid::MakeTypedUuid(
       scratchbird::core::platform::UuidKind::object,
       table_uuid);
   if (!parsed_index.ok() || !parsed_table.ok()) {

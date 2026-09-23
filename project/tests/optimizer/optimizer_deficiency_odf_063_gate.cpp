@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -14,6 +15,9 @@
 #include "nosql/search_api.hpp"
 #include "nosql/vector_api.hpp"
 #include "uuid.hpp"
+#include "database_lifecycle.hpp"
+#include "transaction/transaction_api.hpp"
+#include <filesystem>
 
 #include <cstdio>
 #include <cstdlib>
@@ -47,8 +51,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string UuidText(const platform::TypedUuid& value) {
-  return uuid::UuidToString(value.value);
+std::string IdentityOptionBytes(const platform::Uuid& value) {
+  return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
 }
 
 api::EngineTypedValue TextValue(const std::string& value) {
@@ -73,7 +77,7 @@ bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
                       const std::string& kind,
                       const std::string& id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && std::holds_alternative<std::string>(item.evidence_id) && std::get<std::string>(item.evidence_id) == id) {
       return true;
     }
   }
@@ -84,17 +88,17 @@ void RequireEvidenceHygiene(const std::vector<api::EngineEvidenceReference>& evi
   for (const auto& item : evidence) {
     Require(item.evidence_kind.find("timestamp") == std::string::npos,
             "ODF-063 evidence kind used timestamp authority");
-    Require(item.evidence_id.find("timestamp") == std::string::npos,
+    Require(scratchbird::tests::EvidenceTextFind(item.evidence_id, "timestamp") == std::string::npos,
             "ODF-063 evidence id used timestamp authority");
     Require(item.evidence_kind.find("uuid_order") == std::string::npos,
             "ODF-063 evidence kind used UUID ordering authority");
-    Require(item.evidence_id.find("uuid_order") == std::string::npos,
+    Require(scratchbird::tests::EvidenceTextFind(item.evidence_id, "uuid_order") == std::string::npos,
             "ODF-063 evidence id used UUID ordering authority");
     Require(item.evidence_kind.find("wal_finality") == std::string::npos,
             "ODF-063 evidence kind used WAL finality authority");
     Require(item.evidence_kind.find("wal_visibility") == std::string::npos,
             "ODF-063 evidence kind used WAL visibility authority");
-    Require(item.evidence_id.find("wal_authority=true") == std::string::npos,
+    Require(scratchbird::tests::EvidenceTextFind(item.evidence_id, "wal_authority=true") == std::string::npos,
             "ODF-063 evidence id used WAL authority");
     Require(item.evidence_kind.find("parser_finality") == std::string::npos,
             "ODF-063 evidence kind used parser finality authority");
@@ -237,13 +241,13 @@ api::EngineDmlHotColdSplitRequest BaseDmlRequest(page::LargePayloadStore* store,
                                                  const Ids& ids,
                                                  platform::u64 tx) {
   api::EngineDmlHotColdSplitRequest request;
-  request.context.database_uuid.canonical = UuidText(ids.database_uuid);
-  request.context.transaction_uuid.canonical = UuidText(ids.transaction_uuid);
+  request.context.database_uuid = ids.database_uuid.value;
+  request.context.transaction_uuid = ids.transaction_uuid.value;
   request.context.local_transaction_id = tx;
   request.context.snapshot_visible_through_local_transaction_id = tx;
-  request.filespace_uuid.canonical = UuidText(ids.filespace_uuid);
-  request.owner_object_uuid.canonical = UuidText(ids.owner_object_uuid);
-  request.row.requested_row_uuid.canonical = UuidText(ids.row_uuid);
+  request.filespace_uuid = ids.filespace_uuid.value;
+  request.owner_object_uuid = ids.owner_object_uuid.value;
+  request.row.requested_row_uuid = ids.row_uuid.value;
   request.row.fields.push_back({"row_id", TextValue("row-1")});
   request.row.fields.push_back({"status", TextValue("open")});
   request.row.fields.push_back({"body", TextValue(std::string(2048, 'D'))});
@@ -292,20 +296,39 @@ void DmlHelperRoutesThroughSplitModel() {
 
 api::EngineRequestContext NoSqlContext(const Ids& ids,
                                        const std::string& database_path,
-                                       platform::u64 tx) {
-  api::EngineRequestContext context;
-  context.database_path = database_path;
-  context.database_uuid.canonical = UuidText(ids.database_uuid);
-  context.transaction_uuid.canonical = UuidText(ids.transaction_uuid);
-  context.local_transaction_id = tx;
+                                       platform::u64 request_ordinal) {
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = database_path;
+  create.database_uuid = ids.database_uuid;
+  create.filespace_uuid = ids.filespace_uuid;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = 1779621000000ull;
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(), "ODF-063 database creation failed");
+  api::EngineBeginTransactionRequest begin;
+  begin.context.database_path = database_path;
+  begin.context.database_uuid = ids.database_uuid.value;
+  begin.context.request_id = "odf063-" + std::to_string(request_ordinal);
+  begin.context.principal_uuid = NewUuid(platform::UuidKind::principal, 601).value;
+  begin.context.session_uuid = NewUuid(platform::UuidKind::object, 602).value;
+  begin.context.security_context_present = true;
+  begin.isolation_level = "read_committed";
+  begin.transaction_policy_profile.encoded_profiles = {
+      "fail_closed:true", "transaction_read_only:false", "transaction_read_mode:read_write"};
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok && begun.local_transaction_id != 0, "ODF-063 engine begin failed");
+  auto context = begin.context;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
   return context;
 }
 
-void SeedCrudFile(const std::string& database_path, const Ids& ids, platform::u64 tx) {
-  std::remove(database_path.c_str());
-  std::remove((database_path + ".sb.api_events").c_str());
-  std::ofstream crud(database_path, std::ios::binary | std::ios::trunc);
-  crud << "SBCRUD1\tTX_BEGIN\t" << tx << "\t" << UuidText(ids.transaction_uuid) << '\n';
+void Rollback(const api::EngineRequestContext& context) {
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = context;
+  Require(api::EngineRollbackTransaction(rollback).ok, "ODF-063 engine rollback failed");
 }
 
 template <typename TRequest>
@@ -313,16 +336,16 @@ void AddNoSqlSplitOptions(TRequest* request,
                           const Ids& ids,
                           const std::string& object_kind,
                           const std::string& payload) {
-  request->target_object.uuid.canonical = UuidText(ids.owner_object_uuid);
+  request->target_object.uuid = ids.owner_object_uuid.value;
   request->localized_names.push_back({"en", "primary", "", object_kind + "-name", true});
   request->option_envelopes.push_back("hot_cold_split.enabled=true");
   request->option_envelopes.push_back("large_payload.payload=" + payload);
   request->option_envelopes.push_back("large_payload.inline_threshold=64");
-  request->option_envelopes.push_back("large_payload.database_uuid=" + UuidText(ids.database_uuid));
-  request->option_envelopes.push_back("large_payload.filespace_uuid=" + UuidText(ids.filespace_uuid));
-  request->option_envelopes.push_back("large_payload.owner_object_uuid=" + UuidText(ids.owner_object_uuid));
-  request->option_envelopes.push_back("large_payload.transaction_uuid=" + UuidText(ids.transaction_uuid));
-  request->option_envelopes.push_back("large_payload.chunk_policy_uuid=" + UuidText(ids.owner_object_uuid));
+  request->option_envelopes.push_back("large_payload.database_uuid=" + IdentityOptionBytes(ids.database_uuid.value));
+  request->option_envelopes.push_back("large_payload.filespace_uuid=" + IdentityOptionBytes(ids.filespace_uuid.value));
+  request->option_envelopes.push_back("large_payload.owner_object_uuid=" + IdentityOptionBytes(ids.owner_object_uuid.value));
+  request->option_envelopes.push_back("large_payload.transaction_uuid=" + IdentityOptionBytes(request->context.transaction_uuid));
+  request->option_envelopes.push_back("large_payload.chunk_policy_uuid=" + IdentityOptionBytes(ids.owner_object_uuid.value));
 }
 
 void RequireNoSqlHotColdPayload(const api::EngineApiResult& result,
@@ -347,62 +370,71 @@ void RequireNoSqlHotColdPayload(const api::EngineApiResult& result,
 
 void NoSqlSurfacesRouteThroughSplitModel() {
   const Ids ids;
-  const std::string base_path = "/tmp/sb_odf_063_gate_api";
+  std::string pattern = "/tmp/sb_odf063_api.XXXXXX";
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  const char* made = ::mkdtemp(writable.data());
+  Require(made != nullptr, "ODF-063 temporary directory failed");
+  struct ScratchDirectory {
+    std::filesystem::path path;
+    ~ScratchDirectory() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+  } directory{made};
+  const std::string base_path = (directory.path / "test").string();
   const std::string body(2048, 'N');
 
   {
     const std::string path = base_path + "_kv.sbdb";
-    SeedCrudFile(path, ids, 77);
     api::EngineKeyValuePutRequest request;
     request.context = NoSqlContext(ids, path, 77);
     AddNoSqlSplitOptions(&request, ids, "key_value", body);
     const auto result = api::EngineKeyValuePut(request);
     RequireNoSqlHotColdPayload(result, "payload", body);
+    Rollback(request.context);
     std::remove(path.c_str());
     std::remove((path + ".sb.api_events").c_str());
   }
   {
     const std::string path = base_path + "_doc.sbdb";
-    SeedCrudFile(path, ids, 78);
     api::EngineDocumentInsertRequest request;
     request.context = NoSqlContext(ids, path, 78);
     AddNoSqlSplitOptions(&request, ids, "document", body);
     const auto result = api::EngineDocumentInsert(request);
     RequireNoSqlHotColdPayload(result, "payload", body);
+    Rollback(request.context);
     std::remove(path.c_str());
     std::remove((path + ".sb.api_events").c_str());
   }
   {
     const std::string path = base_path + "_vector.sbdb";
-    SeedCrudFile(path, ids, 79);
     api::EngineVectorWriteRequest request;
     request.context = NoSqlContext(ids, path, 79);
     AddNoSqlSplitOptions(&request, ids, "vector", body);
     const auto result = api::EngineVectorWrite(request);
     RequireNoSqlHotColdPayload(result, "payload", body);
+    Rollback(request.context);
     std::remove(path.c_str());
     std::remove((path + ".sb.api_events").c_str());
   }
   {
     const std::string path = base_path + "_graph.sbdb";
-    SeedCrudFile(path, ids, 80);
     api::EngineGraphWriteRequest request;
     request.context = NoSqlContext(ids, path, 80);
     AddNoSqlSplitOptions(&request, ids, "graph", body);
     const auto result = api::EngineGraphWrite(request);
     RequireNoSqlHotColdPayload(result, "payload", body);
+    Rollback(request.context);
     std::remove(path.c_str());
     std::remove((path + ".sb.api_events").c_str());
   }
   {
     const std::string path = base_path + "_search.sbdb";
-    SeedCrudFile(path, ids, 81);
     api::EngineSearchQueryRequest request;
     request.context = NoSqlContext(ids, path, 81);
-    request.target_object.uuid.canonical = UuidText(ids.owner_object_uuid);
+    request.target_object.uuid = ids.owner_object_uuid.value;
     AddNoSqlSplitOptions(&request, ids, "search", body);
     const auto result = api::EngineSearchQuery(request);
     RequireNoSqlHotColdPayload(result, "payload", body);
+    Rollback(request.context);
     std::remove(path.c_str());
     std::remove((path + ".sb.api_events").c_str());
   }

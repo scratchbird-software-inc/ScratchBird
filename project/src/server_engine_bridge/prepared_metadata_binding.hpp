@@ -11,6 +11,7 @@
 #include "scratchbird/engine/engine.h"
 
 #include <string_view>
+#include "../core/platform/runtime_platform.hpp"
 
 namespace scratchbird::server_engine_bridge {
 
@@ -31,7 +32,7 @@ void SetPreparedMetadataBindingDispatchTestHookForTesting(
 sb_engine_status_t CreatePreparedMetadataBinding(
     sb_engine_session_t session,
     const sb_engine_request_context_v1_t* prepare_context,
-    std::string_view sealed_prepare_transaction_uuid,
+    const scratchbird::core::platform::Uuid& sealed_prepare_transaction_uuid,
     const sb_engine_sblr_dispatch_params_v1_t* invoke_params,
     PreparedMetadataBindingHandle* out_binding,
     sb_engine_result_t* out_result);

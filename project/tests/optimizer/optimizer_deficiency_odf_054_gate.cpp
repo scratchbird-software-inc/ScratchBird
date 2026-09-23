@@ -8,6 +8,7 @@
 
 #include "deferred_secondary_index_runtime_policy.hpp"
 #include "index_apply_planner.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -240,7 +241,7 @@ void CommitGroupPlannerRoutesChangeBufferDecision() {
   idx::CommitGroupLocalityIndexApplyItem item;
   item.source_batch_ordinal = 0;
   item.source_row_ordinal = 0;
-  item.index_uuid = "idx-city";
+  item.index_uuid = scratchbird::tests::FixtureUuid(6054, 1);
   item.family = "btree";
   item.profile = "rowstore_scalar_btree_v1";
   item.unique = false;

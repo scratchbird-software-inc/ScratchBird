@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "bulk_placement_order.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/import_execution_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -80,16 +81,16 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewUuidValue(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid id_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -108,11 +109,11 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineRowValue Row(std::string row_uuid,
+api::EngineRowValue Row(platform::Uuid row_uuid,
                         std::string id,
                         std::string city) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", TextValue(std::move(id))});
   row.fields.push_back({"city", TextValue(std::move(city))});
   return row;
@@ -122,7 +123,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) { return true; }
+    if (item.evidence_kind == kind && std::holds_alternative<std::string>(item.evidence_id) && std::get<std::string>(item.evidence_id) == id) { return true; }
   }
   return false;
 }
@@ -131,7 +132,8 @@ bool AnyEvidenceContains(const std::vector<api::EngineEvidenceReference>& eviden
                          std::string_view token) {
   for (const auto& item : evidence) {
     if (item.evidence_kind.find(token) != std::string::npos ||
-        item.evidence_id.find(token) != std::string::npos) {
+        (std::holds_alternative<std::string>(item.evidence_id) &&
+         std::get<std::string>(item.evidence_id).find(token) != std::string::npos)) {
       return true;
     }
   }
@@ -152,7 +154,8 @@ void AssertNoRuntimeDocLeaks(const api::EngineApiResult& result) {
   for (const auto& evidence : result.evidence) {
     for (const auto token : forbidden) {
       Require(evidence.evidence_kind.find(token) == std::string::npos &&
-                  evidence.evidence_id.find(token) == std::string::npos,
+                  (!std::holds_alternative<std::string>(evidence.evidence_id) ||
+                   std::get<std::string>(evidence.evidence_id).find(token) == std::string::npos),
               "ODF-047 runtime evidence leaked documentation token");
     }
   }
@@ -164,11 +167,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewUuidValue(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewUuidValue(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -247,9 +250,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-047 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewUuidValue(platform::UuidKind::object, salt + 10);
+  fixture.id_index_uuid = NewUuidValue(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "odf047-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)),
@@ -266,7 +269,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     std::vector<api::EngineRowValue> rows) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";
@@ -304,9 +307,9 @@ void OptimizerCanDerivePlacementOrderForLargeLoad() {
   request.derive_for_large_load = true;
   request.large_load_row_threshold = 3;
   request.placement_key_column = "city";
-  request.rows.push_back({0, "row-z", "zurich"});
-  request.rows.push_back({1, "row-b", "berlin"});
-  request.rows.push_back({2, "row-o", "oslo"});
+  request.rows.push_back({0, scratchbird::tests::FixtureUuid(6047, 1), "zurich"});
+  request.rows.push_back({1, scratchbird::tests::FixtureUuid(6047, 2), "berlin"});
+  request.rows.push_back({2, scratchbird::tests::FixtureUuid(6047, 3), "oslo"});
   const auto plan = opt::PlanBulkPlacementOrder(request);
   Require(plan.ok, "ODF-047 optimizer derived placement order refused");
   Require(plan.ordered_ingest_selected,
@@ -322,9 +325,9 @@ void OptimizerCanDerivePlacementOrderForLargeLoad() {
 
 void StorageClusteringPolicyFailsClosedWithoutExplicitChangePolicy() {
   page::OrderedIngestPhysicalClusteringRequest request;
-  request.current_descriptor.relation_uuid = "relation-1";
+  request.current_descriptor.relation_uuid = scratchbird::tests::FixtureUuid(6047, 4);
   request.current_descriptor.placement_key_column = "city";
-  request.current_descriptor.policy_uuid = "policy-old";
+  request.current_descriptor.policy_uuid = scratchbird::tests::FixtureUuid(6047, 5);
   request.current_descriptor.descriptor_generation = 4;
   request.current_descriptor.physical_clustering_enabled = true;
   request.requested_placement_key_column = "id";
@@ -344,10 +347,10 @@ void StorageClusteringPolicyFailsClosedWithoutExplicitChangePolicy() {
 
 void DirectBulkAppliesRowsInPlacementOrderAndPreservesUuidIdentity() {
   auto fixture = MakeFixture("explicit", 47100);
-  const std::string row_z = NewUuidText(platform::UuidKind::row, 47120);
-  const std::string row_b = NewUuidText(platform::UuidKind::row, 47121);
-  const std::string row_q = NewUuidText(platform::UuidKind::row, 47122);
-  const std::string row_o = NewUuidText(platform::UuidKind::row, 47123);
+  const platform::Uuid row_z = NewUuidValue(platform::UuidKind::row, 47120);
+  const platform::Uuid row_b = NewUuidValue(platform::UuidKind::row, 47121);
+  const platform::Uuid row_q = NewUuidValue(platform::UuidKind::row, 47122);
+  const platform::Uuid row_o = NewUuidValue(platform::UuidKind::row, 47123);
   auto context = Begin(fixture, "odf047-explicit");
   auto request = ImportRequest(fixture,
                                context,
@@ -396,10 +399,10 @@ void DirectBulkRefusesUncontrolledClusteringKeyChangeBeforeAppend() {
   auto context = Begin(fixture, "odf047-refuse");
   auto request = ImportRequest(fixture,
                                context,
-                               {Row(NewUuidText(platform::UuidKind::row, 47220),
+                               {Row(NewUuidValue(platform::UuidKind::row, 47220),
                                     "002",
                                     "oslo"),
-                                Row(NewUuidText(platform::UuidKind::row, 47221),
+                                Row(NewUuidValue(platform::UuidKind::row, 47221),
                                     "001",
                                     "berlin")});
   request.option_envelopes.push_back("ordered_ingest=enabled");
@@ -432,10 +435,10 @@ void DirectBulkAllowsControlledClusteringDescriptorUpdate() {
   auto context = Begin(fixture, "odf047-allowed");
   auto request = ImportRequest(fixture,
                                context,
-                               {Row(NewUuidText(platform::UuidKind::row, 47320),
+                               {Row(NewUuidValue(platform::UuidKind::row, 47320),
                                     "002",
                                     "oslo"),
-                                Row(NewUuidText(platform::UuidKind::row, 47321),
+                                Row(NewUuidValue(platform::UuidKind::row, 47321),
                                     "001",
                                     "berlin")});
   request.option_envelopes.push_back("ordered_ingest=enabled");
@@ -444,7 +447,8 @@ void DirectBulkAllowsControlledClusteringDescriptorUpdate() {
   request.option_envelopes.push_back("physical_clustering.current_key=city");
   request.option_envelopes.push_back("physical_clustering.current_generation=4");
   request.option_envelopes.push_back("physical_clustering.key=id");
-  request.option_envelopes.push_back("physical_clustering.policy_uuid=policy-odf047");
+  request.option_envelopes.push_back("physical_clustering.policy_uuid=" +
+      uuid::UuidToString(scratchbird::tests::FixtureUuid(6047, 6)));
   request.option_envelopes.push_back("physical_clustering.allow_key_change=true");
   const auto imported = api::EngineExecuteImportRows(request);
   RequireOk(imported, "ODF-047 controlled clustering import failed");

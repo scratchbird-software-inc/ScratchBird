@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -61,24 +62,24 @@ SblrResult Run(const FunctionRegistry& registry,
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
-  request.context.sblr_context.database_uuid = std::string(kDatabaseUuid);
-  request.context.sblr_context.current_schema_uuid = std::string(kSchemaUuid);
-  request.context.sblr_context.user_uuid = std::string(kUserUuid);
-  request.context.sblr_context.current_role_uuid = std::string(kRoleUuid);
-  request.context.sblr_context.node_uuid = std::string(kNodeUuid);
-  request.context.sblr_context.session_uuid = std::string(kSessionUuid);
-  request.context.sblr_context.transaction_uuid = std::string(kTransactionUuid);
-  request.context.sblr_context.statement_uuid = std::string(kStatementUuid);
-  request.context.sblr_context.security_snapshot_uuid = std::string(kSecuritySnapshotUuid);
-  request.context.sblr_context.current_diagnostic_uuid = std::string(kDiagnosticUuid);
+  request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033301");
+  request.context.sblr_context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033302");
+  request.context.sblr_context.user_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033303");
+  request.context.sblr_context.current_role_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033304");
+  request.context.sblr_context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033305");
+  request.context.sblr_context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033306");
+  request.context.sblr_context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033307");
+  request.context.sblr_context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033308");
+  request.context.sblr_context.security_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033309");
+  request.context.sblr_context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033310");
   request.context.sblr_context.current_diagnostic_id = "SBSFC033_DIAGNOSTIC";
   request.context.sblr_context.current_sqlstate = "42000";
   request.context.sblr_context.local_transaction_id = 33033;
   request.context.sblr_context.transaction_isolation_level = "snapshot";
   request.context.sblr_context.transaction_context_present = true;
   request.context.sblr_context.security_context_present = true;
-  request.context.sblr_context.parser_profile_uuid = std::string(kParserProfileUuid);
-  request.context.sblr_context.client_protocol_uuid = std::string(kClientProtocolUuid);
+  request.context.sblr_context.parser_profile_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033311");
+  request.context.sblr_context.client_protocol_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000033312");
   request.context.sblr_context.application_name = "sbsql_sbsfc_033_conformance";
   for (std::size_t i = 0; i < values.size(); ++i) {
     request.arguments.push_back(FunctionArgument{"arg" + std::to_string(i), std::move(values[i])});

@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_ddl_create_index_runtime.hpp"
 #include "engine/sblr/sblr_dispatch.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
@@ -27,9 +28,9 @@ sblr::SblrOperationEnvelope CanonicalEnvelope(
   envelope.result_shape = "ddl_result";
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
-      "019d0000-0000-7000-8000-000000002600";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002600");
   envelope.registry_snapshot_uuid =
-      "019d0000-0000-7000-8000-000000002601";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002601");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;

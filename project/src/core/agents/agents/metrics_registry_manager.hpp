@@ -66,6 +66,8 @@ struct MetricsRegistryManagerActionRequest {
   scratchbird::core::metrics::MetricRegistry* registry = nullptr;
   scratchbird::core::metrics::MetricLabelSet labels;
   std::string history_path;
+  scratchbird::core::metrics::MetricUuid actor_uuid;
+  scratchbird::core::metrics::MetricUuid transaction_uuid;
   scratchbird::core::metrics::MetricRollupGrain rollup_grain =
       scratchbird::core::metrics::MetricRollupGrain::one_minute;
   u64 observation_time_microseconds = 0;

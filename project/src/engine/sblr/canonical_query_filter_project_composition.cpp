@@ -18,6 +18,7 @@
 #include "canonical_query_scalar_support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -183,12 +184,19 @@ ExecuteCanonicalObjectFreeFilterQuery(
                   "live FILTER exceeds the admitted memory budget");
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
+  std::array<api::EngineUuid, 4> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live filter_project identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto filter_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "filter.capability");
+      owned_identities[1];
   std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
@@ -254,16 +262,9 @@ ExecuteCanonicalObjectFreeFilterQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "filter.execution-attempt");
+      owned_identities[2];
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(request.context.local_transaction_id) + ":" +
-              std::to_string(
-                  request.context.snapshot_visible_through_local_transaction_id),
-          "filter.transaction-effect-unchanged");
+      owned_identities[3];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -400,12 +401,19 @@ ExecuteCanonicalObjectFreeProjectQuery(
                   "live PROJECT exceeds the admitted memory budget");
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
+  std::array<api::EngineUuid, 4> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live filter_project identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto project_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "project.capability");
+      owned_identities[1];
   const std::string project_implementation_id =
       prepared_root.expression_projection
           ? "project.typed.expression-row.v1"
@@ -475,16 +483,9 @@ ExecuteCanonicalObjectFreeProjectQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "project.execution-attempt");
+      owned_identities[2];
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(request.context.local_transaction_id) + ":" +
-              std::to_string(
-                  request.context.snapshot_visible_through_local_transaction_id),
-          "project.transaction-effect-unchanged");
+      owned_identities[3];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -692,14 +693,21 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
                   "FILTER/PROJECT exceeds the admitted memory budget");
   }
 
-  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid;
+  std::array<api::EngineUuid, 5> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live filter_project identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto filter_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "filter.capability");
+      owned_identities[1];
   const auto project_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "project.capability");
+      owned_identities[2];
   const auto filtered_row_count = filtered_input.batch.rows.size();
   std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id,
@@ -784,16 +792,9 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "filter-project.execution-attempt");
+      owned_identities[3];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      "filter-project.transaction-effect-unchanged");
+      .transaction_effect_evidence_uuid = owned_identities[4];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -968,17 +969,22 @@ ExecuteCanonicalObjectFreeProjectSortQuery(
                   "PROJECT/SORT exceeds the admitted memory budget");
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
+  std::array<api::EngineUuid, 6> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live filter_project identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto project_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "project.capability");
+      owned_identities[1];
   const auto sort_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "sort.capability");
-  const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" + prepared_sort.ordering_property_uuid,
-      "project-sort.deterministic-tie");
+      owned_identities[2];
+  const auto deterministic_tie_evidence_uuid = owned_identities[3];
   std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id,
        std::string(kValuesImplementationId),
@@ -1065,16 +1071,9 @@ ExecuteCanonicalObjectFreeProjectSortQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "project-sort.execution-attempt");
+      owned_identities[4];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      "project-sort.transaction-effect-unchanged");
+      .transaction_effect_evidence_uuid = owned_identities[5];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -1325,19 +1324,24 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
                   "FILTER/PROJECT/SORT exceeds the admitted memory budget");
   }
 
-  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid;
+  std::array<api::EngineUuid, 7> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live filter_project identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto filter_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "filter.capability");
+      owned_identities[1];
   const auto project_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "project.capability");
+      owned_identities[2];
   const auto sort_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "sort.capability");
-  const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" + prepared_sort.ordering_property_uuid,
-      "filter-project-sort.deterministic-tie");
+      owned_identities[3];
+  const auto deterministic_tie_evidence_uuid = owned_identities[4];
   std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id,
        std::string(kValuesImplementationId),
@@ -1446,16 +1450,9 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "filter-project-sort.execution-attempt");
+      owned_identities[5];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      "filter-project-sort.transaction-effect-unchanged");
+      .transaction_effect_evidence_uuid = owned_identities[6];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -1744,21 +1741,26 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
                   "budget");
   }
 
-  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid;
+  std::array<api::EngineUuid, 8> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live filter_project identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto filter_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "filter.capability");
+      owned_identities[1];
   const auto project_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "project.capability");
+      owned_identities[2];
   const auto sort_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "sort.capability");
+      owned_identities[3];
   const auto limit_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "limit.capability");
-  const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" + prepared_sort.ordering_property_uuid,
-      "filter-project-sort-limit.deterministic-tie");
+      owned_identities[4];
+  const auto deterministic_tie_evidence_uuid = owned_identities[5];
   std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id,
        std::string(kValuesImplementationId),
@@ -1882,16 +1884,9 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "filter-project-sort-limit.execution-attempt");
+      owned_identities[6];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      "filter-project-sort-limit.transaction-effect-unchanged");
+      .transaction_effect_evidence_uuid = owned_identities[7];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -2252,26 +2247,27 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
                   "full SQL tail exceeds the admitted memory budget");
   }
 
-  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid;
+  std::array<api::EngineUuid, 9> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live filter_project identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto filter_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "filter.capability");
+      owned_identities[1];
   const auto project_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "project.capability");
+      owned_identities[2];
   const auto distinct_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "distinct.capability");
+      owned_identities[3];
   const auto sort_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "sort.capability");
-  const auto limit_capability_uuid = DerivedCanonicalUuid(
-      identity_scope,
-      fetch_first_rows_only
-          ? "fetch.capability"
-          : (has_offset ? "limit-offset.capability" : "limit.capability"));
-  const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" + prepared_sort.ordering_property_uuid,
-      "filter-project-distinct-sort-limit.deterministic-tie");
+      owned_identities[4];
+  const auto limit_capability_uuid = owned_identities[5];
+  const auto deterministic_tie_evidence_uuid = owned_identities[6];
   const std::string limit_implementation_id =
       fetch_first_rows_only ? "fetch.native.rows-only.v1"
                             : "limit.typed.v1";
@@ -2397,16 +2393,9 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "filter-project-distinct-sort-limit.execution-attempt");
+      owned_identities[7];
   execution_request.result_publication_request
-      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(request.context.local_transaction_id) + ":" +
-          std::to_string(
-              request.context.snapshot_visible_through_local_transaction_id),
-      "filter-project-distinct-sort-limit.transaction-effect-unchanged");
+      .transaction_effect_evidence_uuid = owned_identities[8];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =

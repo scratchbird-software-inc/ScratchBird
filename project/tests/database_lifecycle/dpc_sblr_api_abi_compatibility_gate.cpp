@@ -92,8 +92,12 @@ struct UuidFactory {
     return generated.value;
   }
 
-  std::string Text(platform::UuidKind kind, platform::u64 salt) const {
-    return uuid::UuidToString(Typed(kind, salt).value);
+  platform::Uuid Identity(platform::UuidKind kind, platform::u64 salt) const {
+    return Typed(kind, salt).value;
+  }
+  std::string Bytes(platform::UuidKind kind, platform::u64 salt) const {
+    const auto identity = Identity(kind, salt);
+    return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
   }
 };
 
@@ -181,15 +185,25 @@ void AddOperand(engine_sblr::SblrOperationEnvelope* envelope,
   envelope->operands.push_back({"text", std::move(name), std::move(value)});
 }
 
+void AddOperand(engine_sblr::SblrOperationEnvelope* envelope,
+                std::string name, const platform::Uuid& identity) {
+  engine_sblr::SblrOperand operand;
+  operand.type = "uuid";
+  operand.name = std::move(name);
+  operand.value_kind = engine_sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
+  envelope->operands.push_back(std::move(operand));
+}
+
 engine_sblr::SblrSourceSymbolArtifact Symbol(std::string symbol_kind,
                                              std::string stable_key,
-                                             std::string resolved_uuid,
+                                             platform::Uuid resolved_uuid,
                                              std::string render_hint,
                                              std::string scope) {
   engine_sblr::SblrSourceSymbolArtifact symbol;
   symbol.symbol_kind = std::move(symbol_kind);
   symbol.stable_key = std::move(stable_key);
-  symbol.resolved_uuid = std::move(resolved_uuid);
+  symbol.resolved_uuid.assign(reinterpret_cast<const char*>(resolved_uuid.bytes.data()), resolved_uuid.bytes.size());
   symbol.render_hint = std::move(render_hint);
   symbol.scope = std::move(scope);
   symbol.source_hash = "sha256:dpc074-source-symbol";
@@ -204,7 +218,7 @@ void AttachSourcePolicy(engine_sblr::SblrOperationEnvelope* envelope,
   envelope->source_artifact_map.policy_status =
       "non_authoritative_render_metadata";
   envelope->source_artifact_map.source_identity =
-      "dpc074-source-map:" + uuids.Text(platform::UuidKind::object, salt);
+      "dpc074-source-map:" + std::to_string(salt);
   envelope->source_artifact_map.source_hash = "sha256:dpc074-source-map";
   envelope->source_artifact_map.render_metadata_only = true;
   envelope->source_artifact_map.contains_sql_text = false;
@@ -218,18 +232,16 @@ engine_sblr::SblrOperationEnvelope BuildDmlInsertEnvelope(
 
   auto envelope = engine_sblr::MakeSblrEnvelope(
       entry->operation_id, entry->opcode, "DPC-074-SBLR-API-ABI");
-  envelope.parser_package_uuid = uuids.Text(platform::UuidKind::object, 100);
-  envelope.registry_snapshot_uuid = uuids.Text(platform::UuidKind::object, 101);
+  envelope.parser_package_uuid = uuids.Identity(platform::UuidKind::object, 100);
+  envelope.registry_snapshot_uuid = uuids.Identity(platform::UuidKind::object, 101);
   envelope.requires_security_context = entry->requires_security_context;
   envelope.requires_transaction_context = entry->requires_transaction_context;
   envelope.requires_cluster_authority = entry->requires_cluster_authority;
 
-  const std::string table_uuid = uuids.Text(platform::UuidKind::object, 110);
-  const std::string descriptor_uuid =
-      uuids.Text(platform::UuidKind::object, 111);
-  const std::string column_uuid = uuids.Text(platform::UuidKind::object, 112);
-  const std::string parameter_uuid =
-      uuids.Text(platform::UuidKind::object, 113);
+  const auto table_uuid = uuids.Identity(platform::UuidKind::object, 110);
+  const auto descriptor_uuid = uuids.Identity(platform::UuidKind::object, 111);
+  const auto column_uuid = uuids.Identity(platform::UuidKind::object, 112);
+  const auto parameter_uuid = uuids.Identity(platform::UuidKind::object, 113);
 
   AddOperand(&envelope, "sbsql_render_family",
              "source_preserving_dml_single_row_v1");
@@ -256,11 +268,11 @@ api::EngineRequestContext MakeContext(const UuidFactory& uuids) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "dpc074-sblr-api-abi";
-  context.database_uuid.canonical = uuids.Text(platform::UuidKind::database, 200);
-  context.principal_uuid.canonical =
-      uuids.Text(platform::UuidKind::principal, 201);
-  context.session_uuid.canonical = uuids.Text(platform::UuidKind::session, 202);
-  context.transaction_uuid.canonical = uuids.Text(platform::UuidKind::object, 203);
+  context.database_uuid = uuids.Identity(platform::UuidKind::database, 200);
+  context.principal_uuid =
+      uuids.Identity(platform::UuidKind::principal, 201);
+  context.session_uuid = uuids.Identity(platform::UuidKind::session, 202);
+  context.transaction_uuid = uuids.Identity(platform::UuidKind::object, 203);
   context.local_transaction_id = 74;
   context.snapshot_visible_through_local_transaction_id = 74;
   context.security_context_present = true;
@@ -315,9 +327,9 @@ void AssertRegistryAndTextRoundTrip(const UuidFactory& uuids) {
 
     auto envelope = engine_sblr::MakeSblrEnvelope(
         by_operation->operation_id, by_operation->opcode, "dpc074.registry");
-    envelope.parser_package_uuid = uuids.Text(platform::UuidKind::object, 10);
+    envelope.parser_package_uuid = uuids.Identity(platform::UuidKind::object, 10);
     envelope.registry_snapshot_uuid =
-        uuids.Text(platform::UuidKind::object, 11);
+        uuids.Identity(platform::UuidKind::object, 11);
     envelope.requires_security_context = by_operation->requires_security_context;
     envelope.requires_transaction_context =
         by_operation->requires_transaction_context;
@@ -421,9 +433,9 @@ void AssertAdmissionAndEmbeddedDispatch(const UuidFactory& uuids) {
   auto envelope = engine_sblr::MakeSblrEnvelope(
       "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION",
       "dpc074.server-admission");
-  envelope.parser_package_uuid = uuids.Text(platform::UuidKind::object, 300);
+  envelope.parser_package_uuid = uuids.Identity(platform::UuidKind::object, 300);
   envelope.registry_snapshot_uuid =
-      uuids.Text(platform::UuidKind::object, 301);
+      uuids.Identity(platform::UuidKind::object, 301);
   envelope.requires_transaction_context = false;
   envelope =
       scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
@@ -545,9 +557,9 @@ void AssertPublicAbiAndCapabilities(const UuidFactory& uuids) {
       "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION",
       "dpc074.public-abi");
   show_version.parser_package_uuid =
-      uuids.Text(platform::UuidKind::object, 401);
+      uuids.Identity(platform::UuidKind::object, 401);
   show_version.registry_snapshot_uuid =
-      uuids.Text(platform::UuidKind::object, 402);
+      uuids.Identity(platform::UuidKind::object, 402);
   show_version =
       scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
           std::move(show_version));

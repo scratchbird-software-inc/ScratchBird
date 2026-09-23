@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -78,7 +79,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) {
       return true;
     }
   }
@@ -92,16 +93,16 @@ std::uint64_t NowMillis() {
           .count());
 }
 
-std::string NewUuidText(UuidKind kind, std::uint64_t timestamp) {
+api::EngineUuid NewUuid(UuidKind kind, std::uint64_t timestamp) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, timestamp);
   Require(generated.ok(), "procedural block test UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 struct DatabaseFixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
+  api::EngineUuid database_uuid;
 
   DatabaseFixture() = default;
   DatabaseFixture(const DatabaseFixture&) = delete;
@@ -147,7 +148,7 @@ DatabaseFixture CreateDatabaseFixture() {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "procedural block test database creation failed");
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   return fixture;
 }
 
@@ -157,11 +158,11 @@ api::EngineRequestContext BeginTransaction(const DatabaseFixture& fixture) {
   begin.context.trust_mode = api::EngineTrustMode::server_isolated;
   begin.context.request_id = "sblr-procedural-block-v1";
   begin.context.database_path = fixture.database_path.string();
-  begin.context.database_uuid.canonical = fixture.database_uuid;
-  begin.context.principal_uuid.canonical =
-      NewUuidText(UuidKind::object, now + 10);
-  begin.context.session_uuid.canonical =
-      NewUuidText(UuidKind::object, now + 11);
+  begin.context.database_uuid = fixture.database_uuid;
+  begin.context.principal_uuid =
+      NewUuid(UuidKind::object, now + 10);
+  begin.context.session_uuid =
+      NewUuid(UuidKind::object, now + 11);
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 1;
@@ -270,8 +271,8 @@ sblr::SblrDispatchResult DispatchBlock(
   // opcode.  Supply otherwise valid producer/registry identities so the
   // dispatch assertion below isolates that missing canonical identity rather
   // than failing first on an unrelated header omission.
-  envelope.parser_package_uuid = context.session_uuid.canonical;
-  envelope.registry_snapshot_uuid = context.database_uuid.canonical;
+  envelope.parser_package_uuid = context.session_uuid;
+  envelope.registry_snapshot_uuid = context.database_uuid;
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.contains_sql_text = false;

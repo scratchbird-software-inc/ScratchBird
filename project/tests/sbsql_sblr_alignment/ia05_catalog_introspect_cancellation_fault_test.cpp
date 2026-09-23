@@ -44,8 +44,8 @@ api::EngineColumnDefinition CatalogColumn(std::uint32_t ordinal,
 void SeedCatalogObject(api::EngineRequestContext context) {
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
-  schema.target_object.uuid.canonical =
-      Text(NewUuid(platform::UuidKind::schema, 36121));
+  schema.target_object.uuid =
+      Identity(NewUuid(platform::UuidKind::schema, 36121));
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(CatalogName("catalog_probe_schema"));
   const auto created_schema = api::EngineCreateSchema(schema);
@@ -55,8 +55,8 @@ void SeedCatalogObject(api::EngineRequestContext context) {
   api::EngineCreateTableRequest table;
   table.context = context;
   table.target_schema = schema.target_object;
-  table.requested_table_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object, 36122));
+  table.requested_table_uuid =
+      Identity(NewUuid(platform::UuidKind::object, 36122));
   table.table_names.push_back(CatalogName("catalog_probe_table"));
   table.table_columns.push_back(CatalogColumn(0, "id", "int64"));
   table.table_columns.push_back(CatalogColumn(1, "value", "int64"));
@@ -74,7 +74,7 @@ void SeedCatalogObject(api::EngineRequestContext context) {
 
 sblr::SblrOperationEnvelope CatalogIntrospectMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const std::vector<std::uint8_t>& descriptor_bytes) {
   auto member = sblr::MakeSblrEnvelope(
       "engine.op.catalog_introspect", "SBLR_CATALOG_INTROSPECT",
@@ -106,15 +106,15 @@ void VerifyCatalogSnapshot(bool retire_owner) {
   std::atomic<unsigned> probes{0};
   auto context = BeginTransaction(fixture, &probes);
   context.trace_tags.push_back("right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 36120));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 36120));
+  context.current_package_uuid = parser_uuid;
   context.query_cancellation_requested = [&] {
     probes.fetch_add(1, std::memory_order_relaxed);
     return cancel.load(std::memory_order_relaxed);
   };
   api::EngineMaterializedAuthorizationGrant select_grant;
-  select_grant.grant_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object, 36123));
+  select_grant.grant_uuid =
+      Identity(NewUuid(platform::UuidKind::object, 36123));
   select_grant.subject_uuid = context.principal_uuid;
   select_grant.subject_kind = "principal";
   select_grant.right = "SELECT";
@@ -126,7 +126,7 @@ void VerifyCatalogSnapshot(bool retire_owner) {
   // statements; the test never authors datatype snapshot identity.
   bridge::StatementContextAcquireRequest seed_acquire;
   seed_acquire.engine_context = &context;
-  seed_acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  seed_acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle seed_receipt;
   bridge::StatementContextReceiptView seed_view;
   sb_engine_result_t result = nullptr;
@@ -139,10 +139,10 @@ void VerifyCatalogSnapshot(bool retire_owner) {
   result = nullptr;
   Require(bridge::CopyStatementContextEngineContextV1(
               seed_receipt, &seed_context, &result) == SB_ENGINE_STATUS_OK &&
-              !seed_context.datatype_catalog_snapshot_uuid.canonical.empty() &&
+              !seed_context.datatype_catalog_snapshot_uuid.is_nil() &&
               seed_context.datatype_catalog_generation != 0 &&
               seed_context.datatype_registry_generation != 0 &&
-              seed_context.datatype_catalog_snapshot_uuid.canonical ==
+              seed_context.datatype_catalog_snapshot_uuid ==
                   seed_view.literal_catalog_snapshot_uuid &&
               seed_context.datatype_catalog_generation ==
                   seed_view.literal_catalog_generation &&
@@ -163,7 +163,7 @@ void VerifyCatalogSnapshot(bool retire_owner) {
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   result = nullptr;
@@ -354,7 +354,7 @@ void VerifyCatalogSnapshot(bool retire_owner) {
                   decoded_result.availability,
           "003612 current availability did not match the published CIRS");
   api::SblrExecutorAvailabilitySetRequest revoke;
-  revoke.database_uuid = context.database_uuid.canonical;
+  revoke.database_uuid = context.database_uuid;
   revoke.expected_snapshot_uuid =
       current_availability.snapshot.snapshot_uuid;
   revoke.expected_generation = current_availability.snapshot.generation;

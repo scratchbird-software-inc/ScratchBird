@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,8 +7,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "nosql/graph_api.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -18,23 +21,19 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 
-constexpr std::string_view kVertexA =
-    "019df075-0000-7000-8000-00000000000a";
-constexpr std::string_view kVertexB =
-    "019df075-0000-7000-8000-00000000000b";
-constexpr std::string_view kVertexC =
-    "019df075-0000-7000-8000-00000000000c";
-constexpr std::string_view kVertexD =
-    "019df075-0000-7000-8000-00000000000d";
-constexpr std::string_view kVertexE =
-    "019df075-0000-7000-8000-00000000000e";
+constexpr auto kVertexA = scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-00000000000a");
+constexpr auto kVertexB = scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-00000000000b");
+constexpr auto kVertexC = scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-00000000000c");
+constexpr auto kVertexD = scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-00000000000d");
+constexpr auto kVertexE = scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-00000000000e");
 
-std::string Path(std::initializer_list<std::string_view> vertices) {
-  std::string path;
-  for (const auto vertex : vertices) {
-    if (!path.empty()) { path += "->"; }
-    path += vertex;
-  }
+std::string Path(std::initializer_list<api::EngineUuid> vertices) {
+  std::string path = "SBGRPATH2";
+  const auto count = static_cast<std::uint64_t>(vertices.size());
+  for (unsigned shift = 0; shift < 64; shift += 8)
+    path.push_back(static_cast<char>((count >> shift) & 0xff));
+  for (const auto& vertex : vertices)
+    path.append(reinterpret_cast<const char*>(vertex.bytes.data()), vertex.bytes.size());
   return path;
 }
 
@@ -50,8 +49,8 @@ void Require(bool condition, std::string_view message) {
 api::EngineRequestContext Context(api::EngineApiU64 tx = 75) {
   api::EngineRequestContext context;
   context.database_path = "/tmp/sb_odf_075_gate_api.sbdb";
-  context.database_uuid.canonical = "019df075-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical = "019df075-0000-7000-8000-000000000075";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-000000000001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-000000000075");
   context.local_transaction_id = tx;
   context.security_context_present = true;
   return context;
@@ -84,7 +83,7 @@ api::EngineGraphPhysicalProof GraphProof() {
   proof.provider_contract.index_generation.covers_predicate = true;
   proof.provider_contract.index_generation.required_generation = 75;
   proof.provider_contract.index_generation.available_generation = 75;
-  proof.provider_contract.index_generation.index_uuid = "odf075-graph-adjacency";
+  proof.provider_contract.index_generation.index_uuid = scratchbird::tests::FixtureUuid(1274, 601);
   proof.provider_contract.policy.proof_present = true;
   proof.provider_contract.policy.allowed = true;
   proof.provider_contract.mga_recheck.proof_present = true;
@@ -97,19 +96,19 @@ api::EngineGraphPhysicalProof GraphProof() {
 
 std::vector<api::EngineGraphVertexInput> Vertices() {
   return {
-      {std::string(kVertexA),
+      {kVertexA,
        {"person", "seed"},
        {{"tenant", "blue"}, {"name", "alpha"}}},
-      {std::string(kVertexB),
+      {kVertexB,
        {"person"},
        {{"tenant", "green"}, {"name", "beta"}}},
-      {std::string(kVertexC),
+      {kVertexC,
        {"account"},
        {{"tenant", "blue"}, {"name", "connector"}}},
-      {std::string(kVertexD),
+      {kVertexD,
        {"account"},
        {{"tenant", "red"}, {"name", "detour"}}},
-      {std::string(kVertexE),
+      {kVertexE,
        {"person"},
        {{"tenant", "blue"}, {"name", "cycle"}}},
   };
@@ -117,20 +116,20 @@ std::vector<api::EngineGraphVertexInput> Vertices() {
 
 std::vector<api::EngineGraphEdgeInput> Edges() {
   return {
-      {"019df075-0000-7000-8000-000000000101", std::string(kVertexA),
-       std::string(kVertexC), "knows", {{"since", "2024"}}, 1.0},
-      {"019df075-0000-7000-8000-000000000102", std::string(kVertexA),
-       std::string(kVertexD), "knows", {{"since", "2025"}}, 2.0},
-      {"019df075-0000-7000-8000-000000000103", std::string(kVertexC),
-       std::string(kVertexB), "knows", {{"since", "2026"}}, 1.5},
-      {"019df075-0000-7000-8000-000000000104", std::string(kVertexD),
-       std::string(kVertexB), "knows", {{"since", "2026"}}, 2.5},
-      {"019df075-0000-7000-8000-000000000105", std::string(kVertexB),
-       std::string(kVertexA), "blocks", {{"since", "2023"}}, 3.0},
-      {"019df075-0000-7000-8000-000000000106", std::string(kVertexA),
-       std::string(kVertexE), "blocks", {{"since", "2022"}}, 4.0},
-      {"019df075-0000-7000-8000-000000000107", std::string(kVertexE),
-       std::string(kVertexA), "knows", {{"since", "2022"}}, 5.0},
+      {scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-000000000101"), kVertexA,
+       kVertexC, "knows", {{"since", "2024"}}, 1.0},
+      {scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-000000000102"), kVertexA,
+       kVertexD, "knows", {{"since", "2025"}}, 2.0},
+      {scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-000000000103"), kVertexC,
+       kVertexB, "knows", {{"since", "2026"}}, 1.5},
+      {scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-000000000104"), kVertexD,
+       kVertexB, "knows", {{"since", "2026"}}, 2.5},
+      {scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-000000000105"), kVertexB,
+       kVertexA, "blocks", {{"since", "2023"}}, 3.0},
+      {scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-000000000106"), kVertexA,
+       kVertexE, "blocks", {{"since", "2022"}}, 4.0},
+      {scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-000000000107"), kVertexE,
+       kVertexA, "knows", {{"since", "2022"}}, 5.0},
   };
 }
 
@@ -150,7 +149,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
                       std::string_view id) {
   for (const auto& item : result.evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -178,6 +177,21 @@ std::string RowField(const api::EngineApiResult& result,
   return {};
 }
 
+api::EngineUuid RowIdentity(const api::EngineApiResult& result,
+                            std::size_t index, std::string_view name) {
+  Require(index < result.result_shape.rows.size(), "graph row missing");
+  for (const auto& [field, value] : result.result_shape.rows[index].fields) {
+    if (field != name) continue;
+    Require(value.descriptor.canonical_type_name == "uuid" &&
+            value.encoded_value.empty() && value.binary_value.size() == 16,
+            "graph UUID must be binary16");
+    api::EngineUuid uuid;
+    std::copy(value.binary_value.begin(), value.binary_value.end(), uuid.bytes.begin());
+    return uuid;
+  }
+  Fail("graph UUID field missing");
+}
+
 bool AnyRowFieldEquals(const api::EngineApiResult& result,
                        std::string_view field,
                        std::string_view expected) {
@@ -201,7 +215,7 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
           "parser_transaction_finality_authority=true",
           "client_autocommit_authority=true"}) {
       Require(item.evidence_kind.find(forbidden) == std::string::npos &&
-                  item.evidence_id.find(forbidden) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFind(item.evidence_id, forbidden) == std::string::npos,
               "ODF-075 evidence leaked forbidden authority or fallback token");
     }
   }
@@ -217,7 +231,7 @@ void PropertyIndexSeedTraversalAndFrontierBatching() {
 
   const auto result = api::EngineGraphQuery(request);
   Require(result.ok, "ODF-075 property-index graph traversal failed");
-  Require(RowField(result, 0, "vertex_id") == kVertexA,
+  Require(RowIdentity(result, 0, "vertex_id") == kVertexA,
           "ODF-075 property index seed did not select vertex A first");
   Require(AnyRowFieldEquals(result, "path", Path({kVertexA, kVertexC, kVertexB})),
           "ODF-075 depth-2 frontier traversal missed A->C->B");
@@ -249,15 +263,15 @@ void PropertyIndexSeedTraversalAndFrontierBatching() {
 
 void BidirectionalAToBPath() {
   auto request = BaseRequest();
-  request.bidirectional_start_vertex_id = kVertexA;
-  request.bidirectional_end_vertex_id = kVertexB;
+  request.bidirectional_start_vertex_id = scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-00000000000a");
+  request.bidirectional_end_vertex_id = scratchbird::tests::FixtureUuidLiteral("019df075-0000-7000-8000-00000000000b");
   request.max_depth = 4;
 
   const auto result = api::EngineGraphQuery(request);
   Require(result.ok, "ODF-075 bidirectional graph path query failed");
-  Require(RowField(result, 0, "vertex_id") == kVertexA,
+  Require(RowIdentity(result, 0, "vertex_id") == kVertexA,
           "ODF-075 bidirectional path did not start at A");
-  Require(RowField(result, 2, "vertex_id") == kVertexB,
+  Require(RowIdentity(result, 2, "vertex_id") == kVertexB,
           "ODF-075 bidirectional path did not end at B");
   Require(RowField(result, 2, "path") == Path({kVertexA, kVertexC, kVertexB}),
           "ODF-075 bidirectional path was not deterministic");
@@ -272,12 +286,12 @@ void BidirectionalAToBPath() {
 void VectorSearchFusionSeedTraversal() {
   auto request = BaseRequest();
   request.fusion_source_kind = api::EngineGraphFusionSourceKind::kVector;
-  request.fused_candidate_seed_vertex_ids = {std::string(kVertexC)};
+  request.fused_candidate_seed_vertex_ids = {kVertexC};
   request.max_depth = 1;
 
   const auto result = api::EngineGraphQuery(request);
   Require(result.ok, "ODF-075 graph+vector fusion seed traversal failed");
-  Require(RowField(result, 0, "vertex_id") == kVertexC,
+  Require(RowIdentity(result, 0, "vertex_id") == kVertexC,
           "ODF-075 fusion seed did not start at candidate C");
   Require(AnyRowFieldEquals(result, "path", Path({kVertexC, kVertexB})),
           "ODF-075 fusion seed traversal missed C->B");
@@ -292,12 +306,12 @@ void VectorSearchFusionSeedTraversal() {
 void SearchFusionSeedTraversal() {
   auto request = BaseRequest();
   request.fusion_source_kind = api::EngineGraphFusionSourceKind::kSearch;
-  request.fused_candidate_seed_vertex_ids = {std::string(kVertexA)};
+  request.fused_candidate_seed_vertex_ids = {kVertexA};
   request.max_depth = 1;
 
   const auto result = api::EngineGraphQuery(request);
   Require(result.ok, "ODF-075 graph+search fusion seed traversal failed");
-  Require(RowField(result, 0, "vertex_id") == kVertexA,
+  Require(RowIdentity(result, 0, "vertex_id") == kVertexA,
           "ODF-075 search fusion seed did not start at candidate A");
   Require(AnyRowFieldEquals(result, "path", Path({kVertexA, kVertexC})),
           "ODF-075 search fusion seed traversal missed A->C");
@@ -434,7 +448,7 @@ void ProviderContractRefusalsFailClosed() {
 void LegacyEmptyRequestFallbackCompatibility() {
   api::EngineGraphQueryRequest request;
   request.context = Context();
-  request.target_object.uuid.canonical = "legacy-graph-collection";
+  request.target_object.uuid = scratchbird::tests::FixtureUuid(1506, 100);
   request.target_object.object_kind = "graph_collection";
   const auto result = api::EngineGraphQuery(request);
   Require(result.ok, "ODF-075 legacy graph fallback failed");

@@ -28,6 +28,7 @@
 #include "canonical_relational_expression.hpp"
 
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "engine/executor/executor_foundation.hpp"
 #include "engine/executor/model_family_executor.hpp"
@@ -73,6 +74,16 @@ namespace opt = scratchbird::engine::optimizer;
 namespace plan = scratchbird::engine::planner;
 
 namespace {
+std::optional<api::EngineUuid> GraphNativeCell(const api::EngineTypedValue* value,
+                                            bool allow_nil = false) {
+  if (!value || !value->encoded_value.empty() || value->binary_value.size() != 16)
+    return std::nullopt;
+  api::EngineUuid uuid;
+  std::copy(value->binary_value.begin(), value->binary_value.end(), uuid.bytes.begin());
+  if (!core::uuid::IsEngineIdentityUuid(uuid) && !(allow_nil && uuid.is_nil())) return std::nullopt;
+  return uuid;
+}
+
 
 // SEARCH_KEY: SB_ENGINE_CANONICAL_QUERY_GRAPH_COMPOSITION_AUTHORITY
 // Owns one admitted production graph source route and its bounded relational
@@ -459,27 +470,30 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   graph_request.bound_object_identity.resource_epoch =
       input.context.resource_epoch;
 
-  const auto identity_scope = dag.bound_sblr_tree_uuid + ":" +
-                              input.context.statement_uuid;
-  const auto physical_alternative_uuid = DerivedCanonicalUuid(
-      identity_scope,
-      "alternative." + std::to_string(scan->node_id) +
-          ".physical_graph_adjacency_scan_v1");
-  const auto provider_uuid = DerivedCanonicalUuid(identity_scope, "graph.provider");
+  // Consumer kinds are unique. Retain invocation-owned native identities.
+  std::array<api::EngineUuid, 29> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                               "graph execution identity allocation failed");
+    identity = *issued;
+  }
+  const auto physical_alternative_uuid = owned_identities[0];
+  const auto provider_uuid = owned_identities[1];
   const auto capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "graph.capability");
+      owned_identities[2];
   const auto result_handle_uuid =
-      DerivedCanonicalUuid(identity_scope, "graph.result-handle");
+      owned_identities[3];
   const auto property_uuid =
-      DerivedCanonicalUuid(identity_scope, "graph.property");
+      owned_identities[4];
   const auto security_receipt_uuid =
-      DerivedCanonicalUuid(identity_scope, "graph.security-receipt");
+      owned_identities[5];
   const auto policy_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "graph.policy-snapshot");
+      owned_identities[6];
   const auto statistics_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "graph.statistics-snapshot");
+      owned_identities[7];
   const auto resource_contract_uuid =
-      DerivedCanonicalUuid(identity_scope, "graph.resource-contract");
+      owned_identities[8];
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
 
@@ -518,12 +532,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
                                input.context.authorization_context.present;
   std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
   alternatives.push_back(MakeModelFamilyCapabilitySnapshotForCompositionV1(
-      planning, identity_scope + ".graph.fallback",
+      planning,
       opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
       provider_uuid, capability_uuid, graph_request.provider_generation, true,
       1, 1, planning.memory_budget_bytes));
   const auto planned = PlanCanonicalModelFamilySourceForCompositionV1(
-      planning, identity_scope + ".graph.inventory", std::move(alternatives));
+      planning, std::move(alternatives));
   if (!planned.accepted || !planned.selected || !planned.data_access_allowed ||
       !planned.optimizer_owned_enumeration ||
       !planned.exact_fallback_selected ||
@@ -831,18 +845,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   bool fetch_first_rows_only = false;
   std::string limit_implementation_id;
   std::string nonrecursive_cte_implementation_id;
-  std::string cte_capability_uuid;
-  std::string filter_capability_uuid;
-  std::string project_capability_uuid;
-  std::string sort_capability_uuid;
-  std::string window_capability_uuid;
-  std::string window_order_evidence_uuid;
-  std::string aggregate_capability_uuid;
-  std::string recursive_term_capability_uuid;
-  std::string recursive_root_capability_uuid;
-  std::string set_values_capability_uuid;
-  std::string set_root_capability_uuid;
-  std::string limit_capability_uuid;
+  api::EngineUuid cte_capability_uuid;
+  api::EngineUuid filter_capability_uuid;
+  api::EngineUuid project_capability_uuid;
+  api::EngineUuid sort_capability_uuid;
+  api::EngineUuid window_capability_uuid;
+  api::EngineUuid window_order_evidence_uuid;
+  api::EngineUuid aggregate_capability_uuid;
+  api::EngineUuid recursive_term_capability_uuid;
+  api::EngineUuid recursive_root_capability_uuid;
+  api::EngineUuid set_values_capability_uuid;
+  api::EngineUuid set_root_capability_uuid;
+  api::EngineUuid limit_capability_uuid;
   std::unordered_set<api::RelationalDagNodeKind> consumer_kinds;
   for (const auto* consumer : consumer_chain) {
     const auto logical_consumer = logical_node_for(consumer->node_id);
@@ -876,8 +890,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
                       prepared.detail);
       }
       prepared_filter = std::move(prepared);
-      filter_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "graph.filter.capability");
+      filter_capability_uuid = owned_identities[9];
       consumer_profile.implementation_id = "filter.3vl.row.v1";
       consumer_profile.capability_uuid = filter_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kFilter;
@@ -890,8 +903,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                       "graph PROJECT semantic is not canonical");
       }
-      project_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "graph.project.capability");
+      project_capability_uuid = owned_identities[10];
       std::vector<const api::RelationalOutputRecord*> project_outputs;
       for (const auto& output : dag.outputs) {
         if (output.relation_node_id == consumer->node_id) {
@@ -1023,8 +1035,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
                       prepared.detail);
       }
       prepared_sort = std::move(prepared);
-      sort_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "graph.sort.capability");
+      sort_capability_uuid = owned_identities[11];
       consumer_profile.implementation_id =
           prepared_sort->expression_ordering
               ? "sort.typed.expression-row.v1"
@@ -1042,8 +1053,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           plan::CanonicalLogicalPropertyKind::kOrdering};
       consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kWindow) {
-      constexpr std::string_view kRowNumberFunctionUuid =
-          "019de5fc-2400-7539-bcce-00eef3ae7220";
+      constexpr api::EngineUuid kRowNumberFunctionUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x75,0x39,0xbc,0xce,0x00,0xee,0xf3,0xae,0x72,0x20}};
       std::vector<const api::RelationalWindowDefinitionRecord*> definitions;
       std::vector<const api::RelationalWindowInvocationRecord*> invocations;
       std::vector<const api::RelationalOutputRecord*> window_outputs;
@@ -1082,7 +1092,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           typed_sort->bound_expression_ids.size() == 1 &&
           prepared_sort.has_value() &&
           consumer->required_property_uuids ==
-              std::vector<std::string>{
+              std::vector<api::EngineUuid>{
                   prepared_sort->ordering_property_uuid} &&
           consumer->delivered_property_uuids.size() == 2 &&
           std::ranges::find(consumer->delivered_property_uuids,
@@ -1135,7 +1145,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           function->expression_kind !=
               api::RelationalExpressionKind::kFunctionCall ||
           function->function_uuid !=
-              std::optional<std::string>(kRowNumberFunctionUuid) ||
+              std::optional<api::EngineUuid>(kRowNumberFunctionUuid) ||
           function->bound_name_uuid.has_value() ||
           function->operator_name.has_value() ||
           function->literal_kind.has_value() ||
@@ -1144,7 +1154,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           function->result_descriptor_id !=
               invocations.front()->result_descriptor_id ||
           row_number_descriptor == dag.descriptors.end() ||
-          int64_type_uuid.empty() ||
+          int64_type_uuid.is_nil() ||
           row_number_descriptor->type_uuid != int64_type_uuid ||
           row_number_descriptor->nullability !=
               api::RelationalNullability::kNonNull ||
@@ -1191,9 +1201,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
               plan::CanonicalLogicalPropertyKind::kWindow ||
           window_property->origin_logical_node_id != consumer->node_id ||
           window_property->dependency_property_uuids !=
-              std::vector<std::string>{
+              std::vector<api::EngineUuid>{
                   prepared_sort->ordering_property_uuid} ||
-          window_property->window_frame_descriptor_uuid.empty()) {
+          window_property->window_frame_descriptor_uuid.is_nil()) {
         return refuse("QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1",
                       "graph ROW_NUMBER property binding is not exact");
       }
@@ -1242,11 +1252,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       composition_state.result_bindings.push_back(
           std::move(row_number_binding));
       prepared_row_number = std::move(row_number_column);
-      window_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "graph.window.row-number.capability");
-      window_order_evidence_uuid = DerivedCanonicalUuid(
-          identity_scope + ":" + prepared_sort->ordering_property_uuid,
-          "graph.window.deterministic-order");
+      window_capability_uuid = owned_identities[12];
+      window_order_evidence_uuid = owned_identities[13];
       consumer_profile.implementation_id = "window.row-number.v1";
       consumer_profile.capability_uuid = window_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kWindow;
@@ -1278,7 +1285,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       const auto int64_type_uuid = type_uuid_for("int64");
       if (consumer->output_descriptor_ids.size() != 1 ||
           count_descriptor == dag.descriptors.end() ||
-          int64_type_uuid.empty() ||
+          int64_type_uuid.is_nil() ||
           count_descriptor->type_uuid != int64_type_uuid ||
           count_descriptor->nullability !=
               api::RelationalNullability::kNonNull ||
@@ -1301,8 +1308,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       composition_state.batch.columns = {prepared.result_column};
       composition_state.result_bindings = prepared.result_bindings;
       prepared_count_star = std::move(prepared);
-      aggregate_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "graph.count-star.capability");
+      aggregate_capability_uuid = owned_identities[14];
       consumer_profile.implementation_id = "aggregate.count-star.v1";
       consumer_profile.capability_uuid = aggregate_capability_uuid;
       consumer_profile.physical_node_kind =
@@ -1337,10 +1343,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       nonrecursive_cte_implementation_id =
           consumer->shareable ? "cte.bound.materialize.typed.v1"
                               : "cte.bound.inline.typed.v1";
-      cte_capability_uuid = DerivedCanonicalUuid(
-          identity_scope,
-          consumer->shareable ? "graph.cte.materialize.capability"
-                              : "graph.cte.inline.capability");
+      cte_capability_uuid = owned_identities[15];
       consumer_profile.implementation_id =
           nonrecursive_cte_implementation_id;
       consumer_profile.capability_uuid = cte_capability_uuid;
@@ -1389,8 +1392,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       limit_implementation_id = fetch_first_rows_only
                                     ? "fetch.native.rows-only.v1"
                                     : "limit.typed.v1";
-      limit_capability_uuid = DerivedCanonicalUuid(
-          identity_scope, "graph.limit.capability");
+      limit_capability_uuid = owned_identities[16];
       consumer_profile.implementation_id = limit_implementation_id;
       consumer_profile.capability_uuid = limit_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kLimit;
@@ -1465,10 +1467,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
                     "graph UNION ALL VALUES memory bound was exceeded");
     }
     graph_set_values_memory_bytes = values_memory;
-    set_values_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "graph.set-values.capability");
-    set_root_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "graph.set-union-all.capability");
+    set_values_capability_uuid = owned_identities[17];
+    set_root_capability_uuid = owned_identities[18];
 
     LivePhysicalNodeProfile values_profile;
     values_profile.logical_node_id = logical_values->logical_node_id;
@@ -1562,10 +1562,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           "graph recursive payload peak exceeds its admitted memory budget");
     }
     prepared_recursive_cte = prepared;
-    recursive_term_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "graph.recursive-term.capability");
-    recursive_root_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "graph.recursive-root.capability");
+    recursive_term_capability_uuid = owned_identities[19];
+    recursive_root_capability_uuid = owned_identities[20];
 
     LivePhysicalNodeProfile term_profile;
     term_profile.logical_node_id = recursive_term->node_id;
@@ -1642,24 +1640,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
     std::string field_name;
     exec::ExecutorColumnDescriptor column;
   };
-  const auto descriptor_field = [](const std::string& encoded,
-                                   const std::string_view key) {
-    std::optional<std::string> value;
-    std::size_t offset = 0;
-    while (offset <= encoded.size()) {
-      const auto end = encoded.find(';', offset);
-      const auto field = std::string_view(encoded).substr(
-          offset, end == std::string::npos ? std::string::npos
-                                            : end - offset);
-      const auto equal = field.find('=');
-      if (equal != std::string_view::npos && field.substr(0, equal) == key) {
-        if (value.has_value()) return std::optional<std::string>{};
-        value = std::string(field.substr(equal + 1));
-      }
-      if (end == std::string::npos) break;
-      offset = end + 1;
-    }
-    return value;
+  const auto descriptor_field = [](const std::string& encoded, std::string_view key) -> std::optional<std::string> {
+    api::CatalogColumnMetadata metadata;
+    if (!api::DecodeCatalogColumnMetadata(encoded, &metadata)) return std::nullopt;
+    const auto found = metadata.text.find(std::string(key));
+    return found == metadata.text.end() ? std::nullopt : std::optional<std::string>(found->second);
+  };
+  const auto descriptor_identity = [](const std::string& encoded, std::string_view key) -> std::optional<api::EngineUuid> {
+    api::CatalogColumnMetadata metadata;
+    if (!api::DecodeCatalogColumnMetadata(encoded, &metadata)) return std::nullopt;
+    const auto found = metadata.identities.find(std::string(key));
+    return found == metadata.identities.end() ? std::nullopt : std::optional<api::EngineUuid>(found->second);
   };
   const auto runtime_descriptor = [](const auto& source,
                                      const std::string& type_name) {
@@ -1715,8 +1706,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
         });
     const auto persisted_type_uuid =
         persisted_column == persisted_relation.columns.end()
-            ? std::optional<std::string>{}
-            : descriptor_field(
+            ? std::optional<api::EngineUuid>{}
+            : descriptor_identity(
                   persisted_column->value_descriptor.encoded_descriptor,
                   "type_uuid");
     const auto expected_u32 = [](const auto& value) {
@@ -1734,7 +1725,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
         persisted_column->value_descriptor.encoded_descriptor.empty() ||
         !persisted_type_uuid.has_value() ||
         *persisted_type_uuid != descriptor->type_uuid ||
-        descriptor_field(
+        descriptor_identity(
             persisted_column->value_descriptor.encoded_descriptor,
             "collation_uuid") != descriptor->collation_uuid ||
         descriptor_field(
@@ -1757,7 +1748,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
         (descriptor->collation_uuid.has_value()
              ? persisted_column->collation_uuid !=
                    *descriptor->collation_uuid
-             : !persisted_column->collation_uuid.empty()) ||
+             : !persisted_column->collation_uuid.is_nil()) ||
         !api::QowCanonicalDescriptorIdentityV1(
             persisted_column->value_descriptor)) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
@@ -1839,7 +1830,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   auto& provider_contract = proof.provider_contract;
   provider_contract.family = api::EngineNoSqlProviderFamily::kGraph;
   provider_contract.scope = api::EngineNoSqlProviderScope::kLocal;
-  provider_contract.provider_id = provider_uuid;
+  provider_contract.provider_id = "graph.local.bounded_adjacency.v1";
+  provider_contract.provider_uuid = provider_uuid;
   provider_contract.fallback_provider_id =
       "GRAPH_BOUNDED_ADJACENCY_SCAN_EXACT_V1";
   provider_contract.local_provider_available = true;
@@ -1850,14 +1842,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   provider_contract.descriptor_visibility.descriptor_shape_compatible = true;
   provider_contract.descriptor_visibility.descriptor_generation =
       graph_request.provider_generation;
-  provider_contract.descriptor_visibility.proof_id =
-      DerivedCanonicalUuid(identity_scope, "graph.descriptor-proof");
+  provider_contract.descriptor_visibility.proof_uuid =
+      owned_identities[21];
   provider_contract.security_redaction.proof_present = true;
   provider_contract.security_redaction.redaction_policy_bound = true;
   provider_contract.security_redaction.security_snapshot_bound = true;
   provider_contract.security_redaction.redaction_profile =
       "graph.engine-row-security.v1";
-  provider_contract.security_redaction.proof_id = security_receipt_uuid;
+  provider_contract.security_redaction.proof_uuid = security_receipt_uuid;
   provider_contract.index_generation.proof_present = true;
   provider_contract.index_generation.visible_to_snapshot = true;
   provider_contract.index_generation.covers_predicate = true;
@@ -1866,9 +1858,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   provider_contract.index_generation.available_generation =
       graph_request.provider_generation;
   provider_contract.index_generation.index_uuid =
-      DerivedCanonicalUuid(identity_scope, "graph.adjacency-index");
-  provider_contract.index_generation.proof_id =
-      DerivedCanonicalUuid(identity_scope, "graph.index-proof");
+      owned_identities[22];
+  provider_contract.index_generation.proof_uuid =
+      owned_identities[23];
   provider_contract.delta_overlay.required = false;
   provider_contract.policy.proof_present = true;
   provider_contract.policy.allowed = true;
@@ -1888,8 +1880,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   provider_generation.redaction_epoch = planning.policy_epoch;
   provider_generation.catalog_epoch = generation;
   provider_generation.generation_uuid =
-      DerivedCanonicalUuid(identity_scope, "graph.provider-generation");
-  provider_generation.provider_id = provider_uuid;
+      owned_identities[24];
+  provider_generation.provider_id = provider_contract.provider_id;
+  provider_generation.provider_uuid = provider_uuid;
   provider_generation.database_uuid = input.context.database_uuid;
   provider_generation.collection_uuid = graph_request.graph_object_uuid;
   provider_generation.publish_state = "published";
@@ -1900,8 +1893,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       "graph.provider.restore-metadata.v1";
   provider_generation.repair_metadata_ref =
       "graph.provider.repair-metadata.v1";
-  provider_generation.support_bundle_evidence_id =
-      DerivedCanonicalUuid(identity_scope, "graph.support-evidence");
+  provider_generation.support_bundle_evidence_id = "graph.provider.support.v1";
+  provider_generation.support_bundle_evidence_uuid =
+      owned_identities[25];
   provider_contract.mga_recheck.proof_present = true;
   provider_contract.mga_recheck.row_mga_recheck_required = true;
   provider_contract.mga_recheck.row_security_recheck_required = true;
@@ -1972,7 +1966,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   execution_request.current_mga_statement_context = mga;
   execution_request.execute_provider =
       [graph_request, source_input, output_bindings, property_uuid,
-       security_receipt_uuid, identity_scope,
+       security_receipt_uuid,
        graph_provider_batch_memory_budget,
        persisted_descriptor_uuid =
            persisted_relation.descriptor_uuid,
@@ -2077,10 +2071,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           provider_batch_bytes += bytes;
           return true;
         };
-        const auto account_provider_string = [&](const std::string_view value) {
+        const auto account_provider_string = [&](const auto& item) {
+          if constexpr (std::is_same_v<std::remove_cvref_t<decltype(item)>, api::EngineUuid>) {
+            return true; // Inline bytes covered by the fixed descriptor budget.
+          } else {
+          const std::string_view value(item);
           const auto bytes = static_cast<std::uint64_t>(value.size());
           return bytes <= std::numeric_limits<std::uint64_t>::max() / 2 &&
                  account_provider_batch(bytes * 2);
+          }
         };
         for (const auto& output : output_bindings) {
           if (poll_provider_cancellation()) return provider;
@@ -2164,17 +2163,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
               cycle->state != api::EngineValueState::value ||
               direction->encoded_value != expected_direction ||
               cycle->encoded_value != "visited_set" ||
-              !CanonicalUuidText(vertex_uuid->encoded_value) ||
-              !CanonicalUuidText(path_uuid->encoded_value) ||
-              ((graph_depth == 0) != edge_uuid->encoded_value.empty()) ||
+              !GraphNativeCell(vertex_uuid) ||
+              !GraphNativeCell(path_uuid) ||
+              (!GraphNativeCell(edge_uuid, true) ||
+               ((graph_depth == 0) != GraphNativeCell(edge_uuid, true)->is_nil())) ||
               (graph_depth > 0 &&
-               !CanonicalUuidText(edge_uuid->encoded_value)) ||
+               !GraphNativeCell(edge_uuid)) ||
               !account_provider_batch(4096 +
                                       output_bindings.size() * 256) ||
               !account_provider_string(vertex_uuid->encoded_value) ||
               !account_provider_string(edge_uuid->encoded_value) ||
               !account_provider_string(path_uuid->encoded_value) ||
-              !account_provider_batch(2 * 36)) {
+              !account_provider_batch(3 * 16)) {
             provider.diagnostic_id =
                 provider_batch_budget_exhausted
                     ? "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"
@@ -2229,9 +2229,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
               parsed_depth.ec != std::errc{} ||
               parsed_depth.ptr != depth->encoded_value.data() +
                                       depth->encoded_value.size() ||
-              vertex_uuid->encoded_value.empty() ||
-              path_uuid->encoded_value.empty() ||
-              (graph_depth == 0) != edge_uuid->encoded_value.empty()) {
+              !GraphNativeCell(vertex_uuid) || !GraphNativeCell(path_uuid) ||
+              !GraphNativeCell(edge_uuid, true) ||
+              ((graph_depth == 0) != GraphNativeCell(edge_uuid, true)->is_nil())) {
             provider.diagnostic_id = "SB_MODEL_TYPED_EXCHANGE_INVALID_V1";
             provider.detail = "graph provider row identity is incomplete";
             return provider;
@@ -2268,12 +2268,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
             tuple.values.push_back(std::move(typed));
           }
           batch.rows.push_back(std::move(tuple));
+          const auto issued_row_uuid = core::uuid::IssueRuntimeIdentityV7();
+          if (!issued_row_uuid) {
+            provider.diagnostic_id = "SB_MODEL_GRAPH_IDENTITY_ISSUANCE_FAILED_V1";
+            provider.detail = "graph output row identity allocation failed";
+            return provider;
+          }
           provider_batch.ordered_row_identities.push_back(
               {{},
-               DerivedCanonicalUuid(identity_scope,
-                                    "graph.row." + path_uuid->encoded_value),
-               vertex_uuid->encoded_value, edge_uuid->encoded_value,
-               path_uuid->encoded_value, graph_depth});
+               *issued_row_uuid,
+               *GraphNativeCell(vertex_uuid), *GraphNativeCell(edge_uuid, true),
+               *GraphNativeCell(path_uuid), graph_depth});
         }
         provider_batch.provider_uuid = source_input.provider_uuid;
         provider_batch.provider_generation = source_input.provider_generation;
@@ -2508,9 +2513,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                     "graph SORT comparison bound overflowed");
     }
-    const auto tie_uuid = DerivedCanonicalUuid(
-        identity_scope + ":" + prepared_sort->ordering_property_uuid,
-        "graph.sort.deterministic-tie");
+    const auto tie_uuid = owned_identities[26];
     if (prepared_sort->expression_ordering) {
       selected.available_executors.push_back(
           MakeLiveExpressionSortRegistration(
@@ -2574,18 +2577,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(identity_scope + ":" +
-                               input.context.current_monotonic_ns,
-                           "graph.execution-attempt");
+      owned_identities[27];
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id) + ":" +
-              std::to_string(
-                  input.context.snapshot_visible_through_local_transaction_id),
-          "graph.transaction-effect-unchanged");
+      owned_identities[28];
   selected.result_publication_request.maximum_row_count =
       execution_row_bound;
   selected.result_publication_request.column_bindings =

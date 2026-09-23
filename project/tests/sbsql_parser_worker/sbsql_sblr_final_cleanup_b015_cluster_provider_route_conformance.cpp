@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -201,7 +202,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -259,9 +260,9 @@ std::string EvidenceMessage(const SurfaceEvidenceRow& row,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-0000000f1501";
-  session.connection_uuid = "019f0000-0000-7000-8000-0000000f1502";
-  session.database_uuid = "019f0000-0000-7000-8000-0000000f1503";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1501");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1502");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1503");
   session.catalog_epoch = 151;
   session.security_policy_epoch = 157;
   session.descriptor_epoch = 163;
@@ -271,7 +272,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-0000000f1504";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1504");
   config.bundle_contract_id = "sbp_sbsql@sbsql-sblr-final-cleanup-b015";
   config.build_id = "sbsql-sblr-final-cleanup-b015";
   return config;
@@ -307,14 +308,14 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   context.security_context_present = security_context_present;
   context.cluster_authority_available = cluster_provider::ClusterProviderSupportsExecution();
   context.database_path = "/tmp/sbsql_sblr_final_cleanup_b015.sbdb";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-0000000f1601";
-  context.cluster_uuid.canonical = "019f0000-0000-7000-8000-0000000f1602";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-0000000f1603";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-0000000f1604";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-0000000f1605";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-0000000f1606";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-0000000f1607";
-  context.current_diagnostic_uuid.canonical = "019f0000-0000-7000-8000-0000000f1608";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1601");
+  context.cluster_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1602");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1603");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1604");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1605");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1606");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1607");
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-0000000f1608");
   context.local_transaction_id = 1515;
   context.snapshot_visible_through_local_transaction_id = 1515;
   context.catalog_generation_id = 151;
@@ -542,7 +543,7 @@ void RequirePublicClusterRefusal(const RouteRow& row) {
                     "authority.cluster.provider_dispatch_required") &&
               !HasValue(artifacts.envelope.required_authority_steps,
                         "authority.engine.cluster_provider_boundary_required") &&
-              !HasValue(artifacts.envelope.descriptor_refs, "sys.cluster.provider") &&
+              !HasValue(artifacts.envelope.descriptor_requirements, "sys.cluster.provider") &&
               !HasValue(artifacts.envelope.policy_refs,
                         "cluster_provider_boundary_policy"),
           EvidenceMessage(row, "authority", "public refusal retained provider dispatch authority"));
@@ -589,7 +590,7 @@ void RequireEngineApiLowering(const RouteRow& row) {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_storage_or_finality"),
           EvidenceMessage(row, "authority", "no-finality authority missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.cluster.provider"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.cluster.provider"),
           EvidenceMessage(row, "authority", "cluster provider descriptor missing"));
   Require(HasValue(artifacts.envelope.policy_refs, "cluster_provider_boundary_policy"),
           EvidenceMessage(row, "authority", "cluster provider boundary policy missing"));

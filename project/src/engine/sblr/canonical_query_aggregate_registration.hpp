@@ -25,8 +25,8 @@ namespace exec = scratchbird::engine::executor;
 struct PreparedAggregateValueBindingReceipt {
   std::size_t value_column{0};
   std::uint32_t descriptor_id{0};
-  std::string descriptor_uuid;
-  std::string type_uuid;
+  core::platform::Uuid descriptor_uuid;
+  core::platform::Uuid type_uuid;
   bool nullable{false};
   std::string canonical_type_name;
   std::string encoded_descriptor;
@@ -72,9 +72,9 @@ struct PreparedGroupedCountSumRoot {
   std::string detail;
 };
 
-std::string ExactCanonicalCoreDatatypeUuidV1(std::string_view stable_name);
-std::string ExactCanonicalCoreDatatypeTypeUuidV1(std::string_view stable_name);
-std::string ExactCanonicalInt64TypeUuidV1();
+core::platform::Uuid ExactCanonicalCoreDatatypeUuidV1(std::string_view stable_name);
+core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(std::string_view stable_name);
+core::platform::Uuid ExactCanonicalInt64TypeUuidV1();
 
 bool RevalidatePreparedAggregateValueBindings(
     const std::vector<std::size_t>& value_columns,
@@ -129,7 +129,7 @@ bool BindCanonicalAggregateEqualityTerms(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveAggregateRegistryRegistration(
     PreparedGlobalAggregateRoot prepared,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t maximum_input_row_count,
     std::uint64_t maximum_filter_truth_memory_bytes,
     scratchbird::engine::internal_api::EngineRequestContext mga_context,
@@ -138,7 +138,7 @@ MakeLiveAggregateRegistryRegistration(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveGroupedCountSumRegistration(
     PreparedGroupedCountSumRoot prepared,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::size_t maximum_input_row_count,
     std::size_t maximum_output_row_count,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);

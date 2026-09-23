@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "canonical_relational_expression.hpp"
 
 #include <cstdlib>
@@ -21,14 +22,10 @@ namespace sblr = scratchbird::engine::sblr;
 namespace {
 
 // QOW-TEST-QRY-017-HAVING-ROW-BINDING-V1
-constexpr std::string_view kCountUuid =
-    "019de5fc-2400-784a-9aec-371f8b95b7ea";
-constexpr std::string_view kSumUuid =
-    "019de5fc-2400-72e4-8549-82b2eef5a777";
-constexpr std::string_view kInt64TypeUuid =
-    "019d0000-0000-7000-8000-00000000d712";
-constexpr std::string_view kBooleanTypeUuid =
-    "01000000-626f-7f6c-a561-6e0000000000";
+constexpr auto kCountUuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-784a-9aec-371f8b95b7ea");
+constexpr auto kSumUuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-72e4-8549-82b2eef5a777");
+constexpr auto kInt64TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
+constexpr auto kBooleanTypeUuid = scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000");
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
@@ -39,8 +36,8 @@ bool Require(const bool condition, const std::string_view detail) {
 }
 
 api::RelationalTypeDescriptor Descriptor(
-    const std::uint32_t id, const std::string& uuid,
-    const std::string& type_uuid, const api::RelationalNullability nullable) {
+    const std::uint32_t id, const api::EngineUuid& uuid,
+    const api::EngineUuid& type_uuid, const api::RelationalNullability nullable) {
   api::RelationalTypeDescriptor descriptor;
   descriptor.descriptor_id = id;
   descriptor.descriptor_uuid = uuid;
@@ -51,7 +48,7 @@ api::RelationalTypeDescriptor Descriptor(
 
 api::RelationalExpressionRecord Function(
     const std::uint32_t id, const std::uint32_t descriptor_id,
-    const std::string_view function_uuid,
+    const api::EngineUuid& function_uuid,
     std::vector<std::uint32_t> children = {}) {
   api::RelationalExpressionRecord expression;
   expression.expression_id = id;
@@ -103,27 +100,27 @@ api::TypedRelationalDag Dag(const std::string& count_threshold = "1",
                             const std::string& sum_threshold = "6") {
   api::TypedRelationalDag dag;
   dag.descriptors = {
-      Descriptor(1, "019f3300-0000-7100-8000-000000000101",
-                 std::string(kInt64TypeUuid),
+      Descriptor(1, scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7100-8000-000000000101"),
+                 kInt64TypeUuid,
                  api::RelationalNullability::kNonNull),
-      Descriptor(2, "019f3300-0000-7100-8000-000000000102",
-                 std::string(kInt64TypeUuid),
+      Descriptor(2, scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7100-8000-000000000102"),
+                 kInt64TypeUuid,
                  api::RelationalNullability::kNullable),
-      Descriptor(3, "019f3300-0000-7100-8000-000000000103",
-                 std::string(kInt64TypeUuid),
+      Descriptor(3, scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7100-8000-000000000103"),
+                 kInt64TypeUuid,
                  api::RelationalNullability::kNonNull),
-      Descriptor(4, "019f3300-0000-7100-8000-000000000104",
-                 std::string(kBooleanTypeUuid),
+      Descriptor(4, scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7100-8000-000000000104"),
+                 kBooleanTypeUuid,
                  api::RelationalNullability::kNullable),
-      Descriptor(5, "019f3300-0000-7100-8000-000000000105",
-                 std::string(kInt64TypeUuid),
+      Descriptor(5, scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7100-8000-000000000105"),
+                 kInt64TypeUuid,
                  api::RelationalNullability::kNullable),
-      Descriptor(6, "019f3300-0000-7100-8000-000000000106",
-                 std::string(kInt64TypeUuid),
+      Descriptor(6, scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7100-8000-000000000106"),
+                 kInt64TypeUuid,
                  api::RelationalNullability::kNullable),
   };
   auto& decorated = dag.descriptors[4];
-  decorated.collation_uuid = "019f3300-0000-7300-8000-000000000301";
+  decorated.collation_uuid = scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7300-8000-000000000301");
   decorated.timezone_profile_id = "tz-profile-qow-017";
   decorated.width = 64;
   decorated.precision = 19;
@@ -134,7 +131,7 @@ api::TypedRelationalDag Dag(const std::string& count_threshold = "1",
   identifier.expression_kind = api::RelationalExpressionKind::kIdentifier;
   identifier.result_descriptor_id = 6;
   identifier.bound_name_uuid =
-      "019f3300-0000-7400-8000-000000000401";
+      scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7400-8000-000000000401");
 
   dag.expressions = {
       Function(1, 1, kCountUuid),
@@ -148,8 +145,8 @@ api::TypedRelationalDag Dag(const std::string& count_threshold = "1",
       Unary(9, 4, "NOT", 6),
       Unary(10, 4, "NOT", 7),
       std::move(identifier),
-      Function(12, 1, "019f3300-0000-7500-8000-000000000501"),
-      Function(13, 5, "019f3300-0000-7500-8000-000000000502"),
+      Function(12, 1, scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7500-8000-000000000501")),
+      Function(13, 5, scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7500-8000-000000000502")),
       Binary(16, 4, ">", 11, 18),
       Binary(17, 4, "AND", 16, 6),
       Literal(18, 6, "1"),
@@ -159,7 +156,7 @@ api::TypedRelationalDag Dag(const std::string& count_threshold = "1",
   sum_argument.expression_kind = api::RelationalExpressionKind::kIdentifier;
   sum_argument.result_descriptor_id = 2;
   sum_argument.bound_name_uuid =
-      "019f3300-0000-7400-8000-000000000402";
+      scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7400-8000-000000000402");
   dag.expressions.push_back(std::move(sum_argument));
   api::RelationalExpressionRecord parameter;
   parameter.expression_id = 15;
@@ -191,7 +188,7 @@ api::EngineDescriptor EngineDescriptor(const api::TypedRelationalDag& dag,
                                        const std::string_view type_name) {
   const auto& source = FindDescriptor(dag, id);
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = source.descriptor_uuid;
+  descriptor.descriptor_uuid = source.descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = type_name;
   const char* nullability = "unknown";
@@ -200,12 +197,9 @@ api::EngineDescriptor EngineDescriptor(const api::TypedRelationalDag& dag,
   } else if (source.nullability == api::RelationalNullability::kNullable) {
     nullability = "nullable";
   }
-  descriptor.encoded_descriptor =
-      "type_uuid=" + source.type_uuid + ";nullability=" + nullability;
-  if (source.collation_uuid.has_value()) {
-    descriptor.encoded_descriptor +=
-        ";collation_uuid=" + *source.collation_uuid;
-  }
+  descriptor.type_uuid = source.type_uuid;
+  descriptor.encoded_descriptor = std::string("nullability=") + nullability;
+  if (source.collation_uuid.has_value()) descriptor.collation_uuid = *source.collation_uuid;
   if (source.timezone_profile_id.has_value()) {
     descriptor.encoded_descriptor +=
         ";timezone_profile_id=" + *source.timezone_profile_id;
@@ -503,8 +497,7 @@ bool ValidateFullDescriptorIdentity() {
   };
 
   auto changed = row;
-  changed[2].descriptor.descriptor_uuid.canonical =
-      "019f3300-0000-7100-8000-000000000999";
+  changed[2].descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f3300-0000-7100-8000-000000000999");
   passed &= Refuses(dag, 7, binding, changed,
                     "descriptor UUID drift was admitted");
   changed = row;

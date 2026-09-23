@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -45,6 +46,8 @@ std::filesystem::path MakeTempDir() {
 memory::TempWorkspacePolicy Policy(const std::filesystem::path& root, std::uint64_t quota = 4096) {
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "dblc013x_conformance";
+  policy.database_uuid = scratchbird::tests::FixtureUuid(1546, 1);
+  policy.engine_uuid = scratchbird::tests::FixtureUuid(1546, 2);
   policy.root_path = root;
   policy.filespace_quota_bytes = quota;
   policy.session_quota_bytes = quota;
@@ -56,28 +59,28 @@ memory::TempWorkspacePolicy Policy(const std::filesystem::path& root, std::uint6
   return policy;
 }
 
-memory::TempWorkspaceOwner Owner(std::string suffix) {
+memory::TempWorkspaceOwner Owner(std::uint32_t ordinal) {
   memory::TempWorkspaceOwner owner;
-  owner.temp_object_uuid = "temp-" + suffix;
-  owner.database_id = "database-a";
-  owner.engine_id = "engine-a";
-  owner.session_id = "session-a";
-  owner.transaction_id = "txn-a";
-  owner.statement_id = "stmt-a";
-  owner.operation_id = "op-a";
+  owner.temp_object_uuid = scratchbird::tests::FixtureUuid(1545, ordinal);
+  owner.database_id = scratchbird::tests::FixtureUuid(1546, 1);
+  owner.engine_id = scratchbird::tests::FixtureUuid(1546, 2);
+  owner.session_id = scratchbird::tests::FixtureUuid(1546, 3);
+  owner.transaction_id = scratchbird::tests::FixtureUuid(1546, 4);
+  owner.statement_id = scratchbird::tests::FixtureUuid(1546, 5);
+  owner.operation_id = scratchbird::tests::FixtureUuid(1546, 6);
   owner.policy_generation = 7;
   owner.security_generation = 9;
-  owner.snapshot_boundary = "snapshot-inventory-generation-11";
-  owner.metadata_boundary = "metadata-generation-13";
-  owner.resource_budget_reference = "budget-a";
+  owner.snapshot_boundary = scratchbird::tests::FixtureUuid(1546, 7);
+  owner.metadata_boundary = scratchbird::tests::FixtureUuid(1546, 8);
+  owner.resource_budget_reference = scratchbird::tests::FixtureUuid(1546, 9);
   return owner;
 }
 
-memory::TempWorkspaceAllocationRequest Request(std::string suffix,
+memory::TempWorkspaceAllocationRequest Request(std::uint32_t ordinal,
                                                memory::TempWorkspaceLifetime lifetime,
                                                std::uint64_t bytes) {
   memory::TempWorkspaceAllocationRequest request;
-  request.owner = Owner(std::move(suffix));
+  request.owner = Owner(ordinal);
   request.lifetime = lifetime;
   request.bytes = bytes;
   request.purpose = "DBLC-013X conformance";
@@ -100,24 +103,24 @@ void TestAllocationQuotaAndDiagnostics() {
   memory::TempWorkspaceLifecycleManager manager(Policy(root, 1024));
 
   auto reservation = manager.ReserveTempFilespace(
-      Request("reserve", memory::TempWorkspaceLifetime::statement_lifetime, 128));
+      Request(1, memory::TempWorkspaceLifetime::statement_lifetime, 128));
   Require(reservation.ok() && reservation.record.has_value(), "temp filespace reservation failed");
   Require(std::filesystem::exists(reservation.record->path), "reserved temp filespace file was not created");
 
   auto sort = manager.AllocateSortSpill(
-      Request("sort", memory::TempWorkspaceLifetime::statement_lifetime, 256));
+      Request(2, memory::TempWorkspaceLifetime::statement_lifetime, 256));
   Require(sort.ok() && sort.record.has_value(), "sort spill allocation failed");
   Require(sort.record->storage_class == memory::TempStorageClass::sort_workspace,
           "sort spill did not use sort workspace class");
 
   auto hash = manager.AllocateHashSpill(
-      Request("hash", memory::TempWorkspaceLifetime::statement_lifetime, 256));
+      Request(3, memory::TempWorkspaceLifetime::statement_lifetime, 256));
   Require(hash.ok() && hash.record.has_value(), "hash spill allocation failed");
   Require(hash.record->storage_class == memory::TempStorageClass::hash_workspace,
           "hash spill did not use hash workspace class");
 
   auto denied = manager.AllocateSpillFile(
-      Request("denied", memory::TempWorkspaceLifetime::statement_lifetime, 512));
+      Request(4, memory::TempWorkspaceLifetime::statement_lifetime, 512));
   Require(!denied.ok(), "quota denial unexpectedly succeeded");
   RequireValidDiagnostic(denied.diagnostic, "TEMP_WORKSPACE.QUOTA_DENIED", "quota denial");
   Require(manager.Snapshot().quota_denial_count == 1, "quota denial metric was not recorded");
@@ -133,36 +136,36 @@ void TestCommitRollbackDisconnectAndShutdownCleanup() {
   memory::TempWorkspaceLifecycleManager manager(Policy(root));
 
   auto commit = manager.AllocateSpillFile(
-      Request("commit", memory::TempWorkspaceLifetime::transaction_lifetime, 128));
+      Request(5, memory::TempWorkspaceLifetime::transaction_lifetime, 128));
   Require(commit.ok() && commit.record.has_value(), "commit cleanup setup allocation failed");
 
-  auto refused = manager.CleanupOnCommit("txn-a", memory::TempTransactionOutcomeEvidence::rolled_back);
+  auto refused = manager.CleanupOnCommit(scratchbird::tests::FixtureUuid(1546, 4), memory::TempTransactionOutcomeEvidence::rolled_back);
   Require(!refused.ok(), "commit cleanup accepted rollback evidence");
   RequireValidDiagnostic(refused.diagnostic, "TEMP_WORKSPACE.OUTCOME_EVIDENCE_REQUIRED",
                          "commit evidence refusal");
   Require(manager.Find(commit.record->allocation_id).has_value(),
           "commit cleanup without commit evidence removed a workspace");
 
-  auto commit_cleaned = manager.CleanupOnCommit("txn-a", memory::TempTransactionOutcomeEvidence::committed);
+  auto commit_cleaned = manager.CleanupOnCommit(scratchbird::tests::FixtureUuid(1546, 4), memory::TempTransactionOutcomeEvidence::committed);
   Require(commit_cleaned.ok() && commit_cleaned.cleaned_count == 1, "commit cleanup failed");
   Require(!std::filesystem::exists(commit.record->path), "commit cleanup left spill file behind");
 
   auto rollback = manager.AllocateSpillFile(
-      Request("rollback", memory::TempWorkspaceLifetime::transaction_lifetime, 128));
+      Request(6, memory::TempWorkspaceLifetime::transaction_lifetime, 128));
   Require(rollback.ok() && rollback.record.has_value(), "rollback cleanup setup allocation failed");
-  auto rollback_cleaned = manager.CleanupOnRollback("txn-a", memory::TempTransactionOutcomeEvidence::rolled_back);
+  auto rollback_cleaned = manager.CleanupOnRollback(scratchbird::tests::FixtureUuid(1546, 4), memory::TempTransactionOutcomeEvidence::rolled_back);
   Require(rollback_cleaned.ok() && rollback_cleaned.cleaned_count == 1, "rollback cleanup failed");
   Require(!std::filesystem::exists(rollback.record->path), "rollback cleanup left spill file behind");
 
   auto disconnect = manager.AllocateSpillFile(
-      Request("disconnect", memory::TempWorkspaceLifetime::session_lifetime, 128));
+      Request(7, memory::TempWorkspaceLifetime::session_lifetime, 128));
   Require(disconnect.ok() && disconnect.record.has_value(), "disconnect cleanup setup allocation failed");
-  auto disconnect_cleaned = manager.CleanupOnDisconnect("session-a");
+  auto disconnect_cleaned = manager.CleanupOnDisconnect(scratchbird::tests::FixtureUuid(1546, 3));
   Require(disconnect_cleaned.ok() && disconnect_cleaned.cleaned_count == 1, "disconnect cleanup failed");
   Require(!std::filesystem::exists(disconnect.record->path), "disconnect cleanup left spill file behind");
 
   auto shutdown = manager.AllocateSpillFile(
-      Request("shutdown", memory::TempWorkspaceLifetime::session_lifetime, 128));
+      Request(8, memory::TempWorkspaceLifetime::session_lifetime, 128));
   Require(shutdown.ok() && shutdown.record.has_value(), "shutdown cleanup setup allocation failed");
   auto shutdown_cleaned = manager.CleanupOnShutdown();
   Require(shutdown_cleaned.ok() && shutdown_cleaned.cleaned_count == 1, "shutdown cleanup failed");
@@ -175,7 +178,7 @@ void TestRecoveryCleanupAndRefusal() {
   memory::TempWorkspaceLifecycleManager manager(Policy(root));
 
   auto evidence_required_request =
-      Request("recovery-evidence", memory::TempWorkspaceLifetime::transaction_lifetime, 128);
+      Request(9, memory::TempWorkspaceLifetime::transaction_lifetime, 128);
   evidence_required_request.evidence_required_before_discard = true;
   auto evidence_required = manager.AllocateSpillFile(std::move(evidence_required_request));
   Require(evidence_required.ok() && evidence_required.record.has_value(),
@@ -198,7 +201,7 @@ void TestRecoveryCleanupAndRefusal() {
   Require(!std::filesystem::exists(evidence_required.record->path),
           "recovery cleanup left discard-after-evidence file behind");
 
-  auto resumable_request = Request("operation-resume", memory::TempWorkspaceLifetime::operation_lifetime, 128);
+  auto resumable_request = Request(10, memory::TempWorkspaceLifetime::operation_lifetime, 128);
   resumable_request.durable_operation_owned = true;
   auto resumable = manager.AllocateSpillFile(std::move(resumable_request));
   Require(resumable.ok() && resumable.record.has_value(), "operation-owned recovery setup failed");

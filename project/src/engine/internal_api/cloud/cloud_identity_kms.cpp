@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "cloud/cloud_identity_kms.hpp"
+#include "catalog/binary_view_options.hpp"
+#include "crud_support/crud_store.hpp"
 
 #include "api_diagnostics.hpp"
 
@@ -58,6 +60,17 @@ std::string OptionValue(const EngineApiRequest& request, const std::string& pref
   return {};
 }
 
+EngineUuid OptionUuid(const EngineApiRequest& request,const std::string& prefix) {
+  return BinaryViewUuid(OptionValue(request,prefix));
+}
+EngineUuid FirstPresentUuid(const EngineApiRequest& request,std::initializer_list<const char*> prefixes) {
+  for(const char* prefix:prefixes) {
+    const auto bytes=OptionValue(request,prefix);
+    if(!bytes.empty())return BinaryViewUuid(bytes);
+  }
+  return {};
+}
+
 bool OptionPresent(const EngineApiRequest& request, const std::string& exact_value) {
   for (const auto& option : request.option_envelopes) {
     if (option == exact_value) { return true; }
@@ -101,11 +114,6 @@ std::string Hex64(const std::uint64_t value) {
   return out.str();
 }
 
-std::string SyntheticUuid(const std::string& kind, const std::string& seed) {
-  const std::string hex = Hex64(Fnv1a(kind + ":a:" + seed)) + Hex64(Fnv1a(kind + ":b:" + seed));
-  return hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" + hex.substr(12, 4) + "-" +
-         hex.substr(16, 4) + "-" + hex.substr(20, 12);
-}
 
 std::string RedactedReference(const std::string& reference) {
   if (reference.empty()) { return {}; }
@@ -133,8 +141,8 @@ CloudIdentityKmsValidation Fail(const EngineApiRequest& request,
   validation.rows.push_back({"plaintext_material_persisted", "false"});
   validation.rows.push_back({"plaintext_material_returned", "false"});
   if (add_denial_audit) {
-    std::string audit = FirstPresentValue(request, {"audit_evidence_uuid:", "static_secret_audit_evidence_uuid:", "audit_policy_uuid:"});
-    if (audit.empty()) { audit = SyntheticUuid("cloud_identity_kms_audit", validation.diagnostic.code + ":" + validation.diagnostic.detail); }
+    EngineUuid audit = FirstPresentUuid(request, {"audit_evidence_uuid:", "static_secret_audit_evidence_uuid:", "audit_policy_uuid:"});
+    if (audit.is_nil()) { audit = GenerateCrudEngineUuid("object"); }
     validation.evidence.push_back({"cloud_identity_kms_denial_audit", audit});
   }
   return validation;
@@ -198,16 +206,16 @@ CloudIdentityKmsValidation ValidateStaticSecretException(const EngineApiRequest&
       !OptionBool(request, "legacy_static_secret_policy:", false)) {
     return Fail(request, "SB_DIAG_CLOUD_STATIC_SECRET_FORBIDDEN", "static_secret_break_glass_or_legacy_scope_required");
   }
-  if (OptionValue(request, "static_secret_policy_uuid:").empty()) {
+  if (OptionUuid(request, "static_secret_policy_uuid:").is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_STATIC_SECRET_FORBIDDEN", "static_secret_policy_uuid_required");
   }
-  if (OptionValue(request, "static_secret_audit_evidence_uuid:").empty()) {
+  if (OptionUuid(request, "static_secret_audit_evidence_uuid:").is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_STATIC_SECRET_FORBIDDEN", "static_secret_audit_evidence_required");
   }
-  if (OptionValue(request, "static_secret_rotation_policy_uuid:").empty()) {
+  if (OptionUuid(request, "static_secret_rotation_policy_uuid:").is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_STATIC_SECRET_FORBIDDEN", "static_secret_rotation_policy_required");
   }
-  if (FirstPresentValue(request, {"static_secret_protected_material_version_uuid:", "protected_material_version_uuid:"}).empty()) {
+  if (FirstPresentUuid(request, {"static_secret_protected_material_version_uuid:", "protected_material_version_uuid:"}).is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_STATIC_SECRET_FORBIDDEN", "static_secret_protected_material_reference_required");
   }
   CloudIdentityKmsValidation ok;
@@ -229,13 +237,13 @@ CloudIdentityKmsValidation ValidateSecretlessIdentity(const EngineApiRequest& re
     return ok;
   }
 
-  if (OptionValue(request, "provider_profile_uuid:").empty()) {
+  if (OptionUuid(request, "provider_profile_uuid:").is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_IDENTITY_MAPPING_MISSING", "provider_profile_uuid_required");
   }
   if (FirstPresentValue(request, {"external_subject_ref:", "subject_ref:", "provider_subject_ref:"}).empty()) {
     return Fail(request, "SB_DIAG_CLOUD_IDENTITY_MAPPING_MISSING", "external_subject_ref_required");
   }
-  if (OptionValue(request, "internal_subject_uuid:").empty()) {
+  if (OptionUuid(request, "internal_subject_uuid:").is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_IDENTITY_MAPPING_MISSING", "internal_subject_uuid_required");
   }
   if (!ModeEvidenceVerified(request, mode)) {
@@ -278,13 +286,13 @@ CloudIdentityKmsValidation ValidateKmsPolicy(const EngineApiRequest& request, co
   if (kms_mode == "unsupported") {
     return Fail(request, "SB_DIAG_CLOUD_KMS_PROFILE_INVALID", "kms_mode_unsupported");
   }
-  if (OptionValue(request, "kms_profile_uuid:").empty()) {
+  if (OptionUuid(request, "kms_profile_uuid:").is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_KMS_PROFILE_INVALID", "kms_profile_uuid_required");
   }
-  if (OptionValue(request, "rotation_policy_uuid:").empty()) {
+  if (OptionUuid(request, "rotation_policy_uuid:").is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_KEY_ROTATION_BLOCKED", "rotation_policy_uuid_required");
   }
-  if (OptionValue(request, "audit_policy_uuid:").empty()) {
+  if (OptionUuid(request, "audit_policy_uuid:").is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_KMS_PROFILE_INVALID", "audit_policy_uuid_required");
   }
   if (!OptionBool(request, "envelope_encryption_flag:", true)) {
@@ -309,7 +317,7 @@ CloudIdentityKmsValidation ValidateKmsPolicy(const EngineApiRequest& request, co
         !OptionBool(request, "kms_emulator_evidence_verified:", false)))) {
     return Fail(request, "SB_DIAG_CLOUD_KMS_PROFILE_INVALID", "local_kms_emulator_evidence_required");
   }
-  if (kms_mode == "manual_recovery_key" && OptionValue(request, "manual_recovery_approval_uuid:").empty()) {
+  if (kms_mode == "manual_recovery_key" && OptionUuid(request, "manual_recovery_approval_uuid:").is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_KMS_PROFILE_INVALID", "manual_recovery_approval_uuid_required");
   }
 
@@ -324,10 +332,10 @@ CloudIdentityKmsValidation ValidateKmsPolicy(const EngineApiRequest& request, co
       }).empty()) {
     return Fail(request, "SB_DIAG_CLOUD_KMS_PROFILE_INVALID", "key_reference_required");
   }
-  if (FirstPresentValue(request, {"protected_material_uuid:", "kms_protected_material_uuid:"}).empty()) {
+  if (FirstPresentUuid(request, {"protected_material_uuid:", "kms_protected_material_uuid:"}).is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_KMS_PROFILE_INVALID", "protected_material_uuid_required");
   }
-  if (FirstPresentValue(request, {"protected_material_version_uuid:", "kms_protected_material_version_uuid:"}).empty()) {
+  if (FirstPresentUuid(request, {"protected_material_version_uuid:", "kms_protected_material_version_uuid:"}).is_nil()) {
     return Fail(request, "SB_DIAG_CLOUD_KMS_PROFILE_INVALID", "protected_material_version_uuid_required");
   }
 
@@ -339,15 +347,13 @@ CloudIdentityKmsValidation ValidateKmsPolicy(const EngineApiRequest& request, co
 CloudProtectedReference MakeIdentityReference(const EngineApiRequest& request, const std::string& mode) {
   CloudProtectedReference ref;
   const std::string subject = FirstPresentValue(request, {"external_subject_ref:", "subject_ref:", "provider_subject_ref:"});
-  const std::string version = FirstPresentValue(request, {"identity_protected_material_version_uuid:", "static_secret_protected_material_version_uuid:", "protected_material_version_uuid:"});
+  const EngineUuid version = FirstPresentUuid(request, {"identity_protected_material_version_uuid:", "static_secret_protected_material_version_uuid:", "protected_material_version_uuid:"});
   ref.reference_kind = mode == "static_secret" ? "static_secret_protected_reference" : "secretless_identity_binding";
-  ref.provider_profile_uuid = OptionValue(request, "provider_profile_uuid:");
-  ref.protected_material_uuid = FirstPresentValue(request, {"identity_protected_material_uuid:", "protected_material_uuid:"});
+  ref.provider_profile_uuid = OptionUuid(request, "provider_profile_uuid:");
+  ref.protected_material_uuid = FirstPresentUuid(request, {"identity_protected_material_uuid:", "protected_material_uuid:"});
   ref.protected_material_version_uuid = version;
-  ref.redacted_external_reference = RedactedReference(subject.empty() ? OptionValue(request, "static_secret_policy_uuid:") : subject);
-  ref.reference_uuid = SyntheticUuid(ref.reference_kind, mode + ":" + ref.provider_profile_uuid + ":" +
-                                                                  ref.protected_material_version_uuid + ":" +
-                                                                  ref.redacted_external_reference);
+  ref.redacted_external_reference = subject.empty() ? "redacted-static-policy-reference" : RedactedReference(subject);
+  ref.reference_uuid = GenerateCrudEngineUuid("object");
   return ref;
 }
 
@@ -363,13 +369,11 @@ CloudProtectedReference MakeKmsReference(const EngineApiRequest& request, const 
   });
   CloudProtectedReference ref;
   ref.reference_kind = "kms_wrapping_key_reference";
-  ref.provider_profile_uuid = OptionValue(request, "provider_profile_uuid:");
-  ref.protected_material_uuid = FirstPresentValue(request, {"protected_material_uuid:", "kms_protected_material_uuid:"});
-  ref.protected_material_version_uuid = FirstPresentValue(request, {"protected_material_version_uuid:", "kms_protected_material_version_uuid:"});
+  ref.provider_profile_uuid = OptionUuid(request, "provider_profile_uuid:");
+  ref.protected_material_uuid = FirstPresentUuid(request, {"protected_material_uuid:", "kms_protected_material_uuid:"});
+  ref.protected_material_version_uuid = FirstPresentUuid(request, {"protected_material_version_uuid:", "kms_protected_material_version_uuid:"});
   ref.redacted_external_reference = RedactedReference(kms_mode + ":" + key_ref);
-  ref.reference_uuid = SyntheticUuid(ref.reference_kind, kms_mode + ":" + OptionValue(request, "kms_profile_uuid:") +
-                                                                  ":" + ref.protected_material_version_uuid + ":" +
-                                                                  ref.redacted_external_reference);
+  ref.reference_uuid = GenerateCrudEngineUuid("object");
   return ref;
 }
 
@@ -377,17 +381,14 @@ CloudKmsEnvelopeMetadata MakeEnvelope(const EngineApiRequest& request,
                                       const std::string& kms_mode,
                                       const CloudProtectedReference& kms_reference) {
   CloudKmsEnvelopeMetadata envelope;
-  envelope.kms_profile_uuid = OptionValue(request, "kms_profile_uuid:");
+  envelope.kms_profile_uuid = OptionUuid(request, "kms_profile_uuid:");
   envelope.kms_mode = kms_mode;
-  envelope.rotation_policy_uuid = OptionValue(request, "rotation_policy_uuid:");
-  envelope.audit_policy_uuid = OptionValue(request, "audit_policy_uuid:");
+  envelope.rotation_policy_uuid = OptionUuid(request, "rotation_policy_uuid:");
+  envelope.audit_policy_uuid = OptionUuid(request, "audit_policy_uuid:");
   envelope.envelope_version = OptionValue(request, "envelope_version:");
   if (envelope.envelope_version.empty()) { envelope.envelope_version = "1"; }
   envelope.wrapping_reference_uuid = kms_reference.reference_uuid;
-  envelope.envelope_uuid = SyntheticUuid("cloud_kms_envelope",
-                                                   envelope.kms_profile_uuid + ":" +
-                                                       kms_reference.protected_material_version_uuid + ":" +
-                                                       envelope.envelope_version);
+  envelope.envelope_uuid = GenerateCrudEngineUuid("object");
   return envelope;
 }
 
@@ -399,10 +400,10 @@ EngineTypedValue RowValue(std::string value) {
   return typed;
 }
 
-void AddResultRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
+void AddResultRow(EngineApiResult* result, std::vector<std::pair<std::string, EngineEvidenceValue>> fields) {
   EngineRowValue row;
-  row.requested_row_uuid = SyntheticUuid("cloud_identity_kms_row", std::to_string(result->result_shape.rows.size()));
-  for (auto& field : fields) { row.fields.push_back({std::move(field.first), RowValue(std::move(field.second))}); }
+  row.requested_row_uuid = GenerateCrudEngineUuid("row");
+  for (auto& field : fields) { row.fields.push_back({std::move(field.first), std::visit([](const auto& value){return ApiBehaviorValue(value);},field.second)}); }
   result->result_shape.result_kind = "cloud_identity_kms_policy_rows";
   result->result_shape.rows.push_back(std::move(row));
 }
@@ -465,6 +466,12 @@ bool CloudIdentityModeIsSecretless(const std::string& mode) {
 }
 
 CloudIdentityKmsValidation ValidateCloudIdentityKmsPolicy(const EngineApiRequest& request) {
+  for(const auto& option:request.option_envelopes) {
+    const auto colon=option.find(':');
+    if(colon!=std::string::npos&&option.substr(0,colon).ends_with("uuid")&&
+        BinaryViewUuid(option.substr(colon+1)).is_nil())
+      return Fail(request,"SB_DIAG_CLOUD_IDENTITY_MAPPING_MISSING","binary_uuid_option_required");
+  }
   std::string offending_prefix;
   if (ContainsPlaintextOption(request, &offending_prefix)) {
     return Fail(request, "SB_DIAG_CLOUD_PLAINTEXT_MATERIAL_FORBIDDEN",
@@ -504,15 +511,18 @@ CloudIdentityKmsValidation ValidateCloudIdentityKmsPolicy(const EngineApiRequest
   validation.identity_reference = MakeIdentityReference(request, identity_mode);
   validation.kms_reference = MakeKmsReference(request, kms_mode);
   validation.envelope = MakeEnvelope(request, kms_mode, validation.kms_reference);
+  if(validation.identity_reference.reference_uuid.is_nil()||validation.kms_reference.reference_uuid.is_nil()||
+      validation.envelope.envelope_uuid.is_nil())return Fail(request,
+          "SB_DIAG_CLOUD_IDENTITY_MAPPING_MISSING","identity_issuance_failed",false);
 
   const bool static_exception = identity_mode == "static_secret";
   const bool local_emulator = identity_mode == "local_emulator_identity" || kms_mode == "local_emulator";
   validation.evidence.push_back({"cloud_identity_kms_policy_validated", validation.envelope.envelope_uuid});
   validation.evidence.push_back({"cloud_identity_binding_reference", validation.identity_reference.reference_uuid});
   validation.evidence.push_back({"cloud_kms_wrapping_reference", validation.kms_reference.reference_uuid});
-  validation.evidence.push_back({"cloud_identity_kms_audit", OptionValue(request, "audit_policy_uuid:")});
+  validation.evidence.push_back({"cloud_identity_kms_audit", OptionUuid(request, "audit_policy_uuid:")});
   if (static_exception) {
-    validation.evidence.push_back({"cloud_static_secret_policy_exception", OptionValue(request, "static_secret_audit_evidence_uuid:")});
+    validation.evidence.push_back({"cloud_static_secret_policy_exception", OptionUuid(request, "static_secret_audit_evidence_uuid:")});
   }
   if (local_emulator) {
     validation.evidence.push_back({"cloud_local_emulator_fixture", validation.envelope.envelope_uuid});
@@ -523,7 +533,7 @@ CloudIdentityKmsValidation ValidateCloudIdentityKmsPolicy(const EngineApiRequest
   validation.rows.push_back({"identity_secretless", CloudIdentityModeIsSecretless(identity_mode) ? "true" : "false"});
   validation.rows.push_back({"static_secret_policy_exception", static_exception ? "true" : "false"});
   validation.rows.push_back({"kms_mode", kms_mode});
-  validation.rows.push_back({"provider_profile_uuid", OptionValue(request, "provider_profile_uuid:")});
+  validation.rows.push_back({"provider_profile_uuid", OptionUuid(request, "provider_profile_uuid:")});
   validation.rows.push_back({"identity_reference_uuid", validation.identity_reference.reference_uuid});
   validation.rows.push_back({"identity_external_subject_ref", validation.identity_reference.redacted_external_reference});
   validation.rows.push_back({"kms_reference_uuid", validation.kms_reference.reference_uuid});

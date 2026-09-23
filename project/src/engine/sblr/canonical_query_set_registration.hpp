@@ -65,7 +65,7 @@ bool CanonicalSetOperationExecutionReceiptMatches(
 exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
     LiveSetRegistrationProfiles prepared_set_nodes,
     std::string implementation_id,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);
 
 }  // namespace scratchbird::engine::sblr

@@ -14,11 +14,22 @@
 #include <algorithm>
 #include <optional>
 #include <utility>
+#include "uuid.hpp"
+#include <algorithm>
 
 namespace scratchbird::engine::internal_api {
 namespace {
 
 namespace agents = scratchbird::core::agents;
+std::string IdentityBytes(const EngineUuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+bool ReadIdentity(std::string_view bytes, EngineUuid* id) {
+  if (bytes.size() != id->bytes.size()) return false;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), id->bytes.size(), id->bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(*id);
+}
+
 
 std::string DiagnosticDetail(const EngineApiDiagnostic& diagnostic) {
   if (!diagnostic.detail.empty()) { return diagnostic.detail; }
@@ -113,7 +124,7 @@ agents::DurableAgentResourceReservationRequest ResourceReservationForAction(
           "agent_action_resource_reservation|" + reservation.reservation_key);
   reservation.owner_scope = request.context.principal_uuid.is_nil()
                                 ? request.authority.principal_uuid
-                                : request.context.principal_uuid;
+                                : IdentityBytes(request.context.principal_uuid);
   reservation.agent_type_id = request.action.agent_type_id;
   reservation.operation_id = request.action.operation_id;
   reservation.now_microseconds =
@@ -199,12 +210,18 @@ agents::AgentRuntimeStatus ValidateStrictMetricsBeforeActionReservation(
         request.action.agent_type_id);
   }
 
-  auto metric_context = request.metric_context;
-  if (metric_context.database_uuid.empty()) {
-    metric_context.database_uuid = request.authority.scope_uuid;
+  EngineUuid scope_uuid, principal_uuid;
+  if (!ReadIdentity(request.authority.scope_uuid, &scope_uuid) ||
+      !ReadIdentity(request.authority.principal_uuid, &principal_uuid)) {
+    return agents::AgentError("SB_AGENT_ACTION_STORE.AUTHORITY_IDENTITY_INVALID",
+                              "authority identities must be binary16 UUIDv7");
   }
-  if (metric_context.principal_uuid.empty()) {
-    metric_context.principal_uuid = request.authority.principal_uuid;
+  auto metric_context = request.metric_context;
+  if (metric_context.database_uuid.is_nil()) {
+    metric_context.database_uuid = scope_uuid;
+  }
+  if (metric_context.principal_uuid.is_nil()) {
+    metric_context.principal_uuid = principal_uuid;
   }
   if (metric_context.wall_now_microseconds == 0) {
     metric_context.wall_now_microseconds = 1;
@@ -213,8 +230,8 @@ agents::AgentRuntimeStatus ValidateStrictMetricsBeforeActionReservation(
 
   auto metric_options = request.metric_snapshot_options;
   metric_options.mode = agents::AgentMetricRuntimeMode::production_strict;
-  if (metric_options.expected_scope_uuid.empty()) {
-    metric_options.expected_scope_uuid = request.authority.scope_uuid;
+  if (metric_options.expected_scope_uuid.is_nil()) {
+    metric_options.expected_scope_uuid = scope_uuid;
   }
   const auto metric_evaluation = agents::EvaluateAgentObservedMetricSnapshots(
       *descriptor,
@@ -313,8 +330,8 @@ BuildEngineOwnedAgentActuatorRegistry(
   result.registry.evidence_uuid_ =
       agents::DeterministicAgentRuntimeObjectUuidFromKey(
           "engine_owned_agent_actuator_registry|" +
-          context.database_uuid + "|" +
-          context.transaction_uuid + "|" +
+          IdentityBytes(context.database_uuid) + "|" +
+          IdentityBytes(context.transaction_uuid) + "|" +
           std::to_string(context.local_transaction_id) + "|" +
           std::to_string(route_proofs.route_proofs.size()));
   result.registry.registry_ = std::move(registry);
@@ -471,9 +488,9 @@ AgentActionDispatchStoreResult DispatchAgentActionWithDurableCatalogStore(
       request.fsync_or_checkpoint_evidence;
   dispatch_request.provider_execution_context.request_id = request.context.request_id;
   dispatch_request.provider_execution_context.database_uuid =
-      request.context.database_uuid;
+      IdentityBytes(request.context.database_uuid);
   dispatch_request.provider_execution_context.transaction_uuid =
-      request.context.transaction_uuid;
+      IdentityBytes(request.context.transaction_uuid);
   dispatch_request.provider_execution_context.local_transaction_id =
       request.context.local_transaction_id;
   dispatch_request.provider_execution_context.registry_provenance =

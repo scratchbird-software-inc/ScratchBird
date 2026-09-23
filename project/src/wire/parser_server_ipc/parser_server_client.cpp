@@ -1,3 +1,6 @@
+#include "wire/public_result_packet.hpp"
+#include "management_request_codec.hpp"
+#include "public_relation_projection_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -1170,35 +1173,13 @@ std::optional<std::string> EncodedDescriptorExactFieldValue(
 bool ValidatePublicRelationDatatypeIdentityV3(
     const PublicRelationDescriptor& descriptor,
     const PublicRelationColumnDescriptor& column) {
-  const auto canonical_descriptor_uuid = EncodedDescriptorExactFieldValue(
-      column.encoded_type_descriptor, "datatype_descriptor_uuid");
-  // Only this legacy parser presentation envelope is textual. Transport
-  // identities and the Core lookup retain their original binary values.
-  const auto identity = [](const std::string& text)
-      -> std::optional<scratchbird::core::platform::Uuid> {
-    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-    if (!parsed.ok() ||
-        !scratchbird::core::uuid::IsEngineIdentityUuid(parsed.value) ||
-        scratchbird::core::uuid::UuidToString(parsed.value) != text)
-      return std::nullopt;
-    return parsed.value;
-  };
-  const auto descriptor_uuid = canonical_descriptor_uuid
-      ? identity(*canonical_descriptor_uuid)
-      : std::optional{column.type_descriptor_uuid};
-  if (!descriptor_uuid ||
-      !scratchbird::core::uuid::IsEngineIdentityUuid(*descriptor_uuid)) return false;
-  if (!column.datatype_identity_present) {
-    // A canonical TEXT descriptor can never legally omit its registry tuple.
-    // This comparison is refusal-only; it does not grant UUID-only authority.
-    constexpr scratchbird::core::platform::Uuid text_descriptor{
-        {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x18}};
-    return *descriptor_uuid != text_descriptor;
-  }
+  const auto& descriptor_uuid = column.datatype_descriptor_uuid;
+  if (!column.datatype_identity_present ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(descriptor_uuid)) return false;
   if (!scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.datatype_catalog_snapshot_uuid) ||
       descriptor.datatype_catalog_generation == 0 ||
       descriptor.datatype_registry_generation == 0 ||
-      !canonical_descriptor_uuid.has_value() ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(descriptor_uuid) ||
       column.datatype_descriptor_generation == 0 ||
       !scratchbird::core::uuid::IsEngineIdentityUuid(column.datatype_type_uuid) ||
       column.datatype_type_generation == 0 ||
@@ -1214,7 +1195,7 @@ bool ValidatePublicRelationDatatypeIdentityV3(
           snapshot_uuid,
           descriptor.datatype_catalog_generation,
           descriptor.datatype_registry_generation,
-          *descriptor_uuid,
+          descriptor_uuid,
           column.datatype_descriptor_generation);
   if (!authority.ok) return false;
   const auto& row = authority.row;
@@ -1224,7 +1205,7 @@ bool ValidatePublicRelationDatatypeIdentityV3(
              snapshot_uuid &&
          row.catalog_generation == descriptor.datatype_catalog_generation &&
          row.registry_generation == descriptor.datatype_registry_generation &&
-         row.descriptor_uuid == *descriptor_uuid &&
+         row.descriptor_uuid == descriptor_uuid &&
          row.descriptor_generation ==
              column.datatype_descriptor_generation &&
          row.type_uuid == type_uuid &&
@@ -1525,6 +1506,8 @@ bool AppendTypedExecuteDiagnostics(
     MessageVectorSet* messages);
 
 std::string TextLineValue(std::string_view encoded, std::string_view key) {
+  if (encoded.starts_with(scratchbird::wire::public_result::kMagic))
+    return scratchbird::wire::public_result::Value(encoded, key).value_or("");
   std::size_t start = 0;
   while (start <= encoded.size()) {
     const std::size_t end = encoded.find('\n', start);
@@ -4688,10 +4671,10 @@ std::vector<std::uint8_t> EncodeResolveNamePayload(const ParserSessionContext& s
   std::vector<std::uint8_t> out;
   PutString(&out, presented_name);
   PutU8(&out, quoted ? 1 : 0);
-  const std::string identifier_profile =
+  const auto identifier_profile =
       session.dialect_profile_uuid.is_nil() ? config.dialect_profile_uuid
                                            : session.dialect_profile_uuid;
-  PutString(&out, identifier_profile);
+  PutUuid(&out, identifier_profile.bytes);
   PutString(&out, session.default_language.empty() ? "en" : session.default_language);
   PutString(&out, JoinSearchPath(session));
   PutString(&out, object_class);
@@ -4747,20 +4730,15 @@ std::vector<std::uint8_t> EncodeManagementPayload(std::string_view operation_key
                                                   std::string_view audit_reason,
                                                   std::uint64_t timeout_ms,
                                                   bool include_history) {
-  const std::vector<std::pair<std::string, std::string>> fields{
-      {"operation_key", std::string(operation_key)},
-      {"target_uuid", std::string(target_uuid)},
-      {"mode", std::string(mode)},
-      {"audit_reason", std::string(audit_reason)},
-      {"timeout_ms", std::to_string(timeout_ms)},
-      {"include_history", include_history ? "true" : "false"},
-  };
+  scratchbird::wire::ManagementRequestV1 request;
+  request.operation_key = operation_key;
+  request.target_uuid = target_uuid;
+  request.mode = mode;
+  request.audit_reason = audit_reason;
+  request.timeout_ms = timeout_ms;
+  request.include_history = include_history;
   std::vector<std::uint8_t> out;
-  PutU16(&out, static_cast<std::uint16_t>(fields.size()));
-  for (const auto& [key, value] : fields) {
-    PutString(&out, key);
-    PutString(&out, value);
-  }
+  if (!scratchbird::wire::EncodeManagementRequestV1(request, &out)) return {};
   return out;
 }
 
@@ -5013,275 +4991,72 @@ PublicNameResolutionResult DecodePublicNameResultPayloadV3(
     const std::uint8_t extension_version = response.payload[offset++];
     const std::uint32_t extension_bytes = GetU32(response.payload, offset);
     offset += 4;
-    if (extension_kind != kRelationDescriptorExtensionKind ||
-        (extension_version != kRelationDescriptorExtensionVersion &&
-         extension_version != kRelationDescriptorExtensionVersionV2 &&
-         extension_version != kRelationDescriptorExtensionVersionV3) ||
-        extension_bytes > kMaxPublicRelationProjectionBytes ||
+    if (extension_kind != kPublicRelationProjectionKindV4 ||
+        extension_version != kPublicRelationProjectionVersionV4 ||
         extension_bytes > response.payload.size() - offset) {
-      invalid(extension_bytes > kMaxPublicRelationProjectionBytes
-                  ? "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_TOO_LARGE"
-                  : "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-              "The V3 relation descriptor extension header is invalid.");
-      return result;
-    }
-    const std::size_t extension_end = offset + extension_bytes;
-    auto read_bounded_string = [&](std::string* value,
-                                   std::size_t max_bytes) {
-      return ReadStringWithin(response.payload,
-                              &offset,
-                              value,
-                              extension_end,
-                              max_bytes);
-    };
-    auto& descriptor = result.relation_descriptor;
-    const bool relation_descriptor_v2_or_later =
-        extension_version >= kRelationDescriptorExtensionVersionV2;
-    const bool relation_descriptor_v3 =
-        extension_version == kRelationDescriptorExtensionVersionV3;
-    if (offset + (relation_descriptor_v3
-                      ? 96
-                      : (relation_descriptor_v2_or_later ? 64 : 48)) >
-        extension_end) {
       invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-              "The V3 relation descriptor identity is truncated.");
+              "The binary relation descriptor extension header is invalid.");
       return result;
     }
-    const auto descriptor_uuid = GetUuid(response.payload, offset);
-    offset += 16;
-    const auto relation_uuid = GetUuid(response.payload, offset);
-    offset += 16;
-    std::array<std::uint8_t, 16> schema_uuid{};
-    if (relation_descriptor_v2_or_later) {
-      schema_uuid = GetUuid(response.payload, offset);
-      offset += 16;
-    }
-    descriptor.descriptor_generation = GetU64(response.payload, offset);
-    offset += 8;
-    descriptor.validated_resource_epoch = GetU64(response.payload, offset);
-    offset += 8;
-    std::array<std::uint8_t, 16> datatype_catalog_snapshot_uuid{};
-    if (relation_descriptor_v3) {
-      datatype_catalog_snapshot_uuid = GetUuid(response.payload, offset);
-      offset += 16;
-      descriptor.datatype_catalog_generation =
-          GetU64(response.payload, offset);
-      offset += 8;
-      descriptor.datatype_registry_generation =
-          GetU64(response.payload, offset);
-      offset += 8;
-    }
-    if (offset + 4 > extension_end) {
+    PublicRelationProjectionV4 projection;
+    if (!DecodePublicRelationProjectionV4(
+            std::span<const std::uint8_t>(response.payload).subspan(offset, extension_bytes),
+            kPublicRelationProjectionMaximumBytesV4, &projection) ||
+        projection.relation_uuid != result.object_uuid) {
       invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-              "The V3 relation descriptor column count is truncated.");
+              "The binary relation descriptor is malformed or identifies another relation.");
       return result;
     }
-    const std::uint32_t column_count = GetU32(response.payload, offset);
-    offset += 4;
-    if (!EngineIdentityUuidValid(descriptor_uuid) || !EngineIdentityUuidValid(relation_uuid) ||
-        (relation_descriptor_v2_or_later &&
-         !EngineIdentityUuidValid(schema_uuid)) ||
-        descriptor.descriptor_generation == 0 ||
-        descriptor.validated_resource_epoch == 0 ||
-        (relation_descriptor_v3 &&
-         (!EngineIdentityUuidValid(datatype_catalog_snapshot_uuid) ||
-          descriptor.datatype_catalog_generation == 0 ||
-          descriptor.datatype_registry_generation == 0)) ||
-        column_count == 0 ||
-        column_count > kMaxPublicRelationProjectionColumns) {
-      invalid(column_count > kMaxPublicRelationProjectionColumns
-                  ? "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_TOO_LARGE"
-                  : "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-              "The V3 relation descriptor identity or column count is invalid.");
-      return result;
-    }
-    descriptor.descriptor_uuid = scratchbird::core::platform::Uuid{descriptor_uuid};
-    descriptor.relation_uuid = scratchbird::core::platform::Uuid{relation_uuid};
-    descriptor.schema_uuid = scratchbird::core::platform::Uuid{schema_uuid};
-    descriptor.datatype_catalog_snapshot_uuid =
-        scratchbird::core::platform::Uuid{datatype_catalog_snapshot_uuid};
-    if (descriptor.relation_uuid != result.object_uuid) {
-      invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RELATION_MISMATCH",
-              "The projected descriptor does not identify the resolved relation.");
-      return result;
-    }
-    std::set<scratchbird::core::platform::Uuid> column_uuids;
-    std::set<std::uint32_t> ordinals;
-    descriptor.columns.reserve(column_count);
-    for (std::uint32_t column_index = 0; column_index < column_count;
-         ++column_index) {
-      if (offset + 20 > extension_end) {
-        invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                "A V3 relation column identity is truncated.");
-        return result;
-      }
+    offset += extension_bytes;
+    PublicRelationDescriptor descriptor;
+    descriptor.descriptor_uuid = projection.descriptor_uuid;
+    descriptor.relation_uuid = projection.relation_uuid;
+    descriptor.schema_uuid = projection.schema_uuid;
+    descriptor.descriptor_generation = projection.descriptor_generation;
+    descriptor.validated_resource_epoch = projection.validated_resource_epoch;
+    descriptor.datatype_catalog_snapshot_uuid = projection.datatype_catalog_snapshot_uuid;
+    descriptor.datatype_catalog_generation = projection.datatype_catalog_generation;
+    descriptor.datatype_registry_generation = projection.datatype_registry_generation;
+    for (auto& source : projection.columns) {
       PublicRelationColumnDescriptor column;
-      const auto column_uuid = GetUuid(response.payload, offset);
-      offset += 16;
-      column.ordinal = GetU32(response.payload, offset);
-      offset += 4;
-      if (!read_bounded_string(&column.canonical_name_key,
-                               kMaxPublicRelationMetadataTextBytes) ||
-          offset + 16 > extension_end) {
-        invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                "A V3 relation column name or type identity is malformed.");
-        return result;
-      }
-      const auto type_descriptor_uuid = GetUuid(response.payload, offset);
-      offset += 16;
-      if (!read_bounded_string(&column.type_descriptor_kind,
-                               kMaxPublicRelationMetadataTextBytes) ||
-          !read_bounded_string(&column.canonical_type_name,
-                               kMaxPublicRelationMetadataTextBytes) ||
-          !read_bounded_string(&column.encoded_type_descriptor,
-                               kMaxPublicEncodedTypeDescriptorBytes) ||
-          offset >= extension_end) {
-        invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                "A V3 relation column type descriptor is malformed.");
-        return result;
-      }
-      const std::uint8_t attributes = response.payload[offset++];
-      if ((attributes & 0xf0u) != 0 || offset + 16 > extension_end) {
-        invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                "A V3 relation column attribute set is invalid.");
-        return result;
-      }
-      column.nullable = (attributes & 0x01u) != 0;
-      column.generated = (attributes & 0x02u) != 0;
-      column.identity_column = (attributes & 0x04u) != 0;
-      column.charset_variable_width = (attributes & 0x08u) != 0;
-      const auto charset_uuid = GetUuid(response.payload, offset);
-      offset += 16;
-      if (!read_bounded_string(&column.charset_canonical_name,
-                               kMaxPublicRelationMetadataTextBytes) ||
-          offset + 16 > extension_end) {
-        invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                "A V3 relation column charset descriptor is malformed.");
-        return result;
-      }
-      const auto collation_uuid = GetUuid(response.payload, offset);
-      offset += 16;
-      if (!read_bounded_string(&column.collation_canonical_name,
-                               kMaxPublicRelationMetadataTextBytes) ||
-          offset + 12 > extension_end) {
-        invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                "A V3 relation column collation descriptor is malformed.");
-        return result;
-      }
-      column.character_length = GetU32(response.payload, offset);
-      offset += 4;
-      column.charset_min_bytes = GetU32(response.payload, offset);
-      offset += 4;
-      column.charset_max_bytes = GetU32(response.payload, offset);
-      offset += 4;
-
-      if (relation_descriptor_v3) {
-        if (offset >= extension_end) {
-          invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                  "A V3 relation column datatype identity presence is truncated.");
-          return result;
-        }
-        const auto identity_presence = response.payload[offset++];
-        if (identity_presence > 1) {
-          invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                  "A V3 relation column datatype identity presence is invalid.");
-          return result;
-        }
-        column.datatype_identity_present = identity_presence == 1;
-        if (column.datatype_identity_present) {
-          if (offset + 32 > extension_end) {
-            invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                    "A V3 relation column datatype identity is truncated.");
-            return result;
-          }
-          column.datatype_descriptor_generation =
-              GetU64(response.payload, offset);
-          offset += 8;
-          const auto datatype_type_uuid = GetUuid(response.payload, offset);
-          offset += 16;
-          column.datatype_type_generation = GetU64(response.payload, offset);
-          offset += 8;
-          if (!read_bounded_string(&column.datatype_codec_id,
-                                   kMaxPublicRelationMetadataTextBytes) ||
-              offset + 15 > extension_end) {
-            invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                    "A V3 relation column datatype codec identity is malformed.");
-            return result;
-          }
-          column.datatype_codec_version = GetU16(response.payload, offset);
-          offset += 2;
-          column.datatype_codec_generation = GetU64(response.payload, offset);
-          offset += 8;
-          column.datatype_canonical_value_bytes =
-              GetU32(response.payload, offset);
-          offset += 4;
-          column.datatype_null_encoding = response.payload[offset++];
-          column.datatype_type_uuid = scratchbird::core::platform::Uuid{datatype_type_uuid};
-        }
-      }
-
-      if (!EngineIdentityUuidValid(column_uuid) || !EngineIdentityUuidValid(type_descriptor_uuid) ||
-          column.canonical_name_key.empty() ||
-          column.type_descriptor_kind.empty() ||
-          column.canonical_type_name.empty() ||
-          column.encoded_type_descriptor.empty()) {
-        invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                "A V3 relation column has incomplete canonical metadata.");
-        return result;
-      }
-      column.column_uuid = scratchbird::core::platform::Uuid{column_uuid};
-      column.type_descriptor_uuid = scratchbird::core::platform::Uuid{type_descriptor_uuid};
-      if (relation_descriptor_v3 &&
-          !ValidatePublicRelationDatatypeIdentityV3(descriptor, column)) {
+      column.column_uuid = std::move(source.column_uuid);
+      column.ordinal = std::move(source.ordinal);
+      column.canonical_name_key = std::move(source.canonical_name);
+      column.type_descriptor_uuid = std::move(source.descriptor_uuid);
+      column.type_descriptor_kind = std::move(source.descriptor_kind);
+      column.canonical_type_name = std::move(source.canonical_type_name);
+      column.encoded_type_descriptor = std::move(source.scalar_metadata);
+      column.type_shape = std::move(source.shape);
+      column.datatype_descriptor_uuid = std::move(source.datatype_descriptor_uuid);
+      column.nullable = std::move(source.nullable);
+      column.generated = std::move(source.generated);
+      column.identity_column = std::move(source.identity_column);
+      column.charset_uuid = std::move(source.charset_uuid);
+      column.charset_canonical_name = std::move(source.charset_name);
+      column.collation_uuid = std::move(source.collation_uuid);
+      column.collation_canonical_name = std::move(source.collation_name);
+      column.character_length = std::move(source.character_length);
+      column.charset_min_bytes = std::move(source.charset_min_bytes);
+      column.charset_max_bytes = std::move(source.charset_max_bytes);
+      column.charset_variable_width = std::move(source.charset_variable_width);
+      column.datatype_descriptor_generation = std::move(source.descriptor_generation);
+      column.datatype_type_uuid = std::move(source.type_uuid);
+      column.datatype_type_generation = std::move(source.type_generation);
+      column.datatype_codec_id = std::move(source.codec_id);
+      column.datatype_codec_version = std::move(source.codec_version);
+      column.datatype_codec_generation = std::move(source.codec_generation);
+      column.datatype_canonical_value_bytes = std::move(source.canonical_value_width);
+      column.datatype_null_encoding = std::move(source.null_encoding);
+      column.datatype_identity_present = true;
+      if (!ValidatePublicRelationDatatypeIdentityV3(descriptor, column)) {
         invalid("DATATYPE.DESCRIPTOR.INVALID",
-                "A V3 relation column datatype identity does not match the "
-                "exact live registry row.");
-        return result;
-      }
-      if (!column_uuids.insert(column.column_uuid).second ||
-          !ordinals.insert(column.ordinal).second) {
-        invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-                "The V3 relation descriptor repeats a column identity or ordinal.");
-        return result;
-      }
-      const bool has_charset = UuidPresent(charset_uuid);
-      const bool has_collation = UuidPresent(collation_uuid);
-      const bool text_large_object = EncodedDescriptorHasExactField(
-          column.encoded_type_descriptor,
-          "text_resource_storage",
-          "large_object");
-      if (has_charset) column.charset_uuid = scratchbird::core::platform::Uuid{charset_uuid};
-      if (has_collation) column.collation_uuid = scratchbird::core::platform::Uuid{collation_uuid};
-      const bool resource_shape_valid =
-          (!has_charset || EngineIdentityUuidValid(charset_uuid)) &&
-          (!has_collation || EngineIdentityUuidValid(collation_uuid)) &&
-          (!has_collation || has_charset) &&
-          (has_charset
-               ? (!column.charset_canonical_name.empty() &&
-                  (text_large_object ? column.character_length == 0
-                                     : column.character_length != 0) &&
-                  column.charset_min_bytes != 0 &&
-                  column.charset_max_bytes >= column.charset_min_bytes)
-               : (column.charset_canonical_name.empty() &&
-                  column.collation_canonical_name.empty() &&
-                  column.character_length == 0 &&
-                  column.charset_min_bytes == 0 &&
-                  column.charset_max_bytes == 0 &&
-                  !column.charset_variable_width)) &&
-          (!has_collation || !column.collation_canonical_name.empty());
-      if (!resource_shape_valid) {
-        invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
-                "A V3 relation column has inconsistent canonical resource metadata.");
+                "The projected datatype does not match its exact catalog binding.");
         return result;
       }
       descriptor.columns.push_back(std::move(column));
     }
-    if (offset != extension_end) {
-      invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-              "The V3 relation descriptor extension has trailing bytes.");
-      return result;
-    }
     descriptor.present = true;
+    result.relation_descriptor = std::move(descriptor);
   }
   if (offset != response.payload.size()) {
     invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",

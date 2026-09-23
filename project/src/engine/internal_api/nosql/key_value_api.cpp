@@ -17,6 +17,8 @@
 #include "query/expression_api.hpp"
 #include "security/security_model.hpp"
 #include "uuid.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include <set>
 
 #include <algorithm>
 #include <array>
@@ -34,8 +36,8 @@ namespace {
 
 struct PhysicalKeyValueRecord {
   std::string key;
-  std::string object_uuid;
-  std::string row_uuid;
+  EngineUuid object_uuid;
+  EngineUuid row_uuid;
   std::string value;
   EngineApiU64 creator_tx = 0;
   EngineApiU64 expires_after_tx = 0;
@@ -43,15 +45,14 @@ struct PhysicalKeyValueRecord {
 
 using KeyValueMap = std::map<std::string, PhysicalKeyValueRecord>;
 
-std::map<std::string, KeyValueMap>& PhysicalStores() {
-  static std::map<std::string, KeyValueMap> stores;
+using PhysicalStoreKey = std::pair<std::string, EngineUuid>;
+std::map<PhysicalStoreKey, KeyValueMap>& PhysicalStores() {
+  static std::map<PhysicalStoreKey, KeyValueMap> stores;
   return stores;
 }
 
-std::string StoreKey(const EngineRequestContext& context) {
-  if (!context.database_path.empty()) { return context.database_path; }
-  if (!context.database_uuid.is_nil()) { return context.database_uuid; }
-  return "embedded_transient_kv_provider";
+PhysicalStoreKey StoreKey(const EngineRequestContext& context) {
+  return {context.database_path, context.database_uuid};
 }
 
 std::string RequestKey(const EngineApiRequest& request,
@@ -61,7 +62,10 @@ std::string RequestKey(const EngineApiRequest& request,
     return request.localized_names.front().name;
   }
   if (!request.target_object.uuid.is_nil()) {
-    return request.target_object.uuid;
+    const auto store = PhysicalStores().find(StoreKey(request.context));
+    if (store != PhysicalStores().end())
+      for (const auto& [key, record] : store->second)
+        if (record.object_uuid == request.target_object.uuid) return key;
   }
   return {};
 }
@@ -96,12 +100,12 @@ EngineNoSqlPhysicalProviderContract DefaultKvProviderContract() {
   contract.index_generation.covers_predicate = true;
   contract.index_generation.required_generation = 1;
   contract.index_generation.available_generation = 1;
-  contract.index_generation.index_uuid = "kv-exact-prefix-index";
+  contract.index_generation.index_name = "kv-exact-prefix-index";
   contract.index_generation.proof_id = "kv-index-generation:1";
   contract.delta_overlay.required = false;
   contract.policy.proof_present = true;
   contract.policy.allowed = true;
-  contract.policy.policy_snapshot_uuid = "kv-policy-snapshot";
+  contract.policy.policy_name = "kv-policy-snapshot";
   contract.mga_recheck.proof_present = true;
   contract.mga_recheck.row_mga_recheck_required = true;
   contract.mga_recheck.row_security_recheck_required = true;
@@ -136,6 +140,9 @@ TResult DiagnosticResult(const EngineRequestContext& context,
 
 void AddSelectionEvidence(const EngineNoSqlPhysicalProviderSelection& selection,
                           EngineApiResult* result) {
+  if (!selection.generation_uuid.is_nil()) {
+    result->evidence.push_back({"provider_generation_uuid", selection.generation_uuid});
+  }
   for (const auto& item : selection.evidence) {
     AddApiBehaviorEvidence(result, "kv_physical_provider", item);
   }
@@ -208,9 +215,9 @@ void AddKvRow(TResult* result, const PhysicalKeyValueRecord& record) {
                      {"ttl_expires_after_tx", std::to_string(record.expires_after_tx)}});
 }
 
-scratchbird::core::platform::TypedUuid ParseStoredRowUuid(
-    const std::string& row_uuid) {
-  const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
+scratchbird::core::platform::TypedUuid AdmitStoredRowUuid(
+    const EngineUuid& row_uuid) {
+  const auto parsed = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
       scratchbird::core::platform::UuidKind::row, row_uuid);
   return parsed.ok() ? parsed.value
                      : scratchbird::core::platform::TypedUuid{};
@@ -259,10 +266,12 @@ scratchbird::core::index::BatchPointLookupPlan MakeKvBatchLookupPlan(
 }
 
 void AddKvLookupRow(EngineApiResult* result,
-                    const scratchbird::core::index::BatchPointLookupRow& row) {
-  std::vector<std::pair<std::string, std::string>> fields = {
+                    const scratchbird::core::index::BatchPointLookupRow& row,
+                    const EngineUuid& object_uuid) {
+  ApiBehaviorFields fields = {
       {"surface", "key_value"},
-      {"row_uuid", scratchbird::core::uuid::UuidToString(row.row_uuid.value)},
+      {"row_uuid", row.row_uuid.value},
+      {"key_uuid", object_uuid},
       {"key", row.encoded_key},
       {"state", "active"},
       {"value", row.payload},
@@ -321,7 +330,7 @@ std::optional<TResult> AddKvBatchLookupRowsFromStore(
           }
           scratchbird::core::index::BatchPointLookupProviderRow row;
           row.encoded_key = key.encoded_key;
-          row.candidate.row_uuid = ParseStoredRowUuid(it->second.row_uuid);
+          row.candidate.row_uuid = AdmitStoredRowUuid(it->second.row_uuid);
           row.candidate.exact_predicate_match = true;
           row.candidate.mga_visible = true;
           row.candidate.security_authorized = true;
@@ -329,7 +338,6 @@ std::optional<TResult> AddKvBatchLookupRowsFromStore(
           row.candidate.source = "nosql.key_value";
           row.exact_row_uuid = row.candidate.row_uuid.valid();
           row.payload = it->second.value;
-          row.attributes.push_back({"key_uuid", it->second.object_uuid});
           row.attributes.push_back(
               {"ttl_expires_after_tx",
                std::to_string(it->second.expires_after_tx)});
@@ -348,7 +356,7 @@ std::optional<TResult> AddKvBatchLookupRowsFromStore(
   }
   AddKvBatchLookupEvidence(result, lookup);
   for (const auto& row : lookup.rows) {
-    AddKvLookupRow(result, row);
+    AddKvLookupRow(result, row, lookup_store.at(row.encoded_key).object_uuid);
   }
   AddApiBehaviorEvidence(result,
                          "kv_ordered_batch_lookup_primitive",
@@ -380,7 +388,7 @@ void UpsertPhysicalRecord(const EngineKeyValuePutRequest& request,
   record.key = RequestKey(request, request.key);
   record.object_uuid = result.primary_object.uuid;
   record.row_uuid = result.catalog_row_uuid;
-  if (record.row_uuid.empty()) { record.row_uuid = GenerateCrudEngineUuid("row"); }
+  if (record.row_uuid.is_nil()) { record.row_uuid = GenerateCrudEngineUuid("row"); }
   record.value = RequestPayloadValue(request, result);
   record.creator_tx = request.context.local_transaction_id;
   record.expires_after_tx = request.expires_after_local_transaction_id;
@@ -391,12 +399,7 @@ void UpsertPhysicalRecord(const EngineKeyValuePutRequest& request,
   if (!logical_key.empty()) {
     auto& stored = PhysicalStores()[StoreKey(request.context)];
     stored[logical_key] = std::move(record);
-    const auto canonical_key = result.primary_object.uuid;
-    if (!canonical_key.empty() && canonical_key != logical_key) {
-      auto alias = stored[logical_key];
-      alias.key = canonical_key;
-      stored[canonical_key] = std::move(alias);
-    }
+
   }
 }
 
@@ -538,7 +541,9 @@ EngineKeyValuePipelineResult EngineKeyValuePipeline(
   for (const auto& put : request.puts) {
     PhysicalKeyValueRecord record;
     record.key = put.key;
-    record.object_uuid = put.key;
+    const auto prior = staged_store.find(put.key);
+    record.object_uuid = prior == staged_store.end()
+        ? GenerateCrudEngineUuid("object") : prior->second.object_uuid;
     record.row_uuid = GenerateCrudEngineUuid("row");
     record.value = put.value;
     record.creator_tx = request.context.local_transaction_id;
@@ -587,8 +592,8 @@ EngineKeyValueAtomicProgramResult EngineKeyValueAtomicProgram(
   for (const auto& step : request.steps) {
     auto& record = store[step.key];
     record.key = step.key;
-    record.object_uuid = step.key;
-    if (record.row_uuid.empty()) { record.row_uuid = GenerateCrudEngineUuid("row"); }
+    if (record.object_uuid.is_nil()) record.object_uuid = GenerateCrudEngineUuid("object");
+    if (record.row_uuid.is_nil()) { record.row_uuid = GenerateCrudEngineUuid("row"); }
     record.creator_tx = request.context.local_transaction_id;
     if (step.opcode == "set") {
       record.value = step.operand;
@@ -642,18 +647,8 @@ bool CheckedAddU64(const std::uint64_t value, std::uint64_t* total) {
   return true;
 }
 
-bool CanonicalKeyValueUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto byte = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(byte) || std::isupper(byte)) return false;
-  }
-  return true;
+bool CanonicalKeyValueUuid(const EngineUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool WellFormedUtf8(const std::string_view value) {
@@ -747,47 +742,37 @@ bool CanonicalKeyValueTimestamp(const std::string_view value,
 
 bool ExactKeyValueValueDescriptor(const EngineDescriptor& descriptor,
                                   const std::string_view expected_type,
-                                  const std::string_view expected_type_uuid,
+                                  const EngineUuid& expected_type_uuid,
                                   const scratchbird::core::datatypes::
                                       DatatypeTypeCodecIdentityRowV1*
                                           expected_registry_identity,
-                                  const std::string_view expected_column_uuid,
+                                  const EngineUuid& expected_column_uuid,
                                   const bool expected_nullable) {
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
       descriptor.descriptor_kind != "canonical_type_descriptor" ||
       descriptor.canonical_type_name != expected_type) {
     return false;
   }
-  std::map<std::string_view, std::string_view> fields;
-  const auto encoded = std::string_view(descriptor.encoded_descriptor);
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto end = encoded.find(';', offset);
-    const auto field = encoded.substr(
-        offset, end == std::string_view::npos ? std::string_view::npos
-                                              : end - offset);
-    const auto equal = field.find('=');
-    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
-        equal + 1 == field.size() ||
-        !fields.emplace(field.substr(0, equal), field.substr(equal + 1)).second)
-      return false;
-    if (end == std::string_view::npos) break;
-    offset = end + 1;
-  }
+  CatalogColumnMetadata metadata;
+  if (!DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &metadata)) return false;
+  const auto& fields = metadata.text;
+  const auto& identities = metadata.identities;
   const bool contextual_text = expected_type == "text";
-  if (fields.size() != (contextual_text ? 12U : 3U) ||
-      !fields.contains("canonical") || !fields.contains("type_uuid") ||
+  if (fields.size() != (contextual_text ? 8U : 2U) ||
+      identities.size() != (contextual_text ? 4U : 1U) ||
+      !fields.contains("canonical") || !identities.contains("type_uuid") ||
       !fields.contains("nullable") ||
       fields.at("canonical") != expected_type ||
-      !CanonicalKeyValueUuid(fields.at("type_uuid")) ||
-      fields.at("type_uuid") != expected_type_uuid ||
+      !CanonicalKeyValueUuid(identities.at("type_uuid")) ||
+      identities.at("type_uuid") != expected_type_uuid ||
+      descriptor.type_uuid != expected_type_uuid ||
       fields.at("nullable") != (expected_nullable ? "true" : "false") ||
       (contextual_text &&
        (expected_registry_identity == nullptr ||
-        !fields.contains("column_uuid") ||
-        fields.at("column_uuid") != expected_column_uuid ||
-        !fields.contains("datatype_descriptor_uuid") ||
-        fields.at("datatype_descriptor_uuid") !=
+        !identities.contains("column_uuid") ||
+        identities.at("column_uuid") != expected_column_uuid ||
+        !identities.contains("datatype_descriptor_uuid") ||
+        identities.at("datatype_descriptor_uuid") !=
             expected_registry_identity->descriptor_uuid ||
         descriptor.descriptor_uuid !=
             expected_column_uuid ||
@@ -797,8 +782,8 @@ bool ExactKeyValueValueDescriptor(const EngineDescriptor& descriptor,
         !fields.contains("type_generation") ||
         fields.at("type_generation") !=
             std::to_string(expected_registry_identity->type_generation) ||
-        !fields.contains("codec_uuid") ||
-        fields.at("codec_uuid") != expected_registry_identity->codec_uuid ||
+        !identities.contains("codec_uuid") ||
+        identities.at("codec_uuid") != expected_registry_identity->codec_uuid ||
         !fields.contains("codec_id") ||
         fields.at("codec_id") != expected_registry_identity->codec_id ||
         !fields.contains("codec_version") ||
@@ -810,7 +795,7 @@ bool ExactKeyValueValueDescriptor(const EngineDescriptor& descriptor,
         !fields.contains("null_encoding") ||
         fields.at("null_encoding") !=
             std::to_string(expected_registry_identity->null_encoding_code))) ||
-      (!contextual_text && fields.contains("column_uuid"))) {
+      (!contextual_text && identities.contains("column_uuid"))) {
     return false;
   }
   return true;
@@ -827,7 +812,7 @@ bool ExactKeyValueStorageDescriptorImpl(
   const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return false;
-  std::unordered_set<std::string> column_uuids;
+  std::set<EngineUuid> column_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = descriptor.columns[ordinal];
     // TIMESTAMP_TZ is the signed key/value storage semantic carried by the
@@ -845,11 +830,10 @@ bool ExactKeyValueStorageDescriptorImpl(
     }
     const auto& descriptor_row =
         type_row.manifest.descriptor_rows.front();
-    const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
-        descriptor_row.descriptor_uuid.value);
+    const auto descriptor_uuid = descriptor_row.descriptor_uuid.value;
     const auto codec_identity =
         scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-            "019d0000-0000-7000-8000-00000000d701",
+            EngineUuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x01}},
             manifest.manifest.catalog_epoch, 1, descriptor_uuid,
             descriptor_row.descriptor_epoch);
     const auto expected_type_uuid =
@@ -1235,7 +1219,7 @@ EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
                     "key/value result materialization was cancelled");
     }
     const auto row_bytes = static_cast<std::uint64_t>(
-        row.row_uuid.size() + row.key.size() + row.value.size() + 3);
+        row.row_uuid.bytes.size() + row.key.size() + row.value.size() + 3);
     if (!CheckedAddU64(row_bytes, &result_bytes) ||
         !CheckedAddU64(sizeof(EngineBoundKeyValueRowV1), &memory_bytes) ||
         !CheckedAddU64(row_bytes, &memory_bytes) ||

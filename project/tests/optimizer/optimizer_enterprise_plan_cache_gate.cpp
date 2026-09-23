@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -60,10 +61,10 @@ opt::OptimizerPlanCacheKeyInput EnterpriseInput() {
   input.compatibility_epoch = 5110;
   input.format_compatibility_epoch = 5111;
   input.route_epoch = 5112;
-  input.object_uuids = {"rel.customer.051"};
-  input.function_uuids = {"fn.mask_email.051"};
-  input.index_uuids = {"idx.customer.pk.051"};
-  input.filespace_uuids = {"filespace.hot.051"};
+  input.object_uuids = {scratchbird::tests::FixtureUuid(1264, 1)};
+  input.function_uuids = {scratchbird::tests::FixtureUuid(1264, 2)};
+  input.index_uuids = {scratchbird::tests::FixtureUuid(1264, 3)};
+  input.filespace_uuids = {scratchbird::tests::FixtureUuid(1264, 4)};
   input.dependency_digests = {
       "sha256:dep-rel-customer-v51",
       "sha256:dep-idx-customer-pk-v51",
@@ -99,8 +100,8 @@ opt::CachedOptimizerPlan EnterprisePlan(const opt::OptimizerPlanCacheKeyInput& i
 
 opt::OptimizerPlanCachePersistenceRequest PersistenceRequest() {
   opt::OptimizerPlanCachePersistenceRequest request;
-  request.storage_scope_uuid = "catalog.plan_cache.scope.051";
-  request.persisted_by_principal_uuid = "principal.optimizer.runtime.051";
+  request.storage_scope_uuid = scratchbird::tests::FixtureUuid(1264, 5);
+  request.persisted_by_principal_uuid = scratchbird::tests::FixtureUuid(1264, 6);
   request.persisted_epoch = 5120;
   request.catalog_epoch = 5101;
   request.stats_epoch = 5102;
@@ -215,7 +216,7 @@ bool PersistenceEnvelopeRoundTripsAndInvalidates() {
   if (!Require(hit.hit, "restored enterprise plan was not reusable")) return false;
 
   const auto invalidation = recovered.InvalidateWithEvidence(
-      opt::OptimizerInvalidationEventForMutation("memory_feedback_publication", "", 5130));
+      opt::OptimizerInvalidationEventForMutation("memory_feedback_publication", {}, 5130));
   if (!Require(invalidation.invalidated_count == 1,
                "memory feedback publication did not invalidate restored plan")) return false;
   const auto stale = recovered.LookupEnterprise(input);

@@ -215,11 +215,11 @@
   }
 
   if (IdIs(id, {"data.scalar.current_database_uuid", "sb.fn.system.current_database_uuid"})) {
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.database_uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.database_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.current_node_uuid", "sb.fn.system.current_node_uuid"})) {
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.node_uuid)});
+    return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(request.context.sblr_context.node_uuid)});
   }
 
   if (IdIs(id, {"data.scalar.encode", "sb.fn.encoding.encode", "sb.scalar.encode", "encode"})) {

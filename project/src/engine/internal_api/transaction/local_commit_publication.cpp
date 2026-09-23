@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction/local_commit_publication.hpp"
+#include "transaction/local_commit_publication_codec.hpp"
+#include "engine/authority_hash_material.hpp"
 
 #include "dml/transactional_index_provider.hpp"
 #include "dml/mga_relation_read_view.hpp"
@@ -35,7 +37,7 @@ using scratchbird::storage::disk::SyncParentDirectoryPath;
 using scratchbird::transaction::mga::LookupLocalTransaction;
 using scratchbird::transaction::mga::MakeLocalTransactionId;
 
-constexpr std::string_view kManifestMagic = "SBMGA_LOCAL_COMMIT_PUBLICATION_V1";
+
 
 EngineApiDiagnostic Ok() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -70,72 +72,9 @@ std::string ArtifactPostcondition(const std::filesystem::path& path,
   return digest.ok() ? core_hash::HexLower(digest.digest) : std::string{};
 }
 
-std::string EncodeField(std::string_view value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string encoded;
-  encoded.reserve(value.size());
-  for (const unsigned char ch : value) {
-    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-        (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-') {
-      encoded.push_back(static_cast<char>(ch));
-    } else {
-      encoded.push_back('%');
-      encoded.push_back(kHex[(ch >> 4) & 0xf]);
-      encoded.push_back(kHex[ch & 0xf]);
-    }
-  }
-  return encoded;
-}
-
-int Hex(char ch) {
-  if (ch >= '0' && ch <= '9') return ch - '0';
-  if (ch >= 'a' && ch <= 'f') return 10 + ch - 'a';
-  if (ch >= 'A' && ch <= 'F') return 10 + ch - 'A';
-  return -1;
-}
-
-bool IsSha256(std::string_view value) {
-  return value.size() == 64 &&
-         std::all_of(value.begin(), value.end(),
-                     [](const char ch) { return Hex(ch) >= 0; });
-}
-
-bool DecodeField(std::string_view value, std::string* decoded) {
-  if (decoded == nullptr) return false;
-  decoded->clear();
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (value[i] != '%') {
-      decoded->push_back(value[i]);
-      continue;
-    }
-    if (i + 2 >= value.size()) return false;
-    const int high = Hex(value[i + 1]);
-    const int low = Hex(value[i + 2]);
-    if (high < 0 || low < 0) return false;
-    decoded->push_back(static_cast<char>((high << 4) | low));
-    i += 2;
-  }
-  return true;
-}
-
-std::vector<std::string> SplitTabs(const std::string& line) {
-  std::vector<std::string> fields;
-  std::size_t begin = 0;
-  while (begin <= line.size()) {
-    const auto end = line.find('\t', begin);
-    if (end == std::string::npos) {
-      fields.push_back(line.substr(begin));
-      break;
-    }
-    fields.push_back(line.substr(begin, end - begin));
-    begin = end + 1;
-  }
-  return fields;
-}
-
 std::string ManifestPath(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_transaction_publication." +
-         std::to_string(context.local_transaction_id) + ".v1";
+         std::to_string(context.local_transaction_id) + ".v2";
 }
 
 bool IsPublicationManifest(const std::string& filename,
@@ -212,19 +151,6 @@ std::string ArtifactIdentity(const EngineRequestContext& context,
   return ec ? path.filename().string() : relative.generic_string();
 }
 
-bool ParseU64(std::string_view text, std::uint64_t* value) {
-  if (value == nullptr || text.empty()) return false;
-  std::uint64_t parsed = 0;
-  for (const char ch : text) {
-    if (ch < '0' || ch > '9') return false;
-    const auto digit = static_cast<std::uint64_t>(ch - '0');
-    if (parsed > (std::numeric_limits<std::uint64_t>::max() - digit) / 10) return false;
-    parsed = parsed * 10 + digit;
-  }
-  *value = parsed;
-  return true;
-}
-
 std::string PairMaterial(
     const std::vector<std::pair<std::string, std::string>>& pairs) {
   std::ostringstream material;
@@ -234,35 +160,53 @@ std::string PairMaterial(
   return material.str();
 }
 
+// Typed digest material. A UUID occupies exactly sixteen binary bytes and
+// cannot alias a text field or a different tuple of values.
+std::string NativeMaterial(std::initializer_list<AuthorityHashField> fields) {
+  std::string bytes = "SBMGAM02";
+  AppendBinaryU32(&bytes, static_cast<std::uint32_t>(fields.size()));
+  for (const auto& field : fields) {
+    if (const auto* identity = std::get_if<EngineUuid>(&field)) {
+      bytes.push_back(2);
+      bytes.append(reinterpret_cast<const char*>(identity->bytes.data()), 16);
+    } else {
+      bytes.push_back(1);
+      if (!AppendBinaryString(&bytes, std::get<std::string_view>(field))) return {};
+    }
+  }
+  return bytes;
+}
+
 LocalCommitPublicationMutation Mutation(
     std::string domain,
     std::string kind,
-    std::string object,
-    std::string record,
+    EngineUuid object,
+    EngineUuid record,
     std::string physical,
     std::uint64_t generation_before,
     std::uint64_t generation_after,
     std::string precondition,
     std::string postcondition,
-    const EngineRequestContext& context) {
+    const EngineRequestContext& context,
+    EngineUuid version = {}) {
   LocalCommitPublicationMutation mutation;
   mutation.mutation_domain = std::move(domain);
   mutation.mutation_kind = std::move(kind);
   mutation.object_identity = std::move(object);
-  mutation.record_identity = std::move(record);
+  mutation.record_identity = record;
+  mutation.version_identity = version;
   mutation.physical_identity = std::move(physical);
   mutation.generation_before = generation_before;
   mutation.generation_after = generation_after;
   mutation.precondition_sha256 = Sha256(precondition);
   mutation.postcondition_sha256 = Sha256(postcondition);
-  const std::string identity_material =
-      "SBMGA_MUTATION_ID_V1\t" + context.transaction_uuid + "\t" +
-      std::to_string(context.local_transaction_id) + "\t" +
-      mutation.mutation_domain + "\t" + mutation.mutation_kind + "\t" +
-      mutation.object_identity + "\t" + mutation.record_identity + "\t" +
-      std::to_string(mutation.generation_after);
+  const std::string identity_material = NativeMaterial({
+      std::string_view("SBMGA_MUTATION_ID_V2"), context.transaction_uuid,
+      std::to_string(context.local_transaction_id), mutation.mutation_domain,
+      mutation.mutation_kind, mutation.object_identity, mutation.record_identity,
+      mutation.version_identity, std::to_string(mutation.generation_after)});
   mutation.mutation_identity = Sha256(identity_material);
-  mutation.idempotency_key = Sha256("SBMGA_IDEMPOTENCY_V1\t" + identity_material);
+  mutation.idempotency_key = Sha256(NativeMaterial({std::string_view("SBMGA_IDEMPOTENCY_V2"), identity_material}));
   return mutation;
 }
 
@@ -274,9 +218,8 @@ std::vector<LocalCommitPublicationMutation> TransactionMutations(
   const auto transaction_id = context.local_transaction_id;
   for (const auto& table : state.relation_metadata.tables) {
     if (table.creator_tx != transaction_id) continue;
-    const std::string postcondition = table.table_uuid + "\t" +
-                                      std::to_string(table.event_sequence) + "\t" +
-                                      PairMaterial(table.columns);
+    const std::string postcondition = NativeMaterial({table.table_uuid,
+        std::to_string(table.event_sequence), PairMaterial(table.columns)});
     mutations.push_back(Mutation(
         "catalog", "table_metadata_publish", table.table_uuid,
         table.table_uuid, "mga_relation_metadata", 0, table.event_sequence,
@@ -284,8 +227,8 @@ std::vector<LocalCommitPublicationMutation> TransactionMutations(
   }
   for (const auto& index : state.relation_metadata.indexes) {
     if (index.creator_tx != transaction_id) continue;
-    const std::string postcondition = index.index_uuid + "\t" + index.table_uuid +
-                                      "\t" + std::to_string(index.event_sequence);
+    const std::string postcondition = NativeMaterial({index.index_uuid, index.table_uuid,
+        std::to_string(index.event_sequence)});
     mutations.push_back(Mutation(
         "catalog", "index_metadata_publish", index.table_uuid,
         index.index_uuid, "mga_relation_metadata", 0, index.event_sequence,
@@ -294,10 +237,9 @@ std::vector<LocalCommitPublicationMutation> TransactionMutations(
   for (const auto& descriptor :
        state.relation_metadata.sealed_relation_descriptor_snapshots) {
     if (descriptor.creator_tx != transaction_id) continue;
-    const std::string postcondition = descriptor.relation_uuid + "\t" +
-        descriptor.relation_descriptor_uuid + "\t" +
-        std::to_string(descriptor.relation_descriptor_generation) + "\t" +
-        PairMaterial(descriptor.descriptor_fields);
+    const std::string postcondition = NativeMaterial({descriptor.relation_uuid,
+        descriptor.relation_descriptor_uuid, std::to_string(descriptor.relation_descriptor_generation),
+        PairMaterial(descriptor.descriptor_fields)});
     mutations.push_back(Mutation(
         "catalog", "relation_descriptor_publish", descriptor.relation_uuid,
         descriptor.relation_descriptor_uuid, "mga_relation_descriptors", 0,
@@ -308,48 +250,40 @@ std::vector<LocalCommitPublicationMutation> TransactionMutations(
     if (row.creator_tx != transaction_id) continue;
     const std::string kind = row.deleted
                                  ? "delete_row_version"
-                                 : (row.previous_version_uuid.empty()
+                                 : (row.previous_version_uuid.is_nil()
                                         ? "insert_row_version"
                                         : "update_row_version");
-    const std::string precondition = row.previous_version_uuid.empty()
-                                         ? "absent"
-                                         : row.previous_version_uuid + "\t" +
-                                               std::to_string(row.previous_sequence);
-    const std::string postcondition = row.table_uuid + "\t" + row.row_uuid +
-        "\t" + row.version_uuid + "\t" + std::to_string(row.sequence) +
-        "\t" + (row.deleted ? "deleted" : "live") + "\t" +
-        PairMaterial(row.values);
+    const std::string precondition = row.previous_version_uuid.is_nil() ? "absent" :
+        NativeMaterial({row.previous_version_uuid, std::to_string(row.previous_sequence)});
+    const std::string postcondition = NativeMaterial({row.table_uuid, row.row_uuid,
+        row.version_uuid, std::to_string(row.sequence),
+        std::string_view(row.deleted ? "deleted" : "live"), PairMaterial(row.values)});
     mutations.push_back(Mutation(
-        "row_version", kind, row.table_uuid, row.row_uuid + ":" + row.version_uuid,
+        "row_version", kind, row.table_uuid, row.row_uuid,
         "database_page_or_mga_row_segment", row.previous_sequence,
         row.sequence == 0 ? row.event_sequence : row.sequence, precondition,
-        postcondition, context));
+        postcondition, context, row.version_uuid));
   }
   for (const auto& entry : state.index_entries) {
     if (entry.creator_tx != transaction_id) continue;
-    const std::string postcondition = entry.index_uuid + "\t" + entry.table_uuid +
-        "\t" + entry.row_uuid + "\t" + entry.version_uuid + "\t" +
-        entry.key_value + "\t" + entry.payload_value;
+    const std::string postcondition = NativeMaterial({entry.index_uuid, entry.table_uuid,
+        entry.row_uuid, entry.version_uuid, entry.key_value, entry.payload_value});
     mutations.push_back(Mutation(
         "index", entry.entry_kind.empty() ? "index_entry_publish" : entry.entry_kind,
-        entry.index_uuid, entry.row_uuid + ":" + entry.version_uuid,
+        entry.index_uuid, entry.row_uuid,
         "database_page_or_mga_index_segment", 0,
         entry.sequence == 0 ? entry.event_sequence : entry.sequence, "absent",
-        postcondition, context));
+        postcondition, context, entry.version_uuid));
   }
   for (const auto& record : ledger.records) {
     if (record.delta.local_transaction_id != transaction_id) continue;
-    const std::string delta_uuid = scratchbird::core::uuid::UuidToString(
-        record.delta.delta_id.value);
-    const std::string index_uuid = scratchbird::core::uuid::UuidToString(
-        record.delta.index_uuid.value);
-    const std::string row_uuid = scratchbird::core::uuid::UuidToString(
-        record.delta.row_uuid.value);
+    const auto delta_uuid = record.delta.delta_id.value;
+    const auto index_uuid = record.delta.index_uuid.value;
+    const auto row_uuid = record.delta.row_uuid.value;
     mutations.push_back(Mutation(
         "index", "secondary_index_delta", index_uuid, delta_uuid,
         "mga_secondary_index_delta_ledger", 0, 1, "absent",
-        index_uuid + "\t" + row_uuid + "\t" + record.delta.key_payload +
-            "\tprecommit_uncommitted",
+        NativeMaterial({index_uuid, row_uuid, record.delta.key_payload, std::string_view("precommit_uncommitted")}),
         context));
   }
   std::sort(mutations.begin(), mutations.end(),
@@ -477,36 +411,12 @@ LocalCommitPublicationResult RunLocalCommitPageBarrier(
   }
 
   result.publication_generation = context.local_transaction_id;
-  std::ostringstream body;
-  body << kManifestMagic << '\t' << result.publication_generation << '\t'
-       << EncodeField(context.transaction_uuid) << '\t'
-       << result.mutations.size() << '\t' << result.artifacts.size() << '\n';
-  for (const auto& mutation : result.mutations) {
-    body << "MUTATION\t" << mutation.mutation_identity << '\t'
-         << EncodeField(mutation.mutation_domain) << '\t'
-         << EncodeField(mutation.mutation_kind) << '\t'
-         << EncodeField(mutation.object_identity) << '\t'
-         << EncodeField(mutation.record_identity) << '\t'
-         << EncodeField(mutation.physical_identity) << '\t'
-         << mutation.generation_before << '\t' << mutation.generation_after << '\t'
-         << mutation.idempotency_key << '\t' << mutation.precondition_sha256 << '\t'
-         << mutation.postcondition_sha256 << '\t'
-         << EncodeField(mutation.finality_authority) << '\t'
-         << EncodeField(mutation.lifecycle_state) << '\n';
-  }
-  for (const auto& artifact : result.artifacts) {
-    body << "ARTIFACT\t" << EncodeField(artifact.mutation_domain) << '\t'
-         << EncodeField(artifact.artifact_identity) << '\t'
-         << artifact.durable_size_bytes << '\t'
-         << artifact.postcondition_sha256 << '\n';
-  }
-  const std::string body_bytes = body.str();
-  result.manifest_sha256 = Sha256(body_bytes);
-  if (result.manifest_sha256.empty()) {
-    result.diagnostic = Refuse("manifest_hash_failed");
+  std::string manifest;
+  if (!local_publication_codec::Encode(context, result.mutations, result.artifacts, &manifest)) {
+    result.diagnostic = Refuse("manifest_binary_encoding_failed");
     return result;
   }
-  const std::string manifest = body_bytes + "SEAL\t" + result.manifest_sha256 + "\n";
+  result.manifest_sha256 = manifest.substr(manifest.size() - 64);
   result.manifest_path = ManifestPath(context);
   const std::string temporary = result.manifest_path + ".tmp." +
                                 std::to_string(context.local_transaction_id);
@@ -564,88 +474,11 @@ LocalCommitPublicationRecoveryResult ClassifyLocalCommitPublicationForRecovery(
     result.stable_reason = "durable publication manifest is missing or empty";
     return result;
   }
-  std::istringstream input(encoded);
-  std::string line;
-  std::string body;
-  std::string transaction_uuid;
-  std::uint64_t declared_mutations = 0;
-  std::uint64_t declared_artifacts = 0;
-  if (!std::getline(input, line)) {
-    result.diagnostic = Refuse("publication_manifest_header_missing");
+  if (!local_publication_codec::Decode(encoded, context, &result)) {
+    result.diagnostic = Refuse("publication_manifest_binary_invalid");
+    result.stable_reason = "manifest identity, framing, or checksum is invalid";
     return result;
   }
-  body += line + "\n";
-  const auto header = SplitTabs(line);
-  if (header.size() != 5 || header[0] != kManifestMagic ||
-      !ParseU64(header[1], &result.publication_generation) ||
-      !DecodeField(header[2], &transaction_uuid) ||
-      !ParseU64(header[3], &declared_mutations) ||
-      !ParseU64(header[4], &declared_artifacts) ||
-      result.publication_generation != context.local_transaction_id ||
-      transaction_uuid != context.transaction_uuid) {
-    result.diagnostic = Refuse("publication_manifest_header_invalid");
-    result.stable_reason = "manifest identity or generation does not match the transaction";
-    return result;
-  }
-  std::string seal;
-  while (std::getline(input, line)) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() == 2 && fields[0] == "SEAL") {
-      seal = fields[1];
-      break;
-    }
-    if (fields.size() == 14 && fields[0] == "MUTATION") {
-      LocalCommitPublicationMutation mutation;
-      mutation.mutation_identity = fields[1];
-      if (!IsSha256(fields[1]) ||
-          !DecodeField(fields[2], &mutation.mutation_domain) ||
-          !DecodeField(fields[3], &mutation.mutation_kind) ||
-          !DecodeField(fields[4], &mutation.object_identity) ||
-          !DecodeField(fields[5], &mutation.record_identity) ||
-          !DecodeField(fields[6], &mutation.physical_identity) ||
-          !ParseU64(fields[7], &mutation.generation_before) ||
-          !ParseU64(fields[8], &mutation.generation_after) ||
-          !IsSha256(fields[9]) || !IsSha256(fields[10]) ||
-          !IsSha256(fields[11]) ||
-          !DecodeField(fields[12], &mutation.finality_authority) ||
-          !DecodeField(fields[13], &mutation.lifecycle_state) ||
-          mutation.finality_authority != "durable_transaction_inventory" ||
-          mutation.lifecycle_state != "commit_publish_ready") {
-        result.diagnostic = Refuse("publication_manifest_mutation_invalid");
-        return result;
-      }
-      mutation.idempotency_key = fields[9];
-      mutation.precondition_sha256 = fields[10];
-      mutation.postcondition_sha256 = fields[11];
-      result.mutations.push_back(std::move(mutation));
-      body += line + "\n";
-      continue;
-    }
-    if (fields.size() != 5 || fields[0] != "ARTIFACT") {
-      result.diagnostic = Refuse("publication_manifest_artifact_invalid");
-      return result;
-    }
-    LocalCommitPublicationArtifact artifact;
-    if (!DecodeField(fields[1], &artifact.mutation_domain) ||
-        !DecodeField(fields[2], &artifact.artifact_identity) ||
-        !ParseU64(fields[3], &artifact.durable_size_bytes) ||
-        !IsSha256(fields[4])) {
-      result.diagnostic = Refuse("publication_manifest_artifact_invalid");
-      return result;
-    }
-    artifact.postcondition_sha256 = fields[4];
-    result.artifacts.push_back(std::move(artifact));
-    body += line + "\n";
-  }
-  std::string trailing;
-  if (std::getline(input, trailing) || !IsSha256(seal) ||
-      result.mutations.size() != declared_mutations ||
-      result.artifacts.size() != declared_artifacts || seal != Sha256(body)) {
-    result.diagnostic = Refuse("publication_manifest_seal_invalid");
-    result.stable_reason = "manifest is torn or its checksum is invalid";
-    return result;
-  }
-  result.manifest_sha256 = seal;
 
   const auto transaction = LookupLocalTransaction(
       inventory, MakeLocalTransactionId(context.local_transaction_id));

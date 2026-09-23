@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -51,7 +52,7 @@ std::size_t CountSelectedTreeCandidates(const opt::OptimizedPlan& optimized,
 }
 
 void AddRelationStats(opt::OptimizerStatisticsCatalog* catalog,
-                      const std::string& relation_uuid,
+                      const plan::CanonicalPlannerUuid& relation_uuid,
                       double row_count,
                       double visible_rows,
                       double page_count,
@@ -59,7 +60,7 @@ void AddRelationStats(opt::OptimizerStatisticsCatalog* catalog,
   const auto add = [&](const std::string& name, double value) {
     catalog->Add(opt::MakeStatistic(name,
                                     "relation",
-                                    relation_uuid,
+                                    opt::OptimizerStatisticTarget::Object(relation_uuid),
                                     value,
                                     opt::StatisticSource::kCatalogExact,
                                     17,
@@ -84,11 +85,11 @@ void AddRelationStats(opt::OptimizerStatisticsCatalog* catalog,
 
 opt::OptimizerStatisticsCatalog ExactCatalog() {
   opt::OptimizerStatisticsCatalog catalog;
-  AddRelationStats(&catalog, "rel.customer", 1000.0, 900.0, 40.0, 0.01);
-  AddRelationStats(&catalog, "rel.orders", 100.0, 96.0, 12.0, 0.05);
+  AddRelationStats(&catalog, scratchbird::tests::FixtureUuid(1535, 1), 1000.0, 900.0, 40.0, 0.01);
+  AddRelationStats(&catalog, scratchbird::tests::FixtureUuid(1535, 2), 100.0, 96.0, 12.0, 0.05);
   catalog.Add(opt::MakeStatistic("memory_grant_available_bytes",
                                  "session",
-                                 "local.default",
+                                 opt::OptimizerStatisticTarget::LocalDefault(),
                                  8.0 * 1024.0 * 1024.0,
                                  opt::StatisticSource::kCatalogExact,
                                  17,
@@ -96,7 +97,7 @@ opt::OptimizerStatisticsCatalog ExactCatalog() {
                                  opt::CostConfidence::kHigh));
   catalog.Add(opt::MakeStatistic("group_count",
                                  "query",
-                                 "local.default",
+                                 opt::OptimizerStatisticTarget::LocalDefault(),
                                  12.0,
                                  opt::StatisticSource::kCatalogExact,
                                  17,
@@ -104,7 +105,7 @@ opt::OptimizerStatisticsCatalog ExactCatalog() {
                                  opt::CostConfidence::kHigh));
   catalog.Add(opt::MakeStatistic("limit_count",
                                  "query",
-                                 "local.default",
+                                 opt::OptimizerStatisticTarget::LocalDefault(),
                                  5.0,
                                  opt::StatisticSource::kCatalogExact,
                                  17,
@@ -122,21 +123,21 @@ plan::LogicalPlan FullTreeLogicalPlan() {
                                             plan::PhysicalAccessKind::kNone,
                                             "scan.customer",
                                             "customer_scan");
-  customer.required_object_uuids.push_back("rel.customer");
+  customer.required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1535, 1));
   customer.required_descriptors = {"desc.customer", "predicate.scalar_eq"};
 
   auto orders = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
                                           plan::PhysicalAccessKind::kNone,
                                           "scan.orders",
                                           "orders_scan");
-  orders.required_object_uuids.push_back("rel.orders");
+  orders.required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1535, 2));
   orders.required_descriptors = {"desc.orders", "predicate.scalar_range"};
 
   auto join = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
                                         plan::PhysicalAccessKind::kJoinHash,
                                         "query.join",
                                         "customer_orders_join");
-  join.required_object_uuids = {"rel.customer", "rel.orders"};
+  join.required_object_uuids = {scratchbird::tests::FixtureUuid(1535, 1), scratchbird::tests::FixtureUuid(1535, 2)};
   join.required_descriptors = {"desc.join", "join.equi", "join.reorder_safe"};
 
   auto aggregate = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
@@ -239,7 +240,7 @@ bool FullPhysicalPlanTreeIsSelected() {
          Require(join.children.size() == 2, "join did not carry two selected base leaves") &&
          Require(join.materializes && !join.storage_backed && join.preserves_visibility,
                  "join flags did not preserve materialized visibility") &&
-         Require(HasEvidence(join, "join_order=rel.orders,rel.customer"),
+         Require(join.ordered_relation_uuids == std::vector<plan::CanonicalPlannerUuid>{scratchbird::tests::FixtureUuid(1535, 2), scratchbird::tests::FixtureUuid(1535, 1)},
                  "join order evidence did not record selected cardinality order") &&
          Require(HasEvidence(join, "join_method=join_hash"), "join method evidence missing") &&
          Require(orders.access_kind == plan::PhysicalAccessKind::kScalarBtreeRange,
@@ -249,7 +250,7 @@ bool FullPhysicalPlanTreeIsSelected() {
          Require(orders.descriptor_digest == "desc.orders", "orders descriptor digest mismatch") &&
          Require(orders.storage_backed && orders.preserves_order && orders.preserves_visibility,
                  "orders leaf flags did not preserve ordered storage visibility") &&
-         Require(HasEvidence(orders, "base_relation_uuid=rel.orders"), "orders relation evidence missing") &&
+         Require(orders.relation_uuid == scratchbird::tests::FixtureUuid(1535, 2), "orders relation evidence missing") &&
          Require(customer.access_kind == plan::PhysicalAccessKind::kScalarHashLookup,
                  "customer base leaf did not select hash lookup") &&
          Require(customer.executor_capability_id == "hash_index_lookup",
@@ -257,7 +258,7 @@ bool FullPhysicalPlanTreeIsSelected() {
          Require(customer.descriptor_digest == "desc.customer", "customer descriptor digest mismatch") &&
          Require(customer.storage_backed && !customer.materializes && customer.preserves_visibility,
                  "customer leaf flags did not preserve storage visibility") &&
-         Require(HasEvidence(customer, "base_relation_uuid=rel.customer"), "customer relation evidence missing") &&
+         Require(customer.relation_uuid == scratchbird::tests::FixtureUuid(1535, 1), "customer relation evidence missing") &&
          Require(TreeContainsEvidence(limit, "mga_visibility_authority=engine_transaction_inventory"),
                  "runtime payload did not retain MGA visibility authority evidence") &&
          Require(TreeContainsEvidence(limit, "selected_candidate_id=CAND-OPT-HASH"),

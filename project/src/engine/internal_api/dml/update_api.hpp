@@ -42,9 +42,9 @@ struct EngineDmlUpdateAssignmentDemandV1 {
 };
 
 struct EngineDmlUpdateRowsBindingDemandV1 {
-  std::string authenticated_statement_receipt_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
   std::uint64_t structural_occurrence_id = 0;
-  std::string target_relation_uuid_hint;
+  EngineUuid target_relation_uuid_hint;
   std::vector<EngineDmlUpdateAssignmentDemandV1> assignments;
   std::string predicate_kind;
   std::string predicate_column_spelling;
@@ -53,7 +53,7 @@ struct EngineDmlUpdateRowsBindingDemandV1 {
 };
 
 struct EngineDmlUpdateRowsDescriptorRefV1 {
-  std::string descriptor_uuid;
+  EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation = 0;
 };
 

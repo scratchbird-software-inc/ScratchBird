@@ -54,9 +54,9 @@ struct EngineDocumentInsertRequest : EngineApiRequest {
   // An engine-bound collection identity. Empty retains the legacy session
   // collection mapping for callers that have not entered the canonical model
   // source route.
-  std::string collection_uuid;
-  std::string document_uuid;
-  std::string row_uuid;
+  EngineUuid collection_uuid;
+  EngineUuid document_uuid;
+  EngineUuid row_uuid;
 };
 struct EngineDocumentInsertResult : EngineApiResult {};
 EngineDocumentInsertResult EngineDocumentInsert(const EngineDocumentInsertRequest& request);
@@ -64,7 +64,7 @@ EngineDocumentInsertResult EngineDocumentInsert(const EngineDocumentInsertReques
 struct EngineDocumentFindRequest : EngineApiRequest {
   // Exact relation authority captured by canonical planning.  The document
   // provider must revalidate it before inspecting any current MGA row.
-  std::string expected_descriptor_uuid;
+  EngineUuid expected_descriptor_uuid;
   std::uint64_t expected_descriptor_generation = 0;
   std::string path;
   std::string equals_value;
@@ -89,7 +89,7 @@ struct EngineDocumentFindRequest : EngineApiRequest {
   std::vector<std::string> projected_paths;
   // Empty only for a deliberately missing/dynamic document path.  Otherwise
   // this is the exact current MGA relation column bound by planning.
-  std::vector<std::string> projected_column_uuids;
+  std::vector<EngineUuid> projected_column_uuids;
   std::vector<bool> projected_path_nullable;
   EngineDocumentPhysicalProof physical_proof;
 };
@@ -98,8 +98,8 @@ struct EngineDocumentTypedPathValue {
   EngineTypedValue value;
 };
 struct EngineDocumentTypedRow {
-  std::string document_uuid;
-  std::string row_uuid;
+  EngineUuid document_uuid;
+  EngineUuid row_uuid;
   std::vector<EngineDocumentTypedPathValue> values;
 };
 struct EngineDocumentFindResult : EngineApiResult {

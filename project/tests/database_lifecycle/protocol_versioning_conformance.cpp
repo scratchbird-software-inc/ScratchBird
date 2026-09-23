@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "config.hpp"
 #include "config_policy_security_lifecycle.hpp"
 #include "database_format.hpp"
@@ -124,7 +125,7 @@ server::ServerIpcEndpointDescriptor BaseEndpointDescriptor(const std::filesystem
   server::HostedDatabaseSnapshot database;
   database.state = server::HostedDatabaseState::kOpen;
   database.database_open = true;
-  database.database_uuid = "018f58bd-98f0-7000-8000-0000000130aa";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000000130aa");
   database.database_path = (work / "database.sbdb").string();
   database.config_source_epoch = 7;
   database.config_reload_generation = 8;
@@ -176,7 +177,7 @@ void TestConfigPolicySecurityVersionAndEpochs() {
   auto input = server::BuildConfigPolicySecurityLifecycleInput(
       config,
       "/tmp/sb_dblc013o.sbdb",
-      "018f58bd-98f0-7000-8000-0000000130bb",
+      scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000000130bb"),
       true,
       false);
   auto started = server::StartConfigPolicySecurityLifecycle(input);

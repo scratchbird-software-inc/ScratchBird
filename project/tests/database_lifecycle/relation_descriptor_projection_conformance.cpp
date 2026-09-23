@@ -1,3 +1,5 @@
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +8,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "catalog/relation_descriptor_projection.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "database_lifecycle.hpp"
@@ -16,6 +19,7 @@
 #include "resource_seed_pack.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -64,10 +68,10 @@ std::uint64_t UniqueMillis() {
          (++counter * 1000);
 }
 
-std::string NewUuid(UuidKind kind, std::uint64_t salt) {
+api::EngineUuid NewUuid(UuidKind kind, std::uint64_t salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, salt);
   Require(generated.ok(), "catalog projection UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 scratchbird::core::platform::TypedUuid NewTypedUuid(UuidKind kind,
@@ -88,17 +92,30 @@ api::EngineLocalizedName Name(std::string value) {
   return name;
 }
 
+std::string ResourceMetadata(std::string_view attributes,
+                             const api::EngineUuid& charset,
+                             const api::EngineUuid& collation) {
+  api::CatalogColumnMetadata fields;
+  Require(api::AdmitCatalogColumnMetadata(attributes, &fields),
+          "resource projection attributes invalid");
+  fields.identities = {{"charset_uuid", charset}, {"collation_uuid", collation}};
+  std::string bytes;
+  Require(api::EncodeCatalogColumnMetadata(fields, &bytes),
+          "resource projection metadata encoding failed");
+  return bytes;
+}
+
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
   db::DatabaseLifecycleResult created;
-  std::string database_uuid;
-  std::string principal_uuid;
-  std::string session_uuid;
-  std::string schema_uuid;
-  std::string function_uuid;
-  std::string view_uuid;
-  std::string relation_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid principal_uuid;
+  api::EngineUuid session_uuid;
+  api::EngineUuid schema_uuid;
+  api::EngineUuid function_uuid;
+  api::EngineUuid view_uuid;
+  api::EngineUuid relation_uuid;
   std::uint64_t function_creator_tx = 0;
   std::uint64_t view_creator_tx = 0;
   std::uint64_t salt = 0;
@@ -134,7 +151,7 @@ Fixture CreateFixture() {
   Require(fixture.created.ok(),
           "catalog projection database creation failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   fixture.principal_uuid =
       NewUuid(UuidKind::principal, fixture.salt + 4);
   fixture.session_uuid = NewUuid(UuidKind::object, fixture.salt + 5);
@@ -153,16 +170,15 @@ api::EngineRequestContext Begin(Fixture& fixture,
   begin.context.request_id =
       "catalog-projection-begin-" + std::to_string(ordinal);
   begin.context.database_path = fixture.database_path.string();
-  begin.context.database_uuid.canonical = fixture.database_uuid;
-  begin.context.principal_uuid.canonical = fixture.principal_uuid;
-  begin.context.session_uuid.canonical = fixture.session_uuid;
+  begin.context.database_uuid = fixture.database_uuid;
+  begin.context.principal_uuid = fixture.principal_uuid;
+  begin.context.session_uuid = fixture.session_uuid;
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 1;
   begin.context.resource_epoch =
       fixture.created.state.resource_seed_catalog.resource_epoch;
-  begin.context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  begin.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   begin.context.datatype_catalog_generation = 1;
   begin.context.datatype_registry_generation = 1;
   begin.context.name_resolution_epoch = 1;
@@ -184,7 +200,7 @@ api::EngineRequestContext Begin(Fixture& fixture,
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
   context.read_only_mode = begun.read_only;
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
+  context.current_schema_uuid = fixture.schema_uuid;
   return context;
 }
 
@@ -206,7 +222,7 @@ void CreateSchemaAndFunction(Fixture& fixture,
                              const api::EngineRequestContext& context) {
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
-  schema.target_object.uuid.canonical = fixture.schema_uuid;
+  schema.target_object.uuid = fixture.schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("catalog_projection_schema"));
   RequireOk(api::EngineCreateSchema(schema),
@@ -214,9 +230,9 @@ void CreateSchemaAndFunction(Fixture& fixture,
 
   api::EngineCreateFunctionRequest function;
   function.context = context;
-  function.target_schema.uuid.canonical = fixture.schema_uuid;
+  function.target_schema.uuid = fixture.schema_uuid;
   function.target_schema.object_kind = "schema";
-  function.target_object.uuid.canonical = fixture.function_uuid;
+  function.target_object.uuid = fixture.function_uuid;
   function.target_object.object_kind = "function";
   function.localized_names.push_back(Name("generic_type_name_resolver"));
   function.option_envelopes = {
@@ -241,12 +257,12 @@ void CreateSchemaAndFunction(Fixture& fixture,
 api::EngineCreateViewRequest ViewRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
-    std::string view_uuid) {
+    api::EngineUuid view_uuid) {
   api::EngineCreateViewRequest view;
   view.context = context;
-  view.target_schema.uuid.canonical = fixture.schema_uuid;
+  view.target_schema.uuid = fixture.schema_uuid;
   view.target_schema.object_kind = "schema";
-  view.target_object.uuid.canonical = std::move(view_uuid);
+  view.target_object.uuid = std::move(view_uuid);
   view.target_object.object_kind = "view";
   view.localized_names.push_back(Name("generic_relation_inventory"));
   view.option_envelopes = {
@@ -256,7 +272,7 @@ api::EngineCreateViewRequest ViewRequest(
       "view_projection_count:2",
       std::string("view_projection_0:variant:") +
           api::kRelationDescriptorProjectionTypeInventoryVariantV1,
-      "view_projection_1:function_uuid:" + fixture.function_uuid};
+      "view_projection_1:function_uuid:" + api::MetadataUuidBytes(fixture.function_uuid)};
   return view;
 }
 
@@ -316,8 +332,8 @@ api::MgaRelationStorageDescriptor CreateSourceRelation(
     const api::EngineRequestContext& context) {
   const auto* utf8 = resources::FindResourceSeedCharset(
       fixture.created.state.resource_seed_catalog, "UTF8");
-  Require(utf8 != nullptr && !utf8->resource_uuid.empty() &&
-              !utf8->default_collation_uuid.empty(),
+  Require(utf8 != nullptr && !utf8->resource_uuid.is_nil() &&
+              !utf8->default_collation_uuid.is_nil(),
           "catalog projection UTF8 resources are unavailable");
 
   api::EngineCreateTableRequest table;
@@ -325,10 +341,10 @@ api::MgaRelationStorageDescriptor CreateSourceRelation(
   // The explicit target schema is authoritative even when the caller has no
   // session-default schema. This is the parser-server shape and guards the
   // persisted descriptor from silently losing its schema identity.
-  table.context.current_schema_uuid.canonical.clear();
-  table.target_schema.uuid.canonical = fixture.schema_uuid;
+  table.context.current_schema_uuid = {};
+  table.target_schema.uuid = fixture.schema_uuid;
   table.target_schema.object_kind = "schema";
-  table.requested_table_uuid.canonical = fixture.relation_uuid;
+  table.requested_table_uuid = fixture.relation_uuid;
   table.table_names.push_back(Name("generic_catalog_source"));
   table.table_columns.push_back(
       Column(0, "integer_value", "integer", "type=integer"));
@@ -336,16 +352,12 @@ api::MgaRelationStorageDescriptor CreateSourceRelation(
       1,
       "text_value",
       "text",
-      "type=text;character_length=20;charset_uuid=" +
-          utf8->resource_uuid +
-          ";collation_uuid=" + utf8->default_collation_uuid));
+      ResourceMetadata("type=text;character_length=20", utf8->resource_uuid, utf8->default_collation_uuid)));
   table.table_columns.push_back(Column(
       2,
       "text_payload",
       "blob",
-      "type=blob;text_resource_storage=large_object;charset_uuid=" +
-          utf8->resource_uuid +
-          ";collation_uuid=" + utf8->default_collation_uuid));
+      ResourceMetadata("type=blob;text_resource_storage=large_object", utf8->resource_uuid, utf8->default_collation_uuid)));
   RequireOk(api::EngineCreateTable(table),
             "catalog projection source table create failed");
 
@@ -355,7 +367,7 @@ api::MgaRelationStorageDescriptor CreateSourceRelation(
           "catalog projection source descriptor load failed");
   Require(descriptor.descriptor.columns.size() == 3,
           "catalog projection source descriptor column count is invalid");
-  Require(descriptor.descriptor.schema_uuid.canonical == fixture.schema_uuid,
+  Require(descriptor.descriptor.schema_uuid == fixture.schema_uuid,
           "explicit target schema was not persisted in the relation descriptor");
   return descriptor.descriptor;
 }
@@ -372,9 +384,18 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) {
       return true;
     }
+  }
+  return false;
+}
+
+bool HasEvidence(const api::EngineApiResult& result, std::string_view kind,
+                 const api::EngineUuid& identity) {
+  for (const auto& evidence : result.evidence) {
+    const auto* value = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && value && *value == identity) return true;
   }
   return false;
 }
@@ -393,7 +414,7 @@ api::EngineSelectRowsRequest SelectRequest(
     const api::MgaRelationStorageDescriptor& descriptor) {
   api::EngineSelectRowsRequest select;
   select.context = context;
-  select.target_object.uuid.canonical = fixture.view_uuid;
+  select.target_object.uuid = fixture.view_uuid;
   select.target_object.object_kind = "view";
   select.option_envelopes = {
       std::string("source_kind:") +
@@ -402,8 +423,8 @@ api::EngineSelectRowsRequest SelectRequest(
           api::kRelationDescriptorProjectionMarkerV1,
       std::string("dml_surface_variant:") +
           api::kRelationDescriptorProjectionTypeInventoryVariantV1,
-      "source_uuid:" + fixture.relation_uuid,
-      "source_fingerprint:" + descriptor.descriptor_uuid.canonical,
+      "source_uuid:" + api::MetadataUuidBytes(fixture.relation_uuid),
+      "source_fingerprint:" + api::MetadataUuidBytes(descriptor.descriptor_uuid),
       "source_position:" +
           std::to_string(descriptor.descriptor_generation)};
   return select;
@@ -440,7 +461,7 @@ void RequireProjectionRows(
                           fixture.relation_uuid) &&
               HasEvidence(selected,
                           "catalog_projection_descriptor_uuid",
-                          descriptor.descriptor_uuid.canonical) &&
+                          descriptor.descriptor_uuid) &&
               HasEvidence(selected,
                           "catalog_projection_mga_authority",
                           "durable_transaction_inventory") &&
@@ -481,7 +502,7 @@ void RequireProjectionRows(
   auto wrong_fingerprint = SelectRequest(fixture, context, descriptor);
   wrong_fingerprint.option_envelopes[4] =
       "source_fingerprint:" +
-      NewUuid(UuidKind::object, fixture.salt + 40);
+      api::MetadataUuidBytes(NewUuid(UuidKind::object, fixture.salt + 40));
   const auto wrong_fingerprint_result =
       api::EngineSelectRows(wrong_fingerprint);
   Require(!wrong_fingerprint_result.ok &&

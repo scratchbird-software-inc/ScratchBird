@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -30,29 +31,29 @@ struct DropCase {
   std::string_view sql;
   std::string_view surface_id;
   std::string_view canonical_name;
-  std::string_view uuid;
+  scratchbird::core::platform::Uuid uuid;
   std::string_view canonical_parent_operation_id;
   std::string_view canonical_parent_opcode;
 };
 
 const DropCase kDropCases[] = {
     {"DROP FILESPACE replay_filespace;", "SBSQL-1E702FF60BA0",
-     "drop_filespace_stmt", "019f0000-0000-7000-8000-000000d20001",
+     "drop_filespace_stmt", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d20001"),
      "engine.op.filespace_drop", "SBLR_FILESPACE_DROP"},
     {"DROP POLICY replay_policy;", "SBSQL-25CE560681AB",
-     "drop_policy_stmt", "019f0000-0000-7000-8000-000000d20002",
+     "drop_policy_stmt", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d20002"),
      "engine.op.sec_drop_policy", "SBLR_SEC_DROP_POLICY"},
     {"DROP PRINCIPAL replay_principal;", "SBSQL-EF85496DB350",
-     "drop_principal_stmt", "019f0000-0000-7000-8000-000000d20003",
+     "drop_principal_stmt", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d20003"),
      "not_admitted", "SBLR_DIAGNOSTIC_REFUSAL"},
     {"DROP ROUTINE replay_routine;", "SBSQL-66E94DC7813A",
-     "drop_routine_stmt", "019f0000-0000-7000-8000-000000d20004",
+     "drop_routine_stmt", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d20004"),
      "not_admitted", "SBLR_DIAGNOSTIC_REFUSAL"},
     {"DROP SCHEDULE replay_schedule;", "SBSQL-B039B7B8F5C4",
-     "drop_schedule_stmt", "019f0000-0000-7000-8000-000000d20005",
+     "drop_schedule_stmt", scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d20005"),
      "not_admitted", "SBLR_DIAGNOSTIC_REFUSAL"},
     {"DROP JOB replay_job;", "SBSQL-D64BD9DCA318", "drop_job_stmt",
-     "019f0000-0000-7000-8000-000000d20006", "not_admitted",
+     scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d20006"), "not_admitted",
      "SBLR_DIAGNOSTIC_REFUSAL"},
 };
 
@@ -100,10 +101,10 @@ void PrintMessages(const MessageVectorSet& messages) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000d20111";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000d20112";
-  session.database_uuid = "019f0000-0000-7000-8000-000000d20113";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d20111");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d20112");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d20113");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 101;
   session.security_policy_epoch = 102;
   session.descriptor_epoch = 103;
@@ -114,7 +115,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000d20114";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d20114");
   config.bundle_contract_id = "sbp_sbsql@drop-object-refusal-test";
   config.build_id = "sbsql-drop-object-refusal-test";
   return config;
@@ -127,8 +128,8 @@ PipelineArtifacts RunPipeline(const DropCase& drop_case) {
   artifacts.ast = BuildAst(artifacts.cst);
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst,
                             ParserConfigForTest(), session,
-                            {std::string(drop_case.uuid),
-                             std::string(kSchemaUuid)});
+                            {drop_case.uuid,
+                             scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000d200ff")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;

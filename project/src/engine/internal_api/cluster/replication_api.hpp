@@ -33,7 +33,7 @@ struct EngineReplicationBoundaryRequest : EngineApiRequest {
   bool backup_archive_hold_satisfied = false;
   bool capability_profile_allows = false;
   bool live_ingest_requested = false;
-  std::string policy_snapshot_uuid;
+  EngineUuid policy_snapshot_uuid;
   std::string idempotency_key;
 };
 

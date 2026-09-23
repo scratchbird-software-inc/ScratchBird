@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -19,8 +20,8 @@ namespace {
 namespace agents = scratchbird::core::agents;
 
 constexpr agents::u64 kNowMicros = 4100000000ull;
-constexpr const char* kTenantUuid = "018f2000-0000-7000-8000-000000079001";
-constexpr const char* kDatabaseUuid = "018f2000-0000-7000-8000-000000079002";
+constexpr auto kTenantUuid = scratchbird::tests::FixtureUuidLiteral("018f2000-0000-7000-8000-000000079001");
+constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("018f2000-0000-7000-8000-000000079002");
 constexpr const char* kLeaderInstance = "018f2000-0000-7000-8000-000000079003";
 constexpr const char* kFollowerInstance = "018f2000-0000-7000-8000-000000079004";
 
@@ -65,8 +66,8 @@ agents::AgentRuntimeContext RuntimeContext() {
   context.security_context_present = true;
   context.private_features_available = true;
   context.standalone_edition = true;
-  context.database_uuid = kDatabaseUuid;
-  context.principal_uuid = "018f2000-0000-7000-8000-000000079005";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("018f2000-0000-7000-8000-000000079002");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f2000-0000-7000-8000-000000079005");
   context.wall_now_microseconds = kNowMicros;
   context.monotonic_now_microseconds = kNowMicros;
   return context;
@@ -75,7 +76,7 @@ agents::AgentRuntimeContext RuntimeContext() {
 agents::AgentTenantWorkloadBudget TenantBudget() {
   agents::AgentTenantWorkloadBudget budget;
   budget.tenant_uuid = kTenantUuid;
-  budget.budget_evidence_uuid = "018f2000-0000-7000-8000-000000079006";
+  budget.budget_evidence_uuid = scratchbird::tests::FixtureUuidLiteral("018f2000-0000-7000-8000-000000079006");
   budget.budget_generation = 79;
   budget.max_tenant_live_actions = 4;
   budget.active_tenant_live_actions = 1;
@@ -123,7 +124,7 @@ agents::AgentTenantCoordinationGroup Group(
   group.group_id = "tenant-agent-group-a";
   group.tenant_uuid = kTenantUuid;
   group.database_uuid = kDatabaseUuid;
-  group.group_evidence_uuid = "018f2000-0000-7000-8000-000000079007";
+  group.group_evidence_uuid = scratchbird::tests::FixtureUuidLiteral("018f2000-0000-7000-8000-000000079007");
   group.group_generation = 79;
   group.conflict_policy = conflict_policy;
   group.local_noncluster_group = true;
@@ -150,8 +151,8 @@ agents::AgentTenantSharedMetricSnapshot Metric(
   snapshot.digest = "sha256:tenant-coordination:" + snapshot.metric_family +
                     ":" + snapshot.source_id;
   snapshot.schema_digest = "sha256:schema:" + snapshot.metric_family;
-  snapshot.evidence_uuid = agents::DeterministicAgentRuntimeObjectUuidFromKey(
-      "ceic079|" + snapshot.metric_family + "|" + snapshot.source_id);
+  static unsigned evidence_ordinal = 0;
+  snapshot.evidence_uuid = scratchbird::tests::FixtureUuid(1230, ++evidence_ordinal);
   snapshot.generation = 79;
   snapshot.observed_wall_microseconds = kNowMicros - 100;
   snapshot.max_freshness_microseconds = 1000;
@@ -192,9 +193,9 @@ agents::AgentTenantCoordinationRequest Request(
   request.live_action_requested = live;
   request.mutable_action_requested = live;
   request.live_action_evidence_uuid =
-      "018f2000-0000-7000-8000-000000079008";
+      scratchbird::tests::FixtureUuidLiteral("018f2000-0000-7000-8000-000000079008");
   request.tenant_live_action_evidence_uuid =
-      "018f2000-0000-7000-8000-000000079009";
+      scratchbird::tests::FixtureUuidLiteral("018f2000-0000-7000-8000-000000079009");
   request.tenant_budget = TenantBudget();
   request.coordination_group = Group(conflict_policy);
   request.lock_request.lock_id = "page-family-pool-lock";
@@ -220,7 +221,7 @@ agents::AgentTenantCoordinationLock ActiveLock(
   lock.lease_generation = 4;
   lock.expires_at_microseconds = kNowMicros + 5000;
   lock.durable_lock_evidence_present = true;
-  lock.lock_evidence_uuid = "018f2000-0000-7000-8000-000000079010";
+  lock.lock_evidence_uuid = scratchbird::tests::FixtureUuidLiteral("018f2000-0000-7000-8000-000000079010");
   return lock;
 }
 
@@ -371,7 +372,7 @@ void TestClusterAndAuthorityRefusals() {
   cluster_delegated.coordination_group.external_cluster_provider_id =
       "external-cluster-provider";
   cluster_delegated.coordination_group.external_cluster_provider_evidence_uuid =
-      "018f2000-0000-7000-8000-000000079012";
+      scratchbird::tests::FixtureUuidLiteral("018f2000-0000-7000-8000-000000079012");
   RequireCode(cluster_delegated,
               "SB_AGENT_TENANT_COORDINATION.CLUSTER_DELEGATION_REQUIRED",
               "local cluster delegation");
@@ -384,7 +385,7 @@ void TestClusterAndAuthorityRefusals() {
 
 void TestLiveEvidenceAndForegroundRefusals() {
   auto live_evidence = Request();
-  live_evidence.live_action_evidence_uuid.clear();
+  live_evidence.live_action_evidence_uuid = {};
   RequireCode(live_evidence,
               "SB_AGENT_TENANT_COORDINATION.LIVE_EVIDENCE_REQUIRED",
               "live evidence");

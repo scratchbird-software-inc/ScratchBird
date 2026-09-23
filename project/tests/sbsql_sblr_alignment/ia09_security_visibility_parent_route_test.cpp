@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "dispatch/function_dispatch.hpp"
 #include "registry/function_seed_registry.hpp"
 #include "security/visibility_api.hpp"
@@ -19,7 +20,7 @@ namespace sblr = scratchbird::engine::sblr;
 
 constexpr std::string_view kPrincipalUuid =
     "019d0000-0000-7000-8000-000000005826";
-constexpr std::string_view kOtherPrincipalUuid =
+constexpr char kOtherPrincipalUuid[] =
     "019d0000-0000-7000-8000-000000005827";
 constexpr std::string_view kTargetUuid =
     "019d0000-0000-7000-8000-000000005828";
@@ -34,19 +35,16 @@ void Require(bool condition, std::string_view message) {
 api::EngineRequestContext MaterializedContext() {
   api::EngineRequestContext context;
   context.request_id = "ia09.security_visibility_parent";
-  context.principal_uuid.canonical = std::string(kPrincipalUuid);
-  context.session_uuid.canonical =
-      "019d0000-0000-7000-8000-000000005829";
-  context.statement_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000582a";
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005826");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005829");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000582a");
   context.security_context_present = true;
   context.catalog_generation_id = 11;
   context.security_epoch = 7;
 
   auto& authorization = context.authorization_context;
   authorization.present = true;
-  authorization.authority_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000582b";
+  authorization.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000582b");
   authorization.security_context_generation = 1;
   authorization.principal_uuid = context.principal_uuid;
   authorization.security_epoch = context.security_epoch;
@@ -56,11 +54,10 @@ api::EngineRequestContext MaterializedContext() {
       {context.principal_uuid, "principal"});
 
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000582c";
+  grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000582c");
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = std::string(kTargetUuid);
+  grant.target_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005828");
   grant.right = "SELECT";
   grant.security_epoch = context.security_epoch;
   authorization.grants.push_back(std::move(grant));
@@ -72,7 +69,7 @@ api::EngineEvaluateVisibilityRequest VisibilityRequest(
   api::EngineEvaluateVisibilityRequest request;
   request.context = context;
   request.operation_id = "security.evaluate_visibility";
-  request.target_object.uuid.canonical = std::string(kTargetUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005828");
   request.target_object.object_kind = "table";
   request.required_right = "SELECT";
   request.allow_target_owner = true;
@@ -114,8 +111,8 @@ int main() {
           "005825 owner visibility did not use engine-owned target authority");
 
   auto grant_request = VisibilityRequest(context);
-  grant_request.target_owner_uuid.canonical =
-      std::string(kOtherPrincipalUuid);
+  grant_request.target_owner_uuid =
+      scratchbird::tests::FixtureUuidLiteral(kOtherPrincipalUuid);
   const auto granted = api::EngineEvaluateVisibility(grant_request);
   Require(granted.ok && granted.visible,
           "005825 materialized grant visibility was not admitted");
@@ -150,11 +147,11 @@ int main() {
   function_request.context.dependency_available = true;
   function_request.context.engine_request_context = &cancelled_context;
   function_request.context.sblr_context.user_uuid =
-      cancelled_context.principal_uuid.canonical;
+      cancelled_context.principal_uuid;
   function_request.context.sblr_context.session_uuid =
-      cancelled_context.session_uuid.canonical;
+      cancelled_context.session_uuid;
   function_request.context.sblr_context.statement_uuid =
-      cancelled_context.statement_uuid.canonical;
+      cancelled_context.statement_uuid;
   function_request.context.sblr_context.security_context_present = true;
   function_request.arguments.push_back(
       {"function", TextValue("has_table_privilege")});

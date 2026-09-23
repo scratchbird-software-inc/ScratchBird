@@ -1,3 +1,4 @@
+#include <stdexcept>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -32,11 +33,18 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
-std::string Uuid(const std::uint64_t suffix) {
-  auto text = std::string("019f0000-0000-7400-8000-000000000000");
-  const auto digits = std::to_string(suffix);
-  text.replace(text.size() - digits.size(), digits.size(), digits);
-  return text;
+scratchbird::core::platform::Uuid Uuid(std::uint64_t suffix) {
+  // Retain the original fixture's decimal digits in the UUID's low nibbles.
+  scratchbird::core::platform::Uuid id{};
+  id.bytes[0] = 0x01; id.bytes[1] = 0x9f;
+  id.bytes[6] = 0x74; id.bytes[8] = 0x80;
+  for (unsigned i = 0; i < 6; ++i) {
+    const auto low = suffix % 10; suffix /= 10;
+    const auto high = suffix % 10; suffix /= 10;
+    id.bytes[15 - i] = static_cast<std::uint8_t>((high << 4) | low);
+  }
+  if (suffix != 0) throw std::out_of_range("UUID fixture suffix");
+  return id;
 }
 
 plan::CanonicalMgaStatementContext MgaContext() {
@@ -706,9 +714,12 @@ bool ValidateExhaustiveSearch() {
               result.mga_statement_context, MgaContext()),
       "small legal plan space was not exhaustively and independently proved");
   passed &= Require(
-      result.selected_plan_signature ==
-          "1=" + Uuid(201) + ";2=" + Uuid(202) + ";3=" + Uuid(204) +
-              ";4=" + Uuid(207) + ";",
+      result.selected_alternatives.size() == 4 &&
+          std::ranges::all_of(result.selected_alternatives, [](const auto& selected) {
+            const std::uint64_t expected[] = {0, 201, 202, 204, 207};
+            return selected.logical_node_id >= 1 && selected.logical_node_id <= 4 &&
+                   selected.alternative_uuid == Uuid(expected[selected.logical_node_id]);
+          }),
       "exhaustive search selected the wrong deterministic plan");
 
   std::reverse(alternatives.alternatives.begin(),
@@ -743,8 +754,9 @@ bool ValidateDeterministicTieBreaking() {
       first.accepted && second.accepted &&
           first.deterministic_tie_break_count != 0 &&
           first.selected_plan_signature == second.selected_plan_signature &&
-          first.selected_plan_signature.find("3=" + Uuid(203) + ";") !=
-              std::string::npos &&
+          std::ranges::any_of(first.selected_alternatives, [](const auto& selected) {
+            return selected.logical_node_id == 3 && selected.alternative_uuid == Uuid(203);
+          }) &&
           SameTrace(first.trace, second.trace),
       "equal retained cost vectors did not use the canonical plan-signature tie break");
 }

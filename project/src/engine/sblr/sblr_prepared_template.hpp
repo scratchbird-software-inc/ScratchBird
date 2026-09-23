@@ -28,6 +28,7 @@ struct SblrPreparedTemplateBuildResult {
   scratchbird::engine::executor::PreparedTemplateAdmission admission;
   scratchbird::engine::executor::PreparedTemplateBindContext bind_context;
   std::vector<std::string> evidence;
+  std::vector<internal_api::EngineEvidenceReference> identity_evidence;
 };
 
 SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(

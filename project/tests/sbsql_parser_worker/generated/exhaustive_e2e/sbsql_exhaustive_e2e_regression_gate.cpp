@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../../support/binary_uuid_fixture.hpp"
+
 #include "sblr_admission.hpp"
 #include "../../canonical_sblr_admission_test_helper.hpp"
 #include "sblr_dispatch_server.hpp"
@@ -64,7 +66,8 @@ struct Harness {
 
 namespace sbps = scratchbird::server::sbps;
 
-constexpr const char* kDynamicRouteDatabaseUuid = "019e05ef-f015-7000-8000-000000000001";
+constexpr auto kDynamicRouteDatabaseUuid =
+    scratchbird::tests::FixtureUuidLiteral("019e05ef-f015-7000-8000-000000000001");
 constexpr const char* kDynamicRouteSysVersionUuid = "b4a0fd27-e19b-7719-9105-5882443ee2bc";
 
 bool Contains(std::string_view haystack, std::string_view needle) {
@@ -652,7 +655,7 @@ struct DynamicRouteContext {
   std::filesystem::path database_path;
   std::uint64_t local_transaction_id = 0;
   std::uint64_t snapshot_visible_through_local_transaction_id = 0;
-  std::string transaction_uuid;
+  api::EngineUuid transaction_uuid;
 };
 
 api::EngineRequestContext MakeEngineContext(const std::filesystem::path& database_path) {
@@ -660,9 +663,9 @@ api::EngineRequestContext MakeEngineContext(const std::filesystem::path& databas
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "sbsql-exhaustive-e2e-dynamic-route";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = kDynamicRouteDatabaseUuid;
-  context.principal_uuid.canonical = "019e05ef-f015-7000-8000-000000000002";
-  context.session_uuid.canonical = "019e05ef-f015-7000-8000-000000000003";
+  context.database_uuid = kDynamicRouteDatabaseUuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e05ef-f015-7000-8000-000000000002");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e05ef-f015-7000-8000-000000000003");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -701,7 +704,7 @@ DynamicRouteContext CreateDynamicRouteContext(Harness* harness) {
   route.local_transaction_id = begun.local_transaction_id;
   route.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
-  route.transaction_uuid = begun.transaction_uuid.canonical;
+  route.transaction_uuid = begun.transaction_uuid;
   return route;
 }
 
@@ -858,9 +861,9 @@ void CheckDynamicStoredProcedureRoute(Harness* harness) {
     harness->Check(!executed.sblr_payload.empty() &&
                        !Contains(executed.sblr_payload, live_source_free_sql),
                    "canonical query package was absent or retained executable SQL text");
-    harness->Check(!executed.server_cursor_uuid.empty(),
+    harness->Check(!executed.server_cursor_uuid.is_nil(),
                    "engine-backed dynamic SQL query did not publish a cursor");
-    if (!executed.server_cursor_uuid.empty()) {
+    if (!executed.server_cursor_uuid.is_nil()) {
       const auto fetched = parser.FetchCursorOnRoute(executed.server_cursor_uuid, 1);
       harness->Check(fetched.accepted && fetched.row_count == 1,
                      "engine-backed source-free query cursor did not return one row");

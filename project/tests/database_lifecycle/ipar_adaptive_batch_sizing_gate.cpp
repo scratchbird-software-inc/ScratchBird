@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -38,7 +39,7 @@ void Require(bool condition, std::string_view message) {
 
 void DumpEvidence(const std::vector<api::EngineEvidenceReference>& evidence) {
   for (const auto& entry : evidence) {
-    std::cerr << entry.evidence_kind << '=' << entry.evidence_id << '\n';
+    std::cerr << entry.evidence_kind << '=' << scratchbird::tests::EvidenceTextFields(entry.evidence_id) << '\n';
   }
 }
 
@@ -63,16 +64,16 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string schema_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid schema_uuid;
   platform::u64 salt = 0;
   api::EngineRequestContext context;
 
@@ -128,7 +129,7 @@ api::CrudTableRecord Table(const Fixture& fixture) {
 }
 
 api::CrudIndexRecord Index(const Fixture& fixture,
-                           std::string index_uuid,
+                           api::EngineUuid index_uuid,
                            std::string column_name) {
   api::CrudIndexRecord index;
   index.creator_tx = fixture.context.local_transaction_id;
@@ -148,12 +149,12 @@ api::EngineRequestContext BaseContext(const Fixture& fixture, std::string reques
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
+  context.current_schema_uuid = fixture.schema_uuid;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -214,9 +215,9 @@ Fixture MakeFixture(std::string_view label,
   }
   Require(created.ok(), "IPAR-P1-05 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.schema_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.schema_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
   fixture.context = Begin(fixture, "ipar-p1-05-metadata-" + std::string(label));
 
   const auto table = api::AppendMgaTableMetadata(fixture.context, Table(fixture));
@@ -226,7 +227,7 @@ Fixture MakeFixture(std::string_view label,
     const auto metadata = api::AppendMgaIndexMetadata(
         fixture.context,
         Index(fixture,
-              NewUuidText(platform::UuidKind::object, salt + 1000 + index),
+              NewIdentity(platform::UuidKind::object, salt + 1000 + index),
               column));
     Require(!metadata.error, "IPAR-P1-05 index metadata append failed");
   }
@@ -238,10 +239,10 @@ api::EngineInsertRowsRequest InsertRequest(const Fixture& fixture,
                                            std::vector<std::string> options) {
   api::EngineInsertRowsRequest request;
   request.context = fixture.context;
-  request.target_schema.uuid.canonical = fixture.schema_uuid;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_schema.uuid = fixture.schema_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.bound_object_identity.object_uuid = request.target_table.uuid;
   request.bound_object_identity.catalog_generation_id =
@@ -260,7 +261,7 @@ api::EngineApiU64 EvidenceU64(const std::vector<api::EngineEvidenceReference>& e
   for (const auto& item : evidence) {
     if (item.evidence_kind != kind) { continue; }
     try {
-      return static_cast<api::EngineApiU64>(std::stoull(item.evidence_id));
+      return static_cast<api::EngineApiU64>(std::stoull(std::get<std::string>(item.evidence_id)));
     } catch (...) {
       return 0;
     }
@@ -271,7 +272,7 @@ api::EngineApiU64 EvidenceU64(const std::vector<api::EngineEvidenceReference>& e
 std::string EvidenceText(const std::vector<api::EngineEvidenceReference>& evidence,
                          std::string_view kind) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind) { return item.evidence_id; }
+    if (item.evidence_kind == kind) { return scratchbird::tests::EvidenceTextFields(item.evidence_id); }
   }
   return {};
 }

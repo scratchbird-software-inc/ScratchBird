@@ -42,6 +42,8 @@
 
 #if defined(SCRATCHBIRD_CLIENT_ENABLE_LOCAL_SBSQL_BRIDGE)
 #include "wire/sbsql_test_wire.hpp"
+#include "../../../../src/core/uuid/uuid.hpp"
+#include <stdexcept>
 #endif
 #if defined(SCRATCHBIRD_CLIENT_ENABLE_LOCAL_SBSQL_BRIDGE) && \
     defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
@@ -2362,7 +2364,9 @@ core::Status NetworkClient::openLocalIpcBridge(core::ErrorContext* ctx) {
                 parser_config.dialect = "sbsql";
                 parser_config.profile_id = "local_ipc";
                 parser_config.bundle_contract_id = "sbp_sbsql_local_ipc@1";
-                parser_config.parser_uuid = "local_ipc_client_bridge";
+                const auto parser_identity = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+                if (!parser_identity) throw std::runtime_error("parser_instance_identity_unavailable");
+                parser_config.parser_uuid = *parser_identity;
                 parser_config.tls_required = false;
                 scratchbird::parser::sbsql::SbsqlTestWireSession session(
                     std::move(parser_config),
@@ -2467,7 +2471,9 @@ core::Status NetworkClient::openEmbeddedBridge(core::ErrorContext* ctx) {
                     parser_config.dialect = "sbsql";
                     parser_config.profile_id = "embedded";
                     parser_config.bundle_contract_id = "sbp_sbsql_embedded@1";
-                    parser_config.parser_uuid = "embedded_client_bridge";
+                    const auto parser_identity = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+                    if (!parser_identity) throw std::runtime_error("parser_instance_identity_unavailable");
+                    parser_config.parser_uuid = *parser_identity;
                     parser_config.tls_required = false;
                     scratchbird::parser::sbsql::SbsqlTestWireSession session(
                         std::move(parser_config),

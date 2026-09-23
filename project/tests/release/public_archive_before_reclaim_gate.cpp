@@ -1,3 +1,7 @@
+#include "../agents/agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -77,8 +81,8 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string UuidText(UuidKind kind, u64 offset) {
-  return uuid::UuidToString(MakeUuid(kind, offset).value);
+std::string UuidBytes(UuidKind kind, u64 offset) {
+  return BinaryFixtureIdentity(MakeUuid(kind, offset).value);
 }
 
 txn::TransactionIdentity TransactionIdentity(u64 local_id) {
@@ -111,10 +115,10 @@ api::EngineRequestContext Context(const std::filesystem::path& work_dir,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "pcr084-archive-before-reclaim";
   context.database_path = (work_dir / "pcr084.sbdb").string();
-  context.database_uuid.canonical = uuid::UuidToString(database_uuid.value);
-  context.principal_uuid.canonical = UuidText(UuidKind::principal, 30);
-  context.session_uuid.canonical = UuidText(UuidKind::object, 31);
-  context.transaction_uuid.canonical = UuidText(UuidKind::transaction, 32);
+  context.database_uuid = database_uuid.value;
+  context.principal_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::principal, 30));
+  context.session_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::object, 31));
+  context.transaction_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::transaction, 32));
   context.local_transaction_id = 20;
   context.snapshot_visible_through_local_transaction_id = 20;
   context.security_context_present = true;
@@ -170,7 +174,7 @@ filespace::FilespaceOperationRequest AttachArchiveRequest(
 api::EngineArchiveRetainedHistoryRecord RetainedHistoryRecord() {
   api::EngineArchiveRetainedHistoryRecord record;
   record.metadata = RetainedHistoryMetadata();
-  record.table_uuid = UuidText(UuidKind::object, 50);
+  record.table_uuid = UuidBytes(UuidKind::object, 50);
   record.payload_digest = "fnv1a64:retained-history-payload";
   record.retention_class = "history_archive";
   record.retention_policy_ref = "retention.history.local.v1";
@@ -228,7 +232,7 @@ bool ContainsEvidenceKind(const api::EngineApiResult& result,
                           std::string_view id) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        evidence.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(evidence.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -434,11 +438,11 @@ bool FailClosedProof(const std::filesystem::path& work_dir) {
        ok;
 
   agents::ArchiveManagerRequest archive_agent;
-  archive_agent.slice_uuid = UuidText(UuidKind::object, 200);
-  archive_agent.database_uuid = context.database_uuid.canonical;
-  archive_agent.principal_uuid = context.principal_uuid.canonical;
-  archive_agent.mga_transaction_uuid = context.transaction_uuid.canonical;
-  archive_agent.evidence_uuid = UuidText(UuidKind::object, 201);
+  archive_agent.slice_uuid = UuidBytes(UuidKind::object, 200);
+  archive_agent.database_uuid = BinaryFixtureIdentity(context.database_uuid);
+  archive_agent.principal_uuid = BinaryFixtureIdentity(context.principal_uuid);
+  archive_agent.mga_transaction_uuid = BinaryFixtureIdentity(context.transaction_uuid);
+  archive_agent.evidence_uuid = UuidBytes(UuidKind::object, 201);
   archive_agent.local_transaction_id = context.local_transaction_id;
   archive_agent.catalog_generation = 1;
   archive_agent.verify_requested = true;

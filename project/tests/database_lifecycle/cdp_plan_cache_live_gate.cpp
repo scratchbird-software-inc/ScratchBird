@@ -1,3 +1,5 @@
+#include "hash_digest.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -54,10 +56,10 @@ std::uint64_t NowMillis() {
           .count());
 }
 
-std::string GeneratedUuid(UuidKind kind, std::uint64_t salt) {
+api::EngineUuid GeneratedUuid(UuidKind kind, std::uint64_t salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, NowMillis() + salt);
   Require(generated.ok(), "UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 api::EngineLocalizedName Name(std::string value) {
@@ -75,7 +77,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == value) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, value)) {
       return true;
     }
   }
@@ -83,15 +85,15 @@ bool HasEvidence(const api::EngineApiResult& result,
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const std::string& database_uuid,
-                                      std::string principal_uuid) {
+                                      const api::EngineUuid& database_uuid,
+                                      api::EngineUuid principal_uuid) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "cdp-plan-cache-live-gate";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = std::move(principal_uuid);
-  context.session_uuid.canonical = GeneratedUuid(UuidKind::object, 200);
+  context.database_uuid = database_uuid;
+  context.principal_uuid = std::move(principal_uuid);
+  context.session_uuid = GeneratedUuid(UuidKind::object, 200);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -104,8 +106,8 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext Begin(const std::filesystem::path& path,
-                                const std::string& database_uuid,
-                                const std::string& principal_uuid) {
+                                const api::EngineUuid& database_uuid,
+                                const api::EngineUuid& principal_uuid) {
   api::EngineBeginTransactionRequest request;
   request.context = BaseContext(path, database_uuid, principal_uuid);
   request.isolation_level = "read_committed";
@@ -132,7 +134,7 @@ void Rollback(const api::EngineRequestContext& context) {
   RequireOk(api::EngineRollbackTransaction(request), "rollback transaction failed");
 }
 
-std::string CreateDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -150,31 +152,31 @@ std::string CreateDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineCatalogCreateObjectRequest CreateRequest(
     const api::EngineRequestContext& context,
-    const std::string& object_uuid,
+    const api::EngineUuid& object_uuid,
     std::string object_kind,
-    const std::string& schema_uuid,
+    const api::EngineUuid& schema_uuid,
     std::string name) {
   api::EngineCatalogCreateObjectRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = object_uuid;
+  request.target_object.uuid = object_uuid;
   request.target_object.object_kind = std::move(object_kind);
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.localized_names.push_back(Name(std::move(name)));
   return request;
 }
 
 api::EngineResolveNameRequest ResolveRequest(const api::EngineRequestContext& context,
-                                             const std::string& schema_uuid,
+                                             const api::EngineUuid& schema_uuid,
                                              std::string object_kind,
                                              std::string name) {
   api::EngineResolveNameRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.target_object.object_kind = std::move(object_kind);
   request.localized_names.push_back(Name(std::move(name)));
   return request;
@@ -189,13 +191,28 @@ api::EngineTypedValue Int64Value(std::int64_t value) {
   return typed;
 }
 
-api::EngineQueryRelation Relation(const std::string& table_uuid,
+std::string FixtureDescriptorDigest(const api::EngineUuid& identity) {
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(identity.bytes.data(), identity.bytes.size());
+  Require(digest.ok(), "fixture descriptor digest failed");
+  return scratchbird::core::hash::HexLower(digest.digest);
+}
+
+bool HasEvidence(const api::EngineApiResult& result, std::string_view kind,
+                 const api::EngineUuid& expected) {
+  for (const auto& evidence : result.evidence) {
+    const auto* identity = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && identity && *identity == expected) return true;
+  }
+  return false;
+}
+
+api::EngineQueryRelation Relation(const api::EngineUuid& table_uuid,
                                   const std::string& relation_name) {
   api::EngineQueryRelation relation;
   relation.relation_name = relation_name;
-  relation.source_object.uuid.canonical = table_uuid;
+  relation.source_object.uuid = table_uuid;
   relation.source_object.object_kind = "table";
-  relation.descriptor_digest = "generated-descriptor:" + table_uuid;
+  relation.descriptor_digest = FixtureDescriptorDigest(table_uuid);
   for (int value : {1, 2, 3}) {
     api::EngineRowValue row;
     row.fields.push_back({"id", Int64Value(value)});
@@ -205,7 +222,7 @@ api::EngineQueryRelation Relation(const std::string& table_uuid,
 }
 
 api::EnginePlanOperationRequest PlanRequest(api::EngineRequestContext context,
-                                            const std::string& table_uuid,
+                                            const api::EngineUuid& table_uuid,
                                             const std::string& relation_name,
                                             std::string cache_option,
                                             std::string stats_snapshot) {
@@ -213,7 +230,7 @@ api::EnginePlanOperationRequest PlanRequest(api::EngineRequestContext context,
   request.context = std::move(context);
   request.execute = true;
   request.query_operation = "count";
-  request.target_object.uuid.canonical = table_uuid;
+  request.target_object.uuid = table_uuid;
   request.target_object.object_kind = "table";
   request.relations.push_back(Relation(table_uuid, relation_name));
   request.option_envelopes.push_back(std::move(cache_option));
@@ -240,10 +257,10 @@ void RequireSameResult(const api::EnginePlanOperationResult& lhs,
 int main() {
   const auto path = std::filesystem::temp_directory_path() /
                     ("sb_cdp_plan_cache_live_" + std::to_string(NowMillis()) + ".sbdb");
-  const std::string database_uuid = CreateDatabase(path);
-  const std::string owner_uuid = GeneratedUuid(UuidKind::object, 310);
-  const std::string schema_uuid = GeneratedUuid(UuidKind::object, 311);
-  const std::string table_uuid = GeneratedUuid(UuidKind::object, 312);
+  const api::EngineUuid database_uuid = CreateDatabase(path);
+  const api::EngineUuid owner_uuid = GeneratedUuid(UuidKind::object, 310);
+  const api::EngineUuid schema_uuid = GeneratedUuid(UuidKind::object, 311);
+  const api::EngineUuid table_uuid = GeneratedUuid(UuidKind::object, 312);
   const std::string schema_name = "cdp_plan_schema_" + std::to_string(NowMillis());
   const std::string table_name = "cdp_plan_table_" + std::to_string(NowMillis());
   const std::string renamed_table = table_name + "_renamed";
@@ -267,7 +284,7 @@ int main() {
   const auto resolved =
       api::EngineResolveName(ResolveRequest(read_context, schema_uuid, "table", table_name));
   RequireOk(resolved, "resolver lookup failed");
-  Require(resolved.bound_object_identity.object_uuid.canonical == table_uuid,
+  Require(resolved.bound_object_identity.object_uuid == table_uuid,
           "plan cache gate did not resolve generated table UUID");
 
   const auto first = api::EnginePlanOperation(
@@ -275,7 +292,7 @@ int main() {
   RequireOk(first, "first cached plan request failed");
   Require(HasEvidence(first, "optimizer_live_plan_cache", "miss"),
           "first cached plan request did not miss");
-  Require(HasEvidence(first, "optimizer_live_plan_cache_binding", "descriptor:" + table_uuid),
+  Require(HasEvidence(first, "optimizer_live_plan_cache_binding", table_uuid),
           "plan cache did not bind through descriptor UUID");
   Require(CountValue(first) == "3", "first cached plan changed query result");
 
@@ -305,7 +322,7 @@ int main() {
   rename_context.catalog_generation_id = created_table.metadata_cache_epoch;
   api::EngineCatalogRenameObjectRequest rename;
   rename.context = rename_context;
-  rename.target_object.uuid.canonical = table_uuid;
+  rename.target_object.uuid = table_uuid;
   rename.target_object.object_kind = "table";
   rename.localized_names.push_back(Name(renamed_table));
   const auto renamed = api::EngineCatalogRenameObject(rename);

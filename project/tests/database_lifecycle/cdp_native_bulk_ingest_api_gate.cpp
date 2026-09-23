@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -109,20 +110,17 @@ platform::TypedUuid NewTypedUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewTypedUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewTypedUuid(kind, salt).value;
 }
 
-std::string UuidText(const platform::TypedUuid& value) {
-  return uuid::UuidToString(value.value);
-}
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -162,6 +160,10 @@ api::EngineTypedValue BinaryScalarValue(std::string canonical_type_name,
   return typed;
 }
 
+api::EngineTypedValue IdentityScalarValue(std::string type, const platform::Uuid& value) {
+  return BinaryScalarValue(std::move(type), {value.bytes.begin(), value.bytes.end()});
+}
+
 api::EngineTypedValue NullValue(std::string canonical_type_name) {
   api::EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
@@ -173,7 +175,7 @@ api::EngineTypedValue NullValue(std::string canonical_type_name) {
 
 api::EngineRowValue Row(std::string id, std::string payload) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = NewUuidText(platform::UuidKind::object, 900);
+  row.requested_row_uuid = NewIdentity(platform::UuidKind::object, 900);
   row.fields.push_back({"id", TextValue(std::move(id))});
   row.fields.push_back({"payload", TextValue(std::move(payload))});
   return row;
@@ -183,7 +185,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) return true;
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, id)) return true;
   }
   return false;
 }
@@ -193,7 +195,7 @@ api::EngineApiU64 EvidenceU64(const std::vector<api::EngineEvidenceReference>& e
   for (const auto& item : evidence) {
     if (item.evidence_kind != kind) { continue; }
     try {
-      return static_cast<api::EngineApiU64>(std::stoull(item.evidence_id));
+      return static_cast<api::EngineApiU64>(std::stoull(std::get<std::string>(item.evidence_id)));
     } catch (...) {
       return 0;
     }
@@ -229,9 +231,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture, std::string reques
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical = NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -380,7 +382,7 @@ api::CrudIndexRecord TypedScalarUniqueIndex(
     platform::u64 salt) {
   api::CrudIndexRecord index;
   index.creator_tx = context.local_transaction_id;
-  index.index_uuid = NewUuidText(platform::UuidKind::object, salt);
+  index.index_uuid = NewIdentity(platform::UuidKind::object, salt);
   index.table_uuid = fixture.table_uuid;
   index.column_name = column_name;
   index.family = api::kCrudIndexFamilyBtree;
@@ -412,9 +414,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   }
   Require(created.ok(), "CDP-040 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "cdp040-metadata");
   const auto table = api::AppendMgaTableMetadata(metadata, Table(fixture, metadata));
@@ -445,9 +447,9 @@ Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 int64 index database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "cdp040-int64-index-metadata");
   const auto table = api::AppendMgaTableMetadata(metadata, Table(fixture, metadata));
@@ -479,8 +481,8 @@ Fixture MakeTypedScalarFixture(std::string name,
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 typed scalar database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
 
   auto metadata = Begin(fixture, "cdp040-typed-scalar-metadata");
   const auto table = api::AppendMgaTableMetadata(
@@ -511,8 +513,8 @@ std::vector<api::EngineRowValue> Rows(std::string prefix, int count) {
 
 api::EngineRowValue Int64IndexedRow(int value, platform::u64 salt) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, salt);
+  row.requested_row_uuid =
+      NewIdentity(platform::UuidKind::object, salt);
   row.fields.push_back({"id", ScalarValue("int64", std::to_string(value))});
   row.fields.push_back({"payload",
                         TextValue("int64-index-payload-" +
@@ -526,8 +528,8 @@ api::EngineRowValue Int64IndexedRow(int value) {
 
 api::EngineRowValue NullInt64IndexedRow() {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, 1179);
+  row.requested_row_uuid =
+      NewIdentity(platform::UuidKind::object, 1179);
   row.fields.push_back({"id", NullValue("int64")});
   row.fields.push_back({"payload", TextValue("int64-index-payload-null")});
   return row;
@@ -535,8 +537,8 @@ api::EngineRowValue NullInt64IndexedRow() {
 
 api::EngineRowValue NullCharacterRow() {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, 1199);
+  row.requested_row_uuid =
+      NewIdentity(platform::UuidKind::object, 1199);
   row.fields.push_back({"id", NullValue("int64")});
   row.fields.push_back({"payload", TextValue("null-character-payload")});
   return row;
@@ -544,8 +546,8 @@ api::EngineRowValue NullCharacterRow() {
 
 api::EngineRowValue TypedScalarRow(int index) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, 1200 + index);
+  row.requested_row_uuid =
+      NewIdentity(platform::UuidKind::object, 1200 + index);
   row.fields.push_back({"id", ScalarValue("int64", std::to_string(index))});
   row.fields.push_back({"flag_value", ScalarValue("boolean", index % 2 == 0 ? "true" : "false")});
   row.fields.push_back({"tiny_i", ScalarValue("int8", index % 2 == 0 ? "12" : "-12")});
@@ -564,7 +566,7 @@ api::EngineRowValue TypedScalarRow(int index) {
   row.fields.push_back({"real_128", BinaryScalarValue("real128", std::vector<std::uint8_t>{
       static_cast<std::uint8_t>(index), 1, 2, 3, 4, 5, 6, 7,
       8, 9, 10, 11, 12, 13, 14, 15})});
-  row.fields.push_back({"uuid_value", ScalarValue("uuid", NewUuidText(platform::UuidKind::object, 1300 + index))});
+  row.fields.push_back({"uuid_value", IdentityScalarValue("uuid", NewIdentity(platform::UuidKind::object, 1300 + index))});
   row.fields.push_back({"ip_value", BinaryScalarValue("ip_address", std::vector<std::uint8_t>{
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 0, 2,
       static_cast<std::uint8_t>(index)})});
@@ -573,7 +575,7 @@ api::EngineRowValue TypedScalarRow(int index) {
       static_cast<std::uint8_t>(index), 24, 4})});
   row.fields.push_back({"mac_value", BinaryScalarValue("mac_address", std::vector<std::uint8_t>{
       0, 0, 2, 0, 0, 0, 0, static_cast<std::uint8_t>(index)})});
-  row.fields.push_back({"enum_value", ScalarValue("enum_value", NewUuidText(platform::UuidKind::object, 1400 + index))});
+  row.fields.push_back({"enum_value", IdentityScalarValue("enum_value", NewIdentity(platform::UuidKind::object, 1400 + index))});
   row.fields.push_back({"date_value", ScalarValue("date", index % 2 == 0 ? "2026-06-25" : "1970-01-01")});
   row.fields.push_back({"time_value", ScalarValue("time", index % 2 == 0 ? "23:59:58.123456789" : "00:00:01")});
   row.fields.push_back({"timestamp_value", ScalarValue("timestamp", index % 2 == 0 ? "2026-06-25T12:34:56.123456789Z" : "1970-01-01T00:00:01")});
@@ -698,7 +700,7 @@ api::CrudIndexRecord DescriptorPayloadUniqueIndex(
     platform::u64 salt) {
   api::CrudIndexRecord index;
   index.creator_tx = context.local_transaction_id;
-  index.index_uuid = NewUuidText(platform::UuidKind::object, salt);
+  index.index_uuid = NewIdentity(platform::UuidKind::object, salt);
   index.table_uuid = fixture.table_uuid;
   index.column_name = column_name;
   index.family = api::kCrudIndexFamilyBtree;
@@ -728,8 +730,8 @@ Fixture MakeDescriptorPayloadFixture(std::string name,
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 descriptor payload database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
 
   auto metadata = Begin(fixture, "cdp040-descriptor-payload-metadata");
   const auto table = api::AppendMgaTableMetadata(
@@ -755,8 +757,8 @@ Fixture MakeDescriptorPayloadFixture(std::string name,
 
 api::EngineRowValue DescriptorPayloadRow(int row_index) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, 1700 + row_index);
+  row.requested_row_uuid =
+      NewIdentity(platform::UuidKind::object, 1700 + row_index);
   const auto& types = DescriptorPayloadTypeNames();
   for (std::size_t index = 0; index < types.size(); ++index) {
     row.fields.push_back(
@@ -780,7 +782,7 @@ api::EngineExecuteNativeBulkIngestRequest NativeRequest(
     std::vector<api::EngineRowValue> rows) {
   api::EngineExecuteNativeBulkIngestRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
   request.estimated_row_count = static_cast<api::EngineApiU64>(request.canonical_rows.size());
@@ -794,7 +796,7 @@ api::EngineApiU64 SelectCount(const Fixture& fixture,
                               const api::EngineRequestContext& context) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
   const auto selected = api::EngineSelectRows(request);
@@ -804,8 +806,8 @@ api::EngineApiU64 SelectCount(const Fixture& fixture,
 
 platform::TypedUuid RelationUuid(const Fixture& fixture) {
   const auto parsed =
-      uuid::ParseTypedUuid(platform::UuidKind::object, fixture.table_uuid);
-  Require(parsed.ok(), "CDP-040 table UUID parse failed");
+      uuid::MakeTypedUuid(platform::UuidKind::object, fixture.table_uuid);
+  Require(parsed.ok(), "CDP-040 table UUID validation failed");
   return parsed.value;
 }
 
@@ -842,8 +844,8 @@ sblr::SblrOperationEnvelope NativeEnvelope() {
   Require(identity != nullptr && identity->code != 0,
           "CDP-040 native ingest canonical opcode identity missing");
   envelope.opcode_code = identity->code;
-  envelope.parser_package_uuid = NewUuidText(platform::UuidKind::object, 2000);
-  envelope.registry_snapshot_uuid = NewUuidText(platform::UuidKind::object, 2001);
+  envelope.parser_package_uuid = NewIdentity(platform::UuidKind::object, 2000);
+  envelope.registry_snapshot_uuid = NewIdentity(platform::UuidKind::object, 2001);
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
@@ -860,7 +862,7 @@ sblr::SblrOperationEnvelope NativeRoundTripEnvelope() {
 api::EngineApiRequest SblrApiRequest(const Fixture& fixture,
                                      std::vector<api::EngineRowValue> rows) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.rows = std::move(rows);
   request.option_envelopes.push_back("estimated_row_count:" + std::to_string(request.rows.size()));
@@ -909,11 +911,10 @@ void StoreU64(std::array<std::uint8_t, 132>* out,
   }
 }
 
-std::array<std::uint8_t, 16> UuidBytes(std::string_view value,
+std::array<std::uint8_t, 16> UuidBytes(const platform::Uuid& value,
                                        std::string_view message) {
-  const auto parsed = uuid::ParseUuid(std::string(value));
-  Require(parsed.ok(), message);
-  return parsed.value.bytes;
+  Require(!value.is_nil(), message);
+  return value.bytes;
 }
 
 void AppendUuid(std::vector<std::uint8_t>* out,
@@ -1008,7 +1009,7 @@ std::vector<std::uint8_t> NativeRowPacket(
 sblr::SblrOperationEnvelope CanonicalPackageFrame(
     bool begin,
     const server::ServerSessionRecord& session,
-    std::string_view registry_snapshot_uuid,
+    const platform::Uuid& registry_snapshot_uuid,
     const std::array<std::uint8_t, 16>& package_uuid) {
   const std::string operation_id =
       begin ? "engine.op.package_begin" : "engine.op.package_end";
@@ -1026,14 +1027,14 @@ sblr::SblrOperationEnvelope CanonicalPackageFrame(
   frame.requires_transaction_context = identity->requires_transaction_context;
   frame.requires_cluster_authority = identity->requires_cluster_authority;
   frame.parser_package_uuid =
-      server::UuidBytesToText(session.admitted_parser_package_uuid);
+      platform::Uuid{session.admitted_parser_package_uuid};
   frame.parser_package_version_major =
       session.admitted_parser_package_version_major;
   frame.parser_package_version_minor =
       session.admitted_parser_package_version_minor;
   frame.parser_package_version_patch =
       session.admitted_parser_package_version_patch;
-  frame.registry_snapshot_uuid = std::string(registry_snapshot_uuid);
+  frame.registry_snapshot_uuid = registry_snapshot_uuid;
   frame.parser_resolved_names_to_uuids = true;
   sblr::SblrOperand operand;
   operand.ordinal = 1;
@@ -1089,7 +1090,7 @@ CanonicalSubmissionParts CanonicalNativeBulkContainer(
   operation.requires_transaction_context = identity->requires_transaction_context;
   operation.requires_cluster_authority = identity->requires_cluster_authority;
   operation.parser_package_uuid =
-      server::UuidBytesToText(session.admitted_parser_package_uuid);
+      platform::Uuid{session.admitted_parser_package_uuid};
   operation.parser_package_version_major =
       session.admitted_parser_package_version_major;
   operation.parser_package_version_minor =
@@ -1109,7 +1110,13 @@ CanonicalSubmissionParts CanonicalNativeBulkContainer(
     operand.value_body.insert(operand.value_body.end(), value.begin(), value.end());
     operation.operands.push_back(std::move(operand));
   };
-  append_text("target_object_uuid", fixture.table_uuid);
+  sblr::SblrOperand target;
+  target.type = "uuid";
+  target.name = "target_object_uuid";
+  target.ordinal = 1;
+  target.value_kind = sblr::SblrValueKind::uuid_ref;
+  target.value_body.assign(fixture.table_uuid.bytes.begin(), fixture.table_uuid.bytes.end());
+  operation.operands.push_back(std::move(target));
   append_text("target_object_kind", "table");
   append_text("native_bulk_ingest", "true");
   append_text("native_bulk_ingest_enabled", enabled ? "true" : "false");
@@ -1234,7 +1241,7 @@ server::ServerSessionRegistry MakeServerRegistry(
     std::array<std::uint8_t, 16>* session_uuid) {
   server::ServerTransactionState transaction;
   transaction.local_transaction_id = context.local_transaction_id;
-  transaction.transaction_uuid = context.transaction_uuid.canonical;
+  transaction.transaction_uuid = context.transaction_uuid;
   transaction.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
   transaction.transaction_timestamp = context.transaction_timestamp;
@@ -1242,7 +1249,7 @@ server::ServerSessionRegistry MakeServerRegistry(
 
   server::ServerSessionRecord session;
   session.session_uuid =
-      UuidBytes(context.session_uuid.canonical,
+      UuidBytes(context.session_uuid,
                 "CDP-040 server session UUID was malformed");
   session.connection_uuid = session.session_uuid;
   session.server_channel_uuid = sbps::MakeUuidV7Bytes();
@@ -1251,7 +1258,7 @@ server::ServerSessionRegistry MakeServerRegistry(
   session.transaction_routing_v2_negotiated = true;
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid =
-      UuidBytes(context.principal_uuid.canonical,
+      UuidBytes(context.principal_uuid,
                 "CDP-040 server principal UUID was malformed");
   session.effective_user_uuid = session.principal_uuid;
   session.admitted_parser_package_uuid = sbps::MakeUuidV7Bytes();
@@ -1268,7 +1275,7 @@ server::ServerSessionRegistry MakeServerRegistry(
   session.default_local_transaction_id = context.local_transaction_id;
   session.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
-  session.transaction_uuid = context.transaction_uuid.canonical;
+  session.transaction_uuid = context.transaction_uuid;
   session.transaction_timestamp = context.transaction_timestamp;
   session.default_transaction_isolation_level =
       context.transaction_isolation_level;
@@ -1301,7 +1308,7 @@ sbps::Frame AcquireStatementFrame(
   AppendUuid(&frame.payload, session_uuid);
   AppendU64(&frame.payload, context.local_transaction_id);
   AppendUuid(&frame.payload,
-             UuidBytes(context.transaction_uuid.canonical,
+             UuidBytes(context.transaction_uuid,
                        "CDP-040 transaction UUID was malformed"));
   return frame;
 }
@@ -1334,9 +1341,9 @@ sbps::Frame CanonicalNativeServerFrame(
   std::array<std::uint8_t, 16> statement_uuid{};
   std::copy_n(acquired.payload.begin() + 3, statement_uuid.size(),
               statement_uuid.begin());
-  const auto statement_text = server::UuidBytesToText(statement_uuid);
+  const auto statement_identity = platform::Uuid{statement_uuid};
   const auto statement =
-      registry->statement_contexts_by_statement_uuid.find(statement_text);
+      registry->statement_contexts_by_statement_uuid.find(statement_identity);
   Require(statement != registry->statement_contexts_by_statement_uuid.end() &&
               statement->second.receipt && !statement->second.released,
           "CDP-040 private statement receipt was not retained by the server");
@@ -1361,7 +1368,7 @@ sbps::Frame CanonicalNativeServerFrame(
   frame.payload.push_back(1);  // selected transaction route
   AppendU64(&frame.payload, context.local_transaction_id);
   AppendUuid(&frame.payload,
-             UuidBytes(context.transaction_uuid.canonical,
+             UuidBytes(context.transaction_uuid,
                        "CDP-040 transaction UUID was malformed"));
   AppendUuid(&frame.payload, statement_uuid);
   AppendBytes(&frame.payload, submission.container);
@@ -2030,8 +2037,8 @@ Fixture MakeOpaqueRenderOnlyPayloadFixture(std::string name,
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 opaque payload database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
 
   auto metadata = Begin(fixture, "cdp040-opaque-payload-metadata");
   const auto table = api::AppendMgaTableMetadata(
@@ -2043,8 +2050,8 @@ Fixture MakeOpaqueRenderOnlyPayloadFixture(std::string name,
 
 api::EngineRowValue OpaqueRenderOnlyPayloadRow(const std::string& type_name) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, 1811);
+  row.requested_row_uuid =
+      NewIdentity(platform::UuidKind::object, 1811);
   row.fields.push_back(
       {"opaque_payload",
        BinaryScalarValue(type_name,

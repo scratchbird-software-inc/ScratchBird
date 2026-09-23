@@ -1,3 +1,7 @@
+#include "../agents/agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +10,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "backup_archive/backup_archive_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
@@ -105,12 +110,12 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string UuidText(TypedUuid typed_uuid) {
-  return uuid::UuidToString(typed_uuid.value);
+std::string UuidBytes(TypedUuid typed_uuid) {
+  return BinaryFixtureIdentity(typed_uuid.value);
 }
 
-std::string UuidText(UuidKind kind, u64 offset) {
-  return UuidText(MakeUuid(kind, offset));
+std::string UuidBytes(UuidKind kind, u64 offset) {
+  return UuidBytes(MakeUuid(kind, offset));
 }
 
 DatabaseFixture CreateDatabaseFixture(const std::filesystem::path& path,
@@ -142,9 +147,9 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = UuidText(fixture.database_uuid);
-  context.principal_uuid.canonical = UuidText(UuidKind::principal, 20);
-  context.session_uuid.canonical = UuidText(UuidKind::object, 21);
+  context.database_uuid = NativeFixtureIdentity(UuidBytes(fixture.database_uuid));
+  context.principal_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::principal, 20));
+  context.session_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::object, 21));
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -152,8 +157,7 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
@@ -207,7 +211,7 @@ bool Commit(api::EngineRequestContext* context) {
     return false;
   }
   context->local_transaction_id = 0;
-  context->transaction_uuid.canonical.clear();
+  context->transaction_uuid = {};
   return true;
 }
 
@@ -235,7 +239,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
   }
@@ -293,24 +297,24 @@ bool BackupForwardSessionProof(const std::filesystem::path& work_dir) {
   const auto target = CreateDatabaseFixture(work_dir / "target.sbdb", 101);
   const auto base_manifest = work_dir / "base.sblbk";
   const auto delta_manifest = work_dir / "write-after.sbdlt";
-  const std::string timeline_uuid = UuidText(UuidKind::object, 200);
-  const std::string fork_uuid = UuidText(UuidKind::object, 201);
+  const std::string timeline_uuid = UuidBytes(UuidKind::object, 200);
+  const std::string fork_uuid = UuidBytes(UuidKind::object, 201);
 
   auto tx1 = Context(source, "pcr085-source-tx1");
   ok = Expect(Begin(&tx1), "PCR-085 source tx1 should begin") && ok;
-  const std::string schema_uuid = UuidText(UuidKind::schema, 500);
+  const auto schema_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::schema, 500));
   api::EngineCreateSchemaRequest schema;
   schema.context = tx1;
-  schema.target_object.uuid.canonical = schema_uuid;
+  schema.target_object.uuid = schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back({"en", "primary", "", "pcr085", true});
   const auto created_schema = api::EngineCreateSchema(schema);
   ok = ExpectApiOk(created_schema,
                    "PCR-085 source schema should create") && ok;
-  tx1.current_schema_uuid.canonical = schema_uuid;
+  tx1.current_schema_uuid = schema_uuid;
   api::EngineCreateTableRequest create;
   create.context = tx1;
-  create.target_schema.uuid.canonical = schema_uuid;
+  create.target_schema.uuid = schema_uuid;
   create.target_schema.object_kind = "schema";
   create.table_names.push_back({"en", "primary", "", "backup_forward_items", true});
   api::EngineColumnDefinition payload_col;
@@ -328,7 +332,7 @@ bool BackupForwardSessionProof(const std::filesystem::path& work_dir) {
   api::EngineStartLogicalBackupRequest base_backup;
   base_backup.context = BackupContext(source, "pcr085-base-backup");
   base_backup.option_envelopes.push_back("target_uri:" + base_manifest.string());
-  base_backup.option_envelopes.push_back("filespace_uuid:" + UuidText(source.filespace_uuid));
+  base_backup.option_envelopes.push_back("filespace_uuid:" + UuidBytes(source.filespace_uuid));
   base_backup.option_envelopes.push_back("timeline_uuid:" + timeline_uuid);
   base_backup.option_envelopes.push_back("fork_uuid:" + fork_uuid);
   const auto base = api::EngineStartLogicalBackup(base_backup);
@@ -342,7 +346,7 @@ bool BackupForwardSessionProof(const std::filesystem::path& work_dir) {
   start.base_snapshot_visible_through_local_transaction_id =
       base.snapshot_visible_through_local_transaction_id;
   start.source_manifest_uri = base_manifest.string();
-  start.filespace_uuid = UuidText(source.filespace_uuid);
+  start.filespace_uuid = UuidBytes(source.filespace_uuid);
   start.timeline_uuid = timeline_uuid;
   start.fork_uuid = fork_uuid;
   const auto session = api::EngineStartBackupForwardSession(start);
@@ -370,7 +374,7 @@ bool BackupForwardSessionProof(const std::filesystem::path& work_dir) {
   finish.base_backup_uuid = base.backup_uuid;
   finish.source_manifest_uri = base_manifest.string();
   finish.delta_manifest_uri = delta_manifest.string();
-  finish.filespace_uuid = UuidText(source.filespace_uuid);
+  finish.filespace_uuid = UuidBytes(source.filespace_uuid);
   finish.timeline_uuid = timeline_uuid;
   finish.fork_uuid = fork_uuid;
   finish.selected_start_transaction_id = session.selected_start_transaction_id;
@@ -402,7 +406,7 @@ bool BackupForwardSessionProof(const std::filesystem::path& work_dir) {
   ok = Expect(ManifestHasField(delta_body,
                                "META",
                                "source_backup_uuid",
-                               base.backup_uuid.canonical),
+                               BinaryFixtureIdentity(base.backup_uuid)),
               "PCR-085 delta manifest should bind source backup UUID") &&
        ok;
   ok = Expect(ManifestHasField(delta_body, "META", "coverage_contiguous", "true"),
@@ -475,7 +479,7 @@ bool FailClosedProof(const std::filesystem::path& work_dir) {
 
   api::EngineStartBackupForwardSessionRequest missing_base;
   missing_base.context = BackupContext(source, "pcr085-missing-base");
-  missing_base.filespace_uuid = UuidText(source.filespace_uuid);
+  missing_base.filespace_uuid = UuidBytes(source.filespace_uuid);
   missing_base.source_manifest_uri = manifest.string();
   const auto missing_base_result =
       api::EngineStartBackupForwardSession(missing_base);
@@ -487,11 +491,11 @@ bool FailClosedProof(const std::filesystem::path& work_dir) {
 
   api::EngineFinishBackupForwardSessionRequest finish;
   finish.context = BackupContext(source, "pcr085-fail-finish");
-  finish.session_uuid.canonical = UuidText(UuidKind::object, 400);
-  finish.base_backup_uuid.canonical = UuidText(UuidKind::object, 401);
+  finish.session_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::object, 400));
+  finish.base_backup_uuid = NativeFixtureIdentity(UuidBytes(UuidKind::object, 401));
   finish.source_manifest_uri = (work_dir / "base.sblbk").string();
   finish.delta_manifest_uri = manifest.string();
-  finish.filespace_uuid = UuidText(source.filespace_uuid);
+  finish.filespace_uuid = UuidBytes(source.filespace_uuid);
   finish.selected_start_transaction_id = 2;
   finish.finish_transaction_id = 2;
 

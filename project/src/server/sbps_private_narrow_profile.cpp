@@ -119,23 +119,6 @@ int HexDigit(char value) {
   return -1;
 }
 
-UuidV1 ParseUuid(std::string_view text) {
-  UuidV1 result{};
-  std::size_t nibble = 0;
-  for (const auto value : text) {
-    if (value == '-') continue;
-    const auto digit = HexDigit(value);
-    if (digit < 0 || nibble >= 32) return {};
-    if ((nibble & 1u) == 0) {
-      result[nibble / 2] = static_cast<byte>(digit << 4);
-    } else {
-      result[nibble / 2] |= static_cast<byte>(digit);
-    }
-    ++nibble;
-  }
-  return nibble == 32 ? result : UuidV1{};
-}
-
 Hash256V1 ParseHash(std::string_view text) {
   Hash256V1 result{};
   if (text.size() != 64) return result;
@@ -315,13 +298,13 @@ CoreProfileRecordV1 CorePrivateNarrowProfileRecordV1() {
   CoreProfileRecordV1 record;
   record.profile_id = kProfileIdV1;
   record.profile_uuid =
-      ParseUuid("019d3b15-6e00-7000-8000-000000000001");
+      UuidV1{{0x01, 0x9d, 0x3b, 0x15, 0x6e, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}};
   record.activation_set_uuid =
-      ParseUuid("019d3b15-6e00-7000-8000-000000000002");
+      UuidV1{{0x01, 0x9d, 0x3b, 0x15, 0x6e, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02}};
   record.implementation_evidence_uuid =
-      ParseUuid("019d3b15-6e00-7000-8000-000000000003");
+      UuidV1{{0x01, 0x9d, 0x3b, 0x15, 0x6e, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03}};
   record.endpoint_profile_uuid =
-      ParseUuid("019d3b15-6e00-7000-8000-000000000004");
+      UuidV1{{0x01, 0x9d, 0x3b, 0x15, 0x6e, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04}};
   record.implementation_evidence_id = kImplementationEvidenceIdV1;
   record.registry_snapshot_sha256 = ParseHash(kRegistrySnapshotSha256V1);
   record.protocol_major = kProtocolMajorV1;
@@ -358,9 +341,9 @@ EvidenceRecordV1 CorePendingPrivateNarrowEvidenceV1() {
   EvidenceRecordV1 evidence;
   evidence.implementation_evidence_id = kImplementationEvidenceIdV1;
   evidence.evidence_uuid =
-      ParseUuid("019d3b15-6e00-7000-8000-000000000003");
+      UuidV1{{0x01, 0x9d, 0x3b, 0x15, 0x6e, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03}};
   evidence.activation_set_uuid =
-      ParseUuid("019d3b15-6e00-7000-8000-000000000002");
+      UuidV1{{0x01, 0x9d, 0x3b, 0x15, 0x6e, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02}};
   evidence.approved_profile_id = kProfileIdV1;
   evidence.protocol_major = kProtocolMajorV1;
   evidence.protocol_minor = kProtocolMinorV1;

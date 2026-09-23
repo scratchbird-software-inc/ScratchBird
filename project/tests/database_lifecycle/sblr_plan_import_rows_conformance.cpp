@@ -96,21 +96,17 @@ platform::TypedUuid NewUuid(platform::UuidKind kind) {
   return issued.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind) {
-  return uuid::UuidToString(NewUuid(kind).value);
+platform::Uuid NewIdentity(platform::UuidKind kind) {
+  return NewUuid(kind).value;
 }
 
-codec::PlanImportRowsUuidV1 UuidBytes(std::string_view text) {
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  Require(parsed.ok() && !uuid::IsNilUuid(parsed.value),
-          "plan-import test UUID was not canonical");
-  return parsed.value.bytes;
+codec::PlanImportRowsUuidV1 UuidBytes(const platform::Uuid& identity) {
+  Require(uuid::IsEngineIdentityUuid(identity), "plan-import identity invalid");
+  return identity.bytes;
 }
 
-std::string UuidText(const codec::PlanImportRowsUuidV1& bytes) {
-  platform::Uuid value;
-  value.bytes = bytes;
-  return uuid::UuidToString(value);
+platform::Uuid Identity(const codec::PlanImportRowsUuidV1& bytes) {
+  return platform::Uuid{bytes};
 }
 
 template <std::size_t N>
@@ -142,12 +138,12 @@ DirectoryImage ReadDirectoryImage(const std::filesystem::path& root) {
 struct Fixture {
   std::filesystem::path root;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string filespace_uuid;
-  std::string schema_uuid;
-  std::string principal_uuid;
-  std::string session_uuid;
-  std::string table_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid filespace_uuid;
+  platform::Uuid schema_uuid;
+  platform::Uuid principal_uuid;
+  platform::Uuid session_uuid;
+  platform::Uuid table_uuid;
   std::uint64_t ended_local_transaction_id = 0;
   api::EngineUuid ended_transaction_uuid;
   api::EngineRequestContext planning_context;
@@ -165,11 +161,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.default_root_uuid.canonical = fixture.filespace_uuid;
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
-  context.principal_uuid.canonical = fixture.principal_uuid;
-  context.session_uuid.canonical = fixture.session_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.default_root_uuid = fixture.filespace_uuid;
+  context.current_schema_uuid = fixture.schema_uuid;
+  context.principal_uuid = fixture.principal_uuid;
+  context.session_uuid = fixture.session_uuid;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -214,9 +210,9 @@ void Rollback(const api::EngineRequestContext& context) {
 api::EngineRequestContext AttachStatementReceipt(
     const Fixture& fixture,
     api::EngineRequestContext context) {
-  context.statement_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
-  context.statement_snapshot_uuid.canonical.clear();
+  context.statement_uuid =
+      NewIdentity(platform::UuidKind::object);
+  context.statement_snapshot_uuid = {};
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = context;
   const auto snapshot = api::EnginePublishStatementSnapshot(publish);
@@ -227,10 +223,10 @@ api::EngineRequestContext AttachStatementReceipt(
           .publication_inventory_next_local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_receipt_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
-  context.statement_metadata_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  context.statement_receipt_uuid =
+      NewIdentity(platform::UuidKind::object);
+  context.statement_metadata_snapshot_uuid =
+      NewIdentity(platform::UuidKind::object);
   context.statement_metadata_snapshot_engine_owned = true;
   context.statement_metadata_snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
@@ -238,16 +234,16 @@ api::EngineRequestContext AttachStatementReceipt(
       snapshot.snapshot_vector.active_excluded_local_transaction_ids;
   context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
       snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
-  context.transaction_policy_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  context.transaction_policy_snapshot_uuid =
+      NewIdentity(platform::UuidKind::object);
   context.transaction_policy_snapshot_generation = 1;
-  context.resource_admission_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  context.resource_admission_uuid =
+      NewIdentity(platform::UuidKind::object);
 
   auto& authorization = context.authorization_context;
   authorization.present = true;
-  authorization.authority_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  authorization.authority_uuid =
+      NewIdentity(platform::UuidKind::object);
   authorization.security_context_generation = 1;
   authorization.principal_uuid = context.principal_uuid;
   authorization.security_epoch = context.security_epoch;
@@ -258,11 +254,11 @@ api::EngineRequestContext AttachStatementReceipt(
   subject.subject_kind = "principal";
   authorization.effective_subjects.push_back(subject);
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  grant.grant_uuid =
+      NewIdentity(platform::UuidKind::object);
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = fixture.table_uuid;
+  grant.target_uuid = fixture.table_uuid;
   grant.right = "INSERT";
   grant.security_epoch = context.security_epoch;
   authorization.grants.push_back(std::move(grant));
@@ -306,12 +302,12 @@ Fixture MakeFixture() {
   }
   Require(created.ok(), "plan-import database creation failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.filespace_uuid = uuid::UuidToString(create.filespace_uuid.value);
-  fixture.schema_uuid = NewUuidText(platform::UuidKind::schema);
-  fixture.principal_uuid = NewUuidText(platform::UuidKind::principal);
-  fixture.session_uuid = NewUuidText(platform::UuidKind::session);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.filespace_uuid = create.filespace_uuid.value;
+  fixture.schema_uuid = NewIdentity(platform::UuidKind::schema);
+  fixture.principal_uuid = NewIdentity(platform::UuidKind::principal);
+  fixture.session_uuid = NewIdentity(platform::UuidKind::session);
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object);
 
   auto metadata = Begin(fixture, "plan-import-metadata");
   api::CrudTableRecord table;
@@ -363,7 +359,7 @@ api::EngineCreateImportRowsPlanDescriptorRequestV1 FactoryRequest(
   api::EngineCreateImportRowsPlanDescriptorRequestV1 request;
   request.context = binder_context;
   request.structural_occurrence_id = 1;
-  request.target_table_uuid.canonical = fixture.table_uuid;
+  request.target_table_uuid = fixture.table_uuid;
   request.source_kind = codec::PlanImportRowsSourceKindV1::csv_stream;
   request.source_fingerprint_present = false;
   request.format_family = codec::PlanImportRowsFormatFamilyV1::csv;
@@ -420,7 +416,7 @@ void RequireRefusal(const api::EnginePlanImportRowsResult& result,
               result.normalized_source_kind_code == 0 &&
               result.normalized_format_family_code == 0 &&
               result.mapped_column_count == 0 &&
-              result.validated_request_descriptor_uuid.canonical.empty() &&
+              result.validated_request_descriptor_uuid.is_nil() &&
               result.validated_request_descriptor_generation == 0 &&
               !Nonzero(result.validated_request_projection_sha256) &&
               result.accepted_executor_evidence.exact_bytes.empty() &&
@@ -453,8 +449,8 @@ void RequireSuccessContract(
               result.normalized_format_family == "csv",
           "plan-import normalized enum result fields drifted");
   Require(result.mapped_column_count == 0 &&
-              result.validated_request_descriptor_uuid.canonical ==
-                  UuidText(descriptor_ref.descriptor_uuid) &&
+              result.validated_request_descriptor_uuid ==
+                  Identity(descriptor_ref.descriptor_uuid) &&
               result.validated_request_descriptor_generation ==
                   descriptor_ref.descriptor_generation &&
               Nonzero(result.validated_request_projection_sha256),
@@ -470,10 +466,10 @@ void RequireSuccessContract(
                   result.validated_request_projection_sha256 &&
               evidence.executor_availability_generation != 0 &&
               evidence.transaction_uuid ==
-                  UuidBytes(context.transaction_uuid.canonical) &&
+                  UuidBytes(context.transaction_uuid) &&
               evidence.local_transaction_id == context.local_transaction_id &&
               evidence.mga_snapshot_uuid ==
-                  UuidBytes(context.statement_snapshot_uuid.canonical) &&
+                  UuidBytes(context.statement_snapshot_uuid) &&
               evidence.mga_snapshot_generation ==
                   context.statement_snapshot_generation &&
               evidence.completed_validation_bits ==
@@ -501,9 +497,9 @@ codec::SblrOperationEnvelope PlanEnvelope(
   envelope.result_shape = "import_plan_result";
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   envelope.registry_snapshot_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewIdentity(platform::UuidKind::object);
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.contains_sql_text = false;
@@ -772,7 +768,7 @@ int main() {
   opcode_invalid.descriptor_ref = {};
   opcode_invalid.context.authorization_context.grants.clear();
   opcode_invalid.context.local_transaction_id = 0;
-  opcode_invalid.context.transaction_uuid.canonical.clear();
+  opcode_invalid.context.transaction_uuid = {};
   require_higher_precedence(opcode_invalid, "SBLR.OPCODE_INVALID", 0,
                             "plan-import opcode precedence drifted");
 
@@ -784,21 +780,21 @@ int main() {
   auto security_denied = request;
   security_denied.context.authorization_context.grants.clear();
   security_denied.context.local_transaction_id = 0;
-  security_denied.context.transaction_uuid.canonical.clear();
+  security_denied.context.transaction_uuid = {};
   ++security_denied.context.statement_snapshot_generation;
   require_higher_precedence(security_denied, "SECURITY.ACCESS_DENIED", 4,
                             "plan-import security precedence drifted");
 
   auto transaction_absent = request;
   transaction_absent.context.local_transaction_id = 0;
-  transaction_absent.context.transaction_uuid.canonical.clear();
+  transaction_absent.context.transaction_uuid = {};
   ++transaction_absent.context.statement_snapshot_generation;
   require_higher_precedence(
       transaction_absent, "MGA.TRANSACTION_INVALID", 4,
       "absent plan-import transaction was not TRANSACTION_INVALID");
 
   auto transaction_malformed = request;
-  transaction_malformed.context.transaction_uuid.canonical = "malformed";
+  transaction_malformed.context.transaction_uuid.bytes[8] = 0;
   require_higher_precedence(
       transaction_malformed, "MGA.TRANSACTION_INVALID", 4,
       "malformed plan-import transaction was not TRANSACTION_INVALID");
@@ -818,8 +814,8 @@ int main() {
       "active stale plan-import authority was not AUTHORITY_MISMATCH");
 
   auto stale_receipt = request;
-  stale_receipt.context.statement_receipt_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  stale_receipt.context.statement_receipt_uuid =
+      NewIdentity(platform::UuidKind::object);
   require_higher_precedence(
       stale_receipt, "MGA.AUTHORITY_MISMATCH", 4,
       "stale plan-import receipt was not AUTHORITY_MISMATCH");

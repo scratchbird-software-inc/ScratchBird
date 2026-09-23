@@ -13,6 +13,7 @@
 #include "config.hpp"
 #include "diagnostics.hpp"
 #include "sbps.hpp"
+#include "../core/platform/runtime_platform.hpp"
 
 #include <array>
 #include <cstdint>
@@ -45,7 +46,7 @@ struct ParserPackageRegistryEntry {
   bool dev_hash_bypass = false;
   bool parser_support_udr_required = false;
   bool parser_support_udr_available = true;
-  std::string parser_support_udr_uuid;
+  core::platform::Uuid parser_support_udr_uuid;
   std::string parser_support_udr_abi = "sb_udr_v1";
   std::string parser_support_udr_source_revision;
   std::string parser_support_udr_binary_hash;

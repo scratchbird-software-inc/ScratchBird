@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #include "engine/sblr/sblr_name_resolve_runtime.hpp"
 #include "wire/parser_server_ipc/sbps_statement_management_bind_codec.hpp"
@@ -329,9 +330,9 @@ int main() {
   member.result_shape = "name_resolve_result";
   member.diagnostic_shape = "diagnostic_vector";
   member.parser_package_uuid =
-      "019d0000-0000-7000-8000-000000003614";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000003614");
   member.registry_snapshot_uuid =
-      "019d0000-0000-7000-8000-000000003615";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000003615");
   member.requires_security_context = true;
   member.requires_transaction_context = true;
   member.parser_resolved_names_to_uuids = true;

@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -51,16 +53,16 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid index_uuid;
   api::EngineRequestContext context;
 
   ~Fixture() {
@@ -107,14 +109,14 @@ api::CrudIndexRecord Index(const Fixture& fixture) {
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
-                                      const std::string& database_uuid,
+                                      const api::EngineUuid& database_uuid,
                                       std::string request_id) {
   api::EngineRequestContext context;
   context.request_id = std::move(request_id);
   context.database_path = database_path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = NewUuidText(platform::UuidKind::principal, 100);
-  context.session_uuid.canonical = "session-pfar-012";
+  context.database_uuid = database_uuid;
+  context.principal_uuid = NewIdentity(platform::UuidKind::principal, 100);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 1201);
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -124,7 +126,7 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
 }
 
 api::EngineRequestContext BeginContext(const std::filesystem::path& database_path,
-                                       const std::string& database_uuid,
+                                       const api::EngineUuid& database_uuid,
                                        std::string request_id) {
   api::EngineBeginTransactionRequest request;
   request.context = BaseContext(database_path, database_uuid, std::move(request_id));
@@ -165,9 +167,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   }
   Require(created.ok(), "PFAR-012 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 20);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 20);
   fixture.context = BeginContext(fixture.database_path,
                                  fixture.database_uuid,
                                  "pfar-012-" + name + "-metadata");
@@ -196,7 +198,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, id)) {
       return true;
     }
   }
@@ -206,7 +208,11 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
 bool HasNonEmptyEvidenceKind(const std::vector<api::EngineEvidenceReference>& evidence,
                              std::string_view kind) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && !item.evidence_id.empty()) {
+    if (item.evidence_kind == kind && std::visit([](const auto& value) {
+          if constexpr (std::is_same_v<std::decay_t<decltype(value)>, api::EngineUuid>)
+            return !value.is_nil();
+          else return !value.empty();
+        }, item.evidence_id)) {
       return true;
     }
   }
@@ -217,7 +223,7 @@ platform::u64 EvidenceU64(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view kind) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind) {
-      return static_cast<platform::u64>(std::stoull(item.evidence_id));
+      return static_cast<platform::u64>(std::stoull(std::get<std::string>(item.evidence_id)));
     }
   }
   return 0;
@@ -238,7 +244,7 @@ std::size_t EvidenceIndex(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view kind,
                           std::string_view id) {
   for (std::size_t index = 0; index < evidence.size(); ++index) {
-    if (evidence[index].evidence_kind == kind && evidence[index].evidence_id == id) {
+    if (evidence[index].evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence[index].evidence_id, id)) {
       return index;
     }
   }
@@ -257,8 +263,8 @@ api::EngineInsertRowsRequest InsertRequest(Fixture& fixture,
   api::EngineInsertRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = std::move(request_id);
-  request.target_table.uuid.canonical = fixture.table_uuid;
-  request.target_schema.uuid.canonical = NewUuidText(platform::UuidKind::schema, 300);
+  request.target_table.uuid = fixture.table_uuid;
+  request.target_schema.uuid = NewIdentity(platform::UuidKind::schema, 300);
   request.estimated_row_count = 1;
   request.input_rows.push_back(Row("1", "alpha"));
   request.option_envelopes = std::move(options);
@@ -272,8 +278,8 @@ api::EngineInsertRowsRequest MultiInsertRequest(Fixture& fixture,
   api::EngineInsertRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = std::move(request_id);
-  request.target_table.uuid.canonical = fixture.table_uuid;
-  request.target_schema.uuid.canonical = NewUuidText(platform::UuidKind::schema, 350);
+  request.target_table.uuid = fixture.table_uuid;
+  request.target_schema.uuid = NewIdentity(platform::UuidKind::schema, 350);
   request.estimated_row_count = static_cast<api::EngineApiU64>(row_count);
   request.option_envelopes = std::move(options);
   request.input_rows.reserve(static_cast<std::size_t>(row_count));
@@ -290,7 +296,7 @@ api::EngineUpdateRowsRequest UpdateRequest(Fixture& fixture,
   api::EngineUpdateRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = std::move(request_id);
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.update_predicate.predicate_kind = "column_equals";
   request.update_predicate.canonical_predicate_envelope = "id";
   request.update_predicate.bound_values.push_back(IntValue("1"));
@@ -305,7 +311,7 @@ api::EngineUpdateRowsRequest UpdateAllRequest(Fixture& fixture,
   api::EngineUpdateRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = std::move(request_id);
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.assignments.push_back({"name", TextValue("batch_updated")});
   request.option_envelopes = std::move(options);
   return request;
@@ -315,7 +321,7 @@ api::EngineDeleteRowsRequest DeleteAllRequest(Fixture& fixture, std::string requ
   api::EngineDeleteRowsRequest request;
   request.context = fixture.context;
   request.context.request_id = std::move(request_id);
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   return request;
 }
 

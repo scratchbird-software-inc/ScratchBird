@@ -109,7 +109,7 @@ bool MaterializeExpressionProjectBatch(
 exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
     LiveProjectRegistrationProfile profile,
     std::string implementation_id,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t expected_input_row_count,
     api::TypedRelationalDag relational_dag,
     CanonicalRelationalExpressionRuntimeServices expression_services,
@@ -168,7 +168,6 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
   for (const auto& column : profile.expression_output_columns) {
     if (registration_retained_bytes == 0 ||
         !account_string(column.stable_name) ||
-        !account_string(column.descriptor.descriptor_uuid) ||
         !account_string(column.descriptor.descriptor_kind) ||
         !account_string(column.descriptor.canonical_type_name) ||
         !account_string(column.descriptor.encoded_descriptor)) {

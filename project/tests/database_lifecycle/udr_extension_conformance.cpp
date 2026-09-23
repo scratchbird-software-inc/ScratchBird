@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "extensibility/udr_api.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "database_lifecycle.hpp"
@@ -37,11 +38,11 @@ namespace server = scratchbird::server;
 namespace udr_runtime = scratchbird::udr::runtime;
 namespace sbsql_udr = scratchbird::udr::sbsql_parser_support;
 
-constexpr std::string_view kDatabaseUuid = "019e13b0-0000-7000-8000-000000000001";
+constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000001");
 constexpr std::string_view kUdrProbeStatement = "ENGINE QUERY BIND EXPRESSION";
 constexpr std::uint64_t kDefaultLifecycleTransactionMarker = 10;
 
-std::string g_lifecycle_database_uuid = std::string(kDatabaseUuid);
+api::EngineUuid g_lifecycle_database_uuid = kDatabaseUuid;
 std::uint64_t g_lifecycle_local_transaction_id = 0;
 api::EngineUuid g_lifecycle_transaction_uuid;
 std::uint64_t g_lifecycle_snapshot_visible_through_local_transaction_id = 0;
@@ -84,7 +85,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -138,7 +139,10 @@ bool MetricHasLabel(const metrics::MetricValue& value,
                     std::string_view key,
                     std::string_view expected) {
   for (const auto& label : value.labels) {
-    if (label.key == key && label.value == expected) return true;
+    if (label.key == key) {
+      const auto* text = std::get_if<std::string>(&label.value);
+      if (text != nullptr && *text == expected) return true;
+    }
   }
   return false;
 }
@@ -177,16 +181,16 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "udr-lifecycle-conformance";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = g_lifecycle_database_uuid;
-  context.principal_uuid.canonical = "019e13b0-0000-7000-8000-000000000201";
-  context.session_uuid.canonical = "019e13b0-0000-7000-8000-000000000202";
+  context.database_uuid = g_lifecycle_database_uuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000201");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000202");
   if (use_lifecycle_tx) {
     context.transaction_uuid = g_lifecycle_transaction_uuid;
     context.snapshot_visible_through_local_transaction_id =
         g_lifecycle_snapshot_visible_through_local_transaction_id;
     context.transaction_isolation_level = g_lifecycle_isolation_level;
   } else if (effective_tx != 0) {
-    context.transaction_uuid.canonical = "019e13b0-0000-7000-8000-000000000203";
+    context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000203");
   }
   context.local_transaction_id = effective_tx;
   context.security_context_present = true;
@@ -200,8 +204,7 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
 
   auto& authorization = context.authorization_context;
   authorization.present = true;
-  authorization.authority_uuid.canonical =
-      "019e13b0-0000-7000-8000-000000000210";
+  authorization.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000210");
   authorization.security_context_generation = 1;
   authorization.principal_uuid = context.principal_uuid;
   authorization.security_epoch = context.security_epoch;
@@ -213,9 +216,8 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
       "UDR_MANAGE", "UDR_INSPECT", "UDR_INVOKE"};
   for (std::size_t index = 0; index < udr_rights.size(); ++index) {
     api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid.canonical =
-        "019e13b0-0000-7000-8000-00000000021" +
-        std::to_string(index + 1);
+    grant.grant_uuid =
+        scratchbird::tests::FixtureUuid(1339, index + 1);
     grant.subject_uuid = context.principal_uuid;
     grant.subject_kind = "principal";
     grant.right = udr_rights[index];
@@ -254,13 +256,13 @@ void CreateLifecycleDatabase(const std::filesystem::path& database_path) {
           "failed to generate UUIDs for UDR lifecycle database");
   Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
           "failed to create UDR lifecycle database");
-  g_lifecycle_database_uuid = uuid::UuidToString(create.database_uuid.value);
+  g_lifecycle_database_uuid = create.database_uuid.value;
 }
 
 void BeginLifecycleTransaction(const std::filesystem::path& database_path) {
   api::EngineBeginTransactionRequest begin;
   begin.context = Context(database_path, 0);
-  begin.context.transaction_uuid.canonical.clear();
+  begin.context.transaction_uuid = {};
   begin.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(begin);
   RequireOk(begun, "failed to begin UDR lifecycle MGA transaction");
@@ -290,13 +292,13 @@ api::EngineLocalizedName LocalizedName(std::string name) {
 
 template <typename TRequest>
 TRequest UdrRequest(const std::filesystem::path& database_path,
-                    std::string_view uuid = sbsql_udr::kSbuSbsqlPackageUuid,
+                    const api::EngineUuid& uuid = sbsql_udr::kSbuSbsqlPackageIdentity,
                     std::uint64_t tx = 10) {
   TRequest request;
   request.context = Context(database_path, tx);
-  request.target_database.uuid.canonical = g_lifecycle_database_uuid;
+  request.target_database.uuid = g_lifecycle_database_uuid;
   request.target_database.object_kind = "database";
-  request.target_object.uuid.canonical = std::string(uuid);
+  request.target_object.uuid = uuid;
   request.target_object.object_kind = "udr_package";
   request.localized_names.push_back(LocalizedName("sbu_sbsql_parser_support"));
   return request;
@@ -396,7 +398,7 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
           "unloaded registered UDR invocation was admitted");
 
   auto untrusted = UdrRequest<api::EngineRegisterUdrPackageRequest>(
-      database_path, "019e13b0-0000-7000-8000-000000000103");
+      database_path, scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000103"));
   untrusted.option_envelopes.push_back("permission:manage_udr");
   untrusted.option_envelopes.push_back("abi:sb_udr_v1");
   const auto untrusted_result = api::EngineRegisterUdrPackage(untrusted);
@@ -407,7 +409,7 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   // MDF-017 / DEFER-CXX-ONLY-UDR-ENFORCEMENT: C++ UDRs are the only runtime
   // target admitted by the direct runtime registry or the engine API surface.
   auto non_cpp_descriptor = sbsql_descriptor;
-  non_cpp_descriptor.package_uuid = "019e13b0-0000-7000-8000-000000000108";
+  non_cpp_descriptor.package_uuid = scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000108");
   non_cpp_descriptor.package_name = "non_cpp_udr_runtime";
   non_cpp_descriptor.runtime_language = "python";
   const auto non_cpp_runtime_result =
@@ -418,7 +420,7 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
           "non-C++ UDR runtime descriptor was admitted");
 
   auto non_cpp_request = UdrRequest<api::EngineRegisterUdrPackageRequest>(
-      database_path, "019e13b0-0000-7000-8000-000000000109");
+      database_path, scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000109"));
   AddManageUdrOptions(&non_cpp_request, sbsql_descriptor);
   non_cpp_request.option_envelopes.push_back("runtime_language:python");
   const auto non_cpp_request_result =
@@ -431,7 +433,7 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
           "non-C++ UDR refusal metric was not emitted");
 
   auto missing_tx = UdrRequest<api::EngineRegisterUdrPackageRequest>(
-      database_path, "019e13b0-0000-7000-8000-000000000104", 0);
+      database_path, scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000104"), 0);
   AddManageUdrOptions(&missing_tx, sbsql_descriptor);
   const auto missing_tx_result = api::EngineRegisterUdrPackage(missing_tx);
   Require(!missing_tx_result.ok &&
@@ -439,7 +441,7 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
           "UDR registration admitted a missing MGA transaction context");
 
   auto cluster = UdrRequest<api::EngineRegisterUdrPackageRequest>(
-      database_path, "019e13b0-0000-7000-8000-000000000105");
+      database_path, scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000105"));
   AddManageUdrOptions(&cluster, sbsql_descriptor);
   cluster.option_envelopes.push_back("cluster_deploy:true");
   const auto cluster_result = api::EngineRegisterUdrPackage(cluster);
@@ -448,7 +450,7 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
           "UDR cluster path did not fail closed without cluster authority");
 
   auto bypass = UdrRequest<api::EngineRegisterUdrPackageRequest>(
-      database_path, "019e13b0-0000-7000-8000-000000000106");
+      database_path, scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000106"));
   AddManageUdrOptions(&bypass, sbsql_descriptor);
   bypass.option_envelopes.push_back("bypass_mga");
   const auto bypass_result = api::EngineRegisterUdrPackage(bypass);
@@ -457,7 +459,7 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
           "UDR authority bypass request was admitted");
 
   auto shutdown_register = UdrRequest<api::EngineRegisterUdrPackageRequest>(
-      database_path, "019e13b0-0000-7000-8000-000000000107");
+      database_path, scratchbird::tests::FixtureUuidLiteral("019e13b0-0000-7000-8000-000000000107"));
   AddManageUdrOptions(&shutdown_register, sbsql_descriptor);
   shutdown_register.option_envelopes.push_back("shutdown_draining:true");
   const auto shutdown_register_result = api::EngineRegisterUdrPackage(shutdown_register);

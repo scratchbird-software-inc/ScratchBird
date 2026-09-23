@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
@@ -180,7 +181,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -189,11 +190,11 @@ api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.cluster_authority_available = true;
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-00000000f601";
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000f601");
   context.local_transaction_id = 6606;
-  context.database_uuid.canonical = "fse-p6-result-vector-diagnostic-database";
-  context.session_uuid.canonical = "fse-p6-result-vector-diagnostic-session";
-  context.principal_uuid.canonical = "fse-p6-result-vector-diagnostic-principal";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 3601);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 3602);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 3603);
   context.trace_tags.push_back("sblr_surface_fse_p6_result_vector_diagnostic_gate");
   return context;
 }

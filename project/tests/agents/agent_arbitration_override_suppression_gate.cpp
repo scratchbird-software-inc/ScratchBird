@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -36,7 +37,7 @@ bool Contains(const std::vector<std::string>& values, const std::string& value) 
 agents::AgentRuntimeContext ContextWithOverrideRight() {
   agents::AgentRuntimeContext context;
   context.security_context_present = true;
-  context.database_uuid = "database:agent-arbitration-gate";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 101);
   context.wall_now_microseconds = 1000000;
   context.rights.push_back("OBS_AGENT_OVERRIDE");
   return context;
@@ -45,7 +46,7 @@ agents::AgentRuntimeContext ContextWithOverrideRight() {
 agents::AgentRuntimeContext ContextWithoutOverrideRight() {
   agents::AgentRuntimeContext context;
   context.security_context_present = true;
-  context.database_uuid = "database:agent-arbitration-gate";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 101);
   context.wall_now_microseconds = 1000000;
   context.rights.push_back("OBS_AGENT_STATE_READ");
   return context;

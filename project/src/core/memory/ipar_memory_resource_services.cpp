@@ -264,7 +264,7 @@ IparHotResidencyDecision PlanIparHotResidency(
     IparResidencyDecisionEntry decision_entry;
     decision_entry.entry = entry;
     decision_entry.score = ResidencyScore(entry);
-    if (entry.entry_id.empty() || entry.object_uuid.empty()) {
+    if (entry.entry_id.empty() || entry.object_uuid.is_nil()) {
       decision_entry.action = IparResidencyAction::refuse;
       decision_entry.reason = "identity_required";
     } else if (!EpochComplete(entry.epoch)) {
@@ -498,7 +498,7 @@ IparPrewarmDecision PlanIparWorkingSetPrewarm(IparPrewarmRequest request) {
     result.cold_start_cost_before =
         SaturatingAdd(result.cold_start_cost_before,
                       candidate.cold_start_cost_units);
-    if (candidate.candidate_id.empty() || candidate.object_uuid.empty()) {
+    if (candidate.candidate_id.empty() || candidate.object_uuid.is_nil()) {
       result.skipped.push_back("identity_required");
       continue;
     }

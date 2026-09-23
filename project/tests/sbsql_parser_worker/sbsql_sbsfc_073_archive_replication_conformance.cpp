@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -68,10 +69,10 @@ std::string DiagnosticField(const Diagnostic& diagnostic,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f7300-0000-7000-8000-000000000301";
-  session.connection_uuid = "019f7300-0000-7000-8000-000000000302";
-  session.database_uuid = "019f7300-0000-7000-8000-000000000303";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f7300-0000-7000-8000-000000000301");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f7300-0000-7000-8000-000000000302");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f7300-0000-7000-8000-000000000303");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 73;
   session.security_policy_epoch = 74;
   session.descriptor_epoch = 75;
@@ -82,7 +83,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_073_archive_replication";
-  config.parser_uuid = "019f7300-0000-7000-8000-000000000304";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f7300-0000-7000-8000-000000000304");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-073-archive-replication";
   config.build_id = "sbsql-sbsfc-073-archive-replication";
   return config;

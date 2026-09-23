@@ -1,3 +1,6 @@
+#include "../../wire/binary_status_packet.hpp"
+#include "uuid.hpp"
+#include <algorithm>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -16,6 +19,14 @@
 
 namespace scratchbird::core::agents {
 namespace {
+
+scratchbird::core::platform::Uuid BinaryIdentity(std::string_view bytes) {
+  scratchbird::core::platform::Uuid id;
+  if (bytes.size() != id.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), id.bytes.size(), id.bytes.begin());
+  return scratchbird::core::uuid::IsEngineIdentityUuid(id) ? id : scratchbird::core::platform::Uuid{};
+}
+
 
 bool Contains(const std::vector<std::string>& values, const std::string& value) {
   return std::find(values.begin(), values.end(), value) != values.end();
@@ -102,10 +113,10 @@ AgentRuntimeContext RuntimeContextForInput(const DatabaseEngineAgentInput& input
                              input.lifecycle_mode == AgentLifecycleMode::clone;
   context.archive_hold_mode = input.archive_hold_mode ||
                               input.lifecycle_mode == AgentLifecycleMode::archive_hold;
-  context.principal_uuid = DeterministicAgentRuntimePrincipalUuidFromKey(
+  context.principal_uuid = BinaryIdentity(DeterministicAgentRuntimePrincipalUuidFromKey(
       input.database_uuid + "|database_lifecycle_agent|principal|" +
-      std::to_string(input.policy_generation));
-  context.database_uuid = input.database_uuid;
+      std::to_string(input.policy_generation)));
+  context.database_uuid = BinaryIdentity(input.database_uuid);
   context.trace_tags.push_back("database_engine_lifecycle_agent");
   context.groups.push_back("OPS");
   context.rights.push_back("OBS_AGENT_STATE_READ");
@@ -216,9 +227,9 @@ void ApplyRuntimeManagerSnapshot(const AgentRuntimeManagerSnapshot& snapshot,
   tick_request.context.cluster_authority_available = false;
   tick_request.context.private_features_available = true;
   tick_request.context.standalone_edition = true;
-  tick_request.context.principal_uuid = DeterministicAgentRuntimePrincipalUuidFromKey(
-      snapshot.database_uuid + "|database_engine_agent_tick_health");
-  tick_request.context.database_uuid = snapshot.database_uuid;
+  tick_request.context.principal_uuid = BinaryIdentity(DeterministicAgentRuntimePrincipalUuidFromKey(
+      snapshot.database_uuid + "|database_engine_agent_tick_health"));
+  tick_request.context.database_uuid = BinaryIdentity(snapshot.database_uuid);
   tick_request.context.rights.push_back("OBS_AGENT_STATE_READ");
   const u64 time_reference = snapshot.health_generation == 0
       ? (snapshot.manager_generation == 0 ? 1 : snapshot.manager_generation)
@@ -530,7 +541,7 @@ DatabaseEngineAgentLifecycleResult StopDatabaseEngineLifecycleAgent(
   return result;
 }
 
-void WriteSelectionDecisionJson(std::ostringstream* out,
+void WriteSelectionDecisionJson(scratchbird::wire::binary_status::Stream* out,
                                 const AgentRuntimeSelectionDecision& decision) {
   if (out == nullptr) {
     return;
@@ -557,7 +568,7 @@ void WriteSelectionDecisionJson(std::ostringstream* out,
        << "\"detail\":\"" << JsonEscape(decision.detail) << "\"}";
 }
 
-void WriteTickHealthRecordJson(std::ostringstream* out,
+void WriteTickHealthRecordJson(scratchbird::wire::binary_status::Stream* out,
                                const AgentTickHealthRecord& record) {
   if (out == nullptr) {
     return;
@@ -570,7 +581,7 @@ void WriteTickHealthRecordJson(std::ostringstream* out,
       record.manual_approval_required;
   *out << "{\"agent_type_id\":\"" << JsonEscape(record.agent_type_id) << "\","
        << "\"deployment\":\"" << AgentDeploymentName(record.deployment) << "\","
-       << "\"policy_uuid\":\"" << JsonEscape(record.policy_uuid) << "\","
+       << "\"policy_uuid\":\"" << scratchbird::wire::binary_status::Identity(record.policy_uuid) << "\","
        << "\"tick_class\":\"" << AgentTickHealthClassName(record.tick_class) << "\","
        << "\"lifecycle_state\":\"" << AgentLifecycleStateName(record.lifecycle_state) << "\","
        << "\"action_class\":\"" << AgentActionClassName(record.action_class) << "\","
@@ -596,17 +607,17 @@ void WriteTickHealthRecordJson(std::ostringstream* out,
        << (record.resource_budget_limited ? "true" : "false") << ","
        << "\"diagnostic_code\":\"" << JsonEscape(record.diagnostic_code) << "\","
        << "\"detail\":\"" << JsonEscape(record.detail) << "\","
-       << "\"health_evidence_uuid\":\"" << JsonEscape(record.health_evidence_uuid) << "\","
-       << "\"action_evidence_uuid\":\"" << JsonEscape(record.action_evidence_uuid) << "\"}";
+       << "\"health_evidence_uuid\":\"" << scratchbird::wire::binary_status::Identity(record.health_evidence_uuid) << "\","
+       << "\"action_evidence_uuid\":\"" << scratchbird::wire::binary_status::Identity(record.action_evidence_uuid) << "\"}";
 }
 
 std::string SerializeDatabaseEngineAgentHealthJson(
     const DatabaseEngineAgentHealthPublication& health,
     bool diagnostic_role) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "{\"database_engine_agent\":{"
-      << "\"database_uuid\":\"" << JsonEscape(health.database_uuid) << "\","
-      << "\"engine_instance_uuid\":\"" << JsonEscape(health.engine_instance_uuid) << "\","
+      << "\"database_uuid\":\"" << scratchbird::wire::binary_status::Identity(health.database_uuid) << "\","
+      << "\"engine_instance_uuid\":\"" << scratchbird::wire::binary_status::Identity(health.engine_instance_uuid) << "\","
       << "\"database_lifecycle_state\":\"" << JsonEscape(health.database_lifecycle_state) << "\","
       << "\"agent_state\":\"" << DatabaseEngineAgentLifecycleStateName(health.agent_state) << "\","
       << "\"health_generation\":" << health.health_generation << ","

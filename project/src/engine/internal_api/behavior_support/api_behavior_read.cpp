@@ -10,6 +10,7 @@
 
 #include "local_transaction_store.hpp"
 #include "uuid.hpp"
+#include "api_behavior_record_codec.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -59,7 +60,7 @@ bool ParseU64(const std::string& value, std::uint64_t& out) {
 }
 
 std::string ApiBehaviorEventPath(const EngineRequestContext& context) {
-  return context.database_path + ".sb.api_events";
+  return context.database_path + ".sb.api_events.v2";
 }
 
 std::string LowerAscii(std::string value) {
@@ -177,6 +178,8 @@ ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context)
   const auto link_status = std::filesystem::symlink_status(path, ec);
   if (link_status.type() == std::filesystem::file_type::not_found &&
       (!ec || ec == std::errc::no_such_file_or_directory)) {
+    const bool legacy=std::filesystem::exists(context.database_path+".sb.api_events",ec);
+    if(legacy||ec){result.diagnostic=MakeInvalidRequestDiagnostic("api_behavior.load_state","legacy_format_unsupported");return result;}
     result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
     result.ok = true;
     return result;
@@ -192,31 +195,12 @@ ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context)
   if (ec || !std::filesystem::is_regular_file(status)) return fail("api_journal_not_regular");
   std::ifstream in(path, std::ios::binary);
   if (!in.is_open()) return fail("api_journal_open_failed");
-  std::map<std::string, ApiBehaviorRecord> latest;
-  std::string line;
-  std::uint64_t sequence = 0;
-  while (std::getline(in, line)) {
-    ++sequence;
-    if (line.rfind("SBCRUD1", 0) == 0) { continue; }
-    const auto magic_pos = line.find(kApiBehaviorEventMagic);
-    if (magic_pos == std::string::npos) { continue; }
-    if (magic_pos != 0) return fail("api_journal_record_prefix_invalid");
-    if (in.eof()) return fail("api_journal_record_truncated");
-    const auto parts = Split(line, '\t');
-    if (parts.size() != 10 || parts[0] != kApiBehaviorEventMagic || parts[1] != "RECORD" ||
-        parts[3].empty() || parts[4].empty() || parts[5].empty() || parts[8].empty())
-      return fail("api_journal_record_shape_invalid");
+  std::map<EngineUuid, ApiBehaviorRecord> latest;
+  std::uint64_t sequence=0;
+  while(in.peek()!=std::char_traits<char>::eof()){
     ApiBehaviorRecord record;
-    record.event_sequence = sequence;
-    if (!ParseU64(parts[2], record.creator_tx)) return fail("api_journal_creator_invalid");
-    record.operation_id = parts[3];
-    record.object_uuid = parts[4];
-    record.object_kind = parts[5];
-    if (!HexDecode(parts[6], record.default_name) || !HexDecode(parts[7], record.payload))
-      return fail("api_journal_record_encoding_invalid");
-    record.state = parts[8];
-    if (parts[9] != "0" && parts[9] != "1") return fail("api_journal_deleted_invalid");
-    record.deleted = parts[9] == "1";
+    if(!ReadApiBehaviorRecord(in,&record))return fail("api_journal_binary_record_invalid");
+    record.event_sequence=++sequence;
     if (!MgaCreatorVisible(transaction_inventory.inventory,
                            record.creator_tx,
                            context)) {
@@ -250,7 +234,7 @@ std::vector<ApiBehaviorRecord> VisibleApiBehaviorRecords(const EngineRequestCont
 }
 
 std::optional<ApiBehaviorRecord> FindVisibleApiBehaviorRecord(const EngineRequestContext& context,
-                                                              const std::string& object_uuid,
+                                                              const EngineUuid& object_uuid,
                                                               std::uint64_t observer_tx,
                                                               EngineApiDiagnostic& diagnostic) {
   for (const auto& record : VisibleApiBehaviorRecords(context, {}, observer_tx, diagnostic)) {

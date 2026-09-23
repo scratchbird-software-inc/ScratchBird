@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
           projected.accepted && !projected.outcome_unknown &&
           !projected.messages.has_errors() &&
           projected.server_operation_id == "query.evaluate_projection" &&
-          projected.server_cursor_uuid.empty() &&
+          projected.server_cursor_uuid.is_nil() &&
           projected.server_row_count == 1 &&
           projected.server_result_payload.find(
               "operation_id=query.evaluate_projection") !=
@@ -192,7 +192,7 @@ int main(int argc, char** argv) {
           projected.accepted && !projected.outcome_unknown &&
           !projected.messages.has_errors() &&
           projected.server_operation_id == "query.evaluate_projection" &&
-          projected.server_cursor_uuid.empty() &&
+          projected.server_cursor_uuid.is_nil() &&
           projected.server_row_count == 1 &&
           projected.server_result_payload.find(
               "operation_id=query.evaluate_projection") !=
@@ -332,7 +332,7 @@ int main(int argc, char** argv) {
       const bool no_canonical_or_server_result =
           refused.sblr_payload.empty() &&
           refused.server_operation_id.empty() &&
-          refused.server_cursor_uuid.empty() &&
+          refused.server_cursor_uuid.is_nil() &&
           refused.server_row_count == 0 &&
           refused.server_affected_rows == 0 &&
           !refused.server_affected_rows_present &&
@@ -545,7 +545,7 @@ int main(int argc, char** argv) {
     };
     const auto no_canonical_result = [](const parser::PipelineResult& result) {
       return result.sblr_payload.empty() && result.server_operation_id.empty() &&
-             result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+             result.server_cursor_uuid.is_nil() && result.server_row_count == 0 &&
              result.server_affected_rows == 0 &&
              !result.server_affected_rows_present &&
              result.server_result_payload.empty();
@@ -641,7 +641,7 @@ int main(int argc, char** argv) {
       std::string detail;
       if (!executed.accepted || executed.messages.has_errors() ||
           executed.server_operation_id != "engine.op.stmt_execute" ||
-          executed.server_cursor_uuid.empty() || executed.server_row_count != 1 ||
+          executed.server_cursor_uuid.is_nil() || executed.server_row_count != 1 ||
           !sblr::DecodeSblrStmtExecuteResultV1(
               reinterpret_cast<const std::uint8_t*>(
                   executed.server_result_payload.data()),
@@ -1951,7 +1951,7 @@ END;)SBSQL";
           !refused.sblr_payload.empty() ||
           !refused.server_operation_id.empty() ||
           !refused.server_result_payload.empty() ||
-          !refused.server_cursor_uuid.empty() || refused.server_row_count != 0 ||
+          !refused.server_cursor_uuid.is_nil() || refused.server_row_count != 0 ||
           refused.server_affected_rows != 0 ||
           refused.server_affected_rows_present ||
           refused.messages.diagnostics.size() != 1 ||
@@ -3531,7 +3531,7 @@ END;)SBSQL";
         result.messages.diagnostics.front().code == "SBSQL.IMPL.NOT_AVAILABLE";
     const bool no_canonical_result =
         result.sblr_payload.empty() && result.server_operation_id.empty() &&
-        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_cursor_uuid.is_nil() && result.server_row_count == 0 &&
         result.server_affected_rows == 0 &&
         !result.server_affected_rows_present &&
         result.server_result_payload.empty();
@@ -3549,7 +3549,7 @@ END;)SBSQL";
         result.messages.diagnostics.front().code == "SBSQL.IMPL.NOT_AVAILABLE";
     const bool no_canonical_result =
         result.sblr_payload.empty() && result.server_operation_id.empty() &&
-        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_cursor_uuid.is_nil() && result.server_row_count == 0 &&
         result.server_affected_rows == 0 &&
         !result.server_affected_rows_present &&
         result.server_result_payload.empty();
@@ -3613,7 +3613,7 @@ END;)SBSQL";
     const bool exact_result =
         result.accepted && !result.messages.has_errors() &&
         result.server_operation_id == "engine.op.stmt_execute" &&
-        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        !result.server_cursor_uuid.is_nil() && result.server_row_count == 1 &&
         scratchbird::engine::sblr::DecodeSblrStmtExecuteResultV1(
             reinterpret_cast<const std::uint8_t*>(
                 result.server_result_payload.data()),
@@ -3682,7 +3682,7 @@ END;)SBSQL";
     const bool exact_result =
         result.accepted && !result.messages.has_errors() &&
         result.server_operation_id == "engine.op.stmt_execute_direct" &&
-        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        !result.server_cursor_uuid.is_nil() && result.server_row_count == 1 &&
         scratchbird::engine::sblr::DecodeSblrStmtExecuteDirectResultV1(
             reinterpret_cast<const std::uint8_t*>(
                 result.server_result_payload.data()),
@@ -3811,7 +3811,7 @@ END;)SBSQL";
     const bool exact_result =
         result.accepted && !result.messages.has_errors() &&
         result.server_operation_id == "engine.op.stmt_execute" &&
-        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        !result.server_cursor_uuid.is_nil() && result.server_row_count == 1 &&
         scratchbird::engine::sblr::DecodeSblrStmtExecuteResultV1(
             reinterpret_cast<const std::uint8_t*>(
                 result.server_result_payload.data()),
@@ -3878,7 +3878,7 @@ END;)SBSQL";
     const bool exact_result =
         result.accepted && !result.messages.has_errors() &&
         result.server_operation_id == "engine.op.stmt_execute" &&
-        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        !result.server_cursor_uuid.is_nil() && result.server_row_count == 1 &&
         scratchbird::engine::sblr::DecodeSblrStmtExecuteResultV1(
             reinterpret_cast<const std::uint8_t*>(
                 result.server_result_payload.data()),
@@ -3947,7 +3947,7 @@ END;)SBSQL";
     const bool exact_result =
         result.accepted && !result.messages.has_errors() &&
         result.server_operation_id == "engine.op.result_page" &&
-        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        !result.server_cursor_uuid.is_nil() && result.server_row_count == 1 &&
         scratchbird::engine::sblr::DecodeSblrResultPageResultV1(
             reinterpret_cast<const std::uint8_t*>(
                 result.server_result_payload.data()),
@@ -3994,7 +3994,7 @@ END;)SBSQL";
     const bool exact_terminal =
         result.accepted && !result.messages.has_errors() &&
         result.server_operation_id == "engine.op.catalog_introspect" &&
-        !result.server_cursor_uuid.empty() && result.server_row_count > 1 &&
+        !result.server_cursor_uuid.is_nil() && result.server_row_count > 1 &&
         result.server_result_payload.size() == 320 &&
         scratchbird::engine::sblr::DecodeSblrCatalogIntrospectResultV1(
             reinterpret_cast<const std::uint8_t*>(
@@ -4350,7 +4350,7 @@ END;)SBSQL";
     const bool exact_result =
         result.accepted && !result.messages.has_errors() &&
         result.server_operation_id == "engine.op.parse_text" &&
-        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_cursor_uuid.is_nil() && result.server_row_count == 0 &&
         result.server_affected_rows == 0 &&
         !result.server_affected_rows_present &&
         !result.server_result_payload.empty() && outer_root_shape &&
@@ -4447,7 +4447,7 @@ END;)SBSQL";
     const bool exact_result =
         result.accepted && !result.messages.has_errors() &&
         result.server_operation_id == "engine.op.catalog_epoch_check" &&
-        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_cursor_uuid.is_nil() && result.server_row_count == 0 &&
         result.server_affected_rows == 0 &&
         !result.server_affected_rows_present && outer_root_shape &&
         result_shape && !decoded_descriptor.object_scoped &&
@@ -4560,7 +4560,7 @@ END;)SBSQL";
     const bool exact_result =
         result.accepted && !result.messages.has_errors() &&
         result.server_operation_id == "engine.op.database_attach" &&
-        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_cursor_uuid.is_nil() && result.server_row_count == 0 &&
         result.server_affected_rows == 0 &&
         !result.server_affected_rows_present && outer_root_shape &&
         result_shape && decoded_descriptor.mode == 1 &&
@@ -4615,14 +4615,14 @@ END;)SBSQL";
     const bool exact_result =
         result.accepted && !result.messages.has_errors() &&
         result.server_operation_id == "query.execute" &&
-        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        !result.server_cursor_uuid.is_nil() && result.server_row_count == 1 &&
         result.server_result_payload.empty() &&
         result.sblr_payload.find("SELECT key_a") == std::string::npos;
     if (!exact_result) {
       std::cerr << "CSC-TEST-003601 QUERY_EXECUTE exact_result_failed"
                 << " accepted=" << result.accepted
                 << " operation_id=" << result.server_operation_id
-                << " cursor_uuid=" << result.server_cursor_uuid
+                << " cursor_uuid=" << (result.server_cursor_uuid.is_nil() ? "nil" : "[binary16]")
                 << " row_count=" << result.server_row_count
                 << " terminal_payload_bytes="
                 << result.server_result_payload.size() << '\n';
@@ -4792,7 +4792,7 @@ END;)SBSQL";
         result.messages.diagnostics.front().code ==
             "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
     const bool no_result_publication =
-        result.server_operation_id.empty() && result.server_cursor_uuid.empty() &&
+        result.server_operation_id.empty() && result.server_cursor_uuid.is_nil() &&
         result.server_row_count == 0 && result.server_affected_rows == 0 &&
         !result.server_affected_rows_present &&
         result.server_result_payload.empty();
@@ -4804,7 +4804,7 @@ END;)SBSQL";
                 << " diagnostic_count="
                 << result.messages.diagnostics.size()
                 << " server_operation_id=" << result.server_operation_id
-                << " server_cursor_uuid=" << result.server_cursor_uuid
+                << " server_cursor_uuid=" << (result.server_cursor_uuid.is_nil() ? "nil" : "[binary16]")
                 << " server_row_count=" << result.server_row_count
                 << " server_affected_rows=" << result.server_affected_rows
                 << " server_affected_rows_present="
@@ -4876,7 +4876,7 @@ END;)SBSQL";
             "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN";
     const bool no_canonical_result =
         result.sblr_payload.empty() && result.server_operation_id.empty() &&
-        result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+        result.server_cursor_uuid.is_nil() && result.server_row_count == 0 &&
         result.server_affected_rows == 0 &&
         !result.server_affected_rows_present &&
         result.server_result_payload.empty();

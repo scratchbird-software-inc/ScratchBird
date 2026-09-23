@@ -1,3 +1,4 @@
+#include "security/native_identity_option.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -41,7 +42,7 @@ api::EngineUuid MakeUuid(UuidKind kind, u64 offset) {
       uuid::GenerateEngineIdentityV7(kind, kBaseMillis + offset);
   api::EngineUuid out;
   if (generated.ok()) {
-    out.canonical = uuid::UuidToString(generated.value.value);
+    out = generated.value.value;
   }
   return out;
 }
@@ -108,7 +109,11 @@ std::string FlattenResult(const api::EngineApiResult& result) {
   for (const auto& evidence : result.evidence) {
     out += evidence.evidence_kind;
     out += '=';
-    out += evidence.evidence_id;
+    if (const auto* text = std::get_if<std::string>(&evidence.evidence_id)) {
+      out += *text;
+    } else {
+      out += "[binary UUID]";
+    }
     out += '\n';
   }
   for (const auto& row : result.result_shape.rows) {
@@ -164,11 +169,11 @@ api::EngineProtectedMaterialPolicySet PolicySet(u64 offset,
                                                 u64 retention_until = 0,
                                                 bool legal_hold = false) {
   api::EngineProtectedMaterialPolicySet policy;
-  policy.retention_policy_uuid = MakeUuid(UuidKind::object, offset).canonical;
-  policy.access_policy_uuid = MakeUuid(UuidKind::object, offset + 1).canonical;
-  policy.release_policy_uuid = MakeUuid(UuidKind::object, offset + 2).canonical;
-  policy.purge_policy_uuid = MakeUuid(UuidKind::object, offset + 3).canonical;
-  policy.audit_policy_uuid = MakeUuid(UuidKind::object, offset + 4).canonical;
+  policy.retention_policy_uuid = MakeUuid(UuidKind::object, offset);
+  policy.access_policy_uuid = MakeUuid(UuidKind::object, offset + 1);
+  policy.release_policy_uuid = MakeUuid(UuidKind::object, offset + 2);
+  policy.purge_policy_uuid = MakeUuid(UuidKind::object, offset + 3);
+  policy.audit_policy_uuid = MakeUuid(UuidKind::object, offset + 4);
   policy.retention_until_epoch_millis = retention_until;
   policy.legal_hold = legal_hold;
   policy.release_purposes.push_back("security_use");
@@ -300,7 +305,17 @@ bool TestExternalGroupContracts(const std::filesystem::path& database_path) {
   sync.provider_family = "directory.ldap";
   sync.option_envelopes.push_back("external_group:cn=reader");
   sync.option_envelopes.push_back("internal_group_uuid:" +
-                                  MakeUuid(UuidKind::object, 40).canonical);
+                                  api::MetadataUuidBytes(MakeUuid(UuidKind::object, 40)));
+  auto malformed = sync;
+  malformed.option_envelopes.back() = "internal_group_uuid:018f0000-0000-7000-8000-00000000d001";
+  const auto text_refused = api::EngineSyncExternalGroups(malformed);
+  ok = Expect(!text_refused.ok && !text_refused.materialized,
+              "external group sync must reject a textual UUID") && ok;
+  malformed = sync;
+  malformed.option_envelopes.push_back(malformed.option_envelopes.back());
+  const auto duplicate_refused = api::EngineSyncExternalGroups(malformed);
+  ok = Expect(!duplicate_refused.ok && !duplicate_refused.materialized,
+              "external group sync must reject duplicate identity options") && ok;
   const auto synced = api::EngineSyncExternalGroups(sync);
   ok = Expect(synced.ok && synced.materialized,
               "canonical LDAP external group should materialize") && ok;
@@ -400,9 +415,11 @@ bool TestProtectedMaterialLifecycle(const std::filesystem::path& database_path) 
 
   api::EngineAdmitEncryptionKeyRequest admit;
   admit.context = Context(database_path);
-  admit.key_uuid = "pcr092-key-old";
+  const auto old_key = MakeUuid(UuidKind::object, 51);
+  const auto new_key = MakeUuid(UuidKind::object, 52);
+  admit.key_uuid = old_key;
   admit.key_label = "redacted-key";
-  admit.filespace_uuid = MakeUuid(UuidKind::object, 50).canonical;
+  admit.filespace_uuid = MakeUuid(UuidKind::object, 50);
   admit.secret_evidence = "kms-ref:v1:pcr092-proof";
   admit.option_envelopes.push_back("key_authority:engine");
   const auto admitted = api::EngineAdmitEncryptionKey(admit);
@@ -420,8 +437,8 @@ bool TestProtectedMaterialLifecycle(const std::filesystem::path& database_path) 
 
   api::EngineRotateEncryptionKeyRequest rotate;
   rotate.context = Context(database_path);
-  rotate.key_uuid = "pcr092-key-old";
-  rotate.replacement_key_uuid = "pcr092-key-new";
+  rotate.key_uuid = old_key;
+  rotate.replacement_key_uuid = new_key;
   rotate.replacement_secret_evidence = "kms-ref:v1:pcr092-rotated-proof";
   rotate.rotation_reason = "scheduled public release key rotation";
   rotate.option_envelopes.push_back("key_authority:engine");
@@ -434,9 +451,9 @@ bool TestProtectedMaterialLifecycle(const std::filesystem::path& database_path) 
 
   api::EngineOpenEncryptedFilespaceRequest old_open;
   old_open.context = Context(database_path);
-  old_open.database_uuid = old_open.context.database_uuid.canonical;
+  old_open.database_uuid = old_open.context.database_uuid;
   old_open.filespace_uuid = admit.filespace_uuid;
-  old_open.key_uuid = "pcr092-key-old";
+  old_open.key_uuid = old_key;
   old_open.key_handle = admitted.key_handle;
   old_open.option_envelopes.push_back("filespace_open_authority:engine");
   const auto old_denied = api::EngineOpenEncryptedFilespace(old_open);
@@ -448,12 +465,12 @@ bool TestProtectedMaterialLifecycle(const std::filesystem::path& database_path) 
 
   api::EngineCreateProtectedMaterialRequest create;
   create.context = Context(database_path, 100, 100);
-  create.protected_material_uuid = MakeUuid(UuidKind::object, 60).canonical;
-  create.owner_scope_uuid = create.context.principal_uuid.canonical;
+  create.protected_material_uuid = MakeUuid(UuidKind::object, 60);
+  create.owner_scope_uuid = create.context.principal_uuid;
   create.purpose_class = "security_use";
   create.storage_class = "wrapped";
   create.policy = PolicySet(70);
-  create.initial_version_uuid = MakeUuid(UuidKind::object, 80).canonical;
+  create.initial_version_uuid = MakeUuid(UuidKind::object, 80);
   create.protected_reference = "wrapped-ref:v1:pcr092-initial";
   create.envelope_reference = "envelope-ref:v1:pcr092-initial";
   create.payload_hash = "sha256:" + api::SecuritySha256Hex("pcr092-initial");
@@ -465,7 +482,7 @@ bool TestProtectedMaterialLifecycle(const std::filesystem::path& database_path) 
   api::EngineAddProtectedMaterialVersionRequest add;
   add.context = Context(database_path, 101, 101);
   add.protected_material_uuid = create.protected_material_uuid;
-  add.protected_material_version_uuid = MakeUuid(UuidKind::object, 81).canonical;
+  add.protected_material_version_uuid = MakeUuid(UuidKind::object, 81);
   add.protected_reference = "wrapped-ref:v1:pcr092-rotated";
   add.envelope_reference = "envelope-ref:v1:pcr092-rotated";
   add.payload_hash = "sha256:" + api::SecuritySha256Hex("pcr092-rotated");
@@ -511,9 +528,8 @@ bool TestProtectedMaterialLifecycle(const std::filesystem::path& database_path) 
                                    "protected-material-release:v1:hmac-sha256:"),
                     "protected material release should use HMAC-SHA-256 handle",
                     released) && ok;
-  ok = ExpectResult(StartsWith(released.audit_event_uuid,
-                               "protected-material-audit:v1:sha256:"),
-                    "protected material release audit event should use SHA-256 id",
+  ok = ExpectResult(uuid::IsEngineIdentityUuid(released.audit_event_uuid),
+                    "protected material release audit event should carry an engine UUID",
                     released) && ok;
   ok = Expect(!released.plaintext_material_returned &&
                   released.redaction_applied,
@@ -534,9 +550,9 @@ bool TestProtectedMaterialLifecycle(const std::filesystem::path& database_path) 
                                           "SECURITY.PROTECTED_MATERIAL.RETENTION_REQUIRED"),
                     "retention and legal hold should block protected material purge",
                     purge_denied) && ok;
-  ok = ExpectResult(StartsWith(purge_denied.audit_event_uuid,
-                               "protected-material-audit:v1:sha256:"),
-                    "protected material purge refusal audit should use SHA-256 id",
+  ok = ExpectResult(uuid::IsEngineIdentityUuid(purge_denied.audit_event_uuid) &&
+                        purge_denied.audit_event_uuid != released.audit_event_uuid,
+                    "protected material purge refusal audit should carry a distinct engine UUID",
                     purge_denied) && ok;
 
   return ok;

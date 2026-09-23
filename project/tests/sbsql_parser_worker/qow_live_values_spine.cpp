@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "hash_digest.hpp"
@@ -84,30 +85,23 @@ bool HasApiDiagnosticToken(const sblr::SblrDispatchResult& result,
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000008101";
-  context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000008107";
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000008108";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000008101");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000008107");
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000008108");
   context.catalog_epoch_uuid.canonical = kCatalogEpochUuid;
   context.local_transaction_id = 8101;
   context.snapshot_visible_through_local_transaction_id = 8099;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000008109";
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000008109");
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       kSecurityContextUuid;
   context.catalog_generation_id = 8101;
   context.security_epoch = 8102;
   context.resource_epoch = 8103;
-  context.optimizer_capability_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000008104";
-  context.optimizer_resource_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000008105";
-  context.optimizer_route_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000008106";
+  context.optimizer_capability_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000008104");
+  context.optimizer_resource_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000008105");
+  context.optimizer_route_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000008106");
   context.optimizer_route_epoch = 8104;
   context.optimizer_route_generation = 8105;
   context.optimizer_memory_budget_bytes = 1024 * 1024;
@@ -6243,36 +6237,31 @@ bool ValidateLiveStatementContextRefusalIsAtomic() {
       "narrowed local transaction identity exposed a plan, executor, row, or result");
 
   auto context = Context();
-  context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000008199";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000008199");
   passed &= Require(
       RefusedStatementContextAtomically(
           dispatch(ValuesEnvelope(), std::move(context))),
       "statement mismatch exposed a plan, executor, row, or result");
   context = Context();
-  context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000008199";
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000008199");
   passed &= Require(
       RefusedStatementContextAtomically(
           dispatch(ValuesEnvelope(), std::move(context))),
       "transaction mismatch exposed a plan, executor, row, or result");
   context = Context();
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000008199";
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000008199");
   passed &= Require(
       RefusedStatementContextAtomically(
           dispatch(ValuesEnvelope(), std::move(context))),
       "data snapshot mismatch exposed a plan, executor, row, or result");
   context = Context();
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000008199";
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000008199");
   passed &= Require(
       RefusedStatementContextAtomically(
           dispatch(ValuesEnvelope(), std::move(context))),
       "metadata snapshot mismatch exposed a plan, executor, row, or result");
   context = Context();
-  context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7100-8000-000000008199";
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000008199");
   passed &= Require(
       RefusedStatementContextAtomically(
           dispatch(ValuesEnvelope(), std::move(context))),

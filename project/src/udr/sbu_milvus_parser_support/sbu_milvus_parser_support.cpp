@@ -319,8 +319,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus MilvusLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuMilvusPackageUuid) {
+scratchbird::udr::runtime::UdrStatus MilvusLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuMilvusPackageIdentity) {
     return {false, "UDR.MILVUS.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -533,7 +533,7 @@ UdrResult sbu_milvus_debug_capabilities(std::string_view render_policy) {
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_milvus_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuMilvusPackageUuid);
+  descriptor.package_uuid = kSbuMilvusPackageIdentity;
   descriptor.package_name = std::string(kSbuMilvusPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "milvus-parser-support-beta-closure";

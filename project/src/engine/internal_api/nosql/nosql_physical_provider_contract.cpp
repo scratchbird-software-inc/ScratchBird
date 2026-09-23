@@ -253,11 +253,7 @@ EngineNoSqlPhysicalProviderSelection SelectLocalNoSqlPhysicalProvider(
     Add(&selection.evidence,
         "provider_generation_available_id=" +
             std::to_string(contract.provider_generation.available_generation));
-    Add(&selection.evidence,
-        "provider_generation_uuid=" +
-            (contract.provider_generation.generation_uuid.empty()
-                 ? std::string("none")
-                 : contract.provider_generation.generation_uuid));
+    selection.generation_uuid = contract.provider_generation.generation_uuid;
     Add(&selection.evidence,
         "provider_generation_publish_state=" +
             contract.provider_generation.publish_state);

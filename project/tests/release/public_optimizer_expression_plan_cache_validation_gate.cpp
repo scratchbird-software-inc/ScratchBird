@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "access_path_full.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include <stdexcept>
 #include "logical_plan.hpp"
 #include "optimizer_plan_cache.hpp"
 #include "optimizer_request.hpp"
@@ -49,11 +51,23 @@ bool StartsWith(std::string_view value, std::string_view prefix) {
   return value.rfind(prefix, 0) == 0;
 }
 
-std::string Id(std::string_view suffix) {
+plan::CanonicalPlannerUuid Id(std::string_view suffix) {
+  if (suffix=="column.customer_name") return scratchbird::tests::FixtureUuid(1202, 6301);
+  if (suffix=="filespace.hot") return scratchbird::tests::FixtureUuid(1202, 6302);
+  if (suffix=="function.add") return scratchbird::tests::FixtureUuid(1202, 6303);
+  if (suffix=="function.lower") return scratchbird::tests::FixtureUuid(1202, 6304);
+  if (suffix=="index.customer_name_lower") return scratchbird::tests::FixtureUuid(1202, 6305);
+  if (suffix=="index.customer_name_lower.stats") return scratchbird::tests::FixtureUuid(1202, 6306);
+  if (suffix=="relation.customer") return scratchbird::tests::FixtureUuid(1202, 6307);
+  if (suffix=="table_stats.customer") return scratchbird::tests::FixtureUuid(1202, 6308);
+  throw std::invalid_argument("unknown_optimizer_fixture_identity");
+}
+
+std::string Label(std::string_view suffix) {
   return "pcr063." + std::string(suffix);
 }
 
-opt::CanonicalSblrExpressionNode ColumnExpression(std::string column_uuid) {
+opt::CanonicalSblrExpressionNode ColumnExpression(plan::CanonicalPlannerUuid column_uuid) {
   opt::CanonicalSblrExpressionNode node;
   node.operator_id = "column_ref";
   node.descriptor_digest = "sha256:descriptor-pcr063-customer";
@@ -87,8 +101,8 @@ opt::CanonicalSblrExpressionNode AddExpression(std::string left,
   return root;
 }
 
-opt::OptimizerStatsIdentity FreshIdentity(std::string object_uuid,
-                                          std::string statistic_uuid) {
+opt::OptimizerStatsIdentity FreshIdentity(plan::CanonicalPlannerUuid object_uuid,
+                                          plan::CanonicalPlannerUuid statistic_uuid) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = std::move(object_uuid);
   identity.statistic_uuid = std::move(statistic_uuid);
@@ -157,11 +171,11 @@ plan::OptimizerPolicyMetadata SafePolicy() {
 plan::LogicalPlan LogicalPlan() {
   plan::LogicalPlan logical;
   logical.ok = true;
-  logical.plan_id = Id("logical_plan.customer_lower_lookup");
+  logical.plan_id = Label("logical_plan.customer_lower_lookup");
   logical.optimizer_policy = SafePolicy();
   auto node = plan::MakeLogicalPlanNode(plan::LogicalPlanNodeKind::kDmlRead,
                                         plan::PhysicalAccessKind::kNone,
-                                        Id("operation.customer_lower_lookup"),
+                                        Label("operation.customer_lower_lookup"),
                                         "customer_lower_lookup");
   node.required_object_uuids.push_back(Id("relation.customer"));
   node.required_descriptors.push_back("sha256:descriptor-pcr063-customer");
@@ -171,8 +185,8 @@ plan::LogicalPlan LogicalPlan() {
 
 opt::BoundOptimizerRequest BoundRequest() {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = Id("request.customer_lower_lookup");
-  request.context.operation_id = Id("operation.customer_lower_lookup");
+  request.context.request_uuid = Label("request.customer_lower_lookup");
+  request.context.operation_id = Label("operation.customer_lower_lookup");
   request.context.sblr_digest = "sha256:sblr-pcr063-customer-lower-lookup";
   request.context.descriptor_set_digest = "sha256:descriptor-pcr063-customer";
   request.context.statistics_snapshot_id = "sha256:stats-pcr063-customer";
@@ -225,13 +239,13 @@ opt::OptimizerProductionPlanCacheKeyRequest ProductionCacheKeyRequest() {
 
 opt::CachedOptimizerPlan CachedPlan(const opt::OptimizerPlanCacheKeyInput& input) {
   opt::PlanCandidate candidate;
-  candidate.candidate_id = "CAND-OPT-INDEX:" + Id("index.customer_name_lower");
+  candidate.candidate_id = "CAND-OPT-INDEX:customer_name_lower";
   candidate.access_kind = plan::PhysicalAccessKind::kScalarBtreeLookup;
   candidate.required_facts = {
-      Id("relation.customer"),
-      Id("function.lower"),
-      Id("index.customer_name_lower"),
-      Id("filespace.hot")};
+      Label("relation.customer"),
+      Label("function.lower"),
+      Label("index.customer_name_lower"),
+      Label("filespace.hot")};
   candidate.cost.total_cost = 42;
   candidate.cost.confidence = opt::CostConfidence::kHigh;
   candidate.selected = true;
@@ -242,7 +256,7 @@ opt::CachedOptimizerPlan CachedPlan(const opt::OptimizerPlanCacheKeyInput& input
   cached.created_epoch = input.catalog_epoch;
   cached.result.ok = true;
   cached.result.diagnostic_code = "SB_OPT_OK";
-  cached.result.plan_id = Id("cached_plan.customer_lower_lookup");
+  cached.result.plan_id = Label("cached_plan.customer_lower_lookup");
   cached.result.candidates.push_back(std::move(candidate));
   cached.metadata_only = true;
   cached.mga_visibility_recheck_required = true;

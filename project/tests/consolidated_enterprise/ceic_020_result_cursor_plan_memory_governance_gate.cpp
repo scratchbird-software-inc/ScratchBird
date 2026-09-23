@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -40,6 +41,13 @@ void Require(bool condition, std::string_view message) {
   if (!condition) {
     Fail(message);
   }
+}
+
+memory::ResultCursorPlanMemoryUuid FixtureIdentity(std::string_view suffix, std::uint32_t field) {
+  constexpr std::string_view cohorts[] = {"a", "direct", "expiry", "stream", "plan", "prepared"};
+  for (std::uint32_t n = 0; n < std::size(cohorts); ++n)
+    if (cohorts[n] == suffix) return scratchbird::tests::FixtureUuid(1561, n * 32 + field);
+  Fail("unknown memory governance fixture cohort");
 }
 
 bool Contains(const std::vector<std::string>& evidence,
@@ -86,6 +94,17 @@ void SetBudget(memory::HierarchicalMemoryBudgetLedger* ledger,
           "CEIC-020 budget setup failed");
 }
 
+void SetBudget(memory::HierarchicalMemoryBudgetLedger* ledger,
+               memory::HierarchicalMemoryScopeKind kind,
+               const memory::ResultCursorPlanMemoryUuid& identity, u64 hard) {
+  memory::HierarchicalMemoryBudget budget;
+  budget.scope.kind = kind;
+  budget.scope.binary_scope_uuid = identity.bytes;
+  budget.hard_limit_bytes = hard;
+  budget.provenance = RuntimeProvenance("ceic_020_budget");
+  Require(ledger->SetBudget(std::move(budget)).ok(), "CEIC-020 binary scope budget setup failed");
+}
+
 void SeedBudgets(memory::HierarchicalMemoryBudgetLedger* ledger,
                  const memory::ResultCursorPlanMemoryScope& scope,
                  u64 hard = 64ull * 1024ull) {
@@ -109,19 +128,19 @@ void SeedBudgets(memory::HierarchicalMemoryBudgetLedger* ledger,
 
 memory::ResultCursorPlanMemoryScope BaseScope(std::string suffix = "a") {
   memory::ResultCursorPlanMemoryScope scope;
-  scope.database_id = "ceic020-db-" + suffix;
-  scope.tenant_id = "ceic020-tenant-" + suffix;
-  scope.user_id = "ceic020-user-" + suffix;
-  scope.role_id = "ceic020-role-" + suffix;
-  scope.session_id = "ceic020-session-" + suffix;
-  scope.connection_id = "ceic020-connection-" + suffix;
-  scope.transaction_id = "ceic020-transaction-" + suffix;
-  scope.statement_id = "ceic020-statement-" + suffix;
-  scope.query_id = "ceic020-query-" + suffix;
-  scope.cursor_id = "ceic020-cursor-" + suffix;
+  scope.database_id = FixtureIdentity(suffix, 1);
+  scope.tenant_id = FixtureIdentity(suffix, 2);
+  scope.user_id = FixtureIdentity(suffix, 3);
+  scope.role_id = FixtureIdentity(suffix, 4);
+  scope.session_id = FixtureIdentity(suffix, 5);
+  scope.connection_id = FixtureIdentity(suffix, 6);
+  scope.transaction_id = FixtureIdentity(suffix, 7);
+  scope.statement_id = FixtureIdentity(suffix, 8);
+  scope.query_id = FixtureIdentity(suffix, 9);
+  scope.cursor_id = FixtureIdentity(suffix, 10);
   scope.plan_cache_key = "ceic020-plan-" + suffix;
-  scope.prepared_statement_id = "ceic020-prepared-" + suffix;
-  scope.descriptor_snapshot_id = "ceic020-descriptor-" + suffix;
+  scope.prepared_statement_id = FixtureIdentity(suffix, 11);
+  scope.descriptor_snapshot_id = FixtureIdentity(suffix, 12);
   return scope;
 }
 
@@ -175,7 +194,7 @@ memory::ResultCursorPlanMemoryLeaseRequest LeaseRequest(
   request.memory_class =
       std::string("ceic_020.") +
       memory::ResultCursorPlanMemorySurfaceName(surface);
-  request.owner_id = request.memory_class + ".owner";
+  request.owner_id = scratchbird::tests::FixtureUuid(1561, 1000 + static_cast<std::uint32_t>(surface));
   request.route_label = "ceic020.route";
   request.requested_bytes = bytes;
   return request;
@@ -397,7 +416,7 @@ optimizer::OptimizerPlanCacheKeyInput PlanKey(std::string suffix = "a") {
   input.compatibility_epoch = 109;
   input.format_compatibility_epoch = 110;
   input.route_epoch = 111;
-  input.object_uuids = {"object:" + suffix};
+  input.object_uuids = {FixtureIdentity(suffix, 20)};
   input.dependency_digests = {
       input.descriptor_set_digest,
       input.catalog_stats_digest,
@@ -456,7 +475,7 @@ void OptimizerPlanCacheMemoryIsGoverned() {
 
 internal::EngineDescriptor Descriptor(std::string suffix) {
   internal::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = "descriptor-uuid-" + suffix;
+  descriptor.descriptor_uuid = FixtureIdentity(suffix, 21);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "INTEGER";
   descriptor.encoded_descriptor = "int32:" + suffix;
@@ -468,13 +487,13 @@ executor::PreparedTemplateAdmission Admission(std::string suffix = "a") {
   admission.key.operation_id = "dml.select_rows";
   admission.key.sblr_digest_or_trace_key = "sblr:prepared:" + suffix;
   admission.key.catalog_epoch_uuid =
-      "019f0200-0000-7000-8000-00000000ce20";
+      scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-00000000ce20");
   admission.key.descriptor_set_digest = "prepared:descriptor-set:" + suffix;
   admission.key.epochs.catalog_epoch = 200;
   admission.key.epochs.security_epoch = 201;
   admission.key.epochs.policy_resource_epoch = 202;
   admission.key.epochs.name_resolution_epoch = 203;
-  admission.key.dependency_uuids = {"prepared-object:" + suffix};
+  admission.key.dependency_uuids = {FixtureIdentity(suffix, 22)};
 
   executor::PreparedDescriptorSlot slot;
   slot.stable_name = "slot:" + suffix;
@@ -513,8 +532,8 @@ void PreparedTemplateMemoryIsGoverned() {
   Require(prepared.ok && prepared.prepared_template != nullptr,
           "CEIC-020 governed prepared template failed");
   Require(prepared.prepared_template->memory_governed &&
-              !prepared.prepared_template->prepared_memory_lease_id.empty() &&
-              !prepared.prepared_template->descriptor_snapshot_memory_lease_id.empty(),
+              !prepared.prepared_template->prepared_memory_lease_id.is_nil() &&
+              !prepared.prepared_template->descriptor_snapshot_memory_lease_id.is_nil(),
           "CEIC-020 prepared template did not retain lease IDs");
   Require(Contains(prepared.prepared_template->memory_governance_evidence,
                    "CEIC-020_PREPARED_TEMPLATE_MEMORY_GOVERNED"),

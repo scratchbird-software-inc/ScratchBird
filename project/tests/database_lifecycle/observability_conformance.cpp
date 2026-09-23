@@ -6,6 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
+#include "../agents/agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
 #include "diagnostics.hpp"
 #include "server/diagnostic_rendering/diagnostic_rendering.hpp"
 #include "api_diagnostics.hpp"
@@ -83,7 +86,7 @@ server::HostedEngineState Engine(const std::filesystem::path& temp_dir) {
   state.engine_context_active = true;
   server::HostedDatabaseSnapshot database;
   database.state = server::HostedDatabaseState::kOpen;
-  database.database_uuid = "019e150f-0000-7000-8000-000000000015";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000015");
   database.database_path = (temp_dir / "data" / "observability.sbdb").string();
   database.database_open = true;
   state.databases.push_back(database);
@@ -96,10 +99,10 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& temp_dir) {
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.security_context_present = true;
   context.database_path = (temp_dir / "data" / "observability.sbdb").string();
-  context.database_uuid.canonical = "019e150f-0000-7000-8000-000000000015";
-  context.session_uuid.canonical = "019e150f-0000-7000-8000-000000000016";
-  context.principal_uuid.canonical = "019e150f-0000-7000-8000-000000000017";
-  context.request_id = "019e150f-0000-7000-8000-000000000018";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000015");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000016");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000017");
+  context.request_id = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000018"));
   context.local_transaction_id = 15;
   context.trace_tags = {"group:OPS", "right:AUDIT_READ"};
   scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
@@ -115,10 +118,10 @@ void TestDiagnosticShapes() {
   diagnostic.message_key = "engine.shutdown.ack_timeout";
   diagnostic.safe_message = "Shutdown acknowledgement timed out.";
   diagnostic.retryable = true;
-  diagnostic.correlation_uuid = "019e150f-0000-7000-8000-000000000019";
-  diagnostic.request_uuid = "019e150f-0000-7000-8000-000000000018";
-  diagnostic.session_uuid = "019e150f-0000-7000-8000-000000000016";
-  diagnostic.database_uuid = "019e150f-0000-7000-8000-000000000015";
+  diagnostic.correlation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000019"));
+  diagnostic.request_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000018"));
+  diagnostic.session_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000016"));
+  diagnostic.database_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000015"));
   diagnostic.fields = {
       {"operation_key", "shutdown_database"},
       {"database_uuid", diagnostic.database_uuid},
@@ -164,9 +167,9 @@ void TestServerLifecycleObservability(const std::filesystem::path& temp_dir) {
   success.operation_key = "create_database";
   success.outcome = "created";
   success.route_family = "server_management";
-  success.request_uuid = "019e150f-0000-7000-8000-000000000018";
-  success.session_uuid = "019e150f-0000-7000-8000-000000000016";
-  success.database_uuid = engine.databases.front().database_uuid;
+  success.request_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000018"));
+  success.session_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000016"));
+  success.database_uuid = BinaryFixtureIdentity(engine.databases.front().database_uuid);
   success.state_before = "none";
   success.state_after = "created";
   const auto recorded = server::RecordServerLifecycleObservability(&observability, success);
@@ -187,7 +190,7 @@ void TestServerLifecycleObservability(const std::filesystem::path& temp_dir) {
   refused.outcome = "refused";
   refused.diagnostic_code = "ENGINE.SHUTDOWN_INPUT_INVALID";
   refused.route_family = "server_management";
-  refused.database_uuid = engine.databases.front().database_uuid;
+  refused.database_uuid = BinaryFixtureIdentity(engine.databases.front().database_uuid);
   refused.private_detail = "force shutdown refused without MGA recovery evidence";
   const auto refused_record =
       server::RecordServerLifecycleObservability(&observability, refused);
@@ -220,9 +223,9 @@ void TestEngineMetricsAndAudit(const std::filesystem::path& temp_dir) {
   audit.context = EngineContext(temp_dir);
   audit.operation_key = "repair_database";
   audit.outcome = "repaired";
-  audit.correlation_uuid = "019e150f-0000-7000-8000-000000000019";
+  audit.correlation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000019"));
   audit.cache_invalidation_recorded = true;
-  audit.cache_marker_uuid = "019e150f-0000-7000-8000-000000000020";
+  audit.cache_marker_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000020"));
   const auto audit_result = api::EngineEmitLifecycleAuditEvent(audit);
   Require(audit_result.ok, "engine lifecycle audit emission failed");
   Require(audit_result.emitted && audit_result.redacted && audit_result.cache_marker_linked,
@@ -340,12 +343,12 @@ void TestParserRendering() {
       "listener acknowledgement timeout for hidden internal route",
       false));
   rendering::EngineParserPackageRenderOptions options;
-  options.parser_package_uuid = "019e150f-0000-7000-8000-000000000021";
+  options.parser_package_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000021"));
   options.parser_package_version = "sbsql-observability";
   options.client_dialect = "sbsql_v3";
-  options.correlation_uuid = "019e150f-0000-7000-8000-000000000019";
-  options.request_uuid = "019e150f-0000-7000-8000-000000000018";
-  options.session_uuid = "019e150f-0000-7000-8000-000000000016";
+  options.correlation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000019"));
+  options.request_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000018"));
+  options.session_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000016"));
   const auto envelope = rendering::RenderEngineApiResultForParserPackage(result, options);
   std::vector<std::string> errors;
   Require(rendering::ValidateLegacyRenderedProjectionStructure(envelope, &errors),

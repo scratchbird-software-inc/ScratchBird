@@ -25,7 +25,6 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::IsEngineIdentityUuid;
-using scratchbird::core::uuid::UuidToString;
 
 Status GrowthOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::storage_disk};
@@ -412,7 +411,7 @@ InsertFilespaceGrowthResult Refuse(FilespaceGrowthLedger* ledger,
     ledger->evidence.push_back(result.evidence);
   }
   if (entry.filespace_uuid.valid()) {
-    (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(UuidToString(entry.filespace_uuid.value),
+    (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(entry.filespace_uuid.value,
                                                                           "insert_growth",
                                                                           result.diagnostic.diagnostic_code);
   }
@@ -520,7 +519,7 @@ FilespacePreallocationResult RefusePreallocation(FilespaceGrowthLedger* ledger,
                                                           std::move(detail));
   if (entry.filespace_uuid.valid()) {
     (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(
-        UuidToString(entry.filespace_uuid.value),
+        entry.filespace_uuid.value,
         "preallocate",
         result.diagnostic.diagnostic_code);
   }
@@ -782,7 +781,7 @@ InsertFilespaceGrowthResult RequestInsertFilespaceGrowth(FilespaceGrowthLedger* 
 
   ledger->operations.push_back(entry);
   ledger->evidence.push_back(result.evidence);
-  (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(UuidToString(entry.filespace_uuid.value),
+  (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(entry.filespace_uuid.value,
                                                                         "insert_growth",
                                                                         "admitted");
   return result;
@@ -1123,8 +1122,8 @@ FilespacePreallocationResult PreallocateFilespace(FilespaceGrowthLedger* ledger,
     ledger->member_capacity_windows.push_back(window);
   }
 
-  const std::string database_uuid = UuidToString(entry.database_uuid.value);
-  const std::string filespace_uuid = UuidToString(entry.filespace_uuid.value);
+  const auto database_uuid = entry.database_uuid.value;
+  const auto filespace_uuid = entry.filespace_uuid.value;
   const std::string role = FilespaceRoleName(entry.filespace_role);
   const bool reserved_metric_ok =
       scratchbird::core::metrics::PublishFilespaceReservedBytes(
@@ -1578,8 +1577,8 @@ FilespacePhysicalGrowthResult ExecuteFilespacePhysicalGrowth(
     ledger->member_capacity_windows.push_back(window);
   }
 
-  const std::string database_uuid = UuidToString(entry.database_uuid.value);
-  const std::string filespace_uuid = UuidToString(entry.filespace_uuid.value);
+  const auto database_uuid = entry.database_uuid.value;
+  const auto filespace_uuid = entry.filespace_uuid.value;
   const std::string role = FilespaceRoleName(entry.filespace_role);
   const bool capacity_metric_ok =
       scratchbird::core::metrics::PublishFilespaceCapacitySnapshot(
@@ -1705,7 +1704,7 @@ FilespaceGrowthMutationResult CompleteInsertFilespaceGrowth(FilespaceGrowthLedge
                                                    "storage.filespace.insert_growth.completed",
                                                    request.reason.empty() ? "allocation complete" : request.reason);
   ledger->evidence.push_back(result.evidence);
-  (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(UuidToString(operation->filespace_uuid.value),
+  (void)scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(operation->filespace_uuid.value,
                                                                         "insert_growth",
                                                                         "allocation_complete");
   return result;

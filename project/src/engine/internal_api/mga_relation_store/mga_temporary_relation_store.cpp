@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
@@ -337,9 +338,10 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
     return result;
   }
   std::vector<std::string> metadata_records;
-  std::vector<std::string> row_records;
-  if (!ReadCompleteMgaTextRecords(MetadataStorePath(context), &metadata_records) ||
-      !ReadCompleteMgaTextRecords(RowStorePath(context), &row_records)) {
+  std::vector<CrudRowVersionRecord> row_records;
+  ScopedRelationSummary row_summary;
+  if (!ReadCompleteMgaMetadataRecords(MetadataStorePath(context), &metadata_records) ||
+      !DecodeScopedRowBinaryStore(RowStorePath(context), &row_records, &row_summary) || row_summary.malformed) {
     result.action = "temporary_recovery_store_read_failed";
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.temporary_recovery", "temporary_recovery_store_read_failed");
@@ -369,12 +371,16 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
     return EventAuthority::kActiveOrUnresolved;
   };
 
-  std::set<std::string> temporary_tables;
-  std::set<std::string> durable_global_tables;
-  std::set<std::string> committed_private_tables;
-  std::set<std::string> retired_private_tables;
+  std::set<EngineUuid> temporary_tables;
+  std::set<EngineUuid> durable_global_tables;
+  std::set<EngineUuid> committed_private_tables;
+  std::set<EngineUuid> retired_private_tables;
   for (const auto& line : metadata_records) {
-    const auto fields = SplitTabs(line);
+    std::vector<std::string> fields;
+    if (!DecodeMgaMetadataFields(line, &fields)) {
+      result.diagnostic = MakeInvalidRequestDiagnostic("mga.temporary_recovery", "binary_metadata_invalid");
+      return result;
+    }
     const bool legacy_temporary_table =
         fields.size() >= 11 && fields[0] == kRowStoreMagic &&
         fields[1] == "TABLE_METADATA" && fields[7] == "1";
@@ -394,18 +400,28 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
           sealed_temporary_table
               ? sealed_table_metadata_field_v2::kTemporaryScope
               : 8;
-      temporary_tables.insert(fields[table_uuid_index]);
+      EngineUuid table_uuid;
+      if (!ReadMetadataUuid(fields[table_uuid_index], &table_uuid)) {
+        result.diagnostic = MakeInvalidRequestDiagnostic("mga.temporary_recovery", "table_identity_invalid");
+        return result;
+      }
+      temporary_tables.insert(table_uuid);
       if (fields[temporary_scope_index] == "global") {
-        durable_global_tables.insert(fields[table_uuid_index]);
+        durable_global_tables.insert(table_uuid);
       } else {
-        committed_private_tables.insert(fields[table_uuid_index]);
+        committed_private_tables.insert(table_uuid);
       }
     } else if (fields.size() >= 7 && fields[0] == kRowStoreMagic &&
                fields[1] == "TABLE_METADATA_RETIRED") {
-      temporary_tables.insert(fields[4]);
+      EngineUuid table_uuid;
+      if (!ReadMetadataUuid(fields[4], &table_uuid)) {
+        result.diagnostic = MakeInvalidRequestDiagnostic("mga.temporary_recovery", "retired_identity_invalid");
+        return result;
+      }
+      temporary_tables.insert(table_uuid);
       const auto authority = classify_event(ParseU64(fields[2]));
       if (authority == EventAuthority::kCommitted) {
-        retired_private_tables.insert(fields[4]);
+        retired_private_tables.insert(table_uuid);
         ++result.retired_private_metadata_count;
       }
     }
@@ -418,28 +434,16 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
     }
   }
 
-  std::map<std::string, LatestRowState> latest_rows;
-  for (const auto& line : row_records) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() < 12 || fields[0] != kRowStoreMagic ||
-        fields[1] != "ROW_VERSION") {
-      continue;
-    }
-    const std::string& table_uuid = fields[4];
-    const std::string& row_uuid = fields[5];
-    const std::string& session_uuid = fields[11];
-    if (session_uuid.empty() && temporary_tables.count(table_uuid) == 0) {
-      continue;
-    }
-    temporary_tables.insert(table_uuid);
-    const auto authority = classify_event(ParseU64(fields[2]));
-    if (authority != EventAuthority::kCommitted) { continue; }
-    const std::uint64_t event_sequence = ParseU64(fields[3]);
-    const std::string key = table_uuid + "\t" + row_uuid + "\t" + session_uuid;
-    auto& latest = latest_rows[key];
-    if (event_sequence >= latest.event_sequence) {
-      latest.event_sequence = event_sequence;
-      latest.deleted = fields[7] == "1";
+  std::map<std::tuple<EngineUuid, EngineUuid, EngineUuid>, LatestRowState> latest_rows;
+  for (const auto& row : row_records) {
+    if (row.temporary_session_uuid.is_nil() && !temporary_tables.contains(row.table_uuid)) continue;
+    temporary_tables.insert(row.table_uuid);
+    const auto authority = classify_event(row.creator_tx);
+    if (authority != EventAuthority::kCommitted) continue;
+    auto& latest = latest_rows[{row.table_uuid, row.row_uuid, row.temporary_session_uuid}];
+    if (row.event_sequence >= latest.event_sequence) {
+      latest.event_sequence = row.event_sequence;
+      latest.deleted = row.deleted;
     }
   }
   for (const auto& [_, row] : latest_rows) {
@@ -534,17 +538,16 @@ EngineApiDiagnostic AppendMgaTemporaryTableMetadataRetirement(
       1,
       [&context]() { return ScanNextMetadataEventSequence(context); });
   if (!reservation.ok) { return reservation.diagnostic; }
-  const std::string line = JoinLine({kRowStoreMagic,
-                                     "TABLE_METADATA_RETIRED",
-                                     std::to_string(local_transaction_id),
-                                     std::to_string(reservation.first),
-                                     table.table_uuid,
-                                     cleanup_reason,
-                                     table.temporary_session_uuid});
-  if (!AppendLine(MetadataStorePath(context), line)) {
-    return MakeInvalidRequestDiagnostic("mga.temporary_session_cleanup",
-                                        "table_metadata_retire_append_failed");
-  }
+  const std::string record = EncodeMgaMetadataFields({kRowStoreMagic,
+      "TABLE_METADATA_RETIRED", std::to_string(local_transaction_id),
+      std::to_string(reservation.first), MetadataUuidBytes(table.table_uuid),
+      cleanup_reason, MetadataUuidBytes(table.temporary_session_uuid)});
+  if (record.empty()) return MakeInvalidRequestDiagnostic("mga.temporary_session_cleanup", "table_metadata_retire_encoding_failed");
+  std::ofstream output(MetadataStorePath(context), std::ios::app | std::ios::binary);
+  output.write(record.data(), static_cast<std::streamsize>(record.size()));
+  output.flush();
+  if (!output) return MakeInvalidRequestDiagnostic("mga.temporary_session_cleanup", "table_metadata_retire_append_failed");
+
   return OkDiagnostic();
 }
 
@@ -585,7 +588,7 @@ EngineApiDiagnostic ApplyMgaTemporaryCleanupActions(
   RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto visible_reclaims = LoadVisibleMgaLargeValueReclaims(context);
   if (visible_reclaims.diagnostic.error) { return visible_reclaims.diagnostic; }
-  std::set<std::string> already_reclaimed_overflow_uuids =
+  std::set<EngineUuid> already_reclaimed_overflow_uuids =
       visible_reclaims.overflow_uuids;
   std::uint64_t deleted = 0;
   std::uint64_t reclaimed = 0;
@@ -751,7 +754,7 @@ MgaTemporaryTableDropResult DropMgaTemporaryTable(
     result.diagnostic = visible_reclaims.diagnostic;
     return result;
   }
-  std::set<std::string> already_reclaimed_overflow_uuids =
+  std::set<EngineUuid> already_reclaimed_overflow_uuids =
       visible_reclaims.overflow_uuids;
 
   auto row_context = context;

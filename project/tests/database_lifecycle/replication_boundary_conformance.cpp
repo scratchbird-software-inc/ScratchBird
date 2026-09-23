@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -31,20 +33,16 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
   }
   return false;
 }
 
-api::EngineUuid Uuid(std::string value) {
-  return api::EngineUuid{std::move(value)};
-}
-
-api::EngineObjectReference Obj(std::string uuid, std::string kind) {
+api::EngineObjectReference Obj(api::EngineUuid uuid, std::string kind) {
   api::EngineObjectReference object;
-  object.uuid = Uuid(std::move(uuid));
+  object.uuid = uuid;
   object.object_kind = std::move(kind);
   return object;
 }
@@ -60,15 +58,15 @@ api::EngineReplicationBoundaryRequest BaseRequest(std::string kind) {
   request.context.security_context_present = true;
   request.context.cluster_authority_available = true;
   request.context.local_transaction_id = 42;
-  request.context.transaction_uuid = Uuid("019e0fc9-repl-7000-8000-000000000001");
-  request.target_object = Obj("019e0fc9-table-7000-8000-000000000001", "table");
-  request.publication = Obj("019e0fc9-pub-7000-8000-000000000001", "publication");
-  request.subscription = Obj("019e0fc9-sub-7000-8000-000000000001", "subscription");
-  request.slot = Obj("019e0fc9-slot-7000-8000-000000000001", "replication_slot");
+  request.context.transaction_uuid = scratchbird::tests::FixtureUuid(1251, 1);
+  request.target_object = Obj(scratchbird::tests::FixtureUuid(1251, 2), "table");
+  request.publication = Obj(scratchbird::tests::FixtureUuid(1251, 3), "publication");
+  request.subscription = Obj(scratchbird::tests::FixtureUuid(1251, 4), "subscription");
+  request.slot = Obj(scratchbird::tests::FixtureUuid(1251, 5), "replication_slot");
   request.route_epoch = 7;
   request.route_generation = 3;
   request.retention_horizon_local_transaction_id = 12;
-  request.policy_snapshot_uuid = "019e0fc9-policy-7000-8000-000000000001";
+  request.policy_snapshot_uuid = scratchbird::tests::FixtureUuid(1251, 6);
   request.idempotency_key = "replication-boundary-conformance";
   return request;
 }
@@ -126,6 +124,13 @@ void TestValidatedBoundaryStillFailsClosedUntilMapping() {
   Require(cdc.publication_checked && cdc.subscription_checked && cdc.slot_checked &&
               cdc.changefeed_checked && cdc.retention_checked,
           "DBLC-013AK CDC coverage flags missing");
+
+  auto invalid_policy = BaseRequest("cdc_changefeed");
+  invalid_policy.policy_snapshot_uuid.bytes[6] = 0x40;
+  const auto refused_policy = api::EngineEvaluateReplicationBoundary(invalid_policy);
+  Require(!refused_policy.ok && refused_policy.refusal_reason ==
+              "route_epoch_policy_and_idempotency_required",
+          "replication boundary accepted a non-engine policy UUID");
 
   auto live = BaseRequest("live_ingest");
   live.live_ingest_requested = true;

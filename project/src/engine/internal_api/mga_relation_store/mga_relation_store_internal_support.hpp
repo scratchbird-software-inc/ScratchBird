@@ -50,7 +50,7 @@ bool TextMigrationLineageCreatorVisibleForStoreModule(
 
 bool UpdateScopedRelationSummariesForStoreModule(
     const EngineRequestContext& context,
-    const std::map<std::string, ScopedRelationSummaryDelta>& deltas);
+    const std::map<EngineUuid, ScopedRelationSummaryDelta>& deltas);
 
 // Read-path bridges keep statement snapshot construction and visibility
 // filtering inside the canonical relation authority while allowing physical

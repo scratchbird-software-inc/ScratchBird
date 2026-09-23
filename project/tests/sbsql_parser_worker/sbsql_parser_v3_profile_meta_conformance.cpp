@@ -116,7 +116,7 @@ void VerifyManagementAndClusterClassification() {
           "CLUSTER surface did not carry cluster refusal diagnostic key");
 
   sbsql::ParserConfig config;
-  config.parser_uuid = "sbp_sbsql";
+  config.parser_uuid = scratchbird::tests::FixtureUuid(1365, 5);
   const auto bound = sbsql::BindAst(cluster_ast, sbsql::BuildCst("CLUSTER TOPOLOGY SHOW;"),
                                     config, AuthenticatedSession(), {});
   Require(!bound.bound, "cluster-private statement bound without cluster authority");

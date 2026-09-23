@@ -53,7 +53,7 @@ EngineApiDiagnostic AdmitMgaSavepointProducer(
 // No boundary means no savepoint-specific restriction. The canonical binders
 // pass require_statement_boundary because they subsequently create one.
 EngineApiDiagnostic AdmitMgaDmlSavepointMutation(
-    const EngineRequestContext& context, std::string_view target_relation_uuid,
+    const EngineRequestContext& context, const EngineUuid& target_relation_uuid,
     MgaDmlMutationKind mutation, bool require_statement_boundary = false);
 
 }  // namespace scratchbird::engine::internal_api

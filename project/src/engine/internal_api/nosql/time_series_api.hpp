@@ -105,15 +105,15 @@ struct EngineBoundTimeSeriesReadRequestV1 : EngineApiRequest {
       EngineBoundTimeSeriesReadOperationV1::kRangeRead};
   EngineBoundTimeSeriesAggregateV1 aggregate{
       EngineBoundTimeSeriesAggregateV1::kNone};
-  std::string object_uuid;
+  EngineUuid object_uuid;
   EngineTypedValue range_start;
   EngineTypedValue range_end;
   EngineApiI64 bucket_interval_ns{0};
-  std::string expected_descriptor_uuid;
+  EngineUuid expected_descriptor_uuid;
   std::uint64_t expected_descriptor_generation{0};
-  std::string selected_alternative_uuid;
-  std::string capability_uuid;
-  std::string provider_uuid;
+  EngineUuid selected_alternative_uuid;
+  EngineUuid capability_uuid;
+  EngineUuid provider_uuid;
   std::uint64_t provider_generation{0};
   std::uint64_t rollup_generation{0};
   std::uint64_t visible_late_arrival_generation{0};
@@ -130,9 +130,9 @@ struct EngineBoundTimeSeriesReadRequestV1 : EngineApiRequest {
 };
 
 struct EngineBoundTimeSeriesPointRowV1 {
-  std::string row_uuid;
-  std::string series_uuid;
-  std::string metric_uuid;
+  EngineUuid row_uuid;
+  EngineUuid series_uuid;
+  EngineUuid metric_uuid;
   EngineApiI64 point_timestamp_ns{0};
   std::string point_timestamp;
   std::string tags;
@@ -140,8 +140,8 @@ struct EngineBoundTimeSeriesPointRowV1 {
 };
 
 struct EngineBoundTimeSeriesDownsampleRowV1 {
-  std::string series_uuid;
-  std::string metric_uuid;
+  EngineUuid series_uuid;
+  EngineUuid metric_uuid;
   EngineApiI64 bucket_start_ns{0};
   EngineApiI64 bucket_end_ns{0};
   std::string bucket_start;
@@ -173,11 +173,11 @@ struct EngineBoundTimeSeriesReadResultV1 : EngineApiResult {
   std::uint64_t selected_visible_row_count{0};
   std::uint64_t result_byte_count{0};
   std::string ordering_id;
-  std::string descriptor_uuid;
+  EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation{0};
-  std::string selected_alternative_uuid;
-  std::string capability_uuid;
-  std::string provider_uuid;
+  EngineUuid selected_alternative_uuid;
+  EngineUuid capability_uuid;
+  EngineUuid provider_uuid;
   std::uint64_t provider_generation{0};
   std::vector<EngineBoundTimeSeriesPointRowV1> rows;
   std::vector<EngineBoundTimeSeriesDownsampleRowV1> downsample_rows;

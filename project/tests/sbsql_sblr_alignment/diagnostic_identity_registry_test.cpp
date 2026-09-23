@@ -104,12 +104,12 @@ auto Digest(std::string_view domain,const Bytes& data){
   Bytes material(domain.begin(),domain.end());material.insert(material.end(),data.begin(),data.end());
   const auto hash=hash::ComputeSha256Digest(material);Check(hash.ok()&&hash.digest_bytes==32,"oracle SHA256");return hash.digest;
 }
-std::string Identity(){
+api::EngineUuid Identity(){
   const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
   auto id=scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::object,now);
-  Check(id.ok(),"fixture identity");return scratchbird::core::uuid::UuidToString(id.value.value);
+  Check(id.ok(),"fixture identity");return id.value.value;
 }
-Uuid Raw(const std::string& text){auto id=scratchbird::core::uuid::ParseUuid(text);Check(id.ok(),"fixture uuid");return id.value.bytes;}
+Uuid Raw(const api::EngineUuid& id){return id.bytes;}
 Bytes Read(const std::filesystem::path& p){
   std::ifstream f(p,std::ios::binary);Check(bool(f),"open fixture read");
   return Bytes(std::istreambuf_iterator<char>(f),{});
@@ -176,8 +176,8 @@ void CheckProjection(const api::SblrDiagnosticIdentityResultV1& projected,const 
   Check(visible==projected.snapshot.rows.size(),"restricted row disclosed");
 }
 api::EngineRequestContext Context(const std::string& path){
-  api::EngineRequestContext c;c.database_path=path;c.database_uuid.canonical=Identity();
-  c.principal_uuid.canonical=Identity();c.session_uuid.canonical=Identity();
+  api::EngineRequestContext c;c.database_path=path;c.database_uuid=Identity();
+  c.principal_uuid=Identity();c.session_uuid=Identity();
   c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;
   c.security_epoch=1;c.catalog_generation_id=1;return c;
 }
@@ -189,20 +189,20 @@ void Visibility(api::EngineRequestContext c){
   auto& a=c.authorization_context;a.present=true;a.principal_uuid=c.principal_uuid;
   a.security_epoch=1;a.policy_epoch=1;a.catalog_generation_id=1;
   a.effective_subjects.push_back({c.principal_uuid,"principal"});
-  api::EngineMaterializedAuthorizationGrant g;g.grant_uuid.canonical=Identity();g.subject_uuid=c.principal_uuid;
+  api::EngineMaterializedAuthorizationGrant g;g.grant_uuid=Identity();g.subject_uuid=c.principal_uuid;
   g.subject_kind="principal";g.target_uuid=c.database_uuid;g.right="READ_DIAGNOSTIC_DETAIL";g.security_epoch=1;
   a.grants.push_back(g);Check(mask()==0x17fe,"detail grant mask");
   g.right="AUDIT_READ";a.grants.push_back(g);Check(mask()==0x1ffe,"audit grant mask");
   g.deny=true;a.grants.push_back(g);Check(mask()==0x17fe,"explicit audit deny");a.grants.pop_back();
   g.right="READ_DIAGNOSTIC_DETAIL";a.grants.push_back(g);Check(mask()==0x05fe,"detail deny overrides");a.grants.pop_back();
-  a.principal_uuid.canonical=Identity();Check(mask()==0x05fe,"principal mismatch");a.principal_uuid=c.principal_uuid;
+  a.principal_uuid=Identity();Check(mask()==0x05fe,"principal mismatch");a.principal_uuid=c.principal_uuid;
   a.security_epoch=2;Check(mask()==0x05fe,"expired epoch");a.security_epoch=1;
   api::EngineMaterializedAuthorizationPolicy policy;policy.subject_uuid=c.principal_uuid;
   policy.subject_kind="principal";policy.target_uuid=c.database_uuid;policy.right="READ_DIAGNOSTIC_DETAIL";
   policy.requires_runtime_recheck=true;a.policies.push_back(policy);
   Check(mask()==0x05fe,"runtime pending disclosed metadata");a.policies.back().requires_runtime_recheck=false;
   a.policies.back().deny=true;Check(mask()==0x05fe,"policy deny disclosed metadata");a.policies.clear();
-  a.grants[0].target_uuid.canonical=Identity();Check(mask()==0x05fe,"cross-node grant");
+  a.grants[0].target_uuid=Identity();Check(mask()==0x05fe,"cross-node grant");
   c.security_context_present=false;Check(mask()==0,"unauthenticated visibility");
 }
 #ifdef __linux__
@@ -311,9 +311,13 @@ void RefusalAllocationFaults(Operation operation,const char* expected_code,const
 }
 int main(int argc,char** argv){
   try {
-    if(argc==6 && std::string_view(argv[1])=="--restart"){
-      api::EngineRequestContext c;c.database_path=argv[2];c.database_uuid.canonical=argv[3];
-      c.principal_uuid.canonical=argv[4];c.session_uuid.canonical=argv[5];
+    if(argc==4 && std::string_view(argv[1])=="--restart"){
+      api::EngineRequestContext c;c.database_path=argv[2];
+      const auto identities=Read(argv[3]);
+      Check(identities.size()==48,"restart identity frame extent");
+      std::copy_n(identities.begin(),16,c.database_uuid.bytes.begin());
+      std::copy_n(identities.begin()+16,16,c.principal_uuid.bytes.begin());
+      std::copy_n(identities.begin()+32,16,c.session_uuid.bytes.begin());
       c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;
       const auto before=Read(c.database_path+".sb.sblr_diagnostic_identity_registry.v1");
       auto loaded=api::LoadSblrDiagnosticIdentitySnapshotV1(c);
@@ -321,7 +325,7 @@ int main(int argc,char** argv){
       CheckProjection(loaded,ReadSnapshot(before));
       Check(Read(c.database_path+".sb.sblr_diagnostic_identity_registry.v1")==before,"restart journal changed");return 0;
     }
-    const auto root=std::filesystem::temp_directory_path()/("sb_diag_registry_"+Identity());
+    const auto root=std::filesystem::temp_directory_path()/("sb_diag_registry_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     Check(std::filesystem::create_directory(root),"fixture directory");
     struct Cleanup{std::filesystem::path path;~Cleanup(){std::error_code e;std::filesystem::remove_all(path,e);}} cleanup{root};
     const auto base=(root/"node").string();Write(base,Bytes{0});
@@ -360,8 +364,13 @@ int main(int argc,char** argv){
     for(auto& future:readers){auto r=future.get();Check(r.ok&&r.snapshot.snapshot_uuid==s.snapshot_uuid,"concurrent identity divergence");}
     Check(Read(path)==original,"concurrent reads appended evidence");
 #ifdef __linux__
+    const auto identities_path=(root/"restart-identities.bin").string();
+    Bytes identities;
+    for(const auto& id:{c.database_uuid,c.principal_uuid,c.session_uuid})
+      identities.insert(identities.end(),id.bytes.begin(),id.bytes.end());
+    Write(identities_path,identities);
     auto pid=fork();Check(pid>=0,"fork");
-    if(pid==0){execl(argv[0],argv[0],"--restart",base.c_str(),c.database_uuid.canonical.c_str(),c.principal_uuid.canonical.c_str(),c.session_uuid.canonical.c_str(),nullptr);_exit(127);}
+    if(pid==0){execl(argv[0],argv[0],"--restart",base.c_str(),identities_path.c_str(),nullptr);_exit(127);}
     int status=0;Check(waitpid(pid,&status,0)==pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh-process restart");
 #endif
     auto found=api::LookupSblrDiagnosticIdentityV1(c,s,s.rows.back().diagnostic_uuid,1);

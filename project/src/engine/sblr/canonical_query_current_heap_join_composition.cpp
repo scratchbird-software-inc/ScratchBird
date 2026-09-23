@@ -29,6 +29,9 @@
 #include "transaction/transaction_api.hpp"
 
 #include <algorithm>
+#include <set>
+#include <map>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -245,7 +248,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     std::string component;
     std::string operation;
     std::string implementation_id;
-    std::string capability_uuid;
+    api::EngineUuid capability_uuid;
     CanonicalRelationalExpressionRowBinding predicate_row_binding;
   };
   struct BoundHeapFilterNode {
@@ -1502,18 +1505,36 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       input.context, input.relational_dag, admission.request,
       admission.admission};
   const auto& graph = admission.request.logical_graph;
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
+  // Capabilities are issued for this invocation and retained across planning
+  // and execution. Repeated nodes of one implementation share its capability.
+  std::map<std::string, api::EngineUuid> join_capabilities;
+  std::array<api::EngineUuid, 11> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "heap join execution identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto scan_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "heap-join-tree-scan.capability");
+      owned_identities[0];
   for (auto& bound : bound_joins) {
     bound.implementation_id =
         streaming_hash_profile && bound.node == join
             ? "join.hash-inner.int64-equality.v1"
             : "join." + bound.component + ".3vl.nested.v1";
-    bound.capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "heap-" + bound.component + ".capability");
-    if (bound.capability_uuid.empty()) {
+    auto capability = join_capabilities.find(bound.implementation_id);
+    if (capability == join_capabilities.end()) {
+      const auto issued = core::uuid::IssueRuntimeIdentityV7();
+      if (!issued) {
+        return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                      "heap join capability allocation failed");
+      }
+      capability = join_capabilities.emplace(bound.implementation_id, *issued).first;
+    }
+    bound.capability_uuid = capability->second;
+    if (bound.capability_uuid.is_nil()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TREE-V1",
                     "object-backed join capability identity is unavailable");
     }
@@ -1561,10 +1582,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
          join_memory_grant, 2, 2});
     profiles.back().runtime_peak_from_callback_batches = true;
   }
-  std::string filter_capability_uuid;
+  api::EngineUuid filter_capability_uuid;
   if (!filters.empty()) {
     filter_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-join-filter.capability");
+        owned_identities[1];
     for (const auto* filter : filters) {
       profiles.push_back(
           {filter->node_id, "filter.3vl.row.v1", filter_capability_uuid,
@@ -1579,10 +1600,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       profiles.back().runtime_peak_from_callback_batches = true;
     }
   }
-  std::string project_capability_uuid;
+  api::EngineUuid project_capability_uuid;
   if (!projects.empty()) {
-    project_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "heap-join-project.capability");
+    project_capability_uuid = owned_identities[2];
     for (const auto* project : projects) {
       profiles.push_back(
           {project->node_id, "project.descriptor-direct.v1",
@@ -1598,13 +1618,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       profiles.back().runtime_peak_from_callback_batches = true;
     }
   }
-  std::string inline_cte_capability_uuid;
-  std::string materialized_cte_capability_uuid;
+  api::EngineUuid inline_cte_capability_uuid;
+  api::EngineUuid materialized_cte_capability_uuid;
   if (!ctes.empty()) {
-    inline_cte_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "heap-join-cte-inline.capability");
-    materialized_cte_capability_uuid = DerivedCanonicalUuid(
-        identity_scope, "heap-join-cte-materialized.capability");
+    inline_cte_capability_uuid = owned_identities[3];
+    materialized_cte_capability_uuid = owned_identities[4];
     for (const auto* cte : ctes) {
       const auto implementation_id =
           cte->shareable ? "cte.bound.materialize.typed.v1"
@@ -1636,10 +1654,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
           cte->shareable;
     }
   }
-  std::string limit_capability_uuid;
+  api::EngineUuid limit_capability_uuid;
   if (terminal_limit != nullptr) {
     limit_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-join-limit.capability");
+        owned_identities[5];
     profiles.push_back(
         {terminal_limit->node_id, "limit.typed.v1", limit_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kLimit,
@@ -1786,7 +1804,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   if (streaming_hash_profile) {
     struct StreamingHashScanBinding {
       const api::RelationalDagNode* node{nullptr};
-      std::string relation_uuid;
+      api::EngineUuid relation_uuid;
       api::MgaRelationStorageDescriptor persisted;
       std::vector<const api::MgaRelationColumnStorageDescriptor*> columns;
       std::vector<api::EngineDescriptor> descriptors;
@@ -1833,22 +1851,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     };
     const auto account_descriptor = [&](const api::EngineDescriptor& descriptor,
                                         std::uint64_t* total) {
-      return account_string(descriptor.descriptor_uuid, total) &&
-             account_string(descriptor.descriptor_kind, total) &&
+      return account_string(descriptor.descriptor_kind, total) &&
              account_string(descriptor.canonical_type_name, total) &&
              account_string(descriptor.encoded_descriptor, total);
     };
     const auto account_scan_binding = [&](const StreamingHashScanBinding& binding,
                                           std::uint64_t* total) {
       std::uint64_t allocation = 0;
-      if (!account_string(binding.relation_uuid, total) ||
-          !account_string(binding.persisted.descriptor_uuid, total) ||
-          !account_string(binding.persisted.database_uuid, total) ||
-          !account_string(binding.persisted.schema_uuid, total) ||
-          !account_string(binding.persisted.relation_uuid, total) ||
-          !account_string(binding.persisted.primary_filespace_uuid,
-                          total) ||
-          !account_string(binding.persisted.relation_kind, total) ||
+      if (!account_string(binding.persisted.relation_kind, total) ||
           !account_string(binding.persisted.storage_profile, total) ||
           !multiply_memory(binding.persisted.columns.capacity(),
                            sizeof(api::MgaRelationColumnStorageDescriptor),
@@ -1864,12 +1874,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         return false;
       }
       for (const auto& column : binding.persisted.columns) {
-        if (!account_string(column.column_uuid, total) ||
-            !account_string(column.canonical_name_key, total) ||
+        if (!account_string(column.canonical_name_key, total) ||
             !account_descriptor(column.value_descriptor, total) ||
             !account_string(column.storage_class, total) ||
-            !account_string(column.charset_uuid, total) ||
-            !account_string(column.collation_uuid, total) ||
             !account_string(column.overflow_policy, total)) {
           return false;
         }
@@ -1968,7 +1975,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       prepared.persisted = std::move(descriptor);
       prepared.columns.reserve(scan.output_descriptor_ids.size());
       prepared.descriptors.reserve(scan.output_descriptor_ids.size());
-      std::unordered_set<std::string> projected_column_uuids;
+      std::set<api::EngineUuid> projected_column_uuids;
       for (std::size_t ordinal = 0;
            ordinal < scan.output_descriptor_ids.size(); ++ordinal) {
         const auto* expression =
@@ -2007,7 +2014,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                               api::RelationalNullability::kNullable;
         const auto expected_collation =
             relational_descriptor->collation_uuid.has_value()
-                ? std::optional<std::string_view>{
+                ? std::optional<api::EngineUuid>{
                       *relational_descriptor->collation_uuid}
                 : std::nullopt;
         const auto expected_timezone =
@@ -2040,21 +2047,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                 relational_descriptor->descriptor_uuid ||
             column->value_descriptor.canonical_type_name.empty() ||
             column->nullable != nullable ||
-            !CanonicalDescriptorFieldEqualsForComposition(
-                column->value_descriptor, "type_uuid",
-                std::optional<std::string_view>{
-                    relational_descriptor->type_uuid}) ||
+            column->value_descriptor.type_uuid != relational_descriptor->type_uuid ||
             !exact_nullability_carrier ||
-            !CanonicalDescriptorFieldEqualsForComposition(
-                column->value_descriptor, "collation_uuid",
-                expected_collation) ||
+            column->value_descriptor.collation_uuid !=
+                expected_collation.value_or(api::EngineUuid{}) ||
             !CanonicalDescriptorFieldEqualsForComposition(
                 column->value_descriptor, "timezone_profile_id",
                 expected_timezone) ||
             (relational_descriptor->collation_uuid.has_value()
                  ? column->collation_uuid !=
                        *relational_descriptor->collation_uuid
-                 : !column->collation_uuid.empty())) {
+                 : !column->collation_uuid.is_nil())) {
           *detail =
               "streaming hash scan persisted descriptor differs from binding";
           return false;
@@ -2083,7 +2086,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       return refuse(entry_authority.diagnostic_code, entry_authority.detail);
     }
 
-    const auto authorize = [&](const std::string& relation_uuid,
+    const auto authorize = [&](const api::EngineUuid& relation_uuid,
                                std::string* detail) {
       const auto authorization = api::EvaluateMaterializedAuthorization(
           input.context, input.context.authorization_context, "SELECT",
@@ -2471,15 +2474,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     constexpr std::size_t kStreamingHashPublicationRows = 128;
     pending_page.rows.reserve(kStreamingHashPublicationRows);
     std::shared_ptr<exec::CanonicalResultCursorSession> cursor_session;
-    const auto cursor_uuid = DerivedCanonicalUuid(
-        identity_scope, "heap-hash-inner-result.cursor");
-    const auto execution_attempt_uuid = DerivedCanonicalUuid(
-        identity_scope + ":" + input.context.current_monotonic_ns,
-        "heap-hash-inner.execution-attempt");
-    const auto transaction_effect_uuid = DerivedCanonicalUuid(
-        identity_scope + ":" +
-            std::to_string(input.context.local_transaction_id),
-        "heap-hash-inner.transaction-effect-unchanged");
+    const auto cursor_uuid = owned_identities[6];
+    const auto execution_attempt_uuid = owned_identities[7];
+    const auto transaction_effect_uuid = owned_identities[8];
     std::uint64_t cursor_batch_ordinal = 0;
     std::uint64_t cursor_first_row_ordinal = 0;
     bool initial_cursor_page = true;
@@ -2722,7 +2719,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       std::move(*heap_registration.registration));
   struct HeapJoinRegistrationGroup {
     std::string implementation_id;
-    std::string capability_uuid;
+    api::EngineUuid capability_uuid;
     std::vector<LiveJoinRuntimeNodeConfiguration> node_configurations;
   };
   std::vector<HeapJoinRegistrationGroup> join_registration_groups;
@@ -2880,13 +2877,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     if (registration.retained_live_memory_bytes_v1 == 0 ||
         registration.implementation_id.capacity() ==
             std::numeric_limits<std::size_t>::max() ||
-        registration.executor_capability_uuid.capacity() ==
-            std::numeric_limits<std::size_t>::max() ||
         !CheckedAdd(executor_registration_live_bytes,
                     registration.implementation_id.capacity() + 1,
-                    &executor_registration_live_bytes) ||
-        !CheckedAdd(executor_registration_live_bytes,
-                    registration.executor_capability_uuid.capacity() + 1,
                     &executor_registration_live_bytes) ||
         !CheckedAdd(executor_registration_live_bytes,
                     registration.retained_live_memory_bytes_v1,
@@ -2901,16 +2893,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   selected.result_publication_request.statement_uuid =
       input.context.statement_uuid;
   selected.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + input.context.current_monotonic_ns,
-          "heap-join-tree.execution-attempt");
+      owned_identities[9];
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id) + ":" +
-              std::to_string(
-                  input.context.snapshot_visible_through_local_transaction_id),
-          "heap-join-tree.transaction-effect-unchanged");
+      owned_identities[10];
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.invocation_mode =

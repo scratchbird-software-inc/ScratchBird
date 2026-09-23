@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -40,22 +42,18 @@ namespace mga = scratchbird::transaction::mga;
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
-constexpr std::string_view kGraphVertexA =
-    "019df113-0000-7000-8000-00000000000a";
-constexpr std::string_view kGraphVertexB =
-    "019df113-0000-7000-8000-00000000000b";
-constexpr std::string_view kGraphVertexC =
-    "019df113-0000-7000-8000-00000000000c";
-constexpr std::string_view kGraphVertexD =
-    "019df113-0000-7000-8000-00000000000d";
-constexpr std::string_view kGraphVertexE =
-    "019df113-0000-7000-8000-00000000000e";
+constexpr auto kGraphVertexA = scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-00000000000a");
+constexpr auto kGraphVertexB = scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-00000000000b");
+constexpr auto kGraphVertexC = scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-00000000000c");
+constexpr auto kGraphVertexD = scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-00000000000d");
+constexpr auto kGraphVertexE = scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-00000000000e");
 
-std::string GraphPath(std::initializer_list<std::string_view> vertices) {
-  std::string path;
-  for (const auto vertex : vertices) {
-    if (!path.empty()) { path += "->"; }
-    path += vertex;
+std::string GraphPath(std::initializer_list<api::EngineUuid> vertices) {
+  std::string path = "SBGRPATH2";
+  const std::uint64_t count = vertices.size();
+  for (unsigned n = 0; n < 8; ++n) path.push_back(static_cast<char>(count >> (8*n)));
+  for (const auto& vertex : vertices) {
+    path.append(reinterpret_cast<const char*>(vertex.bytes.data()), vertex.bytes.size());
   }
   return path;
 }
@@ -92,7 +90,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
                       std::string_view id) {
   for (const auto& item : result.evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -103,7 +101,7 @@ bool EvidenceContainsExact(const api::EngineApiResult& result,
                            std::string_view kind,
                            std::string_view id) {
   for (const auto& item : result.evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, id)) {
       return true;
     }
   }
@@ -115,8 +113,8 @@ std::string EvidenceIdContaining(const api::EngineApiResult& result,
                                  std::string_view id) {
   for (const auto& item : result.evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
-      return item.evidence_id;
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
+      return std::get<std::string>(item.evidence_id);
     }
   }
   Fail("ODF-113 expected API evidence was missing");
@@ -145,6 +143,17 @@ std::string RowField(const api::EngineApiResult& result,
     }
   }
   return {};
+}
+
+bool RowIdentityEquals(const api::EngineApiResult& result, std::size_t row_index,
+                       std::string_view field, const api::EngineUuid& expected) {
+  if (row_index >= result.result_shape.rows.size()) return false;
+  for (const auto& [name, value] : result.result_shape.rows[row_index].fields) {
+    if (name == field) return !value.is_null && value.encoded_value.empty() &&
+        value.binary_value.size() == expected.bytes.size() &&
+        std::equal(value.binary_value.begin(), value.binary_value.end(), expected.bytes.begin());
+  }
+  return false;
 }
 
 bool RowHasField(const api::EngineApiResult& result,
@@ -215,19 +224,17 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
   return generated.value;
 }
 
-std::string TransactionUuidText(std::uint64_t local_id) {
+api::EngineUuid TransactionIdentity(std::uint64_t local_id) {
   if (local_id == 113) {
-    return "019df113-0000-7000-8000-000000000071";
+    return scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-000000000071");
   }
   Require(local_id == 130, "ODF-113 unexpected transaction identity");
-  return "019df113-0000-7000-8000-000000000082";
+  return scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-000000000082");
 }
 
 platform::TypedUuid TransactionUuid(std::uint64_t local_id) {
-  const auto parsed = uuid::ParseUuid(TransactionUuidText(local_id));
-  Require(parsed.ok(), "ODF-113 transaction UUID parse failed");
   const auto typed =
-      uuid::MakeTypedUuid(platform::UuidKind::transaction, parsed.value);
+      uuid::MakeTypedUuid(platform::UuidKind::transaction, TransactionIdentity(local_id));
   Require(typed.ok(), "ODF-113 transaction UUID typing failed");
   return typed.value;
 }
@@ -257,7 +264,10 @@ mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
 void CreateDatabaseFixture(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
-  create.database_uuid = NewUuid(platform::UuidKind::database, 1);
+  const auto database_id = uuid::MakeTypedUuid(platform::UuidKind::database,
+      scratchbird::tests::FixtureUuid(1208, 2901));
+  Require(database_id.ok(), "ODF-113 database identity invalid");
+  create.database_uuid = database_id.value;
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 2);
   create.creation_unix_epoch_millis = 1779530000000ull;
   create.require_resource_seed_pack = false;
@@ -300,8 +310,8 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
   context.database_path = database_path.string();
   context.local_transaction_id = tx;
   context.snapshot_visible_through_local_transaction_id = tx;
-  context.database_uuid.canonical = "odf113-database";
-  context.transaction_uuid.canonical = TransactionUuidText(tx);
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 2901);
+  context.transaction_uuid = TransactionIdentity(tx);
   context.security_context_present = true;
   context.request_id = "odf113-request-" + std::to_string(tx);
   context.trace_tags = {"optimizer_deficiency_odf_113_gate",
@@ -343,9 +353,9 @@ void RequireNoForbiddenEvidence(const api::EngineApiResult& result,
                              "write_ahead_log_transaction_finality_authority=true",
                              "client_autocommit_authority=true"}) {
       if (item.evidence_kind.find(token) != std::string::npos ||
-          item.evidence_id.find(token) != std::string::npos) {
+          scratchbird::tests::EvidenceTextFind(item.evidence_id, token) != std::string::npos) {
         std::cerr << "Forbidden ODF-113 evidence token in " << scenario << ": "
-                  << item.evidence_kind << '=' << item.evidence_id << '\n';
+                  << item.evidence_kind << " contains " << token << '\n';
         Fail("ODF-113 runtime evidence leaked a forbidden token");
       }
     }
@@ -466,7 +476,7 @@ void FinalizeScenario(ScenarioEvidence* scenario) {
 api::EngineNoSqlPhysicalProviderContract BaseProviderContract(
     api::EngineNoSqlProviderFamily family,
     std::string provider_id,
-    std::string index_id,
+    api::EngineUuid index_id,
     std::uint64_t generation) {
   api::EngineNoSqlPhysicalProviderContract contract;
   contract.family = family;
@@ -493,7 +503,7 @@ api::EngineNoSqlPhysicalProviderContract BaseProviderContract(
   contract.index_generation.proof_id = "odf113-index-generation";
   contract.policy.proof_present = true;
   contract.policy.allowed = true;
-  contract.policy.policy_snapshot_uuid = "odf113-policy-snapshot";
+  contract.policy.policy_snapshot_uuid = scratchbird::tests::FixtureUuid(1274, 1101);
   contract.mga_recheck.proof_present = true;
   contract.mga_recheck.row_mga_recheck_required = true;
   contract.mga_recheck.row_security_recheck_required = true;
@@ -506,7 +516,7 @@ api::EngineKeyValuePhysicalProof KvExactProof() {
   proof.provider_contract = BaseProviderContract(
       api::EngineNoSqlProviderFamily::kKeyValue,
       "odf113.local.kv.provider",
-      "odf113-kv-exact-prefix-index",
+      scratchbird::tests::FixtureUuid(1580, 1),
       113);
   proof.proof_supplied = true;
   proof.exact_key_index_proof = true;
@@ -525,7 +535,7 @@ api::EngineDocumentPhysicalProof DocumentProof() {
   proof.provider_contract = BaseProviderContract(
       api::EngineNoSqlProviderFamily::kDocument,
       "odf113.local.document.path.provider",
-      "odf113-document-path-shape-index",
+      scratchbird::tests::FixtureUuid(1580, 2),
       114);
   proof.provider_contract.fallback_provider_id =
       "odf113.local.document.shape.dictionary";
@@ -544,7 +554,7 @@ api::EngineSearchPhysicalProof SearchProof() {
   proof.provider_contract = BaseProviderContract(
       api::EngineNoSqlProviderFamily::kSearch,
       "odf113.local.search.provider",
-      "odf113-search-segment-index",
+      scratchbird::tests::FixtureUuid(1580, 3),
       115);
   proof.proof_supplied = true;
   proof.mutable_buffer_proof = true;
@@ -561,7 +571,7 @@ api::EngineVectorPhysicalProof VectorProof() {
   proof.provider_contract = BaseProviderContract(
       api::EngineNoSqlProviderFamily::kVector,
       "odf113.local.vector.provider",
-      "odf113-vector-tiered-index",
+      scratchbird::tests::FixtureUuid(1580, 4),
       116);
   proof.provider_contract.fallback_provider_id = "odf113.local.exact.vector";
   proof.provider_contract.exact_fallback_available = true;
@@ -586,7 +596,7 @@ api::EngineGraphPhysicalProof GraphProof() {
   proof.provider_contract = BaseProviderContract(
       api::EngineNoSqlProviderFamily::kGraph,
       "odf113.local.graph.provider",
-      "odf113-graph-adjacency-index",
+      scratchbird::tests::FixtureUuid(1580, 5),
       117);
   proof.proof_supplied = true;
   proof.vertex_index_proof = true;
@@ -605,7 +615,7 @@ api::EngineTimeSeriesPhysicalProof TimeSeriesProof() {
   proof.provider_contract = BaseProviderContract(
       api::EngineNoSqlProviderFamily::kTimeSeries,
       "odf113.local.time_series.provider",
-      "odf113-time-series-bucket-index",
+      scratchbird::tests::FixtureUuid(1580, 6),
       118);
   proof.proof_supplied = true;
   proof.time_meta_bucket_store_proof = true;
@@ -626,28 +636,28 @@ void AddFragment(api::EngineDocumentInsertRequest* request,
 
 std::vector<api::EngineSearchDocumentInput> SearchCorpus() {
   return {
-      {"doc-alpha-strong", "alpha alpha alpha beta search search", true},
-      {"doc-alpha-mutable", "alpha mutable buffer entry", false},
-      {"doc-beta-sealed", "beta sealed segment entry", true},
-      {"doc-gamma", "gamma delta epsilon", true},
+      {scratchbird::tests::FixtureUuid(1580, 7), "alpha alpha alpha beta search search", true},
+      {scratchbird::tests::FixtureUuid(1580, 8), "alpha mutable buffer entry", false},
+      {scratchbird::tests::FixtureUuid(1580, 9), "beta sealed segment entry", true},
+      {scratchbird::tests::FixtureUuid(1580, 10), "gamma delta epsilon", true},
   };
 }
 
 std::vector<api::EngineVectorCorpusRow> VectorCorpus() {
   return {
-      {"row-alpha",
+      {scratchbird::tests::FixtureUuid(1580, 11),
        {1.0, 0.0},
        {{"alpha", 1.0}},
        {{"tenant", "blue"}, {"kind", "primary"}}},
-      {"row-beta",
+      {scratchbird::tests::FixtureUuid(1580, 12),
        {0.9, 0.1},
        {{"beta", 1.0}},
        {{"tenant", "red"}, {"kind", "secondary"}}},
-      {"row-gamma",
+      {scratchbird::tests::FixtureUuid(1580, 13),
        {0.0, 1.0},
        {{"alpha", 0.2}, {"boost", 1.0}},
        {{"tenant", "blue"}, {"kind", "secondary"}}},
-      {"row-delta",
+      {scratchbird::tests::FixtureUuid(1580, 14),
        {0.4, 0.6},
        {{"boost", 3.0}},
        {{"tenant", "green"}, {"kind", "primary"}}},
@@ -658,8 +668,8 @@ api::EngineVectorSearchRequest BaseVectorRequest() {
   api::EngineVectorSearchRequest request;
   request.context.database_path = "odf113-vector-transient";
   request.context.local_transaction_id = 113;
-  request.context.database_uuid.canonical = "odf113-vector-database";
-  request.context.transaction_uuid.canonical = "odf113-vector-transaction";
+  request.context.database_uuid = scratchbird::tests::FixtureUuid(1208, 2902);
+  request.context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 2903);
   request.context.security_context_present = true;
   request.query_vector = {1.0, 0.0};
   request.top_k = 3;
@@ -670,41 +680,41 @@ api::EngineVectorSearchRequest BaseVectorRequest() {
 
 std::vector<api::EngineGraphVertexInput> GraphVertices() {
   return {
-      {std::string(kGraphVertexA), {"person", "seed"},
+      {kGraphVertexA, {"person", "seed"},
        {{"tenant", "blue"}, {"name", "alpha"}}},
-      {std::string(kGraphVertexB), {"person"},
+      {kGraphVertexB, {"person"},
        {{"tenant", "green"}, {"name", "beta"}}},
-      {std::string(kGraphVertexC), {"account"},
+      {kGraphVertexC, {"account"},
        {{"tenant", "blue"}, {"name", "connector"}}},
-      {std::string(kGraphVertexD), {"account"},
+      {kGraphVertexD, {"account"},
        {{"tenant", "red"}, {"name", "detour"}}},
-      {std::string(kGraphVertexE), {"person"},
+      {kGraphVertexE, {"person"},
        {{"tenant", "blue"}, {"name", "cycle"}}},
   };
 }
 
 std::vector<api::EngineGraphEdgeInput> GraphEdges() {
   return {
-      {"019df113-0000-7000-8000-000000000101",
-       std::string(kGraphVertexA), std::string(kGraphVertexC), "knows",
+      {scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-000000000101"),
+       kGraphVertexA, kGraphVertexC, "knows",
        {{"since", "2024"}}, 1.0},
-      {"019df113-0000-7000-8000-000000000102",
-       std::string(kGraphVertexA), std::string(kGraphVertexD), "knows",
+      {scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-000000000102"),
+       kGraphVertexA, kGraphVertexD, "knows",
        {{"since", "2025"}}, 2.0},
-      {"019df113-0000-7000-8000-000000000103",
-       std::string(kGraphVertexC), std::string(kGraphVertexB), "knows",
+      {scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-000000000103"),
+       kGraphVertexC, kGraphVertexB, "knows",
        {{"since", "2026"}}, 1.5},
-      {"019df113-0000-7000-8000-000000000104",
-       std::string(kGraphVertexD), std::string(kGraphVertexB), "knows",
+      {scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-000000000104"),
+       kGraphVertexD, kGraphVertexB, "knows",
        {{"since", "2026"}}, 2.5},
-      {"019df113-0000-7000-8000-000000000105",
-       std::string(kGraphVertexB), std::string(kGraphVertexA), "blocks",
+      {scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-000000000105"),
+       kGraphVertexB, kGraphVertexA, "blocks",
        {{"since", "2023"}}, 3.0},
-      {"019df113-0000-7000-8000-000000000106",
-       std::string(kGraphVertexA), std::string(kGraphVertexE), "blocks",
+      {scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-000000000106"),
+       kGraphVertexA, kGraphVertexE, "blocks",
        {{"since", "2022"}}, 4.0},
-      {"019df113-0000-7000-8000-000000000107",
-       std::string(kGraphVertexE), std::string(kGraphVertexA), "knows",
+      {scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-000000000107"),
+       kGraphVertexE, kGraphVertexA, "knows",
        {{"since", "2022"}}, 5.0},
   };
 }
@@ -713,8 +723,8 @@ api::EngineGraphQueryRequest BaseGraphRequest() {
   api::EngineGraphQueryRequest request;
   request.context.database_path = "odf113-graph-transient";
   request.context.local_transaction_id = 113;
-  request.context.database_uuid.canonical = "odf113-graph-database";
-  request.context.transaction_uuid.canonical = "odf113-graph-transaction";
+  request.context.database_uuid = scratchbird::tests::FixtureUuid(1208, 2904);
+  request.context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 2905);
   request.context.security_context_present = true;
   request.physical_query = true;
   request.vertices = GraphVertices();
@@ -743,8 +753,8 @@ api::EngineTimeSeriesAppendRequest BaseTimeSeriesRequest() {
   api::EngineTimeSeriesAppendRequest request;
   request.context.database_path = "odf113-time-series-transient";
   request.context.local_transaction_id = 113;
-  request.context.database_uuid.canonical = "odf113-time-series-database";
-  request.context.transaction_uuid.canonical = "odf113-time-series-transaction";
+  request.context.database_uuid = scratchbird::tests::FixtureUuid(1208, 2906);
+  request.context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 2907);
   request.context.security_context_present = true;
   request.physical_append = true;
   request.points = TimeSeriesPoints();
@@ -764,6 +774,7 @@ ScenarioEvidence KvPhysicalProviderScenario() {
   const auto tx113 = Context(database.path, 113);
   const auto tx130 = Context(database.path, 130);
 
+  std::uint64_t kv_identity_ordinal = 100;
   const auto put = [&](std::string key,
                        std::string value,
                        api::EngineApiU64 expires_after_tx = 0) {
@@ -771,7 +782,7 @@ ScenarioEvidence KvPhysicalProviderScenario() {
     request.context = tx113;
     request.key = std::move(key);
     request.value = std::move(value);
-    request.target_object.uuid.canonical = request.key;
+    request.target_object.uuid = scratchbird::tests::FixtureUuid(1580, kv_identity_ordinal++);
     request.localized_names.push_back({"en", "primary", "", request.key, true});
     request.expires_after_local_transaction_id = expires_after_tx;
     const auto result = api::EngineKeyValuePut(request);
@@ -903,12 +914,12 @@ ScenarioEvidence KvPhysicalProviderScenario() {
 }
 
 void InsertDocument(const std::filesystem::path& database_path,
-                    const std::string& uuid,
+                    const api::EngineUuid& uuid,
                     const std::string& name,
                     const std::vector<std::pair<std::string, std::string>>& fragments) {
   api::EngineDocumentInsertRequest insert;
   insert.context = Context(database_path, 113);
-  insert.target_object.uuid.canonical = uuid;
+  insert.target_object.uuid = uuid;
   insert.localized_names.push_back({"en", "primary", "", name, true});
   for (const auto& [path, value] : fragments) {
     AddFragment(&insert, path, value);
@@ -925,7 +936,7 @@ ScenarioEvidence DocumentPhysicalProviderScenario() {
   TempDatabase database("document");
   SeedCrudTransaction(database.path);
   InsertDocument(database.path,
-                 "doc-customer-a",
+                 scratchbird::tests::FixtureUuid(1580, 15),
                  "customer-a",
                  {{"customer.id", "A1"},
                   {"customer.tier", "gold"},
@@ -933,7 +944,7 @@ ScenarioEvidence DocumentPhysicalProviderScenario() {
                   {"line_items.1.sku", "SKU-2"},
                   {"private.ssn", "redacted"}});
   InsertDocument(database.path,
-                 "doc-customer-b",
+                 scratchbird::tests::FixtureUuid(1580, 16),
                  "customer-b",
                  {{"customer.id", "B1"},
                   {"customer.tier", "silver"},
@@ -1044,8 +1055,8 @@ ScenarioEvidence DocumentPhysicalProviderScenario() {
 ScenarioEvidence SearchPhysicalProviderScenario() {
   api::EngineSearchQueryRequest request;
   request.context.database_path = "odf113-search-transient";
-  request.context.database_uuid.canonical = "odf113-search-database";
-  request.context.transaction_uuid.canonical = "odf113-search-transaction";
+  request.context.database_uuid = scratchbird::tests::FixtureUuid(1208, 2908);
+  request.context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 2909);
   request.context.local_transaction_id = 113;
   request.context.security_context_present = true;
   request.query_text = "alpha beta absentterm";
@@ -1056,7 +1067,7 @@ ScenarioEvidence SearchPhysicalProviderScenario() {
   RequirePhysicalProviderHygiene(result, "ODF-113 search physical query");
   Require(result.result_shape.rows.size() == 3,
           "ODF-113 search BM25 row count changed");
-  Require(RowField(result, 0, "document_uuid") == "doc-alpha-strong",
+  Require(RowIdentityEquals(result, 0, "document_uuid", scratchbird::tests::FixtureUuid(1580, 7)),
           "ODF-113 search ranking winner changed");
   Require(EvidenceContains(result,
                            "search_physical_access",
@@ -1125,7 +1136,7 @@ ScenarioEvidence VectorPhysicalProviderScenario() {
   exact.requested_access_tier = api::EngineVectorAccessTier::kExact;
   const auto exact_result = api::EngineVectorSearch(exact);
   RequirePhysicalProviderHygiene(exact_result, "ODF-113 vector exact tier");
-  Require(RowField(exact_result, 0, "row_uuid") == "row-alpha",
+  Require(RowIdentityEquals(exact_result, 0, "row_uuid", scratchbird::tests::FixtureUuid(1580, 11)),
           "ODF-113 vector exact winner changed");
   Require(EvidenceContains(exact_result,
                            "vector_physical_access",
@@ -1198,7 +1209,7 @@ ScenarioEvidence VectorPhysicalProviderScenario() {
   hybrid.sparse_terms.push_back({"boost", 2.0});
   const auto hybrid_result = api::EngineVectorSearch(hybrid);
   RequirePhysicalProviderHygiene(hybrid_result, "ODF-113 vector hybrid search");
-  Require(RowField(hybrid_result, 0, "row_uuid") == "row-delta",
+  Require(RowIdentityEquals(hybrid_result, 0, "row_uuid", scratchbird::tests::FixtureUuid(1580, 14)),
           "ODF-113 vector hybrid winner changed");
   Require(EvidenceContains(hybrid_result,
                            "vector_hybrid_dense_sparse",
@@ -1241,7 +1252,7 @@ ScenarioEvidence GraphPhysicalProviderScenario() {
   const auto seeded_result = api::EngineGraphQuery(seeded);
   RequirePhysicalProviderHygiene(seeded_result,
                                  "ODF-113 graph seeded traversal");
-  Require(RowField(seeded_result, 0, "vertex_id") == kGraphVertexA,
+  Require(RowIdentityEquals(seeded_result, 0, "vertex_id", kGraphVertexA),
           "ODF-113 graph seed result changed");
   Require(AnyRowFieldEquals(
               seeded_result, "path",
@@ -1269,8 +1280,8 @@ ScenarioEvidence GraphPhysicalProviderScenario() {
           "ODF-113 graph row security recheck proof missing");
 
   auto bidirectional = BaseGraphRequest();
-  bidirectional.bidirectional_start_vertex_id = kGraphVertexA;
-  bidirectional.bidirectional_end_vertex_id = kGraphVertexB;
+  bidirectional.bidirectional_start_vertex_id = scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-00000000000a");
+  bidirectional.bidirectional_end_vertex_id = scratchbird::tests::FixtureUuidLiteral("019df113-0000-7000-8000-00000000000b");
   bidirectional.max_depth = 4;
   const auto bidirectional_result = api::EngineGraphQuery(bidirectional);
   RequirePhysicalProviderHygiene(bidirectional_result,
@@ -1286,7 +1297,7 @@ ScenarioEvidence GraphPhysicalProviderScenario() {
   auto vector_fusion = BaseGraphRequest();
   vector_fusion.fusion_source_kind = api::EngineGraphFusionSourceKind::kVector;
   vector_fusion.fused_candidate_seed_vertex_ids = {
-      std::string(kGraphVertexC)};
+      kGraphVertexC};
   vector_fusion.max_depth = 1;
   const auto vector_fusion_result = api::EngineGraphQuery(vector_fusion);
   RequirePhysicalProviderHygiene(vector_fusion_result,
@@ -1299,7 +1310,7 @@ ScenarioEvidence GraphPhysicalProviderScenario() {
   auto search_fusion = BaseGraphRequest();
   search_fusion.fusion_source_kind = api::EngineGraphFusionSourceKind::kSearch;
   search_fusion.fused_candidate_seed_vertex_ids = {
-      std::string(kGraphVertexA)};
+      kGraphVertexA};
   search_fusion.max_depth = 1;
   const auto search_fusion_result = api::EngineGraphQuery(search_fusion);
   RequirePhysicalProviderHygiene(search_fusion_result,
@@ -1580,8 +1591,8 @@ void RunSearchRefusalMatrix(ScenarioEvidence* scenario) {
     api::EngineSearchQueryRequest request;
     request.context.database_path = "odf113-search-refusal-transient";
     request.context.local_transaction_id = 113;
-    request.context.database_uuid.canonical = "odf113-search-refusal-database";
-    request.context.transaction_uuid.canonical = "odf113-search-refusal-transaction";
+    request.context.database_uuid = scratchbird::tests::FixtureUuid(1208, 2910);
+    request.context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 2911);
     request.context.security_context_present = true;
     request.query_text = "alpha";
     request.top_k = 2;

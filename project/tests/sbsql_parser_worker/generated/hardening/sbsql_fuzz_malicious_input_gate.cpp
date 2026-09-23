@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "common/common.hpp"
@@ -188,10 +189,10 @@ bool LoweringHasSblrEnvelopeBudgetDiagnostic(std::string_view sql,
   auto ast = sbsql::BuildAst(cst);
   sbsql::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "00000000-0000-7000-8000-00000000f012";
-  session.connection_uuid = "00000000-0000-7000-8000-00000000f013";
-  session.database_uuid = "00000000-0000-7000-8000-00000000f014";
-  session.authenticated_user_uuid = "00000000-0000-7000-8000-00000000f015";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000f012");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000f013");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000f014");
+  session.authenticated_user_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000f015");
 
   auto bound = sbsql::BindAst(ast, cst, config, session);
   auto lowered = sbsql::LowerToSblr(bound, cst, session);
@@ -281,7 +282,7 @@ void ValidateParserDiagnostics(Harness* harness) {
   config.server_endpoint = "/tmp/sbsql-fuzz-public-resolver-required.sock";
   sbsql::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "00000000-0000-7000-8000-fuzz00000001";
+  session.session_uuid = scratchbird::tests::FixtureUuid(1208, 3801);
   auto cst = sbsql::BuildCst("SELECT * FROM missing_relation");
   auto ast = sbsql::BuildAst(cst);
   auto bound = sbsql::BindAst(ast, cst, config, session, {});

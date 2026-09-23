@@ -20,6 +20,7 @@
 #include "agent_metric_runtime.hpp"
 #include "agent_system_profile.hpp"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -51,8 +52,8 @@ enum class AgentTenantCoordinationDecisionKind {
 };
 
 struct AgentTenantWorkloadBudget {
-  std::string tenant_uuid;
-  std::string budget_evidence_uuid;
+  platform::Uuid tenant_uuid;
+  platform::Uuid budget_evidence_uuid;
   u64 budget_generation = 0;
 
   u64 max_tenant_live_actions = 0;
@@ -78,7 +79,7 @@ struct AgentTenantWorkloadBudget {
 struct AgentTenantCoordinationMember {
   std::string instance_id;
   std::string agent_type_id;
-  std::string tenant_uuid;
+  platform::Uuid tenant_uuid;
   AgentTenantCoordinationRole role = AgentTenantCoordinationRole::unknown;
   bool healthy = false;
   bool heartbeat_fresh = false;
@@ -92,9 +93,9 @@ struct AgentTenantCoordinationMember {
 
 struct AgentTenantCoordinationGroup {
   std::string group_id;
-  std::string tenant_uuid;
-  std::string database_uuid;
-  std::string group_evidence_uuid;
+  platform::Uuid tenant_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid group_evidence_uuid;
   u64 group_generation = 0;
   AgentTenantConflictPolicy conflict_policy =
       AgentTenantConflictPolicy::fail_closed;
@@ -102,7 +103,7 @@ struct AgentTenantCoordinationGroup {
   bool local_cluster_claim = false;
   bool external_cluster_provider_proof_present = false;
   std::string external_cluster_provider_id;
-  std::string external_cluster_provider_evidence_uuid;
+  platform::Uuid external_cluster_provider_evidence_uuid;
   bool require_single_leader = true;
   bool allow_follower_live_actions = false;
   std::vector<AgentTenantCoordinationMember> members;
@@ -111,13 +112,13 @@ struct AgentTenantCoordinationGroup {
 struct AgentTenantCoordinationLock {
   std::string lock_id;
   std::string resource_key;
-  std::string tenant_uuid;
+  platform::Uuid tenant_uuid;
   std::string owner_instance_id;
   AgentTenantLockMode mode = AgentTenantLockMode::none;
   u64 lease_generation = 0;
   u64 expires_at_microseconds = 0;
   bool durable_lock_evidence_present = false;
-  std::string lock_evidence_uuid;
+  platform::Uuid lock_evidence_uuid;
   bool released = false;
 };
 
@@ -132,12 +133,12 @@ struct AgentTenantCoordinationLockRequest {
 
 struct AgentTenantSharedMetricSnapshot {
   std::string metric_family;
-  std::string tenant_uuid;
-  std::string scope_uuid;
+  platform::Uuid tenant_uuid;
+  platform::Uuid scope_uuid;
   std::string source_id;
   std::string digest;
   std::string schema_digest;
-  std::string evidence_uuid;
+  platform::Uuid evidence_uuid;
   u64 generation = 0;
   u64 observed_wall_microseconds = 0;
   u64 max_freshness_microseconds = 0;
@@ -160,8 +161,8 @@ struct AgentTenantCoordinationRequest {
   bool production_environment = false;
   bool live_action_requested = false;
   bool mutable_action_requested = false;
-  std::string live_action_evidence_uuid;
-  std::string tenant_live_action_evidence_uuid;
+  platform::Uuid live_action_evidence_uuid;
+  platform::Uuid tenant_live_action_evidence_uuid;
   AgentTenantWorkloadBudget tenant_budget;
   AgentTenantCoordinationGroup coordination_group;
   AgentTenantCoordinationLockRequest lock_request;
@@ -189,6 +190,7 @@ struct AgentTenantCoordinationDecision {
   std::string selected_leader_instance_id;
   std::string lock_token_id;
   std::vector<std::string> evidence_fields;
+  std::map<std::string, platform::Uuid> identity_evidence;
 };
 
 const char* AgentTenantCoordinationRoleName(

@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "nosql/nosql_statistics_api.hpp"
 
 #include <cstdlib>
@@ -33,8 +35,8 @@ void Require(bool condition, std::string_view message) {
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.database_path = "/tmp/sb_odf_078_gate_api.sbdb";
-  context.database_uuid.canonical = "019df078-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical = "019df078-0000-7000-8000-000000000078";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019df078-0000-7000-8000-000000000001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019df078-0000-7000-8000-000000000078");
   context.local_transaction_id = 78;
   context.security_context_present = true;
   return context;
@@ -101,8 +103,7 @@ std::vector<api::EngineNoSqlStatisticInput> AllFamilyStats() {
 api::EnginePlanNoSqlStatisticsAdvisorRequest BaseRequest() {
   api::EnginePlanNoSqlStatisticsAdvisorRequest request;
   request.context = Context();
-  request.target_object.uuid.canonical =
-      "019df078-0000-7000-8000-0000000000aa";
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019df078-0000-7000-8000-0000000000aa");
   request.target_object.object_kind = "nosql_collection";
   request.statistics = AllFamilyStats();
   request.stats_epoch = 44;
@@ -172,7 +173,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
                       std::string_view id) {
   for (const auto& item : result.evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -183,7 +184,9 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
   std::vector<std::string> values;
   for (const auto& item : result.evidence) {
     values.push_back(item.evidence_kind);
-    values.push_back(item.evidence_id);
+    if (const auto* text = std::get_if<std::string>(&item.evidence_id)) {
+      values.push_back(*text);
+    }
   }
   for (const auto& diagnostic : result.diagnostics) {
     values.push_back(diagnostic.code);

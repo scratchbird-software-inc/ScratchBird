@@ -22,13 +22,13 @@ inline constexpr std::size_t kScopedDecodedRowCacheMaxAutoWarmRows = 60000;
 
 bool LoadDecodedScopedRowsForTable(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::vector<CrudRowVersionRecord>* rows,
     bool* used_segment);
 
 bool LoadDecodedScopedRowsForTableBounded(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     BoundedScopedRowReadControl* control,
     std::vector<CrudRowVersionRecord>* rows,
     bool* used_segment);

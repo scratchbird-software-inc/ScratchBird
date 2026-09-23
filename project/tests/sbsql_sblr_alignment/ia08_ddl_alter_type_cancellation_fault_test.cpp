@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_ddl_alter_type_coordinator.hpp"
 
 #include <algorithm>
@@ -31,8 +32,7 @@ int main() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_uuid.canonical =
-      "019d0000-0000-7000-8000-000000002959";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002959");
   context.trace_tags = {"private_ddl_alter_type_binder"};
   context.query_cancellation_requested = [&]() {
     ++cancellation_probes;
@@ -40,7 +40,7 @@ int main() {
   };
 
   const auto refused = api::CompileSblrDdlAlterTypeDescriptor(
-      context, context.statement_uuid.canonical, 1, 1, 1);
+      context, context.statement_uuid, 1, 1, 1);
   assert(!refused.ok);
   assert(refused.diagnostic.code ==
          "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING");
@@ -48,7 +48,7 @@ int main() {
   assert(cancellation_probes.load() == 0);
 
   const auto refused_again = api::CompileSblrDdlAlterTypeDescriptor(
-      context, context.statement_uuid.canonical, 1, 1, 1);
+      context, context.statement_uuid, 1, 1, 1);
   assert(!refused_again.ok);
   assert(refused_again.diagnostic.code ==
          "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING");
@@ -56,38 +56,38 @@ int main() {
   assert(cancellation_probes.load() == 0);
 
   const auto missing_occurrence = api::CompileSblrDdlAlterTypeDescriptor(
-      context, context.statement_uuid.canonical, 0, 1, 1);
+      context, context.statement_uuid, 0, 1, 1);
   assert(!missing_occurrence.ok);
   assert(missing_occurrence.diagnostic.code == "SBLR.OPERAND_INVALID");
   assert(IsZero(missing_occurrence.descriptor));
 
   const auto missing_domain_occurrence =
       api::CompileSblrDdlAlterTypeDescriptor(
-          context, context.statement_uuid.canonical, 1, 0, 1);
+          context, context.statement_uuid, 1, 0, 1);
   assert(!missing_domain_occurrence.ok);
   assert(missing_domain_occurrence.diagnostic.code == "SBLR.OPERAND_INVALID");
 
   const auto missing_availability = api::CompileSblrDdlAlterTypeDescriptor(
-      context, context.statement_uuid.canonical, 1, 1, 0);
+      context, context.statement_uuid, 1, 1, 0);
   assert(!missing_availability.ok);
   assert(missing_availability.diagnostic.code == "SBLR.OPERAND_INVALID");
 
   auto missing_binder = context;
   missing_binder.trace_tags.clear();
   const auto unbound = api::CompileSblrDdlAlterTypeDescriptor(
-      missing_binder, context.statement_uuid.canonical, 1, 1, 1);
+      missing_binder, context.statement_uuid, 1, 1, 1);
   assert(!unbound.ok);
   assert(unbound.diagnostic.code == "SBLR.OPERAND_INVALID");
 
   auto missing_snapshot = context;
   missing_snapshot.statement_metadata_snapshot_engine_owned = false;
   const auto snapshot_invalid = api::CompileSblrDdlAlterTypeDescriptor(
-      missing_snapshot, context.statement_uuid.canonical, 1, 1, 1);
+      missing_snapshot, context.statement_uuid, 1, 1, 1);
   assert(!snapshot_invalid.ok);
   assert(snapshot_invalid.diagnostic.code == "SBLR.OPERAND_INVALID");
 
   const auto receipt_invalid = api::CompileSblrDdlAlterTypeDescriptor(
-      context, "019d0000-0000-7000-8000-000000002958", 1, 1, 1);
+      context, scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002958"), 1, 1, 1);
   assert(!receipt_invalid.ok);
   assert(receipt_invalid.diagnostic.code == "SBLR.OPERAND_INVALID");
   assert(cancellation_probes.load() == 0);

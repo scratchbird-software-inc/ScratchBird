@@ -1,3 +1,4 @@
+#include "wire/public_result_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -435,6 +436,8 @@ std::string EnvelopeHeader(std::string_view operation_id,
 }
 
 std::string TextLineValue(std::string_view payload, std::string_view key) {
+  if (payload.starts_with(scratchbird::wire::public_result::kMagic)) return scratchbird::wire::public_result::Value(payload, key).value_or("");
+
   const std::string prefix = std::string(key) + "=";
   std::size_t offset = 0;
   while (offset <= payload.size()) {
@@ -464,6 +467,14 @@ std::optional<std::uint64_t> ParseU64(std::string_view text) {
 }
 
 std::map<std::string, std::string> SemicolonFields(std::string_view text) {
+  if (text.starts_with(scratchbird::wire::public_result::kMagic)) {
+    std::vector<scratchbird::wire::public_result::Field> fields;
+    if (!scratchbird::wire::public_result::Decode(text, &fields)) return {};
+    std::map<std::string, std::string> values;
+    for (const auto& field : fields) if (!values.emplace(field.name, field.value).second) return {};
+    return values;
+  }
+
   std::map<std::string, std::string> fields;
   std::size_t offset = 0;
   while (offset <= text.size()) {
@@ -483,6 +494,11 @@ std::map<std::string, std::string> SemicolonFields(std::string_view text) {
 }
 
 std::string EvidenceValue(std::string_view payload, std::string_view kind) {
+  if (payload.starts_with(scratchbird::wire::public_result::kMagic)) {
+    const auto field = scratchbird::wire::public_result::Evidence(payload, kind);
+    return field ? field->value : std::string{};
+  }
+
   const std::string prefix = "evidence=" + std::string(kind) + ":";
   std::size_t offset = 0;
   while (offset <= payload.size()) {

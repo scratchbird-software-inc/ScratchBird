@@ -798,6 +798,10 @@ core::Status parseParameterStatus(const std::vector<uint8_t>& payload,
         setError(ctx, "Parameter status truncated");
         return core::Status::PROTOCOL_VIOLATION;
     }
+    if (name == "session.authenticated_user_uuid" && value_len != 16) {
+        setError(ctx, "Legacy UUID parameter status must contain binary16");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
     value.assign(reinterpret_cast<const char*>(payload.data() + offset), value_len);
     return core::Status::OK;
 }
@@ -829,9 +833,15 @@ core::Status parseParameterStatuses(const std::vector<uint8_t>& payload,
             }
             std::string name(reinterpret_cast<const char*>(payload.data() + offset), name_len);
             offset += name_len;
+            const uint8_t value_type = payload[offset];
             offset += 3;
             uint32_t value_len = readU32(payload.data() + offset);
             offset += 4;
+            if ((value_type == 0x04 && value_len != 16) ||
+                (name == "session.authenticated_user_uuid" && value_type != 0x04)) {
+                setError(ctx, "UUID parameter status must contain binary16 with UUID type");
+                return core::Status::PROTOCOL_VIOLATION;
+            }
             if (offset + value_len > payload.size()) {
                 ok = false;
                 break;

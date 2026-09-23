@@ -108,14 +108,14 @@ struct EngineBoundKeyValueReadRequestV1 : EngineApiRequest {
   std::uint16_t abi_version{1};
   EngineBoundKeyValueReadOperationV1 operation{
       EngineBoundKeyValueReadOperationV1::kGet};
-  std::string object_uuid;
+  EngineUuid object_uuid;
   std::vector<EngineTypedValue> request_values;
   std::string statement_timestamp;
-  std::string expected_descriptor_uuid;
+  EngineUuid expected_descriptor_uuid;
   std::uint64_t expected_descriptor_generation{0};
-  std::string selected_alternative_uuid;
-  std::string capability_uuid;
-  std::string provider_uuid;
+  EngineUuid selected_alternative_uuid;
+  EngineUuid capability_uuid;
+  EngineUuid provider_uuid;
   std::uint64_t provider_generation{0};
   std::size_t maximum_request_keys{0};
   std::uint64_t maximum_request_bytes{0};
@@ -130,7 +130,7 @@ struct EngineBoundKeyValueReadRequestV1 : EngineApiRequest {
 };
 
 struct EngineBoundKeyValueRowV1 {
-  std::string row_uuid;
+  EngineUuid row_uuid;
   std::string key;
   std::string value;
 };
@@ -145,11 +145,11 @@ struct EngineBoundKeyValueReadResultV1 : EngineApiResult {
   std::uint64_t selected_visible_row_count{0};
   std::uint64_t result_byte_count{0};
   std::string ordering_id;
-  std::string descriptor_uuid;
+  EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation{0};
-  std::string selected_alternative_uuid;
-  std::string capability_uuid;
-  std::string provider_uuid;
+  EngineUuid selected_alternative_uuid;
+  EngineUuid capability_uuid;
+  EngineUuid provider_uuid;
   std::uint64_t provider_generation{0};
   std::vector<EngineBoundKeyValueRowV1> rows;
 };

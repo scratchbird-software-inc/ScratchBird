@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "runtime_platform.hpp"
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -20,27 +21,42 @@ class ReservationBackedMemoryResource;
 
 namespace scratchbird::udr::runtime {
 
+using UdrUuid = scratchbird::core::platform::Uuid;
+
 struct UdrStatus {
   bool ok{false};
   std::string diagnostic_code;
   std::string detail;
+  UdrUuid identity;
+};
+
+// Binary bindings supplied by the owning engine/session. Context text is not
+// an identity source, and missing bindings remain nil.
+struct UdrIdentityContext {
+  UdrUuid session_uuid;
+  UdrUuid connection_uuid;
+  UdrUuid database_uuid;
+  std::vector<UdrUuid> resolved_objects;
+  UdrUuid parser_uuid;
 };
 
 struct UdrCallInput {
-  std::string package_uuid;
+  UdrUuid package_uuid;
   std::string entrypoint;
   std::string payload;
   std::string context_packet;
+  UdrIdentityContext identities;
 };
 
 struct UdrCallResult {
   bool ok{false};
   std::string payload;
   std::string message_vector_json;
+  UdrUuid package_uuid;
 };
 
 using UdrEntrypointCallback = UdrCallResult (*)(const UdrCallInput& input);
-using UdrLifecycleCallback = UdrStatus (*)(std::string_view package_uuid);
+using UdrLifecycleCallback = UdrStatus (*)(const UdrUuid& package_uuid);
 
 struct UdrEntrypointDescriptor {
   std::string name;
@@ -49,7 +65,7 @@ struct UdrEntrypointDescriptor {
 };
 
 struct UdrPackageDescriptor {
-  std::string package_uuid;
+  UdrUuid package_uuid;
   std::string package_name;
   std::string abi_version;
   std::string source_revision;
@@ -67,7 +83,7 @@ struct UdrPackageRuntimeState {
   bool registered{false};
   bool loaded{false};
   std::size_t active_invocations{0};
-  std::string package_uuid;
+  UdrUuid package_uuid;
   std::string package_name;
   std::string abi_version;
   std::string source_revision;
@@ -91,21 +107,21 @@ class UdrInvocationLease {
   void Release();
 
  private:
-  friend UdrStatus AcquireInvocationRef(std::string_view package_uuid,
+  friend UdrStatus AcquireInvocationRef(const UdrUuid& package_uuid,
                                         UdrInvocationLease* out_lease);
-  explicit UdrInvocationLease(std::string package_uuid);
+  explicit UdrInvocationLease(UdrUuid package_uuid);
 
-  std::string package_uuid_;
+  UdrUuid package_uuid_;
   bool held_{false};
 };
 
 UdrStatus RegisterPackage(const UdrPackageDescriptor& descriptor);
-std::optional<UdrPackageDescriptor> FindPackageDescriptor(std::string_view package_uuid);
-std::optional<UdrPackageRuntimeState> GetPackageState(std::string_view package_uuid);
-UdrStatus LoadPackage(std::string_view package_uuid);
-UdrStatus UnloadPackage(std::string_view package_uuid);
-UdrStatus UnregisterPackage(std::string_view package_uuid);
-UdrStatus AcquireInvocationRef(std::string_view package_uuid, UdrInvocationLease* out_lease);
+std::optional<UdrPackageDescriptor> FindPackageDescriptor(const UdrUuid& package_uuid);
+std::optional<UdrPackageRuntimeState> GetPackageState(const UdrUuid& package_uuid);
+UdrStatus LoadPackage(const UdrUuid& package_uuid);
+UdrStatus UnloadPackage(const UdrUuid& package_uuid);
+UdrStatus UnregisterPackage(const UdrUuid& package_uuid);
+UdrStatus AcquireInvocationRef(const UdrUuid& package_uuid, UdrInvocationLease* out_lease);
 UdrCallResult InvokePackage(const UdrCallInput& input);
 UdrCallResult InvokePackageWithReservedWorkspace(
     const UdrCallInput& input,

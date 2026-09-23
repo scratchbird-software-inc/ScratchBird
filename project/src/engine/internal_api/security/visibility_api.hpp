@@ -61,7 +61,7 @@ struct EngineEvaluateClusterProjectionRedactionRequest : EngineApiRequest {
       ClusterProjectionRedactionSensitivity::topology;
   std::string projection_id;
   std::string projection_source;
-  std::string target_uuid;
+  EngineUuid target_uuid;
   std::string retention_policy_ref;
   std::string support_bundle_policy_ref;
   bool retention_evidence_present = false;

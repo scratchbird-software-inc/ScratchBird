@@ -22,9 +22,9 @@ struct SpatialPoint2dV1 {
 };
 
 struct SpatialSourceRowV1 {
-  std::string row_uuid;
+  core::platform::Uuid row_uuid;
   std::vector<std::uint8_t> encoded_point;
-  std::string crs_uuid;
+  core::platform::Uuid crs_uuid;
   std::string value_profile_id{std::string(kSpatialNativeCartesianPoint2dV1)};
 };
 
@@ -43,11 +43,11 @@ struct SpatialExecutionRequestV1 {
   std::string profile_id{std::string(kSpatialNativeCartesianPoint2dV1)};
   std::string operation_id;
   std::string predicate_id;
-  std::string object_uuid;
-  std::string geometry_descriptor_uuid;
-  std::string geometry_type_uuid;
-  std::string crs_uuid;
-  std::string query_crs_uuid;
+  core::platform::Uuid object_uuid;
+  core::platform::Uuid geometry_descriptor_uuid;
+  core::platform::Uuid geometry_type_uuid;
+  core::platform::Uuid crs_uuid;
+  core::platform::Uuid query_crs_uuid;
   std::uint64_t crs_generation{0};
   std::uint64_t source_generation{0};
   std::uint64_t catalog_generation{0};
@@ -70,9 +70,9 @@ struct SpatialExecutionRequestV1 {
 };
 
 struct SpatialResultRowV1 {
-  std::string row_uuid;
+  core::platform::Uuid row_uuid;
   std::vector<std::uint8_t> encoded_point;
-  std::string crs_uuid;
+  core::platform::Uuid crs_uuid;
   bool predicate_truth{false};
   double distance{0.0};
 };
@@ -96,11 +96,11 @@ struct SpatialExecutionRequestV2 {
   std::string profile_id{std::string(kSpatialNativeCartesianPoint2dV1)};
   std::string operation_id;
   std::string predicate_id;
-  std::string object_uuid;
-  std::string geometry_descriptor_uuid;
-  std::string geometry_type_uuid;
-  std::string crs_uuid;
-  std::string query_crs_uuid;
+  core::platform::Uuid object_uuid;
+  core::platform::Uuid geometry_descriptor_uuid;
+  core::platform::Uuid geometry_type_uuid;
+  core::platform::Uuid crs_uuid;
+  core::platform::Uuid query_crs_uuid;
   std::uint64_t crs_generation{0};
   std::uint64_t source_generation{0};
   std::uint64_t catalog_generation{0};

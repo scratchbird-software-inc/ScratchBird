@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -1563,7 +1564,7 @@ void TestForeignFilespaceQuarantine(const std::filesystem::path& dir,
       filespace::ImportForeignFilespaceIntoQuarantine(&registry, request);
   Require(!duplicate.ok(), "duplicate foreign filespace identity was admitted");
 
-  request.inspector_uuid = "019e2000-0000-7000-8000-000000000201";
+  request.inspector_uuid = scratchbird::tests::FixtureUuidLiteral("019e2000-0000-7000-8000-000000000201");
   const auto inspected = filespace::InspectForeignFilespaceQuarantine(registry, request);
   Require(inspected.ok(), "foreign filespace inspection failed");
   Require(inspected.inspection_passed && inspected.release_allowed,
@@ -1578,7 +1579,7 @@ void TestForeignFilespaceQuarantine(const std::filesystem::path& dir,
 
   request.header_inspection_passed = true;
   request.release_authorized = true;
-  request.release_authority_uuid = "019e2000-0000-7000-8000-000000000202";
+  request.release_authority_uuid = scratchbird::tests::FixtureUuidLiteral("019e2000-0000-7000-8000-000000000202");
   const auto released =
       filespace::ReleaseForeignFilespaceQuarantine(&registry, request);
   Require(released.ok(), "foreign filespace release failed");
@@ -1968,8 +1969,8 @@ void TestFilespaceDiscoveryExecution(const std::filesystem::path& dir,
   execution.header_inspection_passed = true;
   execution.release_authorized = true;
   execution.operation_uuid = "p2-discovery-execution";
-  execution.inspector_uuid = "019e2000-0000-7000-8000-000000000301";
-  execution.release_authority_uuid = "019e2000-0000-7000-8000-000000000302";
+  execution.inspector_uuid = scratchbird::tests::FixtureUuidLiteral("019e2000-0000-7000-8000-000000000301");
+  execution.release_authority_uuid = scratchbird::tests::FixtureUuidLiteral("019e2000-0000-7000-8000-000000000302");
 
   const auto executed =
       filespace::ExecuteFilespaceDiscoveryActions(&registry, execution);
@@ -2120,7 +2121,7 @@ void TestFilespaceDiscoveryPhysicalCleanupExecution(
   orphan_cleanup.physical_header_required_for_quarantine = true;
   orphan_cleanup.header_inspection_passed = true;
   orphan_cleanup.operation_uuid = "p2-discovery-orphan-cleanup";
-  orphan_cleanup.inspector_uuid = "019e2000-0000-7000-8000-000000000303";
+  orphan_cleanup.inspector_uuid = scratchbird::tests::FixtureUuidLiteral("019e2000-0000-7000-8000-000000000303");
   orphan_cleanup.allow_physical_filespace_delete = true;
   orphan_cleanup.physical_delete_legal_hold_clear = true;
   orphan_cleanup.physical_delete_retention_satisfied = true;
@@ -2377,7 +2378,7 @@ void TestFilespacePackageWorkflow(const std::filesystem::path& dir,
 
   auto admit_request = import_request;
   admit_request.admission_authorized = true;
-  admit_request.operator_identity = "019e2000-0000-7000-8000-000000000301";
+  admit_request.operator_identity = scratchbird::tests::FixtureUuidLiteral("019e2000-0000-7000-8000-000000000301");
   const auto admitted = filespace::AdmitFilespacePackage(&import_registry, admit_request);
   Require(admitted.ok(), "filespace package admit failed");
   Require(admitted.admitted_count == 2, "filespace package admitted count mismatch");
@@ -2397,7 +2398,7 @@ void TestFilespacePackageWorkflow(const std::filesystem::path& dir,
 
   auto reject_request = import_request;
   reject_request.reject_authorized = true;
-  reject_request.operator_identity = "019e2000-0000-7000-8000-000000000302";
+  reject_request.operator_identity = scratchbird::tests::FixtureUuidLiteral("019e2000-0000-7000-8000-000000000302");
   const auto rejected = filespace::RejectFilespacePackage(&reject_registry, reject_request);
   Require(rejected.ok(), "filespace package reject failed");
   Require(rejected.rejected_count == 2, "filespace package rejected count mismatch");

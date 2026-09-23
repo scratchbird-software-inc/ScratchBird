@@ -84,7 +84,7 @@ struct InsertBatchMemoryPolicy {
 struct InsertBatchTraceEvent {
   std::string event_name;
   std::string phase;
-  std::string detail;
+  EngineEvidenceValue detail;
 };
 
 struct BoundInsertRowTemplate {
@@ -343,7 +343,7 @@ EngineApiDiagnostic AppendSecondaryIndexDeltaLedgerEntries(const EngineRequestCo
                                                            const InsertBatchContext& context,
                                                            const PreparedInsertRow& row,
                                                            const EngineUuid& version_uuid);
-void AddInsertTrace(InsertBatchContext* context, std::string event_name, std::string phase, std::string detail = {});
+void AddInsertTrace(InsertBatchContext* context, std::string event_name, std::string phase, EngineEvidenceValue detail = {});
 void AddInsertBatchEvidenceToResult(const InsertBatchContext& context, EngineApiResult* result);
 void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metric, double value, std::string result, std::string reason = {});
 bool InsertBatchOptionEnabled(const EngineInsertRowsRequest& request, const std::string& option);

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "management/support_bundle_api.hpp"
 #include "server_observability.hpp"
 
@@ -89,7 +90,7 @@ server::HostedEngineState Engine(const std::filesystem::path& temp_dir) {
   state.engine_context_active = true;
   server::HostedDatabaseSnapshot database;
   database.state = server::HostedDatabaseState::kOpen;
-  database.database_uuid = "019e13a1-0000-7000-8000-000000000001";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e13a1-0000-7000-8000-000000000001");
   database.database_path = (temp_dir / "data" / "example.sbdb").string();
   database.database_open = true;
   database.write_admission_fenced = false;
@@ -219,7 +220,7 @@ void TestEngineSupportBundleApi() {
   api::EnginePrepareSupportBundleRequest request;
   request.context.trust_mode = api::EngineTrustMode::server_isolated;
   request.context.security_context_present = true;
-  request.context.database_uuid.canonical = "019e13a1-0000-7000-8000-000000000002";
+  request.context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e13a1-0000-7000-8000-000000000002");
   request.context.database_path = "/tmp/protected/example.sbdb";
   request.option_envelopes.push_back("engine_authorized_support_export:true");
   const auto prepared = api::EnginePrepareSupportBundle(request);

@@ -6,6 +6,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+using scratchbird::tests::FixtureIdentityForLabel;
 #include "agent_action_dispatch.hpp"
 #include "agent_manual_approval.hpp"
 #include "agent_package_provenance_test_support.hpp"
@@ -32,11 +37,11 @@ agents::DurableAgentCatalogImage DurableCatalog() {
   image.schema_version = 1;
   image.authority.durable_catalog_authority = true;
   image.authority.mga_transaction_evidence = true;
-  image.authority.mga_transaction_uuid = "019f0760-0000-7000-8000-000000000001";
+  image.authority.mga_transaction_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000001"));
   image.authority.transaction_generation = kPolicyGeneration;
-  image.authority.evidence_uuid = "019f0760-0000-7000-8000-000000000002";
-  image.authority.database_uuid = "019f0760-0000-7000-8000-000000000003";
-  image.authority.catalog_storage_uuid = "019f0760-0000-7000-8000-000000000004";
+  image.authority.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000002"));
+  image.authority.database_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000003"));
+  image.authority.catalog_storage_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000004"));
   image.authority.storage_commit_evidence_uuid = image.authority.evidence_uuid;
   image.authority.catalog_generation = 1;
   image.authority.local_transaction_id = 7600;
@@ -45,9 +50,9 @@ agents::DurableAgentCatalogImage DurableCatalog() {
   image.authority.fsync_or_checkpoint_evidence = true;
 
   agents::AgentInstanceRecord instance;
-  instance.instance_uuid = "019f0760-0000-7000-8000-000000000010";
+  instance.instance_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000010"));
   instance.agent_type_id = "page_allocation_manager";
-  instance.policy_uuid = "019f0760-0000-7000-8000-000000000011";
+  instance.policy_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000011"));
   instance.scope = "database/filespace/page_family/page_type";
   instance.state = agents::AgentLifecycleState::registered;
   instance.policy_generation = kPolicyGeneration;
@@ -62,9 +67,9 @@ agents::DurableAgentCatalogImage DurableCatalog() {
 agents::AgentActionAuthorityProvenance OperatorAuthority() {
   agents::AgentActionAuthorityProvenance authority;
   authority.source = agents::AgentActionAuthoritySource::operator_request;
-  authority.principal_uuid = "019f0760-0000-7000-8000-000000000020";
-  authority.scope_uuid = "019f0760-0000-7000-8000-000000000021";
-  authority.provenance_evidence_uuid = "019f0760-0000-7000-8000-000000000022";
+  authority.principal_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000020"));
+  authority.scope_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000021"));
+  authority.provenance_evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000022"));
   authority.operator_authority = true;
   authority.rights = {"OBS_AGENT_CONTROL"};
   return authority;
@@ -82,7 +87,7 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedMetricSnapshots(
     snapshot.namespace_path = dependency.namespace_prefix + ".observed";
     snapshot.generation = 760 + ordinal;
     snapshot.observed_wall_microseconds = kNow - 1000;
-    snapshot.scope_uuid = authority.scope_uuid;
+    snapshot.scope_uuid = NativeFixtureIdentity(authority.scope_uuid);
     snapshot.digest = "sha256:" + dependency.metric_family;
     snapshot.value_digest = snapshot.digest;
     snapshot.schema_digest = "schema:" + snapshot.metric_family + ":" +
@@ -106,8 +111,8 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedMetricSnapshots(
     source_a.attestation_key_id = "metric-key:" + source_a.source_id;
     source_a.attestation_digest = "attestation:" + source_a.metric_family +
                                   ":" + source_a.source_id;
-    source_a.evidence_uuid = "metric-evidence-" + std::to_string(ordinal) +
-                             ":source-a";
+    source_a.evidence_uuid = NativeFixtureIdentity(FixtureIdentityForLabel("metric-evidence-" + std::to_string(ordinal) +
+                             ":source-a"));
     source_a.snapshot_id = "metric-snapshot-" + std::to_string(ordinal) +
                            ":source-a";
     snapshots.push_back(std::move(source_a));
@@ -119,8 +124,8 @@ std::vector<agents::AgentObservedMetricSnapshot> ObservedMetricSnapshots(
     source_b.attestation_key_id = "metric-key:" + source_b.source_id;
     source_b.attestation_digest = "attestation:" + source_b.metric_family +
                                   ":" + source_b.source_id;
-    source_b.evidence_uuid = "metric-evidence-" + std::to_string(ordinal) +
-                             ":source-b";
+    source_b.evidence_uuid = NativeFixtureIdentity(FixtureIdentityForLabel("metric-evidence-" + std::to_string(ordinal) +
+                             ":source-b"));
     source_b.snapshot_id = "metric-snapshot-" + std::to_string(ordinal) +
                            ":source-b";
     snapshots.push_back(std::move(source_b));
@@ -135,8 +140,8 @@ agents::AgentRuntimeContext MetricContext(
   context.security_context_present = true;
   context.private_features_available = true;
   context.standalone_edition = true;
-  context.database_uuid = authority.scope_uuid;
-  context.principal_uuid = authority.principal_uuid;
+  context.database_uuid = NativeFixtureIdentity(authority.scope_uuid);
+  context.principal_uuid = NativeFixtureIdentity(authority.principal_uuid);
   context.rights = authority.rights;
   context.wall_now_microseconds = kNow;
   return context;
@@ -147,7 +152,7 @@ std::string ObservedMetricDigestForAction(
   const auto descriptor = agents::FindAgentType("page_allocation_manager");
   Require(descriptor.has_value(), "page allocation descriptor missing");
   agents::AgentMetricSnapshotEvaluationOptions options;
-  options.expected_scope_uuid = authority.scope_uuid;
+  options.expected_scope_uuid = NativeFixtureIdentity(authority.scope_uuid);
   const auto evaluation = agents::EvaluateAgentObservedMetricSnapshots(
       *descriptor,
       MetricContext(authority),
@@ -169,7 +174,7 @@ void AddApprovalGrant(agents::AgentActionRequest* action,
   (*action).inputs[prefix + "action_uuid"] = action->action_uuid;
   (*action).inputs[prefix + "agent_type_id"] = action->agent_type_id;
   (*action).inputs[prefix + "operation_id"] = action->operation_id;
-  (*action).inputs[prefix + "scope_uuid"] = "019f0760-0000-7000-8000-000000000021";
+  (*action).inputs[prefix + "scope_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000021"));
   (*action).inputs[prefix + "principal_uuid"] = principal_uuid;
   (*action).inputs[prefix + "evidence_uuid"] =
       "019f0760-0000-7000-8000-0000000002" + std::to_string(index);
@@ -193,38 +198,38 @@ agents::AgentActionRequest Action(std::string uuid,
   agents::AgentActionRequest action;
   action.action_uuid = std::move(uuid);
   action.agent_type_id = "page_allocation_manager";
-  action.instance_uuid = "019f0760-0000-7000-8000-000000000010";
+  action.instance_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000010"));
   action.actuator_id = "page_manager";
   action.operation_id = "preallocate_page_family";
   action.idempotency_key = std::move(idempotency_key);
   action.dry_run = false;
   action.manual_approval_present = true;
-  action.inputs["evidence_uuid"] = "019f0760-0000-7000-8000-000000000030";
+  action.inputs["evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000030"));
   action.inputs["metric_digest"] = ObservedMetricDigestForAction(authority);
   action.inputs["scope_uuid"] = authority.scope_uuid;
   action.inputs["redaction_class"] = "standard";
   action.inputs["retention_class"] = "audit";
   action.inputs["safety_envelope_version"] = "1";
-  action.inputs["safety_evidence_uuid"] = "019f0760-0000-7000-8000-000000000031";
-  action.inputs["policy_evidence_uuid"] = "019f0760-0000-7000-8000-000000000032";
+  action.inputs["safety_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000031"));
+  action.inputs["policy_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000032"));
   action.inputs["approval_required"] = "true";
   action.inputs["manual_approval_present"] = "true";
   action.inputs["approval_workflow_version"] = "1";
-  action.inputs["approval_evidence_uuid"] = "019f0760-0000-7000-8000-000000000033";
+  action.inputs["approval_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000033"));
   action.inputs["approval_ticket_id"] = "INC-CEIC-076";
   action.inputs["approval_review_deadline_microseconds"] =
       std::to_string(kNow + 3600000000ull);
   action.inputs["approval_notification_required"] = "true";
   action.inputs["approval_notification_triggered"] = "true";
   action.inputs["approval_notification_evidence_uuid"] =
-      "019f0760-0000-7000-8000-000000000034";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000034"));
   action.inputs["approval_notification_channel"] = "ops-page";
   action.inputs["approval_notified_principals"] =
-      "019f0760-0000-7000-8000-0000000000a1,"
-      "019f0760-0000-7000-8000-0000000000a2";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-0000000000a1")) +
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-0000000000a2"));
   action.inputs["rollout_mode"] = "live";
   action.inputs["rollout_state"] = "active";
-  action.inputs["rollout_evidence_uuid"] = "019f0760-0000-7000-8000-000000000035";
+  action.inputs["rollout_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000035"));
   action.inputs["failure_threshold"] = "3";
   action.inputs["observed_failures"] = "0";
   action.inputs["retry_limit"] = "2";
@@ -232,22 +237,22 @@ agents::AgentActionRequest Action(std::string uuid,
   action.inputs["rate_limit_key"] = "page-preallocate";
   action.inputs["rate_limit_per_window"] = "4";
   action.inputs["action_count_in_window"] = "1";
-  action.inputs["rate_limit_evidence_uuid"] = "019f0760-0000-7000-8000-000000000036";
+  action.inputs["rate_limit_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000036"));
   action.inputs["blast_radius_units"] = "1";
   action.inputs["max_blast_radius_units"] = "3";
-  action.inputs["blast_radius_evidence_uuid"] = "019f0760-0000-7000-8000-000000000037";
+  action.inputs["blast_radius_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000037"));
   action.inputs["backup_check_required"] = "true";
   action.inputs["checkpoint_check_required"] = "true";
   action.inputs["storage_check_required"] = "true";
   action.inputs["transaction_check_required"] = "true";
-  action.inputs["backup_evidence_uuid"] = "019f0760-0000-7000-8000-000000000038";
-  action.inputs["checkpoint_evidence_uuid"] = "019f0760-0000-7000-8000-000000000039";
-  action.inputs["storage_check_evidence_uuid"] = "019f0760-0000-7000-8000-00000000003a";
-  action.inputs["transaction_evidence_uuid"] = "019f0760-0000-7000-8000-00000000003b";
+  action.inputs["backup_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000038"));
+  action.inputs["checkpoint_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000039"));
+  action.inputs["storage_check_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-00000000003a"));
+  action.inputs["transaction_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-00000000003b"));
   action.inputs["compensation_required"] = "true";
   action.inputs["rollback_required"] = "true";
-  action.inputs["compensation_plan_evidence_uuid"] = "019f0760-0000-7000-8000-00000000003c";
-  action.inputs["rollback_plan_evidence_uuid"] = "019f0760-0000-7000-8000-00000000003d";
+  action.inputs["compensation_plan_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-00000000003c"));
+  action.inputs["rollback_plan_evidence_uuid"] = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-00000000003d"));
   action.inputs["authority_claims"] = "agent_evidence";
 
   if (break_glass) {
@@ -256,7 +261,7 @@ agents::AgentActionRequest Action(std::string uuid,
     action.inputs["break_glass_scope_uuid"] = authority.scope_uuid;
     action.inputs["break_glass_ticket_id"] = "INC-CEIC-076";
     action.inputs["break_glass_activated_by_principal_uuid"] =
-        "019f0760-0000-7000-8000-0000000000a1";
+        BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-0000000000a1"));
     action.inputs["break_glass_activated_at_microseconds"] =
         std::to_string(kNow - 1000000);
     action.inputs["break_glass_expires_at_microseconds"] =
@@ -268,16 +273,16 @@ agents::AgentActionRequest Action(std::string uuid,
     action.inputs["approval_escalation_required"] = "true";
     action.inputs["approval_escalation_triggered"] = "true";
     action.inputs["approval_escalation_evidence_uuid"] =
-        "019f0760-0000-7000-8000-000000000040";
+        BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000040"));
     action.inputs["approval_escalation_chain_id"] = "break-glass-sre-duty";
     action.inputs["approval_escalated_principals"] =
-        "019f0760-0000-7000-8000-0000000000b1";
+        BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-0000000000b1"));
     action.inputs["approval_count"] = "1";
-    AddApprovalGrant(&action, 1, "019f0760-0000-7000-8000-0000000000b1", true);
+    AddApprovalGrant(&action, 1, BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-0000000000b1")), true);
   } else {
     action.inputs["approval_count"] = "2";
-    AddApprovalGrant(&action, 1, "019f0760-0000-7000-8000-0000000000a1", false);
-    AddApprovalGrant(&action, 2, "019f0760-0000-7000-8000-0000000000a2", false);
+    AddApprovalGrant(&action, 1, BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-0000000000a1")), false);
+    AddApprovalGrant(&action, 2, BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-0000000000a2")), false);
   }
   return action;
 }
@@ -295,7 +300,7 @@ agents::AgentActuatorProviderRegistry Registry() {
   provider.real_subsystem_handler = true;
   provider.subsystem_handler_id = "storage.page.preallocate_page_family";
   provider.handler_provenance = "ceic076_real_subsystem_handler";
-  provider.handler_evidence_uuid = "019f0760-0000-7000-8000-000000000050";
+  provider.handler_evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000050"));
   provider.idempotent = true;
   provider.supports_retry = true;
   provider.supports_rollback_compensation = true;
@@ -312,7 +317,7 @@ agents::AgentActuatorProviderRegistry Registry() {
         result.mutation_attempted = true;
         result.outcome_verified = true;
         result.verification_evidence_uuid =
-            "019f0760-0000-7000-8000-000000000051";
+            BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000051"));
         result.status = {true, "SB_AGENT_ACTION.OUTCOME_VERIFIED",
                          request.action.action_uuid};
         return result;
@@ -333,7 +338,7 @@ agents::AgentActionDispatchResult Dispatch(
   request.production_live_path = true;
   request.metric_context = MetricContext(request.authority);
   request.metric_snapshot_options.expected_scope_uuid =
-      request.authority.scope_uuid;
+      NativeFixtureIdentity(request.authority.scope_uuid);
   request.observed_metric_snapshots = ObservedMetricSnapshots(request.authority);
   request.provider_execution_context.engine_owned_registry = true;
   request.provider_execution_context.durable_catalog_store_context = true;
@@ -343,12 +348,12 @@ agents::AgentActionDispatchResult Dispatch(
       "agent-approval-break-glass-workflow-gate";
   request.provider_execution_context.database_uuid = request.authority.scope_uuid;
   request.provider_execution_context.transaction_uuid =
-      "019f0760-0000-7000-8000-000000000090";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000090"));
   request.provider_execution_context.local_transaction_id = 76;
   request.provider_execution_context.registry_provenance =
       "engine_internal_api_registered_provider_registry";
   request.provider_execution_context.registry_evidence_uuid =
-      "019f0760-0000-7000-8000-000000000091";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000091"));
   request.subsystem_reported_success = true;
   request.intended_state_observed = true;
   return agents::DispatchAgentAction(request);
@@ -383,13 +388,13 @@ void RequireDispatchRefusal(const agents::AgentActionDispatchResult& result,
 
 void TestPositiveWorkflows() {
   const auto registry = Registry();
-  RequireDispatchOk(Dispatch(Action("019f0760-0000-7000-8000-000000000101",
+  RequireDispatchOk(Dispatch(Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000101")),
                                     "idem-normal-approval", false),
                              registry),
                     "normal approval",
                     agents::AgentManualApprovalMode::normal_two_person);
   const auto break_glass = Dispatch(
-      Action("019f0760-0000-7000-8000-000000000102",
+      Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000102")),
              "idem-break-glass", true),
       registry);
   RequireDispatchOk(break_glass,
@@ -404,56 +409,56 @@ void TestPositiveWorkflows() {
 void TestNegativeDispatchWorkflows() {
   const auto registry = Registry();
 
-  auto action = Action("019f0760-0000-7000-8000-000000000201",
+  auto action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000201")),
                        "idem-same-principal", false);
   action.inputs["approval_1_principal_uuid"] = OperatorAuthority().principal_uuid;
   RequireDispatchRefusal(
       Dispatch(std::move(action), registry),
       "SB_AGENT_APPROVAL_WORKFLOW.SAME_PRINCIPAL_REFUSED");
 
-  action = Action("019f0760-0000-7000-8000-000000000202",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000202")),
                   "idem-expired", false);
   action.inputs["approval_1_expires_at_microseconds"] = std::to_string(kNow - 1);
   RequireDispatchRefusal(
       Dispatch(std::move(action), registry),
       "SB_AGENT_APPROVAL_WORKFLOW.APPROVAL_EXPIRED");
 
-  action = Action("019f0760-0000-7000-8000-000000000203",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000203")),
                   "idem-revoked", false);
   action.inputs["approval_1_revoked"] = "true";
   action.inputs["approval_1_revocation_evidence_uuid"] =
-      "019f0760-0000-7000-8000-0000000000ff";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-0000000000ff"));
   RequireDispatchRefusal(
       Dispatch(std::move(action), registry),
       "SB_AGENT_APPROVAL_WORKFLOW.APPROVAL_REVOKED");
 
-  action = Action("019f0760-0000-7000-8000-000000000204",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000204")),
                   "idem-ticket", false);
   action.inputs.erase("approval_ticket_id");
   RequireDispatchRefusal(Dispatch(std::move(action), registry),
                          "SB_AGENT_APPROVAL_WORKFLOW.TICKET_REQUIRED");
 
-  action = Action("019f0760-0000-7000-8000-000000000205",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000205")),
                   "idem-notification", false);
   action.inputs.erase("approval_notification_evidence_uuid");
   RequireDispatchRefusal(
       Dispatch(std::move(action), registry),
       "SB_AGENT_APPROVAL_WORKFLOW.NOTIFICATION_REQUIRED");
 
-  action = Action("019f0760-0000-7000-8000-000000000206",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000206")),
                   "idem-escalation", true);
   action.inputs.erase("approval_escalation_evidence_uuid");
   RequireDispatchRefusal(Dispatch(std::move(action), registry),
                          "SB_AGENT_APPROVAL_WORKFLOW.ESCALATION_REQUIRED");
 
-  action = Action("019f0760-0000-7000-8000-000000000207",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000207")),
                   "idem-review", false);
   action.inputs.erase("approval_review_deadline_microseconds");
   RequireDispatchRefusal(
       Dispatch(std::move(action), registry),
       "SB_AGENT_APPROVAL_WORKFLOW.REVIEW_DEADLINE_REQUIRED");
 
-  action = Action("019f0760-0000-7000-8000-000000000208",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000208")),
                   "idem-duration", true);
   action.inputs["break_glass_expires_at_microseconds"] =
       std::to_string(kNow + 1200000000ull);
@@ -461,28 +466,28 @@ void TestNegativeDispatchWorkflows() {
       Dispatch(std::move(action), registry),
       "SB_AGENT_APPROVAL_WORKFLOW.BREAK_GLASS_DURATION_EXCEEDED");
 
-  action = Action("019f0760-0000-7000-8000-000000000209",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000209")),
                   "idem-scope", false);
   action.inputs["approval_1_scope_uuid"] =
-      "019f0760-0000-7000-8000-000000000099";
+      BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000099"));
   RequireDispatchRefusal(Dispatch(std::move(action), registry),
                          "SB_AGENT_APPROVAL_WORKFLOW.SCOPE_MISMATCH");
 
-  action = Action("019f0760-0000-7000-8000-000000000210",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000210")),
                   "idem-policy-generation", false);
   action.inputs["approval_1_policy_generation"] = "75";
   RequireDispatchRefusal(
       Dispatch(std::move(action), registry),
       "SB_AGENT_APPROVAL_WORKFLOW.POLICY_GENERATION_MISMATCH");
 
-  action = Action("019f0760-0000-7000-8000-000000000211",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000211")),
                   "idem-forbidden-authority", false);
   action.inputs["approval_authority_claims"] = "transaction_finality";
   RequireDispatchRefusal(
       Dispatch(std::move(action), registry),
       "SB_AGENT_APPROVAL_WORKFLOW.FORBIDDEN_AUTHORITY_CLAIM");
 
-  action = Action("019f0760-0000-7000-8000-000000000212",
+  action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000212")),
                   "idem-break-glass-activator", true);
   action.inputs["approval_1_principal_uuid"] =
       action.inputs["break_glass_activated_by_principal_uuid"];
@@ -492,7 +497,7 @@ void TestNegativeDispatchWorkflows() {
 }
 
 void TestLocalClusterApprovalRefusal() {
-  auto action = Action("019f0760-0000-7000-8000-000000000301",
+  auto action = Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0760-0000-7000-8000-000000000301")),
                        "idem-local-cluster", false);
   action.agent_type_id = "cluster_autoscale_manager";
   action.inputs["cluster_route_requested"] = "true";

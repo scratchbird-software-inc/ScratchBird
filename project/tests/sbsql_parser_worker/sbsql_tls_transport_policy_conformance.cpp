@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "session_registry.hpp"
 
 #include <array>
@@ -66,7 +67,7 @@ HostedEngineState MakeEngineState() {
   database.state = HostedDatabaseState::kOpen;
   database.database_open = true;
   database.database_path = "/tmp/sb_sbsql_tls_transport_policy_conformance.sbdb";
-  database.database_uuid = "019e05bf-f010-7000-8000-0000000000ab";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e05bf-f010-7000-8000-0000000000ab");
   state.databases.push_back(database);
   return state;
 }

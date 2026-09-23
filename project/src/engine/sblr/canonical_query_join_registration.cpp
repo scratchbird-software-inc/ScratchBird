@@ -28,7 +28,7 @@ namespace api = scratchbird::engine::internal_api;
 // SEARCH_KEY: SB_ENGINE_CANONICAL_QUERY_JOIN_REGISTRATION_AUTHORITY
 exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
     std::string implementation_id,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::vector<api::EngineSqlTruthValue> predicate_truth_values,
     const std::size_t pair_count,
     const std::size_t output_row_bound,
@@ -260,7 +260,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
         }
         if (cancellation_policy == nullptr ||
             duplicate_cancellation_policy ||
-            cancellation_policy->evidence_uuid.empty()) {
+            cancellation_policy->evidence_uuid.is_nil()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-JOIN-CANCELLATION-POLICY-V1";
@@ -367,9 +367,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
                 for (std::size_t column = 0;
                      column < batch.rows[row].values.size(); ++column) {
                   const auto& value = batch.rows[row].values[column];
-                  if (!add_row_string(
-                          value.descriptor.descriptor_uuid) ||
-                      !add_row_string(value.descriptor.descriptor_kind) ||
+                  if (!add_row_string(value.descriptor.descriptor_kind) ||
                       !add_row_string(
                           value.descriptor.canonical_type_name) ||
                       !add_row_string(value.descriptor.encoded_descriptor) ||
@@ -407,13 +405,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
             };
         const auto add_callback_mga_context =
             [&](const exec::PhysicalMgaStatementContext& context) {
-              return add_callback_carrier_string(context.statement_uuid) &&
-                     add_callback_carrier_string(
-                         context.owning_transaction_uuid) &&
-                     add_callback_carrier_string(
-                         context.statement_snapshot_uuid) &&
-                     add_callback_carrier_string(
-                         context.statement_metadata_snapshot_uuid) &&
+              return add_callback_carrier_array(
+                         1, sizeof(exec::PhysicalMgaStatementContext)) &&
                      add_callback_carrier_array(
                          context.active_excluded_local_transaction_ids.size(),
                          sizeof(std::uint64_t)) &&
@@ -430,8 +423,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
             // Conservative unpacked ceiling for the derived-nullability bits.
             add_callback_carrier_array(callback_output_width,
                                        sizeof(std::uint8_t)) &&
-            add_callback_carrier_string(dag.selected_plan_uuid) &&
-            add_callback_carrier_string(dag.selected_plan_uuid) &&
+            add_callback_carrier_array(2, sizeof(api::EngineUuid)) &&
             // The callback step and the join result temporarily own separate
             // statement-context copies before the result is moved into step.
             add_callback_mga_context(dag.mga_statement_context) &&
@@ -562,8 +554,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
                              static_cast<std::uint64_t>(value.capacity()) + 1,
                              &descriptor_bytes);
                 };
-                return account_string(descriptor.descriptor_uuid) &&
-                       account_string(descriptor.descriptor_kind) &&
+                return account_string(descriptor.descriptor_kind) &&
                        account_string(descriptor.canonical_type_name) &&
                        account_string(descriptor.encoded_descriptor) &&
                        CheckedAdd(descriptor_bytes, 32,

@@ -83,7 +83,7 @@ OrderedIngestPhysicalClusteringResult ResolveOrderedIngestPhysicalClustering(
 
   result.descriptor.physical_clustering_enabled = true;
   result.descriptor.placement_key_column = request.requested_placement_key_column;
-  if (!request.requested_policy_uuid.empty()) {
+  if (!request.requested_policy_uuid.is_nil()) {
     result.descriptor.policy_uuid = request.requested_policy_uuid;
   }
   if (result.descriptor.descriptor_generation == 0) {

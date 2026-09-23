@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_sec_alter_policy_runtime.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 
@@ -228,9 +229,9 @@ void RequireSecurityPolicyShowCarrier() {
   envelope.result_shape = "security_policy_result";
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
-      "019d0000-0000-7000-8000-000000005821";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005821");
   envelope.registry_snapshot_uuid =
-      "019d0000-0000-7000-8000-000000005822";
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005822");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;

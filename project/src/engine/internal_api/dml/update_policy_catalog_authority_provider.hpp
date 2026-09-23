@@ -24,12 +24,12 @@ namespace scratchbird::engine::internal_api {
 
 struct EngineDmlUpdatePolicyCatalogCaptureRequestV1 {
   EngineRequestContext context;
-  std::string authenticated_statement_receipt_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
   std::uint64_t structural_occurrence_id = 0;
   EngineDmlUpdateRelationOccurrenceAuthorityV1 relation_occurrence;
-  std::string catalog_snapshot_uuid;
+  EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string descriptor_uuid;
+  EngineUuid descriptor_uuid;
   std::uint64_t descriptor_generation = 0;
 };
 

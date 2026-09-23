@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/temporal_bitemporal_api.hpp"
 #include "local_transaction_store.hpp"
@@ -34,19 +35,15 @@ namespace txn = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kPrincipalUuid =
-    "019f0500-0000-7000-8000-000000000001";
-constexpr std::string_view kTableUuid =
-    "019f0500-0000-7000-8000-000000000003";
-constexpr std::string_view kSystemPeriodUuid =
-    "019f0500-0000-7000-8000-000000000004";
-constexpr std::string_view kApplicationPeriodUuid =
-    "019f0500-0000-7000-8000-000000000005";
+constexpr auto kPrincipalUuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000001");
+constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000003");
+constexpr auto kSystemPeriodUuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000004");
+constexpr auto kApplicationPeriodUuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000005");
 
 struct Fixture {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
   txn::LocalTransactionId typed_local_transaction_id;
   txn::LocalTransactionInventory inventory;
@@ -90,7 +87,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
       return true;
     }
   }
@@ -122,6 +119,17 @@ bool AnyFieldValue(const api::EngineApiResult& result,
   return false;
 }
 
+bool AnyFieldValue(const api::EngineApiResult& result,
+                   std::string_view field, const api::EngineUuid& expected) {
+  for (const auto& row : result.result_shape.rows) {
+    for (const auto& [name, value] : row.fields) {
+      if (name == field && value.binary_value ==
+          std::vector<std::uint8_t>(expected.bytes.begin(), expected.bytes.end())) return true;
+    }
+  }
+  return false;
+}
+
 api::EngineLocalizedName Name(std::string name) {
   api::EngineLocalizedName localized;
   localized.language_tag = "en";
@@ -134,16 +142,16 @@ api::EngineLocalizedName Name(std::string name) {
 
 void Grant(api::EngineRequestContext* context,
            std::string right,
-           std::string target_uuid = std::string(kTableUuid)) {
+           api::EngineUuid target_uuid = kTableUuid) {
   api::EngineAuthorizationSubject subject;
-  subject.subject_uuid.canonical = std::string(kPrincipalUuid);
+  subject.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000001");
   subject.subject_kind = "user";
   context->authorization_context.effective_subjects.push_back(subject);
 
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.subject_uuid.canonical = std::string(kPrincipalUuid);
+  grant.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000001");
   grant.subject_kind = "user";
-  grant.target_uuid.canonical = std::move(target_uuid);
+  grant.target_uuid = std::move(target_uuid);
   grant.right = std::move(right);
   context->authorization_context.grants.push_back(std::move(grant));
 }
@@ -152,18 +160,17 @@ api::EngineRequestContext Context(const Fixture& fixture,
                                   std::vector<std::string> rights) {
   api::EngineRequestContext context;
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = std::string(kPrincipalUuid);
-  context.session_uuid.canonical = "019f0500-0000-7000-8000-000000000010";
-  context.transaction_uuid.canonical = fixture.transaction_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000001");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000010");
+  context.transaction_uuid = fixture.transaction_uuid;
   context.local_transaction_id = fixture.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       fixture.local_transaction_id;
   context.security_context_present = true;
   context.authorization_context.present = true;
-  context.authorization_context.principal_uuid.canonical = std::string(kPrincipalUuid);
-  context.authorization_context.authority_uuid.canonical =
-      "019f0500-0000-7000-8000-000000000020";
+  context.authorization_context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000001");
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000020");
   context.authorization_context.evidence_tags.push_back("temporal_conformance");
   for (auto& right : rights) {
     Grant(&context, std::move(right));
@@ -205,8 +212,8 @@ Fixture CreateFixture() {
                                           1790500000004);
   Require(begun.ok(), "local transaction begin failed");
   fixture.inventory = std::move(begun.inventory);
-  fixture.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  fixture.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
+  fixture.database_uuid = database_uuid.value.value;
+  fixture.transaction_uuid = transaction_uuid.value.value;
   fixture.local_transaction_id = begun.entry.identity.local_id.value;
   fixture.typed_local_transaction_id = begun.entry.identity.local_id;
   const auto persisted =
@@ -230,7 +237,7 @@ void CommitFixture(Fixture* fixture) {
   Require(reopened.ok(), "reopen transaction begin failed");
   fixture->inventory = std::move(reopened.inventory);
   fixture->transaction_uuid =
-      uuid::UuidToString(reopen_transaction_uuid.value.value);
+      reopen_transaction_uuid.value.value;
   fixture->local_transaction_id = reopened.entry.identity.local_id.value;
   fixture->typed_local_transaction_id = reopened.entry.identity.local_id;
   const auto persisted =
@@ -289,24 +296,24 @@ void ValidateAdmissionAndRegistry() {
 }
 
 api::EngineCreateTemporalPeriodRequest BaseCreateRequest(const Fixture& fixture,
-                                                         std::string period_uuid,
+                                                         api::EngineUuid period_uuid,
                                                          std::string name) {
   api::EngineCreateTemporalPeriodRequest request;
   request.context = Context(fixture,
                             {"TEMPORAL_HISTORY_ADMIN",
                              "TEMPORAL_HISTORY_READ",
                              "TEMPORAL_BACKDATE"});
-  request.target_object.uuid.canonical = std::move(period_uuid);
+  request.target_object.uuid = std::move(period_uuid);
   request.target_object.object_kind = "temporal_period";
-  request.related_objects.push_back({{std::string(kTableUuid)}, "table"});
+  request.related_objects.push_back({{kTableUuid}, "table"});
   request.localized_names.push_back(Name(std::move(name)));
-  request.option_envelopes.push_back("table_uuid:" + std::string(kTableUuid));
+  request.related_objects.push_back({kTableUuid, "table"});
   return request;
 }
 
 void TestCreateAndShowPeriods(Fixture* fixture) {
   auto system = BaseCreateRequest(*fixture,
-                                  std::string(kSystemPeriodUuid),
+                                  kSystemPeriodUuid,
                                   "system_period");
   system.option_envelopes.push_back("axis:system_time");
   system.option_envelopes.push_back("system_versioning:true");
@@ -323,7 +330,7 @@ void TestCreateAndShowPeriods(Fixture* fixture) {
           "temporal API drifted into parser SQL authority");
 
   auto application = BaseCreateRequest(*fixture,
-                                       std::string(kApplicationPeriodUuid),
+                                       kApplicationPeriodUuid,
                                        "valid_range");
   application.option_envelopes.push_back("axis:valid_time");
   application.option_envelopes.push_back("start_bound_type:timestamp");
@@ -334,9 +341,9 @@ void TestCreateAndShowPeriods(Fixture* fixture) {
 
   api::EngineShowBitemporalPeriodsRequest show;
   show.context = Context(*fixture, {"TEMPORAL_HISTORY_READ"});
-  show.target_object.uuid.canonical = std::string(kTableUuid);
+  show.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000003");
   show.target_object.object_kind = "table";
-  show.option_envelopes.push_back("table_uuid:" + std::string(kTableUuid));
+  show.related_objects.push_back({kTableUuid, "table"});
   const auto show_result = api::EngineShowBitemporalPeriods(show);
   Require(show_result.ok, "show bitemporal periods failed");
   Require(show_result.result_shape.result_kind == "rs.bitemporal.periods.v1",
@@ -353,7 +360,7 @@ void TestCreateAndShowPeriods(Fixture* fixture) {
 
 void TestTemporalRefusals(const Fixture& fixture) {
   auto writable_system = BaseCreateRequest(fixture,
-                                           "019f0500-0000-7000-8000-000000000040",
+                                           scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000040"),
                                            "bad_system_period");
   writable_system.option_envelopes.push_back("axis:system_time");
   writable_system.option_envelopes.push_back("start_generated_always:true");
@@ -366,7 +373,7 @@ void TestTemporalRefusals(const Fixture& fixture) {
           "system-time generated diagnostic missing");
 
   auto mixed_bounds = BaseCreateRequest(fixture,
-                                        "019f0500-0000-7000-8000-000000000041",
+                                        scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000041"),
                                         "bad_application_period");
   mixed_bounds.option_envelopes.push_back("axis:application_time");
   mixed_bounds.option_envelopes.push_back("start_bound_type:date");
@@ -378,9 +385,9 @@ void TestTemporalRefusals(const Fixture& fixture) {
 
   api::EngineReadBitemporalHistoryRequest repeated;
   repeated.context = Context(fixture, {"TEMPORAL_HISTORY_READ"});
-  repeated.target_object.uuid.canonical = std::string(kTableUuid);
+  repeated.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000003");
   repeated.target_object.object_kind = "table";
-  repeated.option_envelopes.push_back("table_uuid:" + std::string(kTableUuid));
+  repeated.related_objects.push_back({kTableUuid, "table"});
   repeated.option_envelopes.push_back("axis:system_time");
   repeated.option_envelopes.push_back("axis:system");
   const auto repeated_result = api::EngineReadBitemporalHistory(repeated);
@@ -390,9 +397,9 @@ void TestTemporalRefusals(const Fixture& fixture) {
 
   api::EngineReadBitemporalHistoryRequest reversed;
   reversed.context = Context(fixture, {"TEMPORAL_HISTORY_READ"});
-  reversed.target_object.uuid.canonical = std::string(kTableUuid);
+  reversed.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000003");
   reversed.target_object.object_kind = "table";
-  reversed.option_envelopes.push_back("table_uuid:" + std::string(kTableUuid));
+  reversed.related_objects.push_back({kTableUuid, "table"});
   reversed.option_envelopes.push_back("axis:system_time");
   reversed.option_envelopes.push_back("system_time_from:2026-06-02T00:00:00Z");
   reversed.option_envelopes.push_back("system_time_to:2026-06-01T00:00:00Z");
@@ -403,9 +410,9 @@ void TestTemporalRefusals(const Fixture& fixture) {
 
   api::EngineDropTemporalPeriodRequest drop;
   drop.context = Context(fixture, {"TEMPORAL_HISTORY_ADMIN"});
-  drop.target_object.uuid.canonical = std::string(kSystemPeriodUuid);
+  drop.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000004");
   drop.target_object.object_kind = "temporal_period";
-  drop.option_envelopes.push_back("table_uuid:" + std::string(kTableUuid));
+  drop.related_objects.push_back({kTableUuid, "table"});
   const auto drop_result = api::EngineDropTemporalPeriod(drop);
   Require(!drop_result.ok, "DROP PERIOD without disposition accepted");
   Require(HasDiagnostic(drop_result,
@@ -414,7 +421,7 @@ void TestTemporalRefusals(const Fixture& fixture) {
 
   api::EngineShowBitemporalPeriodsRequest no_right;
   no_right.context = Context(fixture, {});
-  no_right.target_object.uuid.canonical = std::string(kTableUuid);
+  no_right.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000003");
   no_right.target_object.object_kind = "table";
   const auto no_right_result = api::EngineShowBitemporalPeriods(no_right);
   Require(!no_right_result.ok, "temporal read without right accepted");
@@ -425,9 +432,9 @@ void TestTemporalRefusals(const Fixture& fixture) {
 void TestReadAndDml(Fixture* fixture) {
   api::EngineReadBitemporalHistoryRequest read;
   read.context = Context(*fixture, {"TEMPORAL_HISTORY_READ"});
-  read.target_object.uuid.canonical = std::string(kTableUuid);
+  read.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000003");
   read.target_object.object_kind = "table";
-  read.option_envelopes.push_back("table_uuid:" + std::string(kTableUuid));
+  read.related_objects.push_back({kTableUuid, "table"});
   read.option_envelopes.push_back("axis:system_time");
   read.option_envelopes.push_back("axis:application_time");
   read.option_envelopes.push_back("system_time_from:2026-06-01T00:00:00Z");
@@ -448,11 +455,10 @@ void TestReadAndDml(Fixture* fixture) {
 
   api::EngineApplyForPortionOfPeriodRequest denied_backdate;
   denied_backdate.context = Context(*fixture, {"TEMPORAL_HISTORY_READ"});
-  denied_backdate.target_object.uuid.canonical =
-      "019f0500-0000-7000-8000-000000000050";
+  denied_backdate.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000050");
   denied_backdate.target_object.object_kind = "temporal_dml_event";
-  denied_backdate.option_envelopes.push_back("table_uuid:" + std::string(kTableUuid));
-  denied_backdate.option_envelopes.push_back("period_uuid:" + std::string(kApplicationPeriodUuid));
+  denied_backdate.related_objects.push_back({kTableUuid, "table"});
+  denied_backdate.related_objects.push_back({kApplicationPeriodUuid, "temporal_period"});
   denied_backdate.option_envelopes.push_back("application_time_from:2025-01-01");
   denied_backdate.option_envelopes.push_back("application_time_to:2025-02-01");
   denied_backdate.option_envelopes.push_back("dml_action:update");
@@ -479,8 +485,7 @@ void TestReadAndDml(Fixture* fixture) {
           "FOR PORTION OF privileged audit evidence missing");
 
   api::EngineApplyForPortionOfPeriodRequest delete_portion = apply;
-  delete_portion.target_object.uuid.canonical =
-      "019f0500-0000-7000-8000-000000000051";
+  delete_portion.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000051");
   delete_portion.option_envelopes.erase(
       std::remove(delete_portion.option_envelopes.begin(),
                   delete_portion.option_envelopes.end(),
@@ -494,16 +499,16 @@ void TestReadAndDml(Fixture* fixture) {
 
   api::EngineShowBitemporalHistoryRequest history;
   history.context = Context(*fixture, {"TEMPORAL_HISTORY_READ"});
-  history.target_object.uuid.canonical = std::string(kTableUuid);
+  history.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000003");
   history.target_object.object_kind = "table";
-  history.option_envelopes.push_back("table_uuid:" + std::string(kTableUuid));
+  history.related_objects.push_back({kTableUuid, "table"});
   const auto history_result = api::EngineShowBitemporalHistory(history);
   Require(history_result.ok, "SHOW BITEMPORAL HISTORY failed");
   Require(history_result.result_shape.result_kind == "rs.bitemporal.history.v1",
           "history result shape drifted");
   Require(AnyFieldValue(history_result,
                         "period_uuid",
-                        std::string(kApplicationPeriodUuid)),
+                        kApplicationPeriodUuid),
           "history did not include application period evidence");
 }
 
@@ -511,14 +516,14 @@ void TestCommittedReopenVisibility(Fixture* fixture) {
   CommitFixture(fixture);
   api::EngineShowBitemporalPeriodsRequest show;
   show.context = Context(*fixture, {"TEMPORAL_HISTORY_READ"});
-  show.target_object.uuid.canonical = std::string(kTableUuid);
+  show.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0500-0000-7000-8000-000000000003");
   show.target_object.object_kind = "table";
-  show.option_envelopes.push_back("table_uuid:" + std::string(kTableUuid));
+  show.related_objects.push_back({kTableUuid, "table"});
   const auto result = api::EngineShowBitemporalPeriods(show);
   Require(result.ok, "committed reopen period show failed");
-  Require(AnyFieldValue(result, "period_uuid", std::string(kSystemPeriodUuid)),
+  Require(AnyFieldValue(result, "period_uuid", kSystemPeriodUuid),
           "committed system period not visible after reopen");
-  Require(AnyFieldValue(result, "period_uuid", std::string(kApplicationPeriodUuid)),
+  Require(AnyFieldValue(result, "period_uuid", kApplicationPeriodUuid),
           "committed application period not visible after reopen");
 }
 

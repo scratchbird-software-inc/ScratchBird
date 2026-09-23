@@ -16,6 +16,8 @@
 #include "page_registry.hpp"
 #include "security/security_model.hpp"
 #include "uuid.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <stdexcept>
 
 #include <algorithm>
 #include <cstdint>
@@ -166,44 +168,37 @@ std::string ManagementPolicyValue(const EngineApiRequest& request) {
 
 std::string LedgerKey(const EngineRequestContext& context,
                       const EngineObjectReference& filespace) {
-  const std::string path = context.database_path.empty() ? std::string("database_path_absent")
-                                                         : context.database_path;
-  const std::string database = context.database_uuid.is_nil()
-                                   ? std::string("database_uuid_absent")
-                                   : context.database_uuid;
-  return path + "|" + database + "|" + filespace.uuid + "|filespace.preallocate";
-}
-
-platform::u64 StableSeed(const std::string& value, platform::u64 salt) {
-  platform::u64 hash = 1469598103934665603ull ^ salt;
-  for (const unsigned char c : value) {
-    hash ^= static_cast<platform::u64>(c);
-    hash *= 1099511628211ull;
-  }
-  return 1910000000000ull + (hash % 1000000000ull);
+  return EncodeMgaMetadataFields({"filespace.preallocate.v2",context.database_path,
+      MetadataUuidBytes(context.database_uuid),MetadataUuidBytes(filespace.uuid)});
 }
 
 platform::TypedUuid GeneratedIdentity(platform::UuidKind kind,
-                                      const std::string& key,
-                                      platform::u64 salt) {
-  const auto generated = uuid::GenerateEngineIdentityV7(kind, StableSeed(key, salt));
-  return generated.ok() ? generated.value : platform::TypedUuid{};
+                                      const std::string&,
+                                      platform::u64) {
+  const auto issued = uuid::IssueRuntimeIdentityV7();
+  if (!issued) return {};
+  const auto typed = uuid::MakeTypedUuid(kind, *issued);
+  return typed.ok() ? typed.value : platform::TypedUuid{};
 }
 
 bool IsEngineIdentity(const platform::TypedUuid& typed, platform::UuidKind kind) {
   return typed.kind == kind && typed.valid() && uuid::IsEngineIdentityUuid(typed.value);
 }
 
-platform::TypedUuid ParseEngineIdentity(platform::UuidKind kind, const std::string& text) {
-  const auto parsed = uuid::ParseTypedUuid(kind, text);
-  if (!parsed.ok() || !IsEngineIdentity(parsed.value, kind)) {
-    return {};
-  }
-  return parsed.value;
+platform::TypedUuid BindEngineIdentity(platform::UuidKind kind, const EngineUuid& identity) {
+  const auto bound = uuid::MakeTypedUuid(kind, identity);
+  if (!bound.ok() || !IsEngineIdentity(bound.value, kind)) return {};
+  return bound.value;
 }
 
-std::string UuidText(const platform::TypedUuid& typed) {
-  return typed.valid() ? uuid::UuidToString(typed.value) : std::string{};
+platform::TypedUuid ReadOptionIdentity(platform::UuidKind kind, const std::string& bytes) {
+  EngineUuid identity;
+  if (!ReadMetadataUuid(bytes, &identity)) return {};
+  return BindEngineIdentity(kind, identity);
+}
+
+EngineUuid UuidIdentity(const platform::TypedUuid& typed) {
+  return typed.valid() ? typed.value : EngineUuid{};
 }
 
 EngineObjectReference TargetFilespace(const EngineApiRequest& request) {
@@ -216,15 +211,15 @@ EngineObjectReference TargetFilespace(const EngineApiRequest& request) {
     }
   }
   EngineObjectReference target;
-  target.uuid = OptionValue(request, "target_filespace_uuid:");
+  target.uuid = ReadOptionIdentity(platform::UuidKind::filespace, OptionValue(request, "target_filespace_uuid:")).value;
   target.object_kind = "filespace";
   return target;
 }
 
 bool VisibleFilespaceCatalogDescriptorExists(const EngineRequestContext& context,
-                                             const std::string& filespace_uuid,
+                                             const EngineUuid& filespace_uuid,
                                              EngineApiDiagnostic& diagnostic) {
-  if (filespace_uuid.empty()) {
+  if (filespace_uuid.is_nil()) {
     return false;
   }
   const auto record =
@@ -233,16 +228,12 @@ bool VisibleFilespaceCatalogDescriptorExists(const EngineRequestContext& context
   if (record.has_value() && record->object_kind == "filespace") {
     return true;
   }
-  const auto parsed_filespace = ParseEngineIdentity(platform::UuidKind::filespace, filespace_uuid);
+  const auto parsed_filespace = BindEngineIdentity(platform::UuidKind::filespace, filespace_uuid);
   if (!parsed_filespace.valid()) {
     return false;
   }
-  const std::string path = context.database_path.empty() ? std::string("database_path_absent")
-                                                         : context.database_path;
-  const std::string database = context.database_uuid.is_nil()
-                                   ? std::string("database_uuid_absent")
-                                   : context.database_uuid;
-  const std::string key = path + "|" + database + "|filespace.lifecycle";
+  const auto key = EncodeMgaMetadataFields({"filespace.lifecycle.v2",context.database_path,
+      MetadataUuidBytes(context.database_uuid)});
   std::lock_guard<std::mutex> lock(FilespaceLifecycleRouteMutex());
   const auto runtime = FilespaceLifecycleRouteRegistries().find(key);
   if (runtime == FilespaceLifecycleRouteRegistries().end()) {
@@ -263,12 +254,8 @@ EngineApiDiagnostic FilespaceCatalogDescriptorNotFoundDiagnostic(const char* ope
 }
 
 std::string LifecycleRegistryKey(const EngineRequestContext& context) {
-  const std::string path = context.database_path.empty() ? std::string("database_path_absent")
-                                                         : context.database_path;
-  const std::string database = context.database_uuid.is_nil()
-                                   ? std::string("database_uuid_absent")
-                                   : context.database_uuid;
-  return path + "|" + database + "|filespace.lifecycle";
+  return EncodeMgaMetadataFields({"filespace.lifecycle.v2",context.database_path,
+      MetadataUuidBytes(context.database_uuid)});
 }
 
 platform::u32 PageSizeBytes(const EngineApiRequest& request) {
@@ -348,7 +335,9 @@ std::string DefaultLifecyclePath(const EngineApiRequest& request,
   const std::string base = request.context.database_path.empty()
                                ? std::string("/tmp/scratchbird-filespace")
                                : request.context.database_path;
-  return base + "." + target.uuid + ".filespace";
+  const auto component = uuid::EngineIdentityPathComponent(target.uuid);
+  if (!component) throw std::invalid_argument("filespace_path_identity_invalid");
+  return base + "." + component->string() + ".filespace";
 }
 
 platform::u64 RequestedPreallocationPages(const EngineApiRequest& request,
@@ -463,8 +452,9 @@ platform::TypedUuid OptionalObjectIdentity(const EngineApiRequest& request,
                                            const std::string& prefix,
                                            const std::string& key,
                                            platform::u64 salt) {
-  const auto parsed = ParseEngineIdentity(platform::UuidKind::object, OptionValue(request, prefix));
-  return parsed.valid() ? parsed : GeneratedIdentity(platform::UuidKind::object, key, salt);
+  const auto bytes=OptionValue(request,prefix);
+  if (bytes.empty()) return GeneratedIdentity(platform::UuidKind::object,key,salt);
+  return ReadOptionIdentity(platform::UuidKind::object,bytes);
 }
 
 void EnsureFilespacePreallocateRuntime(FilespacePreallocateRouteRuntime* runtime,
@@ -762,9 +752,7 @@ filespace::FilespacePackageRequest BuildPackageStorageRequest(
   storage_request.database_uuid = database_uuid;
   storage_request.target_database_uuid = database_uuid;
   storage_request.package_name = "route_filespace_package";
-  storage_request.operator_identity = request.context.principal_uuid.is_nil()
-                                          ? "engine.operator"
-                                          : request.context.principal_uuid;
+  storage_request.operator_identity = request.context.principal_uuid;
   storage_request.descriptors.push_back(
       PackageDescriptorForRoute(database_uuid,
                                 filespace_uuid,
@@ -1231,7 +1219,7 @@ EngineFilespaceDiscoveryResult EngineDiscoverFilespaceAnomalies(
 	                                true));
   }
 
-  const auto database_uuid = ParseEngineIdentity(platform::UuidKind::database,
+  const auto database_uuid = BindEngineIdentity(platform::UuidKind::database,
                                                 request.context.database_uuid);
   if (!database_uuid.valid()) {
     return FilespaceDiscoveryFailure(
@@ -1510,7 +1498,7 @@ EngineFilespacePackageResult EngineFilespacePackageOperation(
                                 true));
   }
 
-  const auto database_uuid = ParseEngineIdentity(platform::UuidKind::database,
+  const auto database_uuid = BindEngineIdentity(platform::UuidKind::database,
                                                 request.context.database_uuid);
   if (!database_uuid.valid()) {
     return FilespacePackageFailure(
@@ -2098,9 +2086,9 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
         MakeInvalidRequestDiagnostic(effective_operation, "target_filespace_uuid_required"));
   }
 
-  const auto database_uuid = ParseEngineIdentity(platform::UuidKind::database,
+  const auto database_uuid = BindEngineIdentity(platform::UuidKind::database,
                                                 request.context.database_uuid);
-  const auto filespace_uuid = ParseEngineIdentity(platform::UuidKind::filespace,
+  const auto filespace_uuid = BindEngineIdentity(platform::UuidKind::filespace,
                                                  target.uuid);
   if (!database_uuid.valid()) {
     return FilespaceLifecycleFailure(
@@ -2146,7 +2134,7 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
   storage_request.database_uuid = database_uuid;
   storage_request.filespace_uuid = filespace_uuid;
   storage_request.merge_target_filespace_uuid =
-      ParseEngineIdentity(platform::UuidKind::filespace,
+      ReadOptionIdentity(platform::UuidKind::filespace,
                           OptionValue(request, "filespace.merge_target_uuid:"));
   storage_request.path = DefaultLifecyclePath(request, target);
   storage_request.role = LifecycleRoleValue(request, lifecycle_operation);
@@ -2260,7 +2248,7 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
                      {"storage_executor", "ApplyFilespaceOperation"},
                      {"filespace_uuid", target.uuid},
                      {"merge_target_filespace_uuid",
-                      UuidText(storage_request.merge_target_filespace_uuid)},
+                      UuidIdentity(storage_request.merge_target_filespace_uuid)},
                      {"filespace_role", filespace::FilespaceRoleName(storage_result.descriptor.role)},
                      {"filespace_state", filespace::FilespaceStateName(storage_result.descriptor.state)},
                      {"durable_state_changed", storage_result.durable_state_changed ? "true" : "false"},
@@ -2278,7 +2266,7 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
   if (storage_request.merge_target_filespace_uuid.valid()) {
     AddApiBehaviorEvidence(&result,
                            "merge_target_filespace",
-                           UuidText(storage_request.merge_target_filespace_uuid));
+                           UuidIdentity(storage_request.merge_target_filespace_uuid));
   }
   AddApiBehaviorEvidence(&result,
                          "physical_file_removed",
@@ -2347,11 +2335,11 @@ EngineFilespacePreallocateResult EngineFilespacePreallocate(
   }
 
   const std::string key = LedgerKey(request.context, target);
-  const auto database_uuid = ParseEngineIdentity(platform::UuidKind::database,
+  const auto database_uuid = BindEngineIdentity(platform::UuidKind::database,
                                                 request.context.database_uuid);
-  const auto filespace_uuid = ParseEngineIdentity(platform::UuidKind::filespace,
+  const auto filespace_uuid = BindEngineIdentity(platform::UuidKind::filespace,
                                                  target.uuid);
-  const auto transaction_uuid = ParseEngineIdentity(platform::UuidKind::transaction,
+  const auto transaction_uuid = BindEngineIdentity(platform::UuidKind::transaction,
                                                    request.context.transaction_uuid);
   if (!database_uuid.valid()) {
     return FilespacePreallocateFailure(
@@ -2458,7 +2446,7 @@ EngineFilespacePreallocateResult EngineFilespacePreallocate(
       request.context, kOperation);
   result.primary_object = target;
   AddApiBehaviorEvidence(&result, "filespace_preallocation",
-                         UuidText(storage.operation.preallocation_operation_id));
+                         UuidIdentity(storage.operation.preallocation_operation_id));
   AddApiBehaviorEvidence(&result, "storage_executor", "PreallocateFilespace");
   AddApiBehaviorEvidence(&result, "parser_storage_authority", "false");
   const std::string surface_id = OptionValue(request, "sbsfc077_surface_id:");
@@ -2470,7 +2458,7 @@ EngineFilespacePreallocateResult EngineFilespacePreallocate(
                      {"storage_execution", "completed"},
                      {"filespace_preallocation_ledger_mutated", "true"},
                      {"filespace_preallocation_operation_uuid",
-                      UuidText(storage.operation.preallocation_operation_id)},
+                      UuidIdentity(storage.operation.preallocation_operation_id)},
                      {"filespace_preallocation_state",
                       filespace::FilespacePreallocationStateName(storage.operation.state)},
                      {"filespace_preallocation_diagnostic", storage.diagnostic.diagnostic_code},

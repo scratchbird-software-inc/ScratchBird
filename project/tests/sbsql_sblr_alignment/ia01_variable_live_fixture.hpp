@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_variable_frame_coordinator.hpp"
 #include "engine/sblr/sblr_variable_runtime.hpp"
 
@@ -11,7 +12,7 @@ struct Live {
   bridge::StatementContextReceiptView view;
   Submission submission;
   Bytes sbve;
-  std::string parser_uuid;
+  platform::Uuid parser_uuid;
 };
 
 inline std::array<std::uint8_t,32> DomainHash(std::string_view domain,
@@ -23,13 +24,12 @@ inline std::array<std::uint8_t,32> DomainHash(std::string_view domain,
 inline Live Build(Fixture& fixture, PublicSession& session,
                   api::EngineRequestContext* context) {
   Require(context!=nullptr,"variable fixture context missing");
-  const auto operation=Text(NewUuid(platform::UuidKind::object,9361));
+  const auto operation=Identity(NewUuid(platform::UuidKind::object,9361));
   auto coordinator_context=*context;
-  coordinator_context.statement_uuid.canonical=Text(NewUuid(platform::UuidKind::object,9360));
+  coordinator_context.statement_uuid=Identity(NewUuid(platform::UuidKind::object,9360));
   coordinator_context.statement_metadata_snapshot_engine_owned=true;
   coordinator_context.trace_tags.push_back("private_variable_frame_coordination");
-  coordinator_context.catalog_epoch_uuid.canonical=
-      "019d0000-0000-7000-8000-00000000d701";
+  coordinator_context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   coordinator_context.catalog_generation_id=1;
   api::SblrVariableFrameDemand structural;
   structural.declaration_occurrence_id=1;structural.datatype_context_code=1;
@@ -41,7 +41,7 @@ inline Live Build(Fixture& fixture, PublicSession& session,
   if(!begun.ok)std::cerr<<"variable-begin:"<<begun.diagnostic.code<<':'<<begun.diagnostic.message_key<<':'<<begun.diagnostic.detail<<'\n';
   Require(begun.ok&&begun.snapshot.mappings.size()==1,"variable frame begin failed");
   bridge::StatementContextAcquireRequest acquire;acquire.engine_context=context;
-  acquire.exact_transaction_uuid=context->transaction_uuid.canonical;
+  acquire.exact_transaction_uuid=context->transaction_uuid;
   acquire.variable_frame_selector.version=1;
   acquire.variable_frame_selector.public_coordination_uuid=begun.snapshot.public_coordination_uuid;
   acquire.variable_frame_selector.operation_uuid=operation;
@@ -116,7 +116,7 @@ inline Live Build(Fixture& fixture, PublicSession& session,
   execution.registry_snapshot_uuid=admission.registry_snapshot_uuid;execution.registry_generation=admission.registry_generation;
   execution.executor_availability_generation=admission.executor_availability_generation;execution.binding_sha256=admission.binding_sha256;
   live.sbve=runtime::EncodeSblrVariableExecutionBindingV1(execution);
-  const auto parser_uuid=Text(NewUuid(platform::UuidKind::object,9362));live.parser_uuid=parser_uuid;
+  const auto parser_uuid=Identity(NewUuid(platform::UuidKind::object,9362));live.parser_uuid=parser_uuid;
   auto member=sblr::MakeSblrEnvelope("query.execute","SBLR_QUERY_EXECUTE","ia01.variable.cancel.query");
   member.opcode_code=0x1207;member.result_shape="query_execute_result";member.diagnostic_shape="diagnostic_vector";
   member.parser_package_uuid=parser_uuid;member.registry_snapshot_uuid=live.view.catalog_epoch_uuid;member.parser_resolved_names_to_uuids=true;

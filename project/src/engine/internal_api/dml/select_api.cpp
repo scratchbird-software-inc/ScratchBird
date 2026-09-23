@@ -10,6 +10,8 @@
 #include "dml/dml_target_access_plan.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "catalog/binary_view_options.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/relation_descriptor_projection.hpp"
 #include "catalog/relation_projection_view.hpp"
@@ -37,6 +39,14 @@
 
 namespace scratchbird::engine::internal_api {
 namespace {
+
+EngineUuid RequiredBinaryIdentity(const std::string& bytes) {
+  if (bytes.empty()) return {};
+  EngineUuid identity;
+  if (!ReadMetadataUuid(bytes, &identity))
+    throw std::invalid_argument("dml_binary_identity_required");
+  return identity;
+}
 
 using SelectApiSteadyClock = std::chrono::steady_clock;
 
@@ -174,21 +184,16 @@ EngineResultShape CountProjectionResultShape(
 }
 
 std::string PayloadFieldValue(const std::string& payload, const std::string& prefix) {
-  std::size_t offset = 0;
-  while (offset <= payload.size()) {
-    const auto next = payload.find(';', offset);
-    const auto end = next == std::string::npos ? payload.size() : next;
-    const std::string field = payload.substr(offset, end - offset);
-    if (field.rfind(prefix, 0) == 0) return field.substr(prefix.size());
-    if (next == std::string::npos) break;
-    offset = next + 1;
-  }
+  std::vector<std::string> fields;
+  if (!DecodeBinaryViewOptions(payload, &fields)) return {};
+  for (const auto& field : fields)
+    if (field.starts_with(prefix)) return field.substr(prefix.size());
   return {};
 }
 
 const EngineExecutableObjectRecord* FindExecutableObject(
     const EngineExecutableObjectLifecycleState& state,
-    const std::string& object_uuid) {
+    const EngineUuid& object_uuid) {
   const EngineExecutableObjectRecord* found = nullptr;
   for (const auto& object : state.objects) {
     if (object.object_uuid != object_uuid) continue;
@@ -209,13 +214,13 @@ std::optional<std::int64_t> RoutineArgumentI64(const EngineSelectRowsRequest& re
   return parsed;
 }
 
-CrudRowVersionRecord MakeProcedureRow(const std::string& routine_uuid,
+CrudRowVersionRecord MakeProcedureRow(const EngineUuid& routine_uuid,
                                        std::uint64_t sequence,
                                        std::vector<std::pair<std::string, std::string>> values) {
   CrudRowVersionRecord row;
   row.table_uuid = routine_uuid;
-  row.row_uuid = routine_uuid + ":row:" + std::to_string(sequence);
-  row.version_uuid = row.row_uuid + ":v1";
+  row.row_uuid = GenerateCrudEngineUuid("row");
+  row.version_uuid = GenerateCrudEngineUuid("object");
   row.sequence = sequence;
   row.values = std::move(values);
   return row;
@@ -223,7 +228,7 @@ CrudRowVersionRecord MakeProcedureRow(const std::string& routine_uuid,
 
 std::vector<CrudRowVersionRecord> MaterializeGenerateSeriesProcedure(
     const EngineSelectRowsRequest& request,
-    const std::string& routine_uuid,
+    const EngineUuid& routine_uuid,
     std::string* error_detail) {
   const auto start = RoutineArgumentI64(request, 0);
   const auto end = RoutineArgumentI64(request, 1);
@@ -244,7 +249,7 @@ std::vector<CrudRowVersionRecord> MaterializeGenerateSeriesProcedure(
 
 std::vector<CrudRowVersionRecord> MaterializeEvenNumbersProcedure(
     const EngineSelectRowsRequest& request,
-    const std::string& routine_uuid,
+    const EngineUuid& routine_uuid,
     std::string* error_detail) {
   const auto max_value = RoutineArgumentI64(request, 0);
   if (!max_value) {
@@ -264,7 +269,7 @@ std::vector<CrudRowVersionRecord> MaterializeEvenNumbersProcedure(
 std::vector<CrudRowVersionRecord> MaterializeDynamicMultiplyProcedure(
     const EngineSelectRowsRequest& request,
     const EngineExecutableObjectRecord& object,
-    const std::string& routine_uuid,
+    const EngineUuid& routine_uuid,
     std::string* error_detail) {
   const auto max_key = RoutineArgumentI64(request, 0);
   const auto factor = RoutineArgumentI64(request, 1);
@@ -272,9 +277,9 @@ std::vector<CrudRowVersionRecord> MaterializeDynamicMultiplyProcedure(
     if (error_detail != nullptr) *error_detail = "selectable_procedure_arguments_invalid";
     return {};
   }
-  const std::string dependency_uuid =
-      PayloadFieldValue(object.payload, "related_object_0_uuid:");
-  if (dependency_uuid.empty()) {
+  const EngineUuid dependency_uuid =
+      RequiredBinaryIdentity(PayloadFieldValue(object.payload, "related_object_0_uuid:"));
+  if (dependency_uuid.is_nil()) {
     if (error_detail != nullptr) *error_detail = "selectable_procedure_dependency_required";
     return {};
   }
@@ -325,11 +330,11 @@ std::vector<CrudRowVersionRecord> MaterializeDynamicMultiplyProcedure(
 std::vector<CrudRowVersionRecord> MaterializeFirebirdFirstProductProcedure(
     const EngineSelectRowsRequest& request,
     const EngineExecutableObjectRecord& object,
-    const std::string& routine_uuid,
+    const EngineUuid& routine_uuid,
     std::string* error_detail) {
-  const std::string dependency_uuid =
-      PayloadFieldValue(object.payload, "related_object_0_uuid:");
-  if (dependency_uuid.empty()) {
+  const EngineUuid dependency_uuid =
+      RequiredBinaryIdentity(PayloadFieldValue(object.payload, "related_object_0_uuid:"));
+  if (dependency_uuid.is_nil()) {
     if (error_detail != nullptr) *error_detail = "selectable_procedure_dependency_required";
     return {};
   }
@@ -366,7 +371,7 @@ std::vector<CrudRowVersionRecord> MaterializeFirebirdFirstProductProcedure(
 std::vector<CrudRowVersionRecord> MaterializeSelectableProcedureRows(
     const EngineSelectRowsRequest& request,
     const EngineExecutableObjectRecord& object,
-    const std::string& routine_uuid,
+    const EngineUuid& routine_uuid,
     std::string* error_detail) {
   const std::string descriptor =
       PayloadFieldValue(object.payload, "compiled_body_descriptor:");
@@ -550,7 +555,7 @@ SelectProjectionPredicateResolution ResolveSelectColumnInProjectionPredicate(
   resolution.attempted = true;
   resolution.ok = false;
 
-  const std::string source_uuid = OptionValue(request, "source_uuid:");
+  const EngineUuid source_uuid = RequiredBinaryIdentity(OptionValue(request, "source_uuid:"));
   const std::string select_column = OptionValue(request, "subquery_select_column:");
   const std::string subquery_predicate_kind =
       OptionValue(request, "subquery_predicate_kind:");
@@ -561,7 +566,7 @@ SelectProjectionPredicateResolution ResolveSelectColumnInProjectionPredicate(
   const std::string subquery_predicate_value_type =
       OptionValue(request, "subquery_predicate_value_type:");
 
-  if (source_uuid.empty() || select_column.empty()) {
+  if (source_uuid.is_nil() || select_column.empty()) {
     resolution.diagnostic =
         MakeInvalidRequestDiagnostic("dml.select_rows",
                                      "subquery_predicate_descriptor_incomplete");
@@ -637,7 +642,7 @@ SelectProjectionPredicateResolution ResolveSelectColumnInProjectionPredicate(
 
 std::vector<CrudRowVersionRecord> BoundedVisibleRowsForEqualityOrder(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EnginePredicateEnvelope& predicate,
     const EngineRequestContext& context,
     EngineApiU64 limit) {
@@ -846,9 +851,9 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
                              select_phase_micros);
   };
   if (OptionValue(request, "source_kind:") == "selectable_procedure") {
-    std::string routine_uuid = OptionValue(request, "routine_object_uuid:");
-    if (routine_uuid.empty()) routine_uuid = OptionValue(request, "source_uuid:");
-    if (routine_uuid.empty()) {
+    EngineUuid routine_uuid = RequiredBinaryIdentity(OptionValue(request, "routine_object_uuid:"));
+    if (routine_uuid.is_nil()) routine_uuid = RequiredBinaryIdentity(OptionValue(request, "source_uuid:"));
+    if (routine_uuid.is_nil()) {
       return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
           request.context,
           "dml.select_rows",
@@ -920,8 +925,8 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     write_select_trace(result.visible_count);
     return result;
   }
-  const std::string table_uuid = !request.source_object.uuid.is_nil() ? request.source_object.uuid : request.target_object.uuid;
-  if (table_uuid.empty()) {
+  const EngineUuid table_uuid = !request.source_object.uuid.is_nil() ? request.source_object.uuid : request.target_object.uuid;
+  if (table_uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "source_table_uuid_required"));
   }
   TransactionalRelationStore relation_store(request.context);
@@ -969,14 +974,14 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   }
   const EnginePredicateEnvelope requested_predicate =
       !request.select_predicate.predicate_kind.empty() ? request.select_predicate : request.predicate;
-  const std::string subquery_source_uuid = OptionValue(request, "source_uuid:");
+  const EngineUuid subquery_source_uuid = RequiredBinaryIdentity(OptionValue(request, "source_uuid:"));
   const bool needs_subquery_source_scope =
       (requested_predicate.predicate_kind == "column_in_projection" ||
        requested_predicate.predicate_kind == "column_not_in_projection") &&
-      !subquery_source_uuid.empty();
+      !subquery_source_uuid.is_nil();
   auto loaded = needs_subquery_source_scope
       ? relation_store.OpenRelationScans(
-            std::vector<std::string>{table_uuid, subquery_source_uuid})
+            std::vector<EngineUuid>{table_uuid, subquery_source_uuid})
       : relation_store.OpenRelationScan(table_uuid);
   mark_select_phase("load_target_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", loaded.diagnostic); }

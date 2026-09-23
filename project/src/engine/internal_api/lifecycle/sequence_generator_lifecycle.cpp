@@ -8,6 +8,13 @@
 
 #include "lifecycle/sequence_generator_lifecycle.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
+#include "catalog/binary_catalog_metadata.hpp"
+#include "behavior_support/api_behavior_store.hpp"
+#include "core/uuid/uuid.hpp"
+#include "local_transaction_store.hpp"
+#include "transaction/transaction_api.hpp"
+#include <filesystem>
+#include <mutex>
 
 #include <algorithm>
 #include <cctype>
@@ -25,12 +32,14 @@ struct RawSequenceEvent {
   std::uint64_t event_sequence = 0;
   std::string event_kind;
   std::uint64_t creator_tx = 0;
-  std::map<std::string, std::string> fields;
+  BinaryCatalogMetadata fields;
 };
 
 struct TransactionOutcome {
   std::string outcome = "unknown";
-  std::string transaction_uuid;
+  EngineUuid transaction_uuid;
+  std::uint64_t commit_sequence = 0;
+  std::uint64_t begin_visible_through_commit_sequence = 0;
   bool committed_row_effects = true;
   bool folded_to_no_effect = false;
   bool external_exposure_observed = true;
@@ -48,45 +57,6 @@ struct WindowPlan {
 
 std::string EventPath(const EngineRequestContext& context) {
   return context.database_path + ".sb.sequence_generator_events";
-}
-
-std::vector<std::string> Split(const std::string& value, char delimiter) {
-  std::vector<std::string> parts;
-  std::string current;
-  std::istringstream in(value);
-  while (std::getline(in, current, delimiter)) { parts.push_back(current); }
-  return parts;
-}
-
-std::string HexEncode(const std::string& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(value.size() * 2);
-  for (unsigned char c : value) {
-    out.push_back(kHex[(c >> 4) & 0x0f]);
-    out.push_back(kHex[c & 0x0f]);
-  }
-  return out;
-}
-
-int HexValue(char c) {
-  if (c >= '0' && c <= '9') { return c - '0'; }
-  if (c >= 'a' && c <= 'f') { return 10 + c - 'a'; }
-  if (c >= 'A' && c <= 'F') { return 10 + c - 'A'; }
-  return -1;
-}
-
-std::string HexDecode(const std::string& value) {
-  std::string out;
-  if ((value.size() % 2) != 0) { return out; }
-  out.reserve(value.size() / 2);
-  for (std::size_t i = 0; i < value.size(); i += 2) {
-    const int hi = HexValue(value[i]);
-    const int lo = HexValue(value[i + 1]);
-    if (hi < 0 || lo < 0) { return {}; }
-    out.push_back(static_cast<char>((hi << 4) | lo));
-  }
-  return out;
 }
 
 std::uint64_t ParseU64(const std::string& value, std::uint64_t fallback = 0) {
@@ -113,26 +83,26 @@ bool ParseBool(const std::string& value, bool fallback = false) {
 
 std::string BoolText(bool value) { return value ? "1" : "0"; }
 
-std::string Field(const std::map<std::string, std::string>& fields,
+std::string Field(const BinaryCatalogMetadata& fields,
                   const std::string& key,
                   std::string fallback = {}) {
-  const auto it = fields.find(key);
-  return it == fields.end() ? std::move(fallback) : it->second;
+  const auto it = fields.text.find(key);
+  return it == fields.text.end() ? std::move(fallback) : it->second;
 }
 
-std::uint64_t FieldU64(const std::map<std::string, std::string>& fields,
+std::uint64_t FieldU64(const BinaryCatalogMetadata& fields,
                        const std::string& key,
                        std::uint64_t fallback = 0) {
   return ParseU64(Field(fields, key), fallback);
 }
 
-std::int64_t FieldI64(const std::map<std::string, std::string>& fields,
+std::int64_t FieldI64(const BinaryCatalogMetadata& fields,
                       const std::string& key,
                       std::int64_t fallback = 0) {
   return ParseI64(Field(fields, key), fallback);
 }
 
-bool FieldBool(const std::map<std::string, std::string>& fields,
+bool FieldBool(const BinaryCatalogMetadata& fields,
                const std::string& key,
                bool fallback = false) {
   return ParseBool(Field(fields, key), fallback);
@@ -169,7 +139,13 @@ EngineApiDiagnostic SequenceDiagnostic(const char* code, std::string detail = {}
   return {diagnostic_code, std::move(message_key), std::move(detail), error};
 }
 
-EngineApiDiagnostic OkDiagnostic() { return SequenceDiagnostic(kSequenceDiagnosticOk, {}, false); }
+EngineApiDiagnostic SequenceDiagnostic(const char* code, const EngineUuid& identity, bool error = true) {
+  auto diagnostic = SequenceDiagnostic(code, std::string{}, error);
+  diagnostic.identity_fields.emplace_back("generator_uuid", identity);
+  return diagnostic;
+}
+
+EngineApiDiagnostic OkDiagnostic() { return SequenceDiagnostic(kSequenceDiagnosticOk, std::string{}, false); }
 
 template <typename TResult>
 TResult SuccessResult(const EngineRequestContext& context, std::string operation_id) {
@@ -198,89 +174,62 @@ TResult DiagnosticResult(const EngineRequestContext& context,
   return result;
 }
 
-EngineTypedValue TextValue(std::string value) {
-  EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
-  typed.encoded_value = std::move(value);
-  return typed;
-}
+using SequenceFields = std::vector<std::pair<std::string, EngineEvidenceValue>>;
 
-void AddRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
-  EngineRowValue row;
-  row.requested_row_uuid =
-      "seq-row-" + std::to_string(result->result_shape.rows.size() + 1);
-  for (auto& field : fields) {
-    row.fields.push_back({std::move(field.first), TextValue(std::move(field.second))});
-  }
+void AddRow(EngineApiResult* result, SequenceFields fields) {
+  ApiBehaviorFields values;
+  for (auto& [key, value] : fields)
+    std::visit([&](auto&& v) { values.emplace_back(key, v); }, value);
   result->result_shape.result_kind = "sequence_generator_lifecycle_rows";
-  result->result_shape.rows.push_back(std::move(row));
+  result->result_shape.rows.push_back(ApiBehaviorRow(std::move(values)));
 }
 
-void AddEvidence(EngineApiResult* result, std::string kind, std::string id) {
+void AddEvidence(EngineApiResult* result, std::string kind, EngineEvidenceValue id) {
   result->evidence.push_back({std::move(kind), std::move(id)});
 }
 
-std::string Hex64(std::uint64_t value, int width) {
-  std::ostringstream out;
-  out << std::hex << std::setfill('0') << std::setw(width) << value;
-  return out.str();
-}
-
-std::uint64_t Fnv1a64(const std::string& value) {
-  std::uint64_t hash = 1469598103934665603ull;
-  for (unsigned char c : value) {
-    hash ^= c;
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
-std::string DerivedUuid(const std::string& prefix, const EngineRequestContext& context, std::uint64_t salt) {
-  const std::string seed = prefix + "|" + context.database_path + "|" + context.request_id + "|" +
-                           context.transaction_uuid + "|" +
-                           std::to_string(context.local_transaction_id) + "|" + std::to_string(salt);
-  const std::uint64_t a = Fnv1a64(seed);
-  const std::uint64_t b = Fnv1a64(seed + "|identity");
-  return Hex64((a >> 32) & 0xffffffffu, 8) + "-" +
-         Hex64((a >> 16) & 0xffffu, 4) + "-" +
-         Hex64((a & 0x0fffu) | 0x7000u, 4) + "-" +
-         Hex64(((b >> 48) & 0x3fffu) | 0x8000u, 4) + "-" +
-         Hex64(b & 0xffffffffffffull, 12);
-}
-
-std::string MakeEvent(std::string event_kind,
-                      std::uint64_t creator_tx,
-                      std::vector<std::pair<std::string, std::string>> fields) {
-  std::string out = std::string(kSequenceGeneratorLifecycleEventMagic) + "\t" +
-                    std::move(event_kind) + "\t" + std::to_string(creator_tx);
-  for (auto& field : fields) {
-    out.push_back('\t');
-    out += field.first;
-    out.push_back('=');
-    out += HexEncode(field.second);
-  }
-  return out;
+EngineUuid IssueSequenceIdentity() {
+  return scratchbird::core::uuid::IssueRuntimeIdentityV7().value_or(EngineUuid{});
 }
 
 EngineApiDiagnostic AppendEvent(const EngineRequestContext& context,
                                 std::string event_kind,
                                 std::uint64_t creator_tx,
-                                std::vector<std::pair<std::string, std::string>> fields) {
-  if (context.database_path.empty()) {
+                                SequenceFields fields) {
+  if (context.database_path.empty())
     return SequenceDiagnostic(kSequenceDiagnosticDatabasePathRequired, "database_path");
+  BinaryCatalogMetadata metadata;
+  metadata.text.emplace("event_kind", std::move(event_kind));
+  metadata.text.emplace("creator_tx", std::to_string(creator_tx));
+  for (const auto& [key, value] : fields) {
+    if (metadata.text.contains(key) || metadata.identities.contains(key))
+      return SequenceDiagnostic(kSequenceDiagnosticDatabaseWriteFailed, "duplicate_event_field");
+    if (const auto* uuid = std::get_if<EngineUuid>(&value)) metadata.identities.emplace(key, *uuid);
+    else metadata.text.emplace(key, std::get<std::string>(value));
   }
-  std::ofstream out(EventPath(context), std::ios::binary | std::ios::app);
-  if (!out) { return SequenceDiagnostic(kSequenceDiagnosticDatabaseWriteFailed, "open"); }
-  out << MakeEvent(std::move(event_kind), creator_tx, std::move(fields)) << '\n';
+  std::string bytes;
+  if (!EncodeBinaryCatalogMetadata(metadata, kSequenceGeneratorLifecycleEventMagic, &bytes))
+    return SequenceDiagnostic(kSequenceDiagnosticDatabaseWriteFailed, "invalid_event_fields");
+  std::string framed;
+  AppendBinaryU32(&framed, static_cast<std::uint32_t>(bytes.size()));
+  framed += bytes;
+  static std::mutex append_mutex;
+  const std::lock_guard lock(append_mutex);
+  const auto path = EventPath(context);
+  std::ofstream out(path, std::ios::binary | std::ios::app);
+  if (!out) return SequenceDiagnostic(kSequenceDiagnosticDatabaseWriteFailed, "open");
+  out.write(framed.data(), static_cast<std::streamsize>(framed.size()));
   out.flush();
-  if (!out) { return SequenceDiagnostic(kSequenceDiagnosticDatabaseWriteFailed, "flush"); }
+  out.close();
+  if (!out || !scratchbird::storage::disk::SyncFilesystemPath(path, true).ok() ||
+      !scratchbird::storage::disk::SyncParentDirectoryPath(path).ok())
+    return SequenceDiagnostic(kSequenceDiagnosticDatabaseWriteFailed, "sync");
   return OkDiagnostic();
 }
 
 EngineApiDiagnostic AppendDiagnosticEvent(const EngineRequestContext& context,
                                           const std::string& code,
-                                          const std::string& generator_uuid,
+                                          const EngineUuid& generator_uuid,
                                           const std::string& detail) {
   if (context.database_path.empty()) { return OkDiagnostic(); }
   return AppendEvent(context,
@@ -302,37 +251,46 @@ EngineLoadSequenceGeneratorLifecycleStateResult ReadRawEvents(
   }
   std::ifstream in(EventPath(context), std::ios::binary);
   if (!in) {
+    std::error_code error;
+    if (std::filesystem::exists(EventPath(context), error) || error) {
+      result.diagnostic = SequenceDiagnostic(kSequenceDiagnosticDatabaseWriteFailed, "open_read");
+      return result;
+    }
     result.ok = true;
     result.diagnostic = OkDiagnostic();
     return result;
   }
-  std::string line;
-  std::uint64_t event_sequence = 0;
-  while (std::getline(in, line)) {
-    ++event_sequence;
-    const auto parts = Split(line, '\t');
-    if (parts.size() < 3 || parts[0] != kSequenceGeneratorLifecycleEventMagic) { continue; }
-    RawSequenceEvent event;
-    event.event_sequence = event_sequence;
-    event.event_kind = parts[1];
-    event.creator_tx = ParseU64(parts[2]);
-    for (std::size_t i = 3; i < parts.size(); ++i) {
-      const auto pos = parts[i].find('=');
-      if (pos == std::string::npos) { continue; }
-      event.fields[parts[i].substr(0, pos)] = HexDecode(parts[i].substr(pos + 1));
+  std::vector<RawSequenceEvent> decoded;
+  while (in.peek() != std::char_traits<char>::eof()) {
+    std::array<std::uint8_t, 4> prefix{};
+    in.read(reinterpret_cast<char*>(prefix.data()), prefix.size());
+    std::uint32_t size = 0;
+    std::size_t cursor = 0;
+    if (!in || !ReadBinaryU32(prefix, &cursor, &size) || size > kApiBehaviorRecordMaximumBytes || size < 20) {
+      result.diagnostic = SequenceDiagnostic(kSequenceDiagnosticDatabaseWriteFailed, "invalid_event_frame");
+      return result;
     }
-    events->push_back(std::move(event));
+    std::string bytes(size, '\0');
+    in.read(bytes.data(), size);
+    RawSequenceEvent event;
+    if (!in || !DecodeBinaryCatalogMetadata(bytes, kSequenceGeneratorLifecycleEventMagic, &event.fields) ||
+        !event.fields.text.contains("event_kind") || !event.fields.text.contains("creator_tx")) {
+      result.diagnostic = SequenceDiagnostic(kSequenceDiagnosticDatabaseWriteFailed, "invalid_event_record");
+      return result;
+    }
+    event.event_sequence = decoded.size() + 1;
+    event.event_kind = Field(event.fields, "event_kind");
+    event.creator_tx = FieldU64(event.fields, "creator_tx");
+    decoded.push_back(std::move(event));
   }
+  if (in.bad()) {
+    result.diagnostic = SequenceDiagnostic(kSequenceDiagnosticDatabaseWriteFailed, "read");
+    return result;
+  }
+  *events = std::move(decoded);
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   return result;
-}
-
-std::uint64_t NextEventSalt(const EngineRequestContext& context) {
-  std::vector<RawSequenceEvent> events;
-  const auto loaded = ReadRawEvents(context, &events);
-  if (!loaded.ok) { return 1; }
-  return events.empty() ? 1 : events.back().event_sequence + 1;
 }
 
 bool ValidateMutatingContext(const EngineRequestContext& context, EngineApiDiagnostic* diagnostic) {
@@ -346,11 +304,21 @@ bool ValidateMutatingContext(const EngineRequestContext& context, EngineApiDiagn
     *diagnostic = SequenceDiagnostic(kSequenceDiagnosticMgaTransactionRequired, "local_transaction_id");
     return false;
   }
-  return true;
+  const auto inventory = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  if (inventory.ok()) {
+    for (const auto& entry : inventory.inventory.entries) {
+      if (entry.identity.local_id.value == context.local_transaction_id &&
+          entry.identity.transaction_uuid.value == context.transaction_uuid &&
+          entry.state == scratchbird::transaction::mga::TransactionState::active && !entry.rollback_only)
+        return true;
+    }
+  }
+  *diagnostic = SequenceDiagnostic(kSequenceDiagnosticMgaTransactionRequired, "active_inventory_owner_required");
+  return false;
 }
 
-std::string GeneratorUuidFromRequest(const EngineApiRequest& request, const std::string& explicit_uuid) {
-  if (!explicit_uuid.empty()) { return explicit_uuid; }
+EngineUuid GeneratorUuidFromRequest(const EngineApiRequest& request, const EngineUuid& explicit_uuid) {
+  if (!explicit_uuid.is_nil()) { return explicit_uuid; }
   if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
   if (!request.bound_object_identity.object_uuid.is_nil()) {
     return request.bound_object_identity.object_uuid;
@@ -360,13 +328,13 @@ std::string GeneratorUuidFromRequest(const EngineApiRequest& request, const std:
 
 EngineSequenceGeneratorDefinition NormalizeDefinition(const EngineSequenceCreateGeneratorRequest& request) {
   auto definition = request.definition;
-  if (definition.generator_uuid.empty()) {
+  if (definition.generator_uuid.is_nil()) {
     definition.generator_uuid = GeneratorUuidFromRequest(request, {});
   }
-  if (definition.database_uuid.empty()) { definition.database_uuid = request.context.database_uuid; }
-  if (definition.schema_uuid.empty()) { definition.schema_uuid = request.target_schema.uuid; }
+  if (definition.database_uuid.is_nil()) { definition.database_uuid = request.context.database_uuid; }
+  if (definition.schema_uuid.is_nil()) { definition.schema_uuid = request.target_schema.uuid; }
   if (definition.allocation_mode.empty()) { definition.allocation_mode = "local_node_generator"; }
-  if (definition.value_type_uuid.empty()) { definition.value_type_uuid = "int64"; }
+  if (definition.value_type_uuid.is_nil()) { definition.value_type_uuid = kSequenceInt64TypeUuid; }
   if (definition.cache_size == 0) { definition.cache_size = 1; }
   if (definition.policy_generation == 0) { definition.policy_generation = 1; }
   return definition;
@@ -383,7 +351,7 @@ EngineSequenceGeneratorDefinition NormalizeDefinition(const EngineSequenceAlterG
 }
 
 bool ReferenceMappingIncomplete(const EngineSequenceGeneratorDefinition& definition) {
-  if (definition.reference_profile_uuid.empty()) { return false; }
+  if (definition.reference_profile_uuid.is_nil()) { return false; }
   return !definition.reference_mapping_complete ||
          definition.reference_family.empty() ||
          definition.reference_mapping_label.empty() ||
@@ -396,7 +364,7 @@ bool ReferenceMappingIncomplete(const EngineSequenceGeneratorDefinition& definit
 EngineApiDiagnostic ValidateDefinition(const EngineRequestContext& context,
                                        const EngineSequenceGeneratorDefinition& definition,
                                        bool validate_cluster_metric_request) {
-  if (definition.generator_uuid.empty()) {
+  if (definition.generator_uuid.is_nil()) {
     return SequenceDiagnostic(kSequenceDiagnosticUuidInvalid, "generator_uuid");
   }
   if (definition.increment_by == 0) {
@@ -424,7 +392,7 @@ EngineApiDiagnostic ValidateDefinition(const EngineRequestContext& context,
   return OkDiagnostic();
 }
 
-std::vector<std::pair<std::string, std::string>> DefinitionFields(
+std::vector<std::pair<std::string, EngineEvidenceValue>> DefinitionFields(
     const EngineSequenceGeneratorDefinition& definition) {
   return {
       {"generator_uuid", definition.generator_uuid},
@@ -461,16 +429,16 @@ std::vector<std::pair<std::string, std::string>> DefinitionFields(
       {"cluster_metric_path_requested", BoolText(definition.cluster_metric_path_requested)}};
 }
 
-EngineSequenceGeneratorDefinition DefinitionFromFields(const std::map<std::string, std::string>& fields) {
+EngineSequenceGeneratorDefinition DefinitionFromFields(const BinaryCatalogMetadata& fields) {
   EngineSequenceGeneratorDefinition definition;
-  definition.generator_uuid = Field(fields, "generator_uuid");
-  definition.database_uuid = Field(fields, "database_uuid");
-  definition.schema_uuid = Field(fields, "schema_uuid");
-  definition.table_uuid = Field(fields, "table_uuid");
-  definition.column_uuid = Field(fields, "column_uuid");
-  definition.constraint_uuid = Field(fields, "constraint_uuid");
-  definition.domain_uuid = Field(fields, "domain_uuid");
-  definition.value_type_uuid = Field(fields, "value_type_uuid", "int64");
+  definition.generator_uuid = BinaryCatalogUuid(fields, "generator_uuid");
+  definition.database_uuid = BinaryCatalogUuid(fields, "database_uuid");
+  definition.schema_uuid = BinaryCatalogUuid(fields, "schema_uuid");
+  definition.table_uuid = BinaryCatalogUuid(fields, "table_uuid");
+  definition.column_uuid = BinaryCatalogUuid(fields, "column_uuid");
+  definition.constraint_uuid = BinaryCatalogUuid(fields, "constraint_uuid");
+  definition.domain_uuid = BinaryCatalogUuid(fields, "domain_uuid");
+  definition.value_type_uuid = BinaryCatalogUuid(fields, "value_type_uuid", kSequenceInt64TypeUuid);
   definition.allocation_mode = Field(fields, "allocation_mode", "local_node_generator");
   definition.start_value = FieldI64(fields, "start_value", 1);
   definition.increment_by = FieldI64(fields, "increment_by", 1);
@@ -482,10 +450,10 @@ EngineSequenceGeneratorDefinition DefinitionFromFields(const std::map<std::strin
   definition.transactional_allocation = FieldBool(fields, "transactional_allocation");
   definition.reusable_if_no_effect = FieldBool(fields, "reusable_if_no_effect");
   definition.consumed_on_rollback = FieldBool(fields, "consumed_on_rollback", true);
-  definition.policy_uuid = Field(fields, "policy_uuid");
-  definition.policy_version_uuid = Field(fields, "policy_version_uuid");
+  definition.policy_uuid = BinaryCatalogUuid(fields, "policy_uuid");
+  definition.policy_version_uuid = BinaryCatalogUuid(fields, "policy_version_uuid");
   definition.policy_generation = FieldU64(fields, "policy_generation", 1);
-  definition.reference_profile_uuid = Field(fields, "reference_profile_uuid");
+  definition.reference_profile_uuid = BinaryCatalogUuid(fields, "reference_profile_uuid");
   definition.reference_family = Field(fields, "reference_family");
   definition.reference_mapping_label = Field(fields, "reference_mapping_label");
   definition.reference_allocation_timing = Field(fields, "reference_allocation_timing");
@@ -499,7 +467,7 @@ EngineSequenceGeneratorDefinition DefinitionFromFields(const std::map<std::strin
 }
 
 EngineSequenceGeneratorRecord* FindGenerator(EngineSequenceGeneratorLifecycleState* state,
-                                             const std::string& generator_uuid) {
+                                             const EngineUuid& generator_uuid) {
   for (auto& generator : state->generators) {
     if (generator.definition.generator_uuid == generator_uuid) { return &generator; }
   }
@@ -507,7 +475,7 @@ EngineSequenceGeneratorRecord* FindGenerator(EngineSequenceGeneratorLifecycleSta
 }
 
 const EngineSequenceGeneratorRecord* FindGenerator(const EngineSequenceGeneratorLifecycleState& state,
-                                                   const std::string& generator_uuid) {
+                                                   const EngineUuid& generator_uuid) {
   for (const auto& generator : state.generators) {
     if (generator.definition.generator_uuid == generator_uuid) { return &generator; }
   }
@@ -517,14 +485,19 @@ const EngineSequenceGeneratorRecord* FindGenerator(const EngineSequenceGenerator
 bool DdlEventVisible(const EngineRequestContext& context,
                      std::uint64_t creator_tx,
                      const std::map<std::uint64_t, TransactionOutcome>& outcomes) {
-  if (creator_tx == 0) { return true; }
-  if (context.local_transaction_id != 0 && creator_tx == context.local_transaction_id) { return true; }
   const auto outcome = outcomes.find(creator_tx);
-  if (outcome == outcomes.end()) { return false; }
-  if (outcome->second.outcome != "committed" && outcome->second.outcome != "archived") { return false; }
-  if (context.snapshot_visible_through_local_transaction_id != 0) {
-    return creator_tx <= context.snapshot_visible_through_local_transaction_id;
+  if (creator_tx == 0 || outcome == outcomes.end()) return false;
+  const auto reader = outcomes.find(context.local_transaction_id);
+  if (context.local_transaction_id != 0) {
+    if (reader == outcomes.end() || reader->second.transaction_uuid != context.transaction_uuid ||
+        (reader->second.outcome != "active" && reader->second.outcome != "read_only_active")) return false;
+    if (creator_tx == context.local_transaction_id) return true;
   }
+  if (outcome->second.outcome != "committed") return false;
+  if (reader != outcomes.end() && outcome->second.commit_sequence > reader->second.begin_visible_through_commit_sequence)
+    return false;
+  if (context.snapshot_visible_through_local_transaction_id != 0 &&
+      creator_tx > context.snapshot_visible_through_local_transaction_id) return false;
   return true;
 }
 
@@ -615,21 +588,38 @@ WindowPlan PlanWindow(const EngineSequenceGeneratorRecord& generator) {
   return plan;
 }
 
-std::map<std::uint64_t, TransactionOutcome> BuildOutcomeMap(const std::vector<RawSequenceEvent>& events) {
-  std::map<std::uint64_t, TransactionOutcome> outcomes;
-  for (const auto& event : events) {
-    if (event.event_kind != "MGA_OUTCOME") { continue; }
-    const std::uint64_t tx = FieldU64(event.fields, "outcome_local_transaction_id");
-    if (tx == 0) { continue; }
+bool BuildOutcomeMap(const EngineRequestContext& context,
+                     const std::vector<RawSequenceEvent>& events,
+                     std::map<std::uint64_t, TransactionOutcome>* outcomes) {
+  const auto loaded = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  if (!loaded.ok()) return false;
+  using scratchbird::transaction::mga::TransactionState;
+  for (const auto& entry : loaded.inventory.entries) {
     TransactionOutcome outcome;
-    outcome.outcome = Field(event.fields, "mga_outcome", "unknown");
-    outcome.transaction_uuid = Field(event.fields, "outcome_transaction_uuid");
-    outcome.committed_row_effects = FieldBool(event.fields, "committed_row_effects", true);
-    outcome.folded_to_no_effect = FieldBool(event.fields, "folded_to_no_effect", false);
-    outcome.external_exposure_observed = FieldBool(event.fields, "external_exposure_observed", true);
-    outcomes[tx] = std::move(outcome);
+    outcome.transaction_uuid = entry.identity.transaction_uuid.value;
+    outcome.commit_sequence = entry.commit_sequence;
+    outcome.begin_visible_through_commit_sequence = entry.begin_visible_through_commit_sequence;
+    switch (scratchbird::transaction::mga::InventoryVisibilityState(entry)) {
+      case TransactionState::committed: outcome.outcome = "committed"; break;
+      case TransactionState::rolled_back: outcome.outcome = "rolled_back"; break;
+      case TransactionState::active: outcome.outcome = "active"; break;
+      case TransactionState::read_only_active: outcome.outcome = "read_only_active"; break;
+      default: break;
+    }
+    outcomes->emplace(entry.identity.local_id.value, outcome);
   }
-  return outcomes;
+  // Events annotate row effects only after the durable inventory proves finality.
+  for (const auto& event : events) {
+    if (event.event_kind != "MGA_OUTCOME") continue;
+    const auto it = outcomes->find(FieldU64(event.fields, "outcome_local_transaction_id"));
+    const auto declared = Field(event.fields, "mga_outcome");
+    if (it == outcomes->end() || it->second.transaction_uuid != BinaryCatalogUuid(event.fields, "outcome_transaction_uuid") ||
+        (declared != it->second.outcome && !(declared == "archived" && it->second.outcome == "committed"))) return false;
+    it->second.committed_row_effects = FieldBool(event.fields, "committed_row_effects", true);
+    it->second.folded_to_no_effect = FieldBool(event.fields, "folded_to_no_effect", false);
+    it->second.external_exposure_observed = FieldBool(event.fields, "external_exposure_observed", true);
+  }
+  return true;
 }
 
 void ApplyOutcomeToAllocation(const TransactionOutcome& outcome,
@@ -677,7 +667,7 @@ void ApplyOutcomeState(EngineSequenceGeneratorLifecycleState* state,
                        const std::map<std::uint64_t, TransactionOutcome>& outcomes) {
   for (auto& allocation : state->allocations) {
     const auto outcome = outcomes.find(allocation.local_transaction_id);
-    if (outcome != outcomes.end()) {
+    if (outcome != outcomes.end() && outcome->second.transaction_uuid == allocation.transaction_uuid) {
       ApplyOutcomeToAllocation(outcome->second, &allocation, &state->metrics);
     }
   }
@@ -703,14 +693,14 @@ EngineSequenceAllocationRecord AllocationFromFields(const RawSequenceEvent& even
   allocation.local_transaction_id = FieldU64(event.fields, "local_transaction_id", event.creator_tx);
   allocation.sequence_epoch = FieldU64(event.fields, "sequence_epoch", event.event_sequence);
   allocation.cache_window_generation = FieldU64(event.fields, "cache_window_generation");
-  allocation.allocation_uuid = Field(event.fields, "allocation_uuid");
-  allocation.reservation_uuid = Field(event.fields, "reservation_uuid");
-  allocation.generator_uuid = Field(event.fields, "generator_uuid");
-  allocation.table_uuid = Field(event.fields, "table_uuid");
-  allocation.column_uuid = Field(event.fields, "column_uuid");
-  allocation.statement_uuid = Field(event.fields, "statement_uuid");
-  allocation.record_uuid = Field(event.fields, "record_uuid");
-  allocation.transaction_uuid = Field(event.fields, "transaction_uuid");
+  allocation.allocation_uuid = BinaryCatalogUuid(event.fields, "allocation_uuid");
+  allocation.reservation_uuid = BinaryCatalogUuid(event.fields, "reservation_uuid");
+  allocation.generator_uuid = BinaryCatalogUuid(event.fields, "generator_uuid");
+  allocation.table_uuid = BinaryCatalogUuid(event.fields, "table_uuid");
+  allocation.column_uuid = BinaryCatalogUuid(event.fields, "column_uuid");
+  allocation.statement_uuid = BinaryCatalogUuid(event.fields, "statement_uuid");
+  allocation.record_uuid = BinaryCatalogUuid(event.fields, "record_uuid");
+  allocation.transaction_uuid = BinaryCatalogUuid(event.fields, "transaction_uuid");
   allocation.allocated_value = FieldI64(event.fields, "allocated_value");
   allocation.allocation_mode = Field(event.fields, "allocation_mode", "local_node_generator");
   allocation.allocation_finality = Field(event.fields, "allocation_finality", "allocated_uncommitted");
@@ -731,16 +721,18 @@ EngineIdentityValueBindingRecord BindingFromFields(const RawSequenceEvent& event
   EngineIdentityValueBindingRecord binding;
   binding.creator_tx = event.creator_tx;
   binding.event_sequence = event.event_sequence;
-  binding.identity_binding_uuid = Field(event.fields, "identity_binding_uuid");
-  binding.generator_uuid = Field(event.fields, "generator_uuid");
-  binding.allocation_uuid = Field(event.fields, "allocation_uuid");
-  binding.table_uuid = Field(event.fields, "table_uuid");
-  binding.record_uuid = Field(event.fields, "record_uuid");
-  binding.identity_column_uuid = Field(event.fields, "identity_column_uuid");
+  binding.identity_binding_uuid = BinaryCatalogUuid(event.fields, "identity_binding_uuid");
+  binding.generator_uuid = BinaryCatalogUuid(event.fields, "generator_uuid");
+  binding.allocation_uuid = BinaryCatalogUuid(event.fields, "allocation_uuid");
+  binding.table_uuid = BinaryCatalogUuid(event.fields, "table_uuid");
+  binding.record_uuid = BinaryCatalogUuid(event.fields, "record_uuid");
+  binding.identity_column_uuid = BinaryCatalogUuid(event.fields, "identity_column_uuid");
   binding.identity_value_kind = Field(event.fields, "identity_value_kind");
-  binding.identity_value = Field(event.fields, "identity_value");
+  binding.identity_value = event.fields.identities.contains("identity_value")
+      ? EngineEvidenceValue{BinaryCatalogUuid(event.fields, "identity_value")}
+      : EngineEvidenceValue{Field(event.fields, "identity_value")};
   binding.binding_finality = Field(event.fields, "binding_finality", "allocated_uncommitted");
-  binding.transaction_uuid = Field(event.fields, "transaction_uuid");
+  binding.transaction_uuid = BinaryCatalogUuid(event.fields, "transaction_uuid");
   binding.local_transaction_id = FieldU64(event.fields, "local_transaction_id", event.creator_tx);
   return binding;
 }
@@ -748,7 +740,7 @@ EngineIdentityValueBindingRecord BindingFromFields(const RawSequenceEvent& event
 void FillGeneratorResult(EngineApiResult* result, const EngineSequenceGeneratorRecord& generator) {
   result->primary_object.uuid = generator.definition.generator_uuid;
   result->primary_object.object_kind = "sequence_generator";
-  result->catalog_row_uuid = "seq-catalog-" + std::to_string(generator.metadata_epoch);
+  // This allocation record does not claim a catalog-row identity.
   AddEvidence(result, "sequence_generator_lifecycle", generator.definition.generator_uuid);
   AddEvidence(result, "sequence_policy_cache", "bounded_nonfinality_cache_v1");
   AddEvidence(result, "mga_transaction_authority", "allocation_not_transaction_finality");
@@ -782,6 +774,7 @@ void FillAllocationResult(EngineApiResult* result, const EngineSequenceAllocatio
 
 EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleState(
     const EngineRequestContext& context) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   std::vector<RawSequenceEvent> events;
   auto read = ReadRawEvents(context, &events);
   if (!read.ok) { return read; }
@@ -792,7 +785,13 @@ EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleSt
   result.state.max_event_sequence = events.empty() ? 0 : events.back().event_sequence;
   EnsureMetricPaths(&result.state);
 
-  const auto outcomes = BuildOutcomeMap(events);
+  std::map<std::uint64_t, TransactionOutcome> outcomes;
+  if (!BuildOutcomeMap(context, events, &outcomes)) {
+    result.ok = false;
+    result.diagnostic = SequenceDiagnostic(kSequenceDiagnosticMgaTransactionRequired, "durable_inventory_or_annotation_invalid");
+    return result;
+  }
+  std::vector<EngineUuid> released_allocations;
   for (const auto& event : events) {
     result.state.max_event_sequence = std::max(result.state.max_event_sequence, event.event_sequence);
     if (event.event_kind == "CREATE") {
@@ -814,11 +813,11 @@ EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleSt
       }
     } else if (event.event_kind == "ALTER" || event.event_kind == "RESTART") {
       if (!DdlEventVisible(context, event.creator_tx, outcomes)) { continue; }
-      const std::string generator_uuid = Field(event.fields, "generator_uuid");
+      const EngineUuid generator_uuid = BinaryCatalogUuid(event.fields, "generator_uuid");
       auto* generator = FindGenerator(&result.state, generator_uuid);
       if (generator == nullptr) { continue; }
       EngineSequenceGeneratorDefinition replacement = DefinitionFromFields(event.fields);
-      if (replacement.generator_uuid.empty()) { replacement.generator_uuid = generator_uuid; }
+      if (replacement.generator_uuid.is_nil()) { replacement.generator_uuid = generator_uuid; }
       generator->definition = replacement;
       generator->metadata_epoch = event.event_sequence;
       generator->event_sequence = event.event_sequence;
@@ -832,7 +831,7 @@ EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleSt
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, generator->metadata_epoch);
     } else if (event.event_kind == "DROP") {
       if (!DdlEventVisible(context, event.creator_tx, outcomes)) { continue; }
-      const std::string generator_uuid = Field(event.fields, "generator_uuid");
+      const EngineUuid generator_uuid = BinaryCatalogUuid(event.fields, "generator_uuid");
       auto* generator = FindGenerator(&result.state, generator_uuid);
       if (generator == nullptr) { continue; }
       generator->metadata_epoch = event.event_sequence;
@@ -842,7 +841,7 @@ EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleSt
       generator->cache_window_active = false;
       result.state.metadata_epoch = std::max(result.state.metadata_epoch, generator->metadata_epoch);
     } else if (event.event_kind == "CACHE_WINDOW") {
-      auto* generator = FindGenerator(&result.state, Field(event.fields, "generator_uuid"));
+      auto* generator = FindGenerator(&result.state, BinaryCatalogUuid(event.fields, "generator_uuid"));
       if (generator == nullptr) { continue; }
       ++result.state.metrics.cache_windows_reserved_total;
       generator->cache_window_generation = FieldU64(event.fields, "cache_window_generation");
@@ -872,11 +871,24 @@ EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleSt
       }
       result.state.allocations.push_back(std::move(allocation));
     } else if (event.event_kind == "RELEASE_VALUE") {
-      auto* generator = FindGenerator(&result.state, Field(event.fields, "generator_uuid"));
+      auto* generator = FindGenerator(&result.state, BinaryCatalogUuid(event.fields, "generator_uuid"));
       if (generator == nullptr) { continue; }
-      generator->reusable_released_values.push_back(FieldI64(event.fields, "released_value"));
+      const auto allocation_uuid = BinaryCatalogUuid(event.fields, "allocation_uuid");
+      if (std::find(released_allocations.begin(), released_allocations.end(), allocation_uuid) != released_allocations.end()) continue;
+      const auto allocation = std::find_if(result.state.allocations.begin(), result.state.allocations.end(),
+          [&](const auto& entry) { return entry.allocation_uuid == allocation_uuid; });
+      if (allocation == result.state.allocations.end()) continue;
+      const auto outcome = outcomes.find(allocation->local_transaction_id);
+      if (outcome == outcomes.end() || outcome->second.transaction_uuid != allocation->transaction_uuid) continue;
+      auto evaluated = *allocation;
+      EngineSequenceGeneratorMetrics ignored_metrics;
+      ApplyOutcomeToAllocation(outcome->second, &evaluated, &ignored_metrics);
+      if (!evaluated.released || evaluated.generator_uuid != generator->definition.generator_uuid ||
+          evaluated.allocated_value != FieldI64(event.fields, "released_value")) continue;
+      released_allocations.push_back(allocation_uuid);
+      generator->reusable_released_values.push_back(evaluated.allocated_value);
     } else if (event.event_kind == "REUSE_VALUE") {
-      auto* generator = FindGenerator(&result.state, Field(event.fields, "generator_uuid"));
+      auto* generator = FindGenerator(&result.state, BinaryCatalogUuid(event.fields, "generator_uuid"));
       if (generator == nullptr) { continue; }
       const std::int64_t reused = FieldI64(event.fields, "reused_value");
       const auto it = std::find(generator->reusable_released_values.begin(),
@@ -890,8 +902,8 @@ EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleSt
     } else if (event.event_kind == "RECOVERY_SNAPSHOT") {
       ++result.state.metrics.recovery_snapshots_total;
       result.state.recovered_from_persisted_state = true;
-      result.state.recovery_snapshot_uuid = Field(event.fields, "recovery_snapshot_uuid");
-      auto* generator = FindGenerator(&result.state, Field(event.fields, "generator_uuid"));
+      result.state.recovery_snapshot_uuid = BinaryCatalogUuid(event.fields, "recovery_snapshot_uuid");
+      auto* generator = FindGenerator(&result.state, BinaryCatalogUuid(event.fields, "generator_uuid"));
       if (generator == nullptr) { continue; }
       generator->recovered_from_persisted_state = true;
       generator->recovery_snapshot_uuid = result.state.recovery_snapshot_uuid;
@@ -901,7 +913,7 @@ EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleSt
       generator->cache_next_value = generator->durable_next_value;
     } else if (event.event_kind == "RETENTION_BLOCKED") {
       ++result.state.metrics.mga_retention_blocked_total;
-      auto* generator = FindGenerator(&result.state, Field(event.fields, "generator_uuid"));
+      auto* generator = FindGenerator(&result.state, BinaryCatalogUuid(event.fields, "generator_uuid"));
       if (generator != nullptr) { generator->retained_by_mga_horizon = true; }
     } else if (event.event_kind == "DIAGNOSTIC") {
       const std::string code = Field(event.fields, "diagnostic_code");
@@ -920,6 +932,7 @@ EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleSt
 
 EngineSequenceCreateGeneratorResult EngineSequenceCreateGenerator(
     const EngineSequenceCreateGeneratorRequest& request) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.create";
   EngineApiDiagnostic diagnostic;
   if (!ValidateMutatingContext(request.context, &diagnostic)) {
@@ -959,6 +972,7 @@ EngineSequenceCreateGeneratorResult EngineSequenceCreateGenerator(
 
 EngineSequenceAlterGeneratorResult EngineSequenceAlterGenerator(
     const EngineSequenceAlterGeneratorRequest& request) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.alter";
   EngineApiDiagnostic diagnostic;
   if (!ValidateMutatingContext(request.context, &diagnostic)) {
@@ -1001,12 +1015,13 @@ EngineSequenceAlterGeneratorResult EngineSequenceAlterGenerator(
 
 EngineSequenceRestartGeneratorResult EngineSequenceRestartGenerator(
     const EngineSequenceRestartGeneratorRequest& request) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.restart";
   EngineApiDiagnostic diagnostic;
   if (!ValidateMutatingContext(request.context, &diagnostic)) {
     return DiagnosticResult<EngineSequenceRestartGeneratorResult>(request.context, kOperation, diagnostic);
   }
-  const std::string generator_uuid = GeneratorUuidFromRequest(request, request.generator_uuid);
+  const EngineUuid generator_uuid = GeneratorUuidFromRequest(request, request.generator_uuid);
   const auto loaded = LoadSequenceGeneratorLifecycleState(request.context);
   const auto* existing = FindGenerator(loaded.state, generator_uuid);
   if (existing == nullptr) {
@@ -1038,12 +1053,13 @@ EngineSequenceRestartGeneratorResult EngineSequenceRestartGenerator(
 
 EngineSequenceDropGeneratorResult EngineSequenceDropGenerator(
     const EngineSequenceDropGeneratorRequest& request) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.drop";
   EngineApiDiagnostic diagnostic;
   if (!ValidateMutatingContext(request.context, &diagnostic)) {
     return DiagnosticResult<EngineSequenceDropGeneratorResult>(request.context, kOperation, diagnostic);
   }
-  const std::string generator_uuid = GeneratorUuidFromRequest(request, request.generator_uuid);
+  const EngineUuid generator_uuid = GeneratorUuidFromRequest(request, request.generator_uuid);
   const auto loaded = LoadSequenceGeneratorLifecycleState(request.context);
   const auto* existing = FindGenerator(loaded.state, generator_uuid);
   if (existing == nullptr) {
@@ -1071,12 +1087,13 @@ EngineSequenceDropGeneratorResult EngineSequenceDropGenerator(
 
 EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
     const EngineSequenceAllocateValueRequest& request) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.allocate";
   EngineApiDiagnostic diagnostic;
   if (!ValidateMutatingContext(request.context, &diagnostic)) {
     return DiagnosticResult<EngineSequenceAllocateValueResult>(request.context, kOperation, diagnostic);
   }
-  const std::string generator_uuid = GeneratorUuidFromRequest(request, request.generator_uuid);
+  const EngineUuid generator_uuid = GeneratorUuidFromRequest(request, request.generator_uuid);
   const auto loaded = LoadSequenceGeneratorLifecycleState(request.context);
   if (!loaded.ok) {
     return DiagnosticResult<EngineSequenceAllocateValueResult>(request.context, kOperation, loaded.diagnostic);
@@ -1104,9 +1121,10 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
   EngineSequenceGeneratorRecord generator = *existing;
   if (!generator.reusable_released_values.empty()) {
     const std::int64_t value = generator.reusable_released_values.front();
-    const std::uint64_t salt = NextEventSalt(request.context);
-    const std::string allocation_uuid = DerivedUuid("sequence-allocation", request.context, salt);
-    const std::string reservation_uuid = DerivedUuid("sequence-reservation", request.context, salt + 1);
+
+    const EngineUuid allocation_uuid = IssueSequenceIdentity();
+    const EngineUuid reservation_uuid = IssueSequenceIdentity();
+    if (allocation_uuid.is_nil() || reservation_uuid.is_nil()) return DiagnosticResult<EngineSequenceAllocateValueResult>(request.context, kOperation, SequenceDiagnostic(kSequenceDiagnosticUuidInvalid, "identity_issuance_failed"));
     const auto reuse = AppendEvent(
         request.context,
         "REUSE_VALUE",
@@ -1201,9 +1219,10 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
   const bool active_after = !CacheWindowConsumedAfter(generator, value) &&
                             next_after_value.has_value() &&
                             CacheValueWithinWindow(generator, *next_after_value);
-  const std::uint64_t salt = NextEventSalt(request.context);
-  const std::string allocation_uuid = DerivedUuid("sequence-allocation", request.context, salt);
-  const std::string reservation_uuid = DerivedUuid("sequence-reservation", request.context, salt + 1);
+
+  const EngineUuid allocation_uuid = IssueSequenceIdentity();
+  const EngineUuid reservation_uuid = IssueSequenceIdentity();
+    if (allocation_uuid.is_nil() || reservation_uuid.is_nil()) return DiagnosticResult<EngineSequenceAllocateValueResult>(request.context, kOperation, SequenceDiagnostic(kSequenceDiagnosticUuidInvalid, "identity_issuance_failed"));
   const auto appended = AppendEvent(
       request.context,
       "ALLOCATE",
@@ -1255,6 +1274,7 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
 
 EngineSequenceApplyMgaTransactionOutcomeResult EngineSequenceApplyMgaTransactionOutcome(
     const EngineSequenceApplyMgaTransactionOutcomeRequest& request) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.apply_mga_outcome";
   if (request.context.database_path.empty()) {
     return DiagnosticResult<EngineSequenceApplyMgaTransactionOutcomeResult>(
@@ -1270,6 +1290,15 @@ EngineSequenceApplyMgaTransactionOutcomeResult EngineSequenceApplyMgaTransaction
         kOperation,
         SequenceDiagnostic(kSequenceDiagnosticMgaTransactionRequired, "mga_outcome"));
   }
+  std::map<std::uint64_t, TransactionOutcome> outcomes;
+  const bool inventory_ok = BuildOutcomeMap(request.context, {}, &outcomes);
+  const auto outcome = outcomes.find(request.outcome_local_transaction_id);
+  if (!inventory_ok || outcome == outcomes.end() ||
+      outcome->second.transaction_uuid != request.outcome_transaction_uuid ||
+      (request.mga_outcome != outcome->second.outcome &&
+       !(request.mga_outcome == "archived" && outcome->second.outcome == "committed")))
+    return DiagnosticResult<EngineSequenceApplyMgaTransactionOutcomeResult>(request.context, kOperation,
+        SequenceDiagnostic(kSequenceDiagnosticMgaTransactionRequired, "durable_outcome_mismatch"));
   const auto appended = AppendEvent(
       request.context,
       "MGA_OUTCOME",
@@ -1283,10 +1312,17 @@ EngineSequenceApplyMgaTransactionOutcomeResult EngineSequenceApplyMgaTransaction
   if (appended.error) {
     return DiagnosticResult<EngineSequenceApplyMgaTransactionOutcomeResult>(request.context, kOperation, appended);
   }
+  std::vector<RawSequenceEvent> existing_events;
+  const auto existing = ReadRawEvents(request.context, &existing_events);
+  if (!existing.ok) return DiagnosticResult<EngineSequenceApplyMgaTransactionOutcomeResult>(request.context, kOperation, existing.diagnostic);
   const auto after = LoadSequenceGeneratorLifecycleState(request.context);
+  if (!after.ok) return DiagnosticResult<EngineSequenceApplyMgaTransactionOutcomeResult>(request.context, kOperation, after.diagnostic);
   for (const auto& allocation : after.state.allocations) {
     if (allocation.local_transaction_id != request.outcome_local_transaction_id) { continue; }
     if (!allocation.released) { continue; }
+    if (std::any_of(existing_events.begin(), existing_events.end(), [&](const auto& event) {
+          return event.event_kind == "RELEASE_VALUE" && BinaryCatalogUuid(event.fields, "allocation_uuid") == allocation.allocation_uuid;
+        })) continue;
     const auto release = AppendEvent(
         request.context,
         "RELEASE_VALUE",
@@ -1301,6 +1337,7 @@ EngineSequenceApplyMgaTransactionOutcomeResult EngineSequenceApplyMgaTransaction
     }
   }
   const auto reloaded = LoadSequenceGeneratorLifecycleState(request.context);
+  if (!reloaded.ok) return DiagnosticResult<EngineSequenceApplyMgaTransactionOutcomeResult>(request.context, kOperation, reloaded.diagnostic);
   auto result = SuccessResult<EngineSequenceApplyMgaTransactionOutcomeResult>(request.context, kOperation);
   for (const auto& allocation : reloaded.state.allocations) {
     if (allocation.local_transaction_id == request.outcome_local_transaction_id) {
@@ -1314,31 +1351,35 @@ EngineSequenceApplyMgaTransactionOutcomeResult EngineSequenceApplyMgaTransaction
 
 EngineSequenceBindIdentityValueResult EngineSequenceBindIdentityValue(
     const EngineSequenceBindIdentityValueRequest& request) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.identity.bind";
   EngineApiDiagnostic diagnostic;
   if (!ValidateMutatingContext(request.context, &diagnostic)) {
     return DiagnosticResult<EngineSequenceBindIdentityValueResult>(request.context, kOperation, diagnostic);
   }
-  if (request.table_uuid.empty() || request.record_uuid.empty() || request.identity_column_uuid.empty()) {
+  if (request.table_uuid.is_nil() || request.record_uuid.is_nil() || request.identity_column_uuid.is_nil()) {
     return DiagnosticResult<EngineSequenceBindIdentityValueResult>(
         request.context,
         kOperation,
         SequenceDiagnostic(kSequenceDiagnosticRangeInvalid, "identity_binding_metadata"));
   }
-  std::string identity_value = request.identity_value;
+  EngineEvidenceValue identity_value = request.identity_value;
+  const auto* identity_text = std::get_if<std::string>(&identity_value);
+  const bool identity_empty = identity_text && identity_text->empty();
   if (request.identity_value_kind == "row_uuid_identity") {
     if (request.attempted_second_uuid_for_row_identity ||
-        (!identity_value.empty() && identity_value != request.record_uuid)) {
+        (!identity_empty && identity_value != EngineEvidenceValue{request.record_uuid})) {
       diagnostic = SequenceDiagnostic(kSequenceDiagnosticIdentityDoubleUuidForbidden, request.record_uuid);
       AppendDiagnosticEvent(request.context, diagnostic.code, request.generator_uuid, diagnostic.detail);
       return DiagnosticResult<EngineSequenceBindIdentityValueResult>(request.context, kOperation, diagnostic);
     }
     identity_value = request.record_uuid;
-  } else if (identity_value.empty()) {
+  } else if (identity_empty) {
     identity_value = request.allocation_uuid;
   }
-  const std::uint64_t salt = NextEventSalt(request.context);
-  const std::string binding_uuid = DerivedUuid("sequence-identity-binding", request.context, salt);
+
+  const EngineUuid binding_uuid = IssueSequenceIdentity();
+  if (binding_uuid.is_nil()) return DiagnosticResult<EngineSequenceBindIdentityValueResult>(request.context, kOperation, SequenceDiagnostic(kSequenceDiagnosticUuidInvalid, "identity_issuance_failed"));
   const auto appended = AppendEvent(
       request.context,
       "IDENTITY_BIND",
@@ -1358,6 +1399,7 @@ EngineSequenceBindIdentityValueResult EngineSequenceBindIdentityValue(
     return DiagnosticResult<EngineSequenceBindIdentityValueResult>(request.context, kOperation, appended);
   }
   const auto after = LoadSequenceGeneratorLifecycleState(request.context);
+  if (!after.ok) return DiagnosticResult<EngineSequenceBindIdentityValueResult>(request.context, kOperation, after.diagnostic);
   auto result = SuccessResult<EngineSequenceBindIdentityValueResult>(request.context, kOperation);
   if (!after.state.identity_bindings.empty()) { result.binding = after.state.identity_bindings.back(); }
   if (request.identity_value_kind == "row_uuid_identity") {
@@ -1377,6 +1419,7 @@ EngineSequenceBindIdentityValueResult EngineSequenceBindIdentityValue(
 
 EngineSequenceRecoverGeneratorStateResult EngineSequenceRecoverGeneratorState(
     const EngineSequenceRecoverGeneratorStateRequest& request) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.recover";
   const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::sequence_default);
   if (savepoint.error)
@@ -1391,8 +1434,9 @@ EngineSequenceRecoverGeneratorStateResult EngineSequenceRecoverGeneratorState(
   if (!loaded.ok) {
     return DiagnosticResult<EngineSequenceRecoverGeneratorStateResult>(request.context, kOperation, loaded.diagnostic);
   }
-  const std::string snapshot_uuid =
-      DerivedUuid("sequence-recovery-snapshot", request.context, loaded.state.max_event_sequence + 1);
+  const EngineUuid snapshot_uuid =
+      IssueSequenceIdentity();
+  if (snapshot_uuid.is_nil()) return DiagnosticResult<EngineSequenceRecoverGeneratorStateResult>(request.context, kOperation, SequenceDiagnostic(kSequenceDiagnosticUuidInvalid, "identity_issuance_failed"));
   for (const auto& generator : loaded.state.generators) {
     if (generator.dropped || !generator.cache_window_active) { continue; }
     std::uint64_t unused = 0;
@@ -1419,6 +1463,7 @@ EngineSequenceRecoverGeneratorStateResult EngineSequenceRecoverGeneratorState(
     }
   }
   const auto after = LoadSequenceGeneratorLifecycleState(request.context);
+  if (!after.ok) return DiagnosticResult<EngineSequenceRecoverGeneratorStateResult>(request.context, kOperation, after.diagnostic);
   auto result = SuccessResult<EngineSequenceRecoverGeneratorStateResult>(request.context, kOperation);
   result.state = after.state;
   result.recovery_snapshot_uuid = snapshot_uuid;
@@ -1429,6 +1474,7 @@ EngineSequenceRecoverGeneratorStateResult EngineSequenceRecoverGeneratorState(
 
 EngineSequenceEvaluateMgaRetentionResult EngineSequenceEvaluateMgaRetention(
     const EngineSequenceEvaluateMgaRetentionRequest& request) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.evaluate_mga_retention";
   const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::sequence_default);
   if (savepoint.error)
@@ -1444,7 +1490,7 @@ EngineSequenceEvaluateMgaRetentionResult EngineSequenceEvaluateMgaRetention(
     return DiagnosticResult<EngineSequenceEvaluateMgaRetentionResult>(request.context, kOperation, loaded.diagnostic);
   }
   std::uint64_t blocked = 0;
-  std::string blocked_generator;
+  EngineUuid blocked_generator;
   for (const auto& generator : loaded.state.generators) {
     if (!generator.dropped) { continue; }
     for (const auto& allocation : loaded.state.allocations) {

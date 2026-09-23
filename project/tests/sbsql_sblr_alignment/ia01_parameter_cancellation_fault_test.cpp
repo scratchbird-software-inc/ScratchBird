@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "hash_digest.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_parameter_runtime.hpp"
@@ -109,8 +110,8 @@ ExactParameterCarrier BuildCarrier() {
   envelope.result_shape = "query_execute_result";
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
-      "019f0000-0000-7500-8000-000000000304";
-  envelope.registry_snapshot_uuid = std::string(kCatalogUuid);
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7500-8000-000000000304");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000000303");
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_transaction_context = true;
 
@@ -253,22 +254,16 @@ ExactParameterCarrier BuildCarrier() {
 api::EngineRequestContext Context(std::atomic<unsigned>* probes) {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000000303";
-  context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000000313";
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000000314";
-  context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7100-8000-000000000303";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7120-8000-000000000303");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7130-8000-000000000313");
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7140-8000-000000000314");
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7100-8000-000000000303");
   context.local_transaction_id = 37;
   context.snapshot_visible_through_local_transaction_id = 35;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000000315";
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7150-8000-000000000315");
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f0000-0000-7110-8000-000000000304";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7110-8000-000000000304");
   context.catalog_generation_id = 303;
   context.security_epoch = 304;
   context.resource_epoch = 305;

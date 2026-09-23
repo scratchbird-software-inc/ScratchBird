@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "domain_support/domain_store.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "mga_relation_store/mga_binary_identity_codec.hpp"
 
 #include "crud_support/crud_store.hpp"
 #include "datatype_operations.hpp"
@@ -55,14 +57,14 @@ using scratchbird::core::platform::u64;
 
 // SEARCH_KEY: SB_ENGINE_DOMAIN_BINARY_CATALOG_ENVELOPE
 inline constexpr std::array<byte, 8> kDomainCatalogMagic = {
-    'S', 'B', 'D', 'O', 'M', 'C', '0', '1'};
+    'S', 'B', 'D', 'O', 'M', 'C', '0', '2'};
 inline constexpr std::array<byte, 8> kDomainCatalogRecordMagic = {
-    'S', 'B', 'D', 'O', 'M', 'R', '0', '1'};
-inline constexpr u16 kDomainCatalogVersion = 1;
+    'S', 'B', 'D', 'O', 'M', 'R', '0', '2'};
+inline constexpr u16 kDomainCatalogVersion = 2;
 inline constexpr u16 kDomainCatalogHeaderBytes = 80;
 inline constexpr u16 kDomainCatalogRecordHeaderBytes = 88;
 inline constexpr u16 kDomainCatalogDigestBytes = core_hash::kSha256DigestBytes;
-inline constexpr u32 kDomainStringFieldCount = 25;
+inline constexpr u32 kDomainStringFieldCount = 21;
 inline constexpr u32 kDomainRecordFlagNullable = 1u << 0;
 inline constexpr u32 kDomainRecordFlagDropped = 1u << 1;
 
@@ -200,11 +202,7 @@ bool ReadLengthPrefixedString(const std::vector<byte>& payload,
 
 std::vector<std::string> DomainStringFields(const DomainRecord& record) {
   return {
-      record.domain_uuid,
-      record.catalog_row_uuid,
-      record.schema_uuid,
       record.default_name,
-      record.base_descriptor_uuid,
       record.base_descriptor_kind,
       record.base_canonical_type_name,
       record.base_encoded_descriptor,
@@ -231,11 +229,7 @@ std::vector<std::string> DomainStringFields(const DomainRecord& record) {
 bool AssignDomainStringFields(const std::vector<std::string>& fields, DomainRecord* record) {
   if (fields.size() != kDomainStringFieldCount) { return false; }
   std::size_t index = 0;
-  record->domain_uuid = fields[index++];
-  record->catalog_row_uuid = fields[index++];
-  record->schema_uuid = fields[index++];
   record->default_name = fields[index++];
-  record->base_descriptor_uuid = fields[index++];
   record->base_descriptor_kind = fields[index++];
   record->base_canonical_type_name = fields[index++];
   record->base_encoded_descriptor = fields[index++];
@@ -325,7 +319,7 @@ std::string LowerAscii(std::string value) {
 }
 
 bool HasDomainRight(const EngineRequestContext& context,
-                    const std::string& domain_uuid,
+                    const EngineUuid& domain_uuid,
                     const std::string& right) {
   return context.security_context_present &&
          SecurityContextHasRight(context, right, domain_uuid);
@@ -561,8 +555,8 @@ bool DomainVisibilityAllowsRead(const EngineRequestContext& context,
     return false;
   }
   if (StartsWith(policy, "require_principal:")) {
-    const std::string required = domain.visibility_policy_envelope.substr(18);
-    if (!required.empty() && context.principal_uuid == required) { return true; }
+    const auto required=std::string_view(domain.visibility_policy_envelope).substr(18);
+    if(required.size()==16){EngineUuid identity;std::copy_n(reinterpret_cast<const std::uint8_t*>(required.data()),16,identity.bytes.begin());if(core::uuid::IsEngineIdentityUuid(identity)&&context.principal_uuid==identity)return true;}
     *rejection_detail = "domain_visibility_principal_denied:" + column_name;
     return false;
   }
@@ -698,74 +692,18 @@ std::string MaterializeDefault(const std::string& envelope) {
   return {};
 }
 
-std::string MakeDomainEvent(const char* action, const DomainRecord& record) {
-  return std::string(kDomainFoundationEventMagic) + "\t" + action + "\t" + std::to_string(record.creator_tx) + "\t" +
-         record.domain_uuid + "\t" + record.catalog_row_uuid + "\t" + record.schema_uuid + "\t" +
-         EncodeCrudText(record.default_name) + "\t" + record.base_descriptor_uuid + "\t" + record.base_descriptor_kind +
-         "\t" + record.base_canonical_type_name + "\t" + EncodeCrudText(record.base_encoded_descriptor) + "\t" +
-         (record.nullable ? "1" : "0") + "\t" + EncodeCrudText(record.default_expression_envelope) + "\t" +
-         EncodeCrudText(record.check_constraint_envelope) + "\t" + EncodeCrudText(record.charset_or_collation_ref) + "\t" +
-         EncodeCrudText(record.numeric_metadata) + "\t" + record.validation_hook_status + "\t" +
-         EncodeCrudText(record.cast_policy_envelope) + "\t" +
-         EncodeCrudText(record.mutation_policy_envelope) + "\t" +
-         EncodeCrudText(record.masking_policy_envelope) + "\t" +
-         EncodeCrudText(record.visibility_policy_envelope) + "\t" +
-         EncodeCrudText(record.encryption_policy_ref) + "\t" +
-         EncodeCrudText(record.driver_metadata_envelope) + "\t" +
-         EncodeCrudText(record.wire_metadata_envelope) + "\t" +
-         EncodeCrudText(record.element_path_envelope) + "\t" +
-         EncodeCrudText(record.method_binding_envelope) + "\t" +
-         EncodeCrudText(record.localized_names_envelope) + "\t" +
-         EncodeCrudText(record.comment_envelope) + "\t" +
-         EncodeCrudText(record.reference_alias_envelope);
+bool EncodeBinaryDomainRecord(const BinaryDomainRecord&,std::vector<byte>*);
+bool DecodeBinaryDomainRecord(const std::vector<byte>&,std::size_t*,u64*,BinaryDomainRecord*,std::string*);
+std::string MakeDomainEvent(const char* action,const DomainRecord& record){
+  BinaryDomainRecord value;value.action=std::string_view(action)=="DOMAIN_CREATE"?DomainBinaryAction::create:std::string_view(action)=="DOMAIN_ALTER"?DomainBinaryAction::alter:DomainBinaryAction::drop;
+  value.sequence=1;value.record=record;std::vector<byte> encoded;
+  if(!EncodeBinaryDomainRecord(value,&encoded))return {};
+  return {reinterpret_cast<const char*>(encoded.data()),encoded.size()};
 }
-
-std::optional<DomainBinaryAction> DomainBinaryActionFromText(const std::string& action) {
-  if (action == "DOMAIN_CREATE") { return DomainBinaryAction::create; }
-  if (action == "DOMAIN_ALTER") { return DomainBinaryAction::alter; }
-  if (action == "DOMAIN_DROP") { return DomainBinaryAction::drop; }
-  return std::nullopt;
-}
-
-bool ParseTextDomainEvent(const std::string& line,
-                          DomainBinaryAction* action,
-                          DomainRecord* record) {
-  const auto parts = Split(line, '\t');
-  if (parts.size() < 4 || parts[0] != kDomainFoundationEventMagic) { return false; }
-  const auto parsed_action = DomainBinaryActionFromText(parts[1]);
-  if (!parsed_action) { return false; }
-  *action = *parsed_action;
-  record->creator_tx = ParseU64(parts[2]);
-  record->domain_uuid = parts[3];
-  record->dropped = *action == DomainBinaryAction::drop;
-  if (*action == DomainBinaryAction::drop) { return true; }
-  if (parts.size() < 17) { return false; }
-  record->catalog_row_uuid = parts[4];
-  record->schema_uuid = parts[5];
-  record->default_name = HexDecode(parts[6]);
-  record->base_descriptor_uuid = parts[7];
-  record->base_descriptor_kind = parts[8];
-  record->base_canonical_type_name = parts[9];
-  record->base_encoded_descriptor = HexDecode(parts[10]);
-  record->nullable = ParseBool(parts[11]);
-  record->default_expression_envelope = HexDecode(parts[12]);
-  record->check_constraint_envelope = HexDecode(parts[13]);
-  record->charset_or_collation_ref = HexDecode(parts[14]);
-  record->numeric_metadata = HexDecode(parts[15]);
-  record->validation_hook_status = parts[16];
-  if (parts.size() > 17) { record->cast_policy_envelope = HexDecode(parts[17]); }
-  if (parts.size() > 18) { record->mutation_policy_envelope = HexDecode(parts[18]); }
-  if (parts.size() > 19) { record->masking_policy_envelope = HexDecode(parts[19]); }
-  if (parts.size() > 20) { record->visibility_policy_envelope = HexDecode(parts[20]); }
-  if (parts.size() > 21) { record->encryption_policy_ref = HexDecode(parts[21]); }
-  if (parts.size() > 22) { record->driver_metadata_envelope = HexDecode(parts[22]); }
-  if (parts.size() > 23) { record->wire_metadata_envelope = HexDecode(parts[23]); }
-  if (parts.size() > 24) { record->element_path_envelope = HexDecode(parts[24]); }
-  if (parts.size() > 25) { record->method_binding_envelope = HexDecode(parts[25]); }
-  if (parts.size() > 26) { record->localized_names_envelope = HexDecode(parts[26]); }
-  if (parts.size() > 27) { record->comment_envelope = HexDecode(parts[27]); }
-  if (parts.size() > 28) { record->reference_alias_envelope = HexDecode(parts[28]); }
-  return true;
+bool DecodeDomainEvent(const std::string& event,DomainBinaryAction* action,DomainRecord* record){
+  const std::vector<byte> bytes(event.begin(),event.end());std::size_t offset=0;u64 sequence=0;BinaryDomainRecord value;std::string detail;
+  if(!DecodeBinaryDomainRecord(bytes,&offset,&sequence,&value,&detail)||offset!=bytes.size())return false;
+  *action=value.action;*record=std::move(value.record);return true;
 }
 
 std::string DomainEventPath(const EngineRequestContext& context) {
@@ -794,6 +732,11 @@ BinaryCatalogLoadResult BinaryCatalogError(const std::string& operation_id,
 }
 
 bool SerializeDomainPayload(const DomainRecord& record, std::vector<byte>* payload) {
+  if(!core::uuid::IsEngineIdentityUuid(record.domain_uuid))return false;
+  for(const auto& id:{record.domain_uuid,record.catalog_row_uuid,record.schema_uuid,record.base_descriptor_uuid}){
+    if(!id.is_nil()&&!core::uuid::IsEngineIdentityUuid(id))return false;
+    payload->insert(payload->end(),id.bytes.begin(),id.bytes.end());
+  }
   for (const auto& field : DomainStringFields(record)) {
     if (!AppendLengthPrefixedString(payload, field)) { return false; }
   }
@@ -803,7 +746,13 @@ bool SerializeDomainPayload(const DomainRecord& record, std::vector<byte>* paylo
 bool DeserializeDomainPayload(const std::vector<byte>& payload, DomainRecord* record) {
   std::vector<std::string> fields;
   fields.reserve(kDomainStringFieldCount);
-  std::size_t offset = 0;
+  std::size_t offset=0;
+  for(auto* id:{&record->domain_uuid,&record->catalog_row_uuid,&record->schema_uuid,&record->base_descriptor_uuid}){
+    if(payload.size()-offset<16)return false;
+    std::copy_n(payload.begin()+offset,16,id->bytes.begin());offset+=16;
+    if(!id->is_nil()&&!core::uuid::IsEngineIdentityUuid(*id))return false;
+  }
+  if(record->domain_uuid.is_nil())return false;
   for (u32 i = 0; i < kDomainStringFieldCount; ++i) {
     std::string field;
     if (!ReadLengthPrefixedString(payload, &offset, &field)) { return false; }
@@ -1093,24 +1042,10 @@ EngineApiDiagnostic PersistBinaryDomainCatalog(const EngineRequestContext& conte
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-BinaryCatalogLoadResult LoadLegacyDomainTextEvents(const EngineRequestContext& context) {
-  BinaryCatalogLoadResult result;
-  result.ok = true;
-  result.present = false;
-  std::ifstream in(DomainEventPath(context), std::ios::binary);
-  if (!in) { in.open(context.database_path, std::ios::binary); }
-  if (!in) { return result; }
-  std::string line;
-  u64 sequence = 0;
-  while (std::getline(in, line)) {
-    if (line.rfind(kDomainFoundationEventMagic, 0) != 0) { continue; }
-    BinaryDomainRecord record;
-    if (!ParseTextDomainEvent(line, &record.action, &record.record)) { continue; }
-    record.sequence = ++sequence;
-    result.records.push_back(std::move(record));
-    result.present = true;
-  }
-  return result;
+BinaryCatalogLoadResult RejectLegacyDomainEvents(const EngineRequestContext& context){
+  std::error_code error;const bool legacy=std::filesystem::exists(DomainEventPath(context),error);
+  if(legacy||error)return BinaryCatalogError("domain.load_state","legacy_domain_format_unsupported");
+  return BinaryCatalogAbsent();
 }
 
 EngineApiDiagnostic ValidateDomainMutatingTransactionAuthority(const EngineRequestContext& context,
@@ -1128,11 +1063,9 @@ EngineApiDiagnostic ValidateDomainMutatingTransactionAuthority(const EngineReque
   if (tx == crud.state.transactions.end() || tx->second != "active") {
     return MakeInvalidRequestDiagnostic("domain.append_event", "active_local_transaction_required");
   }
-  const auto parts = Split(event, '\t');
-  if (parts.size() < 3 || parts[0] != kDomainFoundationEventMagic) {
-    return MakeInvalidRequestDiagnostic("domain.append_event", "domain_event_invalid");
-  }
-  const std::uint64_t creator_tx = ParseU64(parts[2]);
+  DomainBinaryAction action;DomainRecord record;
+  if(!DecodeDomainEvent(event,&action,&record))return MakeInvalidRequestDiagnostic("domain.append_event","domain_event_invalid");
+  const auto creator_tx=record.creator_tx;
   if (creator_tx != context.local_transaction_id) {
     return MakeInvalidRequestDiagnostic("domain.append_event", "domain_creator_tx_mismatch");
   }
@@ -1161,7 +1094,7 @@ DomainStoreResult LoadDomainState(const EngineRequestContext& context) {
     return result;
   }
   if (!loaded.present) {
-    loaded = LoadLegacyDomainTextEvents(context);
+    loaded = RejectLegacyDomainEvents(context);
     if (!loaded.ok) {
       result.diagnostic = loaded.diagnostic;
       return result;
@@ -1180,7 +1113,7 @@ EngineApiDiagnostic AppendDomainEvent(const EngineRequestContext& context, const
   const auto authority_status = ValidateDomainMutatingTransactionAuthority(context, event);
   if (authority_status.error) { return authority_status; }
   BinaryDomainRecord new_record;
-  if (!ParseTextDomainEvent(event, &new_record.action, &new_record.record)) {
+  if (!DecodeDomainEvent(event, &new_record.action, &new_record.record)) {
     return MakeInvalidRequestDiagnostic("domain.append_event", "domain_event_invalid");
   }
   if (new_record.record.creator_tx != context.local_transaction_id) {
@@ -1190,7 +1123,7 @@ EngineApiDiagnostic AppendDomainEvent(const EngineRequestContext& context, const
   auto loaded = LoadBinaryDomainCatalog(context);
   if (!loaded.ok) { return loaded.diagnostic; }
   if (!loaded.present) {
-    loaded = LoadLegacyDomainTextEvents(context);
+    loaded = RejectLegacyDomainEvents(context);
     if (!loaded.ok) { return loaded.diagnostic; }
   }
   u64 sequence = 0;
@@ -1211,12 +1144,12 @@ std::string MakeDomainAlterEvent(const DomainRecord& record) {
   return MakeDomainEvent("DOMAIN_ALTER", record);
 }
 
-std::string MakeDomainDropEvent(std::uint64_t creator_tx, const std::string& domain_uuid) {
-  return std::string(kDomainFoundationEventMagic) + "\tDOMAIN_DROP\t" + std::to_string(creator_tx) + "\t" + domain_uuid;
+std::string MakeDomainDropEvent(std::uint64_t creator_tx, const EngineUuid& domain_uuid) {
+  DomainRecord record;record.creator_tx=creator_tx;record.domain_uuid=domain_uuid;record.dropped=true;return MakeDomainEvent("DOMAIN_DROP",record);
 }
 
 std::optional<DomainRecord> FindVisibleDomain(const EngineRequestContext& context,
-                                              const std::string& domain_uuid,
+                                              const EngineUuid& domain_uuid,
                                               std::uint64_t observer_tx) {
   const auto domains = LoadDomainState(context);
   if (!domains.ok) { return std::nullopt; }
@@ -1240,8 +1173,7 @@ EngineDescriptor DomainDescriptor(const DomainRecord& record) {
   descriptor.descriptor_uuid = record.domain_uuid;
   descriptor.descriptor_kind = "domain";
   descriptor.canonical_type_name = record.default_name.empty() ? record.base_canonical_type_name : record.default_name;
-  descriptor.encoded_descriptor = std::string("domain_uuid=") + record.domain_uuid + ";base_descriptor_uuid=" +
-                                  record.base_descriptor_uuid + ";base_type=" + record.base_canonical_type_name +
+  descriptor.encoded_descriptor = std::string("base_type=")+record.base_canonical_type_name+
                                   ";nullable=" + (record.nullable ? "true" : "false") +
                                   ";validation_hook_status=" + record.validation_hook_status;
   AppendEncodedDescriptorField(&descriptor.encoded_descriptor, "cast_policy", record.cast_policy_envelope);
@@ -1259,17 +1191,27 @@ EngineDescriptor DomainDescriptor(const DomainRecord& record) {
   return descriptor;
 }
 
-std::string DomainUuidFromDescriptor(const EngineDescriptor& descriptor) {
+EngineUuid DomainUuidFromDescriptor(const EngineDescriptor& descriptor) {
   if (descriptor.descriptor_kind == "domain" && !descriptor.descriptor_uuid.is_nil()) {
     return descriptor.descriptor_uuid;
   }
   return DomainUuidFromColumnDescriptor(descriptor.encoded_descriptor);
 }
 
-std::string DomainUuidFromColumnDescriptor(const std::string& column_descriptor) {
-  if (StartsWith(column_descriptor, "domain:")) { return column_descriptor.substr(7); }
-  return DescriptorField(column_descriptor, "domain_uuid");
+std::string DomainColumnDescriptor(const EngineUuid& id) {
+  if (!core::uuid::IsEngineIdentityUuid(id)) return {};
+  CatalogColumnMetadata fields;
+  fields.identities.emplace("domain_uuid", id);
+  std::string bytes;
+  return EncodeCatalogColumnMetadata(fields, &bytes) ? bytes : std::string{};
 }
+EngineUuid DomainUuidFromColumnDescriptor(const std::string& bytes) {
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(bytes, &fields)) return {};
+  const auto id = BinaryCatalogUuid(fields, "domain_uuid");
+  return core::uuid::IsEngineIdentityUuid(id) ? id : EngineUuid{};
+}
+
 
 bool IsSupportedDomainCheckEnvelope(const std::string& envelope) {
   if (envelope.empty()) { return true; }
@@ -1280,19 +1222,19 @@ bool IsSupportedDomainCheckEnvelope(const std::string& envelope) {
 }
 
 bool DomainChainContainsUuid(const EngineRequestContext& context,
-                             const std::string& start_domain_uuid,
-                             const std::string& searched_domain_uuid,
+                             const EngineUuid& start_domain_uuid,
+                             const EngineUuid& searched_domain_uuid,
                              std::uint64_t observer_tx) {
-  if (start_domain_uuid.empty() || searched_domain_uuid.empty()) { return false; }
-  std::string current = start_domain_uuid;
-  std::set<std::string> seen;
-  for (std::uint32_t depth = 0; depth < 32 && !current.empty(); ++depth) {
+  if (start_domain_uuid.is_nil() || searched_domain_uuid.is_nil()) { return false; }
+  EngineUuid current = start_domain_uuid;
+  std::set<EngineUuid> seen;
+  for (std::uint32_t depth = 0; depth < 32 && !current.is_nil(); ++depth) {
     if (current == searched_domain_uuid) { return true; }
     if (!seen.insert(current).second) { return false; }
     const auto domain = FindVisibleDomain(context, current, observer_tx);
     if (!domain) { return false; }
-    std::string next;
-    if (domain->base_descriptor_kind == "domain" && !domain->base_descriptor_uuid.empty()) {
+    EngineUuid next;
+    if (domain->base_descriptor_kind == "domain" && !domain->base_descriptor_uuid.is_nil()) {
       next = domain->base_descriptor_uuid;
     } else {
       next = DomainUuidFromColumnDescriptor(domain->base_encoded_descriptor);
@@ -1307,8 +1249,8 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
                                                      const EngineTypedValue& input_value,
                                                      std::uint64_t observer_tx) {
   DomainValueValidationResult result;
-  const std::string domain_uuid = DomainUuidFromDescriptor(domain_descriptor);
-  if (domain_uuid.empty()) {
+  const EngineUuid domain_uuid = DomainUuidFromDescriptor(domain_descriptor);
+  if (domain_uuid.is_nil()) {
     result.diagnostic = DomainValidationDiagnostic("domain_uuid_required");
     return result;
   }
@@ -1335,7 +1277,7 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
     return result;
   }
   EngineTypedValue value_for_base_cast = input_value;
-  if (domain->base_descriptor_kind == "domain" && !domain->base_descriptor_uuid.empty()) {
+  if (domain->base_descriptor_kind == "domain" && !domain->base_descriptor_uuid.is_nil()) {
     if (domain->base_descriptor_uuid == domain_uuid ||
         DomainChainContainsUuid(context, domain->base_descriptor_uuid, domain_uuid, observer_tx)) {
       result.diagnostic = DomainValidationDiagnostic("domain_chain_cycle_detected");
@@ -1397,8 +1339,11 @@ DomainRowValidationResult ApplyDomainRulesToCrudValues(
   DomainRowValidationResult result;
   result.values = input_values;
   for (const auto& [column_name, column_descriptor] : table_columns) {
-    const std::string domain_uuid = DomainUuidFromColumnDescriptor(column_descriptor);
-    if (domain_uuid.empty()) { continue; }
+    const EngineUuid domain_uuid = DomainUuidFromColumnDescriptor(column_descriptor);
+    if(domain_uuid.is_nil()&&(column_descriptor.starts_with("domain:")||column_descriptor.starts_with("SBDOMID2")||!DescriptorField(column_descriptor,"domain_uuid").empty())){
+      result.diagnostic=DomainValidationDiagnostic("domain_binding_format_invalid");return result;
+    }
+    if (domain_uuid.is_nil()) { continue; }
     const auto domain = FindVisibleDomain(context, domain_uuid, observer_tx);
     if (!domain) {
       result.diagnostic = DomainValidationDiagnostic("domain_not_visible_for_column:" + column_name);
@@ -1426,12 +1371,11 @@ DomainRowValidationResult ApplyDomainRulesToCrudValues(
     value.descriptor.canonical_type_name = "character";
     value.encoded_value = FieldValue(result.values, column_name);
     value.is_null = value.encoded_value == "<NULL>";
-    const std::string proof_identity =
-        domain_uuid + "\n" + column_name + "\n" +
-        domain->base_descriptor_uuid + "\n" + domain->base_descriptor_kind + "\n" +
-        domain->base_canonical_type_name + "\n" + domain->check_constraint_envelope + "\n" +
-        (domain->nullable ? "nullable" : "not_nullable") + "\n" +
-        std::to_string(observer_tx) + "\n" + value.encoded_value;
+    std::string proof_identity("domain_check.v2");
+    proof_identity.append(reinterpret_cast<const char*>(domain_uuid.bytes.data()),16);
+    proof_identity.append(reinterpret_cast<const char*>(domain->base_descriptor_uuid.bytes.data()),16);
+    for(const auto* field:std::initializer_list<const std::string*>{&column_name,&domain->base_descriptor_kind,&domain->base_canonical_type_name,&domain->check_constraint_envelope,&value.encoded_value})AppendBinaryString(&proof_identity,*field);
+    AppendBinaryU8(&proof_identity,domain->nullable?1:0);AppendBinaryU64(&proof_identity,observer_tx);
     if (const auto cached_value = FindConstraintDmlProofPayload(cache,
                                                                 context,
                                                                 "domain_check",
@@ -1464,7 +1408,7 @@ DomainRowValidationResult ApplyDomainRulesToCrudValues(
 }
 
 bool DomainHasCrudDependencies(const EngineRequestContext& context,
-                               const std::string& domain_uuid,
+                               const EngineUuid& domain_uuid,
                                std::uint64_t observer_tx) {
   const auto crud = LoadCrudState(context);
   if (!crud.ok) { return true; }
@@ -1485,8 +1429,11 @@ DomainReadPolicyResult ApplyDomainReadPoliciesToCrudValues(
   DomainReadPolicyResult result;
   result.values = input_values;
   for (const auto& [column_name, column_descriptor] : table_columns) {
-    const std::string domain_uuid = DomainUuidFromColumnDescriptor(column_descriptor);
-    if (domain_uuid.empty()) { continue; }
+    const EngineUuid domain_uuid = DomainUuidFromColumnDescriptor(column_descriptor);
+    if(domain_uuid.is_nil()&&(column_descriptor.starts_with("domain:")||column_descriptor.starts_with("SBDOMID2")||!DescriptorField(column_descriptor,"domain_uuid").empty())){
+      result.diagnostic=DomainValidationDiagnostic("domain_binding_format_invalid");return result;
+    }
+    if (domain_uuid.is_nil()) { continue; }
     const auto domain = FindVisibleDomain(context, domain_uuid, observer_tx);
     if (!domain) {
       result.diagnostic = DomainValidationDiagnostic("domain_not_visible_for_column:" + column_name);

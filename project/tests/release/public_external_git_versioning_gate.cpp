@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "artifacts/artifact_api.hpp"
 #include "database_lifecycle.hpp"
 #include "sblr_dispatch.hpp"
@@ -66,10 +67,6 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.value;
 }
 
-std::string UuidText(TypedUuid typed_uuid) {
-  return uuid::UuidToString(typed_uuid.value);
-}
-
 DatabaseFixture CreateDatabaseFixture(const std::filesystem::path& path) {
   DatabaseFixture fixture;
   fixture.path = path;
@@ -106,7 +103,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view evidence_id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == evidence_id) { return true; }
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == evidence_id)) { return true; }
   }
   return false;
 }
@@ -119,14 +116,24 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineRowValue ArtifactRow(std::string uuid,
+api::EngineTypedValue IdentityValue(const api::EngineUuid& identity) {
+  api::EngineTypedValue value;
+  value.state = api::EngineValueState::value;
+  value.is_null = false;
+  value.descriptor.descriptor_kind = "scalar";
+  value.descriptor.canonical_type_name = "uuid";
+  value.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
+  return value;
+}
+
+api::EngineRowValue ArtifactRow(const api::EngineUuid& identity,
                                 std::string kind,
                                 std::string name,
                                 std::string payload) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = uuid + "-row";
-  row.fields.push_back({"artifact_format", TextValue("sb.catalog.artifact.v1")});
-  row.fields.push_back({"object_uuid", TextValue(std::move(uuid))});
+  row.requested_row_uuid = scratchbird::tests::FixtureUuid(1530, 1);
+  row.fields.push_back({"artifact_format", TextValue("sb.catalog.artifact.v2")});
+  row.fields.push_back({"object_uuid", IdentityValue(identity)});
   row.fields.push_back({"object_kind", TextValue(std::move(kind))});
   row.fields.push_back({"default_name", TextValue(std::move(name))});
   row.fields.push_back({"payload", TextValue(std::move(payload))});
@@ -146,17 +153,30 @@ bool RowHasField(const api::EngineRowValue& row,
   return RowField(row, name) == expected;
 }
 
+bool RowHasField(const api::EngineRowValue& row,
+                 std::string_view name,
+                 const api::EngineUuid& expected) {
+  for (const auto& [field_name, value] : row.fields) {
+    if (field_name != name) continue;
+    return value.state == api::EngineValueState::value && !value.is_null &&
+           value.encoded_value.empty() && value.binary_value.size() == 16 &&
+           std::equal(value.binary_value.begin(), value.binary_value.end(),
+                      expected.bytes.begin());
+  }
+  return false;
+}
+
 api::EngineRequestContext Context(const DatabaseFixture& fixture,
                                   std::uint64_t tx) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = UuidText(fixture.database_uuid);
-  context.session_uuid.canonical = "019e3900-0000-7000-8000-00000000e912";
-  context.principal_uuid.canonical = "019e3900-0000-7000-8000-00000000e914";
+  context.database_uuid = fixture.database_uuid.value;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e3900-0000-7000-8000-00000000e912");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e3900-0000-7000-8000-00000000e914");
   context.local_transaction_id = tx;
   if (tx != 0) {
-    context.transaction_uuid.canonical = "019e3900-0000-7000-8000-00000000e913";
+    context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e3900-0000-7000-8000-00000000e913");
     context.snapshot_visible_through_local_transaction_id = tx;
   }
   context.security_context_present = true;
@@ -201,7 +221,7 @@ void Commit(api::EngineRequestContext* context) {
   }
   Require(committed.ok, "external Git transaction commit failed");
   context->local_transaction_id = 0;
-  context->transaction_uuid.canonical.clear();
+  context->transaction_uuid = {};
 }
 
 sblr::SblrDispatchResult DispatchEncoded(std::string operation_id,
@@ -220,11 +240,11 @@ sblr::SblrDispatchResult DispatchEncoded(std::string operation_id,
 }
 
 std::vector<api::EngineRowValue> MutatedCandidateRows(const api::EngineApiResult& exported,
-                                                       std::string_view uuid) {
+                                                       const api::EngineUuid& identity) {
   std::vector<api::EngineRowValue> rows;
   for (auto row : exported.result_shape.rows) {
     if (RowHasField(row, "snapshot_entry_kind", "manifest")) { continue; }
-    if (RowHasField(row, "object_uuid", uuid)) {
+    if (RowHasField(row, "object_uuid", identity)) {
       for (auto& [name, value] : row.fields) {
         if (name == "payload") {
           value.encoded_value += ";localized_name=en,alias,git_review_schema,git_review_alias,alias";
@@ -238,7 +258,7 @@ std::vector<api::EngineRowValue> MutatedCandidateRows(const api::EngineApiResult
 }
 
 void RunGate() {
-  constexpr std::string_view kObjectUuid = "019e3900-0000-7000-8000-00000000e915";
+  constexpr auto kObjectUuid = scratchbird::tests::FixtureUuidLiteral("019e3900-0000-7000-8000-00000000e915");
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "external_git_versioning.sbdb";
   const auto fixture = CreateDatabaseFixture(database_path);
@@ -249,7 +269,7 @@ void RunGate() {
   api::EngineImportCatalogArtifactsRequest import;
   import.context = import_context;
   import.option_envelopes.push_back("external_git_policy:enabled");
-  import.rows.push_back(ArtifactRow(std::string(kObjectUuid),
+  import.rows.push_back(ArtifactRow(kObjectUuid,
                                     "schema",
                                     "git_review_schema",
                                     "localized_name=en,default,git_review_schema,git_review_schema,default"));

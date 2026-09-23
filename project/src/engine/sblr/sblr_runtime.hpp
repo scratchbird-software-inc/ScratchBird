@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -54,6 +55,7 @@ enum class SblrValuePayloadKind {
   uuid_binary,
   temporal_text,
   descriptor_payload,
+  uuid_array_binary,
 };
 
 struct SblrDiagnosticField {
@@ -85,6 +87,8 @@ struct SblrValue {
   // or binary_value as a second identity authority. Descriptor binding still
   // controls user UUID version/render policy and system UUIDv7 admission.
   SblrUuid uuid_value;
+  // A UUID collection retains one native value per element; no text shadow.
+  std::vector<SblrUuid> uuid_array_value;
   SblrValuePayloadKind payload_kind = SblrValuePayloadKind::none;
   std::int64_t int64_value = 0;
   std::uint64_t uint64_value = 0;
@@ -104,6 +108,13 @@ SblrValue MakeSblrUuidValue(const SblrUuid& uuid);
 // Conflicting legacy representations fail without changing the destination.
 bool CopySblrUuidPayload(const SblrValue& value,
                          std::vector<std::uint8_t>* destination);
+
+// Private projection payload transfer: consecutive binary16 elements. The
+// enclosing payload length supplies the element count; this is not a persisted
+// ARRAY datatype encoding or descriptor/catalog admission.
+bool SblrUuidArrayPayloadValid(const SblrValue& value) noexcept;
+bool CopySblrUuidArrayPayload(const SblrValue& value,
+                              std::vector<std::uint8_t>* destination);
 
 struct SblrResult {
   SblrStatusCode status = SblrStatusCode::ok;
@@ -127,12 +138,31 @@ struct SblrSessionAdvisoryLockEntry {
   std::int64_t key = 0;
   SblrUuid owner_session_uuid;
   std::uint64_t acquisition_count = 0;
+  std::uint64_t owner_process_id = 0;
 };
 
 struct SblrTransactionAdvisoryLockEntry {
   std::int64_t key = 0;
-  std::string owner_transaction_token;
+  SblrUuid owner_transaction_uuid;
   std::uint64_t acquisition_count = 0;
+  std::uint64_t owner_local_transaction_id = 0;
+};
+
+enum class SblrAdvisoryLockOwnerKind : std::uint8_t {
+  session, process, transaction, local_transaction
+};
+struct SblrAdvisoryLockOwner {
+  SblrAdvisoryLockOwnerKind kind = SblrAdvisoryLockOwnerKind::session;
+  SblrUuid uuid;
+  std::uint64_t numeric_reference = 0;
+};
+struct SblrAdvisoryLockEvidence {
+  std::string function_name;
+  std::string action;
+  std::int64_t key = 0;
+  SblrAdvisoryLockOwner owner;
+  std::uint64_t remaining_acquisitions = 0;
+  std::optional<std::int64_t> timeout_seconds;
 };
 
 struct SblrSessionRuntimeState {
@@ -143,9 +173,9 @@ struct SblrSessionRuntimeState {
   std::vector<std::uint64_t> terminate_requested_backend_pids;
   std::vector<std::string> backend_control_evidence;
   std::vector<SblrSessionAdvisoryLockEntry> advisory_lock_entries;
-  std::vector<std::string> advisory_lock_evidence;
+  std::vector<SblrAdvisoryLockEvidence> advisory_lock_evidence;
   std::vector<SblrTransactionAdvisoryLockEntry> transaction_advisory_lock_entries;
-  std::vector<std::string> transaction_advisory_lock_evidence;
+  std::vector<SblrAdvisoryLockEvidence> transaction_advisory_lock_evidence;
 };
 
 struct SblrExecutionContext {

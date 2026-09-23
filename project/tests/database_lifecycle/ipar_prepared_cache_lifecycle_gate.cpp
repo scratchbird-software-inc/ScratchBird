@@ -1,3 +1,5 @@
+#include "dml/mga_relation_read_view.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,12 +8,14 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/insert_batch.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -30,12 +34,12 @@ namespace db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr const char* kLiveSchemaUuid = "019f3000-0000-7000-8000-000000000001";
-constexpr const char* kLiveTableUuid = "019f3000-0000-7000-8000-000000000101";
-constexpr const char* kLiveIndexUuid = "019f3000-0000-7000-8000-000000000201";
-constexpr const char* kLiveDomainUuid = "019f3000-0000-7000-8000-000000000301";
-constexpr const char* kLivePrincipalUuid = "019f3000-0000-7000-8000-000000000401";
-constexpr const char* kLiveGroupUuid = "019f3000-0000-7000-8000-000000000402";
+constexpr auto kLiveSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000001");
+constexpr auto kLiveTableUuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000101");
+constexpr auto kLiveIndexUuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000201");
+constexpr auto kLiveDomainUuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000301");
+constexpr auto kLivePrincipalUuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000401");
+constexpr auto kLiveGroupUuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000402");
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -48,28 +52,28 @@ void Require(bool condition, std::string_view message) {
   }
 }
 
-api::EngineAuthorizationSubject Subject(std::string uuid, std::string kind) {
+api::EngineAuthorizationSubject Subject(api::EngineUuid uuid, std::string kind) {
   api::EngineAuthorizationSubject subject;
-  subject.subject_uuid.canonical = std::move(uuid);
+  subject.subject_uuid = std::move(uuid);
   subject.subject_kind = std::move(kind);
   return subject;
 }
 
 api::EngineRequestContext Context(std::string request_id,
-                                  std::string principal = "principal-ipar-cache",
-                                  std::string session = "session-ipar-cache",
-                                  std::string role = "role-ipar-cache",
-                                  std::string group = "group-ipar-cache",
+                                  api::EngineUuid principal = scratchbird::tests::FixtureUuid(1558, 1),
+                                  api::EngineUuid session = scratchbird::tests::FixtureUuid(1558, 2),
+                                  api::EngineUuid role = scratchbird::tests::FixtureUuid(1558, 3),
+                                  api::EngineUuid group = scratchbird::tests::FixtureUuid(1558, 4),
                                   std::uint64_t catalog_epoch = 101,
                                   std::uint64_t security_epoch = 201,
                                   std::uint64_t policy_epoch = 301) {
   api::EngineRequestContext context;
   context.request_id = std::move(request_id);
-  context.database_uuid.canonical = "database-ipar-cache";
-  context.principal_uuid.canonical = std::move(principal);
-  context.session_uuid.canonical = std::move(session);
-  context.current_role_uuid.canonical = std::move(role);
-  context.transaction_uuid.canonical = "transaction-ipar-cache";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 2001);
+  context.principal_uuid = std::move(principal);
+  context.session_uuid = std::move(session);
+  context.current_role_uuid = std::move(role);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 2002);
   context.local_transaction_id = 77;
   context.snapshot_visible_through_local_transaction_id = 77;
   context.catalog_generation_id = catalog_epoch;
@@ -79,28 +83,28 @@ api::EngineRequestContext Context(std::string request_id,
   context.security_context_present = true;
 
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical = "security-authority-ipar-cache";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuid(1558, 5);
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.catalog_generation_id = catalog_epoch;
   context.authorization_context.security_epoch = security_epoch;
   context.authorization_context.policy_epoch = policy_epoch;
   context.authorization_context.effective_subjects.push_back(
-      Subject(context.principal_uuid.canonical, "principal"));
+      Subject(context.principal_uuid, "principal"));
   context.authorization_context.effective_subjects.push_back(
       Subject(std::move(group), "group"));
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = "grant-ipar-cache-insert";
+  grant.grant_uuid = scratchbird::tests::FixtureUuid(1558, 6);
   grant.subject_uuid = context.authorization_context.effective_subjects.back().subject_uuid;
   grant.subject_kind = "group";
-  grant.target_uuid.canonical = "table-ipar-cache";
+  grant.target_uuid = scratchbird::tests::FixtureUuid(1558, 7);
   grant.right = "INSERT";
   grant.security_epoch = security_epoch;
   context.authorization_context.grants.push_back(std::move(grant));
   api::EngineMaterializedAuthorizationPolicy policy;
-  policy.policy_uuid.canonical = "policy-ipar-cache-rls";
+  policy.policy_uuid = scratchbird::tests::FixtureUuid(1558, 8);
   policy.subject_uuid = context.authorization_context.effective_subjects.back().subject_uuid;
   policy.subject_kind = "group";
-  policy.target_uuid.canonical = "table-ipar-cache";
+  policy.target_uuid = scratchbird::tests::FixtureUuid(1558, 7);
   policy.right = "INSERT";
   policy.policy_kind = "rls_filter";
   policy.requires_runtime_recheck = true;
@@ -111,20 +115,36 @@ api::EngineRequestContext Context(std::string request_id,
   return context;
 }
 
-api::CrudTableRecord Table(std::string table_uuid = "table-ipar-cache") {
+std::string DomainColumnMetadata(const api::EngineUuid& domain) {
+  api::CatalogColumnMetadata fields;
+  fields.text = {{"canonical", "int64"}, {"primary_key", "true"},
+                 {"not_null", "true"}, {"check", "gte:0"}};
+  fields.identities.emplace("domain_uuid", domain);
+  std::string bytes;
+  Require(api::EncodeCatalogColumnMetadata(fields, &bytes),
+          "cache fixture domain metadata encoding failed");
+  return bytes;
+}
+
+api::CrudTableRecord Table(api::EngineUuid table_uuid = scratchbird::tests::FixtureUuid(1558, 7)) {
   api::CrudTableRecord table;
   table.creator_tx = 77;
   table.table_uuid = std::move(table_uuid);
   table.default_name = "ipar_cache_table";
-  table.columns.push_back({"id", "canonical=int64;primary_key=true;not_null=true;check=gte:0;domain_uuid=domain-ipar-int"});
+  table.columns.push_back({"id", DomainColumnMetadata(scratchbird::tests::FixtureUuid(1558, 20))});
   table.columns.push_back({"payload", "canonical=character;default=literal:empty;check=length_lte:256"});
   return table;
 }
 
-api::CrudIndexRecord Index(const std::string& table_uuid) {
+api::CrudIndexRecord Index(const api::EngineUuid& table_uuid) {
   api::CrudIndexRecord index;
   index.creator_tx = 77;
-  index.index_uuid = table_uuid + "-idx-id";
+  const std::array tables{scratchbird::tests::FixtureUuid(1558, 7),
+                          scratchbird::tests::FixtureUuid(1558, 14),
+                          scratchbird::tests::FixtureUuid(1558, 15)};
+  const auto found = std::find(tables.begin(), tables.end(), table_uuid);
+  Require(found != tables.end(), "unmapped cache fixture table identity");
+  index.index_uuid = scratchbird::tests::FixtureUuid(1558, 100 + (found - tables.begin()));
   index.table_uuid = table_uuid;
   index.column_name = "id";
   index.family = api::kCrudIndexFamilyBtree;
@@ -134,8 +154,8 @@ api::CrudIndexRecord Index(const std::string& table_uuid) {
   return index;
 }
 
-api::CrudState State(const api::CrudTableRecord& table) {
-  api::CrudState state;
+api::MgaRelationReadView State(const api::CrudTableRecord& table) {
+  api::MgaRelationReadView state;
   state.transactions[77] = "active";
   state.tables.push_back(table);
   return state;
@@ -145,9 +165,9 @@ api::EngineInsertRowsRequest InsertRequest(api::EngineRequestContext context,
                                            std::vector<std::string> options = {}) {
   api::EngineInsertRowsRequest request;
   request.context = std::move(context);
-  request.target_table.uuid.canonical = "table-ipar-cache";
-  request.target_schema.uuid.canonical = "schema-ipar-cache";
-  request.target_object.uuid.canonical = "table-ipar-cache";
+  request.target_table.uuid = scratchbird::tests::FixtureUuid(1558, 7);
+  request.target_schema.uuid = scratchbird::tests::FixtureUuid(1558, 9);
+  request.target_object.uuid = scratchbird::tests::FixtureUuid(1558, 7);
   request.bound_object_identity.object_uuid = request.target_table.uuid;
   request.bound_object_identity.catalog_generation_id = request.context.catalog_generation_id;
   request.bound_object_identity.security_epoch = request.context.security_epoch;
@@ -158,17 +178,19 @@ api::EngineInsertRowsRequest InsertRequest(api::EngineRequestContext context,
   return request;
 }
 
+void BindExpectedAuthority(api::EngineInsertRowsRequest* request,
+                           const api::InsertBatchContext& context) {
+  auto& expected = request->prepared_descriptor_expectation;
+  expected.principal_uuid = context.prepared_descriptor_principal_uuid;
+  expected.role_uuid = context.prepared_descriptor_role_uuid;
+  expected.session_uuid = context.prepared_descriptor_session_uuid;
+  expected.content_key = context.prepared_descriptor_content_key;
+}
+
 std::vector<std::string> ExpectedAuthorityOptions(const api::InsertBatchContext& context) {
   return {
-      "prepared_descriptor.expected_cache_key=" + context.prepared_descriptor_cache_key,
       "prepared_descriptor.expected_generation=" +
           std::to_string(context.prepared_descriptor_generation),
-      "prepared_descriptor.expected_principal_uuid=" +
-          context.prepared_descriptor_principal_uuid,
-      "prepared_descriptor.expected_role_uuid=" +
-          context.prepared_descriptor_role_uuid,
-      "prepared_descriptor.expected_session_uuid=" +
-          context.prepared_descriptor_session_uuid,
       "prepared_descriptor.expected_catalog_epoch=" +
           std::to_string(context.prepared_descriptor_catalog_epoch),
       "prepared_descriptor.expected_security_epoch=" +
@@ -183,9 +205,18 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& entry : evidence) {
-    if (entry.evidence_kind == kind && entry.evidence_id == id) {
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(entry.evidence_id, id)) {
       return true;
     }
+  }
+  return false;
+}
+
+bool EvidenceContains(const api::EngineApiResult& result, std::string_view kind,
+                      const api::EngineUuid& identity) {
+  for (const auto& item : result.evidence) {
+    const auto* value = std::get_if<api::EngineUuid>(&item.evidence_id);
+    if (item.evidence_kind == kind && value && *value == identity) return true;
   }
   return false;
 }
@@ -198,7 +229,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
       continue;
     }
     if (needle.empty() ||
-        entry.evidence_id.find(needle) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(entry.evidence_id, needle) != std::string::npos) {
       return true;
     }
   }
@@ -247,7 +278,7 @@ std::filesystem::path MakeLiveTempPath() {
           std::to_string(static_cast<long long>(getpid())) + ".sbdb");
 }
 
-std::string CreateLiveDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateLiveDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -265,33 +296,30 @@ std::string CreateLiveDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "IPAR prepared validator database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext LiveBaseContext(const std::filesystem::path& path,
-                                          const std::string& database_uuid,
+                                          const api::EngineUuid& database_uuid,
                                           std::string request_id,
-                                          std::string session_uuid) {
+                                          api::EngineUuid session_uuid) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = kLivePrincipalUuid;
-  context.session_uuid.canonical = std::move(session_uuid);
-  context.current_schema_uuid.canonical = kLiveSchemaUuid;
-  context.default_root_uuid.canonical =
-      "019f3000-0000-7000-8000-000000000403";
-  context.current_role_uuid.canonical =
-      "019f3000-0000-7000-8000-000000000404";
+  context.database_uuid = database_uuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000401");
+  context.session_uuid = std::move(session_uuid);
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000001");
+  context.default_root_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000403");
+  context.current_role_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000404");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f3000-0000-7000-8000-000000000405";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000405");
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
   context.authorization_context.policy_epoch = context.resource_epoch;
@@ -303,19 +331,19 @@ api::EngineRequestContext LiveBaseContext(const std::filesystem::path& path,
       Subject(kLiveGroupUuid, "group"));
 
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = "019f3000-0000-7000-8000-000000000501";
-  grant.subject_uuid.canonical = kLiveGroupUuid;
+  grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000501");
+  grant.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000402");
   grant.subject_kind = "group";
-  grant.target_uuid.canonical = kLiveTableUuid;
+  grant.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000101");
   grant.right = "INSERT";
   grant.security_epoch = context.security_epoch;
   context.authorization_context.grants.push_back(std::move(grant));
 
   api::EngineMaterializedAuthorizationPolicy policy;
-  policy.policy_uuid.canonical = "019f3000-0000-7000-8000-000000000502";
-  policy.subject_uuid.canonical = kLiveGroupUuid;
+  policy.policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000502");
+  policy.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000402");
   policy.subject_kind = "group";
-  policy.target_uuid.canonical = kLiveTableUuid;
+  policy.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000101");
   policy.right = "INSERT";
   policy.policy_kind = "rls_filter";
   policy.requires_runtime_recheck = true;
@@ -327,9 +355,9 @@ api::EngineRequestContext LiveBaseContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginLiveTransaction(const std::filesystem::path& path,
-                                               const std::string& database_uuid,
+                                               const api::EngineUuid& database_uuid,
                                                std::string request_id,
-                                               std::string session_uuid) {
+                                               api::EngineUuid session_uuid) {
   api::EngineBeginTransactionRequest request;
   request.context = LiveBaseContext(path,
                                     database_uuid,
@@ -366,12 +394,11 @@ void CommitLiveTransaction(const api::EngineRequestContext& context) {
 
 api::CrudTableRecord LiveTable() {
   api::CrudTableRecord table;
-  table.table_uuid = kLiveTableUuid;
+  table.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000101");
   table.default_name = "ipar_prepared_validator";
   table.columns.push_back(
       {"id",
-       std::string("canonical=int64;primary_key=true;not_null=true;") +
-           "check=gte:0;domain_uuid=" + kLiveDomainUuid});
+       DomainColumnMetadata(kLiveDomainUuid)});
   table.columns.push_back(
       {"payload", "canonical=character;default=literal:empty;check=length_lte:16"});
   table.columns.push_back({"tenant", "canonical=character;not_null=true"});
@@ -380,8 +407,8 @@ api::CrudTableRecord LiveTable() {
 
 api::CrudIndexRecord LiveUniqueIndex() {
   api::CrudIndexRecord index;
-  index.index_uuid = kLiveIndexUuid;
-  index.table_uuid = kLiveTableUuid;
+  index.index_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000201");
+  index.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000101");
   index.default_name = "ipar_prepared_validator_pk";
   index.column_name = "id";
   index.key_envelopes.push_back("id");
@@ -394,11 +421,11 @@ api::CrudIndexRecord LiveUniqueIndex() {
 api::DomainRecord LiveDomain(std::uint64_t creator_tx) {
   api::DomainRecord record;
   record.creator_tx = creator_tx;
-  record.domain_uuid = kLiveDomainUuid;
-  record.catalog_row_uuid = "019f3000-0000-7000-8000-000000000302";
-  record.schema_uuid = kLiveSchemaUuid;
+  record.domain_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000301");
+  record.catalog_row_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000302");
+  record.schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000001");
   record.default_name = "ipar_non_negative_int";
-  record.base_descriptor_uuid = "descriptor-int64";
+  record.base_descriptor_uuid = scratchbird::tests::FixtureUuid(1558, 10);
   record.base_descriptor_kind = "scalar";
   record.base_canonical_type_name = "int64";
   record.base_encoded_descriptor = "canonical=int64";
@@ -419,10 +446,10 @@ void SeedLiveValidatorMetadata(const api::EngineRequestContext& context) {
           "IPAR prepared validator index seed failed");
 }
 
-api::EngineRowValue LiveRow(std::string row_uuid,
+api::EngineRowValue LiveRow(api::EngineUuid row_uuid,
                             std::vector<std::pair<std::string, api::EngineTypedValue>> fields) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields = std::move(fields);
   return row;
 }
@@ -431,10 +458,10 @@ api::EngineInsertRowsResult LiveInsert(const api::EngineRequestContext& context,
                                        api::EngineRowValue row) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = kLiveSchemaUuid;
-  request.target_table.uuid.canonical = kLiveTableUuid;
+  request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000001");
+  request.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000101");
   request.target_table.object_kind = "table";
-  request.target_object.uuid.canonical = kLiveTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000101");
   request.target_object.object_kind = "table";
   request.bound_object_identity.object_uuid = request.target_table.uuid;
   request.bound_object_identity.catalog_generation_id =
@@ -571,37 +598,41 @@ void ValidateEpochAndAuthorityRefusals() {
   auto stale_security_options = ExpectedAuthorityOptions(base);
   auto stale_security = InsertRequest(
       Context("ipar-prepared-cache-stale-security",
-              "principal-ipar-cache",
-              "session-ipar-cache",
-              "role-ipar-cache",
-              "group-ipar-cache",
+              scratchbird::tests::FixtureUuid(1558, 1),
+              scratchbird::tests::FixtureUuid(1558, 2),
+              scratchbird::tests::FixtureUuid(1558, 3),
+              scratchbird::tests::FixtureUuid(1558, 4),
               base.prepared_descriptor_catalog_epoch,
               base.prepared_descriptor_security_epoch + 1,
               base.prepared_descriptor_policy_epoch),
       stale_security_options);
+  BindExpectedAuthority(&stale_security, base);
   RequireRefusal(Begin(stale_security, table), "stale_security_epoch");
 
   auto cross_session = InsertRequest(
       Context("ipar-prepared-cache-cross-session",
-              "principal-ipar-cache",
-              "session-ipar-cache-other"),
+              scratchbird::tests::FixtureUuid(1558, 1),
+              scratchbird::tests::FixtureUuid(1558, 12)),
       ExpectedAuthorityOptions(base));
+  BindExpectedAuthority(&cross_session, base);
   RequireRefusal(Begin(cross_session, table), "cross_session");
 
   auto cross_user = InsertRequest(
       Context("ipar-prepared-cache-cross-user",
-              "principal-ipar-cache-other",
-              "session-ipar-cache"),
+              scratchbird::tests::FixtureUuid(1558, 11),
+              scratchbird::tests::FixtureUuid(1558, 2)),
       ExpectedAuthorityOptions(base));
+  BindExpectedAuthority(&cross_user, base);
   RequireRefusal(Begin(cross_user, table), "cross_user");
 
   auto changed_group = InsertRequest(
       Context("ipar-prepared-cache-group-change",
-              "principal-ipar-cache",
-              "session-ipar-cache",
-              "role-ipar-cache",
-              "group-ipar-cache-other"),
+              scratchbird::tests::FixtureUuid(1558, 1),
+              scratchbird::tests::FixtureUuid(1558, 2),
+              scratchbird::tests::FixtureUuid(1558, 3),
+              scratchbird::tests::FixtureUuid(1558, 13)),
       ExpectedAuthorityOptions(base));
+  BindExpectedAuthority(&changed_group, base);
   RequireRefusal(Begin(changed_group, table), "authorization_context_changed");
 
   auto lease_options = ExpectedAuthorityOptions(base);
@@ -609,24 +640,25 @@ void ValidateEpochAndAuthorityRefusals() {
   lease_options.push_back("prepared_descriptor.current_lease_epoch=11");
   auto lease_expired =
       InsertRequest(Context("ipar-prepared-cache-lease-expired"), lease_options);
+  BindExpectedAuthority(&lease_expired, base);
   RequireRefusal(Begin(lease_expired, table), "lease_expired");
 }
 
 void ValidateEvictionGenerationRefusal() {
-  const auto table_a = Table("table-ipar-cache-evict-a");
+  const auto table_a = Table(scratchbird::tests::FixtureUuid(1558, 14));
   auto request_a = InsertRequest(Context("ipar-prepared-cache-evict-a"),
                                  {"prepared_descriptor.cache_limit=1"});
-  request_a.target_table.uuid.canonical = table_a.table_uuid;
-  request_a.target_object.uuid.canonical = table_a.table_uuid;
+  request_a.target_table.uuid = table_a.table_uuid;
+  request_a.target_object.uuid = table_a.table_uuid;
   request_a.bound_object_identity.object_uuid = request_a.target_table.uuid;
   const auto first_a = Begin(request_a, table_a);
   Require(first_a.accepted, "IPAR eviction first descriptor refused");
 
-  const auto table_b = Table("table-ipar-cache-evict-b");
+  const auto table_b = Table(scratchbird::tests::FixtureUuid(1558, 15));
   auto request_b = InsertRequest(Context("ipar-prepared-cache-evict-b"),
                                  {"prepared_descriptor.cache_limit=1"});
-  request_b.target_table.uuid.canonical = table_b.table_uuid;
-  request_b.target_object.uuid.canonical = table_b.table_uuid;
+  request_b.target_table.uuid = table_b.table_uuid;
+  request_b.target_object.uuid = table_b.table_uuid;
   request_b.bound_object_identity.object_uuid = request_b.target_table.uuid;
   const auto first_b = Begin(request_b, table_b);
   Require(first_b.accepted, "IPAR eviction second descriptor refused");
@@ -638,9 +670,10 @@ void ValidateEvictionGenerationRefusal() {
   rebound_options.push_back("prepared_descriptor.cache_limit=1");
   auto rebound_request =
       InsertRequest(Context("ipar-prepared-cache-evict-a-rebound"), rebound_options);
-  rebound_request.target_table.uuid.canonical = table_a.table_uuid;
-  rebound_request.target_object.uuid.canonical = table_a.table_uuid;
+  rebound_request.target_table.uuid = table_a.table_uuid;
+  rebound_request.target_object.uuid = table_a.table_uuid;
   rebound_request.bound_object_identity.object_uuid = rebound_request.target_table.uuid;
+  BindExpectedAuthority(&rebound_request, first_a);
   RequireRefusal(Begin(rebound_request, table_a), "evicted_or_rebound");
 }
 
@@ -651,18 +684,18 @@ void ValidatePreparedDescriptorExecutesLiveValidators() {
   auto setup = BeginLiveTransaction(path,
                                     database_uuid,
                                     "ipar-prepared-validator-setup",
-                                    "019f3000-0000-7000-8000-000000000601");
+                                    scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000601"));
   SeedLiveValidatorMetadata(setup);
   CommitLiveTransaction(setup);
 
   auto writer = BeginLiveTransaction(path,
                                      database_uuid,
                                      "ipar-prepared-validator-writer",
-                                     "019f3000-0000-7000-8000-000000000602");
+                                     scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000602"));
 
   const auto first = LiveInsert(
       writer,
-      LiveRow("019f3000-0000-7000-8000-000000000701",
+      LiveRow(scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000701"),
               {{"id", TextValue("42")},
                {"tenant", TextValue("tenant_a")}}));
   if (!first.ok) {
@@ -697,7 +730,7 @@ void ValidatePreparedDescriptorExecutesLiveValidators() {
 
   const auto second = LiveInsert(
       writer,
-      LiveRow("019f3000-0000-7000-8000-000000000702",
+      LiveRow(scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000702"),
               {{"id", TextValue("43")},
                {"payload", TextValue("short")},
                {"tenant", TextValue("tenant_a")}}));
@@ -727,7 +760,7 @@ void ValidatePreparedDescriptorExecutesLiveValidators() {
 
   const auto domain_refusal = LiveInsert(
       writer,
-      LiveRow("019f3000-0000-7000-8000-000000000703",
+      LiveRow(scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000703"),
               {{"id", TextValue("-1")},
                {"tenant", TextValue("tenant_a")}}));
   Require(!domain_refusal.ok,
@@ -737,7 +770,7 @@ void ValidatePreparedDescriptorExecutesLiveValidators() {
 
   const auto not_null_refusal = LiveInsert(
       writer,
-      LiveRow("019f3000-0000-7000-8000-000000000704",
+      LiveRow(scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000704"),
               {{"id", TextValue("44")},
                {"payload", TextValue("short")}}));
   Require(!not_null_refusal.ok,
@@ -747,7 +780,7 @@ void ValidatePreparedDescriptorExecutesLiveValidators() {
 
   const auto check_refusal = LiveInsert(
       writer,
-      LiveRow("019f3000-0000-7000-8000-000000000705",
+      LiveRow(scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000705"),
               {{"id", TextValue("45")},
                {"payload", TextValue("payload-too-long-for-check")},
                {"tenant", TextValue("tenant_a")}}));
@@ -758,7 +791,7 @@ void ValidatePreparedDescriptorExecutesLiveValidators() {
 
   const auto duplicate_refusal = LiveInsert(
       writer,
-      LiveRow("019f3000-0000-7000-8000-000000000706",
+      LiveRow(scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000706"),
               {{"id", TextValue("42")},
                {"tenant", TextValue("tenant_a")}}));
   Require(!duplicate_refusal.ok,
@@ -768,7 +801,7 @@ void ValidatePreparedDescriptorExecutesLiveValidators() {
 
   const auto rls_refusal = LiveInsert(
       writer,
-      LiveRow("019f3000-0000-7000-8000-000000000707",
+      LiveRow(scratchbird::tests::FixtureUuidLiteral("019f3000-0000-7000-8000-000000000707"),
               {{"id", TextValue("46")},
                {"payload", TextValue("short")},
                {"tenant", TextValue("tenant_b")}}));

@@ -96,7 +96,7 @@ const exec::PhysicalAdmissionEvidence* FindLiveCancellationPolicy(
     if (evidence.stage != exec::PhysicalAdmissionStage::kPolicyCapability) {
       continue;
     }
-    if (policy != nullptr || evidence.evidence_uuid.empty()) return nullptr;
+    if (policy != nullptr || evidence.evidence_uuid.is_nil()) return nullptr;
     policy = &evidence;
   }
   return policy;
@@ -116,7 +116,7 @@ void BindLiveCancellationFailure(
     step->transient_state_cleanup_proven = true;
     step->cancellation_evidence_uuid =
         cancellation_policy == nullptr
-            ? std::string{}
+            ? core::platform::Uuid{}
             : cancellation_policy->evidence_uuid;
   } else if (step->diagnostic.diagnostic_code ==
              "SB_MODEL_COORDINATOR_LEG_FAILED_V1") {
@@ -313,41 +313,25 @@ std::optional<std::uint64_t> BoundOperatorLocalPhysicalDagCopyMemoryBytes(
            add(static_cast<std::uint64_t>(value.size()) + 1);
   };
   const auto add_context = [&](const exec::PhysicalMgaStatementContext& value) {
-    return add_string(value.statement_uuid) &&
-           add_string(value.owning_transaction_uuid) &&
-           add_string(value.statement_snapshot_uuid) &&
-           add_string(value.statement_metadata_snapshot_uuid) &&
-           add_array(value.active_excluded_local_transaction_ids.size(),
+    return add_array(value.active_excluded_local_transaction_ids.size(),
                      sizeof(std::uint64_t)) &&
            add_array(value.in_doubt_excluded_local_transaction_ids.size(),
                      sizeof(std::uint64_t)) &&
            add_string(value.snapshot_kind) &&
            add_string(value.statement_timestamp);
   };
-  const auto add_string_vector = [&](const std::vector<std::string>& values) {
-    if (!add_array(values.size(), sizeof(std::string))) return false;
-    return std::ranges::all_of(values, add_string);
+  const auto add_uuid_vector = [&](const std::vector<core::platform::Uuid>& values) {
+    return add_array(values.size(), sizeof(core::platform::Uuid));
   };
-  if (!add_string(dag.selected_plan_uuid) ||
-      !add_context(dag.mga_statement_context) ||
+  if (!add_context(dag.mga_statement_context) ||
       !add_array(dag.admission_evidence.size(),
                  sizeof(exec::PhysicalAdmissionEvidence)) ||
       !add_array(dag.nodes.size(), sizeof(exec::PhysicalNodeRecord)) ||
-      !add_string(dag.bound_sblr_tree_uuid) ||
-      !add_string(dag.catalog_epoch_uuid) ||
-      !add_string(dag.security_context_uuid) ||
-      !add_string(dag.capability_snapshot_uuid) ||
-      !add_string(dag.resource_snapshot_uuid) ||
-      !add_string(dag.statistics_snapshot_uuid) ||
-      !add_string(dag.route_snapshot_uuid) ||
       !add_string(dag.selected_plan_signature) ||
       // Temporary reachability vectors used before the bounded DAG copy.
       !add_array(dag.nodes.size(), sizeof(std::uint8_t)) ||
       !add_array(dag.nodes.size(), sizeof(std::size_t))) {
     return std::nullopt;
-  }
-  for (const auto& evidence : dag.admission_evidence) {
-    if (!add_string(evidence.evidence_uuid)) return std::nullopt;
   }
   for (const auto& node : dag.nodes) {
     if (!add_string(node.implementation_id) ||
@@ -355,18 +339,12 @@ std::optional<std::uint64_t> BoundOperatorLocalPhysicalDagCopyMemoryBytes(
                    sizeof(std::uint64_t)) ||
         !add_array(node.output_descriptor_ids.size(),
                    sizeof(std::uint32_t)) ||
-        !add_string(node.selected_alternative_uuid) ||
-        !add_string(node.executor_capability_uuid) ||
-        !add_string(node.cost_vector_uuid) ||
-        !add_string_vector(node.required_property_uuids) ||
-        !add_string_vector(node.delivered_property_uuids) ||
+        !add_uuid_vector(node.required_property_uuids) ||
+        !add_uuid_vector(node.delivered_property_uuids) ||
         !add_context(node.mga_statement_context) ||
         !add_string(node.logical_semantic_variant_id) ||
-        !add_string(node.transformation_uuid) ||
         !add_string(node.transformation_rule_id) ||
-        !add_string_vector(node.enforced_property_uuids) ||
-        !add_string(node.retained_cost.cost_vector_uuid) ||
-        !add_string(node.retained_cost.calibration_profile_uuid) ||
+        !add_uuid_vector(node.enforced_property_uuids) ||
         !add_string(node.retained_cost.scalarization_policy_id)) {
       return std::nullopt;
     }
@@ -473,12 +451,6 @@ bool BuildStrictUnaryOperatorLocalPhysicalDag(
   };
   const auto& context = dag.mga_statement_context;
   const bool callback_carriers_bounded =
-      add_string(dag.selected_plan_uuid) &&
-      add_string(dag.selected_plan_uuid) &&
-      add_string(context.statement_uuid) &&
-      add_string(context.owning_transaction_uuid) &&
-      add_string(context.statement_snapshot_uuid) &&
-      add_string(context.statement_metadata_snapshot_uuid) &&
       add_context_array(
           context.active_excluded_local_transaction_ids.capacity(),
           sizeof(std::uint64_t)) &&
@@ -487,10 +459,6 @@ bool BuildStrictUnaryOperatorLocalPhysicalDag(
           sizeof(std::uint64_t)) &&
       add_string(context.snapshot_kind) &&
       add_string(context.statement_timestamp) &&
-      add_string(context.statement_uuid) &&
-      add_string(context.owning_transaction_uuid) &&
-      add_string(context.statement_snapshot_uuid) &&
-      add_string(context.statement_metadata_snapshot_uuid) &&
       add_context_array(
           context.active_excluded_local_transaction_ids.capacity(),
           sizeof(std::uint64_t)) &&
@@ -619,11 +587,6 @@ bool BuildStrictBinaryOperatorLocalPhysicalDag(
                       &callback_carrier_bytes);
   };
   const bool callback_carriers_bounded =
-      add_string(dag.selected_plan_uuid) &&
-      add_string(context.statement_uuid) &&
-      add_string(context.owning_transaction_uuid) &&
-      add_string(context.statement_snapshot_uuid) &&
-      add_string(context.statement_metadata_snapshot_uuid) &&
       add_context_array(
           context.active_excluded_local_transaction_ids.capacity(),
           sizeof(std::uint64_t)) &&
@@ -722,7 +685,7 @@ std::size_t CanonicalPhysicalRegistrationRevalidationCountForTest() {
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveMaterializedSourceRegistration(
     std::unordered_map<std::uint64_t, exec::DescriptorBatch> batches,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::string diagnostic_id,
     std::string operation_name,
     const exec::PhysicalNodeKind node_kind,
@@ -859,7 +822,7 @@ MakeLiveMaterializedSourceRegistration(
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
     std::unordered_map<std::uint64_t, exec::DescriptorBatch> batches,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     std::string diagnostic_id,
     std::string operation_name,
     const bool strict_dispatcher_memory) {
@@ -873,7 +836,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
 
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveTableSubqueryRegistration(
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t maximum_input_row_count,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;

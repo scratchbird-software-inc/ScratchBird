@@ -914,8 +914,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus FirebirdLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuFirebirdPackageUuid) {
+scratchbird::udr::runtime::UdrStatus FirebirdLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuFirebirdPackageIdentity) {
     return {false, "UDR.FIREBIRD.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -1324,7 +1324,7 @@ UdrResult sbu_firebird_bridge_dispatch(std::string_view request_packet,
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_firebird_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuFirebirdPackageUuid);
+  descriptor.package_uuid = kSbuFirebirdPackageIdentity;
   descriptor.package_name = std::string(kSbuFirebirdPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "firebird-parser-support-db-lifecycle";

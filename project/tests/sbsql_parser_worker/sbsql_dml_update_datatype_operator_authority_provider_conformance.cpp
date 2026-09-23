@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -23,16 +24,11 @@ namespace {
 namespace api = scratchbird::engine::internal_api;
 namespace wire = scratchbird::wire;
 
-constexpr std::string_view kDatatypeSnapshotUuid =
-    "019d0000-0000-7000-8000-00000000d701";
-constexpr std::string_view kBigintDescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d711";
-constexpr std::string_view kBigintTypeUuid =
-    "019d0000-0000-7000-8000-00000000d712";
-constexpr std::string_view kTextDescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d718";
-constexpr std::string_view kTextTypeUuid =
-    "019d0000-0000-7000-8000-00000000d719";
+constexpr auto kDatatypeSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+constexpr auto kBigintDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
+constexpr auto kBigintTypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
+constexpr auto kTextDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
+constexpr auto kTextTypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719");
 
 [[noreturn]] void Fail(const std::string& message) {
   std::cerr << message << '\n';
@@ -55,18 +51,11 @@ wire::TypedUpdateUuid Uuid(unsigned seed) {
   return value;
 }
 
-wire::TypedUpdateUuid ParseUuid(std::string_view text) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  Require(parsed.ok(), "test UUID did not parse");
-  wire::TypedUpdateUuid value{};
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), value.begin());
-  return value;
+wire::TypedUpdateUuid IdentityBytes(const api::EngineUuid& id) {
+  return id.bytes;
 }
-
-std::string UuidText(const wire::TypedUpdateUuid& value) {
-  scratchbird::core::platform::Uuid uuid{};
-  std::copy(value.begin(), value.end(), uuid.bytes.begin());
-  return scratchbird::core::uuid::UuidToString(uuid);
+api::EngineUuid NativeIdentity(const wire::TypedUpdateUuid& value) {
+  return api::EngineUuid{value};
 }
 
 wire::TypedUpdateHash VectorHash(std::span<const std::uint8_t> bytes) {
@@ -91,21 +80,21 @@ api::EngineRequestContext Context(bool recovery = false,
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.database_path = "/tmp/sb_update_datatype_operator_provider.sdb";
-  context.database_uuid.canonical = UuidText(Uuid(1));
-  context.transaction_uuid.canonical = UuidText(Uuid(2));
+  context.database_uuid = NativeIdentity(Uuid(1));
+  context.transaction_uuid = NativeIdentity(Uuid(2));
   context.local_transaction_id = 3;
-  context.statement_receipt_uuid.canonical = UuidText(Uuid(3));
-  context.statement_snapshot_uuid.canonical = UuidText(Uuid(4));
+  context.statement_receipt_uuid = NativeIdentity(Uuid(3));
+  context.statement_snapshot_uuid = NativeIdentity(Uuid(4));
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical = UuidText(Uuid(5));
+  context.statement_metadata_snapshot_uuid = NativeIdentity(Uuid(5));
   context.catalog_generation_id = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      std::string(kDatatypeSnapshotUuid);
+  context.datatype_catalog_snapshot_uuid =
+      kDatatypeSnapshotUuid;
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.security_context_present = true;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical = UuidText(Uuid(6));
+  context.authorization_context.authority_uuid = NativeIdentity(Uuid(6));
   context.authorization_context.security_context_generation = 1;
   context.trace_tags.push_back(
       recovery ? "private_dml_update_rows_recovery"
@@ -132,18 +121,18 @@ Fixture MakeFixture(bool equality, bool text_assignment = false,
   auto& descriptor = fixture.descriptor;
   descriptor.descriptor_uuid = Uuid(10);
   descriptor.descriptor_generation = 1;
-  descriptor.authenticated_statement_receipt_uuid = ParseUuid(
-      Context().statement_receipt_uuid.canonical);
+  descriptor.authenticated_statement_receipt_uuid = IdentityBytes(
+      Context().statement_receipt_uuid);
   descriptor.structural_occurrence_id = 11;
   descriptor.operation_uuid = Uuid(12);
   descriptor.operation_generation = 1;
-  descriptor.owning_transaction_uuid = ParseUuid(
-      Context().transaction_uuid.canonical);
+  descriptor.owning_transaction_uuid = IdentityBytes(
+      Context().transaction_uuid);
   descriptor.owning_local_transaction_id = Context().local_transaction_id;
-  descriptor.statement_snapshot_uuid = ParseUuid(
-      Context().statement_snapshot_uuid.canonical);
-  descriptor.catalog_snapshot_uuid = ParseUuid(
-      Context().statement_metadata_snapshot_uuid.canonical);
+  descriptor.statement_snapshot_uuid = IdentityBytes(
+      Context().statement_snapshot_uuid);
+  descriptor.catalog_snapshot_uuid = IdentityBytes(
+      Context().statement_metadata_snapshot_uuid);
   descriptor.catalog_generation = Context().catalog_generation_id;
   descriptor.datatype_registry_generation = 1;
   descriptor.security_context_uuid = Uuid(13);
@@ -163,9 +152,9 @@ Fixture MakeFixture(bool equality, bool text_assignment = false,
   assignment.target_column_occurrence_generation = 1;
   assignment.target_column_uuid = Uuid(23);
   assignment.target_column_generation = 1;
-  assignment.value_descriptor_uuid = ParseUuid(kBigintDescriptorUuid);
+  assignment.value_descriptor_uuid = IdentityBytes(kBigintDescriptorUuid);
   assignment.value_descriptor_generation = 1;
-  assignment.value_type_uuid = ParseUuid(kBigintTypeUuid);
+  assignment.value_type_uuid = IdentityBytes(kBigintTypeUuid);
   assignment.value_type_generation = 1;
   assignment.codec_id = "datatype.int64.le.v1";
   assignment.codec_version = 1;
@@ -250,8 +239,8 @@ Fixture MakeFixture(bool equality, bool text_assignment = false,
 
   if (text_assignment) {
     auto& text = fixture.assignments.records.front();
-    text.value_descriptor_uuid = ParseUuid(kTextDescriptorUuid);
-    text.value_type_uuid = ParseUuid(kTextTypeUuid);
+    text.value_descriptor_uuid = IdentityBytes(kTextDescriptorUuid);
+    text.value_type_uuid = IdentityBytes(kTextTypeUuid);
     text.codec_id = "datatype.text.utf8.v1";
     text.canonical_value = std::move(text_value);
     text.value_state = text_state;
@@ -355,7 +344,7 @@ api::EngineDmlUpdateDatatypeOperatorAuthorityCaptureResultV1 Capture(
   api::EngineDmlUpdateDatatypeOperatorAuthorityCaptureRequestV1 request;
   request.context = std::move(context);
   request.authenticated_statement_receipt_uuid =
-      request.context.statement_receipt_uuid.canonical;
+      request.context.statement_receipt_uuid;
   request.exact_descriptor_dudc = fixture.dudc;
   request.exact_assignment_vector_duav = fixture.duav;
   request.exact_predicate_vector_duev = fixture.duev;
@@ -374,13 +363,13 @@ void TestPrebindingAndCanonicalTrue() {
   }
   Require(resolved.ok && resolved.datatype_snapshot_uuid == kDatatypeSnapshotUuid &&
               resolved.boolean_descriptor_uuid ==
-                  UuidText(wire::kTypedUpdateBooleanUuid) &&
+                  NativeIdentity(wire::kTypedUpdateBooleanUuid) &&
               resolved.boolean_type_uuid ==
-                  UuidText(wire::kTypedUpdateBooleanUuid) &&
+                  NativeIdentity(wire::kTypedUpdateBooleanUuid) &&
               resolved.boolean_codec_id == "datatype.boolean.u8.v1" &&
               resolved.builtin_operator_snapshot_uuid ==
-                  UuidText(wire::kTypedUpdateOperatorSnapshotUuid) &&
-              resolved.equality_operator_uuid.empty(),
+                  NativeIdentity(wire::kTypedUpdateOperatorSnapshotUuid) &&
+              resolved.equality_operator_uuid.is_nil(),
           "pre-carrier boolean/operator authority was not live-registry issued");
 
   const auto fixture = MakeFixture(false);
@@ -404,7 +393,7 @@ void TestPrebindingAndCanonicalTrue() {
           "binder capability was accepted for datatype revalidation");
 
   auto cross_receipt = Context(false, true);
-  cross_receipt.statement_receipt_uuid.canonical = UuidText(Uuid(90));
+  cross_receipt.statement_receipt_uuid = NativeIdentity(Uuid(90));
   const auto refused = api::RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
       cross_receipt, captured);
   Require(refused.error && refused.code == "MGA.TRANSACTION.STALE",
@@ -430,19 +419,19 @@ void TestEqualityBindingAndOperatorAuthority() {
   api::EngineDmlUpdateDatatypeOperatorBindingRequestV1 binding;
   binding.context = Context();
   binding.equality_required = true;
-  binding.left_descriptor_uuid = std::string(kBigintDescriptorUuid);
+  binding.left_descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
   binding.left_descriptor_generation = 1;
-  binding.left_type_uuid = std::string(kBigintTypeUuid);
+  binding.left_type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
   binding.left_type_generation = 1;
-  binding.right_descriptor_uuid = std::string(kBigintDescriptorUuid);
+  binding.right_descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
   binding.right_descriptor_generation = 1;
-  binding.right_type_uuid = std::string(kBigintTypeUuid);
+  binding.right_type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
   binding.right_type_generation = 1;
   const auto resolved =
       api::ResolveDmlUpdateDatatypeOperatorBindingAuthorityV1(binding);
   Require(resolved.ok &&
               resolved.equality_operator_uuid ==
-                  UuidText(wire::kTypedUpdateEqualOperatorUuid) &&
+                  NativeIdentity(wire::kTypedUpdateEqualOperatorUuid) &&
               resolved.equality_operator_generation == 1,
           "live bigint equality authority did not resolve");
 
@@ -476,8 +465,8 @@ void TestTextV2CaptureAndRecovery() {
                 captured.diagnostic.detail);
     const auto& text = captured.datatypes.records.back();
     Require(text.datatype_identity_code == wire::TypedUpdateDatatypeIdentityCode::text_v2 &&
-                text.descriptor_uuid == ParseUuid(kTextDescriptorUuid) &&
-                text.type_uuid == ParseUuid(kTextTypeUuid) &&
+                text.descriptor_uuid == IdentityBytes(kTextDescriptorUuid) &&
+                text.type_uuid == IdentityBytes(kTextTypeUuid) &&
                 text.canonical_value_minimum_bytes == 0 &&
                 text.canonical_value_maximum_bytes == 16777216 &&
                 text.canonical_value_exact_bytes == 0,
@@ -510,7 +499,7 @@ void TestTextV2CaptureAndRecovery() {
     Require(stale_result.error && stale_result.code == "MGA.TRANSACTION.STALE",
             "TEXT recovery reused a stale registry generation");
     auto cross_receipt = Context(false, true);
-    cross_receipt.statement_receipt_uuid.canonical = UuidText(Uuid(90));
+    cross_receipt.statement_receipt_uuid = NativeIdentity(Uuid(90));
     Require(api::RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
                 cross_receipt, captured).error,
             "TEXT authority was reused by another receipt");
@@ -599,7 +588,7 @@ void TestTextV2CaptureAndRecovery() {
     switch (field) {
       case 0: assignment.value_descriptor_uuid = Uuid(91); break;
       case 1: assignment.value_descriptor_generation += 1; break;
-      case 2: assignment.value_type_uuid = ParseUuid(kTextDescriptorUuid); break;
+      case 2: assignment.value_type_uuid = IdentityBytes(kTextDescriptorUuid); break;
       case 3: assignment.codec_id = "datatype.text.utf16.v1"; break;
       case 4: assignment.codec_version += 1; break;
       case 5: assignment.codec_generation += 1; break;
@@ -624,7 +613,7 @@ void TestTextV2CaptureAndRecovery() {
               deduplicated.datatypes.records.size() == 2,
           "two TEXT assignments must share one exact datatype authority row");
   const auto registry = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-      std::string(kDatatypeSnapshotUuid), 1, 1, std::string(kTextDescriptorUuid), 1);
+      kDatatypeSnapshotUuid, 1, 1, kTextDescriptorUuid, 1);
   Require(registry.ok && registry.row.datatype_identity_code == 0 &&
               registry.row.byte_order_code == 0 && registry.row.representation_code == 0,
           "v2 provider mutated the general registry's closed v1 carrier codes");

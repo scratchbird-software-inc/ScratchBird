@@ -10,7 +10,7 @@
 
 #include "metric_contracts.hpp"
 
-#include <sstream>
+#include "uuid.hpp"
 #include <utility>
 
 namespace scratchbird::core::metrics {
@@ -37,13 +37,6 @@ MetricLabelSet Labels(std::initializer_list<MetricLabel> labels) {
   return MetricLabelSet(labels.begin(), labels.end());
 }
 
-std::string Redacted(const std::string& value, bool allow_sensitive) {
-  if (value.empty()) {
-    return "none";
-  }
-  return allow_sensitive ? value : "[redacted]";
-}
-
 bool StorageMetricFamily(const std::string& family) {
   return StartsWith(family, "sb_filespace") ||
          StartsWith(family, "sb_page") ||
@@ -53,21 +46,6 @@ bool StorageMetricFamily(const std::string& family) {
          StartsWith(family, "sb_storage") ||
          StartsWith(family, "sb_temp") ||
          StartsWith(family, "sb_index_build");
-}
-
-std::string RenderSupportBundleLine(const MetricValue& metric,
-                                    const StorageMetricsManagementRequest& request) {
-  std::ostringstream out;
-  out << "namespace=sys.metrics.storage"
-      << ";family=" << metric.family
-      << ";database_uuid=" << Redacted(request.database_uuid,
-                                       request.allow_sensitive_labels)
-      << ";filespace_uuid=" << Redacted(request.filespace_uuid,
-                                        request.allow_sensitive_labels)
-      << ";local_path=" << Redacted(request.local_path_sample, false)
-      << ";protected_payload=" << Redacted(request.protected_payload_sample, false)
-      << ";value=" << metric.value;
-  return out.str();
 }
 
 }  // namespace
@@ -89,12 +67,15 @@ StorageMetricsManagementResult PublishStorageMetricsManagementSurface(
     return result;
   }
 
-  const std::string database_uuid =
-      request.database_uuid.empty() ? "database-storage-metrics" : request.database_uuid;
-  const std::string filespace_uuid =
-      request.filespace_uuid.empty() ? "filespace-storage-metrics" : request.filespace_uuid;
-  const std::string node_uuid =
-      request.node_uuid.empty() ? "node-storage-metrics" : request.node_uuid;
+  if (!core::uuid::IsEngineIdentityUuid(request.database_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(request.filespace_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(request.node_uuid)) {
+    AddDiagnostic(&result, "SB-STORAGE-METRICS-NATIVE-IDENTITY-REQUIRED");
+    return result;
+  }
+  const auto database_uuid = request.database_uuid;
+  const auto filespace_uuid = request.filespace_uuid;
+  const auto node_uuid = request.node_uuid;
 
   AddMetricFailure(&result, PublishFilespaceCapacitySnapshot(1024 * 1024, 512 * 1024, 512 * 1024, database_uuid, filespace_uuid, node_uuid, "active_primary", "ssd"));
   AddMetricFailure(&result, PublishFilespaceReservedBytes(64 * 1024, database_uuid, filespace_uuid, node_uuid, "active_primary", "ssd", "safety_margin"));
@@ -134,16 +115,30 @@ StorageMetricsManagementResult PublishStorageMetricsManagementSurface(
       continue;
     }
     const MetricDescriptor* descriptor = registry.FindDescriptor(value.family);
-    if (descriptor != nullptr) {
-      value = RedactSensitiveMetricValue(*descriptor, std::move(value), request.allow_sensitive_labels);
+    StorageMetricSupportRecord record;
+    if (!descriptor || !ProjectMetricForSupport(
+        *descriptor, value, request.allow_sensitive_labels, &record.metric, &value)) {
+      result.visible_metrics.clear();
+      result.support_bundle_records.clear();
+      AddDiagnostic(&result, "SB-STORAGE-METRICS-BINARY-PROJECTION-REFUSED");
+      return result;
     }
-    result.visible_metrics.push_back(value);
+    result.visible_metrics.push_back(std::move(value));
     if (request.support_bundle_requested) {
-      result.support_bundle_lines.push_back(RenderSupportBundleLine(value, request));
+      record.identities_redacted = !request.allow_sensitive_labels;
+      if (request.allow_sensitive_labels) {
+        record.database_uuid = database_uuid;
+        record.filespace_uuid = filespace_uuid;
+      }
+      record.local_path_redacted = !request.local_path_sample.empty();
+      record.protected_payload_redacted = !request.protected_payload_sample.empty();
+      result.redaction_applied = result.redaction_applied || record.identities_redacted ||
+          record.local_path_redacted || record.protected_payload_redacted ||
+          !record.metric.omitted_sensitive_labels.empty();
+      result.support_bundle_records.push_back(std::move(record));
     }
   }
 
-  result.redaction_applied = request.support_bundle_requested;
   return result;
 }
 

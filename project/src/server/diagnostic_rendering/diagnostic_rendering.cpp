@@ -19,6 +19,9 @@ using engine::internal_api::EngineTypedValue;
 using engine::internal_api::EngineRowValue;
 using engine::internal_api::MakeInvalidRequestDiagnostic;
 namespace {
+std::string IdentityBytes(const scratchbird::core::platform::Uuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
 
 bool SourceMetadataValid(const EngineRenderedDiagnostic& diagnostic) {
   if (diagnostic.code.empty() || diagnostic.message_key.empty() ||
@@ -63,7 +66,7 @@ EngineRenderedField RenderField(const std::pair<std::string, EngineTypedValue>& 
 EngineRenderedRow RenderRow(const EngineRowValue& row) {
   EngineRenderedRow rendered;
   if (!row.requested_row_uuid.is_nil())
-    rendered.row_uuid = scratchbird::core::uuid::UuidToString(row.requested_row_uuid);
+    rendered.row_uuid = IdentityBytes(row.requested_row_uuid);
   for (const auto& field : row.fields) { rendered.fields.push_back(RenderField(field)); }
   return rendered;
 }
@@ -89,11 +92,11 @@ EngineRenderedResultEnvelope RenderEngineApiResultForParserPackage(const EngineA
   envelope.columns = result.result_shape.columns;
   if (envelope.transaction_uuid.empty()) {
     if (!result.transaction_uuid.is_nil())
-      envelope.transaction_uuid = scratchbird::core::uuid::UuidToString(result.transaction_uuid);
+      envelope.transaction_uuid = IdentityBytes(result.transaction_uuid);
   }
   if (envelope.database_uuid.empty() && result.primary_object.object_kind == "database") {
     if (!result.primary_object.uuid.is_nil())
-      envelope.database_uuid = scratchbird::core::uuid::UuidToString(result.primary_object.uuid);
+      envelope.database_uuid = IdentityBytes(result.primary_object.uuid);
   }
 
   if (envelope.parser_package_uuid.empty()) {

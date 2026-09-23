@@ -26,8 +26,8 @@ struct AgentSupportBundleTriageRouteRequest {
   scratchbird::core::agents::implemented_agents::SupportBundleTriageResult
       triage_result;
   EnginePrepareSupportBundleRequest support_request;
-  std::string agent_uuid;
-  std::string evidence_uuid;
+  EngineUuid agent_uuid;
+  EngineUuid evidence_uuid;
   bool durable_evidence_store_authority = false;
   bool tamper_chain_verified = false;
   bool redaction_profile_authoritative = false;

@@ -54,29 +54,29 @@ std::uint64_t StringListBytes(const std::vector<std::string>& values) {
 
 std::uint64_t TableMetadataEstimateBytes(const CrudTableRecord& table) {
   std::uint64_t total = 96;
-  AddBytes(&total, TextBytes(table.table_uuid));
+  AddBytes(&total, 16);
   AddBytes(&total, TextBytes(table.default_name));
   AddBytes(&total, PairBytes(table.columns));
   AddBytes(&total, TextBytes(table.temporary_scope));
-  AddBytes(&total, TextBytes(table.temporary_session_uuid));
+  AddBytes(&total, 16);
   AddBytes(&total, TextBytes(table.on_commit_action));
   return total;
 }
 
 std::uint64_t RowVersionEstimateBytes(const CrudRowVersionRecord& row) {
   std::uint64_t total = 128;
-  AddBytes(&total, TextBytes(row.table_uuid));
-  AddBytes(&total, TextBytes(row.row_uuid));
-  AddBytes(&total, TextBytes(row.version_uuid));
-  AddBytes(&total, TextBytes(row.previous_version_uuid));
+  AddBytes(&total, 16);
+  AddBytes(&total, 16);
+  AddBytes(&total, 16);
+  AddBytes(&total, 16);
   AddBytes(&total, PairBytes(row.values));
   return total;
 }
 
 std::uint64_t IndexMetadataEstimateBytes(const CrudIndexRecord& index) {
   std::uint64_t total = 128;
-  AddBytes(&total, TextBytes(index.index_uuid));
-  AddBytes(&total, TextBytes(index.table_uuid));
+  AddBytes(&total, 16);
+  AddBytes(&total, 16);
   AddBytes(&total, TextBytes(index.column_name));
   AddBytes(&total, TextBytes(index.family));
   AddBytes(&total, TextBytes(index.profile));
@@ -91,27 +91,27 @@ std::uint64_t IndexMetadataEstimateBytes(const CrudIndexRecord& index) {
 
 std::uint64_t IndexEntryEstimateBytes(const CrudIndexEntryRecord& entry) {
   std::uint64_t total = 112;
-  AddBytes(&total, TextBytes(entry.index_uuid));
-  AddBytes(&total, TextBytes(entry.table_uuid));
+  AddBytes(&total, 16);
+  AddBytes(&total, 16);
   AddBytes(&total, TextBytes(entry.column_name));
   AddBytes(&total, TextBytes(entry.family));
   AddBytes(&total, TextBytes(entry.entry_kind));
   AddBytes(&total, TextBytes(entry.key_value));
   AddBytes(&total, TextBytes(entry.payload_value));
-  AddBytes(&total, TextBytes(entry.row_uuid));
-  AddBytes(&total, TextBytes(entry.version_uuid));
+  AddBytes(&total, 16);
+  AddBytes(&total, 16);
   return total;
 }
 
-bool TableUuidSeen(const std::vector<std::string>& seen,
-                   const std::string& table_uuid) {
+bool TableUuidSeen(const std::vector<EngineUuid>& seen,
+                   const EngineUuid& table_uuid) {
   return std::find(seen.begin(), seen.end(), table_uuid) != seen.end();
 }
 
 MgaRelationStatistics EstimateRelationStatisticsFromState(
     const EngineRequestContext& context,
     const RelationReadSnapshot& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     bool include_indexes) {
   MgaRelationStatistics statistics;
   const auto table =
@@ -152,7 +152,7 @@ MgaRelationStatistics EstimateRelationStatisticsFromState(
 
 MgaRelationStatisticsResult EstimateMgaRelationStatistics(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     bool include_indexes) {
   MgaRelationStatisticsResult result;
   auto loaded = LoadMgaRelationStoreState(context);
@@ -181,9 +181,9 @@ MgaRelationStatisticsResult EstimateMgaCatalogStatistics(
   }
   const RelationReadSnapshot state =
       BuildCrudCompatibilityStateFromMga(loaded.state);
-  std::vector<std::string> table_uuids;
+  std::vector<EngineUuid> table_uuids;
   for (const auto& table : state.tables) {
-    if (table.table_uuid.empty() ||
+    if (table.table_uuid.is_nil() ||
         TableUuidSeen(table_uuids, table.table_uuid)) {
       continue;
     }

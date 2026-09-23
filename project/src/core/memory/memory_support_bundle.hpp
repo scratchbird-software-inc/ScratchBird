@@ -11,6 +11,7 @@
 #include "foreign_memory_reservation.hpp"
 #include "memory.hpp"
 #include "metric_registry.hpp"
+#include "metric_support_projection.hpp"
 #include "runtime_platform.hpp"
 
 #include <array>
@@ -139,9 +140,17 @@ struct MemorySupportBundleRequest {
   bool include_self_accounting = true;
 };
 
+struct MemorySupportBundleMetricRecord {
+  std::string family;
+  scratchbird::core::metrics::MetricSupportProjection metric;
+  bool value_redacted = false;
+  std::string tamper_evidence_digest;
+};
+
 struct MemorySupportBundleResult {
   Status status;
   std::vector<MemorySupportBundleRow> rows;
+  std::vector<MemorySupportBundleMetricRecord> metric_records;
   std::vector<std::string> evidence;
   u64 redacted_row_count = 0;
   u64 top_context_count = 0;

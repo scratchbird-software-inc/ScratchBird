@@ -4,6 +4,12 @@
 #include "hash_digest.hpp"
 #include "../sblr/sblr_autonomous_frame_runtime.hpp"
 #include "uuid.hpp"
+#include "catalog/binary_catalog_metadata.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <filesystem>
+#include <charconv>
+#include <limits>
+#include <iterator>
 
 #include <algorithm>
 #include <chrono>
@@ -15,8 +21,8 @@
 namespace scratchbird::engine::internal_api {
 namespace {
 std::mutex mutex;
-std::unordered_map<std::string, SblrAutonomousFrameSnapshot> rows;
-std::unordered_map<std::string, SblrAutonomousBodyFrameProjectionV1> projections;
+std::map<EngineUuid, SblrAutonomousFrameSnapshot> rows;
+std::map<std::pair<EngineUuid, std::uint64_t>, SblrAutonomousBodyFrameProjectionV1> projections;
 std::uint64_t generation = 0;
 
 EngineApiDiagnostic Diagnostic(std::string code, std::string key) {
@@ -27,17 +33,16 @@ bool HasTag(const EngineRequestContext& context, const char* tag) {
          std::find(context.trace_tags.begin(), context.trace_tags.end(), tag) !=
              context.trace_tags.end();
 }
-std::string Identity(std::uint64_t value) {
+EngineUuid Identity(std::uint64_t value) {
   const auto millis = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count());
   const auto uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
       scratchbird::core::platform::UuidKind::object, millis + value);
-  return uuid.ok() ? scratchbird::core::uuid::UuidToString(uuid.value.value)
-                   : std::string{};
+  return uuid.ok() ? uuid.value.value : EngineUuid{};
 }
-bool Uuid(const std::string& text) {
-  return scratchbird::core::uuid::ParseUuid(text).ok();
+bool Uuid(const EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 bool Sha(const std::string& text) {
   return text.size() == 71 && text.rfind("sha256:", 0) == 0;
@@ -45,10 +50,9 @@ bool Sha(const std::string& text) {
 std::string DescriptorEvidence(const SblrAutonomousFrameSnapshot& snapshot) {
   const auto& a = snapshot.authority;
   scratchbird::engine::sblr::SblrAutonomousFrameDescriptorV1 descriptor;
-  const auto uuid = [](const std::string& text, auto* out) {
-    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-    if (!parsed.ok()) return false;
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), out->begin());
+  const auto uuid = [](const EngineUuid& value, auto* out) {
+    if (!Uuid(value)) return false;
+    *out = value.bytes;
     return true;
   };
   const auto sha = [](const std::string& text, auto* out) {
@@ -78,7 +82,7 @@ std::string DescriptorEvidence(const SblrAutonomousFrameSnapshot& snapshot) {
       !uuid(a.security_snapshot_uuid, &descriptor.security) ||
       !uuid(a.policy_snapshot_uuid, &descriptor.policy) ||
       !uuid(a.body_sblr_uuid, &descriptor.body) ||
-      (!a.dynamic_statement_sblr_uuid.empty() &&
+      (!a.dynamic_statement_sblr_uuid.is_nil() &&
        !uuid(a.dynamic_statement_sblr_uuid, &descriptor.dynamic)) ||
       !sha(a.effect_set_sha256, &descriptor.effect_sha)) return {};
   descriptor.frame_generation = snapshot.frame_generation;
@@ -114,8 +118,8 @@ bool Valid(const EngineRequestContext& c,
          a.effect_count <= 64 && Sha(a.effect_set_sha256) &&
          Sha(a.projection_evidence_sha256);
 }
-std::string ProjectionKey(const std::string& receipt, std::uint64_t occurrence) {
-  return receipt + ":" + std::to_string(occurrence);
+auto ProjectionKey(const EngineUuid& receipt, std::uint64_t occurrence) {
+  return std::pair{receipt, occurrence};
 }
 std::string ProjectionPath(const EngineRequestContext& c) {
   return c.database_path + ".sb.sblr_autonomous_body_frame_projection.v1";
@@ -127,52 +131,147 @@ std::string ShaMaterial(const std::string& material) {
   for(auto byte:digest){out.push_back(hex[byte>>4]);out.push_back(hex[byte&15]);}
   return out;
 }
+std::string EncodeProjection(const SblrAutonomousBodyFrameProjectionV1& a) {
+  BinaryCatalogMetadata fields;
+  fields.identities.emplace("preliminary_receipt_uuid", a.preliminary_receipt_uuid);
+  fields.identities.emplace("parent_transaction_uuid", a.parent_transaction_uuid);
+  fields.identities.emplace("parent_frame_uuid", a.parent_frame_uuid);
+  fields.identities.emplace("database_uuid", a.database_uuid);
+  fields.identities.emplace("attachment_uuid", a.attachment_uuid);
+  fields.identities.emplace("session_uuid", a.session_uuid);
+  fields.identities.emplace("principal_uuid", a.principal_uuid);
+  fields.identities.emplace("security_snapshot_uuid", a.security_snapshot_uuid);
+  fields.identities.emplace("policy_snapshot_uuid", a.policy_snapshot_uuid);
+  fields.identities.emplace("body_sblr_uuid", a.body_sblr_uuid);
+  fields.identities.emplace("dynamic_statement_sblr_uuid", a.dynamic_statement_sblr_uuid);
+  fields.text.emplace("structural_occurrence_id", std::to_string(a.structural_occurrence_id));
+  fields.text.emplace("catalog_generation", std::to_string(a.catalog_generation));
+  fields.text.emplace("capability_generation", std::to_string(a.capability_generation));
+  fields.text.emplace("intent", std::to_string(a.intent));
+  fields.text.emplace("nesting_depth", std::to_string(a.nesting_depth));
+  fields.text.emplace("effect_count", std::to_string(a.effect_count));
+  fields.text.emplace("body_sblr_sha256", a.body_sblr_sha256);
+  fields.text.emplace("effect_set_sha256", a.effect_set_sha256);
+  fields.text.emplace("projection_evidence_sha256", a.projection_evidence_sha256);
+  std::string bytes;
+  return EncodeBinaryCatalogMetadata(fields, "autonomous.body_projection.v2", &bytes) ? bytes : std::string{};
+}
+bool DecodeProjection(std::string_view bytes, SblrAutonomousBodyFrameProjectionV1* output) {
+  if (!output) return false;
+  BinaryCatalogMetadata fields;
+  if (!DecodeBinaryCatalogMetadata(bytes, "autonomous.body_projection.v2", &fields) ||
+      fields.identities.size() != 11 || fields.text.size() != 9) return false;
+  SblrAutonomousBodyFrameProjectionV1 a;
+  const auto identity = [&](const char* name, EngineUuid* target, bool optional = false) {
+    const auto it = fields.identities.find(name);
+    if (it == fields.identities.end() ||
+        (!Uuid(it->second) && !(optional && it->second.is_nil()))) return false;
+    *target = it->second; return true;
+  };
+  const auto number = [&](const char* name, auto* target) {
+    const auto it = fields.text.find(name);
+    if (it == fields.text.end() || it->second.empty()) return false;
+    std::uint64_t value = 0;
+    const auto& text = it->second;
+    const auto [end, error] = std::from_chars(text.data(), text.data()+text.size(),value);
+    using Number = std::remove_reference_t<decltype(*target)>;
+    if (error != std::errc{} || end != text.data()+text.size() ||
+        value > std::numeric_limits<Number>::max()) return false;
+    *target = static_cast<Number>(value); return true;
+  };
+  if (!identity("preliminary_receipt_uuid", &a.preliminary_receipt_uuid)) return false;
+  if (!identity("parent_transaction_uuid", &a.parent_transaction_uuid)) return false;
+  if (!identity("parent_frame_uuid", &a.parent_frame_uuid)) return false;
+  if (!identity("database_uuid", &a.database_uuid)) return false;
+  if (!identity("attachment_uuid", &a.attachment_uuid)) return false;
+  if (!identity("session_uuid", &a.session_uuid)) return false;
+  if (!identity("principal_uuid", &a.principal_uuid)) return false;
+  if (!identity("security_snapshot_uuid", &a.security_snapshot_uuid)) return false;
+  if (!identity("policy_snapshot_uuid", &a.policy_snapshot_uuid)) return false;
+  if (!identity("body_sblr_uuid", &a.body_sblr_uuid)) return false;
+  if (!identity("dynamic_statement_sblr_uuid", &a.dynamic_statement_sblr_uuid, true)) return false;
+  if (!number("structural_occurrence_id", &a.structural_occurrence_id)) return false;
+  if (!number("catalog_generation", &a.catalog_generation)) return false;
+  if (!number("capability_generation", &a.capability_generation)) return false;
+  if (!number("intent", &a.intent)) return false;
+  if (!number("nesting_depth", &a.nesting_depth)) return false;
+  if (!number("effect_count", &a.effect_count)) return false;
+  if (!fields.text.contains("body_sblr_sha256") || !Sha(fields.text.at("body_sblr_sha256"))) return false;
+  a.body_sblr_sha256 = fields.text.at("body_sblr_sha256");
+  if (!fields.text.contains("effect_set_sha256") || !Sha(fields.text.at("effect_set_sha256"))) return false;
+  a.effect_set_sha256 = fields.text.at("effect_set_sha256");
+  if (!fields.text.contains("projection_evidence_sha256") || !Sha(fields.text.at("projection_evidence_sha256"))) return false;
+  a.projection_evidence_sha256 = fields.text.at("projection_evidence_sha256");
+  if (!a.structural_occurrence_id || !a.catalog_generation || !a.capability_generation ||
+      a.intent < 1 || a.intent > 4 || a.nesting_depth < 1 || a.nesting_depth > 8 || a.effect_count > 64)
+    return false;
+  *output = std::move(a); return true;
+}
 bool AppendProjection(const EngineRequestContext& c, char event,
                       const SblrAutonomousBodyFrameProjectionV1& a) {
-  std::ofstream out(ProjectionPath(c), std::ios::app);
+  if (event != 'P' && event != 'C') return false;
+  const auto projection = EncodeProjection(a);
+  if (projection.empty()) return false;
+  const auto bytes = EncodeMgaMetadataFields({"autonomous.projection.journal.v2", std::string(1,event), projection});
+  if (bytes.empty()) return false;
+  std::ofstream out(ProjectionPath(c), std::ios::binary | std::ios::app);
   if (!out) return false;
-  out << event << ' ' << std::quoted(a.preliminary_receipt_uuid) << ' '
-      << a.structural_occurrence_id << ' ' << std::quoted(a.parent_transaction_uuid) << ' '
-      << std::quoted(a.parent_frame_uuid) << ' ' << std::quoted(a.database_uuid) << ' '
-      << std::quoted(a.attachment_uuid) << ' ' << std::quoted(a.session_uuid) << ' '
-      << std::quoted(a.principal_uuid) << ' ' << std::quoted(a.security_snapshot_uuid) << ' '
-      << std::quoted(a.policy_snapshot_uuid) << ' ' << a.catalog_generation << ' '
-      << a.capability_generation << ' ' << std::quoted(a.body_sblr_uuid) << ' '
-      << std::quoted(a.dynamic_statement_sblr_uuid) << ' '
-      << std::quoted(a.body_sblr_sha256) << ' ' << unsigned(a.intent) << ' '
-      << unsigned(a.nesting_depth) << ' ' << a.effect_count << ' '
-      << std::quoted(a.effect_set_sha256) << ' '
-      << std::quoted(a.projection_evidence_sha256) << '\n';
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
   out.flush(); return bool(out);
 }
-void LoadProjections(const EngineRequestContext& c) {
-  std::ifstream in(ProjectionPath(c));
-  char event; SblrAutonomousBodyFrameProjectionV1 a;
-  unsigned intent, depth;
-  while (in >> event >> std::quoted(a.preliminary_receipt_uuid) >> a.structural_occurrence_id
-         >> std::quoted(a.parent_transaction_uuid) >> std::quoted(a.parent_frame_uuid)
-         >> std::quoted(a.database_uuid) >> std::quoted(a.attachment_uuid)
-         >> std::quoted(a.session_uuid) >> std::quoted(a.principal_uuid)
-         >> std::quoted(a.security_snapshot_uuid) >> std::quoted(a.policy_snapshot_uuid)
-         >> a.catalog_generation >> a.capability_generation >> std::quoted(a.body_sblr_uuid)
-         >> std::quoted(a.dynamic_statement_sblr_uuid) >> std::quoted(a.body_sblr_sha256)
-         >> intent >> depth >> a.effect_count >> std::quoted(a.effect_set_sha256)
-         >> std::quoted(a.projection_evidence_sha256)) {
-    a.intent=static_cast<std::uint8_t>(intent); a.nesting_depth=static_cast<std::uint8_t>(depth);
-    const auto key=ProjectionKey(a.preliminary_receipt_uuid,a.structural_occurrence_id);
-    if(event=='P') projections[key]=a; else if(event=='C') projections.erase(key);
+bool LoadProjections(const EngineRequestContext& c) {
+  std::error_code error;
+  const auto path = ProjectionPath(c);
+  const bool exists = std::filesystem::exists(path,error);
+  if (error) return false;
+  if (!exists) return true;
+  const auto size = std::filesystem::file_size(path,error);
+  if (error || size > kMgaMetadataMaximumBytes) return false;
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  const std::string bytes((std::istreambuf_iterator<char>(in)), {});
+  if (in.bad() || bytes.size() != size) return false;
+  std::vector<std::string> records;
+  if (!DecodeMgaMetadataStream(std::span(reinterpret_cast<const std::uint8_t*>(bytes.data()),bytes.size()), &records))
+    return false;
+  auto staged = projections;
+  for (auto it = staged.begin(); it != staged.end();) {
+    if (it->second.database_uuid == c.database_uuid) it = staged.erase(it);
+    else ++it;
   }
+  for (const auto& record : records) {
+    std::vector<std::string> fields;
+    SblrAutonomousBodyFrameProjectionV1 a;
+    if (!DecodeMgaMetadataFields(record,&fields) || fields.size() != 3 ||
+        fields[0] != "autonomous.projection.journal.v2" ||
+        (fields[1] != "P" && fields[1] != "C") || !DecodeProjection(fields[2], &a) ||
+        a.database_uuid != c.database_uuid) return false;
+    const auto key = ProjectionKey(a.preliminary_receipt_uuid,a.structural_occurrence_id);
+    if (fields[1] == "P") staged[key] = std::move(a);
+    else staged.erase(key);
+  }
+  projections.swap(staged);
+  return true;
 }
 bool Publish(const EngineRequestContext& c,
              const SblrAutonomousFrameSnapshot& s) {
-  std::ofstream out(c.database_path + ".sb.sblr_autonomous_frame.v1",
-                    std::ios::app);
+  BinaryCatalogMetadata fields;
+  fields.identities = {{"database_uuid", c.database_uuid},
+                       {"frame_uuid", s.frame_uuid},
+                       {"child_transaction_uuid", s.child_transaction_uuid},
+                       {"recovery_token_uuid", s.recovery_token_uuid}};
+  fields.text = {{"frame_generation", std::to_string(s.frame_generation)},
+                 {"child_transaction_number", std::to_string(s.child_transaction_number)},
+                 {"state", std::to_string(static_cast<unsigned>(s.state))},
+                 {"finality_sequence", std::to_string(s.finality_sequence)}};
+  std::string payload;
+  if (!EncodeBinaryCatalogMetadata(fields, "autonomous.frame.journal.v2", &payload)) return false;
+  const auto bytes = EncodeMgaMetadataFields({"autonomous.frame.journal.v2", payload});
+  if (bytes.empty()) return false;
+  std::ofstream out(c.database_path + ".sb.sblr_autonomous_frame.v1", std::ios::binary | std::ios::app);
   if (!out) return false;
-  out << "SBAF1\t" << s.frame_uuid << '\t' << s.frame_generation << '\t'
-      << s.child_transaction_uuid << '\t' << s.child_transaction_number << '\t'
-      << unsigned(s.state) << '\t' << s.finality_sequence << '\n';
-  out.flush();
-  return bool(out);
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  out.flush(); return bool(out);
 }
 }  // namespace
 
@@ -189,7 +288,8 @@ EngineApiDiagnostic PublishSblrAutonomousBodyFrameProjection(
                                  authority.structural_occurrence_id);
   if (projections.contains(key))
     return Diagnostic("PSQL.AUTONOMOUS_DESCRIPTOR_INVALID", "sblr.psql_autonomous.projection_duplicate");
-  LoadProjections(c);
+  if (!LoadProjections(c))
+    return Diagnostic("PSQL.AUTONOMOUS_DESCRIPTOR_INVALID", "sblr.psql_autonomous.projection_journal_invalid");
   if (projections.contains(key))
     return Diagnostic("PSQL.AUTONOMOUS_DESCRIPTOR_INVALID", "sblr.psql_autonomous.projection_duplicate");
   if (!AppendProjection(c, 'P', authority))
@@ -199,7 +299,7 @@ EngineApiDiagnostic PublishSblrAutonomousBodyFrameProjection(
 }
 
 EngineApiDiagnostic CompileAndPublishSblrAutonomousBodyFrameProjection(
-    const EngineRequestContext& c, const std::string& receipt,
+    const EngineRequestContext& c, const EngineUuid& receipt,
     std::uint64_t occurrence) {
   if (!HasTag(c, "private_psql_autonomous_body_compiler") ||
       !c.statement_metadata_snapshot_engine_owned || receipt != c.statement_uuid ||
@@ -217,7 +317,10 @@ EngineApiDiagnostic CompileAndPublishSblrAutonomousBodyFrameProjection(
   a.security_snapshot_uuid=Identity(++generation);a.policy_snapshot_uuid=Identity(++generation);
   a.catalog_generation=++generation;a.capability_generation=++generation;
   a.body_sblr_uuid=Identity(++generation);a.intent=1;a.nesting_depth=1;a.effect_count=0;
-  const std::string material=receipt+":"+std::to_string(occurrence)+":"+a.body_sblr_uuid;
+  std::string material;
+  material.append(reinterpret_cast<const char*>(receipt.bytes.data()), receipt.bytes.size());
+  AppendBinaryU64(&material, occurrence);
+  material.append(reinterpret_cast<const char*>(a.body_sblr_uuid.bytes.data()), a.body_sblr_uuid.bytes.size());
   a.body_sblr_sha256=ShaMaterial("ScratchBird.SblrPsqlAutonomousBody.V1"+material);
   a.effect_set_sha256=ShaMaterial("ScratchBird.SblrPsqlAutonomousAllowedEffectSet.V1");
   a.projection_evidence_sha256=ShaMaterial(
@@ -226,7 +329,7 @@ EngineApiDiagnostic CompileAndPublishSblrAutonomousBodyFrameProjection(
 }
 
 EngineApiDiagnostic RevokeSblrAutonomousBodyFrameProjection(
-    const EngineRequestContext& c, const std::string& receipt) {
+    const EngineRequestContext& c, const EngineUuid& receipt) {
   std::lock_guard lock(mutex);
   if (!HasTag(c, "private_psql_autonomous_body_compiler"))
     return Diagnostic("SECURITY.ACCESS_DENIED", "sblr.psql_autonomous.projection_hidden");
@@ -242,7 +345,7 @@ EngineApiDiagnostic RevokeSblrAutonomousBodyFrameProjection(
 }
 
 SblrAutonomousFrameCoordinatorResult ReserveSblrAutonomousFrame(
-    const EngineRequestContext& c, const std::string& receipt,
+    const EngineRequestContext& c, const EngineUuid& receipt,
     std::uint64_t occurrence) {
   std::lock_guard lock(mutex);
   SblrAutonomousFrameCoordinatorResult out;
@@ -253,7 +356,10 @@ SblrAutonomousFrameCoordinatorResult ReserveSblrAutonomousFrame(
   }
   auto projection = projections.find(ProjectionKey(receipt, occurrence));
   if (projection == projections.end()) {
-    LoadProjections(c);
+    if (!LoadProjections(c)) {
+      out.diagnostic = Diagnostic("PSQL.AUTONOMOUS_DESCRIPTOR_INVALID", "sblr.psql_autonomous.projection_journal_invalid");
+      return out;
+    }
     projection = projections.find(ProjectionKey(receipt, occurrence));
   }
   if (projection == projections.end() || !Valid(c, projection->second)) {
@@ -290,7 +396,7 @@ SblrAutonomousFrameCoordinatorResult ReserveSblrAutonomousFrame(
 }
 
 SblrAutonomousFrameCoordinatorResult FinalizeSblrAutonomousFrame(
-    const EngineRequestContext& c, const std::string& id,
+    const EngineRequestContext& c, const EngineUuid& id,
     std::uint64_t frame_generation, bool commit) {
   std::lock_guard lock(mutex);
   SblrAutonomousFrameCoordinatorResult out;

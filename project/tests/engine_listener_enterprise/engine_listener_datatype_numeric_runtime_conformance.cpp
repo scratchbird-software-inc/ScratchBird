@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -74,7 +75,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
   }
@@ -86,12 +87,20 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string UuidText(TypedUuid typed_uuid) {
-  return uuid::UuidToString(typed_uuid.value);
+bool HasEvidence(const api::EngineApiResult& result, std::string_view kind,
+                 const api::EngineUuid& identity) {
+  for (const auto& item : result.evidence)
+    if (item.evidence_kind == kind &&
+        scratchbird::tests::EvidenceIdentityEquals(item.evidence_id, identity)) return true;
+  return false;
 }
 
-std::string UuidText(UuidKind kind, u64 offset) {
-  return UuidText(MakeUuid(kind, offset));
+api::EngineUuid NativeIdentity(TypedUuid typed_uuid) {
+  return typed_uuid.value;
+}
+
+api::EngineUuid NativeIdentity(UuidKind kind, u64 offset) {
+  return NativeIdentity(MakeUuid(kind, offset));
 }
 
 dt::DatatypeOperationValue Value(dt::CanonicalTypeId type_id, std::string value) {
@@ -215,10 +224,10 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = UuidText(fixture.database_uuid);
-  context.node_uuid.canonical = UuidText(UuidKind::object, 32);
-  context.principal_uuid.canonical = UuidText(UuidKind::principal, 33);
-  context.session_uuid.canonical = UuidText(UuidKind::object, 34);
+  context.database_uuid = NativeIdentity(fixture.database_uuid);
+  context.node_uuid = NativeIdentity(UuidKind::object, 32);
+  context.principal_uuid = NativeIdentity(UuidKind::principal, 33);
+  context.session_uuid = NativeIdentity(UuidKind::object, 34);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -249,20 +258,20 @@ void Commit(api::EngineRequestContext* context) {
   const auto committed = api::EngineCommitTransaction(request);
   RequireApiOk(committed, "transaction commit failed");
   context->local_transaction_id = 0;
-  context->transaction_uuid.canonical.clear();
+  context->transaction_uuid = {};
 }
 
 api::DomainRecord Domain(std::uint64_t creator_tx,
-                         std::string domain_uuid,
+                         api::EngineUuid domain_uuid,
                          std::string base_type,
                          std::string check_envelope) {
   api::DomainRecord record;
   record.creator_tx = creator_tx;
   record.domain_uuid = std::move(domain_uuid);
-  record.catalog_row_uuid = UuidText(UuidKind::object, 40 + creator_tx);
-  record.schema_uuid = UuidText(UuidKind::schema, 50 + creator_tx);
+  record.catalog_row_uuid = NativeIdentity(UuidKind::object, 40 + creator_tx);
+  record.schema_uuid = NativeIdentity(UuidKind::schema, 50 + creator_tx);
   record.default_name = "eler030_numeric_domain";
-  record.base_descriptor_uuid = UuidText(UuidKind::object, 60 + creator_tx);
+  record.base_descriptor_uuid = NativeIdentity(UuidKind::object, 60 + creator_tx);
   record.base_descriptor_kind = "scalar";
   record.base_canonical_type_name = std::move(base_type);
   record.base_encoded_descriptor = "canonical=" + record.base_canonical_type_name;
@@ -293,7 +302,7 @@ void DomainPredicateProof() {
 
   auto writer = Context(fixture, "eler030-domain-writer");
   Begin(&writer);
-  const auto domain_uuid = UuidText(UuidKind::object, 70);
+  const auto domain_uuid = NativeIdentity(UuidKind::object, 70);
   const auto domain = Domain(writer.local_transaction_id,
                              domain_uuid,
                              "int128",

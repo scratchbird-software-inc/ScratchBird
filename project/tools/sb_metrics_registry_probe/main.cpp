@@ -31,9 +31,10 @@ bool Require(bool condition, const std::string& message) {
 // This executable is a registry/component probe, not an authorized adapter.
 // Its explicit fixture provenance tests presentation only; it grants no
 // export, committed-snapshot, cluster or residency authority.
-scratchbird::core::metrics::MetricExportResult ProbeProjection(
+scratchbird::client::metrics::MetricExportResult ProbeProjection(
     const scratchbird::core::metrics::MetricRegistry& registry,bool include_cluster) {
   using namespace scratchbird::core::metrics;
+  using namespace scratchbird::client::metrics;
   const auto fixture_id=[](unsigned char tag){MetricUuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[15]=tag;return id;};
   const MetricExportContext context{fixture_id(1),fixture_id(2),fixture_id(3),1,1,2,"probe-local"};
   std::vector<MetricExportSample> samples;
@@ -49,6 +50,7 @@ scratchbird::core::metrics::MetricExportResult ProbeProjection(
 
 int main() {
   using namespace scratchbird::core::metrics;
+  using namespace scratchbird::client::metrics;
   bool ok = true;
   auto& registry = DefaultMetricRegistry();
   const auto descriptors = registry.Descriptors(true);

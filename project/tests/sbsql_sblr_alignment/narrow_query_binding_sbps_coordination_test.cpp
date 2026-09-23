@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -15,6 +16,7 @@
 #include "server/sbps.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "wire/narrow_query_binding_codec.hpp"
 #include "wire/narrow_query_binding_demand_codec.hpp"
 
@@ -44,10 +46,8 @@ namespace server = scratchbird::server;
 namespace uuid = scratchbird::core::uuid;
 namespace wire = scratchbird::wire;
 
-constexpr std::string_view kInt32DescriptorUuid =
-    "019d0000-0000-7000-8000-00000000d716";
-constexpr std::string_view kInt32TypeUuid =
-    "019d0000-0000-7000-8000-00000000d717";
+constexpr auto kInt32DescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716");
+constexpr auto kInt32TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717");
 constexpr std::uint64_t kScanBytes = 64ull * 1024ull * 1024ull;
 constexpr std::uint64_t kTransportBytes = 64ull * 1024ull;
 constexpr std::uint64_t kFixtureEpochMillis = 1945000000000ull;
@@ -96,22 +96,10 @@ platform::TypedUuid NewTypedUuid(platform::UuidKind kind) {
   return durable.value;
 }
 
-std::string UuidText(const platform::TypedUuid& value) {
-  return uuid::UuidToString(value.value);
-}
-
-std::array<std::uint8_t, 16> UuidBytes(std::string_view text) {
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  Require(parsed.ok(), "UUID parsing failed");
-  std::array<std::uint8_t, 16> bytes{};
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            bytes.begin());
-  return bytes;
-}
-
-wire::NarrowQueryUuid WireUuid(std::string_view text) {
-  return UuidBytes(text);
-}
+platform::Uuid NativeUuid(const platform::TypedUuid& value) { return value.value; }
+platform::Uuid NativeUuid(const std::array<std::uint8_t, 16>& value) { return platform::Uuid{value}; }
+std::array<std::uint8_t, 16> UuidBytes(const platform::Uuid& value) { return value.bytes; }
+wire::NarrowQueryUuid WireUuid(const platform::Uuid& value) { return value.bytes; }
 
 sb_engine_uuid_t PublicUuid(const platform::TypedUuid& value) {
   sb_engine_uuid_t result{};
@@ -143,9 +131,26 @@ void RequireRefusal(const server::SessionOperationResult& result,
 }
 
 std::string Int32Descriptor() {
-  return "type=int32;datatype_descriptor_uuid=" +
-         std::string(kInt32DescriptorUuid) + ";type_uuid=" +
-         std::string(kInt32TypeUuid) + ";nullable=false";
+  return "type=int32;nullable=false";
+}
+
+api::EngineColumnDefinition Int32Column() {
+  const auto lookup = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"), 1, 1, kInt32DescriptorUuid, 1);
+  Require(lookup.ok && lookup.row.type_uuid == kInt32TypeUuid,
+          "exact fixture datatype catalog binding is unavailable");
+  api::EngineColumnDefinition column;
+  column.requested_column_uuid = NewTypedUuid(platform::UuidKind::object).value;
+  column.ordinal = 0;
+  column.nullable = false;
+  column.descriptor.descriptor_uuid = lookup.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_uuid = lookup.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = lookup.row.descriptor_generation;
+  column.descriptor.type_uuid = lookup.row.type_uuid;
+  column.descriptor.descriptor_kind = "scalar";
+  column.descriptor.canonical_type_name = lookup.row.canonical_name;
+  column.descriptor.encoded_descriptor = Int32Descriptor();
+  return column;
 }
 
 struct Fixture {
@@ -191,12 +196,12 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "narrow-query-sbps-coordination";
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = UuidText(fixture.database);
+  context.database_uuid = NativeUuid(fixture.database);
   context.database_page_size_bytes = 16384;
-  context.default_root_uuid.canonical = UuidText(fixture.filespace);
-  context.current_schema_uuid.canonical = UuidText(fixture.schema);
-  context.principal_uuid.canonical = UuidText(fixture.principal);
-  context.session_uuid.canonical = UuidText(fixture.session);
+  context.default_root_uuid = NativeUuid(fixture.filespace);
+  context.current_schema_uuid = NativeUuid(fixture.schema);
+  context.principal_uuid = NativeUuid(fixture.principal);
+  context.session_uuid = NativeUuid(fixture.session);
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -211,8 +216,8 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.optimizer_maximum_planning_time_ns = 5'000'000'000ull;
   context.optimizer_spill_allowed = true;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      UuidText(NewTypedUuid(platform::UuidKind::object));
+  context.authorization_context.authority_uuid =
+      NativeUuid(NewTypedUuid(platform::UuidKind::object));
   context.authorization_context.security_context_generation = 1;
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
@@ -225,11 +230,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.authorization_context.effective_subjects.push_back(
       std::move(subject));
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
-      UuidText(NewTypedUuid(platform::UuidKind::object));
+  grant.grant_uuid =
+      NativeUuid(NewTypedUuid(platform::UuidKind::object));
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = UuidText(fixture.relation);
+  grant.target_uuid = NativeUuid(fixture.relation);
   grant.right = "SELECT";
   grant.security_epoch = context.security_epoch;
   context.authorization_context.grants.push_back(std::move(grant));
@@ -272,9 +277,11 @@ Fixture MakeFixture() {
 
   api::CrudTableRecord table;
   table.creator_tx = fixture.transaction.local_transaction_id;
-  table.table_uuid = UuidText(fixture.relation);
+  table.table_uuid = NativeUuid(fixture.relation);
   table.default_name = "narrow_sbps_values";
   table.columns = {{"id", Int32Descriptor()}};
+  table.bound_columns = {Int32Column()};
+  table.bound_relation_generation = table.bound_column_generation = 1;
   Require(!api::AppendMgaTableMetadata(fixture.transaction, table).error,
           "fixture table metadata append failed");
   const auto ensured = api::EnsureMgaRelationStorageDescriptor(
@@ -341,7 +348,7 @@ bridge::StatementContextReceiptHandle AcquireReceipt(
     bridge::StatementContextReceiptView* view) {
   bridge::StatementContextAcquireRequest request;
   request.engine_context = &context;
-  request.exact_transaction_uuid = context.transaction_uuid.canonical;
+  request.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   sb_engine_result_t engine_result = nullptr;
   const auto status = bridge::AcquireStatementContextReceipt(
@@ -375,7 +382,7 @@ wire::NarrowQueryBindingDemand MakeDemand(
   wire::NarrowQuerySourceDemand source;
   source.source_ordinal = 0;
   source.relation_object_hint_present = true;
-  source.relation_object_uuid_hint = WireUuid(UuidText(fixture.relation));
+  source.relation_object_uuid_hint = WireUuid(NativeUuid(fixture.relation));
   source.explicit_alias = true;
   source.alias_spelling = "narrow_source";
   demand.sources.push_back(std::move(source));
@@ -443,7 +450,7 @@ void TestCoordination() {
   bridge::StatementContextAcquireRequest forbidden_request;
   forbidden_request.engine_context = &caller_selected_transport;
   forbidden_request.exact_transaction_uuid =
-      caller_selected_transport.transaction_uuid.canonical;
+      caller_selected_transport.transaction_uuid;
   bridge::StatementContextReceiptHandle forbidden_receipt;
   bridge::StatementContextReceiptView forbidden_view;
   sb_engine_result_t forbidden_result = nullptr;
@@ -482,12 +489,12 @@ void TestCoordination() {
   live.connection_uuid = sbps::MakeUuidV7Bytes();
   live.server_channel_uuid = sbps::MakeUuidV7Bytes();
   live.channel_state = server::ServerChannelState::kReady;
-  live.session_uuid = UuidBytes(UuidText(fixture.session));
+  live.session_uuid = UuidBytes(NativeUuid(fixture.session));
   live.auth_context_uuid = sbps::MakeUuidV7Bytes();
-  live.principal_uuid = UuidBytes(UuidText(fixture.principal));
+  live.principal_uuid = UuidBytes(NativeUuid(fixture.principal));
   live.effective_user_uuid = live.principal_uuid;
   live.database_path = fixture.database_path.string();
-  live.database_uuid = UuidText(fixture.database);
+  live.database_uuid = NativeUuid(fixture.database);
   live.catalog_generation = view.catalog_generation_id;
   live.security_epoch = view.security_epoch;
   live.resource_epoch = view.resource_epoch;
@@ -556,7 +563,7 @@ void TestCoordination() {
 
   auto foreign_demand = MakeDemand(fixture, view);
   foreign_demand.statement_receipt_uuid =
-      WireUuid(UuidText(NewTypedUuid(platform::UuidKind::object)));
+      WireUuid(NativeUuid(NewTypedUuid(platform::UuidKind::object)));
   auto foreign_receipt = RequestFrame(live, EncodeDemand(foreign_demand));
   RequireRefusal(server::HandleQueryNarrowBindingIssue(
                      &registry, engine_state, foreign_receipt),
@@ -567,7 +574,7 @@ void TestCoordination() {
       registry.sessions_by_uuid.at(scratchbird::core::platform::Uuid{live.session_uuid});
   const auto live_transaction_uuid = stored_session.transaction_uuid;
   stored_session.transaction_uuid =
-      UuidText(NewTypedUuid(platform::UuidKind::transaction));
+      NativeUuid(NewTypedUuid(platform::UuidKind::transaction));
   auto stale_transaction = RequestFrame(live, canonical);
   RequireRefusal(server::HandleQueryNarrowBindingIssue(
                      &registry, engine_state, stale_transaction),
@@ -641,7 +648,7 @@ void TestCoordination() {
                   kTransportBytes &&
               snapshot.resource_grant.grant_generation ==
                   snapshot.binding.resource_grant_generation &&
-              WireUuid(snapshot.resource_grant.grant_receipt_uuid.canonical) ==
+              snapshot.resource_grant.grant_receipt_uuid ==
                   snapshot.binding.resource_grant_receipt_uuid,
           "handler did not privately pin the typed-result grant");
 

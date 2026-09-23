@@ -9,7 +9,7 @@
 #pragma once
 
 #include "datatype_descriptor.hpp"
-#include "metric_registry.hpp"
+#include "metric_support_projection.hpp"
 
 #include <string>
 #include <vector>
@@ -23,7 +23,7 @@ struct DatatypeMetricsManagementRequest {
   bool metrics_read_authorized = false;
   bool allow_sensitive_labels = false;
   bool support_bundle_requested = false;
-  std::string principal_uuid;
+  metrics::MetricUuid principal_uuid;
   CanonicalTypeId canonical_type = CanonicalTypeId::unknown;
   CanonicalTypeId source_type = CanonicalTypeId::unknown;
   CanonicalTypeId target_type = CanonicalTypeId::unknown;
@@ -33,11 +33,18 @@ struct DatatypeMetricsManagementRequest {
   std::string protected_payload_sample;
 };
 
+struct DatatypeMetricSupportRecord {
+  metrics::MetricSupportProjection metric;
+  metrics::MetricUuid principal_uuid;
+  bool principal_redacted = false;
+  bool protected_payload_redacted = false;
+};
+
 struct DatatypeMetricsManagementResult {
   bool ok = false;
   std::vector<std::string> diagnostics;
   std::vector<scratchbird::core::metrics::MetricValue> visible_metrics;
-  std::vector<std::string> support_bundle_lines;
+  std::vector<DatatypeMetricSupportRecord> support_bundle_records;
   bool redaction_applied = false;
 };
 

@@ -138,12 +138,14 @@ struct ResourceGovernanceReservationToken {
   std::string owner_scope;
   std::uint64_t created_sequence = 0;
   std::uint64_t lease_deadline_tick = 0;
+  core::platform::Uuid owner_uuid;
 };
 
 struct ResourceGovernanceReservationAcquireRequest {
   ResourceGovernanceAdmissionRequest admission;
   std::string owner_scope;
   std::uint64_t lease_deadline_tick = 0;
+  core::platform::Uuid owner_uuid;
 };
 
 struct ResourceGovernanceReservationSnapshot {
@@ -192,6 +194,7 @@ struct ResourceGovernanceReservationCleanupResult {
   std::string owner_scope;
   std::string diagnostic_code;
   std::vector<std::string> evidence;
+  core::platform::Uuid owner_uuid;
 };
 
 const char* ResourceGovernanceFamilyName(ResourceGovernanceFamily family);
@@ -221,6 +224,10 @@ class ResourceGovernanceReservationLedger {
       const std::string& owner_scope,
       ResourceGovernanceReservationReleaseReason reason =
           ResourceGovernanceReservationReleaseReason::kDisconnect);
+  ResourceGovernanceReservationCleanupResult ReleaseOwnerReservations(
+      const core::platform::Uuid& owner_uuid,
+      ResourceGovernanceReservationReleaseReason reason =
+          ResourceGovernanceReservationReleaseReason::kDisconnect);
   ResourceGovernanceReservationCleanupResult ExpireReservations(
       std::uint64_t now_tick);
   ResourceGovernanceReservationSnapshot Snapshot() const;
@@ -230,6 +237,9 @@ class ResourceGovernanceReservationLedger {
     ResourceGovernanceReservationToken token;
   };
 
+  ResourceGovernanceReservationCleanupResult ReleaseOwnerReservationsImpl(
+      const std::string& owner_scope, const core::platform::Uuid& owner_uuid,
+      ResourceGovernanceReservationReleaseReason reason);
   ResourceGovernanceReservationSnapshot SnapshotLocked() const;
 
   std::string ledger_id_;
@@ -283,6 +293,8 @@ struct HierarchicalMemoryBudgetReservationToken {
   std::uint64_t bytes = 0;
   std::uint64_t created_sequence = 0;
   std::vector<std::string> debited_scope_chain;
+  // Exactly one owner: a named scope or a native system identity.
+  core::platform::Uuid owner_uuid{};
 };
 
 struct HierarchicalMemoryBudgetReserveRequest {
@@ -290,6 +302,8 @@ struct HierarchicalMemoryBudgetReserveRequest {
   std::string owner_scope;
   std::string leaf_scope_id;
   std::uint64_t bytes = 0;
+  // Exactly one owner: a named scope or a native system identity.
+  core::platform::Uuid owner_uuid{};
 };
 
 struct HierarchicalMemoryBudgetReserveResult {
@@ -340,9 +354,13 @@ class HierarchicalMemoryBudgetLedger {
   HierarchicalMemoryBudgetReleaseCode ReleaseNoAlloc(const std::string& token_id) noexcept;
   HierarchicalMemoryBudgetReleaseResult ReleaseOwnerReservations(
       const std::string& owner_scope);
+  HierarchicalMemoryBudgetReleaseResult ReleaseOwnerReservations(
+      const core::platform::Uuid& owner_uuid);
   std::vector<HierarchicalMemoryBudgetScopeSnapshot> Snapshot() const;
 
  private:
+  HierarchicalMemoryBudgetReleaseResult ReleaseOwnerReservationsImpl(
+      const std::string& owner_scope, const core::platform::Uuid& owner_uuid);
   struct ScopeState {
     HierarchicalMemoryBudgetScope scope;
     std::uint64_t current_bytes = 0;

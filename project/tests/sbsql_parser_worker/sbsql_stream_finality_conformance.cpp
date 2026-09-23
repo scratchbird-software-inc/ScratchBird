@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -75,7 +76,7 @@ void PutString(std::vector<std::uint8_t>* out, std::string_view value) {
 struct EngineFixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
+  api::EngineUuid database_uuid;
 
   EngineFixture() = default;
   EngineFixture(const EngineFixture&) = delete;
@@ -130,7 +131,7 @@ EngineFixture MakeEngineFixture() {
   create.allow_minimal_resource_bootstrap = true;
   const auto created = database::CreateDatabaseFile(create);
   Require(created.ok(), "stream finality fixture database creation failed");
-  fixture.database_uuid = uuid::UuidToString(database_uuid.value.value);
+  fixture.database_uuid = database_uuid.value.value;
   return fixture;
 }
 
@@ -155,11 +156,9 @@ scratchbird::server::ServerSessionRegistry MakeRegistry(
   begin.context.trust_mode = api::EngineTrustMode::server_isolated;
   begin.context.request_id = "stream-finality-engine-begin";
   begin.context.database_path = fixture.database_path.string();
-  begin.context.database_uuid.canonical = fixture.database_uuid;
-  begin.context.principal_uuid.canonical =
-      scratchbird::server::UuidBytesToText(session.principal_uuid);
-  begin.context.session_uuid.canonical =
-      scratchbird::server::UuidBytesToText(session.session_uuid);
+  begin.context.database_uuid = fixture.database_uuid;
+  begin.context.principal_uuid.bytes = session.principal_uuid;
+  begin.context.session_uuid.bytes = session.session_uuid;
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 1;
@@ -169,13 +168,13 @@ scratchbird::server::ServerSessionRegistry MakeRegistry(
   const auto begun = api::EngineBeginTransaction(begin);
   RequireEngineOk(begun, "stream finality engine transaction begin failed");
   Require(scratchbird::server::IsCompleteEngineTransactionIdentity(
-              begun.local_transaction_id, begun.transaction_uuid.canonical),
+              begun.local_transaction_id, begun.transaction_uuid),
           "stream finality begin did not return a composite transaction identity");
 
   session.local_transaction_id = begun.local_transaction_id;
   session.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
-  session.transaction_uuid = begun.transaction_uuid.canonical;
+  session.transaction_uuid = begun.transaction_uuid;
   *transaction_context = begin.context;
   transaction_context->local_transaction_id = begun.local_transaction_id;
   transaction_context->snapshot_visible_through_local_transaction_id =
@@ -254,7 +253,7 @@ std::array<std::uint8_t, 16> OpenCursor(scratchbird::server::ServerSessionRegist
   cursor.row_descriptor_uuid = sbps::MakeUuidV7Bytes();
   cursor.snapshot_uuid = sbps::MakeUuidV7Bytes();
   cursor.statement_context_statement_uuid =
-      scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
+      scratchbird::core::platform::Uuid{sbps::MakeUuidV7Bytes()};
 
   scratchbird::server::ServerStatementContextRecord statement_context;
   statement_context.session_uuid = route.session_uuid;
@@ -386,8 +385,8 @@ int main() {
                    "rolled_back_post_inventory_secondary_failure") &&
               recovered.local_transaction_id ==
                   transaction_context.local_transaction_id &&
-              recovered.transaction_uuid.canonical ==
-                  transaction_context.transaction_uuid.canonical,
+              recovered.transaction_uuid ==
+                  transaction_context.transaction_uuid,
           "parser kill transaction was not resolved by exact engine MGA identity");
 
   std::cout << "sbsql_stream_finality_conformance=passed\n";

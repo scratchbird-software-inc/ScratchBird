@@ -106,17 +106,17 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string MakeUuidText(UuidKind kind, u64 offset) {
-  return uuid::UuidToString(MakeUuid(kind, offset).value);
+api::EngineUuid MakeIdentity(UuidKind kind, u64 offset) {
+  return MakeUuid(kind, offset).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_before_uuid;
-  std::string table_after_uuid;
-  std::string index_after_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid table_before_uuid;
+  api::EngineUuid table_after_uuid;
+  api::EngineUuid index_after_uuid;
 };
 
 Fixture MakeFixture(const std::filesystem::path& work_dir) {
@@ -143,10 +143,10 @@ Fixture MakeFixture(const std::filesystem::path& work_dir) {
   }
   Expect(created.ok(), "PCR-072 fixture database should be created");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_before_uuid = MakeUuidText(UuidKind::object, 110);
-  fixture.table_after_uuid = MakeUuidText(UuidKind::object, 111);
-  fixture.index_after_uuid = MakeUuidText(UuidKind::object, 112);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_before_uuid = MakeIdentity(UuidKind::object, 110);
+  fixture.table_after_uuid = MakeIdentity(UuidKind::object, 111);
+  fixture.index_after_uuid = MakeIdentity(UuidKind::object, 112);
   return fixture;
 }
 
@@ -156,9 +156,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = MakeUuidText(UuidKind::principal, 120);
-  context.session_uuid.canonical = MakeUuidText(UuidKind::object, 121);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = MakeIdentity(UuidKind::principal, 120);
+  context.session_uuid = MakeIdentity(UuidKind::object, 121);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -186,7 +186,7 @@ api::EngineRequestContext Begin(const Fixture& fixture, std::string request_id) 
   return context;
 }
 
-api::CrudTableRecord Table(std::string table_uuid,
+api::CrudTableRecord Table(api::EngineUuid table_uuid,
                            std::string default_name) {
   api::CrudTableRecord table;
   table.table_uuid = std::move(table_uuid);
@@ -216,14 +216,14 @@ api::CrudRowVersionRecord Row(const Fixture& fixture,
   api::CrudRowVersionRecord row;
   row.creator_tx = context.local_transaction_id;
   row.table_uuid = fixture.table_after_uuid;
-  row.row_uuid = MakeUuidText(UuidKind::row, 130);
-  row.version_uuid = MakeUuidText(UuidKind::row, 131);
+  row.row_uuid = MakeIdentity(UuidKind::row, 130);
+  row.version_uuid = MakeIdentity(UuidKind::row, 131);
   row.values = {{"id", "1"}, {"name", "after-savepoint"}};
   return row;
 }
 
 bool HasTable(const api::MgaRelationStoreState& state,
-              const std::string& table_uuid) {
+              const api::EngineUuid& table_uuid) {
   for (const auto& table : state.relation_metadata.tables) {
     if (table.table_uuid == table_uuid) {
       return true;
@@ -233,7 +233,7 @@ bool HasTable(const api::MgaRelationStoreState& state,
 }
 
 bool HasIndex(const api::MgaRelationStoreState& state,
-              const std::string& index_uuid) {
+              const api::EngineUuid& index_uuid) {
   for (const auto& index : state.relation_metadata.indexes) {
     if (index.index_uuid == index_uuid) {
       return true;
@@ -557,7 +557,7 @@ bool PreparedAndLimboResolutionProof() {
               "PCR-072 cluster limbo should require external provider evidence") && ok;
 
   txn::LimboOperatorResolutionPolicy external_policy = local_policy;
-  external_policy.external_cluster_provider_decision_authoritative = true;
+  // A provider-looking label cannot grant cluster decision authority to this local API.
   external_policy.operator_evidence_reference =
       "external-cluster-provider://pcr072/cluster-limbo-commit";
   const auto cluster_resolved =
@@ -567,10 +567,10 @@ bool PreparedAndLimboResolutionProof() {
           txn::LimboOperatorDecision::commit,
           kBaseMillis + 4500,
           external_policy);
-  ok = Expect(cluster_resolved.ok() &&
-                  cluster_resolved.entry.state ==
-                      txn::TransactionState::committed,
-              "PCR-072 cluster limbo should resolve only with external provider evidence") && ok;
+  ok = Expect(!cluster_resolved.ok() &&
+                  cluster_resolved.diagnostic.diagnostic_code ==
+                      "SB-SNTXN-LIMBO-EXTERNAL-PROVIDER-REQUIRED",
+              "PCR-072 local operator API must refuse a provider label without cluster authority") && ok;
   return ok;
 }
 

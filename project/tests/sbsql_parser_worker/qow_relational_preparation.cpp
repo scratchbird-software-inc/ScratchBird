@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/canonical_query_aggregate_registration.hpp"
 #include "engine/sblr/canonical_query_node_composition.hpp"
 #include "engine/sblr/canonical_query_object_free_composition_support.hpp"
@@ -183,7 +184,7 @@ void RowBindingAndBounds(Results& results) {
 
   api::RelationalTypeDescriptor descriptor;
   descriptor.descriptor_id = 1;
-  descriptor.descriptor_uuid = "019f0000-0000-7200-8000-000000009c01";
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000009c01");
   descriptor.type_uuid = sblr::ExactCanonicalCoreDatatypeTypeUuidV1("int64");
   descriptor.nullability = api::RelationalNullability::kNonNull;
   dag = {};

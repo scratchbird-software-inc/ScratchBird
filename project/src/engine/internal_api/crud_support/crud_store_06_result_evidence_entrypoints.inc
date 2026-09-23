@@ -133,11 +133,11 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
 }
 
 std::string MakeCrudRowVersionEvent(std::uint64_t creator_tx,
-                                    const std::string& table_uuid,
-                                    const std::string& row_uuid,
-                                    const std::string& version_uuid,
+                                    const EngineUuid& table_uuid,
+                                    const EngineUuid& row_uuid,
+                                    const EngineUuid& version_uuid,
                                     bool deleted,
-                                    const std::string& previous_version_uuid,
+                                    const EngineUuid& previous_version_uuid,
                                     std::uint64_t previous_sequence,
                                     const std::vector<std::pair<std::string, std::string>>& values) {
   (void)creator_tx;
@@ -158,37 +158,46 @@ std::string CrudIndexEvidenceId(const CrudIndexRecord& index,
   const std::string family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
   const std::string exactness = IsApproximateCrudIndexFamily(family) ? "approximate" : "exact";
   const std::string fallback = IsApproximateCrudIndexFamily(family) ? "exact_scan_compatibility_fallback" : "none";
-  return index.index_uuid + "|index_family=" + family + "|index_profile=" + index.profile +
-         "|predicate_kind=" + predicate.predicate_kind + "|candidate_count=" + std::to_string(candidate_count) +
-         "|visible_count=" + std::to_string(visible_count) + "|row_recheck_applied=true|exactness=" + exactness +
-         "|fallback_mode=" + fallback;
+  BinaryCatalogMetadata fields;
+  fields.identities.emplace("index_uuid", index.index_uuid);
+  fields.text = {{"index_family", family}, {"index_profile", index.profile},
+                 {"predicate_kind", predicate.predicate_kind},
+                 {"candidate_count", std::to_string(candidate_count)},
+                 {"visible_count", std::to_string(visible_count)},
+                 {"row_recheck_applied", "true"}, {"exactness", exactness},
+                 {"fallback_mode", fallback}};
+  std::string encoded;
+  if (!EncodeBinaryCatalogMetadata(fields, "crud.index_evidence.v2", &encoded))
+    throw std::invalid_argument("crud_index_evidence_identity_invalid");
+  return encoded;
 }
 
 std::string MakeCrudIndexCreateEvent(std::uint64_t creator_tx,
-                                     const std::string& index_uuid,
-                                     const std::string& table_uuid,
+                                     const EngineUuid& index_uuid,
+                                     const EngineUuid& table_uuid,
                                      const std::string& column_name,
                                      const std::string& profile,
                                      const std::string& default_name) {
-  return std::string("SBCRUD1\tINDEX_CREATE\t") + std::to_string(creator_tx) + "\t" + index_uuid + "\t" + table_uuid +
-         "\t" + EncodeCrudText(column_name) + "\t" + profile + "\t" + EncodeCrudText(default_name);
+  return EncodeMgaMetadataFields({kCrudMagic, "INDEX_CREATE", std::to_string(creator_tx),
+      MetadataUuidBytes(index_uuid), MetadataUuidBytes(table_uuid),
+      EncodeCrudText(column_name), profile, EncodeCrudText(default_name)});
 }
 
 std::string MakeCrudIndexCreateEventV2(std::uint64_t creator_tx, const CrudIndexRecord& index) {
-  return std::string("SBCRUD1\tINDEX_CREATE_V2\t") + std::to_string(creator_tx) + "\t" + index.index_uuid + "\t" +
-         index.table_uuid + "\t" + index.profile + "\t" + index.family + "\t" + EncodeCrudText(index.default_name) +
-         "\t" + EncodeCrudText(index.column_name) + "\t" + EncodeCrudList(index.key_envelopes) + "\t" +
-         EncodeCrudList(index.include_columns) + "\t" + index.predicate_kind + "\t" + EncodeCrudText(index.predicate_column) +
-         "\t" + EncodeCrudText(index.predicate_value) + "\t" + (index.unique ? "1" : "0");
+  return EncodeMgaMetadataFields({kCrudMagic,"INDEX_CREATE_V2",std::to_string(creator_tx),
+      MetadataUuidBytes(index.index_uuid),MetadataUuidBytes(index.table_uuid),index.profile,index.family,
+      EncodeCrudText(index.default_name),EncodeCrudText(index.column_name),EncodeCrudList(index.key_envelopes),
+      EncodeCrudList(index.include_columns),index.predicate_kind,EncodeCrudText(index.predicate_column),
+      EncodeCrudText(index.predicate_value),index.unique ? "1" : "0"});
 }
 
 std::string MakeCrudIndexEntryEvent(std::uint64_t creator_tx,
-                                    const std::string& index_uuid,
-                                    const std::string& table_uuid,
+                                    const EngineUuid& index_uuid,
+                                    const EngineUuid& table_uuid,
                                     const std::string& column_name,
                                     const std::string& key_value,
-                                    const std::string& row_uuid,
-                                    const std::string& version_uuid) {
+                                    const EngineUuid& row_uuid,
+                                    const EngineUuid& version_uuid) {
   (void)creator_tx;
   (void)index_uuid;
   (void)table_uuid;
@@ -203,8 +212,8 @@ std::string MakeCrudIndexEntryEventV2(std::uint64_t creator_tx,
                                       const CrudIndexRecord& index,
                                       const std::string& key_value,
                                       const std::string& payload_value,
-                                      const std::string& row_uuid,
-                                      const std::string& version_uuid) {
+                                      const EngineUuid& row_uuid,
+                                      const EngineUuid& version_uuid) {
   (void)creator_tx;
   (void)index;
   (void)key_value;
@@ -274,13 +283,6 @@ EngineResultShape CrudRowsToResultShape(const std::vector<CrudRowVersionRecord>&
     shape.rows.push_back(std::move(out_row));
   }
   return shape;
-}
-
-void AddEmbeddedTrustModeEvidence(const EngineRequestContext& context, EngineApiResult* result) {
-  if (context.trust_mode == EngineTrustMode::embedded_in_process) {
-    result->embedded_trust_mode_observed = true;
-    result->diagnostics.push_back(MakeEmbeddedTrustModeDiagnostic(result->operation_id));
-  }
 }
 
 }  // namespace scratchbird::engine::internal_api

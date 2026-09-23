@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -174,7 +175,7 @@ void TestActionWithInvalidPolicyFailsClosed() {
 
   agents::AgentRuntimeContext context;
   context.security_context_present = true;
-  context.database_uuid = ValidEvidence().database_uuid;
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e0f2a-002e-7000-8000-000000000002");
   context.groups.push_back("OPS");
 
   agents::AgentActionRequest action;

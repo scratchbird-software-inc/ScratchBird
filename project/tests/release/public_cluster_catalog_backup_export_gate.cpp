@@ -11,6 +11,7 @@
 //
 // PUBLIC_CLUSTER_CATALOG_BACKUP_EXPORT_GATE
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "backup_archive/backup_archive_api.hpp"
 #include "cluster_catalog_manifest.hpp"
 #include "cluster_catalog_record_codec.hpp"
@@ -145,9 +146,9 @@ api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.cluster_authority_available = true;
-  context.database_uuid.canonical = "database:public-cluster-backup-export-pcr104";
-  context.cluster_uuid.canonical = "cluster:public-cluster-backup-export-pcr104";
-  context.principal_uuid.canonical = "principal:public-cluster-backup-export-pcr104";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1287, 1);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(1287, 2);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1287, 3);
   context.trace_tags.push_back("public_cluster_catalog_backup_export_gate");
   return context;
 }

@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -7,6 +9,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "lifecycle/sequence_generator_lifecycle.hpp"
+#include "transaction/transaction_api.hpp"
+#include "database_lifecycle.hpp"
+#include "core/uuid/uuid.hpp"
+#include <map>
 
 #include <chrono>
 #include <cstdlib>
@@ -18,6 +24,8 @@
 namespace {
 
 namespace seq_api = scratchbird::engine::internal_api;
+using scratchbird::tests::FixtureUuid;
+std::map<std::string, std::map<std::uint64_t, seq_api::EngineRequestContext>> contexts;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -66,6 +74,7 @@ std::filesystem::path TestPath(std::string_view label) {
 }
 
 void Cleanup(const std::filesystem::path& path) {
+  contexts.erase(path.string());
   std::error_code ignored;
   std::filesystem::remove(path, ignored);
   std::filesystem::remove(path.string() + ".sb.sequence_generator_events", ignored);
@@ -74,37 +83,59 @@ void Cleanup(const std::filesystem::path& path) {
 seq_api::EngineRequestContext Context(const std::filesystem::path& path,
                                       std::uint64_t tx,
                                       bool cluster_authority = false) {
+  auto& transactions = contexts[path.string()];
+  if (transactions.contains(tx)) return transactions.at(tx);
+  if (!std::filesystem::exists(path)) {
+    scratchbird::storage::database::DatabaseCreateConfig config;
+    config.path = path.string();
+    config.database_uuid = scratchbird::core::uuid::MakeTypedUuid(
+        scratchbird::core::platform::UuidKind::database, FixtureUuid(1295, 1)).value;
+    config.filespace_uuid = scratchbird::core::uuid::MakeTypedUuid(
+        scratchbird::core::platform::UuidKind::filespace, FixtureUuid(1295, 2)).value;
+    config.page_size = 16384;
+    config.creation_unix_epoch_millis = CurrentUnixMillis();
+    config.allow_minimal_resource_bootstrap = true;
+    config.require_resource_seed_pack = false;
+    Require(scratchbird::storage::database::CreateDatabaseFile(config).ok(), "sequence fixture database create failed");
+  }
   seq_api::EngineRequestContext context;
   context.database_path = path.string();
-  context.database_uuid.canonical = "database-013ah";
-  context.principal_uuid.canonical = "principal-013ah";
-  context.transaction_uuid.canonical = "txn-" + std::to_string(tx);
-  context.local_transaction_id = tx;
-  context.request_id = "request-" + std::to_string(tx);
+  context.database_uuid = FixtureUuid(1295, 1);
+  context.principal_uuid = FixtureUuid(1295, 3);
+  context.session_uuid = FixtureUuid(1295, 1000 + tx);
+  context.request_id = "sequence-fixture";
   context.security_context_present = true;
   context.cluster_authority_available = cluster_authority;
-  context.snapshot_visible_through_local_transaction_id = tx == 0 ? 0 : tx;
+  seq_api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "SNAPSHOT";
+  const auto begun = seq_api::EngineBeginTransaction(begin);
+  RequireOk(begun, "sequence fixture durable begin failed");
+  context.transaction_uuid = begun.transaction_uuid;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+  transactions.emplace(tx, context);
   return context;
 }
 
-seq_api::EngineSequenceGeneratorDefinition Definition(std::string uuid,
+seq_api::EngineSequenceGeneratorDefinition Definition(seq_api::EngineUuid uuid,
                                                       std::int64_t start,
                                                       std::int64_t min,
                                                       std::int64_t max,
                                                       std::uint64_t cache_size) {
   seq_api::EngineSequenceGeneratorDefinition definition;
   definition.generator_uuid = std::move(uuid);
-  definition.database_uuid = "database-013ah";
-  definition.schema_uuid = "schema-public";
-  definition.value_type_uuid = "int64";
+  definition.database_uuid = FixtureUuid(1295, 1);
+  definition.schema_uuid = FixtureUuid(1295, 4);
+  definition.value_type_uuid = seq_api::kSequenceInt64TypeUuid;
   definition.allocation_mode = "local_node_generator";
   definition.start_value = start;
   definition.min_value = min;
   definition.max_value = max;
   definition.increment_by = 1;
   definition.cache_size = cache_size;
-  definition.policy_uuid = "policy-sequence-generator-cache";
-  definition.policy_version_uuid = "policy-sequence-generator-cache-v1";
+  definition.policy_uuid = FixtureUuid(1295, 10);
+  definition.policy_version_uuid = FixtureUuid(1295, 11);
   return definition;
 }
 
@@ -114,7 +145,7 @@ seq_api::EngineSequenceCreateGeneratorResult CreateGenerator(
     const seq_api::EngineSequenceGeneratorDefinition& definition) {
   seq_api::EngineSequenceCreateGeneratorRequest request;
   request.context = Context(path, tx);
-  request.target_object.uuid.canonical = definition.generator_uuid;
+  request.target_object.uuid = definition.generator_uuid;
   request.definition = definition;
   return seq_api::EngineSequenceCreateGenerator(request);
 }
@@ -128,8 +159,20 @@ seq_api::EngineSequenceApplyMgaTransactionOutcomeResult ApplyOutcome(
     bool external_exposure_observed = true) {
   seq_api::EngineSequenceApplyMgaTransactionOutcomeRequest request;
   request.context = Context(path, tx);
-  request.outcome_local_transaction_id = tx;
-  request.outcome_transaction_uuid = "txn-" + std::to_string(tx);
+  request.outcome_local_transaction_id = request.context.local_transaction_id;
+  request.outcome_transaction_uuid = request.context.transaction_uuid;
+  if (outcome == "committed") {
+    seq_api::EngineCommitTransactionRequest commit;
+    commit.context = request.context;
+    RequireOk(seq_api::EngineCommitTransaction(commit), "sequence fixture durable commit failed");
+  } else if (outcome == "rolled_back") {
+    seq_api::EngineRollbackTransactionRequest rollback;
+    rollback.context = request.context;
+    RequireOk(seq_api::EngineRollbackTransaction(rollback), "sequence fixture durable rollback failed");
+  }
+  // The notification observer is outside the transaction it reports.
+  request.context.local_transaction_id = 0;
+  request.context.transaction_uuid = {};
   request.mga_outcome = std::move(outcome);
   request.committed_row_effects = committed_row_effects;
   request.folded_to_no_effect = folded_no_effect;
@@ -139,20 +182,20 @@ seq_api::EngineSequenceApplyMgaTransactionOutcomeResult ApplyOutcome(
 
 seq_api::EngineSequenceAllocateValueResult Allocate(const std::filesystem::path& path,
                                                    std::uint64_t tx,
-                                                   std::string generator_uuid,
+                                                   seq_api::EngineUuid generator_uuid,
                                                    bool external_exposure = true) {
   seq_api::EngineSequenceAllocateValueRequest request;
   request.context = Context(path, tx);
   request.generator_uuid = std::move(generator_uuid);
-  request.statement_uuid = "statement-" + std::to_string(tx);
-  request.record_uuid = "record-" + std::to_string(tx);
+  request.statement_uuid = FixtureUuid(1295, 2000 + tx);
+  request.record_uuid = FixtureUuid(1295, 3000 + tx);
   request.external_exposure_allowed = external_exposure;
   return seq_api::EngineSequenceAllocateValue(request);
 }
 
 const seq_api::EngineSequenceGeneratorRecord& RequireGenerator(
     const seq_api::EngineSequenceGeneratorLifecycleState& state,
-    const std::string& generator_uuid) {
+    const seq_api::EngineUuid& generator_uuid) {
   for (const auto& generator : state.generators) {
     if (generator.definition.generator_uuid == generator_uuid) { return generator; }
   }
@@ -170,15 +213,21 @@ const seq_api::EngineSequenceAllocationRecord& RequireAllocationForTx(
 
 bool HasEvidence(const seq_api::EngineApiResult& result, std::string_view kind, std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && (id.empty() || evidence.evidence_id == id)) { return true; }
+    if (evidence.evidence_kind == kind && (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) { return true; }
   }
+  return false;
+}
+
+bool HasEvidence(const seq_api::EngineApiResult& result, std::string_view kind, const seq_api::EngineUuid& id) {
+  for (const auto& evidence : result.evidence)
+    if (evidence.evidence_kind == kind && evidence.evidence_id == seq_api::EngineEvidenceValue{id}) return true;
   return false;
 }
 
 void TestCacheWindowPersistenceAndRecovery() {
   const auto path = TestPath("cache_recovery");
   Cleanup(path);
-  const std::string sequence_uuid = "019e0fda-aaaa-7aaa-8aaa-cache000001";
+  const seq_api::EngineUuid sequence_uuid = FixtureUuid(1295, 12);
   RequireOk(CreateGenerator(path, 1, Definition(sequence_uuid, 10, 10, 100, 3)),
             "DBLC-013AH sequence create failed");
   RequireOk(ApplyOutcome(path, 1, "committed"), "DBLC-013AH create commit evidence failed");
@@ -227,7 +276,7 @@ void TestCacheWindowPersistenceAndRecovery() {
 void TestRollbackAndReusableTransactionSemantics() {
   const auto path = TestPath("rollback");
   Cleanup(path);
-  const std::string non_tx_uuid = "019e0fda-bbbb-7bbb-8bbb-rollback001";
+  const seq_api::EngineUuid non_tx_uuid = FixtureUuid(1295, 13);
   RequireOk(CreateGenerator(path, 1, Definition(non_tx_uuid, 1, 1, 20, 1)),
             "DBLC-013AH nontransactional create failed");
   RequireOk(ApplyOutcome(path, 1, "committed"), "DBLC-013AH nontransactional create commit failed");
@@ -236,13 +285,13 @@ void TestRollbackAndReusableTransactionSemantics() {
             "DBLC-013AH rollback outcome evidence failed");
   const auto rolled_back = seq_api::LoadSequenceGeneratorLifecycleState(Context(path, 11));
   Require(rolled_back.ok, "DBLC-013AH rollback state load failed");
-  const auto& consumed = RequireAllocationForTx(rolled_back.state, 10);
+  const auto& consumed = RequireAllocationForTx(rolled_back.state, Context(path, 10).local_transaction_id);
   Require(consumed.lifecycle_state == "rolled_back_consumed",
           "DBLC-013AH nontransactional rollback did not preserve consumption");
   Require(Allocate(path, 11, non_tx_uuid).allocated_value == 2,
           "DBLC-013AH nontransactional rollback reused a consumed value");
 
-  auto reusable_definition = Definition("019e0fda-bbbb-7bbb-8bbb-rollback002", 100, 100, 120, 1);
+  auto reusable_definition = Definition(FixtureUuid(1295, 14), 100, 100, 120, 1);
   reusable_definition.transactional_allocation = true;
   reusable_definition.consumed_on_rollback = false;
   reusable_definition.reusable_if_no_effect = true;
@@ -269,7 +318,7 @@ void TestRollbackAndReusableTransactionSemantics() {
 void TestRestartAlterDropAndExhaustion() {
   const auto path = TestPath("restart_alter_drop");
   Cleanup(path);
-  const std::string sequence_uuid = "019e0fda-cccc-7ccc-8ccc-restart0001";
+  const seq_api::EngineUuid sequence_uuid = FixtureUuid(1295, 15);
   RequireOk(CreateGenerator(path, 1, Definition(sequence_uuid, 1, 1, 5, 1)),
             "DBLC-013AH restart sequence create failed");
   RequireOk(ApplyOutcome(path, 1, "committed"), "DBLC-013AH restart create commit failed");
@@ -279,7 +328,7 @@ void TestRestartAlterDropAndExhaustion() {
   auto altered_definition = Definition(sequence_uuid, 1, 1, 51, 1);
   seq_api::EngineSequenceAlterGeneratorRequest alter;
   alter.context = Context(path, 3);
-  alter.target_object.uuid.canonical = sequence_uuid;
+  alter.target_object.uuid = sequence_uuid;
   alter.definition = altered_definition;
   alter.restart_with_value = true;
   alter.restart_value = 50;
@@ -309,13 +358,13 @@ void TestIdentityBindingMetadata() {
   Cleanup(path);
   seq_api::EngineSequenceBindIdentityValueRequest bind;
   bind.context = Context(path, 1);
-  bind.table_uuid = "table-customers";
-  bind.record_uuid = "record-row-uuid-001";
-  bind.identity_column_uuid = "column-id";
+  bind.table_uuid = FixtureUuid(1295, 16);
+  bind.record_uuid = FixtureUuid(1295, 17);
+  bind.identity_column_uuid = FixtureUuid(1295, 18);
   bind.identity_value_kind = "row_uuid_identity";
   const auto bound = seq_api::EngineSequenceBindIdentityValue(bind);
   RequireOk(bound, "DBLC-013AH row UUID identity bind failed");
-  Require(bound.binding.identity_value == bind.record_uuid,
+  Require(bound.binding.identity_value == seq_api::EngineEvidenceValue{bind.record_uuid},
           "DBLC-013AH row UUID identity did not use row UUID");
   Require(HasEvidence(bound, "row_uuid_identity", bind.record_uuid),
           "DBLC-013AH row UUID identity evidence missing");
@@ -332,14 +381,14 @@ void TestIdentityBindingMetadata() {
 void TestReferenceMappingDiagnosticsAndLabels() {
   const auto path = TestPath("reference_mapping");
   Cleanup(path);
-  auto incomplete = Definition("019e0fda-dddd-7ddd-8ddd-referencebad001", 1, 1, 10, 2);
-  incomplete.reference_profile_uuid = "reference-mariadb";
+  auto incomplete = Definition(FixtureUuid(1295, 19), 1, 1, 10, 2);
+  incomplete.reference_profile_uuid = FixtureUuid(1295, 20);
   RequireDiagnostic(CreateGenerator(path, 1, incomplete),
                     seq_api::kSequenceDiagnosticReferenceMappingIncomplete,
                     "DBLC-013AH incomplete reference mapping was accepted");
 
-  auto mapped = Definition("019e0fda-dddd-7ddd-8ddd-referencegood01", 1, 1, 10, 2);
-  mapped.reference_profile_uuid = "reference-mariadb";
+  auto mapped = Definition(FixtureUuid(1295, 21), 1, 1, 10, 2);
+  mapped.reference_profile_uuid = FixtureUuid(1295, 20);
   mapped.reference_family = "mariadb";
   mapped.reference_mapping_label = "reference:mariadb:sequence:nontransactional";
   mapped.reference_allocation_timing = "before_row_insert";
@@ -361,7 +410,7 @@ void TestReferenceMappingDiagnosticsAndLabels() {
 void TestClusterFailClosedBoundary() {
   const auto path = TestPath("cluster_fail_closed");
   Cleanup(path);
-  auto clustered = Definition("019e0fda-eeee-7eee-8eee-cluster0001", 1, 1, 10, 1);
+  auto clustered = Definition(FixtureUuid(1295, 22), 1, 1, 10, 1);
   clustered.allocation_mode = "strict_online_generator";
   clustered.requires_cluster_authority = true;
   RequireOk(CreateGenerator(path, 1, clustered), "DBLC-013AH cluster-bound generator create failed");
@@ -382,7 +431,7 @@ void TestClusterFailClosedBoundary() {
 void TestMgaRetentionInteraction() {
   const auto path = TestPath("retention");
   Cleanup(path);
-  const std::string sequence_uuid = "019e0fda-ffff-7fff-8fff-retention01";
+  const seq_api::EngineUuid sequence_uuid = FixtureUuid(1295, 23);
   RequireOk(CreateGenerator(path, 1, Definition(sequence_uuid, 1, 1, 20, 1)),
             "DBLC-013AH retention create failed");
   RequireOk(ApplyOutcome(path, 1, "committed"), "DBLC-013AH retention create commit failed");
@@ -396,7 +445,7 @@ void TestMgaRetentionInteraction() {
 
   seq_api::EngineSequenceEvaluateMgaRetentionRequest blocked;
   blocked.context = Context(path, 12);
-  blocked.retention_visible_through_local_transaction_id = 5;
+  blocked.retention_visible_through_local_transaction_id = Context(path, 1).local_transaction_id;
   const auto blocked_result = seq_api::EngineSequenceEvaluateMgaRetention(blocked);
   RequireDiagnostic(blocked_result,
                     seq_api::kSequenceDiagnosticMgaRetentionBlocked,
@@ -405,7 +454,7 @@ void TestMgaRetentionInteraction() {
           "DBLC-013AH MGA retention blocked allocation count mismatch");
 
   blocked.context = Context(path, 13);
-  blocked.retention_visible_through_local_transaction_id = 20;
+  blocked.retention_visible_through_local_transaction_id = Context(path, 13).local_transaction_id;
   RequireOk(seq_api::EngineSequenceEvaluateMgaRetention(blocked),
             "DBLC-013AH MGA retention allowed horizon failed");
   Cleanup(path);

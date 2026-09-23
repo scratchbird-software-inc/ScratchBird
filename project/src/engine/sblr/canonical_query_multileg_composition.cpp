@@ -53,6 +53,9 @@
 #include "query/expression_api.hpp"
 #include "security/security_model.hpp"
 #include "transaction/transaction_api.hpp"
+#include "crud_support/crud_store.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "hash_digest.hpp"
 
 #include <algorithm>
 #include <array>
@@ -89,24 +92,33 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 std::optional<std::string> Rcp079DescriptorField(
-    const std::string_view encoded, const std::string_view key) {
-  const std::string prefix = std::string(key) + "=";
-  std::optional<std::string> value;
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto separator = encoded.find(';', offset);
-    const auto end = separator == std::string_view::npos
-                         ? encoded.size()
-                         : separator;
-    const auto field = encoded.substr(offset, end - offset);
-    if (field.starts_with(prefix)) {
-      if (value.has_value()) return std::nullopt;
-      value = std::string(field.substr(prefix.size()));
-    }
-    if (separator == std::string_view::npos) break;
-    offset = separator + 1;
+    std::string_view encoded, std::string_view key) {
+  return ExactEncodedDescriptorField(encoded, key);
+}
+std::optional<api::EngineUuid> Rcp079DescriptorIdentity(
+    const api::EngineDescriptor& descriptor, std::string_view key) {
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)) return std::nullopt;
+  const auto found = fields.identities.find(std::string(key));
+  if (key == "type_uuid" && !descriptor.type_uuid.is_nil()) {
+    if (!core::uuid::IsEngineIdentityUuid(descriptor.type_uuid) ||
+        (found != fields.identities.end() && found->second != descriptor.type_uuid)) return std::nullopt;
+    return descriptor.type_uuid;
   }
-  return value;
+  if (found == fields.identities.end() || !core::uuid::IsEngineIdentityUuid(found->second)) return std::nullopt;
+  return found->second;
+}
+std::optional<api::EngineUuid> Rcp080NativeUuidCell(const std::string* bytes) {
+  if (!bytes || bytes->size() != 16) return std::nullopt;
+  api::EngineUuid uuid;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes->data()),16,uuid.bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(uuid) ? std::optional(uuid) : std::nullopt;
+}
+std::optional<api::EngineUuid> Rcp080NativeUuidCell(const api::EngineTypedValue& value) {
+  if (!value.encoded_value.empty() || value.binary_value.size() != 16 || value.is_null) return std::nullopt;
+  api::EngineUuid uuid;
+  std::copy_n(value.binary_value.begin(),16,uuid.bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(uuid) ? std::optional(uuid) : std::nullopt;
 }
 
 void BindCanonicalPersistedRowDescriptorAuthorityForMultilegV1(
@@ -169,7 +181,7 @@ WithMultilegResultDescriptorRebindingV1(
             step.transient_state_cleanup_proven = true;
             step.cancellation_evidence_uuid =
                 cancellation_policy == nullptr
-                    ? std::string{}
+                    ? api::EngineUuid{}
                     : cancellation_policy->evidence_uuid;
           } catch (const std::exception& exception) {
             step.diagnostic.ok = false;
@@ -278,12 +290,12 @@ WithMultilegResultDescriptorRebindingV1(
           const auto& allocation = allocations[ordinal];
           if (!allocation.demand.derived) continue;
           const auto encoded_size =
-              std::string("type_uuid=").size() + allocation.type_uuid.size() +
+              std::string("type_uuid=").size() + allocation.type_uuid.bytes.size() +
               std::string(";nullability=").size() +
               std::string(allocation.demand.nullable ? "nullable"
                                                      : "non_null").size();
           std::uint64_t descriptor_bytes = 0;
-          if (!CheckedAdd(allocation.descriptor_uuid.size(),
+          if (!CheckedAdd(allocation.descriptor_uuid.bytes.size(),
                           std::string("scalar").size(), &descriptor_bytes) ||
               !CheckedAdd(descriptor_bytes,
                           allocation.demand.canonical_type_name.size(),
@@ -343,17 +355,18 @@ WithMultilegResultDescriptorRebindingV1(
             rebound.canonical_type_name =
                 allocation.demand.canonical_type_name;
             rebound.encoded_descriptor =
-                "type_uuid=" + allocation.type_uuid + ";nullability=" +
+                std::string("nullability=") +
                 (allocation.demand.nullable ? "nullable" : "non_null");
+            rebound.type_uuid = allocation.type_uuid;
             column.descriptor = std::move(rebound);
             column.nullable = allocation.demand.nullable;
           } else if (column.descriptor.descriptor_uuid !=
                          allocation.descriptor_uuid ||
-                     allocation.type_uuid.empty() ||
-                     Rcp079DescriptorField(
-                         column.descriptor.encoded_descriptor,
+                     allocation.type_uuid.is_nil() ||
+                     Rcp079DescriptorIdentity(
+                         column.descriptor,
                          "type_uuid") !=
-                         std::optional<std::string>(allocation.type_uuid) ||
+                         std::optional<api::EngineUuid>(allocation.type_uuid) ||
                      column.nullable != allocation.demand.nullable) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
@@ -394,7 +407,7 @@ WithMultilegResultDescriptorRebindingV1(
             step.cancellation_evidence_uuid =
                 validation_cancelled && cancellation_policy != nullptr
                     ? cancellation_policy->evidence_uuid
-                    : std::string{};
+                    : api::EngineUuid{};
           }
           step.result_handle_id = 0;
           step.output_row_count = 0;
@@ -412,7 +425,7 @@ void CaptureRcp079ModelLegV1(
     Rcp079CapturedModelLegV1* capture, const std::uint32_t logical_node_id,
     std::string family_id, std::string implementation_id,
     std::string transformation_rule_id, std::string compatibility_profile_id,
-    std::string relation_descriptor_uuid,
+    core::platform::Uuid relation_descriptor_uuid,
     const std::uint64_t relation_descriptor_generation,
     const plan::CanonicalLogicalRelationalNodeKind logical_node_kind,
     const exec::PhysicalNodeKind physical_node_kind,
@@ -602,7 +615,7 @@ MakeRcp079CapturedModelLegRegistration(
               executed.cleanup_complete && executed.cleanup_count == 1;
           step.cancellation_evidence_uuid =
               cancellation_policy == nullptr
-                  ? std::string{}
+                  ? api::EngineUuid{}
                   : cancellation_policy->evidence_uuid;
           return step;
         }
@@ -668,7 +681,7 @@ MakeRcp079CapturedModelLegRegistration(
 }
 
 exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
-    std::string implementation_id, std::string capability_uuid,
+    std::string implementation_id, api::EngineUuid capability_uuid,
     const exec::CanonicalTimeSeriesAsofInputBindingV1 left_binding,
     const exec::CanonicalTimeSeriesAsofInputBindingV1 right_binding,
     const std::int64_t tolerance_ns, const bool left_outer,
@@ -862,14 +875,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
                         &timestamp_ns)) {
                   return false;
                 }
+                const auto metric = Rcp080NativeUuidCell(row.values[binding.metric_column_ordinal]);
+                if (!metric) return false;
                 keys->push_back(
-                    {row.values[binding.metric_column_ordinal].encoded_value,
+                    {*metric,
                      row.values[binding.tags_column_ordinal].encoded_value,
                      timestamp_ns});
                 if (right_input && binding.raw_time_series) {
-                  request.right_tie_break_row_uuids.push_back(
-                      row.values[binding.row_uuid_column_ordinal]
-                          .encoded_value);
+                  const auto row_uuid = Rcp080NativeUuidCell(row.values[binding.row_uuid_column_ordinal]);
+                  if (!row_uuid) return false;
+                  request.right_tie_break_row_uuids.push_back(*row_uuid);
                 }
               }
               return true;
@@ -1628,7 +1643,7 @@ bool CaptureRcp079ModelSourceLeg(
               loaded.descriptor.columns[1].ordinal == 1 &&
               loaded.descriptor.columns[1].canonical_name_key == "category" &&
               !loaded.descriptor.columns[1].nullable &&
-              loaded.descriptor.columns[1].collation_uuid.empty() &&
+              loaded.descriptor.columns[1].collation_uuid.is_nil() &&
               !Rcp079DescriptorField(
                    loaded.descriptor.columns[1]
                        .value_descriptor.encoded_descriptor,
@@ -1640,15 +1655,15 @@ bool CaptureRcp079ModelSourceLeg(
     auto body_descriptor = input.relational_dag.descriptors.end();
     auto category_descriptor = input.relational_dag.descriptors.end();
     std::uint32_t category_descriptor_id = 0;
-    std::optional<std::string> category_type_uuid;
+    std::optional<api::EngineUuid> category_type_uuid;
     std::optional<api::RelationalTypeDescriptor> local_category_descriptor;
     if (exact) {
       const auto descriptor_matches = [&](const auto& descriptor,
                                           const auto& engine_descriptor) {
-        const auto type_uuid = Rcp079DescriptorField(
-            engine_descriptor.encoded_descriptor, "type_uuid");
-        return type_uuid.has_value() && CanonicalUuidText(*type_uuid) &&
-               CanonicalUuidText(engine_descriptor.descriptor_uuid) &&
+        const auto type_uuid = Rcp079DescriptorIdentity(
+            engine_descriptor, "type_uuid");
+        return type_uuid.has_value() && core::uuid::IsEngineIdentityUuid(*type_uuid) &&
+               core::uuid::IsEngineIdentityUuid(engine_descriptor.descriptor_uuid) &&
                descriptor.descriptor_uuid ==
                    engine_descriptor.descriptor_uuid &&
                descriptor.type_uuid == *type_uuid &&
@@ -1669,18 +1684,18 @@ bool CaptureRcp079ModelSourceLeg(
                 descriptor,
                 loaded.descriptor.columns[1].value_descriptor);
           });
-      category_type_uuid = Rcp079DescriptorField(
-          loaded.descriptor.columns[1].value_descriptor.encoded_descriptor,
+      category_type_uuid = Rcp079DescriptorIdentity(
+          loaded.descriptor.columns[1].value_descriptor,
           "type_uuid");
       exact = body_descriptor != input.relational_dag.descriptors.end() &&
               body_descriptor->descriptor_id ==
                   query_text->result_descriptor_id &&
-              CanonicalUuidText(
+              core::uuid::IsEngineIdentityUuid(
                   loaded.descriptor.columns[1].column_uuid) &&
-              CanonicalUuidText(loaded.descriptor.columns[1]
+              core::uuid::IsEngineIdentityUuid(loaded.descriptor.columns[1]
                                     .value_descriptor.descriptor_uuid) &&
               category_type_uuid.has_value() &&
-              CanonicalUuidText(*category_type_uuid);
+              core::uuid::IsEngineIdentityUuid(*category_type_uuid);
       if (exact &&
           category_descriptor != input.relational_dag.descriptors.end()) {
         category_descriptor_id = category_descriptor->descriptor_id;
@@ -1899,8 +1914,8 @@ struct Rcp080BoundedSourceV1 {
   std::vector<std::string> operation_ids;
   api::MgaRelationStorageDescriptor persisted;
   std::vector<exec::ExecutorColumnDescriptor> columns;
-  std::vector<std::string> output_descriptor_uuids;
-  std::string spatial_crs_uuid;
+  std::vector<api::EngineUuid> output_descriptor_uuids;
+  api::EngineUuid spatial_crs_uuid;
   std::uint64_t spatial_crs_generation{0};
 };
 
@@ -2110,11 +2125,11 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                                                                   : 0U;
       const auto expected_root_bound_name =
           root_family == "spatial" || root_family == "columnar"
-              ? std::optional<std::string>{
+              ? std::optional<api::EngineUuid>{
                     source->required_object_uuids.empty()
-                        ? std::string{}
+                        ? api::EngineUuid{}
                         : source->required_object_uuids.front()}
-              : std::optional<std::string>{};
+              : std::optional<api::EngineUuid>{};
       if (!functionless_operation || expression->literal_kind.has_value() ||
           expression->literal_or_parameter_ref.has_value() ||
           expression->child_expression_ids.size() != expected_arity ||
@@ -2275,12 +2290,12 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   }
   const auto& context = input.context;
   const auto& authorization = context.authorization_context;
-  if (!CanonicalUuidText(context.database_uuid) ||
-      !CanonicalUuidText(context.transaction_uuid) ||
-      !CanonicalUuidText(context.statement_uuid) ||
-      !CanonicalUuidText(context.statement_snapshot_uuid) ||
+  if (!core::uuid::IsEngineIdentityUuid(context.database_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(context.transaction_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(context.statement_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(context.statement_snapshot_uuid) ||
       !context.statement_metadata_snapshot_engine_owned ||
-      !CanonicalUuidText(
+      !core::uuid::IsEngineIdentityUuid(
           context.statement_metadata_snapshot_uuid) ||
       context.local_transaction_id == 0 || context.statement_timestamp.empty() ||
       dag.statement_uuid != context.statement_uuid ||
@@ -2297,7 +2312,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         "SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
         "bounded composition engine-issued statement/MGA cohort is absent or substituted");
   }
-  if (!CanonicalUuidText(context.catalog_epoch_uuid) ||
+  if (!core::uuid::IsEngineIdentityUuid(context.catalog_epoch_uuid) ||
       context.catalog_generation_id == 0 ||
       authorization.catalog_generation_id != context.catalog_generation_id ||
       dag.bound_catalog_epoch_uuid != context.catalog_epoch_uuid) {
@@ -2306,8 +2321,8 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         "bounded composition catalog epoch or generation cohort is absent or substituted");
   }
   if (!context.security_context_present || !authorization.present ||
-      !CanonicalUuidText(context.principal_uuid) ||
-      !CanonicalUuidText(authorization.authority_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(context.principal_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(authorization.authority_uuid) ||
       authorization.principal_uuid !=
           context.principal_uuid ||
       context.security_epoch == 0 ||
@@ -2325,11 +2340,11 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       context.current_monotonic_ns.data() + context.current_monotonic_ns.size(),
       admitted_at_monotonic_ns);
   if (context.resource_epoch == 0 ||
-      !CanonicalUuidText(
+      !core::uuid::IsEngineIdentityUuid(
           context.optimizer_capability_snapshot_uuid) ||
-      !CanonicalUuidText(
+      !core::uuid::IsEngineIdentityUuid(
           context.optimizer_resource_snapshot_uuid) ||
-      !CanonicalUuidText(context.optimizer_route_snapshot_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(context.optimizer_route_snapshot_uuid) ||
       context.optimizer_route_epoch == 0 ||
       context.optimizer_route_generation == 0 ||
       context.optimizer_route_generation ==
@@ -2363,8 +2378,6 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
                   "bounded composition MGA statement context is invalid");
   }
-  const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   const auto generation = input.context.catalog_generation_id;
   const auto security_generation = input.context.security_epoch;
   const auto policy_generation =
@@ -2395,7 +2408,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       return expression.expression_id == expression_id;
     });
   };
-  std::array<std::string, 5> exact_derived_type_uuids;
+  std::array<api::EngineUuid, 5> exact_derived_type_uuids;
   if (std::ranges::any_of(families, [](const std::string_view family) {
         return family == "key_value" || family == "time_series" ||
                family == "vector" || family == "search";
@@ -2407,13 +2420,13 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         ExactCanonicalCoreDatatypeTypeUuidV1("real64"),
         ExactCanonicalCoreDatatypeTypeUuidV1("uint64")};
     if (std::ranges::any_of(exact_derived_type_uuids,
-                            [](const auto& uuid) { return uuid.empty(); })) {
+                            [](const auto& uuid) { return uuid.is_nil(); })) {
       return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                     "bounded derived source core type registry is unavailable");
     }
   }
   const auto exact_derived_type_uuid =
-      [&](const std::string_view canonical_type_name) -> std::string_view {
+      [&](const std::string_view canonical_type_name) -> api::EngineUuid {
     if (canonical_type_name == "uuid") return exact_derived_type_uuids[0];
     if (canonical_type_name == "text") return exact_derived_type_uuids[1];
     if (canonical_type_name == "timestamp_tz") {
@@ -2423,7 +2436,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     if (canonical_type_name == "uint64") return exact_derived_type_uuids[4];
     return {};
   };
-  std::unordered_set<std::string> object_uuids;
+  std::set<api::EngineUuid> object_uuids;
   std::vector<Rcp080BoundedSourceV1> prepared_sources;
   prepared_sources.reserve(sources.size());
   for (std::size_t source_ordinal = 0; source_ordinal < sources.size();
@@ -2511,7 +2524,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "bounded composition source storage/public width is invalid");
     }
-    std::optional<std::string> search_analyzer_uuid;
+    std::optional<api::EngineUuid> search_analyzer_uuid;
     for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
       const auto descriptor = descriptor_for(outputs[ordinal]->descriptor_id);
       const auto expression = expression_for(outputs[ordinal]->expression_id);
@@ -2533,7 +2546,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                 ? expression->bound_name_uuid
             : prepared.family_id == "time_series"
                 ? expression->bound_name_uuid
-                : std::optional<std::string>{
+                : std::optional<api::EngineUuid>{
                       source->required_object_uuids.front()};
         const auto expected_timezone_profile =
             prepared.family_id == "time_series" && ordinal == 3 &&
@@ -2563,7 +2576,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         }
         const auto exact_type_uuid =
             exact_derived_type_uuid(derived_types[ordinal]);
-        if (exact_type_uuid.empty() ||
+        if (exact_type_uuid.is_nil() ||
             descriptor->type_uuid != exact_type_uuid) {
           return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                         "bounded derived source type UUID was substituted");
@@ -2575,16 +2588,17 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         engine_descriptor.canonical_type_name =
             std::string(derived_types[ordinal]);
         engine_descriptor.encoded_descriptor =
-            "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
+            "nullability=non_null";
+        engine_descriptor.type_uuid = descriptor->type_uuid;
         prepared.columns.push_back(
             {std::string(derived_names[ordinal]), std::move(engine_descriptor),
              false, descriptor->descriptor_id});
       } else {
         const auto& column = prepared.persisted.columns[ordinal];
-        const auto type_uuid = Rcp079DescriptorField(
-            column.value_descriptor.encoded_descriptor, "type_uuid");
+        const auto type_uuid = Rcp079DescriptorIdentity(
+            column.value_descriptor, "type_uuid");
         if (expression->bound_name_uuid !=
-                std::optional<std::string>(column.column_uuid) ||
+                std::optional<api::EngineUuid>(column.column_uuid) ||
             outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
             descriptor->descriptor_uuid !=
                 column.value_descriptor.descriptor_uuid ||
@@ -2613,14 +2627,14 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
                       "bounded composition spatial descriptor lacks its exact column inventory");
       }
-      const auto crs = Rcp079DescriptorField(
-          prepared.persisted.columns[1].value_descriptor.encoded_descriptor,
+      const auto crs = Rcp079DescriptorIdentity(
+          prepared.persisted.columns[1].value_descriptor,
           "crs_uuid");
       const auto crs_generation = Rcp079DescriptorField(
           prepared.persisted.columns[1].value_descriptor.encoded_descriptor,
           "crs_generation");
       if (!crs.has_value() || !crs_generation.has_value() ||
-          !CanonicalUuidText(*crs)) {
+          !core::uuid::IsEngineIdentityUuid(*crs)) {
         return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
                       "bounded composition spatial descriptor lacks CRS authority");
       }
@@ -2728,27 +2742,21 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     const auto& captured = captured_sources[ordinal];
     const auto alternative_uuid =
         prepared.family_id == "relational"
-            ? DerivedCanonicalUuid(identity_scope,
-                                   "rcp080.alternative." + suffix)
+            ? api::GenerateCrudEngineUuid("object")
             : captured.execution_request.input.selected_alternative_uuid;
     const auto provider_uuid =
         prepared.family_id == "relational"
-            ? DerivedCanonicalUuid(identity_scope, "rcp080.provider." + suffix)
+            ? api::GenerateCrudEngineUuid("object")
             : captured.execution_request.input.provider_uuid;
     const auto capability_uuid =
         prepared.family_id == "relational"
-            ? DerivedCanonicalUuid(identity_scope,
-                                   "rcp080.capability." + suffix)
+            ? api::GenerateCrudEngineUuid("object")
             : captured.capability_uuid;
-    const auto cost_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.cost." + suffix);
-    const auto provenance_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.cost-provenance." + suffix);
+    const auto cost_uuid = api::GenerateCrudEngineUuid("object");
+    const auto provenance_uuid = api::GenerateCrudEngineUuid("object");
     auto selected_alternative_uuid = alternative_uuid;
-    std::string selected_plan_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.leg-plan." + suffix);
-    auto selected_inventory_receipt_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.inventory." + suffix);
+    api::EngineUuid selected_plan_uuid = api::GenerateCrudEngineUuid("object");
+    auto selected_inventory_receipt_uuid = api::GenerateCrudEngineUuid("object");
     opt::ModelFamilyCostVectorV1 selected_family_cost;
     selected_family_cost.cost_vector_uuid = cost_uuid;
     selected_family_cost.provenance_uuid = provenance_uuid;
@@ -2785,8 +2793,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
           input.context.optimizer_capability_snapshot_uuid;
       family_request.resource_snapshot_uuid =
           input.context.optimizer_resource_snapshot_uuid;
-      family_request.statistics_snapshot_uuid = DerivedCanonicalUuid(
-          identity_scope, "rcp080.statistics." + suffix);
+      family_request.statistics_snapshot_uuid = api::GenerateCrudEngineUuid("object");
       family_request.route_snapshot_uuid =
           input.context.optimizer_route_snapshot_uuid;
       family_request.catalog_generation = generation;
@@ -2802,14 +2809,13 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       family_request.security_admitted = true;
       std::vector<opt::ModelFamilyCapabilitySnapshotV1> alternatives;
       alternatives.push_back(MakeModelFamilyCapabilitySnapshotForCompositionV1(
-          family_request, identity_scope + ".rcp080." + suffix + ".fallback",
+          family_request,
           opt::ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback,
           provider_uuid, capability_uuid,
           captured.execution_request.input.provider_generation, true, 1, 1,
           leg_memory));
       const auto selected = PlanCanonicalModelFamilySourceForCompositionV1(
           family_request,
-          identity_scope + ".rcp080." + suffix + ".inventory",
           std::move(alternatives));
       if (!selected.accepted || !selected.selected ||
           !selected.data_access_allowed ||
@@ -2833,10 +2839,8 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       exact_fallback_selected = selected.exact_fallback_selected;
     }
     if (prepared.family_id == "relational") {
-      selected_family_cost.property_snapshot_uuid = DerivedCanonicalUuid(
-          identity_scope, "rcp080.cost-property." + suffix);
-      selected_family_cost.calibration_profile_uuid = DerivedCanonicalUuid(
-          identity_scope, "rcp080.cost-calibration." + suffix);
+      selected_family_cost.property_snapshot_uuid = api::GenerateCrudEngineUuid("object");
+      selected_family_cost.calibration_profile_uuid = api::GenerateCrudEngineUuid("object");
       selected_family_cost.scalarization_policy_id =
           "model-family.complete-unit-sum-minus-cache-benefit.v1";
       selected_family_cost.memory_grant_units = leg_memory;
@@ -2856,8 +2860,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
 
     opt::ModelFamilyDependencyLegV1 leg;
     leg.lexical_source_ordinal = static_cast<std::uint16_t>(ordinal);
-    leg.physical_node_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.physical-source." + suffix);
+    leg.physical_node_uuid = api::GenerateCrudEngineUuid("object");
     leg.family_id = prepared.family_id;
     leg.operation_ids = prepared.operation_ids;
     leg.operation_id = prepared.operation_id;
@@ -2865,8 +2868,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     leg.selected_alternative_uuid = selected_alternative_uuid;
     leg.provider_uuid = provider_uuid;
     leg.capability_uuid = capability_uuid;
-    leg.delivered_property_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.property." + suffix);
+    leg.delivered_property_uuid = api::GenerateCrudEngineUuid("object");
     leg.bound_object_uuid = prepared.persisted.relation_uuid;
     leg.catalog_snapshot_uuid = leg.current_catalog_snapshot_uuid =
         input.context.catalog_epoch_uuid;
@@ -2875,13 +2877,11 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     leg.security_context_uuid = leg.current_security_context_uuid =
         input.context.authorization_context.authority_uuid;
     leg.policy_snapshot_uuid = leg.current_policy_snapshot_uuid =
-        DerivedCanonicalUuid(identity_scope, "rcp080.policy." + suffix);
+        api::GenerateCrudEngineUuid("object");
     leg.resource_contract_uuid = leg.current_resource_contract_uuid =
-        DerivedCanonicalUuid(identity_scope, "rcp080.resource." + suffix);
-    leg.operation_scope_receipt_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.operation-scope." + suffix);
-    leg.selected_alternative_receipt_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.selection." + suffix);
+        api::GenerateCrudEngineUuid("object");
+    leg.operation_scope_receipt_uuid = api::GenerateCrudEngineUuid("object");
+    leg.selected_alternative_receipt_uuid = api::GenerateCrudEngineUuid("object");
     leg.root_physical_node_id = prepared.node->node_id;
     leg.output_descriptor_ids = prepared.node->output_descriptor_ids;
     leg.output_descriptor_uuids = prepared.output_descriptor_uuids;
@@ -2960,15 +2960,13 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   for (std::size_t ordinal = 0; ordinal < dependency_pairs.size(); ++ordinal) {
     const auto [producer, consumer] = dependency_pairs[ordinal];
     opt::ModelFamilyDependencyEdgeV1 edge;
-    edge.edge_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.edge." + std::to_string(ordinal));
+    edge.edge_uuid = api::GenerateCrudEngineUuid("object");
     edge.producer_lexical_source_ordinal = producer;
     edge.consumer_lexical_source_ordinal = consumer;
     edge.required_property_uuid =
         coordination.legs[producer].delivered_property_uuid;
     edge.delivered_property_uuid = edge.required_property_uuid;
-    edge.descriptor_lineage_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.lineage." + std::to_string(ordinal));
+    edge.descriptor_lineage_uuid = api::GenerateCrudEngineUuid("object");
     edge.producer_output_descriptor_ids =
         coordination.legs[producer].output_descriptor_ids;
     edge.consumer_input_descriptor_ids = edge.producer_output_descriptor_ids;
@@ -2981,9 +2979,9 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
 
   std::vector<std::uint32_t> consumer_descriptors =
       coordination.legs.front().output_descriptor_ids;
-  std::vector<std::string> consumer_descriptor_uuids =
+  std::vector<api::EngineUuid> consumer_descriptor_uuids =
       coordination.legs.front().output_descriptor_uuids;
-  std::string consumer_left_uuid = coordination.legs.front().physical_node_uuid;
+  api::EngineUuid consumer_left_uuid = coordination.legs.front().physical_node_uuid;
   for (std::size_t ordinal = 1; ordinal < sources.size(); ++ordinal) {
     consumer_descriptors.insert(
         consumer_descriptors.end(),
@@ -2994,16 +2992,11 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         coordination.legs[ordinal].output_descriptor_uuids.begin(),
         coordination.legs[ordinal].output_descriptor_uuids.end());
     opt::ModelFamilyRelationalConsumerV1 consumer;
-    consumer.physical_node_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.consumer." + std::to_string(ordinal));
+    consumer.physical_node_uuid = api::GenerateCrudEngineUuid("object");
     consumer.physical_node_id = joins[ordinal - 1]->node_id;
     consumer.causal_counter_id = sources.size() + ordinal;
-    consumer.selected_implementation_uuid = DerivedCanonicalUuid(
-        identity_scope,
-        "rcp080.consumer-implementation." + std::to_string(ordinal));
-    consumer.expected_security_receipt_uuid = DerivedCanonicalUuid(
-        identity_scope,
-        "rcp080.consumer-security." + std::to_string(ordinal));
+    consumer.selected_implementation_uuid = api::GenerateCrudEngineUuid("object");
+    consumer.expected_security_receipt_uuid = api::GenerateCrudEngineUuid("object");
     consumer.join_form_id = "CROSS";
     consumer.input_physical_node_uuids = {
         consumer_left_uuid, coordination.legs[ordinal].physical_node_uuid};
@@ -3069,7 +3062,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   physical_dag.resource_snapshot_uuid =
       input.context.optimizer_resource_snapshot_uuid;
   physical_dag.statistics_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, "rcp080.statistics-snapshot");
+      api::GenerateCrudEngineUuid("object");
   physical_dag.route_snapshot_uuid =
       input.context.optimizer_route_snapshot_uuid;
   physical_dag.catalog_generation = generation;
@@ -3160,9 +3153,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     node.publication_ordinal = physical_dag.nodes.size();
     node.causal_counter_id =
         physical_dag.first_causal_counter_id + node.publication_ordinal;
-    node.transformation_uuid = DerivedCanonicalUuid(
-        identity_scope,
-        "rcp080.transformation.source." + std::to_string(ordinal));
+    node.transformation_uuid = api::GenerateCrudEngineUuid("object");
     node.transformation_rule_id = "rcp080.model-source.v1";
     const auto score = retained_cost(&node, leg.family_local_cost);
     if (!score.has_value() ||
@@ -3185,34 +3176,22 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                                     joins[ordinal]->input_node_ids[1]};
     node.output_descriptor_ids = joins[ordinal]->output_descriptor_ids;
     node.selected_alternative_uuid = consumer.selected_implementation_uuid;
-    node.executor_capability_uuid = DerivedCanonicalUuid(
-        identity_scope,
-        "rcp080.consumer-capability." + std::to_string(ordinal));
+    node.executor_capability_uuid = api::GenerateCrudEngineUuid("object");
     node.executor_capability_abi_version = 1;
-    node.cost_vector_uuid = DerivedCanonicalUuid(
-        identity_scope,
-        "rcp080.consumer-cost." + std::to_string(ordinal));
+    node.cost_vector_uuid = api::GenerateCrudEngineUuid("object");
     node.memory_bytes_required = consumer.memory_grant_bytes;
     node.engine_capability_validated = true;
     node.mga_statement_context = mga;
     node.publication_ordinal = physical_dag.nodes.size();
     node.causal_counter_id =
         physical_dag.first_causal_counter_id + node.publication_ordinal;
-    node.transformation_uuid = DerivedCanonicalUuid(
-        identity_scope,
-        "rcp080.transformation.consumer." + std::to_string(ordinal));
+    node.transformation_uuid = api::GenerateCrudEngineUuid("object");
     node.transformation_rule_id = "rcp080.cross-consumer.v1";
     opt::ModelFamilyCostVectorV1 consumer_cost;
     consumer_cost.cost_vector_uuid = node.cost_vector_uuid;
-    consumer_cost.provenance_uuid = DerivedCanonicalUuid(
-        identity_scope,
-        "rcp080.consumer-cost-provenance." + std::to_string(ordinal));
-    consumer_cost.property_snapshot_uuid = DerivedCanonicalUuid(
-        identity_scope,
-        "rcp080.consumer-cost-property." + std::to_string(ordinal));
-    consumer_cost.calibration_profile_uuid = DerivedCanonicalUuid(
-        identity_scope,
-        "rcp080.consumer-cost-calibration." + std::to_string(ordinal));
+    consumer_cost.provenance_uuid = api::GenerateCrudEngineUuid("object");
+    consumer_cost.property_snapshot_uuid = api::GenerateCrudEngineUuid("object");
+    consumer_cost.calibration_profile_uuid = api::GenerateCrudEngineUuid("object");
     consumer_cost.scalarization_policy_id =
         "model-family.complete-unit-sum-minus-cache-benefit.v1";
     consumer_cost.provenance_generation = generation;
@@ -3244,11 +3223,15 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   for (const auto& node : physical_dag.nodes) signature_nodes.push_back(&node);
   std::ranges::sort(signature_nodes, {},
                     &exec::PhysicalNodeRecord::relational_node_id);
+  std::string signature_material = "SBMULTIPLAN2";
   for (const auto* node : signature_nodes) {
-    physical_dag.selected_plan_signature +=
-        std::to_string(node->relational_node_id) + "=" +
-        node->selected_alternative_uuid + ";";
+    api::AppendBinaryU32(&signature_material, node->relational_node_id);
+    signature_material.append(reinterpret_cast<const char*>(node->selected_alternative_uuid.bytes.data()),16);
   }
+  const auto signature = core::hash::ComputeSha256Digest(
+      reinterpret_cast<const core::platform::byte*>(signature_material.data()),signature_material.size());
+  if (!signature.ok()) return refuse("QOW-DIAG-OPTIMIZER-SIGNATURE-V1", "selected plan signature could not be computed");
+  physical_dag.selected_plan_signature = core::hash::HexLower(signature.digest);
   const auto physical_validation = exec::ValidateTypedPhysicalNodeDag(
       physical_dag, {physical_dag.nodes.size(), 32, 2});
   if (!physical_validation.accepted) {
@@ -3292,8 +3275,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     request.input.capability_uuid = leg.capability_uuid;
     request.input.provider_uuid = leg.provider_uuid;
     request.input.provider_generation = leg.provider_generation;
-    request.input.result_handle_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.result-handle." + std::to_string(ordinal));
+    request.input.result_handle_uuid = api::GenerateCrudEngineUuid("object");
     request.input.causal_counter_id = scheduled->causal_counter_id;
     request.input.output_descriptor_ids = leg.output_descriptor_ids;
     request.input.mga_statement_context = mga;
@@ -3355,8 +3337,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     const auto context = input.context;
     const auto prepared_copy = prepared;
     const auto delivered_property_uuid = leg.delivered_property_uuid;
-    const auto security_receipt_uuid = DerivedCanonicalUuid(
-        identity_scope, "rcp080.provider-security." + std::to_string(ordinal));
+    const auto security_receipt_uuid = api::GenerateCrudEngineUuid("object");
     if (leg.family_id != "relational") {
       const auto provider =
           captured_sources[ordinal].execution_request.execute_provider;
@@ -3507,25 +3488,41 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                 return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                             "composition provider row lacks a non-null column");
               }
-              tuple.values.push_back(exec::MakeExecutorValue(
-                  column.descriptor, value == nullptr ? std::string{} : *value,
-                  value == nullptr));
+              if (column.descriptor.canonical_type_name == "uuid" && value) {
+                const auto native = Rcp080NativeUuidCell(value);
+                if (!native) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID scalar is not binary16");
+                api::EngineTypedValue typed;
+                typed.descriptor = column.descriptor;
+                typed.setState(api::EngineValueState::value);
+                typed.binary_value.assign(native->bytes.begin(), native->bytes.end());
+                tuple.values.push_back(std::move(typed));
+              } else {
+                tuple.values.push_back(exec::MakeExecutorValue(
+                    column.descriptor, value == nullptr ? std::string{} : *value,
+                    value == nullptr));
+              }
             }
             output.batch.rows.push_back(std::move(tuple));
             exec::ModelProviderRowIdentityV1 identity;
             if (source_input.family_id == "document") {
               const auto* document_uuid = value_for(row, "document_uuid");
+              const auto native_document_uuid = Rcp080NativeUuidCell(document_uuid);
+              if (document_uuid && !native_document_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               identity.document_uuid =
-                  document_uuid != nullptr ? *document_uuid : row.row_uuid;
+                  native_document_uuid.value_or(row.row_uuid);
               identity.row_uuid = row.row_uuid;
             } else if (source_input.family_id == "graph") {
               const auto* vertex_uuid = value_for(row, "vertex_uuid");
+              const auto native_vertex_uuid = Rcp080NativeUuidCell(vertex_uuid);
+              if (vertex_uuid && !native_vertex_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               const auto* path_uuid = value_for(row, "path_uuid");
+              const auto native_path_uuid = Rcp080NativeUuidCell(path_uuid);
+              if (path_uuid && !native_path_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               identity.row_uuid = row.row_uuid;
               identity.vertex_uuid =
-                  vertex_uuid != nullptr ? *vertex_uuid : row.row_uuid;
+                  native_vertex_uuid.value_or(row.row_uuid);
               identity.path_uuid =
-                  path_uuid != nullptr ? *path_uuid : row.row_uuid;
+                  native_path_uuid.value_or(row.row_uuid);
             } else if (source_input.family_id == "key_value") {
               identity.row_uuid = row.row_uuid;
               const auto* key = value_for(row, "key");
@@ -3534,11 +3531,13 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
               identity.row_uuid = row.row_uuid;
               identity.series_uuid = source_input.object_uuid;
               const auto* metric_uuid = value_for(row, "metric_uuid");
+              const auto native_metric_uuid = Rcp080NativeUuidCell(metric_uuid);
+              if (metric_uuid && !native_metric_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               const auto* timestamp = value_for(row, "point_timestamp");
               const auto* tags = value_for(row, "tags");
               const auto* value = value_for(row, "value");
               identity.metric_uuid =
-                  metric_uuid == nullptr ? std::string{} : *metric_uuid;
+                  native_metric_uuid.value_or(api::EngineUuid{});
               identity.tags = tags == nullptr ? std::string{} : *tags;
               identity.time_series_payload_kind = "raw.real64.v1";
               identity.time_series_raw_value =
@@ -3557,15 +3556,19 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                   score == nullptr ? std::string{} : *score;
             } else if (source_input.family_id == "search") {
               const auto* document_uuid = value_for(row, "document_uuid");
+              const auto native_document_uuid = Rcp080NativeUuidCell(document_uuid);
+              if (document_uuid && !native_document_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               const auto* analyzer_uuid = value_for(row, "analyzer_uuid");
+              const auto native_analyzer_uuid = Rcp080NativeUuidCell(analyzer_uuid);
+              if (analyzer_uuid && !native_analyzer_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               const auto* analyzer_generation =
                   value_for(row, "analyzer_generation");
               const auto* score = value_for(row, "score");
               const auto* rank = value_for(row, "rank");
               identity.document_uuid =
-                  document_uuid == nullptr ? std::string{} : *document_uuid;
+                  native_document_uuid.value_or(api::EngineUuid{});
               identity.search_analyzer_uuid =
-                  analyzer_uuid == nullptr ? std::string{} : *analyzer_uuid;
+                  native_analyzer_uuid.value_or(api::EngineUuid{});
               if (analyzer_generation != nullptr) {
                 std::from_chars(analyzer_generation->data(),
                                 analyzer_generation->data() +
@@ -3629,14 +3632,14 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         const auto add_column = [&](const exec::ExecutorColumnDescriptor& col) {
           return add_memory(sizeof(exec::ExecutorColumnDescriptor)) &&
                  add_memory(col.stable_name.size()) &&
-                 add_memory(col.descriptor.descriptor_uuid.size()) &&
+                 add_memory(col.descriptor.descriptor_uuid.bytes.size()) &&
                  add_memory(col.descriptor.descriptor_kind.size()) &&
                  add_memory(col.descriptor.canonical_type_name.size()) &&
                  add_memory(col.descriptor.encoded_descriptor.size());
         };
         const auto add_value = [&](const api::EngineTypedValue& value) {
           return add_memory(sizeof(api::EngineTypedValue)) &&
-                 add_memory(value.descriptor.descriptor_uuid.size()) &&
+                 add_memory(value.descriptor.descriptor_uuid.bytes.size()) &&
                  add_memory(value.descriptor.descriptor_kind.size()) &&
                  add_memory(value.descriptor.canonical_type_name.size()) &&
                  add_memory(value.descriptor.encoded_descriptor.size()) &&
@@ -3706,8 +3709,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   execution_request.cleanup_relational_consumer = [](const auto) {};
   execution_request.cancellation_requested = cancellation_requested;
   execution_request.revalidate_publication_state =
-      [admitted, mga, context = input.context, prepared_sources,
-       identity_scope]() {
+      [admitted, mga, context = input.context, prepared_sources]() {
         exec::ModelFamilyCompositionPublicationStateV1 publication;
         publication.current_selected_plan_generation =
             context.optimizer_route_generation;
@@ -3772,17 +3774,11 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
               context.catalog_epoch_uuid);
           publication.current_descriptor_snapshot_uuids.push_back(
               current.ok ? current.descriptor.descriptor_uuid
-                         : std::string{});
+                         : api::EngineUuid{});
           publication.current_security_context_uuids.push_back(
               context.authorization_context.authority_uuid);
-          publication.current_policy_snapshot_uuids.push_back(
-              DerivedCanonicalUuid(
-                  identity_scope,
-                  "rcp080.policy." + std::to_string(ordinal)));
-          publication.current_resource_contract_uuids.push_back(
-              DerivedCanonicalUuid(
-                  identity_scope,
-                  "rcp080.resource." + std::to_string(ordinal)));
+          publication.current_policy_snapshot_uuids.push_back(leg.policy_snapshot_uuid);
+          publication.current_resource_contract_uuids.push_back(leg.resource_contract_uuid);
           publication.current_provider_uuids.push_back(leg.provider_uuid);
           publication.current_capability_uuids.push_back(leg.capability_uuid);
         }
@@ -3815,13 +3811,8 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   publication.selected_physical_dag = std::move(physical_dag);
   publication.selected_catalog_epoch_uuid =
       input.context.catalog_epoch_uuid;
-  publication.execution_attempt_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" + input.context.current_monotonic_ns,
-      "rcp080.execution-attempt");
-  publication.transaction_effect_evidence_uuid = DerivedCanonicalUuid(
-      identity_scope + ":" +
-          std::to_string(input.context.local_transaction_id),
-      "rcp080.transaction-effect-unchanged");
+  publication.execution_attempt_uuid = api::GenerateCrudEngineUuid("object");
+  publication.transaction_effect_evidence_uuid = api::GenerateCrudEngineUuid("object");
   publication.maximum_row_count = maximum_rows;
   std::vector<const api::RelationalOutputRecord*> root_outputs;
   for (const auto& output : dag.outputs) {
@@ -4174,11 +4165,11 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
                   "captured model-family pair DAG is incomplete");
   }
 
-  std::vector<std::string> authorized_object_uuids;
+  std::vector<api::EngineUuid> authorized_object_uuids;
   authorized_object_uuids.reserve(sources.size());
   for (const auto* source : sources) {
     if (source->required_object_uuids.size() != 1 ||
-        !CanonicalUuidText(source->required_object_uuids.front())) {
+        !core::uuid::IsEngineIdentityUuid(source->required_object_uuids.front())) {
       return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
                     "captured model-family object closure is not exact");
     }
@@ -4212,8 +4203,6 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
                   descriptor_preflight.detail);
   }
 
-  const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   std::array<Rcp079CapturedModelLegV1, 2> captured;
   for (std::size_t ordinal = 0; ordinal < sources.size(); ++ordinal) {
     const auto family =
@@ -4224,10 +4213,7 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
       leg.logical_node_id = sources[ordinal]->node_id;
       leg.family_id = family;
       leg.implementation_id = "scan.heap.v1";
-      leg.capability_uuid = DerivedCanonicalUuid(
-          identity_scope,
-          "captured-relational-scan." +
-              std::to_string(sources[ordinal]->node_id) + ".capability");
+      leg.capability_uuid = api::GenerateCrudEngineUuid("object");
       leg.transformation_rule_id = "canonical.heap.scan.v1";
       leg.compatibility_profile_id = "canonical.heap.scan.v1";
       leg.logical_node_kind =
@@ -4616,8 +4602,7 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     profile.model_family_id = leg.family_id + ".local.v1";
     profiles.push_back(std::move(profile));
   }
-  const auto join_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "captured-model-join." + join_component + ".capability");
+  const auto join_capability_uuid = api::GenerateCrudEngineUuid("object");
   LivePhysicalNodeProfile join_profile;
   join_profile.logical_node_id = join->node_id;
   if (asof_join) {
@@ -4931,16 +4916,9 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(identity_scope + ":" +
-                               input.context.current_monotonic_ns,
-                           "captured-model-join.execution-attempt");
+      api::GenerateCrudEngineUuid("object");
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(input.context.local_transaction_id) + ":" +
-              std::to_string(
-                  input.context.snapshot_visible_through_local_transaction_id),
-          "captured-model-join.transaction-effect-unchanged");
+      api::GenerateCrudEngineUuid("object");
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.maximum_row_count = maximum_rows;
@@ -5011,10 +4989,10 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
         descriptor_preflight.publication_allocations[ordinal];
     const auto exact_type_uuid =
         exact_columnar_pair
-            ? Rcp079DescriptorField(
-                  exact_join_columns[ordinal].descriptor.encoded_descriptor,
+            ? Rcp079DescriptorIdentity(
+                  exact_join_columns[ordinal].descriptor,
                   "type_uuid")
-            : std::optional<std::string>{};
+            : std::optional<api::EngineUuid>{};
     if (allocation.demand.nullable !=
             (null_extended ||
              descriptor->nullability ==

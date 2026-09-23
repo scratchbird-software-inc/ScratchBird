@@ -18,6 +18,7 @@
 #include "datatype_operations.hpp"
 
 #include <algorithm>
+#include <set>
 #include <array>
 #include <charconv>
 #include <cstddef>
@@ -256,7 +257,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
     return result;
   }
   const auto core_int64_key_type_uuid = ExactCanonicalInt64TypeUuidV1();
-  if (!CanonicalUuidText(core_int64_key_type_uuid)) {
+  if (!core::uuid::IsEngineIdentityUuid(core_int64_key_type_uuid)) {
     result.detail =
         "grouped COUNT/SUM core int64 key identity is unavailable";
     return result;
@@ -342,9 +343,9 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
         runtime_key.descriptor.descriptor_kind != "scalar" ||
         runtime_key.descriptor.canonical_type_name != "int64" ||
         !api::QowCanonicalDescriptorIdentityV1(runtime_key.descriptor) ||
+        runtime_key.descriptor.type_uuid != core_int64_key_type_uuid ||
         runtime_key.descriptor.encoded_descriptor !=
-            "type_uuid=" + core_int64_key_type_uuid +
-                ";nullability=" + std::string(expected_nullability)) {
+            "nullability=" + std::string(expected_nullability)) {
       result.detail =
           "grouped COUNT/SUM key must bind the exact core int64 type";
       return result;
@@ -434,11 +435,11 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 
   if (profile.projects_grouping_metadata) {
     const auto grouping_int64_type_uuid = ExactCanonicalInt64TypeUuidV1();
-    if (!CanonicalUuidText(grouping_int64_type_uuid)) {
+    if (!core::uuid::IsEngineIdentityUuid(grouping_int64_type_uuid)) {
       result.detail = "GROUPING metadata core int64 identity is not exact";
       return result;
     }
-    std::unordered_set<std::string_view> grouping_descriptor_uuids;
+    std::set<core::platform::Uuid> grouping_descriptor_uuids;
     const auto prepare_projection =
         [&](const std::size_t projection_ordinal,
             const api::RelationalExpressionKind expected_kind,
@@ -474,7 +475,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
               expression->operator_name != expected_operator ||
               expression->literal_or_parameter_ref.has_value() ||
               descriptor->type_uuid != grouping_int64_type_uuid ||
-              !CanonicalUuidText(descriptor->descriptor_uuid) ||
+              !core::uuid::IsEngineIdentityUuid(descriptor->descriptor_uuid) ||
               descriptor->descriptor_uuid == grouping_int64_type_uuid ||
               !grouping_descriptor_uuids
                    .insert(descriptor->descriptor_uuid)
@@ -503,9 +504,8 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
               descriptor->descriptor_uuid;
           engine_descriptor.descriptor_kind = "scalar";
           engine_descriptor.canonical_type_name = "int64";
-          engine_descriptor.encoded_descriptor =
-              "type_uuid=" + descriptor->type_uuid +
-              ";nullability=non_null";
+          engine_descriptor.type_uuid = descriptor->type_uuid;
+          engine_descriptor.encoded_descriptor = "nullability=non_null";
           result.grouping_projection_columns.push_back(
               {output->output_name_utf8, engine_descriptor, false,
                descriptor_id});

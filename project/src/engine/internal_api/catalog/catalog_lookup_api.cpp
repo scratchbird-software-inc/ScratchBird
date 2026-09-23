@@ -21,7 +21,7 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 std::string PublicDisplayNameForObject(const EngineApiRequest& request,
-                                       const std::string& object_uuid,
+                                       const EngineUuid& object_uuid,
                                        const std::string& object_kind) {
   const auto mapped = MapNameRegistryUuidToNamePublic(request, object_uuid, object_kind);
   if (mapped.ok) { return mapped.entry.display_name; }

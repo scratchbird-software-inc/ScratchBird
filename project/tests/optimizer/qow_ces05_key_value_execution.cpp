@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "canonical_query_execute.hpp"
 #include "ast/ast.hpp"
 #include "cst/cst.hpp"
@@ -50,41 +51,52 @@ namespace txn = scratchbird::transaction::mga;
 
 constexpr std::string_view kStatementTimestamp =
     "2026-08-10T12:00:00Z";
-constexpr std::string_view kBaseObjectUuid =
-    "30000000-0000-4000-8000-000000000075";
-constexpr std::string_view kDuplicateObjectUuid =
-    "30000000-0000-4000-8000-000000000076";
-constexpr std::string_view kInvalidExpiryObjectUuid =
-    "30000000-0000-4000-8000-000000000077";
-constexpr std::string_view kJoinObjectUuid =
-    "30000000-0000-4000-8000-000000000078";
+constexpr auto kBaseObjectUuid = scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000075");
+constexpr auto kDuplicateObjectUuid = scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000076");
+constexpr auto kInvalidExpiryObjectUuid = scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000077");
+constexpr auto kJoinObjectUuid = scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000078");
 
-std::string CoreTypeUuid(std::string_view stable_name);
+platform::Uuid CoreTypeUuid(std::string_view stable_name);
 std::string DescriptorField(const std::string& encoded, std::string_view key);
 api::EngineTypedValue TypedValue(const api::EngineDescriptor& descriptor,
                                  std::string encoded,
                                  bool is_null = false);
 
+api::EngineTypedValue TypedValue(const api::EngineDescriptor& descriptor,
+                                 const platform::Uuid& identity) {
+  api::EngineTypedValue value;
+  value.descriptor = descriptor;
+  value.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
+  value.setState(api::EngineValueState::value);
+  return value;
+}
+
+struct SignedJoinRow {
+  platform::Uuid row_uuid;
+  platform::Uuid join_uuid;
+  const char* payload;
+};
+
 struct SignedRow {
-  const char* row_uuid;
+  platform::Uuid row_uuid;
   const char* key;
   const char* value;
   const char* expires_at;
 };
 
 constexpr std::array<SignedRow, 8> kBaseRows{{
-    {"30000000-0000-4000-8000-000000000001", "alpha", "A", nullptr},
-    {"30000000-0000-4000-8000-000000000002", "alpine", "ALP",
+    {scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000001"), "alpha", "A", nullptr},
+    {scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000002"), "alpine", "ALP",
      "2026-08-10T12:00:00.000000001Z"},
-    {"30000000-0000-4000-8000-000000000003", "beta", "B",
+    {scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000003"), "beta", "B",
      "2026-08-10T12:00:00.000000000Z"},
-    {"30000000-0000-4000-8000-000000000004", "betamax", "BM",
+    {scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000004"), "betamax", "BM",
      "2026-08-10T11:59:59.999999999Z"},
-    {"30000000-0000-4000-8000-000000000005", "gamma", "G",
+    {scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000005"), "gamma", "G",
      "2026-08-10T12:00:01.000000000Z"},
-    {"30000000-0000-4000-8000-000000000006", "zeta", "Z", nullptr},
-    {"30000000-0000-4000-8000-000000000007", "éclair", "E", nullptr},
-    {"30000000-0000-4000-8000-000000000008", "élan", "EL", nullptr},
+    {scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000006"), "zeta", "Z", nullptr},
+    {scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000007"), "éclair", "E", nullptr},
+    {scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000008"), "élan", "EL", nullptr},
 }};
 
 bool Require(const bool condition, const std::string_view detail) {
@@ -105,16 +117,16 @@ platform::TypedUuid NewUuid(const platform::UuidKind kind) {
   return uuid::GenerateEngineIdentityV7(kind, Seed()).value;
 }
 
-std::string NewUuidText(const platform::UuidKind kind) {
-  return uuid::UuidToString(NewUuid(kind).value);
+platform::Uuid NewNativeUuid(const platform::UuidKind kind) {
+  return NewUuid(kind).value;
 }
 
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string schema_uuid;
-  std::map<std::string, api::MgaRelationStorageDescriptor> descriptors;
+  platform::Uuid database_uuid;
+  platform::Uuid schema_uuid;
+  std::map<platform::Uuid, api::MgaRelationStorageDescriptor> descriptors;
 
   ~Fixture() {
     std::error_code ignored;
@@ -128,9 +140,9 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = NewUuidText(platform::UuidKind::principal);
-  context.session_uuid.canonical = NewUuidText(platform::UuidKind::object);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = NewNativeUuid(platform::UuidKind::principal);
+  context.session_uuid = NewNativeUuid(platform::UuidKind::object);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -139,8 +151,7 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.security_epoch = 76;
   context.resource_epoch = 77;
   context.name_resolution_epoch = 78;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   return context;
@@ -198,14 +209,15 @@ api::EngineColumnDefinition Column(const std::uint32_t ordinal,
                                    std::string type,
                                    const bool nullable) {
   api::EngineColumnDefinition column;
-  column.requested_column_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  column.requested_column_uuid =
+      NewNativeUuid(platform::UuidKind::object);
   column.names.push_back(Name(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
   // TIMESTAMP_TZ uses the canonical timestamp catalog identity while retaining
   // its exact storage semantic in the persisted descriptor carrier.
   column.descriptor.canonical_type_name =
       type == "timestamp_tz" ? "timestamp" : type;
+  column.descriptor.type_uuid = CoreTypeUuid(type == "text" ? "character" : type == "timestamp_tz" ? "timestamp" : type);
   column.descriptor.encoded_descriptor = "canonical=" + type;
   column.ordinal = ordinal;
   column.nullable = nullable;
@@ -214,12 +226,12 @@ api::EngineColumnDefinition Column(const std::uint32_t ordinal,
 
 void AddAuthorization(api::EngineRequestContext* context,
                       const std::string& right,
-                      const std::string& object_uuid) {
+                      const platform::Uuid& object_uuid) {
   if (!context->authorization_context.present) {
     auto& authorization = context->authorization_context;
     authorization.present = true;
-    authorization.authority_uuid.canonical =
-        NewUuidText(platform::UuidKind::object);
+    authorization.authority_uuid =
+        NewNativeUuid(platform::UuidKind::object);
     authorization.principal_uuid = context->principal_uuid;
     authorization.security_epoch = context->security_epoch;
     authorization.policy_epoch = 79;
@@ -228,10 +240,10 @@ void AddAuthorization(api::EngineRequestContext* context,
         {context->principal_uuid, "principal"});
   }
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = NewUuidText(platform::UuidKind::object);
+  grant.grant_uuid = NewNativeUuid(platform::UuidKind::object);
   grant.subject_uuid = context->principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = object_uuid;
+  grant.target_uuid = object_uuid;
   grant.right = right;
   grant.security_epoch = context->security_epoch;
   context->authorization_context.grants.push_back(std::move(grant));
@@ -258,21 +270,21 @@ bool MakeFixture(Fixture* fixture) {
   if (!db::CreateDatabaseFile(create).ok()) {
     return Require(false, "fixture database creation failed");
   }
-  fixture->database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture->schema_uuid = NewUuidText(platform::UuidKind::schema);
+  fixture->database_uuid = create.database_uuid.value;
+  fixture->schema_uuid = NewNativeUuid(platform::UuidKind::schema);
 
   api::EngineRequestContext context;
   if (!Begin(*fixture, "rcp075-metadata", &context)) return false;
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
-  schema.target_object.uuid.canonical = fixture->schema_uuid;
+  schema.target_object.uuid = fixture->schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("key_value_schema"));
   if (!api::EngineCreateSchema(schema).ok) {
     Rollback(context);
     return Require(false, "fixture schema creation failed");
   }
-  const std::array<std::pair<std::string_view, std::string_view>, 4> tables{{
+  const std::array<std::pair<platform::Uuid, std::string_view>, 4> tables{{
       {kBaseObjectUuid, "base"},
       {kDuplicateObjectUuid, "duplicate_visible"},
       {kInvalidExpiryObjectUuid, "invalid_expiry"},
@@ -281,10 +293,10 @@ bool MakeFixture(Fixture* fixture) {
   for (const auto& [object_uuid, name] : tables) {
     api::EngineCreateTableRequest table;
     table.context = context;
-    table.context.current_schema_uuid.canonical.clear();
-    table.target_schema.uuid.canonical = fixture->schema_uuid;
+    table.context.current_schema_uuid = {};
+    table.target_schema.uuid = fixture->schema_uuid;
     table.target_schema.object_kind = "schema";
-    table.requested_table_uuid.canonical = std::string(object_uuid);
+    table.requested_table_uuid = object_uuid;
     table.table_names.push_back(Name(std::string(name)));
     if (object_uuid == kJoinObjectUuid) {
       table.table_columns.push_back(
@@ -308,7 +320,7 @@ bool MakeFixture(Fixture* fixture) {
       return Require(false, "key/value fixture table creation failed");
     }
     const auto loaded = api::LoadMgaRelationStorageDescriptor(
-        context, std::string(object_uuid));
+        context, object_uuid);
     const auto expected_columns = object_uuid == kJoinObjectUuid ? 2U : 3U;
     if (!loaded.ok ||
         loaded.descriptor.columns.size() != expected_columns ||
@@ -316,27 +328,27 @@ bool MakeFixture(Fixture* fixture) {
       Rollback(context);
       return Require(false, "key/value fixture descriptor load failed");
     }
-    fixture->descriptors.emplace(std::string(object_uuid), loaded.descriptor);
+    fixture->descriptors.emplace(object_uuid, loaded.descriptor);
   }
   // Supplemental relational rows belong to the metadata transaction so the
   // signed key/value transaction inventory beginning at 800 is unchanged.
   const auto& join_descriptor =
-      fixture->descriptors.at(std::string(kJoinObjectUuid));
+      fixture->descriptors.at(kJoinObjectUuid);
   api::EngineInsertRowsRequest join_rows;
   join_rows.context = context;
-  join_rows.target_table.uuid.canonical = std::string(kJoinObjectUuid);
+  join_rows.target_table.uuid = kJoinObjectUuid;
   join_rows.target_table.object_kind = "table";
   join_rows.require_generated_row_uuid = false;
   join_rows.estimated_row_count = 2;
   for (const auto& [row_uuid, join_uuid, payload] :
-       std::array<std::array<const char*, 3>, 2>{{
-           {{"30000000-0000-4000-8000-000000000078",
-             "30000000-0000-4000-8000-000000000001", "matched"}},
-           {{"30000000-0000-4000-8000-000000000079",
-             "30000000-0000-4000-8000-000000000099", "unmatched"}},
+       std::array<SignedJoinRow, 2>{{
+           {scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000078"),
+             scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000001"), "matched"},
+           {scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000079"),
+             scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000099"), "unmatched"},
        }}) {
     api::EngineRowValue row;
-    row.requested_row_uuid.canonical = row_uuid;
+    row.requested_row_uuid = row_uuid;
     row.fields = {
         {"join_uuid",
          TypedValue(join_descriptor.columns[0].value_descriptor, join_uuid)},
@@ -367,7 +379,7 @@ api::EngineTypedValue TypedValue(const api::EngineDescriptor& descriptor,
 api::EngineRowValue Row(const api::MgaRelationStorageDescriptor& descriptor,
                         const SignedRow& row) {
   api::EngineRowValue value;
-  value.requested_row_uuid.canonical = row.row_uuid;
+  value.requested_row_uuid = row.row_uuid;
   value.fields = {
       {"key", TypedValue(descriptor.columns[0].value_descriptor, row.key)},
       {"value", TypedValue(descriptor.columns[1].value_descriptor, row.value)},
@@ -379,14 +391,14 @@ api::EngineRowValue Row(const api::MgaRelationStorageDescriptor& descriptor,
   return value;
 }
 
-bool Insert(const Fixture& fixture, const std::string& object_uuid,
+bool Insert(const Fixture& fixture, const platform::Uuid& object_uuid,
             const std::vector<SignedRow>& rows, const bool commit,
             api::EngineRequestContext* retained_context = nullptr) {
   api::EngineRequestContext context;
-  if (!Begin(fixture, "rcp075-insert-" + object_uuid, &context)) return false;
+  if (!Begin(fixture, "rcp075-insert", &context)) return false;
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = object_uuid;
+  request.target_table.uuid = object_uuid;
   request.target_table.object_kind = "table";
   request.require_generated_row_uuid = false;
   request.estimated_row_count = rows.size();
@@ -408,28 +420,28 @@ bool Insert(const Fixture& fixture, const std::string& object_uuid,
 bool SeedFixtures(Fixture* fixture,
                   api::EngineRequestContext* active_other) {
   for (std::size_t index = 0; index < kBaseRows.size(); ++index) {
-    if (!Insert(*fixture, std::string(kBaseObjectUuid),
+    if (!Insert(*fixture, kBaseObjectUuid,
                 {kBaseRows[index]}, true)) {
       return false;
     }
   }
   const SignedRow ghost{
-      "30000000-0000-4000-8000-000000000009", "ghost", "GHOST", nullptr};
+      scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000009"), "ghost", "GHOST", nullptr};
   const SignedRow pending{
-      "30000000-0000-4000-8000-000000000010", "pending", "PENDING", nullptr};
+      scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000010"), "pending", "PENDING", nullptr};
   const SignedRow old_alpha{
-      "30000000-0000-4000-8000-000000000011", "alpha", "OLD", nullptr};
-  if (!Insert(*fixture, std::string(kBaseObjectUuid), {ghost}, false) ||
-      !Insert(*fixture, std::string(kBaseObjectUuid), {old_alpha}, false)) {
+      scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000011"), "alpha", "OLD", nullptr};
+  if (!Insert(*fixture, kBaseObjectUuid, {ghost}, false) ||
+      !Insert(*fixture, kBaseObjectUuid, {old_alpha}, false)) {
     return false;
   }
   const SignedRow duplicate_one{
-      "30000000-0000-4000-8000-000000000012", "dup", "D1", nullptr};
+      scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000012"), "dup", "D1", nullptr};
   const SignedRow duplicate_two{
-      "30000000-0000-4000-8000-000000000013", "dup", "D2", nullptr};
-  if (!Insert(*fixture, std::string(kDuplicateObjectUuid), {duplicate_one},
+      scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000013"), "dup", "D2", nullptr};
+  if (!Insert(*fixture, kDuplicateObjectUuid, {duplicate_one},
               true) ||
-      !Insert(*fixture, std::string(kDuplicateObjectUuid), {duplicate_two},
+      !Insert(*fixture, kDuplicateObjectUuid, {duplicate_two},
               true)) {
     return false;
   }
@@ -437,9 +449,9 @@ bool SeedFixtures(Fixture* fixture,
   if (!Begin(*fixture, "rcp075-invalid-expiry", &malformed)) return false;
   api::CrudRowVersionRecord row;
   row.creator_tx = malformed.local_transaction_id;
-  row.table_uuid = std::string(kInvalidExpiryObjectUuid);
-  row.row_uuid = "30000000-0000-4000-8000-000000000014";
-  row.version_uuid = NewUuidText(platform::UuidKind::object);
+  row.table_uuid = kInvalidExpiryObjectUuid;
+  row.row_uuid = scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000014");
+  row.version_uuid = NewNativeUuid(platform::UuidKind::object);
   row.values = {{"key", "bad-expiry"},
                 {"value", "BAD"},
                 {"expires_at", "2026-08-10T12:00:00Z"}};
@@ -451,7 +463,7 @@ bool SeedFixtures(Fixture* fixture,
     return Require(false, "invalid expiry fixture append failed");
   }
   if (!Commit(malformed) || !SetNextTransactionId(*fixture, 850) ||
-      !Insert(*fixture, std::string(kBaseObjectUuid), {pending}, false,
+      !Insert(*fixture, kBaseObjectUuid, {pending}, false,
               active_other) ||
       active_other->local_transaction_id != 850 ||
       !SetNextTransactionId(*fixture, 900)) {
@@ -468,9 +480,9 @@ bool SeedFixtures(Fixture* fixture,
 bool PublishReaderContext(const Fixture& fixture,
                           api::EngineRequestContext* context) {
   if (!Begin(fixture, "rcp075-reader", context)) return false;
-  context->statement_uuid.canonical = NewUuidText(platform::UuidKind::object);
-  context->statement_receipt_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  context->statement_uuid = NewNativeUuid(platform::UuidKind::object);
+  context->statement_receipt_uuid =
+      NewNativeUuid(platform::UuidKind::object);
   context->statement_timestamp = std::string(kStatementTimestamp);
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = *context;
@@ -480,17 +492,17 @@ bool PublishReaderContext(const Fixture& fixture,
   context->snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
   context->statement_metadata_snapshot_engine_owned = true;
-  context->statement_metadata_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  context->statement_metadata_snapshot_uuid =
+      NewNativeUuid(platform::UuidKind::object);
   context->statement_metadata_snapshot_visible_through_local_transaction_id =
       context->snapshot_visible_through_local_transaction_id;
-  context->catalog_epoch_uuid.canonical = NewUuidText(platform::UuidKind::object);
-  context->optimizer_capability_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
-  context->optimizer_resource_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
-  context->optimizer_route_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object);
+  context->catalog_epoch_uuid = NewNativeUuid(platform::UuidKind::object);
+  context->optimizer_capability_snapshot_uuid =
+      NewNativeUuid(platform::UuidKind::object);
+  context->optimizer_resource_snapshot_uuid =
+      NewNativeUuid(platform::UuidKind::object);
+  context->optimizer_route_snapshot_uuid =
+      NewNativeUuid(platform::UuidKind::object);
   context->optimizer_route_epoch = 80;
   context->optimizer_route_generation = 81;
   context->optimizer_memory_budget_bytes = 4 * 1024 * 1024;
@@ -511,16 +523,17 @@ bool PublishReaderContext(const Fixture& fixture,
   for (const auto object_uuid :
        {kBaseObjectUuid, kDuplicateObjectUuid, kInvalidExpiryObjectUuid,
         kJoinObjectUuid}) {
-    AddAuthorization(context, "SELECT", std::string(object_uuid));
+    AddAuthorization(context, "SELECT", object_uuid);
   }
   return true;
 }
 
 api::EngineTypedValue RequestText(const std::string& value) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = NewUuidText(platform::UuidKind::object);
+  descriptor.descriptor_uuid = NewNativeUuid(platform::UuidKind::object);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "text";
+  descriptor.type_uuid = CoreTypeUuid("character");
   descriptor.encoded_descriptor = "canonical=text";
   return TypedValue(descriptor, value);
 }
@@ -534,14 +547,14 @@ api::EngineBoundKeyValueReadRequestV1 Request(
   api::EngineBoundKeyValueReadRequestV1 request;
   request.context = context;
   request.operation = operation;
-  request.object_uuid = descriptor.relation_uuid.canonical;
+  request.object_uuid = descriptor.relation_uuid;
   for (const auto& value : values) request.request_values.push_back(RequestText(value));
   request.statement_timestamp = context.statement_timestamp;
-  request.expected_descriptor_uuid = descriptor.descriptor_uuid.canonical;
+  request.expected_descriptor_uuid = descriptor.descriptor_uuid;
   request.expected_descriptor_generation = descriptor.descriptor_generation;
-  request.selected_alternative_uuid = NewUuidText(platform::UuidKind::object);
-  request.capability_uuid = NewUuidText(platform::UuidKind::object);
-  request.provider_uuid = NewUuidText(platform::UuidKind::object);
+  request.selected_alternative_uuid = NewNativeUuid(platform::UuidKind::object);
+  request.capability_uuid = NewNativeUuid(platform::UuidKind::object);
+  request.provider_uuid = NewNativeUuid(platform::UuidKind::object);
   request.provider_generation = descriptor.descriptor_generation;
   request.maximum_request_keys = 128;
   request.maximum_request_bytes = 64 * 1024;
@@ -564,12 +577,12 @@ exec::PhysicalMgaStatementContext PhysicalMga(
   exec::PhysicalMgaStatementContext mga;
   if (!snapshot.ok) return mga;
   const auto& descriptor = snapshot.snapshot_vector;
-  mga.statement_uuid = context.statement_uuid.canonical;
+  mga.statement_uuid = context.statement_uuid;
   mga.statement_timestamp = context.statement_timestamp;
-  mga.owning_transaction_uuid = context.transaction_uuid.canonical;
-  mga.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  mga.owning_transaction_uuid = context.transaction_uuid;
+  mga.statement_snapshot_uuid = context.statement_snapshot_uuid;
   mga.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   mga.owning_local_transaction_id = descriptor.owning_transaction.value;
   mga.visible_committed_high_watermark =
       descriptor.visible_committed_high_watermark;
@@ -638,20 +651,20 @@ bool CoordinatorSelectionProof(
   request.operation_id = "KEY_VALUE_GET";
   request.logical_operator_id = "LOGICAL_KEY_VALUE_SOURCE_V1";
   request.logical_node_id = 75;
-  request.object_uuid = descriptor.relation_uuid.canonical;
+  request.object_uuid = descriptor.relation_uuid;
   request.output_descriptor_ids = {101, 102, 103};
   request.mga_statement_context = PhysicalMga(context);
-  request.bound_sblr_tree_uuid = NewUuidText(platform::UuidKind::object);
-  request.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  request.bound_sblr_tree_uuid = NewNativeUuid(platform::UuidKind::object);
+  request.catalog_epoch_uuid = context.catalog_epoch_uuid;
   request.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
+      context.authorization_context.authority_uuid;
   request.capability_snapshot_uuid =
-      context.optimizer_capability_snapshot_uuid.canonical;
+      context.optimizer_capability_snapshot_uuid;
   request.resource_snapshot_uuid =
-      context.optimizer_resource_snapshot_uuid.canonical;
+      context.optimizer_resource_snapshot_uuid;
   request.statistics_snapshot_uuid =
-      NewUuidText(platform::UuidKind::object);
-  request.route_snapshot_uuid = context.optimizer_route_snapshot_uuid.canonical;
+      NewNativeUuid(platform::UuidKind::object);
+  request.route_snapshot_uuid = context.optimizer_route_snapshot_uuid;
   request.catalog_generation = context.catalog_generation_id;
   request.current_catalog_generation = context.catalog_generation_id;
   request.security_epoch = context.security_epoch;
@@ -664,15 +677,15 @@ bool CoordinatorSelectionProof(
 
   const auto candidate = [&](const bool fallback, const std::uint64_t cost) {
     opt::ModelFamilyCandidateV1 value;
-    value.alternative_uuid = NewUuidText(platform::UuidKind::object);
-    value.provider_uuid = NewUuidText(platform::UuidKind::object);
-    value.capability_uuid = NewUuidText(platform::UuidKind::object);
+    value.alternative_uuid = NewNativeUuid(platform::UuidKind::object);
+    value.provider_uuid = NewNativeUuid(platform::UuidKind::object);
+    value.capability_uuid = NewNativeUuid(platform::UuidKind::object);
     value.implementation_id = "physical_key_value_scan_v1";
     value.provider_generation = descriptor.descriptor_generation;
     value.available = true;
     value.exact = true;
     value.exact_collection_fallback = fallback;
-    value.cost.cost_vector_uuid = NewUuidText(platform::UuidKind::object);
+    value.cost.cost_vector_uuid = NewNativeUuid(platform::UuidKind::object);
     value.cost.cpu_units = cost;
     value.cost.sequential_read_units = cost;
     value.cost.memory_bytes_required = 4096;
@@ -729,10 +742,10 @@ ExchangeRun ExecuteThroughCommonSpine(
   ExchangeRun observed;
   const auto mga = PhysicalMga(provider_request.context);
   provider_request.selected_alternative_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewNativeUuid(platform::UuidKind::object);
   provider_request.capability_uuid =
-      NewUuidText(platform::UuidKind::object);
-  provider_request.provider_uuid = NewUuidText(platform::UuidKind::object);
+      NewNativeUuid(platform::UuidKind::object);
+  provider_request.provider_uuid = NewNativeUuid(platform::UuidKind::object);
   provider_request.provider_generation = descriptor.descriptor_generation;
 
   exec::ModelFamilyExecutionRequestV1 request;
@@ -753,17 +766,17 @@ ExchangeRun ExecuteThroughCommonSpine(
   input.capability_uuid = provider_request.capability_uuid;
   input.provider_uuid = provider_request.provider_uuid;
   input.provider_generation = provider_request.provider_generation;
-  input.result_handle_uuid = NewUuidText(platform::UuidKind::object);
+  input.result_handle_uuid = NewNativeUuid(platform::UuidKind::object);
   input.causal_counter_id = 1;
   input.output_descriptor_ids = {101, 102, 103};
   input.mga_statement_context = mga;
   input.catalog_epoch_uuid =
-      provider_request.context.catalog_epoch_uuid.canonical;
+      provider_request.context.catalog_epoch_uuid;
   input.security_context_uuid = provider_request.context
                                     .authorization_context.authority_uuid
-                                    .canonical;
-  input.policy_snapshot_uuid = NewUuidText(platform::UuidKind::object);
-  input.resource_contract_uuid = NewUuidText(platform::UuidKind::object);
+                                    ;
+  input.policy_snapshot_uuid = NewNativeUuid(platform::UuidKind::object);
+  input.resource_contract_uuid = NewNativeUuid(platform::UuidKind::object);
   input.catalog_generation = provider_request.context.catalog_generation_id;
   input.descriptor_generation = descriptor.descriptor_generation;
   input.security_generation = provider_request.context.security_epoch;
@@ -822,21 +835,17 @@ ExchangeRun ExecuteThroughCommonSpine(
   row_uuid_descriptor.descriptor_uuid = descriptor.descriptor_uuid;
   row_uuid_descriptor.descriptor_kind = "scalar";
   row_uuid_descriptor.canonical_type_name = "uuid";
-  row_uuid_descriptor.encoded_descriptor =
-      "canonical=uuid;type_uuid=" + canonical_uuid_type +
-      ";nullable=false";
+  row_uuid_descriptor.type_uuid = canonical_uuid_type;
+  row_uuid_descriptor.encoded_descriptor = "canonical=uuid;nullable=false";
   columns[0] = {"row_uuid", row_uuid_descriptor, false, 101};
   auto key_descriptor = descriptor.columns[0].value_descriptor;
   auto value_descriptor = descriptor.columns[1].value_descriptor;
   key_descriptor.descriptor_kind = "scalar";
   value_descriptor.descriptor_kind = "scalar";
-  if (!Require(!canonical_uuid_type.empty() &&
-                   DescriptorField(row_uuid_descriptor.encoded_descriptor,
-                                   "type_uuid") == canonical_uuid_type &&
-                   DescriptorField(key_descriptor.encoded_descriptor,
-                                   "type_uuid") == CoreTypeUuid("character") &&
-                   DescriptorField(value_descriptor.encoded_descriptor,
-                                   "type_uuid") == CoreTypeUuid("character"),
+  if (!Require(!canonical_uuid_type.is_nil() &&
+                   row_uuid_descriptor.type_uuid == canonical_uuid_type &&
+                   key_descriptor.type_uuid == CoreTypeUuid("character") &&
+                   value_descriptor.type_uuid == CoreTypeUuid("character"),
                "public UUID/TEXT descriptor identities are not engine-owned")) {
     return observed;
   }
@@ -871,9 +880,9 @@ ExchangeRun ExecuteThroughCommonSpine(
         batch.batch.columns.assign(columns.begin(), columns.end());
         batch.mga_statement_context = selected.mga_statement_context;
         batch.security_receipt_uuid =
-            NewUuidText(platform::UuidKind::object);
+            NewNativeUuid(platform::UuidKind::object);
         batch.properties.property_uuid =
-            NewUuidText(platform::UuidKind::object);
+            NewNativeUuid(platform::UuidKind::object);
         batch.properties.ordering_id = read.ordering_id;
         batch.properties.partitioning_id = "single_local_partition";
         batch.properties.uniqueness_id = "key";
@@ -911,7 +920,7 @@ std::string Diagnostic(const api::EngineApiResult& result) {
 std::string Stream(const api::EngineBoundKeyValueReadResultV1& result) {
   std::string bytes;
   for (const auto& row : result.rows) {
-    bytes += row.row_uuid;
+    bytes.append(reinterpret_cast<const char*>(row.row_uuid.bytes.data()), 16);
     bytes.push_back('\t');
     bytes += row.key;
     bytes.push_back('\t');
@@ -925,7 +934,8 @@ std::string Stream(const exec::ModelFamilyExecutionResultV1& result) {
   std::string bytes;
   for (const auto& row : result.output.batch.rows) {
     if (row.values.size() != 3) return {};
-    bytes += row.values[0].encoded_value;
+    if (!row.values[0].encoded_value.empty() || row.values[0].binary_value.size() != 16) return {};
+    bytes.append(reinterpret_cast<const char*>(row.values[0].binary_value.data()), 16);
     bytes.push_back('\t');
     bytes += row.values[1].encoded_value;
     bytes.push_back('\t');
@@ -945,7 +955,7 @@ bool ProviderMatrix(const Fixture& fixture,
                     const api::EngineRequestContext& context,
                     std::set<std::string>* completed) {
   bool passed = true;
-  const auto& base = fixture.descriptors.at(std::string(kBaseObjectUuid));
+  const auto& base = fixture.descriptors.at(kBaseObjectUuid);
   const auto run = [&](const api::EngineBoundKeyValueReadOperationV1 operation,
                        std::vector<std::string> values,
                        const bool fallback = false) {
@@ -1001,14 +1011,14 @@ bool ProviderMatrix(const Fixture& fixture,
           kv08.rows[1].key == "alpha" && kv08.rows[2].key == "alpine" &&
           kv08.ordering_id == "first_distinct_request_order_v1" &&
           Digest(Stream(kv08)) ==
-              "78293410b49797fa69903b3157d5343f6cfc3f14cb7cbb94a5fa00eb43939e59",
+              "d9de30c7702763446ee3461fde8a5c7c5a03055c35586e203bf153f60d398341",
       "KV-08 multi-get stream drifted");
   completed->insert("KV-08");
   const auto kv09 = run(prefix, {"al"});
   passed &= Require(
       kv09.ok && kv09.rows.size() == 2 &&
           Digest(Stream(kv09)) ==
-              "2e97cd0ad1924d5455fd11e924513b90d816622f1394e4589990ba8fad504e34",
+              "31071a27bc126a8d9b0ed755a4243ada2390bb3f74c033d829c40cc97831534e",
       "KV-09 prefix stream drifted");
   completed->insert("KV-09");
   const auto kv10 = run(prefix, {"be"});
@@ -1020,19 +1030,19 @@ bool ProviderMatrix(const Fixture& fixture,
       kv11.ok && kv11.rows.size() == 6 &&
           kv11.ordering_id == "key_utf8_byte_ascending_v1" &&
           Digest(Stream(kv11)) ==
-              "64253fce9e07494d9e5699c72c3695375ecc0e3cf688dd7ddfbaa8117e8e56ca",
+              "82a8be6fd4442234a14eb10c20767963f2ba819b1e8fb5cabd159ee581f72f84",
       "KV-11 empty-prefix stream drifted");
   completed->insert("KV-11");
   const auto kv12 = run(prefix, {"é"});
   passed &= Require(
       kv12.ok && kv12.rows.size() == 2 &&
           Digest(Stream(kv12)) ==
-              "f6b836b708f59402efcad67072f40ae37781555ec9173f084abb6c50d797f92c",
+              "062daff75db539b45457bff7a04b07307419e33280796e7965a56e4c3c6dcfb7",
       "KV-12 UTF-8 byte prefix stream drifted");
   completed->insert("KV-12");
 
   auto duplicate_request = Request(
-      context, fixture.descriptors.at(std::string(kDuplicateObjectUuid)),
+      context, fixture.descriptors.at(kDuplicateObjectUuid),
       exact, {"dup"});
   const auto kv13 = api::EngineBoundKeyValueReadV1(duplicate_request);
   passed &= Require(!kv13.ok && kv13.rows.empty() &&
@@ -1042,7 +1052,7 @@ bool ProviderMatrix(const Fixture& fixture,
                     "KV-13 duplicate-visible refusal drifted");
   completed->insert("KV-13");
   auto invalid_request = Request(
-      context, fixture.descriptors.at(std::string(kInvalidExpiryObjectUuid)),
+      context, fixture.descriptors.at(kInvalidExpiryObjectUuid),
       prefix, {""});
   const auto kv14 = api::EngineBoundKeyValueReadV1(invalid_request);
   passed &= Require(!kv14.ok && kv14.rows.empty() &&
@@ -1445,7 +1455,7 @@ std::string DescriptorField(const std::string& encoded,
   return {};
 }
 
-std::string CoreTypeUuid(const std::string_view stable_name) {
+platform::Uuid CoreTypeUuid(const std::string_view stable_name) {
   static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
   const auto count = std::ranges::count_if(
@@ -1459,9 +1469,9 @@ std::string CoreTypeUuid(const std::string_view stable_name) {
     return {};
   }
   const auto descriptor_uuid =
-      uuid::UuidToString(descriptor->descriptor_uuid.value);
+      descriptor->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701",
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
       manifest.manifest.catalog_epoch, 1, descriptor_uuid,
       descriptor->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
@@ -1474,16 +1484,16 @@ api::TypedRelationalDag KeyValueDag(
     const std::vector<std::string>& values) {
   api::TypedRelationalDag dag;
   dag.wire_version = 2;
-  dag.bound_sblr_tree_uuid = NewUuidText(platform::UuidKind::object);
-  dag.bound_catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  dag.bound_sblr_tree_uuid = NewNativeUuid(platform::UuidKind::object);
+  dag.bound_catalog_epoch_uuid = context.catalog_epoch_uuid;
   dag.bound_security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
-  dag.statement_uuid = context.statement_uuid.canonical;
+      context.authorization_context.authority_uuid;
+  dag.statement_uuid = context.statement_uuid;
   dag.statement_timestamp = context.statement_timestamp;
-  dag.owning_transaction_uuid = context.transaction_uuid.canonical;
-  dag.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  dag.owning_transaction_uuid = context.transaction_uuid;
+  dag.statement_snapshot_uuid = context.statement_snapshot_uuid;
   dag.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   dag.local_transaction_id = context.local_transaction_id;
   dag.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
@@ -1491,7 +1501,7 @@ api::TypedRelationalDag KeyValueDag(
 
   api::RelationalTypeDescriptor row_uuid;
   row_uuid.descriptor_id = 101;
-  row_uuid.descriptor_uuid = descriptor.descriptor_uuid.canonical;
+  row_uuid.descriptor_uuid = descriptor.descriptor_uuid;
   row_uuid.type_uuid = CoreTypeUuid("uuid");
   row_uuid.nullability = api::RelationalNullability::kNonNull;
   dag.descriptors.push_back(std::move(row_uuid));
@@ -1499,16 +1509,14 @@ api::TypedRelationalDag KeyValueDag(
     api::RelationalTypeDescriptor type;
     type.descriptor_id = static_cast<std::uint32_t>(102 + ordinal);
     type.descriptor_uuid =
-        descriptor.columns[ordinal].value_descriptor.descriptor_uuid.canonical;
-    type.type_uuid = DescriptorField(
-        descriptor.columns[ordinal].value_descriptor.encoded_descriptor,
-        "type_uuid");
+        descriptor.columns[ordinal].value_descriptor.descriptor_uuid;
+    type.type_uuid = descriptor.columns[ordinal].value_descriptor.type_uuid;
     type.nullability = api::RelationalNullability::kNonNull;
     dag.descriptors.push_back(std::move(type));
   }
   api::RelationalTypeDescriptor boolean;
   boolean.descriptor_id = 104;
-  boolean.descriptor_uuid = NewUuidText(platform::UuidKind::object);
+  boolean.descriptor_uuid = NewNativeUuid(platform::UuidKind::object);
   boolean.type_uuid = CoreTypeUuid("boolean");
   boolean.nullability = api::RelationalNullability::kNonNull;
   dag.descriptors.push_back(std::move(boolean));
@@ -1521,9 +1529,9 @@ api::TypedRelationalDag KeyValueDag(
     output.expression_kind = api::RelationalExpressionKind::kIdentifier;
     output.result_descriptor_id = static_cast<std::uint32_t>(101 + ordinal);
     output.bound_name_uuid = ordinal == 0
-                                 ? descriptor.relation_uuid.canonical
+                                 ? descriptor.relation_uuid
                                  : descriptor.columns[ordinal - 1]
-                                       .column_uuid.canonical;
+                                       .column_uuid;
     dag.expressions.push_back(std::move(output));
     dag.outputs.push_back(
         {static_cast<std::uint32_t>(1 + ordinal), 1,
@@ -1535,7 +1543,7 @@ api::TypedRelationalDag KeyValueDag(
   alias.expression_id = 10;
   alias.expression_kind = api::RelationalExpressionKind::kIdentifier;
   alias.result_descriptor_id = 102;
-  alias.bound_name_uuid = descriptor.relation_uuid.canonical;
+  alias.bound_name_uuid = descriptor.relation_uuid;
   dag.expressions.push_back(std::move(alias));
   std::vector<std::uint32_t> literal_ids;
   for (std::size_t ordinal = 0; ordinal < values.size(); ++ordinal) {
@@ -1581,7 +1589,7 @@ api::TypedRelationalDag KeyValueDag(
     equality.operator_name = "=";
     dag.expressions.push_back(std::move(equality));
   }
-  source.required_object_uuids = {descriptor.relation_uuid.canonical};
+  source.required_object_uuids = {descriptor.relation_uuid};
   source.semantic_variant_id = "SBLR_MODEL_SOURCE_V1";
   dag.nodes.push_back(std::move(source));
   return dag;
@@ -1628,7 +1636,7 @@ api::TypedRelationalDag KeyValueUnaryCompositionDag(
   project.semantic_variant_id = "project.select-list.v1";
   dag.nodes.push_back(std::move(project));
 
-  const auto ordering_uuid = NewUuidText(platform::UuidKind::object);
+  const auto ordering_uuid = NewNativeUuid(platform::UuidKind::object);
   api::RelationalPropertyRecord ordering;
   ordering.property_uuid = ordering_uuid;
   ordering.property_kind = api::RelationalPropertyKind::kOrdering;
@@ -1651,17 +1659,16 @@ api::TypedRelationalDag KeyValueUnaryCompositionDag(
   api::RelationalTypeDescriptor row_number_descriptor;
   row_number_descriptor.descriptor_id = 105;
   row_number_descriptor.descriptor_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewNativeUuid(platform::UuidKind::object);
   row_number_descriptor.type_uuid = CoreTypeUuid("int64");
   row_number_descriptor.nullability = api::RelationalNullability::kNonNull;
   dag.descriptors.push_back(std::move(row_number_descriptor));
-  constexpr std::string_view kRowNumberFunctionUuid =
-      "019de5fc-2400-7539-bcce-00eef3ae7220";
+  constexpr auto kRowNumberFunctionUuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-7539-bcce-00eef3ae7220");
   api::RelationalExpressionRecord row_number;
   row_number.expression_id = 41;
   row_number.expression_kind = api::RelationalExpressionKind::kFunctionCall;
   row_number.result_descriptor_id = 105;
-  row_number.function_uuid = std::string(kRowNumberFunctionUuid);
+  row_number.function_uuid = kRowNumberFunctionUuid;
   dag.expressions.push_back(std::move(row_number));
   for (std::size_t ordinal = 0; ordinal < 3; ++ordinal) {
     dag.outputs.push_back(
@@ -1672,14 +1679,14 @@ api::TypedRelationalDag KeyValueUnaryCompositionDag(
          static_cast<std::uint32_t>(ordinal)});
   }
   dag.outputs.push_back({33, 5, 41, "row_number", 105, true, 3});
-  const auto window_uuid = NewUuidText(platform::UuidKind::object);
+  const auto window_uuid = NewNativeUuid(platform::UuidKind::object);
   api::RelationalPropertyRecord window_property;
   window_property.property_uuid = window_uuid;
   window_property.property_kind = api::RelationalPropertyKind::kWindow;
   window_property.origin_node_id = 5;
   window_property.dependency_property_uuids = {ordering_uuid};
   window_property.window_frame_descriptor_uuid =
-      NewUuidText(platform::UuidKind::object);
+      NewNativeUuid(platform::UuidKind::object);
   dag.properties.push_back(std::move(window_property));
   api::RelationalDagNode window;
   window.node_id = 5;
@@ -1705,7 +1712,7 @@ api::TypedRelationalDag KeyValueUnaryCompositionDag(
   invocation.window_definition_id = 1;
   invocation.function_abi_version = 1;
   invocation.builtin_id = "sb.window.row_number";
-  invocation.function_uuid = std::string(kRowNumberFunctionUuid);
+  invocation.function_uuid = kRowNumberFunctionUuid;
   invocation.result_descriptor_id = 105;
   invocation.output_name_utf8 = "row_number";
   dag.window_invocations.push_back(std::move(invocation));
@@ -1761,7 +1768,7 @@ api::TypedRelationalDag KeyValueCteLimitDag(
   dag.nodes.push_back(std::move(cte));
   api::RelationalTypeDescriptor limit_descriptor;
   limit_descriptor.descriptor_id = 105;
-  limit_descriptor.descriptor_uuid = NewUuidText(platform::UuidKind::object);
+  limit_descriptor.descriptor_uuid = NewNativeUuid(platform::UuidKind::object);
   limit_descriptor.type_uuid = CoreTypeUuid("int64");
   limit_descriptor.nullability = api::RelationalNullability::kNonNull;
   dag.descriptors.push_back(std::move(limit_descriptor));
@@ -1792,7 +1799,7 @@ api::TypedRelationalDag KeyValueCountDag(
   dag.root_node_id = 2;
   api::RelationalTypeDescriptor count_descriptor;
   count_descriptor.descriptor_id = 105;
-  count_descriptor.descriptor_uuid = NewUuidText(platform::UuidKind::object);
+  count_descriptor.descriptor_uuid = NewNativeUuid(platform::UuidKind::object);
   count_descriptor.type_uuid = CoreTypeUuid("int64");
   count_descriptor.nullability = api::RelationalNullability::kNonNull;
   dag.descriptors.push_back(std::move(count_descriptor));
@@ -1867,8 +1874,8 @@ api::TypedRelationalDag KeyValueSetDag(
   literal.expression_kind = api::RelationalExpressionKind::kLiteral;
   literal.result_descriptor_id = 101;
   literal.literal_kind = api::RelationalLiteralKind::kUuid;
-  literal.literal_or_parameter_ref =
-      "30000000-0000-4000-8000-000000000099";
+  constexpr auto literal_uuid = scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000099");
+  literal.literal_or_parameter_ref = std::string(reinterpret_cast<const char*>(literal_uuid.bytes.data()), 16);
   dag.expressions.push_back(std::move(literal));
   dag.values_rows.push_back({1, {40}});
   dag.outputs.push_back({21, 3, 40, "row_uuid", 101, true, 0});
@@ -1904,10 +1911,9 @@ api::TypedRelationalDag KeyValueMixedJoinDag(
     const auto& column = heap_descriptor.columns[ordinal];
     api::RelationalTypeDescriptor type;
     type.descriptor_id = descriptor_id;
-    type.descriptor_uuid = column.value_descriptor.descriptor_uuid.canonical;
+    type.descriptor_uuid = column.value_descriptor.descriptor_uuid;
     type.type_uuid =
-        DescriptorField(column.value_descriptor.encoded_descriptor,
-                        "type_uuid");
+        column.value_descriptor.type_uuid;
     type.nullability = column.nullable
                            ? api::RelationalNullability::kNullable
                            : api::RelationalNullability::kNonNull;
@@ -1916,7 +1922,7 @@ api::TypedRelationalDag KeyValueMixedJoinDag(
     expression.expression_id = expression_id;
     expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
     expression.result_descriptor_id = descriptor_id;
-    expression.bound_name_uuid = column.column_uuid.canonical;
+    expression.bound_name_uuid = column.column_uuid;
     dag.expressions.push_back(std::move(expression));
     dag.outputs.push_back(
         {expression_id, 2, expression_id, column.canonical_name_key,
@@ -1927,7 +1933,7 @@ api::TypedRelationalDag KeyValueMixedJoinDag(
   heap.node_kind = api::RelationalDagNodeKind::kScan;
   heap.output_descriptor_ids = {201, 202};
   heap.bound_expression_ids = {50, 51};
-  heap.required_object_uuids = {heap_descriptor.relation_uuid.canonical};
+  heap.required_object_uuids = {heap_descriptor.relation_uuid};
   heap.semantic_variant_id = "relation.source.v1";
   dag.nodes.push_back(std::move(heap));
 
@@ -1983,13 +1989,26 @@ std::string ApiRowField(const api::EngineApiResult& result,
                                    : field->second.encoded_value;
 }
 
+platform::Uuid ApiRowUuid(const api::EngineApiResult& result, std::size_t ordinal,
+                          std::string_view name) {
+  if (ordinal >= result.result_shape.rows.size()) return {};
+  for (const auto& [field, value] : result.result_shape.rows[ordinal].fields) {
+    if (field == name && value.encoded_value.empty() && value.binary_value.size() == 16) {
+      platform::Uuid identity;
+      std::copy(value.binary_value.begin(), value.binary_value.end(), identity.bytes.begin());
+      return identity;
+    }
+  }
+  return {};
+}
+
 bool ProductionCanonicalRoute(
     const Fixture& fixture,
     const api::EngineRequestContext& context) {
   const auto& descriptor =
-      fixture.descriptors.at(std::string(kBaseObjectUuid));
+      fixture.descriptors.at(kBaseObjectUuid);
   const auto& heap_descriptor =
-      fixture.descriptors.at(std::string(kJoinObjectUuid));
+      fixture.descriptors.at(kJoinObjectUuid);
   const auto exact = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, KeyValueDag(
                     context, descriptor,
@@ -2131,8 +2150,8 @@ bool ProductionCanonicalRoute(
       set_union.physical_node_count == 4 &&
       set_union.canonical_result_column_count == 1 &&
       set_union.canonical_result_row_count == 7 &&
-      ApiRowField(set_union.api_result, 6, "row_uuid") ==
-          "30000000-0000-4000-8000-000000000099" &&
+      ApiRowUuid(set_union.api_result, 6, "row_uuid") ==
+          scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000099") &&
       set_replay.api_result.ok &&
       set_replay.canonical_result_bytes == set_union.canonical_result_bytes;
   const auto join_complete = [](const auto& execution,
@@ -2238,7 +2257,7 @@ int main() {
   }
   passed &= VerifySignedTransactionInventory(fixture, context);
   passed &= CoordinatorSelectionProof(
-      context, fixture.descriptors.at(std::string(kBaseObjectUuid)));
+      context, fixture.descriptors.at(kBaseObjectUuid));
   std::set<std::string> completed;
   passed &= ProviderMatrix(fixture, context, &completed);
   passed &= FrontdoorRefusalMatrix(&completed);

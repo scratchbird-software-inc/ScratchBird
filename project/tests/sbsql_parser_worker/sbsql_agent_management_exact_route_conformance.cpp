@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -149,9 +150,9 @@ bool ApiResultHasEvidence(const api::EngineApiResult& result,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000001701";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000001702";
-  session.database_uuid = "019f0000-0000-7000-8000-000000001703";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001701");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001702");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001703");
   session.catalog_epoch = 17;
   session.security_policy_epoch = 19;
   session.descriptor_epoch = 23;
@@ -161,7 +162,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-000000001704";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001704");
   config.bundle_contract_id = "sbp_sbsql@agent-management-route-test";
   config.build_id = "sbsql-agent-management-route-test";
   return config;
@@ -252,7 +253,7 @@ void RequireExactLowering(const AgentRowEvidence& row) {
                    "authority.parser.no_sql_text_execution"),
           EvidenceMessage(row, "no_sql_text_authority",
                           "parser no-SQL-execution authority step missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.agents"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.agents"),
           EvidenceMessage(row, "parser_bind_lower", "sys.agents descriptor evidence missing"));
   Require(row.mutation ==
               HasValue(artifacts.envelope.required_authority_steps,
@@ -303,13 +304,13 @@ api::EngineRequestContext EngineContext(const AgentRowEvidence& row) {
   context.trace_tags.push_back("right:OBS_AGENT_CONTROL");
   context.trace_tags.push_back(std::string("sbsql_surface_id:") + std::string(row.surface_id));
   context.database_path = "/tmp/sbsql_agent_management_exact_route_conformance.sbdb";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000001801";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000001802";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000001803";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000001804";
-  context.cluster_uuid.canonical = "019f0000-0000-7000-8000-000000001807";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000001805";
-  context.current_diagnostic_uuid.canonical = "019f0000-0000-7000-8000-000000001806";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001801");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001802");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001803");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001804");
+  context.cluster_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001807");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001805");
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001806");
   context.catalog_generation_id = 17;
   context.security_epoch = 19;
   context.resource_epoch = 23;
@@ -327,8 +328,8 @@ sblr::SblrOperationEnvelope EngineEnvelope(const AgentRowEvidence& row) {
   Require(registry->opcode == row.opcode,
           EvidenceMessage(row, "engine_dispatch", "canonical opcode mismatch"));
   envelope.opcode_code = registry->code;
-  envelope.parser_package_uuid = "019f0000-0000-7000-8000-000000001808";
-  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-000000001809";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001808");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000001809");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = registry->requires_transaction_context;
   envelope.requires_cluster_authority = registry->requires_cluster_authority;

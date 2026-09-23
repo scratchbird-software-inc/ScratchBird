@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sb_udr_runtime.hpp"
+#include "uuid.hpp"
 
 #include "reservation_backed_memory_resource.hpp"
 
@@ -32,8 +33,8 @@ std::mutex& RegistryMutex() {
   return mutex;
 }
 
-std::map<std::string, RuntimePackage>& Registry() {
-  static std::map<std::string, RuntimePackage> registry;
+std::map<UdrUuid, RuntimePackage>& Registry() {
+  static std::map<UdrUuid, RuntimePackage> registry;
   return registry;
 }
 
@@ -43,6 +44,10 @@ UdrStatus Ok() {
 
 UdrStatus Error(std::string code, std::string detail) {
   return {false, std::move(code), std::move(detail)};
+}
+
+UdrStatus Error(std::string code, const UdrUuid& identity) {
+  return {false, std::move(code), {}, identity};
 }
 
 bool Blank(std::string_view value) {
@@ -55,7 +60,7 @@ bool IsTrustedCppRuntimeLanguage(std::string_view value) {
 }
 
 UdrStatus ValidateDescriptor(const UdrPackageDescriptor& descriptor) {
-  if (Blank(descriptor.package_uuid)) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.package_uuid)) {
     return Error("UDR.RUNTIME.PACKAGE_UUID_REQUIRED", "package_uuid_required");
   }
   if (Blank(descriptor.package_name)) {
@@ -85,13 +90,13 @@ UdrStatus ValidateDescriptor(const UdrPackageDescriptor& descriptor) {
   return Ok();
 }
 
-RuntimePackage* FindLocked(std::string_view package_uuid) {
+RuntimePackage* FindLocked(const UdrUuid& package_uuid) {
   auto& registry = Registry();
-  const auto it = registry.find(std::string(package_uuid));
+  const auto it = registry.find(package_uuid);
   return it == registry.end() ? nullptr : &it->second;
 }
 
-void ReleaseRef(std::string_view package_uuid) {
+void ReleaseRef(const UdrUuid& package_uuid) {
   std::lock_guard<std::mutex> lock(RegistryMutex());
   RuntimePackage* package = FindLocked(package_uuid);
   if (package != nullptr && package->active_invocations > 0) {
@@ -101,7 +106,7 @@ void ReleaseRef(std::string_view package_uuid) {
 
 }  // namespace
 
-UdrInvocationLease::UdrInvocationLease(std::string package_uuid)
+UdrInvocationLease::UdrInvocationLease(UdrUuid package_uuid)
     : package_uuid_(std::move(package_uuid)), held_(true) {}
 
 UdrInvocationLease::UdrInvocationLease(UdrInvocationLease&& other) noexcept
@@ -154,14 +159,14 @@ UdrStatus RegisterPackage(const UdrPackageDescriptor& descriptor) {
   return Ok();
 }
 
-std::optional<UdrPackageDescriptor> FindPackageDescriptor(std::string_view package_uuid) {
+std::optional<UdrPackageDescriptor> FindPackageDescriptor(const UdrUuid& package_uuid) {
   std::lock_guard<std::mutex> lock(RegistryMutex());
   RuntimePackage* package = FindLocked(package_uuid);
   if (package == nullptr) return std::nullopt;
   return package->descriptor;
 }
 
-std::optional<UdrPackageRuntimeState> GetPackageState(std::string_view package_uuid) {
+std::optional<UdrPackageRuntimeState> GetPackageState(const UdrUuid& package_uuid) {
   std::lock_guard<std::mutex> lock(RegistryMutex());
   RuntimePackage* package = FindLocked(package_uuid);
   if (package == nullptr) return std::nullopt;
@@ -183,13 +188,13 @@ std::optional<UdrPackageRuntimeState> GetPackageState(std::string_view package_u
   return state;
 }
 
-UdrStatus LoadPackage(std::string_view package_uuid) {
+UdrStatus LoadPackage(const UdrUuid& package_uuid) {
   UdrLifecycleCallback init = nullptr;
   {
     std::lock_guard<std::mutex> lock(RegistryMutex());
     RuntimePackage* package = FindLocked(package_uuid);
     if (package == nullptr) {
-      return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", std::string(package_uuid));
+      return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", package_uuid);
     }
     if (package->loaded) return Ok();
     init = package->descriptor.init;
@@ -203,22 +208,22 @@ UdrStatus LoadPackage(std::string_view package_uuid) {
   std::lock_guard<std::mutex> lock(RegistryMutex());
   RuntimePackage* package = FindLocked(package_uuid);
   if (package == nullptr) {
-    return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", std::string(package_uuid));
+    return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", package_uuid);
   }
   package->loaded = true;
   return Ok();
 }
 
-UdrStatus UnloadPackage(std::string_view package_uuid) {
+UdrStatus UnloadPackage(const UdrUuid& package_uuid) {
   UdrLifecycleCallback shutdown = nullptr;
   {
     std::lock_guard<std::mutex> lock(RegistryMutex());
     RuntimePackage* package = FindLocked(package_uuid);
     if (package == nullptr) {
-      return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", std::string(package_uuid));
+      return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", package_uuid);
     }
     if (package->active_invocations != 0) {
-      return Error("UDR.UNLOAD_BLOCKED", std::string(package_uuid));
+      return Error("UDR.UNLOAD_BLOCKED", package_uuid);
     }
     if (!package->loaded) return Ok();
     shutdown = package->descriptor.shutdown;
@@ -232,22 +237,22 @@ UdrStatus UnloadPackage(std::string_view package_uuid) {
   std::lock_guard<std::mutex> lock(RegistryMutex());
   RuntimePackage* package = FindLocked(package_uuid);
   if (package == nullptr) {
-    return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", std::string(package_uuid));
+    return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", package_uuid);
   }
   package->loaded = false;
   return Ok();
 }
 
-UdrStatus UnregisterPackage(std::string_view package_uuid) {
+UdrStatus UnregisterPackage(const UdrUuid& package_uuid) {
   UdrLifecycleCallback shutdown = nullptr;
   {
     std::lock_guard<std::mutex> lock(RegistryMutex());
     RuntimePackage* package = FindLocked(package_uuid);
     if (package == nullptr) {
-      return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", std::string(package_uuid));
+      return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", package_uuid);
     }
     if (package->active_invocations != 0) {
-      return Error("UDR.UNLOAD_BLOCKED", std::string(package_uuid));
+      return Error("UDR.UNLOAD_BLOCKED", package_uuid);
     }
     if (package->loaded) {
       shutdown = package->descriptor.shutdown;
@@ -261,28 +266,28 @@ UdrStatus UnregisterPackage(std::string_view package_uuid) {
 
   std::lock_guard<std::mutex> lock(RegistryMutex());
   auto& registry = Registry();
-  const auto it = registry.find(std::string(package_uuid));
+  const auto it = registry.find(package_uuid);
   if (it == registry.end()) {
-    return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", std::string(package_uuid));
+    return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", package_uuid);
   }
   registry.erase(it);
   return Ok();
 }
 
-UdrStatus AcquireInvocationRef(std::string_view package_uuid, UdrInvocationLease* out_lease) {
+UdrStatus AcquireInvocationRef(const UdrUuid& package_uuid, UdrInvocationLease* out_lease) {
   if (out_lease == nullptr) {
-    return Error("UDR.RUNTIME.LEASE_OUTPUT_REQUIRED", std::string(package_uuid));
+    return Error("UDR.RUNTIME.LEASE_OUTPUT_REQUIRED", package_uuid);
   }
   std::lock_guard<std::mutex> lock(RegistryMutex());
   RuntimePackage* package = FindLocked(package_uuid);
   if (package == nullptr) {
-    return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", std::string(package_uuid));
+    return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", package_uuid);
   }
   if (!package->loaded) {
-    return Error("UDR.RUNTIME.PACKAGE_NOT_LOADED", std::string(package_uuid));
+    return Error("UDR.RUNTIME.PACKAGE_NOT_LOADED", package_uuid);
   }
   ++package->active_invocations;
-  *out_lease = UdrInvocationLease(std::string(package_uuid));
+  *out_lease = UdrInvocationLease(package_uuid);
   return Ok();
 }
 
@@ -310,7 +315,12 @@ UdrCallResult InvokePackage(const UdrCallInput& input) {
     }
     callback = it->callback;
   }
-  return callback(input);
+  auto result = callback(input);
+  if (!result.package_uuid.is_nil() && result.package_uuid != input.package_uuid) {
+    return {false, {}, "{\"diagnostic\":\"UDR.RUNTIME.RESULT_IDENTITY_MISMATCH\"}", input.package_uuid};
+  }
+  result.package_uuid = input.package_uuid;
+  return result;
 }
 
 UdrCallResult InvokePackageWithReservedWorkspace(

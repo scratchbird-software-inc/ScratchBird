@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -34,7 +35,7 @@ bool ContainsText(const std::string& value, const std::string& expected) {
   return value.find(expected) != std::string::npos;
 }
 
-opt::JoinRelationNode Relation(std::string uuid,
+opt::JoinRelationNode Relation(scratchbird::core::platform::Uuid uuid,
                                std::uint64_t rows,
                                std::uint64_t memory_profile_bytes = 0,
                                bool ordered = false,
@@ -60,8 +61,8 @@ opt::JoinRelationNode Relation(std::string uuid,
   return relation;
 }
 
-opt::JoinPredicateEdge Edge(std::string left,
-                            std::string right,
+opt::JoinPredicateEdge Edge(scratchbird::core::platform::Uuid left,
+                            scratchbird::core::platform::Uuid right,
                             double selectivity = 0.01,
                             bool equality = true) {
   opt::JoinPredicateEdge edge;
@@ -77,9 +78,9 @@ opt::JoinPredicateEdge Edge(std::string left,
 bool RetainsMemoryProfileFrontierAlternatives() {
   // SEARCH_KEY: OEIC_ENTERPRISE_JOIN_MEMO_FRONTIER
   const auto graph = opt::BuildJoinGraph(
-      {Relation("rel.build", 100000),
-       Relation("rel.probe", 100000)},
-      {Edge("rel.build", "rel.probe", 0.01, true)},
+      {Relation(scratchbird::tests::FixtureUuid(1260, 1), 100000),
+       Relation(scratchbird::tests::FixtureUuid(1260, 2), 100000)},
+      {Edge(scratchbird::tests::FixtureUuid(1260, 1), scratchbird::tests::FixtureUuid(1260, 2), 0.01, true)},
       false,
       false);
 
@@ -109,9 +110,9 @@ bool RetainsMemoryProfileFrontierAlternatives() {
 
 bool PreservesExactnessAndCorrelationProperties() {
   const auto graph = opt::BuildJoinGraph(
-      {Relation("rel.outer", 1000, 0, true, true, true, true, false, true, true),
-       Relation("rel.lossy", 100, 256 * 1024, true, true, true, false)},
-      {Edge("rel.outer", "rel.lossy", 0.05, true)},
+      {Relation(scratchbird::tests::FixtureUuid(1260, 3), 1000, 0, true, true, true, true, false, true, true),
+       Relation(scratchbird::tests::FixtureUuid(1260, 4), 100, 256 * 1024, true, true, true, false)},
+      {Edge(scratchbird::tests::FixtureUuid(1260, 3), scratchbird::tests::FixtureUuid(1260, 4), 0.05, true)},
       false,
       false);
 
@@ -139,9 +140,9 @@ bool PreservesExactnessAndCorrelationProperties() {
 
 bool CollapsesFrontierOnlyWhenPolicyDisablesRetention() {
   const auto graph = opt::BuildJoinGraph(
-      {Relation("rel.a", 100000),
-       Relation("rel.b", 100000)},
-      {Edge("rel.a", "rel.b", 0.01, true)},
+      {Relation(scratchbird::tests::FixtureUuid(1260, 5), 100000),
+       Relation(scratchbird::tests::FixtureUuid(1260, 6), 100000)},
+      {Edge(scratchbird::tests::FixtureUuid(1260, 5), scratchbird::tests::FixtureUuid(1260, 6), 0.01, true)},
       false,
       false);
 

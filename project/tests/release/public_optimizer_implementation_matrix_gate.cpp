@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
+#include <map>
 #include "access_path_full.hpp"
 #include "adaptive_cardinality_feedback.hpp"
 #include "cluster_candidate.hpp"
@@ -121,28 +123,33 @@ std::string Id(std::string_view surface_id, std::string_view suffix) {
   return "pcr060." + std::string(surface_id) + "." + std::string(suffix);
 }
 
-std::string CanonicalUuid(const std::uint64_t suffix) {
-  std::array<char, 37> value{};
-  std::snprintf(value.data(), value.size(),
-                "01a00000-0000-7500-8000-%012llu",
-                static_cast<unsigned long long>(suffix));
-  return value.data();
+plan::CanonicalPlannerUuid CanonicalUuid(const std::uint64_t suffix) {
+  return scratchbird::tests::FixtureUuid(1413, suffix);
 }
 
-std::string RelationUuid(std::string_view surface_id) {
-  return Id(surface_id, "relation");
+plan::CanonicalPlannerUuid FixtureIdentity(std::string_view surface,
+                                          std::string_view role) {
+  static std::map<std::pair<std::string, std::string>, plan::CanonicalPlannerUuid> identities;
+  const auto [entry, inserted] = identities.try_emplace(
+      std::pair{std::string(surface), std::string(role)});
+  if (inserted) entry->second = CanonicalUuid(10000 + identities.size());
+  return entry->second;
+}
+
+plan::CanonicalPlannerUuid RelationUuid(std::string_view surface_id) {
+  return FixtureIdentity(surface_id, "relation");
 }
 
 std::string DescriptorDigest(std::string_view surface_id) {
   return "sha256:descriptor-pcr060-" + std::string(surface_id);
 }
 
-std::string ColumnUuid(std::string_view column) {
-  return "col.pcr060." + std::string(column);
+plan::CanonicalPlannerUuid ColumnUuid(std::string_view column) {
+  return FixtureIdentity("column", column);
 }
 
-opt::OptimizerStatsIdentity FreshStatsIdentity(std::string object_uuid,
-                                               std::string statistic_uuid,
+opt::OptimizerStatsIdentity FreshStatsIdentity(plan::CanonicalPlannerUuid object_uuid,
+                                               plan::CanonicalPlannerUuid statistic_uuid,
                                                std::uint64_t stats_epoch = 6060) {
   opt::OptimizerStatsIdentity identity;
   identity.object_uuid = std::move(object_uuid);
@@ -161,7 +168,7 @@ opt::TableCardinalityStats TableStatsFor(std::string_view surface_id,
                                          std::uint64_t pages = 96) {
   opt::TableCardinalityStats stats;
   stats.identity = FreshStatsIdentity(RelationUuid(surface_id),
-                                      Id(surface_id, "table_stats"));
+                                      FixtureIdentity(surface_id, "table_stats"));
   stats.row_count = rows;
   stats.visible_row_count = rows - 100;
   stats.page_count = pages;
@@ -173,10 +180,10 @@ opt::IndexStats IndexFor(std::string_view surface_id,
                          std::string_view family,
                          std::string_view suffix) {
   opt::IndexStats index;
-  index.index_uuid = Id(surface_id, std::string("index.") + std::string(suffix));
+  index.index_uuid = FixtureIdentity(surface_id, std::string("index.") + std::string(suffix));
   index.relation_uuid = RelationUuid(surface_id);
   index.identity = FreshStatsIdentity(index.relation_uuid,
-                                      index.index_uuid + ".stats");
+                                      FixtureIdentity(surface_id, std::string("index.stats.") + std::string(suffix)));
   index.index_family = std::string(family);
   index.descriptor_digest = DescriptorDigest(surface_id);
   index.collation_identity = "collation.pcr060.binary";
@@ -286,13 +293,13 @@ AccessScenario ScenarioFor(const opt::EnterpriseOptimizerSurfaceEntry& entry) {
     scenario.scenario_id = "btree_point_lookup";
     scenario.predicate_kind = "scalar_eq";
     scenario.indexes = {IndexFor(entry.surface_id, "btree", "btree")};
-    scenario.expected_candidate_id = "CAND-OPT-INDEX:" + scenario.indexes.front().index_uuid;
+    scenario.expected_candidate_id = "CAND-OPT-INDEX";
     scenario.expected_access_kind = plan::PhysicalAccessKind::kScalarBtreeLookup;
   } else if (entry.surface_id == "hash_equality") {
     scenario.scenario_id = "hash_equality_lookup";
     scenario.predicate_kind = "scalar_eq";
     scenario.indexes = {IndexFor(entry.surface_id, "hash", "hash")};
-    scenario.expected_candidate_id = "CAND-OPT-INDEX:" + scenario.indexes.front().index_uuid;
+    scenario.expected_candidate_id = "CAND-OPT-INDEX";
     scenario.expected_access_kind = plan::PhysicalAccessKind::kScalarHashLookup;
   } else if (entry.surface_id == "bitmap_candidate_set") {
     scenario.scenario_id = "bitmap_candidate_set";
@@ -316,39 +323,39 @@ AccessScenario ScenarioFor(const opt::EnterpriseOptimizerSurfaceEntry& entry) {
     index.covered_column_uuids = {ColumnUuid("c1")};
     scenario.indexes = {std::move(index)};
     scenario.covering_payload_proven = true;
-    scenario.expected_candidate_id = "CAND-OPT-COVERING:" + scenario.indexes.front().index_uuid;
+    scenario.expected_candidate_id = "CAND-OPT-COVERING";
     scenario.expected_access_kind = plan::PhysicalAccessKind::kCoveringIndexScan;
   } else if (entry.surface_id == "text_search") {
     scenario.scenario_id = "full_text";
     scenario.predicate_kind = "full_text";
     scenario.indexes = {IndexFor(entry.surface_id, "full_text", "search")};
-    scenario.expected_candidate_id = "CAND-OPT-SPECIALIZED:" + scenario.indexes.front().index_uuid;
+    scenario.expected_candidate_id = "CAND-OPT-SPECIALIZED";
     scenario.expected_access_kind = plan::PhysicalAccessKind::kFullTextProbe;
   } else if (entry.surface_id == "vector_ann" ||
              entry.surface_id == "llvm_native_compile") {
     scenario.scenario_id = entry.surface_id == "vector_ann" ? "vector_ann" : "llvm_vector_exact_fallback";
     scenario.predicate_kind = "vector_approx";
     scenario.indexes = {IndexFor(entry.surface_id, "vector", "vector")};
-    scenario.expected_candidate_id = "CAND-OPT-SPECIALIZED:" + scenario.indexes.front().index_uuid;
+    scenario.expected_candidate_id = "CAND-OPT-SPECIALIZED";
     scenario.expected_access_kind = plan::PhysicalAccessKind::kVectorApproximateWithFallback;
     scenario.llvm_acceleration_checked = entry.surface_id == "llvm_native_compile";
   } else if (entry.surface_id == "document_path") {
     scenario.scenario_id = "document_path";
     scenario.predicate_kind = "document_path";
     scenario.indexes = {IndexFor(entry.surface_id, "document", "document")};
-    scenario.expected_candidate_id = "CAND-OPT-SPECIALIZED:" + scenario.indexes.front().index_uuid;
+    scenario.expected_candidate_id = "CAND-OPT-SPECIALIZED";
     scenario.expected_access_kind = plan::PhysicalAccessKind::kDocumentPathProbe;
   } else if (entry.surface_id == "graph_seed") {
     scenario.scenario_id = "graph_seed";
     scenario.predicate_kind = "graph_seed";
     scenario.indexes = {IndexFor(entry.surface_id, "graph", "graph")};
-    scenario.expected_candidate_id = "CAND-OPT-SPECIALIZED:" + scenario.indexes.front().index_uuid;
+    scenario.expected_candidate_id = "CAND-OPT-SPECIALIZED";
     scenario.expected_access_kind = plan::PhysicalAccessKind::kGraphTraversalSeed;
   } else if (entry.surface_id == "time_series_append") {
     scenario.scenario_id = "time_series_append";
     scenario.predicate_kind = "timeseries_append";
     scenario.indexes = {IndexFor(entry.surface_id, "timeseries", "timeseries")};
-    scenario.expected_candidate_id = "CAND-OPT-SPECIALIZED:" + scenario.indexes.front().index_uuid;
+    scenario.expected_candidate_id = "CAND-OPT-SPECIALIZED";
     scenario.expected_access_kind = plan::PhysicalAccessKind::kTimeSeriesAppendPath;
   } else if (entry.surface_id == "temporary_in_memory") {
     scenario.scenario_id = "temporary_in_memory_catalog_scan";
@@ -417,9 +424,9 @@ opt::OptimizerPlanCacheKeyInput CacheInputFor(std::string_view surface_id) {
   input.format_compatibility_epoch = 6150;
   input.route_epoch = 6160;
   input.object_uuids = {RelationUuid(surface_id)};
-  input.function_uuids = {Id(surface_id, "function.redaction")};
-  input.index_uuids = {Id(surface_id, "index.dependency")};
-  input.filespace_uuids = {Id(surface_id, "filespace.hot")};
+  input.function_uuids = {FixtureIdentity(surface_id, "function.redaction")};
+  input.index_uuids = {FixtureIdentity(surface_id, "index.dependency")};
+  input.filespace_uuids = {FixtureIdentity(surface_id, "filespace.hot")};
   input.dependency_digests = {
       "sha256:dep-relation-pcr060-" + std::string(surface_id),
       "sha256:dep-index-pcr060-" + std::string(surface_id),
@@ -542,13 +549,13 @@ void ApplyAccessProof(const opt::EnterpriseOptimizerSurfaceEntry& entry,
 
 opt::OptimizerStatisticsCatalog JoinStatistics() {
   opt::OptimizerStatisticsCatalog stats;
-  stats.Add(opt::MakeStatistic("row_count", "relation", "rel.pcr060.join.left",
+  stats.Add(opt::MakeStatistic("row_count", "relation", opt::OptimizerStatisticTarget::Object(FixtureIdentity("join", "left")),
                                1000.0, opt::StatisticSource::kCatalogExact,
                                6060, 0, opt::CostConfidence::kHigh));
-  stats.Add(opt::MakeStatistic("row_count", "relation", "rel.pcr060.join.right",
+  stats.Add(opt::MakeStatistic("row_count", "relation", opt::OptimizerStatisticTarget::Object(FixtureIdentity("join", "right")),
                                500.0, opt::StatisticSource::kCatalogExact,
                                6060, 0, opt::CostConfidence::kHigh));
-  stats.Add(opt::MakeStatistic("memory_grant_available_bytes", "session", "local.default",
+  stats.Add(opt::MakeStatistic("memory_grant_available_bytes", "session", opt::OptimizerStatisticTarget::LocalDefault(),
                                1048576.0, opt::StatisticSource::kCatalogExact,
                                6060, 0, opt::CostConfidence::kHigh));
   return stats;
@@ -564,16 +571,16 @@ void ApplyJoinProof(MatrixRow* row) {
                                         plan::PhysicalAccessKind::kJoinHash,
                                         "pcr060.join.operation",
                                         "pcr060_join");
-  node.required_object_uuids = {"rel.pcr060.join.left", "rel.pcr060.join.right"};
+  node.required_object_uuids = {FixtureIdentity("join", "left"), FixtureIdentity("join", "right")};
   node.required_descriptors = {"sha256:descriptor-pcr060-join"};
   logical.nodes.push_back(std::move(node));
 
   const auto optimized = opt::OptimizeLogicalPlanWithStatistics(logical, JoinStatistics());
   std::vector<opt::JoinRelationNode> debug_relations = {
-      {.relation_uuid = "rel.pcr060.join.left",
+      {.relation_uuid = FixtureIdentity("join", "left"),
        .estimated_rows = 1000,
        .memory_profile_bytes = 0},
-      {.relation_uuid = "rel.pcr060.join.right",
+      {.relation_uuid = FixtureIdentity("join", "right"),
        .estimated_rows = 500,
        .memory_profile_bytes = 0}};
   opt::JoinPredicateEdge debug_edge;
@@ -946,10 +953,10 @@ void ApplyModelFamilyProof(
   }
 
   opt::ModelFamilyProfileFactoryRequestV1 request;
-  request.identity_scope = "pcr060.model-family." + entry.surface_id;
   request.logical_request = logical;
   request.capability_snapshots = {capability};
   const auto inventory = opt::BuildModelFamilyAlternativeProfilesV1(request);
+  request.identity_owner = inventory.identity_owner;
   const auto planned = opt::PlanOptimizerOwnedModelFamilySourceV1(request);
   row->candidate_generated = inventory.accepted &&
                              inventory.candidates.size() == 1;
@@ -979,7 +986,7 @@ void ApplyModelFamilyProof(
   row->plan_cache_dependency_bound =
       capability.metrics.statistics_snapshot_uuid ==
           logical.statistics_snapshot_uuid &&
-      !capability.metrics.property_snapshot_uuid.empty();
+      !capability.metrics.property_snapshot_uuid.is_nil();
   row->benchmark_clean_validated =
       entry.benchmark_clean_admissible && planned.accepted;
   row->surface_specific_validator =
@@ -988,7 +995,7 @@ void ApplyModelFamilyProof(
       planned.selected_candidate.route_class == capability.route_class;
 
   auto unavailable = request;
-  unavailable.identity_scope += ".unavailable";
+  unavailable.identity_owner.reset();
   unavailable.capability_snapshots.front().available = false;
   const auto refused = opt::PlanOptimizerOwnedModelFamilySourceV1(unavailable);
   row->fail_closed = !refused.accepted && !refused.data_access_allowed &&

@@ -89,7 +89,7 @@ struct ServerIpcEndpointDescriptor {
   std::uint32_t descriptor_format_version = kServerIpcEndpointDescriptorFormatCurrent;
   std::uint16_t protocol_major = 1;
   std::uint16_t protocol_minor = 0;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::string database_path;
   std::uint64_t lifecycle_generation = 0;
   std::uint64_t descriptor_generation = 0;

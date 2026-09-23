@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -61,7 +62,7 @@ opt::BoundOptimizerRequest SafeRequest() {
   request.logical_plan = SafeLogicalPlan();
   request.statistics.Add(opt::MakeStatistic("row_count",
                                             "relation",
-                                            "rel.opch011",
+                                            opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1235, 1)),
                                             10.0,
                                             opt::StatisticSource::kCatalogExact,
                                             17,

@@ -53,7 +53,7 @@ Fixture CreateDatabaseAttachFixture() {
 
 sblr::SblrOperationEnvelope DatabaseAttachMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const std::vector<std::uint8_t>& descriptor_bytes) {
   auto member = sblr::MakeSblrEnvelope(
       "engine.op.database_attach", "SBLR_DATABASE_ATTACH",
@@ -84,12 +84,12 @@ int main() {
   std::atomic<unsigned> probes{0};
   std::atomic<unsigned> cancel_on_probe{0};
   auto context = BeginTransaction(fixture, &probes);
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 36350));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 36350));
+  context.current_package_uuid = parser_uuid;
   context.authorization_context.security_context_generation = 1;
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object, 36351));
+  grant.grant_uuid =
+      Identity(NewUuid(platform::UuidKind::object, 36351));
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
   grant.target_uuid = context.database_uuid;
@@ -104,7 +104,7 @@ int main() {
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;
@@ -114,7 +114,7 @@ int main() {
           "003636 live statement receipt acquisition failed");
   if (result != nullptr) (void)sb_engine_result_release(result);
   Require(view.database_attach_executor_availability_generation != 0 &&
-              !view.resource_admission_uuid.empty() &&
+              !view.resource_admission_uuid.is_nil() &&
               view.resource_epoch != 0,
           "003636 receipt omitted database-attach authority");
 
@@ -191,7 +191,7 @@ int main() {
   journal_context.trace_tags.push_back("private_database_attach_journal");
   api::SblrDatabaseAttachJournalKeyV1 journal_key;
   journal_key.database_uuid = descriptor.database_uuid;
-  journal_key.session_uuid = RawUuid(journal_context.session_uuid.canonical);
+  journal_key.session_uuid = RawUuid(journal_context.session_uuid);
   journal_key.statement_receipt_uuid = descriptor.statement_receipt_uuid;
   journal_key.attach_uuid = descriptor.attach_uuid;
   journal_key.storage_uuid = descriptor.storage_uuid;

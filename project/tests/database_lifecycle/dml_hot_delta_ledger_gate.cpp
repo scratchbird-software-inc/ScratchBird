@@ -49,16 +49,16 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind,
   return typed.value;
 }
 
-std::string UuidText(platform::UuidKind kind,
+platform::Uuid UuidValue(platform::UuidKind kind,
                      platform::u64 millis,
                      platform::byte suffix) {
-  return uuid::UuidToString(GeneratedUuid(kind, millis, suffix).value);
+  return GeneratedUuid(kind, millis, suffix).value;
 }
 
-std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
+std::vector<platform::byte> EncodedKey(const platform::Uuid& index_uuid,
                                        const std::string& key) {
   const auto descriptor_uuid =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
+      uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::object,
                                            index_uuid);
   Require(descriptor_uuid.ok(), "index uuid parse for key encoding failed");
   idx::IndexKeyEncodingComponent component;
@@ -71,9 +71,9 @@ std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
   return encoded.encoded;
 }
 
-page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
+page::IndexBtreePhysicalTree MakeTree(const platform::Uuid& index_uuid) {
   const auto parsed =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
+      uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::object,
                                            index_uuid);
   Require(parsed.ok(), "index uuid parse failed");
   auto initialized = page::InitializeIndexBtreePhysicalTree(parsed.value, 4096);
@@ -82,7 +82,7 @@ page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
 }
 
 std::size_t CountKey(const page::IndexBtreePhysicalTree& tree,
-                     const std::string& index_uuid,
+                     const platform::Uuid& index_uuid,
                      const std::string& key) {
   const auto scan =
       page::PointLookupIndexBtreePhysicalTree(tree, EncodedKey(index_uuid, key));
@@ -90,8 +90,8 @@ std::size_t CountKey(const page::IndexBtreePhysicalTree& tree,
   return scan.locators.size();
 }
 
-api::CrudIndexRecord Index(std::string index_uuid,
-                           std::string table_uuid,
+api::CrudIndexRecord Index(platform::Uuid index_uuid,
+                           platform::Uuid table_uuid,
                            bool unique = false) {
   api::CrudIndexRecord index;
   index.creator_tx = 42;
@@ -107,8 +107,8 @@ api::CrudIndexRecord Index(std::string index_uuid,
   return index;
 }
 
-api::CrudIndexRecord FullTextIndex(std::string index_uuid,
-                                    std::string table_uuid) {
+api::CrudIndexRecord FullTextIndex(platform::Uuid index_uuid,
+                                    platform::Uuid table_uuid) {
   auto index = Index(std::move(index_uuid), std::move(table_uuid));
   index.family = api::kCrudIndexFamilyFullText;
   index.profile = "native_full_text";
@@ -116,8 +116,8 @@ api::CrudIndexRecord FullTextIndex(std::string index_uuid,
   return index;
 }
 
-api::DmlIndexWriteRowImage Row(std::string row_uuid,
-                               std::string version_uuid,
+api::DmlIndexWriteRowImage Row(platform::Uuid row_uuid,
+                               platform::Uuid version_uuid,
                                std::string id,
                                std::string name,
                                std::string payload = "payload") {
@@ -132,12 +132,12 @@ api::DmlIndexWriteRowImage Row(std::string row_uuid,
 
 api::DmlIndexWriteEvent BaseEvent(api::DmlIndexWriteOperation operation,
                                   const api::CrudIndexRecord& index,
-                                  const std::string& table_uuid) {
+                                  const platform::Uuid& table_uuid) {
   api::DmlIndexWriteEvent event;
   event.operation = operation;
   event.index = index;
   event.table_uuid = table_uuid;
-  event.transaction_uuid = UuidText(platform::UuidKind::transaction,
+  event.transaction_uuid = UuidValue(platform::UuidKind::transaction,
                                     1700100000000ull,
                                     0x31);
   event.local_transaction_id = 77;
@@ -155,12 +155,23 @@ api::DmlIndexWriteEvent BaseEvent(api::DmlIndexWriteOperation operation,
 
 bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
+                 const platform::Uuid& id) {
+  return std::any_of(evidence.begin(), evidence.end(), [&](const auto& item) {
+    return item.evidence_kind == kind &&
+           std::holds_alternative<platform::Uuid>(item.evidence_id) &&
+           std::get<platform::Uuid>(item.evidence_id) == id;
+  });
+}
+
+bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
+                 std::string_view kind,
                  std::string_view id) {
   return std::any_of(evidence.begin(),
                      evidence.end(),
                      [&](const auto& item) {
                        return item.evidence_kind == kind &&
-                              item.evidence_id.find(id) != std::string::npos;
+                              std::holds_alternative<std::string>(item.evidence_id) &&
+                              std::get<std::string>(item.evidence_id).find(id) != std::string::npos;
                      });
 }
 
@@ -204,9 +215,9 @@ api::DmlIndexWritePathResult Apply(api::DmlIndexWriteEvent event,
 
 void SeedOldKey(page::IndexBtreePhysicalTree* tree,
                 const api::CrudIndexRecord& index,
-                const std::string& table_uuid,
-                const std::string& row_uuid,
-                const std::string& version_uuid,
+                const platform::Uuid& table_uuid,
+                const platform::Uuid& row_uuid,
+                const platform::Uuid& version_uuid,
                 const std::string& key) {
   auto insert = BaseEvent(api::DmlIndexWriteOperation::insert, index, table_uuid);
   insert.has_new_row = true;
@@ -216,16 +227,16 @@ void SeedOldKey(page::IndexBtreePhysicalTree* tree,
 }
 
 void TestHotLikeUnchangedUpdate() {
-  const std::string table_uuid =
-      UuidText(platform::UuidKind::object, 1700101000000ull, 0x41);
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700101001000ull, 0x42);
+  const platform::Uuid table_uuid =
+      UuidValue(platform::UuidKind::object, 1700101000000ull, 0x41);
+  const platform::Uuid index_uuid =
+      UuidValue(platform::UuidKind::object, 1700101001000ull, 0x42);
   const auto index = Index(index_uuid, table_uuid);
   auto tree = MakeTree(index_uuid);
-  const std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1700101002000ull, 0x43);
-  const std::string v1 = UuidText(platform::UuidKind::row, 1700101003000ull, 0x44);
-  const std::string v2 = UuidText(platform::UuidKind::row, 1700101004000ull, 0x45);
+  const platform::Uuid row_uuid =
+      UuidValue(platform::UuidKind::row, 1700101002000ull, 0x43);
+  const platform::Uuid v1 = UuidValue(platform::UuidKind::row, 1700101003000ull, 0x44);
+  const platform::Uuid v2 = UuidValue(platform::UuidKind::row, 1700101004000ull, 0x45);
   SeedOldKey(&tree, index, table_uuid, row_uuid, v1, "alpha");
 
   auto update = BaseEvent(api::DmlIndexWriteOperation::update, index, table_uuid);
@@ -257,18 +268,18 @@ void TestHotLikeUnchangedUpdate() {
 }
 
 void TestUpdateRowVersionContinuityFailClosed() {
-  const std::string table_uuid =
-      UuidText(platform::UuidKind::object, 1700101500000ull, 0x46);
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700101501000ull, 0x47);
+  const platform::Uuid table_uuid =
+      UuidValue(platform::UuidKind::object, 1700101500000ull, 0x46);
+  const platform::Uuid index_uuid =
+      UuidValue(platform::UuidKind::object, 1700101501000ull, 0x47);
   const auto index = Index(index_uuid, table_uuid);
   auto tree = MakeTree(index_uuid);
-  const std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1700101502000ull, 0x48);
-  const std::string other_row_uuid =
-      UuidText(platform::UuidKind::row, 1700101503000ull, 0x49);
-  const std::string v1 = UuidText(platform::UuidKind::row, 1700101504000ull, 0x4a);
-  const std::string v2 = UuidText(platform::UuidKind::row, 1700101505000ull, 0x4b);
+  const platform::Uuid row_uuid =
+      UuidValue(platform::UuidKind::row, 1700101502000ull, 0x48);
+  const platform::Uuid other_row_uuid =
+      UuidValue(platform::UuidKind::row, 1700101503000ull, 0x49);
+  const platform::Uuid v1 = UuidValue(platform::UuidKind::row, 1700101504000ull, 0x4a);
+  const platform::Uuid v2 = UuidValue(platform::UuidKind::row, 1700101505000ull, 0x4b);
   SeedOldKey(&tree, index, table_uuid, row_uuid, v1, "alpha");
 
   auto row_mismatch = BaseEvent(api::DmlIndexWriteOperation::update,
@@ -303,15 +314,15 @@ void TestUpdateRowVersionContinuityFailClosed() {
 }
 
 void TestChangedNonUniqueDeferredDeltaOverlay() {
-  const std::string table_uuid =
-      UuidText(platform::UuidKind::object, 1700102000000ull, 0x51);
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700102001000ull, 0x52);
+  const platform::Uuid table_uuid =
+      UuidValue(platform::UuidKind::object, 1700102000000ull, 0x51);
+  const platform::Uuid index_uuid =
+      UuidValue(platform::UuidKind::object, 1700102001000ull, 0x52);
   const auto index = FullTextIndex(index_uuid, table_uuid);
-  const std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1700102002000ull, 0x53);
-  const std::string v1 = UuidText(platform::UuidKind::row, 1700102003000ull, 0x54);
-  const std::string v2 = UuidText(platform::UuidKind::row, 1700102004000ull, 0x55);
+  const platform::Uuid row_uuid =
+      UuidValue(platform::UuidKind::row, 1700102002000ull, 0x53);
+  const platform::Uuid v1 = UuidValue(platform::UuidKind::row, 1700102003000ull, 0x54);
+  const platform::Uuid v2 = UuidValue(platform::UuidKind::row, 1700102004000ull, 0x55);
   idx::PersistentSecondaryIndexDeltaLedger ledger;
 
   auto update = BaseEvent(api::DmlIndexWriteOperation::update, index, table_uuid);
@@ -348,22 +359,22 @@ void TestChangedNonUniqueDeferredDeltaOverlay() {
 }
 
 void TestUniqueOrderedDeferredFallsBackToPhysicalTree() {
-  const std::string table_uuid =
-      UuidText(platform::UuidKind::object, 1700103000000ull, 0x61);
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700103001000ull, 0x62);
+  const platform::Uuid table_uuid =
+      UuidValue(platform::UuidKind::object, 1700103000000ull, 0x61);
+  const platform::Uuid index_uuid =
+      UuidValue(platform::UuidKind::object, 1700103001000ull, 0x62);
   const auto index = Index(index_uuid, table_uuid, true);
   auto update = BaseEvent(api::DmlIndexWriteOperation::update, index, table_uuid);
-  const std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1700103002000ull, 0x63);
+  const platform::Uuid row_uuid =
+      UuidValue(platform::UuidKind::row, 1700103002000ull, 0x63);
   update.has_old_row = true;
   update.old_row = Row(row_uuid,
-                       UuidText(platform::UuidKind::row, 1700103003000ull, 0x64),
+                       UuidValue(platform::UuidKind::row, 1700103003000ull, 0x64),
                        "1",
                        "alpha");
   update.has_new_row = true;
   update.new_row = Row(row_uuid,
-                       UuidText(platform::UuidKind::row, 1700103004000ull, 0x65),
+                       UuidValue(platform::UuidKind::row, 1700103004000ull, 0x65),
                        "2",
                        "alpha");
   idx::PersistentSecondaryIndexDeltaLedger ledger;
@@ -420,16 +431,16 @@ void TestDeferredProofDiagnostics() {
 }
 
 void TestSynchronousFallbackWhenPolicyDisabled() {
-  const std::string table_uuid =
-      UuidText(platform::UuidKind::object, 1700104000000ull, 0x71);
-  const std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700104001000ull, 0x72);
+  const platform::Uuid table_uuid =
+      UuidValue(platform::UuidKind::object, 1700104000000ull, 0x71);
+  const platform::Uuid index_uuid =
+      UuidValue(platform::UuidKind::object, 1700104001000ull, 0x72);
   const auto index = Index(index_uuid, table_uuid);
   auto tree = MakeTree(index_uuid);
-  const std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1700104002000ull, 0x73);
-  const std::string v1 = UuidText(platform::UuidKind::row, 1700104003000ull, 0x74);
-  const std::string v2 = UuidText(platform::UuidKind::row, 1700104004000ull, 0x75);
+  const platform::Uuid row_uuid =
+      UuidValue(platform::UuidKind::row, 1700104002000ull, 0x73);
+  const platform::Uuid v1 = UuidValue(platform::UuidKind::row, 1700104003000ull, 0x74);
+  const platform::Uuid v2 = UuidValue(platform::UuidKind::row, 1700104004000ull, 0x75);
   SeedOldKey(&tree, index, table_uuid, row_uuid, v1, "alpha");
 
   auto update = BaseEvent(api::DmlIndexWriteOperation::update, index, table_uuid);

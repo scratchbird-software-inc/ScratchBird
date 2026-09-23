@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "cloud/cloud_deployment_profile.hpp"
 #include "cloud/cloud_identity_kms.hpp"
 #include "cloud/cloud_provider_capability.hpp"
@@ -63,7 +64,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) {
       return true;
     }
   }
@@ -112,10 +113,10 @@ api::EngineRequestContext SecurityContext() {
   context.request_id = "sbsql-non-core-optional-provider-classification";
   context.database_path = "/tmp/sbsql_non_core_optional_provider_classification.sbdb";
   context.security_context_present = true;
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000120001";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000120002";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000120003";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000120004";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000120001");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000120002");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000120003");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000120004");
   context.local_transaction_id = 120;
   context.security_epoch = 12;
   context.resource_epoch = 13;
@@ -413,7 +414,7 @@ void RequireLlvmOptionalProviderGates() {
   api::EngineCompileLlvmModuleRequest fallback;
   fallback.context = SecurityContext();
   fallback.context.local_transaction_id = 0;
-  fallback.context.transaction_uuid.canonical.clear();
+  fallback.context.transaction_uuid = {};
   fallback.option_envelopes = {
       "compile:jit",
       "module:sblr_projection_unit",

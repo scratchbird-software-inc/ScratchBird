@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "descriptor_value_runtime.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "sbl_numeric.hpp"
@@ -129,8 +130,7 @@ api::EngineDescriptor Descriptor(const std::uint32_t ordinal,
       std::cerr << "missing canonical int128 catalog fixture\n";
       std::abort();
     }
-    descriptor.descriptor_uuid.canonical = scratchbird::core::uuid::UuidToString(
-        row->descriptor_uuid.value);
+    descriptor.descriptor_uuid = row->descriptor_uuid.value;
     const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
         "019d0000-0000-7000-8000-00000000d701", manifest.manifest.catalog_epoch, 1,
         descriptor.descriptor_uuid.canonical, row->descriptor_epoch);
@@ -441,8 +441,7 @@ bool ValidateCanonicalInt128Ordering(const api::EngineDescriptor& descriptor,
     if (mutation == 0) invalid.binary_value.pop_back();
     if (mutation == 1) invalid.binary_value.push_back(0);
     if (mutation == 2) invalid.encoded_value = expected.back();
-    if (mutation == 3) invalid.descriptor.descriptor_uuid.canonical =
-        "019d0000-0000-7000-8000-00000000d715";
+    if (mutation == 3) invalid.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d715");
     if (mutation == 4) invalid.descriptor.encoded_descriptor.replace(
         10, 36, invalid.descriptor.descriptor_uuid.canonical);
     const auto compared = exec::CompareCanonicalDescriptorOrderValues(

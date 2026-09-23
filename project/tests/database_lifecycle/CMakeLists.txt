@@ -8,6 +8,18 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(management_binary_uuid_codec_conformance management_binary_uuid_codec_conformance.cpp)
+target_compile_features(management_binary_uuid_codec_conformance PRIVATE cxx_std_23)
+target_include_directories(management_binary_uuid_codec_conformance PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../src/wire")
+add_test(NAME management_binary_uuid_codec_conformance COMMAND management_binary_uuid_codec_conformance)
+set_tests_properties(management_binary_uuid_codec_conformance PROPERTIES LABELS "wire;binary_uuid;management;unit")
+
+add_executable(public_result_binary_uuid_conformance public_result_binary_uuid_conformance.cpp)
+target_compile_features(public_result_binary_uuid_conformance PRIVATE cxx_std_23)
+target_include_directories(public_result_binary_uuid_conformance PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
+add_test(NAME public_result_binary_uuid_conformance COMMAND public_result_binary_uuid_conformance)
+set_tests_properties(public_result_binary_uuid_conformance PROPERTIES LABELS "wire;binary_uuid;public_abi;unit")
+
 if(NOT TARGET sb_server_legacy_diagnostic_rendering)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/diagnostic_rendering
                    ${CMAKE_CURRENT_BINARY_DIR}/server_legacy_diagnostic_rendering)
@@ -5580,6 +5592,7 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
     PRIVATE
       sb_core_platform
       sb_core_uuid
+      sb_engine_functions
       sb_server_core
       sb_server_event_notifications
       sb_storage_database

@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "extensibility/executable_object_lifecycle.hpp"
+#include "extensibility/executable_object_record_codec.hpp"
+#include "catalog/binary_view_options.hpp"
+#include <filesystem>
 
 #include "crud_support/crud_store.hpp"
 #include "dml/delete_api.hpp"
@@ -59,37 +62,6 @@ std::vector<std::string> Split(const std::string& value, char delimiter) {
   return parts;
 }
 
-std::string HexEncode(const std::string& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(value.size() * 2);
-  for (unsigned char c : value) {
-    out.push_back(kHex[(c >> 4) & 0x0f]);
-    out.push_back(kHex[c & 0x0f]);
-  }
-  return out;
-}
-
-int HexValue(char c) {
-  if (c >= '0' && c <= '9') { return c - '0'; }
-  if (c >= 'a' && c <= 'f') { return 10 + c - 'a'; }
-  if (c >= 'A' && c <= 'F') { return 10 + c - 'A'; }
-  return -1;
-}
-
-std::string HexDecode(const std::string& value) {
-  std::string out;
-  if ((value.size() % 2) != 0) { return out; }
-  out.reserve(value.size() / 2);
-  for (std::size_t i = 0; i < value.size(); i += 2) {
-    const int hi = HexValue(value[i]);
-    const int lo = HexValue(value[i + 1]);
-    if (hi < 0 || lo < 0) { return {}; }
-    out.push_back(static_cast<char>((hi << 4) | lo));
-  }
-  return out;
-}
-
 std::uint64_t ParseU64(const std::string& value) {
   try {
     return static_cast<std::uint64_t>(std::stoull(value));
@@ -139,11 +111,14 @@ std::string Join(const std::vector<std::string>& values, char delimiter) {
 }
 
 EngineApiDiagnostic ExecDiagnostic(const char* code, std::string detail);
+EngineApiDiagnostic ExecDiagnostic(const char* code,const EngineUuid&) {
+  return ExecDiagnostic(code,std::string("object_uuid"));
+}
 EngineApiDiagnostic OkDiagnostic();
 
 struct RoutineDeleteColumnRangeCountDescriptor {
-  std::string table_uuid;
-  std::string column_uuid;
+  EngineUuid table_uuid;
+  EngineUuid column_uuid;
   std::uint32_t lower_input_slot = 0;
   std::uint32_t upper_input_slot = 0;
   std::uint32_t affected_rows_output_slot = 0;
@@ -190,29 +165,20 @@ EngineApiDiagnostic ParseRoutineDeleteColumnRangeCountDescriptor(
     return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
                           "descriptor_output_required");
   }
-  const auto parts = Split(encoded, '|');
-  if (parts.size() != 7 ||
-      parts[0] != kRoutineDeleteColumnRangeCountDescriptorV1 ||
-      parts[1].empty() || parts[2].empty()) {
-    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
-                          "delete_column_range_count_descriptor_shape");
-  }
-  const auto lower_slot = ParseRoutineSlot(parts[3]);
-  const auto upper_slot = ParseRoutineSlot(parts[4]);
-  const auto affected_slot = ParseRoutineSlot(parts[5]);
-  const auto yield_slot = ParseRoutineSlot(parts[6]);
-  if (!lower_slot || !upper_slot || !affected_slot || !yield_slot ||
-      *lower_slot != 0 || *upper_slot != 1 || *affected_slot != 2 ||
-      *yield_slot != 2) {
-    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
-                          "delete_column_range_count_slot_layout");
-  }
-  descriptor->table_uuid = parts[1];
-  descriptor->column_uuid = parts[2];
-  descriptor->lower_input_slot = *lower_slot;
-  descriptor->upper_input_slot = *upper_slot;
-  descriptor->affected_rows_output_slot = *affected_slot;
-  descriptor->yield_output_slot = *yield_slot;
+  const std::string prefix=std::string(kRoutineDeleteColumnRangeCountDescriptorV1)+"|";
+  if(!encoded.starts_with(prefix)||encoded.size()!=prefix.size()+48)
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,"binary_delete_range_descriptor_required");
+  const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t*>(encoded.data()),encoded.size());
+  std::size_t cursor=prefix.size();RoutineDeleteColumnRangeCountDescriptor parsed;
+  if(!catalog_record_codec::Get(bytes,cursor,parsed.table_uuid)||parsed.table_uuid.is_nil()||
+      !catalog_record_codec::Get(bytes,cursor,parsed.column_uuid)||parsed.column_uuid.is_nil()||
+      !catalog_record_codec::Get(bytes,cursor,parsed.lower_input_slot)||
+      !catalog_record_codec::Get(bytes,cursor,parsed.upper_input_slot)||
+      !catalog_record_codec::Get(bytes,cursor,parsed.affected_rows_output_slot)||
+      !catalog_record_codec::Get(bytes,cursor,parsed.yield_output_slot)||
+      parsed.lower_input_slot!=0||parsed.upper_input_slot!=1||parsed.affected_rows_output_slot!=2||parsed.yield_output_slot!=2)
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,"binary_delete_range_descriptor_invalid");
+  *descriptor=parsed;
   return OkDiagnostic();
 }
 
@@ -323,24 +289,14 @@ TResult DiagnosticResult(const EngineRequestContext& context,
   return result;
 }
 
-EngineTypedValue Value(std::string value) {
-  EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
-  typed.encoded_value = std::move(value);
-  return typed;
-}
-
-void AddRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
-  EngineRowValue row;
-  row.requested_row_uuid = "exec-row-" + std::to_string(result->result_shape.rows.size() + 1);
-  for (auto& field : fields) { row.fields.push_back({std::move(field.first), Value(std::move(field.second))}); }
-  result->result_shape.result_kind = "executable_object_lifecycle_rows";
+void AddRow(EngineApiResult* result, ApiBehaviorFields fields) {
+  auto row=ApiBehaviorRow(std::move(fields));
+  row.requested_row_uuid=GenerateCrudEngineUuid("row");
+  result->result_shape.result_kind="executable_object_lifecycle_rows";
   result->result_shape.rows.push_back(std::move(row));
 }
-
-void AddEvidence(EngineApiResult* result, std::string kind, std::string id) {
-  result->evidence.push_back({std::move(kind), std::move(id)});
+void AddEvidence(EngineApiResult* result,std::string kind,EngineEvidenceValue id) {
+  result->evidence.push_back({std::move(kind),std::move(id)});
 }
 
 void AddPreparedMetadataEvidence(const EngineRequestContext& context,
@@ -353,8 +309,7 @@ void AddPreparedMetadataEvidence(const EngineRequestContext& context,
   AddEvidence(
       result,
       "prepared_metadata_exact_version",
-      context.prepared_metadata_required_object_uuid + ":" +
-          std::to_string(
+      std::to_string(
               context.prepared_metadata_required_executable_generation) +
           ":" +
           std::to_string(context.prepared_metadata_required_metadata_epoch));
@@ -473,19 +428,19 @@ std::string ObjectKind(const EngineApiRequest& request) {
   return LowerAscii(OptionValue(request, "object_kind:"));
 }
 
-std::string ObjectUuid(const EngineApiRequest& request) {
+EngineUuid ObjectUuid(const EngineApiRequest& request) {
   if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
   if (!request.bound_object_identity.object_uuid.is_nil()) {
     return request.bound_object_identity.object_uuid;
   }
-  return OptionValue(request, "object_uuid:");
+  return BinaryViewUuid(OptionValue(request, "object_uuid:"));
 }
 
-std::string PackageUuid(const EngineApiRequest& request) {
+EngineUuid PackageUuid(const EngineApiRequest& request) {
   if (!request.context.current_package_uuid.is_nil()) {
     return request.context.current_package_uuid;
   }
-  return OptionValue(request, "package_uuid:");
+  return BinaryViewUuid(OptionValue(request, "package_uuid:"));
 }
 
 std::string ExecutorKind(const EngineApiRequest& request,
@@ -549,11 +504,11 @@ std::string PayloadFromRequest(const EngineApiRequest& request) {
         StartsWith(option, "compiled_body_descriptor:") ||
         StartsWith(option, "procedure_body_sblr_uuid:") ||
         StartsWith(option, "procedure_body_sblr_generation:") ||
-        StartsWith(option, "procedure_body_bytes_hex:") ||
+        StartsWith(option, "procedure_body_bytes:") ||
         StartsWith(option, "procedure_body_sha256:") ||
         StartsWith(option, "procedure_abi_uuid:") ||
         StartsWith(option, "procedure_abi_generation:") ||
-        StartsWith(option, "procedure_abi_bytes_hex:") ||
+        StartsWith(option, "procedure_abi_bytes:") ||
         StartsWith(option, "procedure_abi_evidence_sha256:") ||
         StartsWith(option, "procedure_parameter_count:") ||
         StartsWith(option, "procedure_signature_sha256:") ||
@@ -584,6 +539,9 @@ std::string PayloadFromRequest(const EngineApiRequest& request) {
         StartsWith(option, "routine_parameter_") ||
         StartsWith(option, "routine_return_count:") ||
         StartsWith(option, "routine_return_")) {
+      const auto colon=option.find(':');
+      if(colon!=std::string::npos&&option.substr(0,colon).ends_with("uuid")&&
+          BinaryViewUuid(option.substr(colon+1)).is_nil())return {};
       fields.push_back(option);
     }
   }
@@ -591,20 +549,11 @@ std::string PayloadFromRequest(const EngineApiRequest& request) {
     fields.push_back("descriptor=" + request.descriptors.front().canonical_type_name);
   }
   if (!request.rows.empty()) { fields.push_back("row_parameter_count=" + std::to_string(request.rows.size())); }
-  return Join(fields, ';');
+  return EncodeBinaryViewOptions(fields);
 }
 
 std::string PayloadFieldValue(const std::string& payload, const std::string& prefix) {
-  std::size_t offset = 0;
-  while (offset <= payload.size()) {
-    const auto next = payload.find(';', offset);
-    const auto end = next == std::string::npos ? payload.size() : next;
-    const std::string field = payload.substr(offset, end - offset);
-    if (StartsWith(field, prefix)) { return field.substr(prefix.size()); }
-    if (next == std::string::npos) break;
-    offset = next + 1;
-  }
-  return {};
+  return BinaryViewOptionValue(payload, prefix);
 }
 
 bool RequestsExecutionBoundaryBypass(const EngineApiRequest& request) {
@@ -634,7 +583,7 @@ bool HasInspectPermission(const EngineApiRequest& request) {
                                  request.target_object.uuid);
 }
 
-bool HasInvokePermission(const EngineApiRequest& request, const std::string& object_uuid) {
+bool HasInvokePermission(const EngineApiRequest& request, const EngineUuid& object_uuid) {
   return HasManagePermission(request) ||
          SecurityContextHasRight(request.context, "EXECUTE", object_uuid);
 }
@@ -714,8 +663,7 @@ EngineApiDiagnostic ValidateExactMgaSelector(const EngineRequestContext& context
       continue;
     }
     if (!entry.identity.transaction_uuid.valid() ||
-        scratchbird::core::uuid::UuidToString(
-            entry.identity.transaction_uuid.value) !=
+        entry.identity.transaction_uuid.value !=
             context.transaction_uuid) {
       return ExecDiagnostic(kExecutableObjectDiagnosticExactMgaSelectorMismatch,
                             "local_transaction_id_and_transaction_uuid_do_not_match");
@@ -767,13 +715,13 @@ EngineApiDiagnostic ResolveRoutineColumnBinding(
     if (column.column_uuid != routine.column_uuid) { continue; }
     if (column.canonical_name_key.empty()) {
       return ExecDiagnostic(kExecutableObjectDiagnosticRoutineBindingNotVisible,
-                            "column_name_key_missing:" + routine.column_uuid);
+                            "column_name_key_missing");
     }
     if (column_name != nullptr) { *column_name = column.canonical_name_key; }
     return OkDiagnostic();
   }
   return ExecDiagnostic(kExecutableObjectDiagnosticRoutineBindingNotVisible,
-                        "column_uuid:" + routine.column_uuid);
+                        "column_uuid");
 }
 
 EngineApiDiagnostic ValidateRoutineDeleteColumnRangeCountProgram(
@@ -839,70 +787,42 @@ EngineApiDiagnostic ValidateStoredProgram(const EngineApiRequest& request,
   return OkDiagnostic();
 }
 
-std::string ObjectEvent(const EngineExecutableObjectRecord& record) {
-  return std::string(kExecutableObjectLifecycleEventMagic) + "\tOBJECT\t" +
-         std::to_string(record.creator_tx) + "\t" + record.object_uuid + "\t" + record.object_kind + "\t" +
-         record.schema_uuid + "\t" + record.owner_principal_uuid + "\t" + record.package_uuid + "\t" +
-         record.lifecycle_state + "\t" + std::to_string(record.executable_generation) + "\t" +
-         std::to_string(record.metadata_epoch) + "\t" + record.executor_kind + "\t" +
-         HexEncode(record.stored_sblr_hash) + "\t" + HexEncode(record.stored_sblr_provenance) + "\t" +
-         HexEncode(record.internal_procedure_id) + "\t" + record.side_effect_class + "\t" +
-         record.event_trigger_event + "\t" + HexEncode(record.payload) + "\t" +
-         (record.deleted ? "1" : "0");
+template<class Record> std::string ExecutableEvent(const Record& record) {
+  std::string bytes;
+  if(!EncodeExecutableLifecycleRecord(record,&bytes))return {};
+  return bytes;
 }
-
-std::string DependencyEvent(const EngineExecutableDependencyRecord& record) {
-  return std::string(kExecutableObjectLifecycleEventMagic) + "\tDEPENDENCY\t" +
-         std::to_string(record.creator_tx) + "\t" + record.source_uuid + "\t" + record.source_kind + "\t" +
-         record.dependency_uuid + "\t" + record.dependency_kind + "\t" +
-         std::to_string(record.dependency_generation) + "\t" + std::to_string(record.metadata_epoch) + "\t" +
-         (record.deleted ? "1" : "0");
+std::string ObjectEvent(const EngineExecutableObjectRecord& r) { return ExecutableEvent(r); }
+std::string DependencyEvent(const EngineExecutableDependencyRecord& r) { return ExecutableEvent(r); }
+std::string InvocationEvent(const EngineExecutableInvocationRecord& r) { return ExecutableEvent(r); }
+std::string InvalidationEvent(std::uint64_t tx,const EngineUuid& object_uuid,
+    const EngineUuid& reason_uuid,std::uint64_t dependency_generation,std::uint64_t metadata_epoch) {
+  EngineExecutableInvalidationRecord r;r.creator_tx=tx;r.object_uuid=object_uuid;r.reason_uuid=reason_uuid;
+  r.dependency_generation=dependency_generation;r.metadata_epoch=metadata_epoch;return ExecutableEvent(r);
 }
-
-std::string InvalidationEvent(std::uint64_t tx,
-                              const std::string& object_uuid,
-                              const std::string& reason_uuid,
-                              std::uint64_t dependency_generation,
-                              std::uint64_t metadata_epoch) {
-  return std::string(kExecutableObjectLifecycleEventMagic) + "\tINVALIDATE\t" +
-         std::to_string(tx) + "\t" + object_uuid + "\t" + reason_uuid + "\t" +
-         std::to_string(dependency_generation) + "\t" + std::to_string(metadata_epoch);
+std::string CacheInvalidateEvent(const EngineRequestContext& context,const std::string& operation_id,
+    const EngineUuid& object_uuid,std::uint64_t metadata_epoch) {
+  EngineExecutableCacheRecord r;r.creator_tx=context.local_transaction_id;r.object_uuid=object_uuid;
+  r.operation_id=operation_id;r.metadata_epoch=metadata_epoch;r.security_epoch=context.security_epoch;
+  r.resource_epoch=context.resource_epoch;return ExecutableEvent(r);
 }
-
-std::string InvocationEvent(const EngineExecutableInvocationRecord& record) {
-  return std::string(kExecutableObjectLifecycleEventMagic) + "\tINVOCATION\t" +
-         std::to_string(record.creator_tx) + "\t" + record.invocation_lease_uuid + "\t" +
-         record.object_uuid + "\t" + std::to_string(record.executable_generation) + "\t" +
-         record.lifecycle_state + "\t" + std::to_string(record.metadata_epoch);
-}
-
-std::string CacheInvalidateEvent(const EngineRequestContext& context,
-                                 const std::string& operation_id,
-                                 const std::string& object_uuid,
-                                 std::uint64_t metadata_epoch) {
-  return std::string(kExecutableObjectLifecycleEventMagic) + "\tCACHE_INVALIDATE\t" +
-         std::to_string(context.local_transaction_id) + "\t" + HexEncode(operation_id) + "\t" +
-         object_uuid + "\t" + std::to_string(metadata_epoch) + "\t" +
-         std::to_string(context.security_epoch) + "\t" + std::to_string(context.resource_epoch);
-}
-
-std::string EventTriggerFireEvent(const EngineRequestContext& context,
-                                  const std::string& trigger_uuid,
-                                  const std::string& event_name,
-                                  const std::string& command_tag,
-                                  std::uint64_t metadata_epoch) {
-  return std::string(kExecutableObjectLifecycleEventMagic) + "\tEVENT_TRIGGER_FIRE\t" +
-         std::to_string(context.local_transaction_id) + "\t" + trigger_uuid + "\t" +
-         event_name + "\t" + HexEncode(command_tag) + "\t" + std::to_string(metadata_epoch);
+std::string EventTriggerFireEvent(const EngineRequestContext& context,const EngineUuid& trigger_uuid,
+    const std::string& event_name,const std::string& command_tag,std::uint64_t metadata_epoch) {
+  EngineExecutableTriggerFireRecord r;r.creator_tx=context.local_transaction_id;r.object_uuid=trigger_uuid;
+  r.event_name=event_name;r.command_tag=command_tag;r.metadata_epoch=metadata_epoch;return ExecutableEvent(r);
 }
 
 EngineApiDiagnostic AppendEvent(const EngineRequestContext& context, const std::string& event) {
   if (context.database_path.empty()) {
     return ExecDiagnostic(kExecutableObjectDiagnosticDatabasePathRequired, "database_path");
   }
+  ApiBehaviorRecord frame;ExecutableLifecycleRecord decoded;
+  if(!DecodeApiBehaviorRecord({reinterpret_cast<const std::uint8_t*>(event.data()),event.size()},&frame)||
+      !DecodeExecutableLifecycleFrame(frame,&decoded)||frame.creator_tx!=context.local_transaction_id)
+    return ExecDiagnostic(kExecutableObjectDiagnosticDatabaseWriteFailed,"binary_executable_event_invalid");
   std::ofstream out(EventPath(context), std::ios::binary | std::ios::app);
   if (!out) { return ExecDiagnostic(kExecutableObjectDiagnosticDatabaseWriteFailed, "open"); }
-  out << event << '\n';
+  out.write(event.data(),static_cast<std::streamsize>(event.size()));
   out.flush();
   if (!out) { return ExecDiagnostic(kExecutableObjectDiagnosticDatabaseWriteFailed, "flush"); }
   return OkDiagnostic();
@@ -910,7 +830,7 @@ EngineApiDiagnostic AppendEvent(const EngineRequestContext& context, const std::
 
 EngineApiDiagnostic AppendCacheInvalidation(const EngineRequestContext& context,
                                             const std::string& operation_id,
-                                            const std::string& object_uuid,
+                                            const EngineUuid& object_uuid,
                                             std::uint64_t metadata_epoch) {
   return AppendEvent(context, CacheInvalidateEvent(context, operation_id, object_uuid, metadata_epoch));
 }
@@ -928,14 +848,18 @@ EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestCont
   }
   std::ifstream in(EventPath(context), std::ios::binary);
   if (!in) {
+    std::error_code ec;
+    if(std::filesystem::exists(EventPath(context),ec)||ec) {
+      result.diagnostic=ExecDiagnostic(kExecutableObjectDiagnosticDatabaseWriteFailed,"executable_event_read_failed");return result;
+    }
     result.ok = true;
     result.diagnostic = OkDiagnostic();
     return result;
   }
 
-  std::map<std::string, EngineExecutableObjectRecord> objects;
-  std::map<std::string, EngineExecutableDependencyRecord> dependencies;
-  std::map<std::string, EngineExecutableInvocationRecord> active_invocations;
+  std::map<EngineUuid, EngineExecutableObjectRecord> objects;
+  std::map<std::tuple<EngineUuid,EngineUuid,std::string>, EngineExecutableDependencyRecord> dependencies;
+  std::map<EngineUuid, EngineExecutableInvocationRecord> active_invocations;
   const auto transaction_inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
           context.database_path);
@@ -948,100 +872,40 @@ EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestCont
     return result;
   }
   std::uint64_t event_sequence = 0;
-  std::string line;
-  while (std::getline(in, line)) {
+  while (in.peek()!=std::char_traits<char>::eof()) {
+    ApiBehaviorRecord frame;ExecutableLifecycleRecord event;
+    if(!ReadApiBehaviorRecord(in,&frame)||!DecodeExecutableLifecycleFrame(frame,&event)) {
+      result.diagnostic=ExecDiagnostic(kExecutableObjectDiagnosticDatabaseWriteFailed,"binary_executable_event_corrupt_or_legacy");return result;
+    }
     ++event_sequence;
-    if (!StartsWith(line, kExecutableObjectLifecycleEventMagic)) { continue; }
-    const auto parts = Split(line, '\t');
-    if (parts.size() < 2) { continue; }
-    const std::uint64_t creator_tx = parts.size() >= 3 ? ParseU64(parts[2]) : 0;
-    if (options.enforce_visibility &&
-        !EventVisible(context, creator_tx, &transaction_inventory)) {
-      continue;
-    }
-    const std::string& event = parts[1];
-    if (event == "OBJECT" && parts.size() >= 19) {
-      EngineExecutableObjectRecord record;
-      record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.object_uuid = parts[3];
-      record.object_kind = parts[4];
-      record.schema_uuid = parts[5];
-      record.owner_principal_uuid = parts[6];
-      record.package_uuid = parts[7];
-      record.lifecycle_state = parts[8].empty() ? "active" : parts[8];
-      record.executable_generation = ParseU64(parts[9]);
-      record.metadata_epoch = ParseU64(parts[10]);
-      record.executor_kind = parts[11].empty() ? "sblr" : parts[11];
-      record.stored_sblr_hash = HexDecode(parts[12]);
-      record.stored_sblr_provenance = HexDecode(parts[13]);
-      record.internal_procedure_id = HexDecode(parts[14]);
-      record.side_effect_class = parts[15].empty() ? "none" : parts[15];
-      record.event_trigger_event = parts[16];
-      record.payload = HexDecode(parts[17]);
-      record.deleted = ParseBool(parts[18]);
-      result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
-      if (record.deleted || record.lifecycle_state == "dropped") {
-        objects.erase(record.object_uuid);
-      } else {
-        objects[record.object_uuid] = std::move(record);
+    if(options.enforce_visibility&&!EventVisible(context,frame.creator_tx,&transaction_inventory))continue;
+    std::visit([&](auto& record) {
+      using T=std::decay_t<decltype(record)>;
+      record.event_sequence=event_sequence;
+      result.state.metadata_epoch=std::max(result.state.metadata_epoch,record.metadata_epoch);
+      if constexpr(std::is_same_v<T,EngineExecutableObjectRecord>) {
+        if(record.deleted||record.lifecycle_state=="dropped")objects.erase(record.object_uuid);
+        else objects[record.object_uuid]=std::move(record);
+      } else if constexpr(std::is_same_v<T,EngineExecutableDependencyRecord>) {
+        result.state.dependency_generation=std::max(result.state.dependency_generation,record.dependency_generation);
+        const auto key=std::make_tuple(record.source_uuid,record.dependency_uuid,record.dependency_kind);
+        if(record.deleted)dependencies.erase(key);else dependencies[key]=std::move(record);
+      } else if constexpr(std::is_same_v<T,EngineExecutableInvalidationRecord>) {
+        result.state.dependency_generation=std::max(result.state.dependency_generation,record.dependency_generation);
+        auto found=objects.find(record.object_uuid);
+        if(found!=objects.end()) {
+          found->second.invalidated=true;found->second.invalidated_generation=record.dependency_generation;
+          found->second.invalidation_reason_uuid=record.reason_uuid;
+        }
+      } else if constexpr(std::is_same_v<T,EngineExecutableInvocationRecord>) {
+        if(record.lifecycle_state=="active")active_invocations[record.invocation_lease_uuid]=std::move(record);
+        else active_invocations.erase(record.invocation_lease_uuid);
       }
-    } else if (event == "DEPENDENCY" && parts.size() >= 10) {
-      EngineExecutableDependencyRecord record;
-      record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.source_uuid = parts[3];
-      record.source_kind = parts[4];
-      record.dependency_uuid = parts[5];
-      record.dependency_kind = parts[6];
-      record.dependency_generation = ParseU64(parts[7]);
-      record.metadata_epoch = ParseU64(parts[8]);
-      record.deleted = ParseBool(parts[9]);
-      result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
-      result.state.dependency_generation =
-          std::max(result.state.dependency_generation, record.dependency_generation);
-      const std::string key = record.source_uuid + "\t" + record.dependency_uuid + "\t" + record.dependency_kind;
-      if (record.deleted) {
-        dependencies.erase(key);
-      } else {
-        dependencies[key] = std::move(record);
-      }
-    } else if (event == "INVALIDATE" && parts.size() >= 7) {
-      const std::string object_uuid = parts[3];
-      const std::string reason_uuid = parts[4];
-      const std::uint64_t dependency_generation = ParseU64(parts[5]);
-      const std::uint64_t metadata_epoch = ParseU64(parts[6]);
-      result.state.metadata_epoch = std::max(result.state.metadata_epoch, metadata_epoch);
-      result.state.dependency_generation = std::max(result.state.dependency_generation, dependency_generation);
-      auto found = objects.find(object_uuid);
-      if (found != objects.end()) {
-        found->second.invalidated = true;
-        found->second.invalidated_generation = dependency_generation;
-        found->second.invalidation_reason_uuid = reason_uuid;
-      }
-    } else if (event == "INVOCATION" && parts.size() >= 8) {
-      EngineExecutableInvocationRecord record;
-      record.event_sequence = event_sequence;
-      record.creator_tx = creator_tx;
-      record.invocation_lease_uuid = parts[3];
-      record.object_uuid = parts[4];
-      record.executable_generation = ParseU64(parts[5]);
-      record.lifecycle_state = parts[6];
-      record.metadata_epoch = ParseU64(parts[7]);
-      result.state.metadata_epoch = std::max(result.state.metadata_epoch, record.metadata_epoch);
-      if (record.lifecycle_state == "active") {
-        active_invocations[record.invocation_lease_uuid] = std::move(record);
-      } else {
-        active_invocations.erase(record.invocation_lease_uuid);
-      }
-    } else if (event == "CACHE_INVALIDATE" && parts.size() >= 6) {
-      result.state.metadata_epoch = std::max(result.state.metadata_epoch, ParseU64(parts[5]));
-    } else if (event == "EVENT_TRIGGER_FIRE" && parts.size() >= 7) {
-      result.state.metadata_epoch = std::max(result.state.metadata_epoch, ParseU64(parts[6]));
-    }
+    },event);
   }
+  if(in.bad()) {result.diagnostic=ExecDiagnostic(kExecutableObjectDiagnosticDatabaseWriteFailed,"executable_event_read_failed");return result;}
 
-  std::set<std::string> active_objects;
+  std::set<EngineUuid> active_objects;
   for (auto& [_, object] : objects) {
     active_objects.insert(object.object_uuid);
     result.state.objects.push_back(std::move(object));
@@ -1064,7 +928,7 @@ EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestCont
 }
 
 const EngineExecutableObjectRecord* FindObject(const EngineExecutableObjectLifecycleState& state,
-                                               const std::string& object_uuid) {
+                                               const EngineUuid& object_uuid) {
   for (const auto& object : state.objects) {
     if (object.object_uuid == object_uuid) { return &object; }
   }
@@ -1073,7 +937,7 @@ const EngineExecutableObjectRecord* FindObject(const EngineExecutableObjectLifec
 
 std::vector<EngineExecutableDependencyRecord> DependenciesForSource(
     const EngineExecutableObjectLifecycleState& state,
-    const std::string& source_uuid) {
+    const EngineUuid& source_uuid) {
   std::vector<EngineExecutableDependencyRecord> dependencies;
   for (const auto& dependency : state.dependencies) {
     if (dependency.source_uuid == source_uuid) { dependencies.push_back(dependency); }
@@ -1083,7 +947,7 @@ std::vector<EngineExecutableDependencyRecord> DependenciesForSource(
 
 std::vector<EngineExecutableDependencyRecord> DependentsOf(
     const EngineExecutableObjectLifecycleState& state,
-    const std::string& dependency_uuid) {
+    const EngineUuid& dependency_uuid) {
   std::vector<EngineExecutableDependencyRecord> dependents;
   for (const auto& dependency : state.dependencies) {
     if (dependency.dependency_uuid == dependency_uuid) { dependents.push_back(dependency); }
@@ -1092,7 +956,7 @@ std::vector<EngineExecutableDependencyRecord> DependentsOf(
 }
 
 std::uint64_t ActiveInvocationCount(const EngineExecutableObjectLifecycleState& state,
-                                    const std::string& object_uuid) {
+                                    const EngineUuid& object_uuid) {
   std::uint64_t count = 0;
   for (const auto& invocation : state.active_invocations) {
     if (invocation.object_uuid == object_uuid) { ++count; }
@@ -1101,7 +965,7 @@ std::uint64_t ActiveInvocationCount(const EngineExecutableObjectLifecycleState& 
 }
 
 EngineApiDiagnostic FindVisibleObject(const EngineApiRequest& request,
-                                      const std::string& object_uuid,
+                                      const EngineUuid& object_uuid,
                                       EngineExecutableObjectRecord* record,
                                       EngineExecutableObjectLifecycleState* visible_state) {
   const auto visible = LoadState(request.context, {.enforce_visibility = true});
@@ -1153,7 +1017,7 @@ EngineApiDiagnostic ValidateExecutableDependencies(const EngineExecutableObjectL
 }
 
 EngineApiDiagnostic AppendDependencyRecords(const EngineApiRequest& request,
-                                            const std::string& source_uuid,
+                                            const EngineUuid& source_uuid,
                                             const std::string& source_kind,
                                             std::uint64_t dependency_generation,
                                             std::uint64_t metadata_epoch) {
@@ -1175,7 +1039,7 @@ EngineApiDiagnostic AppendDependencyRecords(const EngineApiRequest& request,
 
 EngineApiDiagnostic RetireDependencyRecords(const EngineRequestContext& context,
                                             const EngineExecutableObjectLifecycleState& state,
-                                            const std::string& source_uuid,
+                                            const EngineUuid& source_uuid,
                                             std::uint64_t dependency_generation,
                                             std::uint64_t metadata_epoch) {
   for (auto dependency : DependenciesForSource(state, source_uuid)) {
@@ -1191,7 +1055,7 @@ EngineApiDiagnostic RetireDependencyRecords(const EngineRequestContext& context,
 
 EngineApiDiagnostic InvalidateDependents(const EngineRequestContext& context,
                                          const EngineExecutableObjectLifecycleState& state,
-                                         const std::string& changed_uuid,
+                                         const EngineUuid& changed_uuid,
                                          std::uint64_t dependency_generation,
                                          std::uint64_t metadata_epoch) {
   for (const auto& dependent : DependentsOf(state, changed_uuid)) {
@@ -1219,13 +1083,13 @@ void FillObjectResult(EngineExecutableObjectLifecycleResult* result,
   result->bound_object_identity.catalog_generation_id = object.metadata_epoch;
   result->bound_object_identity.security_epoch = context.security_epoch;
   result->bound_object_identity.resource_epoch = context.resource_epoch;
-  result->catalog_row_uuid = "exec-catalog-row-" + object.object_uuid;
+  result->catalog_row_uuid = object.catalog_row_uuid;
   result->metadata_cache_epoch = object.metadata_epoch;
   result->executable_generation = object.executable_generation;
   result->active_invocation_count = active_invocation_count;
   AddEvidence(result, "executable_generation", std::to_string(object.executable_generation));
-  AddEvidence(result, "metadata_cache_invalidation",
-              object.object_uuid + ":" + std::to_string(object.metadata_epoch));
+  AddEvidence(result,"metadata_cache_invalidation_object",object.object_uuid);
+  AddEvidence(result,"metadata_cache_invalidation_epoch",std::to_string(object.metadata_epoch));
   if (object.executor_kind == "sblr") {
     AddEvidence(result, "stored_sblr", "hash_and_provenance_recorded");
   } else if (object.executor_kind == "internal_procedure") {
@@ -1251,13 +1115,12 @@ void FillObjectResult(EngineExecutableObjectLifecycleResult* result,
                   {"active_invocation_count", std::to_string(active_invocation_count)}});
 }
 
-std::string RequestedLeaseUuid(const EngineApiRequest& request,
-                               const std::string& object_uuid,
+EngineUuid RequestedLeaseUuid(const EngineApiRequest& request,
+                               const EngineUuid& object_uuid,
                                std::uint64_t active_count) {
-  auto lease = OptionValue(request, "invocation_lease_uuid:");
-  if (!lease.empty()) { return lease; }
-  return "exec-lease-" + object_uuid + "-" + std::to_string(request.context.local_transaction_id) +
-         "-" + std::to_string(active_count + 1);
+  const auto lease=OptionValue(request,"invocation_lease_uuid:");
+  if(!lease.empty())return BinaryViewUuid(lease);
+  return GenerateCrudEngineUuid("object");
 }
 
 EngineApiDiagnostic ValidatePreparedMetadataRequiredVersion(
@@ -1278,8 +1141,7 @@ EngineApiDiagnostic ValidatePreparedMetadataRequiredVersion(
       context.prepared_metadata_required_object_uuid) {
     return ExecDiagnostic(
         kExecutableObjectDiagnosticPreparedMetadataVersionMismatch,
-        "object_uuid:" + object.object_uuid + ":required:" +
-            context.prepared_metadata_required_object_uuid);
+        "prepared_metadata_object_uuid_mismatch");
   }
   if (object.executable_generation !=
       context.prepared_metadata_required_executable_generation) {
@@ -1322,7 +1184,7 @@ EngineApiDiagnostic ValidateInvocationReadiness(const EngineApiRequest& request,
   }
   if (object.invalidated) {
     return ExecDiagnostic(kExecutableObjectDiagnosticDependencyInvalidated,
-                          object.invalidation_reason_uuid.empty() ? object.object_uuid
+                          object.invalidation_reason_uuid.is_nil() ? object.object_uuid
                                                                   : object.invalidation_reason_uuid);
   }
   if (object.executor_kind == "metadata_only") {
@@ -1350,7 +1212,7 @@ EngineTypedValue ScalarValue(std::string type_name, std::string value) {
   return EngineTypedValue(std::move(descriptor), std::move(value));
 }
 
-std::string FindVisibleTableUuidByName(const RelationReadSnapshot& state,
+EngineUuid FindVisibleTableUuidByName(const RelationReadSnapshot& state,
                                        const EngineRequestContext& context,
                                        const std::string& table_name) {
   const auto target = LowerAscii(table_name);
@@ -1385,13 +1247,13 @@ EngineApiDiagnostic ExecuteProcessTasksProcedure(const EngineInvokeExecutableObj
   const auto loaded = LoadMgaRelationStoreState(request.context);
   if (!loaded.ok) { return loaded.diagnostic; }
   RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
-  const std::string task_table_uuid =
+  const EngineUuid task_table_uuid =
       FindVisibleTableUuidByName(state, request.context, "proc_tasks");
-  const std::string result_table_uuid =
+  const EngineUuid result_table_uuid =
       FindVisibleTableUuidByName(state, request.context, "proc_results");
-  if (task_table_uuid.empty() || result_table_uuid.empty()) {
+  if (task_table_uuid.is_nil() || result_table_uuid.is_nil()) {
     return ExecDiagnostic(kExecutableObjectDiagnosticDependencyNotVisible,
-                          task_table_uuid.empty() ? "proc_tasks" : "proc_results");
+                          task_table_uuid.is_nil() ? "proc_tasks" : "proc_results");
   }
   const auto threshold = ParseI64(OptionValue(request, "routine_argument_0_value:"), 0);
   if (threshold < 0) {
@@ -1419,7 +1281,7 @@ EngineApiDiagnostic ExecuteProcessTasksProcedure(const EngineInvokeExecutableObj
   for (const auto& task : candidates) {
     EngineRowValue row;
     row.requested_row_uuid =
-        "proc-process-result-row-" + std::to_string(next_result_id);
+        GenerateCrudEngineUuid("row");
     row.fields.push_back({"result_id", ScalarValue("integer", std::to_string(next_result_id++))});
     row.fields.push_back({"task_id", ScalarValue("integer", std::to_string(task.task_id))});
     row.fields.push_back({"result_text",
@@ -1555,19 +1417,19 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
       PayloadFieldValue(object.payload, "compiled_body_descriptor:");
   if (descriptor == "sblr.psql.body.null.v1") {
     const auto body_uuid =
-        PayloadFieldValue(object.payload, "procedure_body_sblr_uuid:");
+        BinaryViewUuid(PayloadFieldValue(object.payload, "procedure_body_sblr_uuid:"));
     const auto body_generation = ParseU64(PayloadFieldValue(
         object.payload, "procedure_body_sblr_generation:"));
     const auto body_hex =
-        PayloadFieldValue(object.payload, "procedure_body_bytes_hex:");
+        PayloadFieldValue(object.payload, "procedure_body_bytes:");
     const auto body_sha =
         PayloadFieldValue(object.payload, "procedure_body_sha256:");
     const auto abi_uuid =
-        PayloadFieldValue(object.payload, "procedure_abi_uuid:");
+        BinaryViewUuid(PayloadFieldValue(object.payload, "procedure_abi_uuid:"));
     const auto abi_generation = ParseU64(PayloadFieldValue(
         object.payload, "procedure_abi_generation:"));
     const auto abi_bytes_hex =
-        PayloadFieldValue(object.payload, "procedure_abi_bytes_hex:");
+        PayloadFieldValue(object.payload, "procedure_abi_bytes:");
     const auto abi_evidence =
         PayloadFieldValue(object.payload, "procedure_abi_evidence_sha256:");
     const auto parameter_count = ParseU64(PayloadFieldValue(
@@ -1577,32 +1439,32 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
     const auto effect_sha = PayloadFieldValue(
         object.payload, "procedure_effect_set_sha256:");
     const auto recovery_uuid =
-        PayloadFieldValue(object.payload, "procedure_recovery_uuid:");
+        BinaryViewUuid(PayloadFieldValue(object.payload, "procedure_recovery_uuid:"));
     const auto mutation_uuid =
-        PayloadFieldValue(object.payload, "procedure_mutation_uuid:");
-    const auto publication_barrier_uuid = PayloadFieldValue(
-        object.payload, "procedure_publication_barrier_uuid:");
-    const auto decoded_bytes = HexDecode(body_hex);
+        BinaryViewUuid(PayloadFieldValue(object.payload, "procedure_mutation_uuid:"));
+    const auto publication_barrier_uuid = BinaryViewUuid(PayloadFieldValue(
+        object.payload, "procedure_publication_barrier_uuid:"));
+    const auto& decoded_bytes = body_hex;
     scratchbird::engine::sblr::SblrProceduralBodyV1 body;
     std::string body_detail;
-    const auto parsed_body_uuid = scratchbird::core::uuid::ParseUuid(body_uuid);
+    const auto parsed_body_uuid = scratchbird::core::uuid::MakeTypedUuid(core::platform::UuidKind::object,body_uuid);
     const auto parsed_procedure_uuid =
-        scratchbird::core::uuid::ParseUuid(object.object_uuid);
+        scratchbird::core::uuid::MakeTypedUuid(core::platform::UuidKind::object,object.object_uuid);
     if (!parsed_body_uuid.ok() || !parsed_procedure_uuid.ok() ||
         body_generation == 0 || body_hex.empty() || decoded_bytes.empty() ||
-        body_sha.empty() || !scratchbird::core::uuid::ParseUuid(abi_uuid).ok() ||
+        body_sha.empty() || abi_uuid.is_nil() ||
         abi_generation == 0 || abi_bytes_hex.empty() || abi_evidence.empty() ||
         parameter_count > 1 || signature_sha.empty() || effect_sha.empty() ||
-        !scratchbird::core::uuid::ParseUuid(recovery_uuid).ok() ||
-        !scratchbird::core::uuid::ParseUuid(mutation_uuid).ok() ||
-        !scratchbird::core::uuid::ParseUuid(publication_barrier_uuid).ok() ||
+        recovery_uuid.is_nil() ||
+        mutation_uuid.is_nil() ||
+        publication_barrier_uuid.is_nil() ||
         !scratchbird::engine::sblr::DecodeSblrProceduralBodyV1(
             reinterpret_cast<const std::uint8_t*>(decoded_bytes.data()),
             decoded_bytes.size(), &body, &body_detail) ||
         !std::equal(body.body_uuid.begin(), body.body_uuid.end(),
-                    parsed_body_uuid.value.bytes.begin()) ||
+                    parsed_body_uuid.value.value.bytes.begin()) ||
         !std::equal(body.procedure_uuid.begin(), body.procedure_uuid.end(),
-                    parsed_procedure_uuid.value.bytes.begin()) ||
+                    parsed_procedure_uuid.value.value.bytes.begin()) ||
         body.body_generation != body_generation ||
         body.procedure_generation != object.executable_generation ||
         scratchbird::core::hash::HexLower(body.effect_set_sha256) !=
@@ -1624,7 +1486,7 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
       return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
                             "procedural_null_body_persistence_mismatch");
     }
-    const auto persisted_abi_text = HexDecode(abi_bytes_hex);
+    const auto& persisted_abi_text = abi_bytes_hex;
     const std::vector<std::uint8_t> persisted_abi_bytes(
         persisted_abi_text.begin(), persisted_abi_text.end());
     scratchbird::engine::sblr::SblrProcedureAbiV1 persisted_abi;
@@ -1645,15 +1507,14 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
         persisted_abi.evidence != invocation_abi.evidence ||
         scratchbird::core::hash::HexLower(persisted_abi.evidence) !=
             abi_evidence ||
-        scratchbird::core::uuid::UuidToString(
-            scratchbird::core::uuid::Uuid{persisted_abi.abi_uuid}) !=
+        EngineUuid{persisted_abi.abi_uuid} !=
             abi_uuid ||
         persisted_abi.abi_generation != abi_generation ||
         persisted_abi.procedure_generation != object.executable_generation ||
         persisted_abi.parameters.size() != parameter_count ||
         !std::equal(persisted_abi.procedure_uuid.begin(),
                     persisted_abi.procedure_uuid.end(),
-                    parsed_procedure_uuid.value.bytes.begin()) ||
+                    parsed_procedure_uuid.value.value.bytes.begin()) ||
         request.canonical_argument_vector_bytes.size() !=
             scratchbird::engine::sblr::kSblrProcedureArgumentVectorV1Bytes ||
         !scratchbird::engine::sblr::DecodeSblrProcedureArgumentVectorV1(
@@ -1665,9 +1526,8 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
         arguments.argument_vector_generation == 0 ||
         arguments.invocation_generation != 1 ||
         arguments.arguments.size() != persisted_abi.parameters.size() ||
-        scratchbird::core::uuid::UuidToString(
-            scratchbird::core::uuid::Uuid{arguments.invocation_uuid}) !=
-            OptionValue(request, "invocation_lease_uuid:")) {
+        EngineUuid{arguments.invocation_uuid} !=
+            BinaryViewUuid(OptionValue(request, "invocation_lease_uuid:"))) {
       return ExecDiagnostic(
           kExecutableObjectDiagnosticRoutineDescriptorInvalid,
           !argument_detail.empty() ? argument_detail
@@ -1742,8 +1602,8 @@ EngineBeginExecutableObjectInvocationResult BeginInvocationWithOperation(
     return DiagnosticResult<EngineBeginExecutableObjectInvocationResult>(
         request.context, operation_id, context);
   }
-  const std::string object_uuid = ObjectUuid(request);
-  if (object_uuid.empty()) {
+  const EngineUuid object_uuid = ObjectUuid(request);
+  if (object_uuid.is_nil()) {
     return DiagnosticResult<EngineBeginExecutableObjectInvocationResult>(
         request.context,
         operation_id,
@@ -1797,15 +1657,15 @@ EngineFinishExecutableObjectInvocationResult FinishInvocationWithOperation(
     return DiagnosticResult<EngineFinishExecutableObjectInvocationResult>(
         request.context, operation_id, context);
   }
-  const std::string object_uuid = ObjectUuid(request);
-  const std::string lease_uuid = OptionValue(request, "invocation_lease_uuid:");
-  if (object_uuid.empty()) {
+  const EngineUuid object_uuid = ObjectUuid(request);
+  const EngineUuid lease_uuid = BinaryViewUuid(OptionValue(request, "invocation_lease_uuid:"));
+  if (object_uuid.is_nil()) {
     return DiagnosticResult<EngineFinishExecutableObjectInvocationResult>(
         request.context,
         operation_id,
         ExecDiagnostic(kExecutableObjectDiagnosticUuidRequired, "target_object.uuid"));
   }
-  if (lease_uuid.empty()) {
+  if (lease_uuid.is_nil()) {
     return DiagnosticResult<EngineFinishExecutableObjectInvocationResult>(
         request.context,
         operation_id,
@@ -1869,7 +1729,7 @@ EngineFinishExecutableObjectInvocationResult FinishInvocationWithOperation(
 
 EngineApiDiagnostic PreflightCreateExecutableObjectImpl(
     const EngineCreateExecutableObjectRequest& request) {
-  const std::string object_uuid = ObjectUuid(request);
+  const EngineUuid object_uuid = ObjectUuid(request);
   const std::string object_kind = ObjectKind(request);
   if (object_kind.empty()) {
     return ExecDiagnostic(kExecutableObjectDiagnosticKindRequired,
@@ -1877,7 +1737,7 @@ EngineApiDiagnostic PreflightCreateExecutableObjectImpl(
   }
   const auto authority = ValidateManageAuthority(request, object_kind);
   if (authority.error) { return authority; }
-  if (object_uuid.empty()) {
+  if (object_uuid.is_nil()) {
     return ExecDiagnostic(kExecutableObjectDiagnosticUuidRequired,
                           "target_object.uuid");
   }
@@ -1957,7 +1817,7 @@ EngineApiDiagnostic PreflightCreateExecutableObject(
 
 EngineCreateExecutableObjectResult EngineCreateExecutableObject(
     const EngineCreateExecutableObjectRequest& request) {
-  const std::string object_uuid = ObjectUuid(request);
+  const EngineUuid object_uuid = ObjectUuid(request);
   const std::string object_kind = ObjectKind(request);
   if (object_kind.empty()) {
     return DiagnosticResult<EngineCreateExecutableObjectResult>(
@@ -1970,7 +1830,7 @@ EngineCreateExecutableObjectResult EngineCreateExecutableObject(
     return DiagnosticResult<EngineCreateExecutableObjectResult>(
         request.context, kOperationCreate, authority);
   }
-  if (object_uuid.empty()) {
+  if (object_uuid.is_nil()) {
     return DiagnosticResult<EngineCreateExecutableObjectResult>(
         request.context,
         kOperationCreate,
@@ -2061,6 +1921,7 @@ EngineCreateExecutableObjectResult EngineCreateExecutableObject(
   EngineExecutableObjectRecord record;
   record.creator_tx = request.context.local_transaction_id;
   record.object_uuid = object_uuid;
+  record.catalog_row_uuid = GenerateCrudEngineUuid("row");
   record.object_kind = object_kind;
   record.schema_uuid = request.target_schema.uuid;
   record.owner_principal_uuid = request.context.principal_uuid;
@@ -2105,13 +1966,13 @@ EngineCreateExecutableObjectResult EngineCreateExecutableObject(
 
 EngineAlterExecutableObjectResult EngineAlterExecutableObject(
     const EngineAlterExecutableObjectRequest& request) {
-  const std::string object_uuid = ObjectUuid(request);
+  const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
   if (authority.error) {
     return DiagnosticResult<EngineAlterExecutableObjectResult>(
         request.context, kOperationAlter, authority);
   }
-  if (object_uuid.empty()) {
+  if (object_uuid.is_nil()) {
     return DiagnosticResult<EngineAlterExecutableObjectResult>(
         request.context,
         kOperationAlter,
@@ -2163,7 +2024,7 @@ EngineAlterExecutableObjectResult EngineAlterExecutableObject(
   replacement.payload = PayloadFromRequest(request);
   replacement.invalidated = false;
   replacement.invalidated_generation = 0;
-  replacement.invalidation_reason_uuid.clear();
+  replacement.invalidation_reason_uuid = {};
 
   auto appended = AppendEvent(request.context, ObjectEvent(replacement));
   if (appended.error) {
@@ -2200,13 +2061,13 @@ EngineAlterExecutableObjectResult EngineAlterExecutableObject(
 
 EngineDropExecutableObjectResult EngineDropExecutableObject(
     const EngineDropExecutableObjectRequest& request) {
-  const std::string object_uuid = ObjectUuid(request);
+  const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
   if (authority.error) {
     return DiagnosticResult<EngineDropExecutableObjectResult>(
         request.context, kOperationDrop, authority);
   }
-  if (object_uuid.empty()) {
+  if (object_uuid.is_nil()) {
     return DiagnosticResult<EngineDropExecutableObjectResult>(
         request.context,
         kOperationDrop,
@@ -2262,7 +2123,7 @@ EngineDropExecutableObjectResult EngineDropExecutableObject(
 
 EngineQuiesceExecutableObjectResult EngineQuiesceExecutableObject(
     const EngineQuiesceExecutableObjectRequest& request) {
-  const std::string object_uuid = ObjectUuid(request);
+  const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
   if (authority.error) {
     return DiagnosticResult<EngineQuiesceExecutableObjectResult>(
@@ -2297,7 +2158,7 @@ EngineQuiesceExecutableObjectResult EngineQuiesceExecutableObject(
 
 EngineUnloadExecutableObjectResult EngineUnloadExecutableObject(
     const EngineUnloadExecutableObjectRequest& request) {
-  const std::string object_uuid = ObjectUuid(request);
+  const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
   if (authority.error) {
     return DiagnosticResult<EngineUnloadExecutableObjectResult>(
@@ -2381,7 +2242,7 @@ EngineInvokeExecutableObjectResult EngineInvokeExecutableObject(
   }
   EngineFinishExecutableObjectInvocationRequest finish;
   static_cast<EngineApiRequest&>(finish) = request;
-  finish.option_envelopes.push_back("invocation_lease_uuid:" + begun.invocation_lease_uuid);
+  finish.option_envelopes.push_back(BinaryViewUuidOption("invocation_lease_uuid:",begun.invocation_lease_uuid));
   auto finished = FinishInvocationWithOperation(finish, kOperationInvoke);
   if (!finished.ok) {
     EngineInvokeExecutableObjectResult failed;
@@ -2461,7 +2322,7 @@ EngineFireExecutableEventTriggerResult EngineFireExecutableEventTrigger(
         request.context, kOperationFireEventTrigger, loaded.diagnostic);
   }
   std::uint64_t fired_count = 0;
-  std::string first_trigger_uuid;
+  EngineUuid first_trigger_uuid;
   for (const auto& object : loaded.state.objects) {
     if (object.object_kind != "event_trigger" || object.event_trigger_event != event_name ||
         object.lifecycle_state != "active") {
@@ -2488,7 +2349,7 @@ EngineFireExecutableEventTriggerResult EngineFireExecutableEventTrigger(
       return DiagnosticResult<EngineFireExecutableEventTriggerResult>(
           request.context, kOperationFireEventTrigger, appended);
     }
-    if (first_trigger_uuid.empty()) { first_trigger_uuid = object.object_uuid; }
+    if (first_trigger_uuid.is_nil()) { first_trigger_uuid = object.object_uuid; }
     ++fired_count;
   }
   auto result = SuccessResult<EngineFireExecutableEventTriggerResult>(

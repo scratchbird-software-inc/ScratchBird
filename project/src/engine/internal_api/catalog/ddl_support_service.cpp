@@ -12,6 +12,7 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/pinned_descriptor_cache.hpp"
 #include "crud_support/crud_store.hpp"
+#include "mga_relation_store/mga_binary_fields.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -29,9 +30,27 @@ std::string UInt64Hex(std::uint64_t value) {
   return out.str();
 }
 
+std::string IdentityDigestBytes(const EngineUuid& value) {
+  return std::string(reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size());
+}
+
+std::string EdgeDigestBytes(const CatalogDdlDependencyEdge& edge) {
+  std::string bytes = IdentityDigestBytes(edge.source_uuid);
+  bytes += IdentityDigestBytes(edge.dependency_uuid);
+  AppendBinaryString(&bytes, edge.source_kind);
+  AppendBinaryString(&bytes, edge.dependency_kind);
+  AppendBinaryString(&bytes, edge.invalidation_action);
+  return bytes;
+}
+
 std::string StableDigest(const std::vector<std::string>& parts) {
   std::uint64_t hash = 1469598103934665603ull;
   for (const auto& part : parts) {
+    const auto length = static_cast<std::uint64_t>(part.size());
+    for (unsigned byte = 0; byte < 8; ++byte) {
+      hash ^= (length >> (byte * 8)) & 0xffu;
+      hash *= 1099511628211ull;
+    }
     for (const unsigned char ch : part) {
       hash ^= static_cast<std::uint64_t>(ch);
       hash *= 1099511628211ull;
@@ -42,13 +61,13 @@ std::string StableDigest(const std::vector<std::string>& parts) {
   return "fnv1a64:" + UInt64Hex(hash);
 }
 
-std::vector<std::string> SortedUnique(std::vector<std::string> values) {
+std::vector<EngineUuid> SortedUnique(std::vector<EngineUuid> values) {
   std::sort(values.begin(), values.end());
   values.erase(std::unique(values.begin(), values.end()), values.end());
   return values;
 }
 
-std::string ObjectUuidFromRequest(const EngineApiRequest& request) {
+EngineUuid ObjectUuidFromRequest(const EngineApiRequest& request) {
   if (!request.target_object.uuid.is_nil()) {
     return request.target_object.uuid;
   }
@@ -59,7 +78,7 @@ std::string ObjectUuidFromRequest(const EngineApiRequest& request) {
 }
 
 std::string ObjectKindFromState(const EngineCatalogObjectLifecycleState& state,
-                                const std::string& object_uuid,
+                                const EngineUuid& object_uuid,
                                 const std::string& fallback = {}) {
   for (const auto& object : state.objects) {
     if (object.object_uuid == object_uuid) {
@@ -73,7 +92,7 @@ std::vector<CatalogDdlDependencyEdge> DependencyEdges(
     const EngineCatalogObjectLifecycleState& state) {
   std::vector<CatalogDdlDependencyEdge> edges;
   for (const auto& dependency : state.dependencies) {
-    if (dependency.source_uuid.empty() || dependency.dependency_uuid.empty()) {
+    if (dependency.source_uuid.is_nil() || dependency.dependency_uuid.is_nil()) {
       continue;
     }
     edges.push_back({dependency.source_uuid,
@@ -83,7 +102,7 @@ std::vector<CatalogDdlDependencyEdge> DependencyEdges(
                      "invalidate_dependent"});
   }
   for (const auto& object : state.objects) {
-    if (object.object_uuid.empty() || object.schema_uuid.empty()) {
+    if (object.object_uuid.is_nil() || object.schema_uuid.is_nil()) {
       continue;
     }
     edges.push_back({object.object_uuid,
@@ -93,8 +112,8 @@ std::vector<CatalogDdlDependencyEdge> DependencyEdges(
                      "invalidate_child"});
   }
   for (const auto& dependency : state.constraint_dependencies) {
-    if (dependency.constraint_uuid.empty() ||
-        dependency.dependency_object_uuid.empty()) {
+    if (dependency.constraint_uuid.is_nil() ||
+        dependency.dependency_object_uuid.is_nil()) {
       continue;
     }
     edges.push_back({dependency.constraint_uuid,
@@ -106,7 +125,7 @@ std::vector<CatalogDdlDependencyEdge> DependencyEdges(
                          : dependency.invalidation_action});
   }
   for (const auto& support : state.constraint_support_structures) {
-    if (support.constraint_uuid.empty() || support.support_uuid.empty()) {
+    if (support.constraint_uuid.is_nil() || support.support_uuid.is_nil()) {
       continue;
     }
     edges.push_back({support.constraint_uuid,
@@ -140,16 +159,15 @@ std::vector<CatalogDdlDependencyEdge> DependencyEdges(
 
 std::string ClosureCacheKey(const EngineCatalogObjectLifecycleState& state,
                             const EngineRequestContext& context,
-                            const std::string& root_uuid,
+                            const EngineUuid& root_uuid,
                             const std::vector<CatalogDdlDependencyEdge>& edges) {
   std::vector<std::string> parts;
-  parts.push_back("root=" + root_uuid);
+  parts.push_back(IdentityDigestBytes(root_uuid));
   parts.push_back("catalog_epoch=" + std::to_string(state.metadata_epoch));
   parts.push_back("security_epoch=" + std::to_string(context.security_epoch));
   parts.push_back("policy_epoch=" + std::to_string(context.resource_epoch));
   for (const auto& edge : edges) {
-    parts.push_back(edge.source_uuid + ">" + edge.dependency_uuid + ":" +
-                    edge.dependency_kind + ":" + edge.invalidation_action);
+    parts.push_back(EdgeDigestBytes(edge));
   }
   return StableDigest(parts);
 }
@@ -157,7 +175,7 @@ std::string ClosureCacheKey(const EngineCatalogObjectLifecycleState& state,
 CatalogDdlDependencyClosure BuildClosure(
     const EngineCatalogObjectLifecycleState& state,
     const EngineRequestContext& context,
-    const std::string& root_uuid,
+    const EngineUuid& root_uuid,
     std::vector<CatalogDdlDependencyEdge> edges) {
   CatalogDdlDependencyClosure closure;
   closure.root_uuid = root_uuid;
@@ -166,14 +184,14 @@ CatalogDdlDependencyClosure BuildClosure(
   closure.policy_epoch = context.resource_epoch;
   closure.cache_key = ClosureCacheKey(state, context, root_uuid, edges);
 
-  std::map<std::string, std::vector<CatalogDdlDependencyEdge>> by_dependency;
+  std::map<EngineUuid, std::vector<CatalogDdlDependencyEdge>> by_dependency;
   for (const auto& edge : edges) {
     by_dependency[edge.dependency_uuid].push_back(edge);
   }
 
-  std::set<std::string> seen;
-  std::vector<std::string> queue;
-  if (!root_uuid.empty()) {
+  std::set<EngineUuid> seen;
+  std::vector<EngineUuid> queue;
+  if (!root_uuid.is_nil()) {
     seen.insert(root_uuid);
     queue.push_back(root_uuid);
     closure.affected_object_uuids.push_back(root_uuid);
@@ -186,7 +204,7 @@ CatalogDdlDependencyClosure BuildClosure(
     }
     for (const auto& edge : found->second) {
       closure.edges.push_back(edge);
-      if (!edge.source_uuid.empty() && seen.insert(edge.source_uuid).second) {
+      if (!edge.source_uuid.is_nil() && seen.insert(edge.source_uuid).second) {
         queue.push_back(edge.source_uuid);
         closure.affected_object_uuids.push_back(edge.source_uuid);
       }
@@ -194,38 +212,23 @@ CatalogDdlDependencyClosure BuildClosure(
   }
 
   closure.affected_object_uuids = SortedUnique(closure.affected_object_uuids);
-  std::vector<std::string> digest_parts = closure.affected_object_uuids;
+  std::vector<std::string> digest_parts;
+  for (const auto& id : closure.affected_object_uuids) digest_parts.push_back(IdentityDigestBytes(id));
   for (const auto& edge : closure.edges) {
-    digest_parts.push_back(edge.source_uuid + ">" + edge.dependency_uuid + ":" +
-                           edge.invalidation_action);
+    digest_parts.push_back(EdgeDigestBytes(edge));
   }
   closure.closure_digest = StableDigest(digest_parts);
   return closure;
 }
 
-EngineTypedValue TextValue(std::string value) {
-  EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
-  typed.encoded_value = std::move(value);
-  return typed;
-}
-
-void AddSupportRow(EngineApiResult* result,
-                   std::vector<std::pair<std::string, std::string>> fields) {
-  EngineRowValue row;
-  row.requested_row_uuid = GenerateCrudEngineUuid("row");
-  for (auto& field : fields) {
-    row.fields.push_back({std::move(field.first), TextValue(std::move(field.second))});
-  }
+void AddSupportRow(EngineApiResult* result, ApiBehaviorFields fields) {
+  result->result_shape.rows.push_back(ApiBehaviorRow(std::move(fields)));
   result->result_shape.result_kind = "catalog_ddl_support_service";
-  result->result_shape.rows.push_back(std::move(row));
 }
 
 std::string StageDescriptorPayload(const EngineCatalogDdlSupportRequest& request,
                                    const EngineObjectReference& object) {
   std::vector<std::string> parts;
-  parts.push_back("object_uuid=" + object.uuid);
   parts.push_back("object_kind=" + object.object_kind);
   parts.push_back("validation=complete");
   parts.push_back("construction_phase=prebuild");
@@ -310,7 +313,7 @@ std::vector<CatalogDdlCacheInvalidation> PredictCacheInvalidations(
 std::vector<CatalogDdlPreparedContextInvalidation> PredictPreparedInvalidations(
     const EngineCatalogDdlSupportRequest& request,
     const CatalogDdlDependencyClosure& closure) {
-  std::set<std::string> affected(closure.affected_object_uuids.begin(),
+  std::set<EngineUuid> affected(closure.affected_object_uuids.begin(),
                                  closure.affected_object_uuids.end());
   std::vector<CatalogDdlPreparedContextInvalidation> invalidations;
   for (const auto& prepared : request.prepared_contexts) {
@@ -380,7 +383,7 @@ CatalogDdlImmutableSnapshot SnapshotFromClosure(
 CatalogDdlDependencyClosure CatalogDdlDependencyClosureCache::LookupOrBuild(
     const EngineCatalogObjectLifecycleState& state,
     const EngineRequestContext& context,
-    const std::string& root_uuid) {
+    const EngineUuid& root_uuid) {
   const auto edges = DependencyEdges(state);
   const std::string key = ClosureCacheKey(state, context, root_uuid, edges);
   {
@@ -535,8 +538,8 @@ EngineCatalogDdlSupportResult EngineCatalogDdlSupportService(
         operation_id,
         MakeInvalidRequestDiagnostic(operation_id, "database_path_required"));
   }
-  const std::string root_uuid = ObjectUuidFromRequest(request);
-  if (root_uuid.empty()) {
+  const EngineUuid root_uuid = ObjectUuidFromRequest(request);
+  if (root_uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineCatalogDdlSupportResult>(
         request.context,
         operation_id,

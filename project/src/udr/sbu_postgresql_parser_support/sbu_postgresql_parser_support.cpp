@@ -326,8 +326,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus PostgresqlLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuPostgresqlPackageUuid) {
+scratchbird::udr::runtime::UdrStatus PostgresqlLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuPostgresqlPackageIdentity) {
     return {false, "UDR.POSTGRESQL.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -616,7 +616,7 @@ UdrResult sbu_postgresql_debug_capabilities(std::string_view render_policy) {
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_postgresql_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuPostgresqlPackageUuid);
+  descriptor.package_uuid = kSbuPostgresqlPackageIdentity;
   descriptor.package_name = std::string(kSbuPostgresqlPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "postgresql-parser-support-enterprise-closure";

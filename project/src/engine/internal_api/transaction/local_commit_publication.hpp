@@ -34,8 +34,9 @@ struct LocalCommitPublicationMutation {
   std::string mutation_identity;
   std::string mutation_domain;
   std::string mutation_kind;
-  std::string object_identity;
-  std::string record_identity;
+  EngineUuid object_identity;
+  EngineUuid record_identity;
+  EngineUuid version_identity;
   std::string physical_identity;
   std::uint64_t generation_before{0};
   std::uint64_t generation_after{0};

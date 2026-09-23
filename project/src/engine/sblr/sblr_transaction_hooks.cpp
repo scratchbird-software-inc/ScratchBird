@@ -22,7 +22,7 @@ SblrResult LocalHookSuccess(std::string operation_id) {
 }  // namespace
 
 SblrResult sb_sblr_begin_statement_boundary(const SblrExecutionContext& context) {
-  if (context.statement_uuid.empty()) {
+  if (context.statement_uuid.is_nil()) {
     return RefuseSblrOperation(context, "sb_sblr_begin_statement_boundary", "SB_DIAG_TXN_STATEMENT_BOUNDARY_BEGIN_FAILED", "statement_uuid is required");
   }
   return LocalHookSuccess("sb_sblr_begin_statement_boundary");
@@ -64,7 +64,7 @@ SblrResult sb_sblr_runtime_log(const SblrExecutionContext& context, std::string_
 }
 
 SblrResult sb_sblr_end_statement_boundary(const SblrExecutionContext& context) {
-  if (context.statement_uuid.empty()) {
+  if (context.statement_uuid.is_nil()) {
     return RefuseSblrOperation(context, "sb_sblr_end_statement_boundary", "SB_DIAG_TXN_STATEMENT_BOUNDARY_END_FAILED", "statement_uuid is required");
   }
   return LocalHookSuccess("sb_sblr_end_statement_boundary");

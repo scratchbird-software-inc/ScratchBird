@@ -22,17 +22,16 @@ std::mutex& KvMutex() {
   return mutex;
 }
 
-std::map<std::string, std::string>& KvStore() {
-  static std::map<std::string, std::string> store;
+using KvKey = std::pair<scratchbird::engine::sblr::SblrUuid, std::string>;
+
+std::map<KvKey, std::string>& KvStore() {
+  static std::map<KvKey, std::string> store;
   return store;
 }
 
-std::string KeyFor(const FunctionCallRequest& request, std::size_t key_index) {
-  const std::string key = ValueAsText(request.arguments[key_index].value);
-  const std::string scope = request.context.sblr_context.database_uuid.empty()
-                                ? "process"
-                                : request.context.sblr_context.database_uuid;
-  return scope + ":" + key;
+KvKey KeyFor(const FunctionCallRequest& request, std::size_t key_index) {
+  return {request.context.sblr_context.database_uuid,
+          ValueAsText(request.arguments[key_index].value)};
 }
 
 bool DescriptorAcceptsKv(const std::string& descriptor_id) {
@@ -78,12 +77,12 @@ FunctionCallResult DispatchNoSqlKvFunction(const FunctionCallRequest& request) {
     std::lock_guard<std::mutex> guard(KvMutex());
     std::string out = "[";
     bool first = true;
-    const std::string scope = request.context.sblr_context.database_uuid.empty() ? "process:" : request.context.sblr_context.database_uuid + ":";
+    const auto& scope = request.context.sblr_context.database_uuid;
     for (const auto& [key, value] : KvStore()) {
-      if (key.rfind(scope, 0) != 0) continue;
+      if (key.first != scope) continue;
       if (!first) out += ",";
       first = false;
-      out += "\"" + key.substr(scope.size()) + "\"";
+      out += "\"" + key.second + "\"";
     }
     out += "]";
     return MakeFunctionSuccess(request, {MakeTextValue("array", out)});

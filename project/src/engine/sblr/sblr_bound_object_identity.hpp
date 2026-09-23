@@ -15,11 +15,12 @@
 
 namespace scratchbird::engine::sblr {
 
-inline constexpr std::array<std::string_view, 12> kBoundObjectIdentityRoles{
+inline constexpr std::array<std::string_view, 16> kBoundObjectIdentityRoles{
     "target_object_uuid", "source_uuid", "routine_object_uuid",
     "insert_select_source_uuid_0", "insert_select_source_uuid_1", "target_schema_uuid",
     "grantee_uuid", "member_principal_uuid", "container_uuid",
-    "principal_uuid", "policy_uuid", "role_uuid"};
+    "principal_uuid", "policy_uuid", "role_uuid", "group_uuid",
+    "mask_uuid", "rls_uuid", "definer_principal_uuid"};
 
 inline constexpr std::array<std::string_view, 14> kLegacyCatalogIdentityAliases{
     "index_target_uuid", "statistics_target_uuid", "target_table_uuid",

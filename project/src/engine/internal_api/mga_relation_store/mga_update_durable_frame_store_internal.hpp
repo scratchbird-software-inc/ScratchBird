@@ -107,17 +107,17 @@ bool DmlUpdateDurableReadU64(std::span<const std::uint8_t> bytes,
 bool DmlUpdateDurableZero(std::span<const std::uint8_t> bytes);
 
 bool DmlUpdateDurableUuidBytes(
-    std::string_view uuid,
+    const EngineUuid& uuid,
     std::array<std::uint8_t, 16>* bytes);
 bool DmlUpdateDurableTypedUuid(
-    std::string_view uuid,
+    const EngineUuid& uuid,
     scratchbird::wire::TypedUpdateUuid* bytes);
-std::string DmlUpdateDurableUuidText(std::span<const std::uint8_t> bytes);
-std::string DmlUpdateDurableTypedUuidText(
+EngineUuid DmlUpdateDurableUuidValue(std::span<const std::uint8_t> bytes);
+EngineUuid DmlUpdateDurableTypedUuidValue(
     const scratchbird::wire::TypedUpdateUuid& bytes);
 bool DmlUpdateDurablePutUuid(std::vector<std::uint8_t>* bytes,
                              std::size_t offset,
-                             std::string_view uuid);
+                             const EngineUuid& uuid);
 
 bool DmlUpdateDurableBaseIdentityValid(
     const MgaDmlUpdateDurableOperationIdentityV1& identity);
@@ -132,7 +132,7 @@ std::string DmlUpdateDurableDescriptorPath(
     const MgaDmlUpdateDurableOperationIdentityV1& identity);
 std::string DmlUpdateDurableSavepointPath(
     const EngineRequestContext& context,
-    std::string_view savepoint_uuid);
+    const EngineUuid& savepoint_uuid);
 
 MgaDmlUpdateDurableSha256V1 DmlUpdateDurableSha256(
     std::span<const std::uint8_t> bytes);

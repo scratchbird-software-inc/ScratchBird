@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "query/expression_api.hpp"
 
 #include <cstdlib>
@@ -33,17 +34,12 @@ bool Require(const bool condition, const std::string_view message) {
 api::EngineBindExpressionRequest CanonicalRequest() {
   api::EngineBindExpressionRequest request;
   request.operation_id = "query.bind_expression";
-  request.context.principal_uuid.canonical =
-      "019f0000-0000-7200-8000-000000002501";
-  request.context.statement_uuid.canonical =
-      "019f0000-0000-7200-8000-000000002502";
-  request.context.transaction_uuid.canonical =
-      "019f0000-0000-7200-8000-000000002503";
-  request.context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000002504";
+  request.context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002501");
+  request.context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002502");
+  request.context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002503");
+  request.context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002504");
   request.context.statement_metadata_snapshot_engine_owned = true;
-  request.context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7200-8000-000000002505";
+  request.context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002505");
   request.context.catalog_generation_id = 25;
   request.context.security_epoch = 26;
   request.context.resource_epoch = 27;
@@ -51,8 +47,7 @@ api::EngineBindExpressionRequest CanonicalRequest() {
 
   auto& authorization = request.context.authorization_context;
   authorization.present = true;
-  authorization.authority_uuid.canonical =
-      "019f0000-0000-7200-8000-000000002506";
+  authorization.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002506");
   authorization.principal_uuid = request.context.principal_uuid;
   authorization.security_epoch = request.context.security_epoch;
   authorization.policy_epoch = 28;
@@ -62,12 +57,10 @@ api::EngineBindExpressionRequest CanonicalRequest() {
       {request.context.principal_uuid, "principal"});
 
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
-      "019f0000-0000-7200-8000-000000002507";
+  grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002507");
   grant.subject_uuid = request.context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical =
-      "019f0000-0000-7200-8000-000000002508";
+  grant.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002508");
   grant.right = "SELECT";
   grant.security_epoch = request.context.security_epoch;
   authorization.grants.push_back(grant);
@@ -80,16 +73,14 @@ api::EngineBindExpressionRequest CanonicalRequest() {
 
   request.bound_object_identity.object_uuid = grant.target_uuid;
   request.bound_object_identity.resolved_object_type = "table";
-  request.bound_object_identity.resolved_schema_uuid.canonical =
-      "019f0000-0000-7200-8000-000000002509";
+  request.bound_object_identity.resolved_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002509");
   request.bound_object_identity.catalog_generation_id =
       request.context.catalog_generation_id;
   request.bound_object_identity.security_epoch = request.context.security_epoch;
   request.bound_object_identity.resource_epoch = request.context.resource_epoch;
 
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical =
-      "019f0000-0000-7200-8000-000000002510";
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000002510");
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
   descriptor.encoded_descriptor =
@@ -116,8 +107,8 @@ bool AtomicRefusal(const api::EngineBindExpressionRequest& request,
   std::string detail;
   const bool ok = Bind(request, &reference, &descriptor, &reason, &detail);
   return !ok && reason == expected_reason && !detail.empty() &&
-         reference.uuid.canonical.empty() && reference.object_kind.empty() &&
-         descriptor.descriptor_uuid.canonical.empty() &&
+         reference.uuid.is_nil() && reference.object_kind.empty() &&
+         descriptor.descriptor_uuid.is_nil() &&
          descriptor.canonical_type_name.empty();
 }
 
@@ -160,7 +151,7 @@ bool ValidateRefusals() {
   }
   {
     auto request = CanonicalRequest();
-    request.bound_object_identity.object_uuid.canonical.clear();
+    request.bound_object_identity.object_uuid = {};
     passed &= Require(
         AtomicRefusal(request, "unresolved_reference"),
         "unresolved reference did not refuse atomically");

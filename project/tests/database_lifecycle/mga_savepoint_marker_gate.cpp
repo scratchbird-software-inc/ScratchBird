@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
 #include "transaction/savepoint_api.hpp"
 #include "sblr_savepoint_coordinator.hpp"
@@ -90,7 +91,7 @@ void Stack() {
 
 void MarkerObservation() {
   Fixture f;
-  const auto key = api::MgaSavepointUuidKey("019f2100-0000-7000-8000-00000000de01");
+  const auto key = api::MgaSavepointUuidKey(scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-00000000de01"));
   Check(!api::CreateMgaSavepointMarker(f.context, "parent").error, "observation parent create");
   Check(!api::CreateMgaSavepointMarker(f.context, key).error, "observation native create");
   const auto generation = api::ParseSavepoints(f.context).active_savepoints.at(17).at(key).creation_ordinal;
@@ -164,19 +165,19 @@ void Ranges() {
 void Coordinator() {
   Fixture f;
   auto& c = f.context;
-  c.database_uuid.canonical = "12340000-0000-7000-8000-000000000001";
-  c.transaction_uuid.canonical = "12340000-0000-7000-8000-000000000002";
-  c.statement_uuid.canonical = "12340000-0000-7000-8000-000000000003";
+  c.database_uuid = scratchbird::tests::FixtureUuidLiteral("12340000-0000-7000-8000-000000000001");
+  c.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("12340000-0000-7000-8000-000000000002");
+  c.statement_uuid = scratchbird::tests::FixtureUuidLiteral("12340000-0000-7000-8000-000000000003");
   c.security_context_present = true;
   c.statement_metadata_snapshot_engine_owned = true;
   c.trace_tags = {"private_savepoint_coordination"};
   const std::string hash = "sha256:" + std::string(64, 'a');
   const auto activate = [&](std::uint64_t occurrence) {
-    const auto reserved = api::ReserveSblrSavepoint(c, c.statement_uuid.canonical,
+    const auto reserved = api::ReserveSblrSavepoint(c, c.statement_uuid,
                                                    hash, occurrence, hash);
     Check(reserved.ok, "coordinator reserve");
     const auto& s = reserved.snapshot;
-    return api::ActivateSblrSavepoint(c, c.statement_uuid.canonical,
+    return api::ActivateSblrSavepoint(c, c.statement_uuid,
         s.descriptor_uuid, s.descriptor_generation, s.descriptor_evidence_sha256, 1);
   };
   auto outer = activate(1);
@@ -205,13 +206,13 @@ void Coordinator() {
   std::ifstream input(c.database_path + ".sb.sblr_savepoint_coordinator.v2", std::ios::binary);
   const std::string bytes((std::istreambuf_iterator<char>(input)), {});
   Check(!bytes.empty() && bytes.size() % 256 == 0, "fixed-size binary coordinator records");
-  Check(bytes.find(c.transaction_uuid.canonical) == std::string::npos &&
-        bytes.find(target.savepoint_uuid) == std::string::npos &&
-        bytes.find(c.statement_uuid.canonical) == std::string::npos,
+  Check(bytes.find(scratchbird::core::uuid::UuidToString(c.transaction_uuid)) == std::string::npos &&
+        bytes.find(scratchbird::core::uuid::UuidToString(target.savepoint_uuid)) == std::string::npos &&
+        bytes.find(scratchbird::core::uuid::UuidToString(c.statement_uuid)) == std::string::npos,
         "coordinator disk records contain no textual system UUIDs");
-  const auto uuid = scratchbird::core::uuid::ParseUuid(c.transaction_uuid.canonical);
-  Check(uuid.ok() && bytes.substr(48, 16) == std::string(
-      reinterpret_cast<const char*>(uuid.value.bytes.data()), 16),
+  const auto uuid = c.transaction_uuid;
+  Check(!uuid.is_nil() && bytes.substr(48, 16) == std::string(
+      reinterpret_cast<const char*>(uuid.bytes.data()), 16),
       "coordinator transaction UUID occupies exactly binary(16)");
 }
 
@@ -220,18 +221,18 @@ void BinaryCodec() {
   record.kind = 1;
   record.transaction = 17;
   record.uuid_identity = true;
-  record.identity = "12340000-0000-7000-8000-000000000009";
+  record.uuid = scratchbird::tests::FixtureUuidLiteral("12340000-0000-7000-8000-000000000009");
   const auto bytes = api::EncodeMgaSavepointMarker(record);
-  const auto uuid = scratchbird::core::uuid::ParseUuid(record.identity);
+  const auto uuid = record.uuid;
   Check(bytes.size() == 124 && api::MgaSavepointMarkerFrameSize(bytes) == 124,
         "native binary marker has fixed frame size");
-  Check(bytes.find(record.identity) == std::string::npos, "marker has no textual UUID copy");
-  Check(uuid.ok() && bytes.substr(76, 16) == std::string(
-      reinterpret_cast<const char*>(uuid.value.bytes.data()), 16),
+  Check(bytes.find(scratchbird::core::uuid::UuidToString(record.uuid)) == std::string::npos, "marker has no textual UUID copy");
+  Check(!uuid.is_nil() && bytes.substr(76, 16) == std::string(
+      reinterpret_cast<const char*>(uuid.bytes.data()), 16),
       "marker UUID occupies exactly binary(16)");
   api::MgaSavepointMarkerRecord decoded;
   Check(api::DecodeMgaSavepointMarker(bytes, &decoded) && decoded.uuid_identity &&
-        decoded.identity == record.identity && decoded.transaction == 17,
+        decoded.uuid == record.uuid && decoded.identity.empty() && decoded.transaction == 17,
         "binary UUID marker round trip");
   for (std::size_t size = 0; size < bytes.size(); ++size)
     Check(!api::DecodeMgaSavepointMarker(std::string_view(bytes).substr(0, size), &decoded),
@@ -242,6 +243,7 @@ void BinaryCodec() {
     Check(!api::DecodeMgaSavepointMarker(corrupt, &decoded), "corrupt binary frame refused");
   }
   record.uuid_identity = false;
+  record.uuid = {};
   record.identity = "user savepoint label";
   Check(api::DecodeMgaSavepointMarker(api::EncodeMgaSavepointMarker(record), &decoded) &&
         !decoded.uuid_identity && decoded.identity == record.identity,

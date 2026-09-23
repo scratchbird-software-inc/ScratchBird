@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 
 #include <cassert>
@@ -23,8 +24,7 @@ int main() {
       (std::filesystem::temp_directory_path() /
        ("sb_create_index_fail_closed_2603_" + std::to_string(nonce)))
           .string();
-  context.database_uuid.canonical =
-      "019d0000-0000-7000-8000-000000002571";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002571");
   context.security_context_present = true;
   context.trace_tags = {"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};
 
@@ -50,8 +50,8 @@ int main() {
   assert(loaded.snapshot.availability_state ==
          api::SblrExecutorAvailabilityState::installed);
   assert(loaded.snapshot.generation != 0);
-  assert(!loaded.snapshot.snapshot_uuid.empty());
-  assert(loaded.snapshot.database_uuid == context.database_uuid.canonical);
+  assert(!loaded.snapshot.snapshot_uuid.is_nil());
+  assert(loaded.snapshot.database_uuid == context.database_uuid);
   assert(loaded.snapshot.row_identity_sha256 ==
          api::ComputeSblrExecutorAvailabilityRowIdentitySha256(row));
   assert(!loaded.snapshot.decision_evidence_sha256.empty());
@@ -69,7 +69,7 @@ int main() {
          api::SblrExecutorAvailabilityState::installed);
 
   api::SblrExecutorAvailabilitySetRequest set_request;
-  set_request.database_uuid = context.database_uuid.canonical;
+  set_request.database_uuid = context.database_uuid;
   set_request.expected_snapshot_uuid = loaded.snapshot.snapshot_uuid;
   set_request.expected_generation = loaded.snapshot.generation;
   set_request.exact_row_identity = row;

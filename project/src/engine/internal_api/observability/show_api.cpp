@@ -16,6 +16,7 @@
 #include "catalog/name_registry.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "catalog/sys_information_projection.hpp"
+#include "catalog/sys_information_security_context.hpp"
 #include "catalog_index_profile.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
@@ -74,7 +75,10 @@ std::vector<std::string> SplitCommaList(std::string_view value) {
 
 std::string RowFieldTextValue(const SysInformationProjectionRow& row, std::string_view field_name) {
   for (const auto& field : row.fields) {
-    if (field.first == field_name) { return field.second; }
+    if (field.first == field_name) {
+      if (const auto* text = std::get_if<std::string>(&field.second)) { return *text; }
+      return {};
+    }
   }
   return {};
 }
@@ -129,22 +133,31 @@ bool CatalogProjectionPredicateMatches(const SysInformationProjectionRow& row,
   if (predicate_kind.empty() || predicate_columns.empty()) { return true; }
   if (predicate_kind == "columns_all_null") {
     for (const auto& column : SplitCommaList(predicate_columns)) {
-      if (!RowFieldTextValue(row, column).empty()) { return false; }
+      if (!SysInformationFieldIsNull(SysInformationField(row, column))) { return false; }
     }
     return true;
   }
   if (predicate_kind == "columns_all_not_null") {
     for (const auto& column : SplitCommaList(predicate_columns)) {
-      if (RowFieldTextValue(row, column).empty()) { return false; }
+      if (SysInformationFieldIsNull(SysInformationField(row, column))) { return false; }
     }
     return true;
   }
   if (predicate_kind == "column_equals_column_or_left_null") {
     const auto columns = SplitCommaList(predicate_columns);
     if (columns.size() != 2) { return false; }
-    const std::string left = RowFieldTextValue(row, columns[0]);
-    if (left.empty()) { return true; }
-    return left == RowFieldTextValue(row, columns[1]);
+    const auto* left = SysInformationField(row, columns[0]);
+    if (SysInformationFieldIsNull(left)) { return true; }
+    const auto* right = SysInformationField(row, columns[1]);
+    return right != nullptr && *left == *right;
+  }
+  // Text predicate envelopes cannot name binary UUIDs. They require typed
+  // query predicates, never an engine-side UUID parser or formatter.
+  const std::string text_columns = predicate_kind == "expression_equals"
+      ? predicate_columns.substr(predicate_columns.find(':') + 1) : predicate_columns;
+  for (const auto& column : SplitCommaList(text_columns)) {
+    const auto* value = SysInformationField(row, column);
+    if (value != nullptr && !std::holds_alternative<std::string>(*value)) { return false; }
   }
   if (predicate_kind == "column_mod_equals") {
     const auto values = SplitCommaList(predicate_values);
@@ -402,31 +415,7 @@ void PopulateSessionSecurityProjectionContext(
     const EngineShowCatalogRequest& request,
     SysInformationProjectionContext* projection_context) {
   if (projection_context == nullptr) { return; }
-  projection_context->principal_uuid = request.context.principal_uuid;
-  projection_context->principal_name = OptionValue(request, "principal_name:");
-  projection_context->requested_role_name = OptionValue(request, "requested_role_name:");
-  projection_context->active_role_name = OptionValue(request, "active_role_name:");
-  if (projection_context->active_role_name.empty()) {
-    projection_context->active_role_name = projection_context->requested_role_name;
-  }
-  projection_context->active_role_uuid = request.context.current_role_uuid;
-  if (projection_context->active_role_uuid.empty()) {
-    projection_context->active_role_uuid = OptionValue(request, "current_role_uuid:");
-  }
-  projection_context->effective_role_uuids =
-      SplitOptionList(OptionValue(request, "effective_role_uuid_set:"));
-  projection_context->effective_group_uuids =
-      SplitOptionList(OptionValue(request, "effective_group_uuid_set:"));
-  if (!projection_context->active_role_uuid.empty() &&
-      std::find(projection_context->effective_role_uuids.begin(),
-                projection_context->effective_role_uuids.end(),
-                projection_context->active_role_uuid) ==
-          projection_context->effective_role_uuids.end()) {
-    projection_context->effective_role_uuids.push_back(projection_context->active_role_uuid);
-  }
-  if (!projection_context->active_role_name.empty()) {
-    projection_context->effective_role_names.push_back(projection_context->active_role_name);
-  }
+  PopulateSysInformationSecurityContext(request.context, projection_context);
 }
 
 std::string DatabaseDisplayName(const EngineRequestContext& context) {
@@ -482,7 +471,7 @@ void AddPublicExactShowEvidence(TResult* result,
 template <typename TResult>
 TResult ShowBase(const EngineApiRequest& request,
                  const std::string& operation_id,
-                 std::vector<std::pair<std::string, std::string>> fields,
+                 ApiBehaviorFields fields,
                  const std::string& fallback_result_shape) {
   auto result = MakeApiBehaviorSuccess<TResult>(request.context, operation_id);
   AddApiBehaviorEvidence(&result, "observability", operation_id);
@@ -548,9 +537,9 @@ std::string PayloadField(const std::string& payload, const std::string& field_na
 }
 
 std::string SchemaDisplayPath(const std::vector<EngineSchemaTreeRecord>& schemas,
-                              const std::string& schema_uuid,
-                              std::map<std::string, std::string>* cache) {
-  if (schema_uuid.empty() || cache == nullptr) { return {}; }
+                              const EngineUuid& schema_uuid,
+                              std::map<EngineUuid, std::string>* cache) {
+  if (schema_uuid.is_nil() || cache == nullptr) { return {}; }
   const auto cached = cache->find(schema_uuid);
   if (cached != cache->end()) { return cached->second; }
   const auto found = std::find_if(schemas.begin(), schemas.end(), [&schema_uuid](const auto& schema) {
@@ -571,14 +560,14 @@ std::string SchemaDisplayPath(const std::vector<EngineSchemaTreeRecord>& schemas
 }
 
 void AddResolverName(std::vector<SysInformationResolverNameSource>* resolver_names,
-                     std::string object_uuid,
+                     EngineUuid object_uuid,
                      std::string object_class,
-                     std::string scope_uuid,
+                     EngineUuid scope_uuid,
                      std::string language_tag,
                      std::string name_class,
                      std::string display_name,
                      std::uint64_t catalog_generation_id) {
-  if (resolver_names == nullptr || object_uuid.empty() || display_name.empty()) { return; }
+  if (resolver_names == nullptr || object_uuid.is_nil() || display_name.empty()) { return; }
   SysInformationResolverNameSource name;
   name.object_uuid = std::move(object_uuid);
   name.object_class = std::move(object_class);
@@ -653,7 +642,7 @@ void AddNameRegistryResolverNames(
     std::vector<SysInformationResolverNameSource>* resolver_names,
     const NameRegistryState& name_state) {
   for (const auto& entry : name_state.entries) {
-    if (entry.deleted || entry.object_uuid.empty()) { continue; }
+    if (entry.deleted || entry.object_uuid.is_nil()) { continue; }
     AddResolverName(resolver_names,
                     entry.object_uuid,
                     entry.object_class,
@@ -666,10 +655,10 @@ void AddNameRegistryResolverNames(
 }
 
 const NameRegistryEntry* ScopedNameEntryForObject(
-    const std::map<std::string, std::vector<const NameRegistryEntry*>>& names_by_object,
-    const std::string& object_uuid,
+    const std::map<EngineUuid, std::vector<const NameRegistryEntry*>>& names_by_object,
+    const EngineUuid& object_uuid,
     const std::string& object_class,
-    const std::map<std::string, std::string>& schema_path_by_uuid) {
+    const std::map<EngineUuid, std::string>& schema_path_by_uuid) {
   const auto found = names_by_object.find(object_uuid);
   if (found == names_by_object.end()) { return nullptr; }
   const NameRegistryEntry* fallback = nullptr;
@@ -696,67 +685,42 @@ std::uint64_t CatalogGenerationForNameEntry(const NameRegistryEntry& entry,
 
 void AddSystemViewObject(std::vector<SysInformationCatalogObjectSource>* objects,
                          std::vector<SysInformationResolverNameSource>* resolver_names,
-                         const std::map<std::string, std::string>& schema_uuid_by_path,
+                         const std::map<std::string, EngineUuid>& schema_uuid_by_path,
                          const std::string& view_path) {
-  const std::string schema_path = ParentPath(view_path);
-  const auto schema = schema_uuid_by_path.find(schema_path);
-  if (schema == schema_uuid_by_path.end()) { return; }
-  const std::string object_uuid = "sysview:" + view_path;
-  SysInformationCatalogObjectSource object;
-  object.object_uuid = object_uuid;
-  object.object_class = "view";
-  object.schema_uuid = schema->second;
-  object.parent_object_uuid = schema->second;
-  object.table_type = "SYSTEM VIEW";
-  object.catalog_generation_id = 1;
-  object.created_local_transaction_id = 1;
-  objects->push_back(std::move(object));
-  AddResolverName(resolver_names,
-                  object_uuid,
-                  "view",
-                  schema->second,
-                  "en",
-                  "primary",
-                  LeafName(view_path),
-                  1);
+  const auto identity = SysInformationObjectIdentity(*resolver_names, schema_uuid_by_path,
+                                                    view_path, "view");
+  if (identity.is_nil()) { return; }
+  for (auto& object : *objects) {
+    if (object.object_uuid == identity && object.object_class == "view") {
+      object.table_type = "SYSTEM VIEW";
+    }
+  }
 }
 
 void AddSystemTableObject(std::vector<SysInformationCatalogObjectSource>* objects,
-                          std::vector<SysInformationResolverNameSource>* resolver_names,
-                          const std::map<std::string, std::string>& schema_uuid_by_path,
-                          const std::string& table_path) {
-  const std::string schema_path = ParentPath(table_path);
-  const auto schema = schema_uuid_by_path.find(schema_path);
-  if (schema == schema_uuid_by_path.end()) { return; }
-  const std::string object_uuid = "systable:" + table_path;
-  SysInformationCatalogObjectSource object;
-  object.object_uuid = object_uuid;
-  object.object_class = "table";
-  object.schema_uuid = schema->second;
-  object.parent_object_uuid = schema->second;
-  object.table_type = "SYSTEM TABLE";
-  object.catalog_generation_id = 1;
-  object.created_local_transaction_id = 1;
-  objects->push_back(std::move(object));
-  AddResolverName(resolver_names,
-                  object_uuid,
-                  "table",
-                  schema->second,
-                  "en",
-                  "primary",
-                  LeafName(table_path),
-                  1);
+                         std::vector<SysInformationResolverNameSource>* resolver_names,
+                         const std::map<std::string, EngineUuid>& schema_uuid_by_path,
+                         const std::string& table_path) {
+  const auto identity = SysInformationObjectIdentity(*resolver_names, schema_uuid_by_path,
+                                                    table_path, "table");
+  if (identity.is_nil()) { return; }
+  for (auto& object : *objects) {
+    if (object.object_uuid == identity && object.object_class == "table") {
+      object.table_type = "SYSTEM TABLE";
+    }
+  }
 }
 
 void AddSystemColumns(std::vector<SysInformationColumnSource>* columns,
-                      std::set<std::string>* column_keys_in_projection,
-                      const std::string& object_uuid,
+                      std::set<std::pair<EngineUuid, std::uint32_t>>* column_keys_in_projection,
+                      const EngineUuid& object_uuid,
                       const SysInformationProjectionDefinition& definition) {
+  if (object_uuid.is_nil()) { return; }
   std::uint32_t ordinal = 0;
   for (const auto& column : definition.columns) {
     ++ordinal;
     if (column.column_name.empty()) { continue; }
-    const std::string key = object_uuid + ":" + std::to_string(ordinal);
+    const auto key = std::make_pair(object_uuid, ordinal);
     if (!column_keys_in_projection->insert(key).second) { continue; }
     SysInformationColumnSource source;
     source.relation_object_uuid = object_uuid;
@@ -776,16 +740,16 @@ std::uint64_t SecurityCatalogGeneration(std::uint64_t generation, std::uint64_t 
 
 void AddSecurityNavigatorObject(std::vector<SysInformationCatalogObjectSource>* objects,
                                 std::vector<SysInformationResolverNameSource>* resolver_names,
-                                std::string object_uuid,
+                                EngineUuid object_uuid,
                                 std::string object_class,
-                                std::string parent_object_uuid,
-                                std::string schema_uuid,
+                                EngineUuid parent_object_uuid,
+                                EngineUuid schema_uuid,
                                 std::string table_type,
                                 std::string display_name,
                                 std::uint64_t catalog_generation_id,
                                 std::uint64_t creator_tx) {
   if (objects == nullptr || resolver_names == nullptr ||
-      object_uuid.empty() || object_class.empty() || display_name.empty()) {
+      object_uuid.is_nil() || object_class.empty() || display_name.empty()) {
     return;
   }
   SysInformationCatalogObjectSource object;
@@ -800,7 +764,7 @@ void AddSecurityNavigatorObject(std::vector<SysInformationCatalogObjectSource>* 
   AddResolverName(resolver_names,
                   std::move(object_uuid),
                   std::move(object_class),
-                  "",
+                  {},
                   "en",
                   "primary",
                   std::move(display_name),
@@ -808,7 +772,7 @@ void AddSecurityNavigatorObject(std::vector<SysInformationCatalogObjectSource>* 
 }
 
 std::string GrantDisplayName(const EngineSecurityPrivilegeGrantRecord& grant) {
-  if (grant.privilege.empty()) { return grant.grant_uuid; }
+  if (grant.privilege.empty()) { return {}; }
   if (!grant.target_object_kind.empty()) {
     return grant.privilege + " on " + grant.target_object_kind;
   }
@@ -819,12 +783,12 @@ void AddSecurityPrincipalNavigatorObjects(
     std::vector<SysInformationCatalogObjectSource>* objects,
     std::vector<SysInformationResolverNameSource>* resolver_names,
     const EngineSecurityPrincipalLifecycleState& security) {
-  std::map<std::string, std::string> principal_names;
-  std::map<std::string, std::string> role_names;
-  std::map<std::string, std::string> group_names;
+  std::map<EngineUuid, std::string> principal_names;
+  std::map<EngineUuid, std::string> role_names;
+  std::map<EngineUuid, std::string> group_names;
 
   for (const auto& principal : security.principals) {
-    if (principal.deleted || principal.principal_uuid.empty() || principal.principal_name.empty()) {
+    if (principal.deleted || principal.principal_uuid.is_nil() || principal.principal_name.empty()) {
       continue;
     }
     principal_names[principal.principal_uuid] = principal.principal_name;
@@ -832,36 +796,36 @@ void AddSecurityPrincipalNavigatorObjects(
                                resolver_names,
                                principal.principal_uuid,
                                principal.principal_kind == "user" ? "user" : "principal",
-                               "",
-                               "",
+                               {},
+                               {},
                                principal.principal_kind,
                                principal.principal_name,
                                principal.security_generation,
                                principal.creator_tx);
   }
   for (const auto& group : security.groups) {
-    if (group.deleted || group.group_uuid.empty() || group.group_name.empty()) { continue; }
+    if (group.deleted || group.group_uuid.is_nil() || group.group_name.empty()) { continue; }
     group_names[group.group_uuid] = group.group_name;
     AddSecurityNavigatorObject(objects,
                                resolver_names,
                                group.group_uuid,
                                "group",
-                               "",
-                               "",
+                               {},
+                               {},
                                "",
                                group.group_name,
                                group.security_generation,
                                group.creator_tx);
   }
   for (const auto& role : security.roles) {
-    if (role.deleted || role.role_uuid.empty() || role.role_name.empty()) { continue; }
+    if (role.deleted || role.role_uuid.is_nil() || role.role_name.empty()) { continue; }
     role_names[role.role_uuid] = role.role_name;
     AddSecurityNavigatorObject(objects,
                                resolver_names,
                                role.role_uuid,
                                "role",
-                               "",
-                               "",
+                               {},
+                               {},
                                "",
                                role.role_name,
                                role.security_generation,
@@ -869,8 +833,8 @@ void AddSecurityPrincipalNavigatorObjects(
   }
 
   for (const auto& membership : security.memberships) {
-    if (membership.revoked || membership.membership_uuid.empty() ||
-        membership.member_principal_uuid.empty() || membership.container_uuid.empty()) {
+    if (membership.revoked || membership.membership_uuid.is_nil() ||
+        membership.member_principal_uuid.is_nil() || membership.container_uuid.is_nil()) {
       continue;
     }
     const auto principal = principal_names.find(membership.member_principal_uuid);
@@ -880,7 +844,7 @@ void AddSecurityPrincipalNavigatorObjects(
       if (group == group_names.end()) { continue; }
       AddSecurityNavigatorObject(objects,
                                  resolver_names,
-                                 membership.membership_uuid + ":user_group",
+                                 membership.membership_uuid,
                                  "security_user_group_membership",
                                  membership.member_principal_uuid,
                                  membership.container_uuid,
@@ -890,7 +854,7 @@ void AddSecurityPrincipalNavigatorObjects(
                                  membership.creator_tx);
       AddSecurityNavigatorObject(objects,
                                  resolver_names,
-                                 membership.membership_uuid + ":group_user",
+                                 membership.membership_uuid,
                                  "security_group_user_membership",
                                  membership.container_uuid,
                                  membership.member_principal_uuid,
@@ -904,7 +868,7 @@ void AddSecurityPrincipalNavigatorObjects(
       if (principal != principal_names.end()) {
         AddSecurityNavigatorObject(objects,
                                    resolver_names,
-                                   membership.membership_uuid + ":user_role",
+                                   membership.membership_uuid,
                                    "security_user_role_membership",
                                    membership.member_principal_uuid,
                                    membership.container_uuid,
@@ -914,7 +878,7 @@ void AddSecurityPrincipalNavigatorObjects(
                                    membership.creator_tx);
         AddSecurityNavigatorObject(objects,
                                    resolver_names,
-                                   membership.membership_uuid + ":role_user",
+                                   membership.membership_uuid,
                                    "security_role_user_membership",
                                    membership.container_uuid,
                                    membership.member_principal_uuid,
@@ -928,7 +892,7 @@ void AddSecurityPrincipalNavigatorObjects(
       if (group == group_names.end()) { continue; }
       AddSecurityNavigatorObject(objects,
                                  resolver_names,
-                                 membership.membership_uuid + ":group_role",
+                                 membership.membership_uuid,
                                  "security_group_role_membership",
                                  membership.member_principal_uuid,
                                  membership.container_uuid,
@@ -938,7 +902,7 @@ void AddSecurityPrincipalNavigatorObjects(
                                  membership.creator_tx);
       AddSecurityNavigatorObject(objects,
                                  resolver_names,
-                                 membership.membership_uuid + ":role_group",
+                                 membership.membership_uuid,
                                  "security_role_group_membership",
                                  membership.container_uuid,
                                  membership.member_principal_uuid,
@@ -950,7 +914,7 @@ void AddSecurityPrincipalNavigatorObjects(
   }
 
   for (const auto& grant : security.grants) {
-    if (grant.revoked || grant.grant_uuid.empty() || grant.grantee_uuid.empty()) { continue; }
+    if (grant.revoked || grant.grant_uuid.is_nil() || grant.grantee_uuid.is_nil()) { continue; }
     AddSecurityNavigatorObject(objects,
                                resolver_names,
                                grant.grant_uuid,
@@ -964,7 +928,7 @@ void AddSecurityPrincipalNavigatorObjects(
   }
 
   for (const auto& policy : security.row_policies) {
-    if (policy.deleted || policy.policy_uuid.empty()) { continue; }
+    if (policy.deleted || policy.policy_uuid.is_nil()) { continue; }
     const std::string effect = LowerAscii(policy.policy_effect);
     const std::string object_class = effect.find("mask") != std::string::npos
                                          ? "mask"
@@ -975,10 +939,16 @@ void AddSecurityPrincipalNavigatorObjects(
                                resolver_names,
                                policy.policy_uuid,
                                object_class,
-                               "",
+                               {},
                                policy.target_object_uuid,
                                policy.target_object_kind,
-                               policy.policy_uuid,
+                               [&] {
+                                 for (const auto& name : *resolver_names) {
+                                   if (name.object_uuid == policy.policy_uuid &&
+                                       !name.display_name.empty()) { return name.display_name; }
+                                 }
+                                 return std::string{};
+                               }(),
                                policy.policy_generation,
                                policy.creator_tx);
   }
@@ -1032,12 +1002,12 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
   const auto schemas = VisibleSchemaTreeRecords(request.context, observer_tx, schema_diagnostic);
   if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
       request.context, "observability.show_catalog", schema_diagnostic);
-  std::map<std::string, std::string> schema_path_by_uuid;
-  std::map<std::string, std::string> schema_uuid_by_path;
-  std::set<std::string> object_uuids_in_projection;
-  std::set<std::string> column_keys_in_projection;
+  std::map<EngineUuid, std::string> schema_path_by_uuid;
+  std::map<std::string, EngineUuid> schema_uuid_by_path;
+  std::set<EngineUuid> object_uuids_in_projection;
+  std::set<std::pair<EngineUuid, std::uint32_t>> column_keys_in_projection;
   for (const auto& schema : schemas) {
-    if (schema.schema_uuid.empty()) { continue; }
+    if (schema.schema_uuid.is_nil()) { continue; }
     const std::string schema_path = SchemaDisplayPath(schemas, schema.schema_uuid, &schema_path_by_uuid);
     if (!schema_path.empty()) { schema_uuid_by_path[schema_path] = schema.schema_uuid; }
     SysInformationCatalogObjectSource object;
@@ -1072,9 +1042,9 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
   }
 
   const CrudState readable_crud = LoadReadableCatalogCrudState(catalog_read_context);
-  std::set<std::string> crud_table_uuids;
+  std::set<EngineUuid> crud_table_uuids;
   for (const auto& table : readable_crud.tables) {
-    if (table.table_uuid.empty() ||
+    if (table.table_uuid.is_nil() ||
         !CrudCreatorVisible(readable_crud, table.creator_tx, table.event_sequence, observer_tx)) {
       continue;
     }
@@ -1084,7 +1054,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
   const auto lifecycle = LoadCatalogObjectLifecycleState(request.context);
   if (lifecycle.ok) {
     for (const auto& record : lifecycle.state.objects) {
-      if (record.deleted || record.object_uuid.empty()) { continue; }
+      if (record.deleted || record.object_uuid.is_nil()) { continue; }
       if (record.object_kind == "table" &&
           crud_table_uuids.count(record.object_uuid) != 0) {
         continue;
@@ -1113,11 +1083,11 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
                       name.metadata_epoch == 0 ? name.creator_tx : name.metadata_epoch);
     }
     for (const auto& column : lifecycle.state.columns) {
-      if (column.deleted || column.owner_object_uuid.empty()) { continue; }
+      if (column.deleted || column.owner_object_uuid.is_nil()) { continue; }
       if (crud_table_uuids.count(column.owner_object_uuid) != 0) { continue; }
       SysInformationColumnSource source;
       source.relation_object_uuid = column.owner_object_uuid;
-      source.column_name = column.column_uuid;
+      source.column_uuid = column.column_uuid;
       for (const auto& name : lifecycle.state.names) {
         if (name.deleted || name.object_uuid != column.column_uuid) { continue; }
         if (!name.display_name.empty()) {
@@ -1133,8 +1103,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
       source.datatype_name = column.canonical_type_name;
       source.is_nullable = column.nullable ? "YES" : "NO";
       source.catalog_generation_id = column.metadata_epoch == 0 ? column.creator_tx : column.metadata_epoch;
-      const std::string column_key =
-          source.relation_object_uuid + ":" + std::to_string(source.ordinal_position);
+      const auto column_key = std::make_pair(source.relation_object_uuid, source.ordinal_position);
       if (column_keys_in_projection.insert(column_key).second) {
         columns.push_back(std::move(source));
       }
@@ -1142,18 +1111,18 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
   }
 
   const auto name_registry = LoadNameRegistryState(catalog_read_context, observer_tx);
-  std::map<std::string, std::vector<const NameRegistryEntry*>> names_by_object;
+  std::map<EngineUuid, std::vector<const NameRegistryEntry*>> names_by_object;
   if (name_registry.ok) {
     AddNameRegistryResolverNames(&resolver_names, name_registry.state);
     for (const auto& entry : name_registry.state.entries) {
-      if (entry.deleted || entry.object_uuid.empty()) { continue; }
+      if (entry.deleted || entry.object_uuid.is_nil()) { continue; }
       names_by_object[entry.object_uuid].push_back(&entry);
     }
   }
 
-  std::map<std::string, std::string> table_schema_by_uuid;
+  std::map<EngineUuid, EngineUuid> table_schema_by_uuid;
   for (const auto& table : readable_crud.tables) {
-    if (table.table_uuid.empty() ||
+    if (table.table_uuid.is_nil() ||
         !CrudCreatorVisible(readable_crud, table.creator_tx, table.event_sequence, observer_tx)) {
       continue;
     }
@@ -1186,10 +1155,13 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
     for (const auto& [column_name, datatype_name] : table.columns) {
       ++ordinal;
       if (column_name.empty()) { continue; }
-      const std::string column_key = table.table_uuid + ":" + std::to_string(ordinal);
+      const auto column_key = std::make_pair(table.table_uuid, ordinal);
       if (!column_keys_in_projection.insert(column_key).second) { continue; }
       SysInformationColumnSource source;
       source.relation_object_uuid = table.table_uuid;
+      for (const auto& binding : table.bound_columns) {
+        if (binding.ordinal == ordinal) { source.column_uuid = binding.requested_column_uuid; break; }
+      }
       source.schema_uuid = name->scope_uuid;
       source.column_name = column_name;
       source.ordinal_position = ordinal;
@@ -1212,10 +1184,10 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
                                                   visible->domain_uuid,
                                                   "domain",
                                                   schema_path_by_uuid);
-      std::string schema_uuid = visible->schema_uuid;
+      EngineUuid schema_uuid = visible->schema_uuid;
       std::string domain_name = visible->default_name;
       if (name != nullptr) {
-        if (!name->scope_uuid.empty()) { schema_uuid = name->scope_uuid; }
+        if (!name->scope_uuid.is_nil()) { schema_uuid = name->scope_uuid; }
         const std::string display = DisplayTextForNameEntry(*name);
         if (!display.empty()) { domain_name = display; }
       } else if (!domain_name.empty()) {
@@ -1246,7 +1218,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
       }
       SysInformationDomainSource source;
       source.domain_uuid = visible->domain_uuid;
-      source.row_uuid = visible->catalog_row_uuid.empty() ? visible->domain_uuid
+      source.row_uuid = visible->catalog_row_uuid.is_nil() ? visible->domain_uuid
                                                           : visible->catalog_row_uuid;
       source.schema_uuid = schema_uuid;
       source.source_type_name = source_type_name;
@@ -1262,7 +1234,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
   }
 
   for (const auto& index : readable_crud.indexes) {
-    if (index.index_uuid.empty() || index.table_uuid.empty() ||
+    if (index.index_uuid.is_nil() || index.table_uuid.is_nil() ||
         !CrudCreatorVisible(readable_crud, index.creator_tx, index.event_sequence, observer_tx)) {
       continue;
     }
@@ -1294,7 +1266,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
   if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
       request.context, "observability.show_catalog", behavior_diagnostic);
   for (const auto& record : behavior_records) {
-    if (record.object_uuid.empty() ||
+    if (record.object_uuid.is_nil() ||
         record.object_kind == "schema" ||
         record.object_kind == "table" ||
         record.object_kind == "domain" ||
@@ -1307,10 +1279,10 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
         record.object_uuid,
         record.object_kind,
         schema_path_by_uuid);
-    std::string scope_uuid =
-        name == nullptr ? PayloadField(record.payload, "schema") : name->scope_uuid;
+    EngineUuid scope_uuid =
+        name == nullptr ? record.target_schema_uuid : name->scope_uuid;
     if (record.object_kind == "filespace" || record.object_kind == "database") {
-      scope_uuid.clear();
+      scope_uuid = {};
     }
     SysInformationCatalogObjectSource object;
     object.object_uuid = record.object_uuid;
@@ -1367,7 +1339,8 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
     const bool is_system_table = system_tables.find(definition.view_path) != system_tables.end();
     AddSystemColumns(&columns,
                      &column_keys_in_projection,
-                     std::string(is_system_table ? "systable:" : "sysview:") + definition.view_path,
+                     SysInformationObjectIdentity(resolver_names, schema_uuid_by_path,
+                                                  definition.view_path, is_system_table ? "table" : "view"),
                      definition);
     if (!is_system_table && StartsWith(definition.view_path, "sys.information.")) {
       const std::string information_schema_path =
@@ -1375,7 +1348,8 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
           definition.view_path.substr(std::string("sys.information.").size());
       AddSystemColumns(&columns,
                        &column_keys_in_projection,
-                       "sysview:" + information_schema_path,
+                       SysInformationObjectIdentity(resolver_names, schema_uuid_by_path,
+                                                    information_schema_path, "view"),
                        definition);
     }
   }
@@ -1447,7 +1421,11 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
         &result, {{"count", std::to_string(filtered_rows.size())}});
   } else {
     for (const auto& row : filtered_rows) {
-      AddApiBehaviorRow(&result, row.fields);
+      ApiBehaviorFields fields;
+      for (const auto& [name, value] : row.fields) {
+        fields.emplace_back(name, SysInformationTypedValue(value));
+      }
+      AddApiBehaviorRow(&result, std::move(fields));
     }
   }
   AddApiBehaviorEvidence(&result, "catalog_projection", projection_path);

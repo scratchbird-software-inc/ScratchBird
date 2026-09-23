@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -503,8 +504,8 @@ db::DatabaseLifecycleOperationConfig OperationConfig(
     const LifecycleFixture& fixture) {
   db::DatabaseLifecycleOperationConfig config;
   config.path = fixture.database_path.string();
-  config.operation_uuid = "dpc009-restricted-open-operation";
-  config.actor_uuid = "dpc009-actor";
+  config.operation_uuid = scratchbird::tests::FixtureUuid(1259, 1);
+  config.actor_uuid = scratchbird::tests::FixtureUuid(1259, 2);
   config.write_evidence = true;
   return config;
 }
@@ -515,8 +516,8 @@ db::DatabaseLifecycleRepairConfig RepairConfig(
     bool admitted) {
   db::DatabaseLifecycleRepairConfig config;
   config.path = fixture.database_path.string();
-  config.operation_uuid = "dpc009-restricted-open-repair";
-  config.actor_uuid = "dpc009-actor";
+  config.operation_uuid = scratchbird::tests::FixtureUuid(1259, 3);
+  config.actor_uuid = scratchbird::tests::FixtureUuid(1259, 4);
   config.repair_plan_id = std::move(repair_plan_id);
   config.expected_database_uuid = fixture.database_uuid;
   config.expected_filespace_uuid = fixture.filespace_uuid;

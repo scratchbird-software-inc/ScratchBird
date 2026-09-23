@@ -8,6 +8,9 @@
 
 #pragma once
 
+#include "catalog/binary_view_options.hpp"
+#include "mga_relation_store/mga_binary_identity_codec.hpp"
+#include "mga_relation_store/mga_binary_fields.hpp"
 #include "dml/mga_relation_read_view.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "dml/insert_api.hpp"
@@ -56,9 +59,9 @@ inline bool EndsWith(std::string_view value, std::string_view suffix) {
          value.substr(value.size() - suffix.size()) == suffix;
 }
 
-inline std::string ResolveVisibleTableByPresentedName(const EngineRequestContext& context,
+inline EngineUuid ResolveVisibleTableByPresentedName(const EngineRequestContext& context,
                                                       const std::string& presented_name);
-inline std::string ResolveVisibleObjectByPresentedName(const EngineRequestContext& context,
+inline EngineUuid ResolveVisibleObjectByPresentedName(const EngineRequestContext& context,
                                                        const std::string& presented_name,
                                                        std::string expected_object_type);
 
@@ -71,18 +74,7 @@ inline bool OptionPresent(const std::vector<std::string>& options,
 
 inline std::string PayloadFieldValue(const std::string& payload,
                                      std::string_view prefix) {
-  std::size_t offset = 0;
-  while (offset <= payload.size()) {
-    const auto next = payload.find(';', offset);
-    const auto end = next == std::string::npos ? payload.size() : next;
-    const std::string_view field(payload.data() + offset, end - offset);
-    if (StartsWith(field, prefix)) {
-      return std::string(field.substr(prefix.size()));
-    }
-    if (next == std::string::npos) break;
-    offset = next + 1;
-  }
-  return {};
+  return BinaryViewOptionValue(payload, prefix);
 }
 
 inline bool TriggerEventMatches(const std::string& trigger_event,
@@ -102,7 +94,7 @@ inline bool TriggerEventMatches(const std::string& trigger_event,
 
 inline bool TriggerDescriptorMatches(const EngineExecutableObjectRecord& object,
                                      const EngineRequestContext& context,
-                                     const std::string& target_table_uuid,
+                                     const EngineUuid& target_table_uuid,
                                      const std::string& target_table_name,
                                      std::string_view event_name,
                                      std::string_view scope,
@@ -111,9 +103,10 @@ inline bool TriggerDescriptorMatches(const EngineExecutableObjectRecord& object,
   if (object.lifecycle_state != "active" || object.deleted || object.invalidated) return false;
   const auto descriptor_target_uuid =
       PayloadFieldValue(object.payload, "trigger_target_table_uuid:");
-  if (!descriptor_target_uuid.empty() && descriptor_target_uuid != target_table_uuid) {
-    return false;
-  }
+  const EngineUuid descriptor_target_identity = BinaryViewUuid(descriptor_target_uuid);
+  if (!descriptor_target_uuid.empty() &&
+      (descriptor_target_identity.is_nil() ||
+       descriptor_target_identity != target_table_uuid)) return false;
   if (descriptor_target_uuid.empty()) {
     const auto descriptor_target_name =
         LowerAscii(PayloadFieldValue(object.payload, "trigger_target_table_name:"));
@@ -122,7 +115,7 @@ inline bool TriggerDescriptorMatches(const EngineExecutableObjectRecord& object,
       return false;
     }
     if (descriptor_target_name.find('.') != std::string::npos) {
-      const std::string resolved_target_uuid =
+      const EngineUuid resolved_target_uuid =
           ResolveVisibleTableByPresentedName(context, descriptor_target_name);
       if (resolved_target_uuid != target_table_uuid) {
         return false;
@@ -170,7 +163,7 @@ inline std::uint64_t ParseAuditId(std::string_view value) {
 }
 
 inline std::uint64_t NextAuditId(const MgaRelationReadView& state,
-                                 const std::string& audit_table_uuid,
+                                 const EngineUuid& audit_table_uuid,
                                  const EngineRequestContext& context) {
   std::uint64_t max_audit_id = 0;
   for (const auto& row : VisibleMgaRowsForContext(state, audit_table_uuid, context)) {
@@ -210,11 +203,11 @@ inline scratchbird::engine::sblr::SblrExecutionContext TriggerSblrContext(
 }
 
 inline bool NextSequenceAuditId(const EngineRequestContext& context,
-                                const std::string& sequence_uuid,
+                                const EngineUuid& sequence_uuid,
                                 std::uint64_t* audit_id,
                                 EngineApiDiagnostic* diagnostic) {
   if (audit_id == nullptr) return false;
-  if (sequence_uuid.empty()) {
+  if (sequence_uuid.is_nil()) {
     if (diagnostic != nullptr) {
       *diagnostic = EngineApiDiagnostic{
           "TRIGGER.RUNTIME.SEQUENCE_UNRESOLVED",
@@ -226,7 +219,12 @@ inline bool NextSequenceAuditId(const EngineRequestContext& context,
   }
   scratchbird::engine::sblr::SblrSequenceRequest request;
   request.context = TriggerSblrContext(context);
-  request.sequence_uuid = LowerAscii(sequence_uuid);
+  const auto sequence_argument = scratchbird::engine::sblr::MakeSblrUuidValue(sequence_uuid);
+  if (!scratchbird::engine::sblr::BindSblrSequenceArgumentIdentity(sequence_argument, &request)) {
+    if (diagnostic != nullptr)
+      *diagnostic = MakeInvalidRequestDiagnostic("dml.trigger", "audit_sequence_identity_invalid");
+    return false;
+  }
   request.result_descriptor_id = "int64";
   const auto result = scratchbird::engine::sblr::NextSblrSequenceValue(
       &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(), request);
@@ -278,7 +276,7 @@ inline EngineRowValue AuditRow(std::uint64_t audit_id,
   return row;
 }
 
-inline std::string FindVisibleTableByName(const MgaRelationReadView& state,
+inline EngineUuid FindVisibleTableByName(const MgaRelationReadView& state,
                                           const EngineRequestContext& context,
                                           std::string_view table_name) {
   const auto target = LowerAscii(std::string(table_name));
@@ -327,12 +325,12 @@ inline EngineIdentifierAtom ResolverIdentifierAtom(std::string text) {
   return atom;
 }
 
-inline std::string ResolveVisibleTableByPresentedName(const EngineRequestContext& context,
+inline EngineUuid ResolveVisibleTableByPresentedName(const EngineRequestContext& context,
                                                       const std::string& presented_name) {
   return ResolveVisibleObjectByPresentedName(context, presented_name, "table");
 }
 
-inline std::string ResolveVisibleObjectByPresentedName(const EngineRequestContext& context,
+inline EngineUuid ResolveVisibleObjectByPresentedName(const EngineRequestContext& context,
                                                        const std::string& presented_name,
                                                        std::string expected_object_type) {
   std::vector<std::string> parts;
@@ -363,12 +361,12 @@ inline std::string ResolveVisibleObjectByPresentedName(const EngineRequestContex
   return resolved.bound_object_identity.object_uuid;
 }
 
-inline std::string ResolveVisibleSequenceByPresentedName(const EngineRequestContext& context,
+inline EngineUuid ResolveVisibleSequenceByPresentedName(const EngineRequestContext& context,
                                                          const std::string& presented_name) {
   return ResolveVisibleObjectByPresentedName(context, presented_name, "sequence");
 }
 
-inline std::string ResolveTriggerAuditTableUuid(const EngineRequestContext& context,
+inline EngineUuid ResolveTriggerAuditTableUuid(const EngineRequestContext& context,
                                                 const MgaRelationReadView& state,
                                                 const EngineExecutableObjectRecord& trigger,
                                                 std::string_view audit_table_leaf) {
@@ -378,31 +376,31 @@ inline std::string ResolveTriggerAuditTableUuid(const EngineRequestContext& cont
       !target_name.empty() && target_name.find('.') != std::string::npos
           ? SiblingPresentedName(target_name, audit_table_leaf)
           : std::string(audit_table_leaf);
-  const std::string resolved =
+  const EngineUuid resolved =
       ResolveVisibleTableByPresentedName(context, presented_name);
-  if (!resolved.empty()) return resolved;
+  if (!resolved.is_nil()) return resolved;
   // The scoped state is a compatibility fallback for provisional catalogs
   // whose name-registry rows have not yet been installed. It is never widened
   // to a complete relation-store reconstruction.
   return FindVisibleTableByName(state, context, audit_table_leaf);
 }
 
-inline std::string ResolveTriggerAuditSequenceUuid(const EngineRequestContext& context,
+inline EngineUuid ResolveTriggerAuditSequenceUuid(const EngineRequestContext& context,
                                                    const EngineExecutableObjectRecord& trigger,
                                                    std::string_view audit_sequence_leaf) {
   const auto target_name =
       LowerAscii(PayloadFieldValue(trigger.payload, "trigger_target_table_name:"));
   if (!target_name.empty() && target_name.find('.') != std::string::npos) {
     const std::string sibling_name = SiblingPresentedName(target_name, audit_sequence_leaf);
-    const std::string resolved = ResolveVisibleSequenceByPresentedName(context, sibling_name);
-    if (!resolved.empty()) return resolved;
+    const EngineUuid resolved = ResolveVisibleSequenceByPresentedName(context, sibling_name);
+    if (!resolved.is_nil()) return resolved;
   }
   return ResolveVisibleSequenceByPresentedName(context, std::string(audit_sequence_leaf));
 }
 
 inline std::string FindVisibleTableNameByUuid(const MgaRelationReadView& state,
                                               const EngineRequestContext& context,
-                                              const std::string& table_uuid) {
+                                              const EngineUuid& table_uuid) {
   for (const auto& table : state.tables) {
     if (!MgaCreatorVisible(state,
                             table.creator_tx,
@@ -418,7 +416,7 @@ inline std::string FindVisibleTableNameByUuid(const MgaRelationReadView& state,
 inline DmlExecutableTriggerRuntimeResult ResolveTriggerRelationReadView(
     const EngineRequestContext& context,
     const MgaRelationReadView& scoped_state,
-    const std::string& target_table_uuid,
+    const EngineUuid& target_table_uuid,
     std::string_view required_table_name,
     MgaRelationReadView* trigger_state) {
   DmlExecutableTriggerRuntimeResult result;
@@ -442,7 +440,7 @@ inline DmlExecutableTriggerRuntimeResult ResolveTriggerRelationReadView(
 
 inline DmlExecutableTriggerRuntimeResult InsertAuditRows(
     const EngineRequestContext& context,
-    const std::string& audit_table_uuid,
+    const EngineUuid& audit_table_uuid,
     std::vector<EngineRowValue> rows) {
   DmlExecutableTriggerRuntimeResult result;
   if (rows.empty()) return result;
@@ -495,24 +493,20 @@ inline std::map<std::string, bool>& ActiveTriggerDescriptorCache() {
 
 inline std::string ActiveTriggerDescriptorCacheKey(
     const EngineRequestContext& context,
-    const std::string& target_table_uuid) {
-  std::string key;
-  key.reserve(context.database_path.size() + target_table_uuid.size() + 192);
-  key += context.database_uuid;
-  key.push_back('|');
-  key += context.database_path;
-  key.push_back('|');
-  key += target_table_uuid;
-  key.push_back('|');
-  key += context.principal_uuid;
-  key.push_back('|');
-  key += context.current_role_uuid;
-  key.push_back('|');
-  key += std::to_string(context.catalog_generation_id);
-  key.push_back('|');
-  key += std::to_string(context.security_epoch);
-  key.push_back('|');
-  key += std::to_string(context.resource_epoch);
+    const EngineUuid& target_table_uuid) {
+  std::string key("trigger-descriptor-cache-v2", 27);
+  const auto append_uuid = [&](const EngineUuid& value) {
+    key.append(reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size());
+  };
+  AppendBinaryU64(&key, context.database_path.size());
+  key.append(context.database_path);
+  append_uuid(context.database_uuid);
+  append_uuid(target_table_uuid);
+  append_uuid(context.principal_uuid);
+  append_uuid(context.current_role_uuid);
+  AppendBinaryU64(&key, context.catalog_generation_id);
+  AppendBinaryU64(&key, context.security_epoch);
+  AppendBinaryU64(&key, context.resource_epoch);
   return key;
 }
 
@@ -531,7 +525,7 @@ inline void TrimActiveTriggerDescriptorCacheIfNeeded() {
 }
 
 inline bool ScanActiveTableTriggerDescriptors(const EngineRequestContext& context,
-                                              const std::string& target_table_uuid) {
+                                              const EngineUuid& target_table_uuid) {
   const auto loaded = LoadExecutableObjectLifecycleStateForRuntimeDispatch(context);
   if (!loaded.ok) return false;
   auto state = loaded.state;
@@ -540,8 +534,11 @@ inline bool ScanActiveTableTriggerDescriptors(const EngineRequestContext& contex
     if (object.lifecycle_state != "active" || object.deleted || object.invalidated) continue;
     const auto descriptor_target_uuid =
         PayloadFieldValue(object.payload, "trigger_target_table_uuid:");
-    if (!descriptor_target_uuid.empty() && descriptor_target_uuid == target_table_uuid) {
-      return true;
+    if (!descriptor_target_uuid.empty()) {
+      const EngineUuid descriptor_target_identity = BinaryViewUuid(descriptor_target_uuid);
+      // Unresolved binary metadata cannot waive the full trigger path.
+      if (descriptor_target_identity.is_nil() ||
+          descriptor_target_identity == target_table_uuid) return true;
     }
     if (descriptor_target_uuid.empty()) {
       const auto descriptor_target_name =
@@ -549,7 +546,7 @@ inline bool ScanActiveTableTriggerDescriptors(const EngineRequestContext& contex
       if (descriptor_target_name.empty()) {
         continue;
       }
-      const std::string resolved_target_uuid =
+      const EngineUuid resolved_target_uuid =
           ResolveVisibleTableByPresentedName(context, descriptor_target_name);
       if (resolved_target_uuid == target_table_uuid) {
         return true;
@@ -560,8 +557,8 @@ inline bool ScanActiveTableTriggerDescriptors(const EngineRequestContext& contex
 }
 
 inline bool HasActiveTableTriggerDescriptors(const EngineRequestContext& context,
-                                             const std::string& target_table_uuid) {
-  if (target_table_uuid.empty()) return false;
+                                             const EngineUuid& target_table_uuid) {
+  if (target_table_uuid.is_nil()) return false;
   const std::string cache_key =
       ActiveTriggerDescriptorCacheKey(context, target_table_uuid);
   auto& cache = ActiveTriggerDescriptorCache();
@@ -578,7 +575,7 @@ inline bool HasActiveTableTriggerDescriptors(const EngineRequestContext& context
 inline DmlExecutableTriggerRuntimeResult FireAfterInsertTableTriggers(
     const EngineRequestContext& context,
     const MgaRelationReadView& crud_state,
-    const std::string& target_table_uuid,
+    const EngineUuid& target_table_uuid,
     const std::vector<CrudRowVersionRecord>& inserted_rows,
     const std::vector<std::string>& caller_options) {
   DmlExecutableTriggerRuntimeResult result;
@@ -598,8 +595,8 @@ inline DmlExecutableTriggerRuntimeResult FireAfterInsertTableTriggers(
                          state_result.evidence.end());
   const std::string target_table_name =
       FindVisibleTableNameByUuid(trigger_state, context, target_table_uuid);
-  std::string audit_table_uuid;
-  std::string audit_sequence_uuid;
+  EngineUuid audit_table_uuid;
+  EngineUuid audit_sequence_uuid;
   std::vector<EngineRowValue> audit_rows;
   for (const auto& trigger : executable_state.objects) {
     if (!TriggerDescriptorMatches(trigger,
@@ -611,12 +608,12 @@ inline DmlExecutableTriggerRuntimeResult FireAfterInsertTableTriggers(
                                   "sbsql.compiled.trigger.audit_after_insert_row.v1")) {
       continue;
     }
-    if (audit_table_uuid.empty()) {
+    if (audit_table_uuid.is_nil()) {
       audit_table_uuid = ResolveTriggerAuditTableUuid(context, trigger_state, trigger, "trig_audit");
-      if (audit_table_uuid.empty()) return result;
+      if (audit_table_uuid.is_nil()) return result;
       audit_sequence_uuid =
           ResolveTriggerAuditSequenceUuid(context, trigger, "trig_audit_seq");
-      if (audit_sequence_uuid.empty()) {
+      if (audit_sequence_uuid.is_nil()) {
         result.ok = false;
         result.diagnostic = EngineApiDiagnostic{
             "TRIGGER.RUNTIME.SEQUENCE_UNRESOLVED",
@@ -654,7 +651,7 @@ inline DmlExecutableTriggerRuntimeResult FireAfterInsertTableTriggers(
 inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
     const EngineRequestContext& context,
     const MgaRelationReadView& crud_state,
-    const std::string& target_table_uuid,
+    const EngineUuid& target_table_uuid,
     const std::vector<DmlTriggerUpdateRowImage>& updated_rows,
     const std::vector<std::string>& caller_options) {
   DmlExecutableTriggerRuntimeResult result;
@@ -674,8 +671,8 @@ inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
                          state_result.evidence.end());
   const std::string target_table_name =
       FindVisibleTableNameByUuid(trigger_state, context, target_table_uuid);
-  std::string audit_table_uuid;
-  std::string audit_sequence_uuid;
+  EngineUuid audit_table_uuid;
+  EngineUuid audit_sequence_uuid;
   std::vector<EngineRowValue> audit_rows;
   for (const auto& trigger : executable_state.objects) {
     if (TriggerDescriptorMatches(trigger,
@@ -685,12 +682,12 @@ inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
                                  "update",
                                  "row",
                                  "sbsql.compiled.trigger.audit_after_update_row.v1")) {
-      if (audit_table_uuid.empty()) {
+      if (audit_table_uuid.is_nil()) {
         audit_table_uuid = ResolveTriggerAuditTableUuid(context, trigger_state, trigger, "trig_audit");
-        if (audit_table_uuid.empty()) return result;
+        if (audit_table_uuid.is_nil()) return result;
         audit_sequence_uuid =
             ResolveTriggerAuditSequenceUuid(context, trigger, "trig_audit_seq");
-        if (audit_sequence_uuid.empty()) {
+        if (audit_sequence_uuid.is_nil()) {
           result.ok = false;
           result.diagnostic = EngineApiDiagnostic{
               "TRIGGER.RUNTIME.SEQUENCE_UNRESOLVED",
@@ -724,12 +721,12 @@ inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
                                         "update",
                                         "statement",
                                         "sbsql.compiled.trigger.audit_after_update_statement.v1")) {
-      if (audit_table_uuid.empty()) {
+      if (audit_table_uuid.is_nil()) {
         audit_table_uuid = ResolveTriggerAuditTableUuid(context, trigger_state, trigger, "trig_audit");
-        if (audit_table_uuid.empty()) return result;
+        if (audit_table_uuid.is_nil()) return result;
         audit_sequence_uuid =
             ResolveTriggerAuditSequenceUuid(context, trigger, "trig_audit_seq");
-        if (audit_sequence_uuid.empty()) {
+        if (audit_sequence_uuid.is_nil()) {
           result.ok = false;
           result.diagnostic = EngineApiDiagnostic{
               "TRIGGER.RUNTIME.SEQUENCE_UNRESOLVED",
@@ -766,7 +763,7 @@ inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
 inline DmlExecutableTriggerRuntimeResult FireAfterDeleteTableTriggers(
     const EngineRequestContext& context,
     const MgaRelationReadView& crud_state,
-    const std::string& target_table_uuid,
+    const EngineUuid& target_table_uuid,
     const std::vector<CrudRowVersionRecord>& deleted_rows,
     const std::vector<std::string>& caller_options) {
   DmlExecutableTriggerRuntimeResult result;
@@ -786,8 +783,8 @@ inline DmlExecutableTriggerRuntimeResult FireAfterDeleteTableTriggers(
                          state_result.evidence.end());
   const std::string target_table_name =
       FindVisibleTableNameByUuid(trigger_state, context, target_table_uuid);
-  std::string audit_table_uuid;
-  std::string audit_sequence_uuid;
+  EngineUuid audit_table_uuid;
+  EngineUuid audit_sequence_uuid;
   std::vector<EngineRowValue> audit_rows;
   for (const auto& trigger : executable_state.objects) {
     if (!TriggerDescriptorMatches(trigger,
@@ -799,12 +796,12 @@ inline DmlExecutableTriggerRuntimeResult FireAfterDeleteTableTriggers(
                                   "sbsql.compiled.trigger.audit_after_delete_row.v1")) {
       continue;
     }
-    if (audit_table_uuid.empty()) {
+    if (audit_table_uuid.is_nil()) {
       audit_table_uuid = ResolveTriggerAuditTableUuid(context, trigger_state, trigger, "trig_audit");
-      if (audit_table_uuid.empty()) return result;
+      if (audit_table_uuid.is_nil()) return result;
       audit_sequence_uuid =
           ResolveTriggerAuditSequenceUuid(context, trigger, "trig_audit_seq");
-      if (audit_sequence_uuid.empty()) {
+      if (audit_sequence_uuid.is_nil()) {
         result.ok = false;
         result.diagnostic = EngineApiDiagnostic{
             "TRIGGER.RUNTIME.SEQUENCE_UNRESOLVED",

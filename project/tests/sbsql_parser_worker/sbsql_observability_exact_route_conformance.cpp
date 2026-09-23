@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
+#include "uuid.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -41,7 +43,7 @@ struct ObservabilityRowEvidence {
   std::string_view sql;
   std::string_view operation_id;
   std::string_view opcode;
-  std::string_view resolved_object_uuid;
+  api::EngineUuid resolved_object_uuid;
 };
 
 constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
@@ -52,7 +54,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW VERSION",
      "observability.show_version",
      "SBLR_OBSERVABILITY_SHOW_VERSION",
-     ""},
+     {}},
     {"SBSQL-B7EF40AE00EB",
      "show_identity_session",
      "grammar_production",
@@ -60,7 +62,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW DATABASE",
      "observability.show_database",
      "SBLR_OBSERVABILITY_SHOW_DATABASE",
-     ""},
+     {}},
     {"SBSQL-2A0B29C713C7",
      "show",
      "canonical_surface",
@@ -68,7 +70,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW METRICS",
      "observability.show_metrics",
      "SBLR_OBSERVABILITY_SHOW_METRICS",
-     ""},
+     {}},
     {"SBSQL-9481A549CA44",
      "show_metrics_observability",
      "grammar_production",
@@ -76,7 +78,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW METRICS",
      "observability.show_metrics",
      "SBLR_OBSERVABILITY_SHOW_METRICS",
-     ""},
+     {}},
     {"SBSQL-564D768C8ADF",
      "show_stmt",
      "grammar_production",
@@ -84,7 +86,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW METRICS",
      "observability.show_metrics",
      "SBLR_OBSERVABILITY_SHOW_METRICS",
-     ""},
+     {}},
     {"SBSQL-837C1681258A",
      "show_target",
      "grammar_production",
@@ -92,7 +94,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW SESSIONS",
      "observability.show_sessions",
      "SBLR_OBSERVABILITY_SHOW_SESSIONS",
-     ""},
+     {}},
     {"SBSQL-E72BE3893672",
      "show_objects",
      "grammar_production",
@@ -100,7 +102,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW OBJECTS",
      "observability.show_catalog",
      "SBLR_OBSERVABILITY_SHOW_CATALOG",
-     ""},
+     {}},
     {"SBSQL-E6A0DDD9D2D7",
      "show_jobs",
      "grammar_production",
@@ -108,7 +110,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW JOBS",
      "observability.show_jobs",
      "SBLR_OBSERVABILITY_SHOW_JOBS",
-     ""},
+     {}},
     {"SBSQL-556812D92760",
      "show_management",
      "grammar_production",
@@ -116,7 +118,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW MANAGEMENT",
      "observability.show_management",
      "SBLR_OBSERVABILITY_SHOW_MANAGEMENT",
-     ""},
+     {}},
     {"SBSQL-0DA421E46090",
      "show_diagnostics",
      "grammar_production",
@@ -124,7 +126,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW DIAGNOSTICS",
      "observability.show_diagnostics",
      "SBLR_OBSERVABILITY_SHOW_DIAGNOSTICS",
-     ""},
+     {}},
     {"SBSQL-D2617A466C64",
      "show_diagnostics_extended",
      "grammar_production",
@@ -132,7 +134,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW DIAGNOSTICS EXTENDED",
      "observability.show_diagnostics_extended",
      "SBLR_OBSERVABILITY_SHOW_DIAGNOSTICS_EXTENDED",
-     ""},
+     {}},
     {"SBSQL-669919A582BD",
      "show_archive_replication",
      "grammar_production",
@@ -140,7 +142,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW ARCHIVE REPLICATION",
      "observability.show_archive_replication",
      "SBLR_OBSERVABILITY_SHOW_ARCHIVE_REPLICATION",
-     ""},
+     {}},
     {"SBSQL-790219E347FD",
      "show_agents_extended",
      "grammar_production",
@@ -148,7 +150,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW AGENTS EXTENDED",
      "observability.show_agents_extended",
      "SBLR_OBSERVABILITY_SHOW_AGENTS_EXTENDED",
-     ""},
+     {}},
     {"SBSQL-81F70EB4CEF8",
      "agent_state",
      "grammar_production",
@@ -156,7 +158,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW AGENTS EXTENDED",
      "observability.show_agents_extended",
      "SBLR_OBSERVABILITY_SHOW_AGENTS_EXTENDED",
-     ""},
+     {}},
     {"SBSQL-97CD29B9F122",
      "show_filespace_extended",
      "grammar_production",
@@ -164,7 +166,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW FILESPACE EXTENDED",
      "observability.show_filespace_extended",
      "SBLR_OBSERVABILITY_SHOW_FILESPACE_EXTENDED",
-     ""},
+     {}},
     {"SBSQL-6482A2299513",
      "filespace_show_target",
      "grammar_production",
@@ -172,7 +174,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW FILESPACE EXTENDED",
      "observability.show_filespace_extended",
      "SBLR_OBSERVABILITY_SHOW_FILESPACE_EXTENDED",
-     ""},
+     {}},
     {"SBSQL-789915B429AF",
      "show_decision_service_stmt",
      "grammar_production",
@@ -180,7 +182,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW DECISION SERVICE",
      "observability.show_decision_service",
      "SBLR_OBSERVABILITY_SHOW_DECISION_SERVICE",
-     ""},
+     {}},
     {"SBSQL-D01384EE782E",
      "decision_show_target",
      "grammar_production",
@@ -188,7 +190,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW DECISION SERVICE",
      "observability.show_decision_service",
      "SBLR_OBSERVABILITY_SHOW_DECISION_SERVICE",
-     ""},
+     {}},
     {"SBSQL-05DB282498F4",
      "acceleration_stmt",
      "grammar_production",
@@ -196,7 +198,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW ACCELERATION",
      "observability.show_acceleration",
      "SBLR_OBSERVABILITY_SHOW_ACCELERATION",
-     ""},
+     {}},
     {"SBSQL-DF68DFFA5C1E",
      "show_acceleration",
      "grammar_production",
@@ -204,7 +206,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW ACCELERATION",
      "observability.show_acceleration",
      "SBLR_OBSERVABILITY_SHOW_ACCELERATION",
-     ""},
+     {}},
     {"SBSQL-8E570F4EEEF3",
      "accel_show_target",
      "grammar_production",
@@ -212,7 +214,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW ACCELERATION",
      "observability.show_acceleration",
      "SBLR_OBSERVABILITY_SHOW_ACCELERATION",
-     ""},
+     {}},
     {"SBSQL-41F75C7C86A7",
      "show_acceleration_extended",
      "grammar_production",
@@ -220,7 +222,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW ACCELERATION EXTENDED",
      "observability.show_acceleration_extended",
      "SBLR_OBSERVABILITY_SHOW_ACCELERATION_EXTENDED",
-     ""},
+     {}},
     {"SBSQL-9E28B50323FA",
      "describe",
      "canonical_surface",
@@ -228,7 +230,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "DESCRIBE replay_target",
      "observability.show_catalog",
      "SBLR_OBSERVABILITY_SHOW_CATALOG",
-     "019f0000-0000-7000-8000-000000000901"},
+     scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000901")},
     {"SBSQL-DF65788531DB",
      "describe_stmt",
      "grammar_production",
@@ -236,7 +238,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "DESCRIBE replay_target",
      "observability.show_catalog",
      "SBLR_OBSERVABILITY_SHOW_CATALOG",
-     "019f0000-0000-7000-8000-000000000901"},
+     scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000901")},
     {"SBSQL-D29E98768D48",
      "describe_target",
      "grammar_production",
@@ -244,7 +246,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "DESCRIBE replay_target",
      "observability.show_catalog",
      "SBLR_OBSERVABILITY_SHOW_CATALOG",
-     "019f0000-0000-7000-8000-000000000901"},
+     scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000901")},
     {"SBSQL-C7750F0B80EB",
      "show_plan_extended",
      "grammar_production",
@@ -252,7 +254,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "SHOW PLAN EXTENDED",
      "observability.explain_operation",
      "SBLR_OBSERVABILITY_EXPLAIN_OPERATION",
-     ""},
+     {}},
     {"SBSQL-01FAACE4DEFE",
      "explain",
      "canonical_surface",
@@ -260,7 +262,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "EXPLAIN SELECT 1",
      "observability.explain_operation",
      "SBLR_OBSERVABILITY_EXPLAIN_OPERATION",
-     ""},
+     {}},
     {"SBSQL-AB95F9C8DC77",
      "explain_stmt",
      "grammar_production",
@@ -268,7 +270,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "EXPLAIN SELECT 1",
      "observability.explain_operation",
      "SBLR_OBSERVABILITY_EXPLAIN_OPERATION",
-     ""},
+     {}},
     {"SBSQL-BB31ED9589C7",
      "explainable",
      "grammar_production",
@@ -276,7 +278,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "EXPLAIN SELECT 1",
      "observability.explain_operation",
      "SBLR_OBSERVABILITY_EXPLAIN_OPERATION",
-     ""},
+     {}},
     {"SBSQL-EFE86345F99D",
      "explain_kind",
      "grammar_production",
@@ -284,7 +286,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "EXPLAIN PLAN SELECT 1",
      "observability.explain_operation",
      "SBLR_OBSERVABILITY_EXPLAIN_OPERATION",
-     ""},
+     {}},
     {"SBSQL-B3771D9D39C1",
      "explain_option",
      "grammar_production",
@@ -292,7 +294,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "EXPLAIN (VERBOSE) SELECT 1",
      "observability.explain_operation",
      "SBLR_OBSERVABILITY_EXPLAIN_OPERATION",
-     ""},
+     {}},
     {"SBSQL-627723269A64",
      "explain_option_keyword",
      "grammar_production",
@@ -300,7 +302,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "EXPLAIN (VERBOSE) SELECT 1",
      "observability.explain_operation",
      "SBLR_OBSERVABILITY_EXPLAIN_OPERATION",
-     ""},
+     {}},
     {"SBSQL-1BA82B56911E",
      "explain_options",
      "grammar_production",
@@ -308,7 +310,7 @@ constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
      "EXPLAIN (VERBOSE) SELECT 1",
      "observability.explain_operation",
      "SBLR_OBSERVABILITY_EXPLAIN_OPERATION",
-     ""},
+     {}},
 }};
 
 std::string EvidenceMessage(const ObservabilityRowEvidence& row,
@@ -369,6 +371,10 @@ bool HasValue(const std::vector<std::string>& values, std::string_view expected)
   return std::find(values.begin(), values.end(), expected) != values.end();
 }
 
+bool HasValue(const std::vector<api::EngineUuid>& values, const api::EngineUuid& expected) {
+  return std::find(values.begin(), values.end(), expected) != values.end();
+}
+
 bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
 }
@@ -402,7 +408,11 @@ bool ApiResultHasEvidence(const api::EngineApiResult& result,
 std::string ApiResultEvidenceValue(const api::EngineApiResult& result,
                                    std::string_view kind) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind) return evidence.evidence_id;
+    if (evidence.evidence_kind == kind) {
+      const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+      Require(text != nullptr, "expected textual hash evidence");
+      return *text;
+    }
   }
   return {};
 }
@@ -410,9 +420,9 @@ std::string ApiResultEvidenceValue(const api::EngineApiResult& result,
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000000701";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000000702";
-  session.database_uuid = "019f0000-0000-7000-8000-000000000703";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000701");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000702");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000703");
   session.catalog_epoch = 7;
   session.security_policy_epoch = 11;
   session.descriptor_epoch = 13;
@@ -422,7 +432,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-000000000704";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000704");
   config.bundle_contract_id = "sbp_sbsql@observability-route-test";
   config.build_id = "sbsql-observability-route-test";
   return config;
@@ -437,7 +447,7 @@ struct PipelineArtifacts {
 };
 
 PipelineArtifacts RunPipeline(std::string_view sql,
-                              const std::vector<std::string>& resolved_object_uuids = {}) {
+                              const std::vector<api::EngineUuid>& resolved_object_uuids = {}) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
@@ -496,14 +506,14 @@ void RequireRegistryEvidence(const ObservabilityRowEvidence& row) {
 }
 
 void RequireExactLowering(const ObservabilityRowEvidence& row) {
-  std::vector<std::string> resolved_object_uuids;
-  if (!row.resolved_object_uuid.empty()) {
+  std::vector<api::EngineUuid> resolved_object_uuids;
+  if (!row.resolved_object_uuid.is_nil()) {
     resolved_object_uuids.emplace_back(row.resolved_object_uuid);
   }
   const auto artifacts = RunPipeline(row.sql, resolved_object_uuids);
   Require(artifacts.bound.bound,
           EvidenceMessage(row, "parser_bind_lower", "observability statement did not bind"));
-  if (!row.resolved_object_uuid.empty()) {
+  if (!row.resolved_object_uuid.is_nil()) {
     Require(artifacts.bound.requires_name_resolution,
             EvidenceMessage(row,
                             "parser_bind_lower",
@@ -512,10 +522,10 @@ void RequireExactLowering(const ObservabilityRowEvidence& row) {
             EvidenceMessage(row,
                             "parser_bind_lower",
                             "DESCRIBE route missing resolved object UUID"));
-    Require(Contains(artifacts.envelope.payload, row.resolved_object_uuid),
+    Require(!Contains(artifacts.envelope.payload, scratchbird::core::uuid::UuidToString(row.resolved_object_uuid)),
             EvidenceMessage(row,
                             "parser_bind_lower",
-                            "DESCRIBE payload missing resolved object UUID evidence"));
+                            "DESCRIBE textual payload duplicated a binary object identity"));
   }
   Require(artifacts.verifier.admitted,
           EvidenceMessage(row, "parser_bind_lower",
@@ -627,8 +637,8 @@ void RequireExactLowering(const ObservabilityRowEvidence& row) {
     operation.opcode_code = begin ? 1 : 2;
     operation.result_shape = "void";
     operation.diagnostic_shape = "diagnostic_vector";
-    operation.parser_package_uuid = kParserUuid;
-    operation.registry_snapshot_uuid = kRegistryUuid;
+    operation.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000712");
+    operation.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000711");
     operation.parser_resolved_names_to_uuids = true;
     sblr::SblrOperand operand;
     operand.ordinal = 1;
@@ -648,12 +658,12 @@ void RequireExactLowering(const ObservabilityRowEvidence& row) {
   member.opcode_code = opcode_entry->code;
   member.result_shape = "observability_result";
   member.diagnostic_shape = "diagnostic_vector";
-  member.parser_package_uuid = kParserUuid;
-  member.registry_snapshot_uuid = kRegistryUuid;
+  member.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000712");
+  member.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000711");
   member.parser_resolved_names_to_uuids = true;
   sblr::SblrOpcodeStream package;
-  package.package_descriptor_uuid = kPackageUuid;
-  package.registry_snapshot_uuid = kRegistryUuid;
+  package.package_descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000710");
+  package.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000711");
   package.operations = {frame(true), std::move(member), frame(false)};
   const auto canonical = sblr::EncodeSblrOpcodeStream(package);
   if (canonical.empty()) {
@@ -668,7 +678,7 @@ void RequireExactLowering(const ObservabilityRowEvidence& row) {
   Require(!canonical.empty(),
           EvidenceMessage(row, "server_admission", "canonical SBOS encoding failed"));
   sblr::SblrOpcodeStreamAdmission admission;
-  admission.admitted_registry_snapshot_uuid = std::string(kRegistryUuid);
+  admission.admitted_registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000711");
   admission.authenticated = true;
   admission.descriptor_class_accepted = true;
   admission.gateway_pass_through = true;
@@ -706,11 +716,11 @@ void RequireExactLowering(const ObservabilityRowEvidence& row) {
     gateway_request.root_opcode = std::string(row.opcode);
     gateway_request.root_operation_id = std::string(row.operation_id);
     gateway_request.route_snapshot_uuid =
-        "019f0000-0000-7000-8000-000000000713";
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000713");
     gateway_request.route_epoch = 7;
     gateway_request.route_generation = 9;
     gateway_request.security_snapshot_uuid =
-        "019f0000-0000-7000-8000-000000000714";
+        scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000714");
     gateway_request.security_epoch = 11;
     gateway_request.security_observation_generation = 13;
     gateway_request.route_snapshot_engine_owned = true;
@@ -752,13 +762,13 @@ api::EngineRequestContext EngineContext(const ObservabilityRowEvidence& row) {
   context.trace_tags.push_back("right:OBS_METRICS_READ_ALL");
   context.trace_tags.push_back(std::string("sbsql_surface_id:") + std::string(row.surface_id));
   context.database_path = "/tmp/sbsql_observability_exact_route_conformance.sbdb";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000000801";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000000802";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000000803";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000000804";
-  context.cluster_uuid.canonical = "019f0000-0000-7000-8000-000000000807";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000000805";
-  context.current_diagnostic_uuid.canonical = "019f0000-0000-7000-8000-000000000806";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000801");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000802");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000803");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000804");
+  context.cluster_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000807");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000805");
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000806");
   context.current_sqlstate = "01000";
   context.catalog_generation_id = 7;
   context.security_epoch = 11;
@@ -780,8 +790,8 @@ sblr::SblrOperationEnvelope EngineEnvelope(const ObservabilityRowEvidence& row) 
   }
   envelope.result_shape = "observability_result";
   envelope.diagnostic_shape = "diagnostic_vector";
-  envelope.parser_package_uuid = "019f0000-0000-7000-8000-000000000712";
-  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-000000000711";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000712");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000711");
   envelope.parser_resolved_names_to_uuids = true;
   return envelope;
 }
@@ -798,8 +808,8 @@ void RequireEngineDispatch(const ObservabilityRowEvidence& row) {
           EvidenceMessage(row, "cluster_fail_closed",
                           "engine dispatch envelope requested cluster authority"));
   api::EngineApiRequest api_request;
-  if (!row.resolved_object_uuid.empty()) {
-    api_request.target_object.uuid.canonical = std::string(row.resolved_object_uuid);
+  if (!row.resolved_object_uuid.is_nil()) {
+    api_request.target_object.uuid = row.resolved_object_uuid;
     api_request.target_object.object_kind = "table";
   }
   const sblr::SblrDispatchRequest request{

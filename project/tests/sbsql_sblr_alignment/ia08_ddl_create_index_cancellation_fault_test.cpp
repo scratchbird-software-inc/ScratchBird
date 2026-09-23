@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_ddl_create_index_coordinator.hpp"
 
 #include <algorithm>
@@ -18,8 +19,7 @@ int main() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_uuid.canonical =
-      "019d0000-0000-7000-8000-000000002572";
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002572");
   context.trace_tags = {"private_ddl_create_index_binder"};
   context.query_cancellation_requested = [&]() {
     ++cancellation_probes;
@@ -27,7 +27,7 @@ int main() {
   };
 
   const auto refused = api::CompileSblrDdlCreateIndexDescriptor(
-      context, context.statement_uuid.canonical, 1, 1, 1);
+      context, context.statement_uuid, 1, 1, 1);
   assert(!refused.ok);
   assert(refused.diagnostic.code ==
          "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING");
@@ -37,19 +37,19 @@ int main() {
                      [](std::uint8_t byte) { return byte == 0; }));
 
   const auto malformed = api::CompileSblrDdlCreateIndexDescriptor(
-      context, context.statement_uuid.canonical, 0, 1, 1);
+      context, context.statement_uuid, 0, 1, 1);
   assert(!malformed.ok);
   assert(malformed.diagnostic.code == "SBLR.OPERAND_INVALID");
   assert(cancellation_probes.load() == 0);
 
   const auto missing_availability = api::CompileSblrDdlCreateIndexDescriptor(
-      context, context.statement_uuid.canonical, 1, 1, 0);
+      context, context.statement_uuid, 1, 1, 0);
   assert(!missing_availability.ok);
   assert(missing_availability.diagnostic.code == "SBLR.OPERAND_INVALID");
   assert(cancellation_probes.load() == 0);
 
   auto empty_receipt_context = context;
-  empty_receipt_context.statement_uuid.canonical.clear();
+  empty_receipt_context.statement_uuid = {};
   const auto empty_receipt = api::CompileSblrDdlCreateIndexDescriptor(
       empty_receipt_context, {}, 1, 1, 1);
   assert(!empty_receipt.ok);

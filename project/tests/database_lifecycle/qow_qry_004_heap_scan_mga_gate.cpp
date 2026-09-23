@@ -6,6 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
+#include "mga_relation_store/mga_descriptor_record_codec.hpp"
+#include <type_traits>
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
@@ -45,8 +48,8 @@ namespace platform = scratchbird::core::platform;
 namespace mga = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 
-constexpr std::string_view kTypeUuid =
-    "019f0000-0000-7300-8000-000000420001";
+constexpr auto kTypeUuid =
+    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000420001");
 
 template <typename T>
 concept HasCallerCandidates = requires(T value) { value.candidates; };
@@ -190,11 +193,11 @@ void AppendCompleteRelationDescriptorRecord(
   std::ofstream output(context.database_path + ".sb.mga_relation_descriptors",
                        std::ios::binary | std::ios::app);
   Require(output.good(), "relation descriptor fixture append open failed");
-  output << "SBMGADESC1\tRELATION\t" << descriptor.relation_uuid.canonical
-         << '\t'
-         << api::EncodeCrudPairs(
-                api::SerializeMgaRelationStorageDescriptor(descriptor))
-         << '\n';
+  std::string frame;
+  Require(api::AppendMgaDescriptorRecord(descriptor.relation_uuid,
+              api::SerializeMgaRelationStorageDescriptor(descriptor), &frame),
+          "relation descriptor fixture binary encoding failed");
+  output.write(frame.data(), static_cast<std::streamsize>(frame.size()));
   output.flush();
   Require(output.good(), "complete relation descriptor fixture append failed");
 }
@@ -204,8 +207,15 @@ std::string NativeAdmissionFingerprint(
   std::ostringstream output;
   const auto number = [&](const auto value) { output << value << ';'; };
   const auto flag = [&](const bool value) { output << (value ? "1;" : "0;"); };
-  const auto text = [&](const std::string_view value) {
-    output << value.size() << ':' << value << ';';
+  const auto text = [&](const auto& value) {
+    if constexpr (std::is_same_v<std::remove_cvref_t<decltype(value)>, api::EngineUuid>) {
+      output << "16:";
+      output.write(reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size());
+      output << ';';
+    } else {
+      const std::string_view bytes(value);
+      output << bytes.size() << ':' << bytes << ';';
+    }
   };
   const auto numbers = [&](const auto& values) {
     number(values.size());
@@ -421,29 +431,29 @@ platform::TypedUuid NewUuid(const platform::UuidKind kind,
   return generated.value;
 }
 
-std::string NewUuidText(const platform::UuidKind kind,
+api::EngineUuid NewNativeUuid(const platform::UuidKind kind,
                         const platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string filespace_uuid;
-  std::string schema_uuid;
-  std::string principal_uuid;
-  std::string session_uuid;
-  std::string main_table_uuid;
-  std::string empty_table_uuid;
-  std::string full_width_table_uuid;
-  std::string empty_full_width_table_uuid;
-  std::string missing_later_column_table_uuid;
-  std::string duplicate_later_column_table_uuid;
-  std::string malformed_later_column_table_uuid;
-  std::string malformed_table_uuid;
-  std::string temporary_table_uuid;
-  std::string exclusion_table_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid filespace_uuid;
+  api::EngineUuid schema_uuid;
+  api::EngineUuid principal_uuid;
+  api::EngineUuid session_uuid;
+  api::EngineUuid main_table_uuid;
+  api::EngineUuid empty_table_uuid;
+  api::EngineUuid full_width_table_uuid;
+  api::EngineUuid empty_full_width_table_uuid;
+  api::EngineUuid missing_later_column_table_uuid;
+  api::EngineUuid duplicate_later_column_table_uuid;
+  api::EngineUuid malformed_later_column_table_uuid;
+  api::EngineUuid malformed_table_uuid;
+  api::EngineUuid temporary_table_uuid;
+  api::EngineUuid exclusion_table_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -460,11 +470,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.default_root_uuid.canonical = fixture.filespace_uuid;
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
-  context.principal_uuid.canonical = fixture.principal_uuid;
-  context.session_uuid.canonical = fixture.session_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.default_root_uuid = fixture.filespace_uuid;
+  context.current_schema_uuid = fixture.schema_uuid;
+  context.principal_uuid = fixture.principal_uuid;
+  context.session_uuid = fixture.session_uuid;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -511,11 +521,11 @@ void Prepare(const api::EngineRequestContext& context) {
 }
 
 api::EngineRequestContext QueryContext(api::EngineRequestContext context,
-                                       const std::string& table_uuid,
+                                       const api::EngineUuid& table_uuid,
                                        const platform::u64 salt) {
-  context.statement_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, salt + 1);
-  context.statement_snapshot_uuid.canonical.clear();
+  context.statement_uuid =
+      NewNativeUuid(platform::UuidKind::object, salt + 1);
+  context.statement_snapshot_uuid = {};
   api::EnginePublishStatementSnapshotRequest snapshot_request;
   snapshot_request.context = context;
   const auto snapshot = api::EnginePublishStatementSnapshot(snapshot_request);
@@ -523,12 +533,12 @@ api::EngineRequestContext QueryContext(api::EngineRequestContext context,
   context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
   context.snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_metadata_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, salt + 2);
+  context.statement_metadata_snapshot_uuid =
+      NewNativeUuid(platform::UuidKind::object, salt + 2);
   context.statement_metadata_snapshot_engine_owned = true;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, salt + 3);
+  context.authorization_context.authority_uuid =
+      NewNativeUuid(platform::UuidKind::object, salt + 3);
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
   context.authorization_context.policy_epoch = 1;
@@ -539,22 +549,22 @@ api::EngineRequestContext QueryContext(api::EngineRequestContext context,
   subject.subject_kind = "principal";
   context.authorization_context.effective_subjects.push_back(subject);
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, salt + 4);
+  grant.grant_uuid =
+      NewNativeUuid(platform::UuidKind::object, salt + 4);
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = table_uuid;
+  grant.target_uuid = table_uuid;
   grant.right = "SELECT";
   grant.security_epoch = context.security_epoch;
   context.authorization_context.grants.push_back(std::move(grant));
-  context.optimizer_capability_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, salt + 5);
-  context.optimizer_resource_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, salt + 6);
-  context.optimizer_route_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, salt + 7);
-  context.catalog_epoch_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, salt + 8);
+  context.optimizer_capability_snapshot_uuid =
+      NewNativeUuid(platform::UuidKind::object, salt + 5);
+  context.optimizer_resource_snapshot_uuid =
+      NewNativeUuid(platform::UuidKind::object, salt + 6);
+  context.optimizer_route_snapshot_uuid =
+      NewNativeUuid(platform::UuidKind::object, salt + 7);
+  context.catalog_epoch_uuid =
+      NewNativeUuid(platform::UuidKind::object, salt + 8);
   context.optimizer_route_epoch = 1;
   context.optimizer_route_generation = 1;
   context.optimizer_memory_budget_bytes = 8 * 1024 * 1024;
@@ -575,15 +585,15 @@ void ValidateStatementStableSnapshotAuthority(const Fixture& fixture) {
   auto owner = Begin(fixture, "qow-snapshot-owner");
 
   auto prepared_owner = prepared;
-  prepared_owner.statement_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 5000);
+  prepared_owner.statement_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 5000);
   api::EnginePublishStatementSnapshotRequest refused_publish;
   refused_publish.context = prepared_owner;
   Require(!api::EnginePublishStatementSnapshot(refused_publish).ok,
           "prepared transaction published a statement snapshot");
 
-  owner.statement_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 5001);
+  owner.statement_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 5001);
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = owner;
   const auto published = api::EnginePublishStatementSnapshot(publish);
@@ -642,13 +652,13 @@ void ValidateStatementStableSnapshotAuthority(const Fixture& fixture) {
   Require(!api::EngineResolveStatementSnapshot(tampered).ok,
           "tampered statement snapshot high-water resolved");
   tampered = resolve;
-  tampered.context.statement_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 5002);
+  tampered.context.statement_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 5002);
   Require(!api::EngineResolveStatementSnapshot(tampered).ok,
           "mismatched statement identity resolved a snapshot");
   tampered = resolve;
-  tampered.context.statement_snapshot_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 5003);
+  tampered.context.statement_snapshot_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 5003);
   Require(!api::EngineResolveStatementSnapshot(tampered).ok,
           "unknown statement snapshot resolved");
   tampered = resolve;
@@ -664,14 +674,14 @@ void ValidateStatementStableSnapshotAuthority(const Fixture& fixture) {
 }
 
 std::string EncodedInt64Descriptor() {
-  return "canonical=int64;type_uuid=" + std::string(kTypeUuid) +
-         ";nullable=true";
+  return "canonical=int64;nullable=true";
 }
 
 api::EngineDescriptor InputDescriptor() {
   api::EngineDescriptor descriptor;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
+  descriptor.type_uuid = kTypeUuid;
   descriptor.encoded_descriptor = EncodedInt64Descriptor();
   return descriptor;
 }
@@ -700,8 +710,7 @@ api::EngineRowValue FullWidthRow(const std::int64_t first,
   api::EngineTypedValue first_value;
   first_value.descriptor = InputDescriptor();
   first_value.descriptor.encoded_descriptor =
-      "canonical=int64;type_uuid=" + std::string(kTypeUuid) +
-      ";nullable=false";
+      "canonical=int64;nullable=false";
   first_value.encoded_value = std::to_string(first);
   api::EngineTypedValue second_value;
   second_value.descriptor = InputDescriptor();
@@ -719,18 +728,18 @@ api::EngineRowValue FullWidthRow(const std::int64_t first,
 
 api::CrudTableRecord Table(const Fixture& fixture,
                            const api::EngineRequestContext& context,
-                           const std::string& table_uuid,
+                           const api::EngineUuid& table_uuid,
                            const bool temporary = false,
                            const bool full_width = false) {
   api::CrudTableRecord table;
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = table_uuid;
-  table.default_name = "qow_heap_" + table_uuid.substr(table_uuid.size() - 6);
+  static std::uint64_t table_name_ordinal = 0;
+  table.default_name = "qow_heap_" + std::to_string(++table_name_ordinal);
   if (full_width) {
     table.columns.push_back(
         {"required_value",
-         "canonical=int64;type_uuid=" + std::string(kTypeUuid) +
-             ";nullable=false"});
+         "canonical=int64;nullable=false"});
     table.columns.push_back({"nullable_value", EncodedInt64Descriptor()});
   } else {
     table.columns.push_back({"value", EncodedInt64Descriptor()});
@@ -746,7 +755,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
 
 void PersistTable(const Fixture& fixture,
                   const api::EngineRequestContext& context,
-                  const std::string& table_uuid,
+                  const api::EngineUuid& table_uuid,
                   const bool temporary = false,
                   const bool full_width = false) {
   const auto table = Table(fixture, context, table_uuid, temporary, full_width);
@@ -760,12 +769,12 @@ void PersistTable(const Fixture& fixture,
 
 void InsertRows(const Fixture& fixture,
                 const api::EngineRequestContext& context,
-                const std::string& table_uuid,
+                const api::EngineUuid& table_uuid,
                 std::vector<api::EngineRowValue> rows) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = fixture.schema_uuid;
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_schema.uuid = fixture.schema_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.target_object = request.target_table;
   request.bound_object_identity.object_uuid = request.target_table.uuid;
@@ -779,14 +788,14 @@ void InsertRows(const Fixture& fixture,
 }
 
 void DeleteRow(const api::EngineRequestContext& context,
-               const std::string& table_uuid,
-               const std::string& row_uuid) {
+               const api::EngineUuid& table_uuid,
+               const api::EngineUuid& row_uuid) {
   api::EngineDeleteRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate.predicate_kind = "row_uuid_match";
-  request.delete_predicate.canonical_predicate_envelope = row_uuid;
+  request.delete_predicate.row_uuid = row_uuid;
   request.tombstone_only = true;
   const auto deleted = api::EngineDeleteRows(request);
   RequireOk(deleted, "fixture row deletion failed");
@@ -815,39 +824,39 @@ Fixture MakeFixture() {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "database creation failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.filespace_uuid = uuid::UuidToString(create.filespace_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.filespace_uuid = create.filespace_uuid.value;
   fixture.schema_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 20);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 20);
   fixture.principal_uuid =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 21);
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 21);
   fixture.session_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 22);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 22);
   fixture.main_table_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 23);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 23);
   fixture.empty_table_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 24);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 24);
   fixture.full_width_table_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 27);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 27);
   fixture.empty_full_width_table_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 28);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 28);
   fixture.missing_later_column_table_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 34);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 34);
   fixture.duplicate_later_column_table_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 35);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 35);
   fixture.malformed_later_column_table_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 36);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 36);
   fixture.malformed_table_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 25);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 25);
   fixture.temporary_table_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 26);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 26);
   fixture.exclusion_table_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 29);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 29);
 
   auto metadata = Begin(fixture, "qow-heap-metadata");
   auto zero_snapshot_context = metadata;
-  zero_snapshot_context.statement_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 5004);
+  zero_snapshot_context.statement_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 5004);
   api::EngineResolveStatementSnapshotRequest zero_resolve_request;
   {
     const auto inventory_guard =
@@ -943,15 +952,15 @@ Fixture MakeFixture() {
 
   auto malformed_width_writer = Begin(
       fixture, "qow-heap-malformed-full-width-writer");
-  const auto append_full_width_row = [&](const std::string& table_uuid,
+  const auto append_full_width_row = [&](const api::EngineUuid& table_uuid,
                                          const platform::u64 row_salt,
                                          auto values) {
     api::CrudRowVersionRecord row;
     row.creator_tx = malformed_width_writer.local_transaction_id;
     row.table_uuid = table_uuid;
-    row.row_uuid = NewUuidText(platform::UuidKind::row, row_salt);
+    row.row_uuid = NewNativeUuid(platform::UuidKind::row, row_salt);
     row.version_uuid =
-        NewUuidText(platform::UuidKind::object, row_salt + 1);
+        NewNativeUuid(platform::UuidKind::object, row_salt + 1);
     row.values = std::move(values);
     std::uint64_t ignored_sequence = 0;
     const auto appended = api::AppendMgaRowVersion(
@@ -980,9 +989,9 @@ Fixture MakeFixture() {
   valid.creator_tx = malformed_writer.local_transaction_id;
   valid.table_uuid = fixture.malformed_table_uuid;
   valid.row_uuid =
-      NewUuidText(platform::UuidKind::row, fixture.salt + 30);
+      NewNativeUuid(platform::UuidKind::row, fixture.salt + 30);
   valid.version_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 31);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 31);
   valid.values = {{"value", "7"}};
   std::uint64_t ignored_sequence = 0;
   auto append =
@@ -990,9 +999,9 @@ Fixture MakeFixture() {
   Require(!append.error, "valid malformed-fixture row append failed");
   api::CrudRowVersionRecord malformed = valid;
   malformed.row_uuid =
-      NewUuidText(platform::UuidKind::row, fixture.salt + 32);
+      NewNativeUuid(platform::UuidKind::row, fixture.salt + 32);
   malformed.version_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 33);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 33);
   malformed.values = {{"value", "not-an-int64"}};
   append = api::AppendMgaRowVersion(
       malformed_writer, malformed, &ignored_sequence);
@@ -1023,12 +1032,12 @@ exec::CanonicalExecutionMgaAuthority DurableInventoryAuthority(
     }
     const auto& vector = resolved.snapshot_vector;
     auto& statement = current.statement_context;
-    statement.statement_uuid = context.statement_uuid.canonical;
-    statement.owning_transaction_uuid = context.transaction_uuid.canonical;
+    statement.statement_uuid = context.statement_uuid;
+    statement.owning_transaction_uuid = context.transaction_uuid;
     statement.statement_snapshot_uuid =
-        context.statement_snapshot_uuid.canonical;
+        context.statement_snapshot_uuid;
     statement.statement_metadata_snapshot_uuid =
-        context.statement_metadata_snapshot_uuid.canonical;
+        context.statement_metadata_snapshot_uuid;
     statement.owning_local_transaction_id = vector.owning_transaction.value;
     statement.visible_committed_high_watermark =
         vector.visible_committed_high_watermark;
@@ -1064,16 +1073,16 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   auto* relational = new api::TypedRelationalDag();
   relational->wire_version = 2;
   relational->bound_sblr_tree_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 1);
-  relational->bound_catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+      NewNativeUuid(platform::UuidKind::object, salt + 1);
+  relational->bound_catalog_epoch_uuid = context.catalog_epoch_uuid;
   relational->bound_security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
-  relational->statement_uuid = context.statement_uuid.canonical;
-  relational->owning_transaction_uuid = context.transaction_uuid.canonical;
+      context.authorization_context.authority_uuid;
+  relational->statement_uuid = context.statement_uuid;
+  relational->owning_transaction_uuid = context.transaction_uuid;
   relational->statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   relational->statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   relational->local_transaction_id = context.local_transaction_id;
   relational->snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
@@ -1089,8 +1098,8 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
             "fixture descriptor columns are not in persisted ordinal order");
     api::RelationalTypeDescriptor type;
     type.descriptor_id = id;
-    type.descriptor_uuid = column.value_descriptor.descriptor_uuid.canonical;
-    type.type_uuid = std::string(kTypeUuid);
+    type.descriptor_uuid = column.value_descriptor.descriptor_uuid;
+    type.type_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000420001");
     type.nullability = column.nullable
                            ? api::RelationalNullability::kNullable
                            : api::RelationalNullability::kNonNull;
@@ -1099,7 +1108,7 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
     expression.expression_id = id;
     expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
     expression.result_descriptor_id = id;
-    expression.bound_name_uuid = column.column_uuid.canonical;
+    expression.bound_name_uuid = column.column_uuid;
     relational->expressions.push_back(std::move(expression));
     api::RelationalOutputRecord output;
     output.output_id = id;
@@ -1113,7 +1122,7 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
     node.output_descriptor_ids.push_back(id);
     node.bound_expression_ids.push_back(id);
   }
-  node.required_object_uuids = {descriptor.relation_uuid.canonical};
+  node.required_object_uuids = {descriptor.relation_uuid};
   node.semantic_variant_id = "relation.source.v1";
   relational->nodes.push_back(node);
 
@@ -1122,7 +1131,7 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   request.relational_dag = relational;
   request.physical_dag.abi_version = 2;
   request.physical_dag.selected_plan_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 2);
+      NewNativeUuid(platform::UuidKind::object, salt + 2);
   request.physical_dag.root_physical_node_id = 11;
   request.physical_dag.local_transaction_id = context.local_transaction_id;
   request.physical_dag.statement_snapshot_id =
@@ -1132,12 +1141,12 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   const auto snapshot = api::EngineResolveStatementSnapshot(snapshot_request);
   RequireOk(snapshot, "resolve physical statement snapshot failed");
   auto& physical_mga = request.physical_dag.mga_statement_context;
-  physical_mga.statement_uuid = context.statement_uuid.canonical;
-  physical_mga.owning_transaction_uuid = context.transaction_uuid.canonical;
+  physical_mga.statement_uuid = context.statement_uuid;
+  physical_mga.owning_transaction_uuid = context.transaction_uuid;
   physical_mga.statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   physical_mga.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   physical_mga.owning_local_transaction_id =
       snapshot.snapshot_vector.owning_transaction.value;
   physical_mga.visible_committed_high_watermark =
@@ -1165,17 +1174,17 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   physical_mga.current = true;
   request.physical_dag.bound_sblr_tree_uuid =
       relational->bound_sblr_tree_uuid;
-  request.physical_dag.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  request.physical_dag.catalog_epoch_uuid = context.catalog_epoch_uuid;
   request.physical_dag.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
+      context.authorization_context.authority_uuid;
   request.physical_dag.capability_snapshot_uuid =
-      context.optimizer_capability_snapshot_uuid.canonical;
+      context.optimizer_capability_snapshot_uuid;
   request.physical_dag.resource_snapshot_uuid =
-      context.optimizer_resource_snapshot_uuid.canonical;
+      context.optimizer_resource_snapshot_uuid;
   request.physical_dag.statistics_snapshot_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 3);
+      NewNativeUuid(platform::UuidKind::object, salt + 3);
   request.physical_dag.route_snapshot_uuid =
-      context.optimizer_route_snapshot_uuid.canonical;
+      context.optimizer_route_snapshot_uuid;
   request.physical_dag.catalog_generation = context.catalog_generation_id;
   request.physical_dag.security_epoch = context.security_epoch;
   request.physical_dag.policy_epoch =
@@ -1189,17 +1198,17 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   request.physical_dag.optimizer_published = true;
   request.physical_dag.immutable_node_identity_validated = true;
   request.physical_dag.capability_validated_before_access = true;
-  const std::string capability =
-      context.optimizer_capability_snapshot_uuid.canonical;
-  const std::vector<std::string> evidence{
+  const api::EngineUuid capability =
+      context.optimizer_capability_snapshot_uuid;
+  const std::vector<api::EngineUuid> evidence{
       relational->bound_sblr_tree_uuid,
-      context.catalog_epoch_uuid.canonical,
-      context.authorization_context.authority_uuid.canonical,
-      context.statement_snapshot_uuid.canonical,
+      context.catalog_epoch_uuid,
+      context.authorization_context.authority_uuid,
+      context.statement_snapshot_uuid,
       capability,
-      context.optimizer_resource_snapshot_uuid.canonical,
+      context.optimizer_resource_snapshot_uuid,
       request.physical_dag.statistics_snapshot_uuid,
-      context.optimizer_route_snapshot_uuid.canonical};
+      context.optimizer_route_snapshot_uuid};
   for (std::size_t index = 0; index < evidence.size(); ++index) {
     request.physical_dag.admission_evidence.push_back(
         {static_cast<exec::PhysicalAdmissionStage>(index + 1),
@@ -1213,11 +1222,11 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   physical.output_descriptor_ids = node.output_descriptor_ids;
   physical.causal_counter_id = 101;
   physical.selected_alternative_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 4);
+      NewNativeUuid(platform::UuidKind::object, salt + 4);
   physical.executor_capability_uuid = capability;
   physical.executor_capability_abi_version = 1;
   physical.cost_vector_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 5);
+      NewNativeUuid(platform::UuidKind::object, salt + 5);
   physical.memory_bytes_required = 4 * 1024 * 1024;
   physical.engine_capability_validated = true;
   physical.mga_statement_context = request.physical_dag.mga_statement_context;
@@ -1250,7 +1259,7 @@ api::CanonicalHeapOptimizerAdmissionRequest AdmissionRequestFor(
 
 exec::CanonicalHeapRelationAcquisitionRequest RequestFor(
     const api::EngineRequestContext& context,
-    const std::string& relation_uuid,
+    const api::EngineUuid& relation_uuid,
     const platform::u64 salt) {
   const auto descriptor =
       api::LoadMgaRelationStorageDescriptor(context, relation_uuid);
@@ -1290,9 +1299,9 @@ api::CanonicalHeapOptimizerSelectedExecutionRequest SelectedRequestFor(
   request.maximum_output_cells = acquisition.maximum_output_cells;
   request.cancellation_requested = acquisition.cancellation_requested;
   request.execution_attempt_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 1);
+      NewNativeUuid(platform::UuidKind::object, salt + 1);
   request.transaction_effect_evidence_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 2);
+      NewNativeUuid(platform::UuidKind::object, salt + 2);
   return request;
 }
 
@@ -1358,7 +1367,7 @@ void RequireAtomicDispatchFailure(
   Require(!result.diagnostic.ok && result.executed_steps.empty() &&
               result.root_result_handle_id == 0 &&
               result.root_output_descriptor_ids.empty() &&
-              result.selected_plan_uuid.empty() &&
+              result.selected_plan_uuid.is_nil() &&
               result.executed_root_physical_node_id == 0 &&
               result.root_causal_counter_id == 0,
           detail);
@@ -1390,7 +1399,7 @@ void RequireAtomicAdmissionFailure(
               !result.admission.admitted &&
               result.admission.evidence.empty() &&
               result.admission.issues.empty() &&
-              result.current_relation_descriptor_uuid.empty() &&
+              result.current_relation_descriptor_uuid.is_nil() &&
               result.current_relation_descriptor_generation == 0,
           detail);
 }
@@ -1445,16 +1454,16 @@ void ValidateDurableZeroHighWaterHeapGate(Fixture& fixture) {
           "zero-high-water heap inventory publication failed");
 
   const auto relation_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 7000);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 7000);
   PersistTable(fixture, owner, relation_uuid);
   InsertRows(fixture, owner, relation_uuid, {Int64Row(701)});
   api::CrudRowVersionRecord non_owner;
   non_owner.creator_tx = committed_non_owner_id;
   non_owner.table_uuid = relation_uuid;
   non_owner.row_uuid =
-      NewUuidText(platform::UuidKind::row, fixture.salt + 7001);
+      NewNativeUuid(platform::UuidKind::row, fixture.salt + 7001);
   non_owner.version_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 7002);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 7002);
   non_owner.values = {{"value", "702"}};
   std::uint64_t ignored_sequence = 0;
   Require(!api::AppendMgaRowVersion(owner, non_owner, &ignored_sequence).error,
@@ -1585,7 +1594,7 @@ void ValidatePhysicalV2StatementContextRefusalMatrix(Fixture& fixture) {
   auto baseline = RequestFor(reader, fixture.main_table_uuid,
                              fixture.salt + 7260);
   const auto& context = baseline.mga_authority.statement_context;
-  const std::vector<std::string> statement_identity_uuids{
+  const std::vector<api::EngineUuid> statement_identity_uuids{
       context.statement_uuid,
       context.owning_transaction_uuid,
       context.statement_snapshot_uuid,
@@ -1630,7 +1639,7 @@ void ValidatePhysicalV2StatementContextRefusalMatrix(Fixture& fixture) {
 
   auto mutated = baseline;
   auto replacement = context;
-  replacement.statement_uuid.clear();
+  replacement.statement_uuid = {};
   set_physical_context(&mutated, replacement);
   expect_pre_access_refusal(mutated,
                             "missing physical statement UUID was accepted");
@@ -1638,14 +1647,14 @@ void ValidatePhysicalV2StatementContextRefusalMatrix(Fixture& fixture) {
   mutated = baseline;
   replacement = context;
   replacement.statement_metadata_snapshot_uuid =
-      "00000000-0000-0000-0000-000000000000";
+      scratchbird::tests::FixtureUuidLiteral("00000000-0000-0000-0000-000000000000");
   set_physical_context(&mutated, replacement);
   expect_pre_access_refusal(
       mutated, "nil physical metadata snapshot UUID was accepted");
 
   mutated = baseline;
   replacement = context;
-  replacement.statement_snapshot_uuid.front() = 'A';
+  replacement.statement_snapshot_uuid.bytes[8] = 0;
   set_physical_context(&mutated, replacement);
   expect_pre_access_refusal(
       mutated, "malformed physical statement snapshot UUID was accepted");
@@ -1710,7 +1719,7 @@ void ValidatePhysicalV2StatementContextRefusalMatrix(Fixture& fixture) {
   mutated = baseline;
   mutated.physical_dag.nodes.front()
       .mga_statement_context.statement_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 7270);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 7270);
   expect_pre_access_refusal(mutated,
                             "node-swapped statement context was accepted");
 
@@ -1720,7 +1729,7 @@ void ValidatePhysicalV2StatementContextRefusalMatrix(Fixture& fixture) {
 
 bool SameDescriptor(const api::EngineDescriptor& left,
                     const api::EngineDescriptor& right) {
-  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+  return left.descriptor_uuid == right.descriptor_uuid &&
          left.descriptor_kind == right.descriptor_kind &&
          left.canonical_type_name == right.canonical_type_name &&
          left.encoded_descriptor == right.encoded_descriptor;
@@ -1730,8 +1739,8 @@ bool PreservesPersistedDescriptorFields(
     const api::EngineDescriptor& runtime,
     const api::EngineDescriptor& persisted) {
   return runtime.descriptor_kind == "scalar" &&
-         runtime.descriptor_uuid.canonical ==
-             persisted.descriptor_uuid.canonical &&
+         runtime.descriptor_uuid ==
+             persisted.descriptor_uuid &&
          runtime.canonical_type_name == persisted.canonical_type_name &&
          runtime.encoded_descriptor == persisted.encoded_descriptor;
 }
@@ -1768,15 +1777,13 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
                   persisted.descriptor.columns.front().nullable &&
               first.output_batch.columns.front().stable_name ==
                   persisted.descriptor.columns.front().canonical_name_key &&
-              first.column_uuids == std::vector<std::string>{
-                  persisted.descriptor.columns.front().column_uuid.canonical} &&
+              first.column_uuids == std::vector<api::EngineUuid>{
+                  persisted.descriptor.columns.front().column_uuid} &&
               first.counters.output_column_count == 1 &&
               first.counters.materialized_cell_count == 3 &&
               persisted.descriptor.columns.front().ordinal == 0 &&
               request.relational_dag->outputs.front().ordinal == 0 &&
-              persisted_value_descriptor.encoded_descriptor.find(
-                  "type_uuid=" + std::string(kTypeUuid)) !=
-                  std::string::npos,
+              persisted_value_descriptor.type_uuid == kTypeUuid,
           "committed heap rows were not acquired under bounded MGA authority");
   std::size_t null_count = 0;
   for (const auto& row : first.output_batch.rows) {
@@ -1828,7 +1835,7 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
   Require(current_result.diagnostic.ok &&
               current_result.output_batch.rows.size() == 4,
           "new snapshot did not observe committed row");
-  const std::string row_to_delete = current_result.emitted_record_uuids.front();
+  const api::EngineUuid row_to_delete = current_result.emitted_record_uuids.front();
   ReleaseRequest(&current);
   Rollback(current_reader);
 
@@ -1901,8 +1908,8 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
 }
 
 void ValidateStreamingCountStarMatrix(Fixture& fixture) {
-  const std::string relation_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 7200);
+  const api::EngineUuid relation_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 7200);
   auto writer = Begin(fixture, "qow-heap-count-writer");
   PersistTable(fixture, writer, relation_uuid);
   InsertRows(fixture, writer, relation_uuid,
@@ -1993,7 +2000,7 @@ void ValidateStreamingCountStarMatrix(Fixture& fixture) {
   stream.prepare_consumer_for_visible_rows =
       [&](const api::MgaRelationStorageDescriptor& descriptor,
           const std::uint64_t visible_rows, std::uint64_t* row_growth) {
-        if (descriptor.relation_uuid.canonical != relation_uuid ||
+        if (descriptor.relation_uuid != relation_uuid ||
             visible_rows > std::numeric_limits<std::size_t>::max() ||
             row_growth == nullptr) {
           return false;
@@ -2194,7 +2201,7 @@ void ValidatePhysicalHeapDispatchMatrix(Fixture& fixture) {
               !step.heap_read_authority
                    ->wal_is_visibility_or_recovery_authority &&
               step.current_relation_descriptor_uuid ==
-                  persisted.descriptor.descriptor_uuid.canonical &&
+                  persisted.descriptor.descriptor_uuid &&
               step.current_relation_descriptor_generation ==
                   persisted.descriptor.descriptor_generation &&
               step.materialized_output_batch.has_value() &&
@@ -2325,7 +2332,7 @@ void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
           "input-edge refusal occurred after physical read");
 
   mutated = baseline;
-  mutated.physical_dag.nodes.front().executor_capability_uuid.clear();
+  mutated.physical_dag.nodes.front().executor_capability_uuid = {};
   RequireAtomicDispatchFailure(
       exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
       "missing heap capability UUID was accepted");
@@ -2340,11 +2347,11 @@ void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
   second_heap.physical_node_id = 12;
   second_heap.causal_counter_id = 102;
   second_heap.selected_alternative_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 288);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 288);
   second_heap.executor_capability_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 289);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 289);
   second_heap.cost_vector_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 290);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 290);
   auto project = mutated.physical_dag.nodes.front();
   project.physical_node_id = 13;
   project.node_kind = exec::PhysicalNodeKind::kProject;
@@ -2352,11 +2359,11 @@ void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
   project.input_physical_node_ids = {11, 12};
   project.causal_counter_id = 103;
   project.selected_alternative_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 291);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 291);
   project.executor_capability_uuid =
-      reader.optimizer_capability_snapshot_uuid.canonical;
+      reader.optimizer_capability_snapshot_uuid;
   project.cost_vector_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 292);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 292);
   mutated.physical_dag.nodes.push_back(std::move(second_heap));
   mutated.physical_dag.nodes.push_back(std::move(project));
   mutated.physical_dag.root_physical_node_id = 13;
@@ -2425,7 +2432,7 @@ void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
 
   auto malformed_context = reader;
   malformed_context.authorization_context.grants.front()
-      .target_uuid.canonical = fixture.malformed_table_uuid;
+      .target_uuid = fixture.malformed_table_uuid;
   auto malformed_acquisition = RequestFor(malformed_context,
                                           fixture.malformed_table_uuid,
                                           fixture.salt + 287);
@@ -2451,10 +2458,11 @@ exec::CanonicalResultPublicationResult PublishDescriptorCarrier(
     const exec::CanonicalMgaAuthorityOrigin authority_origin =
         exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, salt + 1);
+  descriptor.descriptor_uuid =
+      NewNativeUuid(platform::UuidKind::object, salt + 1);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
+  descriptor.type_uuid = kTypeUuid;
   descriptor.encoded_descriptor = encoded_descriptor;
   exec::CanonicalResultPublicationRequest request;
   request.statement_uuid =
@@ -2463,22 +2471,22 @@ exec::CanonicalResultPublicationResult PublishDescriptorCarrier(
   request.mga_authority.origin = authority_origin;
   if (mismatch_statement_authority) {
     request.mga_authority.statement_context.owning_transaction_uuid =
-        NewUuidText(platform::UuidKind::object, salt + 5);
+        NewNativeUuid(platform::UuidKind::object, salt + 5);
   }
   request.selected_physical_dag = acquisition.physical_dag;
   request.selected_catalog_epoch_uuid =
       acquisition.physical_dag.catalog_epoch_uuid;
   request.execution_attempt_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 3);
+      NewNativeUuid(platform::UuidKind::object, salt + 3);
   request.transaction_effect_evidence_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 4);
+      NewNativeUuid(platform::UuidKind::object, salt + 4);
   request.physical_output_batch.columns.push_back(
       {"value", descriptor, physical_nullable, 1});
   exec::CanonicalResultColumnDescriptor published;
   published.ordinal = 0;
   published.name_utf8 = "value";
-  published.descriptor_uuid = descriptor.descriptor_uuid.canonical;
-  published.type_uuid = std::string(kTypeUuid);
+  published.descriptor_uuid = descriptor.descriptor_uuid;
+  published.type_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000420001");
   published.nullability = published_nullability;
   request.column_bindings.push_back({0, true, published});
   return exec::PublishCanonicalResultEnvelope(request);
@@ -2490,7 +2498,7 @@ void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
   auto acquisition = RequestFor(reader, fixture.main_table_uuid,
                                 fixture.salt + 395);
   const std::string prefix =
-      "canonical=int64;type_uuid=" + std::string(kTypeUuid) + ";";
+      "canonical=int64;";
   auto result = PublishDescriptorCarrier(
       acquisition,
       prefix + "nullable=true", true,
@@ -2509,10 +2517,10 @@ void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
       exec::CanonicalResultNullability::kNullable, fixture.salt + 405, false,
       exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam);
   Require(!result.diagnostic.ok && !result.published &&
-              result.envelope.statement_uuid.empty() &&
-              result.envelope.mga_statement_context.statement_uuid.empty() &&
-              result.envelope.catalog_epoch_uuid.empty() &&
-              result.envelope.execution_attempt_uuid.empty() &&
+              result.envelope.statement_uuid.is_nil() &&
+              result.envelope.mga_statement_context.statement_uuid.is_nil() &&
+              result.envelope.catalog_epoch_uuid.is_nil() &&
+              result.envelope.execution_attempt_uuid.is_nil() &&
               result.envelope.column_descriptors.empty() &&
               result.envelope.row_stream_format_id.empty() &&
               !result.envelope.row_count.has_value() &&
@@ -2550,7 +2558,7 @@ void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
           "canonical unknown nullability spelling regressed");
 
   const std::vector<std::string> refused{
-      "canonical=int64;type_uuid=" + std::string(kTypeUuid),
+      "canonical=int64",
       prefix + "nullable=True",
       prefix + "nullable=true;nullable=true",
       prefix + "nullability=nullable;nullable=false",
@@ -2570,9 +2578,9 @@ void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
       acquisition, prefix + "nullable=true", true,
       exec::CanonicalResultNullability::kNullable, fixture.salt + 490, true);
   Require(!result.diagnostic.ok && !result.published &&
-              result.envelope.statement_uuid.empty() &&
-              result.envelope.mga_statement_context.statement_uuid.empty() &&
-              result.envelope.catalog_epoch_uuid.empty() &&
+              result.envelope.statement_uuid.is_nil() &&
+              result.envelope.mga_statement_context.statement_uuid.is_nil() &&
+              result.envelope.catalog_epoch_uuid.is_nil() &&
               result.row_stream.columns.empty() &&
               result.row_stream.rows.empty() &&
               result.delivery_records.empty() &&
@@ -2613,7 +2621,7 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
   const auto& publication = first.result_publication;
   Require(publication.diagnostic.ok && publication.published &&
               publication.envelope.statement_uuid ==
-                  reader.statement_uuid.canonical &&
+                  reader.statement_uuid &&
               exec::PhysicalMgaStatementContextEqual(
                   publication.envelope.mga_statement_context,
                   request.selected_physical_dag.mga_statement_context) &&
@@ -2628,7 +2636,7 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
               publication.envelope.column_descriptors.front()
                       .descriptor_uuid ==
                   persisted.descriptor.columns.front()
-                      .value_descriptor.descriptor_uuid.canonical &&
+                      .value_descriptor.descriptor_uuid &&
               publication.envelope.column_descriptors.front().type_uuid ==
                   kTypeUuid &&
               publication.envelope.column_descriptors.front().nullability ==
@@ -2642,8 +2650,8 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
               publication.canonical_envelope_bytes.find(
                   "mga.statement_metadata_snapshot_uuid") !=
                   std::string::npos &&
-              publication.canonical_envelope_bytes.find(
-                  request.selected_physical_dag.catalog_epoch_uuid) !=
+              publication.canonical_envelope_bytes.find(std::string(
+                  reinterpret_cast<const char*>(request.selected_physical_dag.catalog_epoch_uuid.bytes.data()), 16)) !=
                   std::string::npos,
           "selected heap result lost derived metadata, rows, or delivery order");
   for (std::size_t index = 1; index < publication.delivery_records.size();
@@ -2979,9 +2987,9 @@ void ValidateFullWidthHeapMatrix(Fixture& fixture) {
               acquired.counters.output_column_count == 2 &&
               acquired.counters.materialized_cell_count == 4 &&
               acquired.column_uuids ==
-                  std::vector<std::string>{
-                      persisted.descriptor.columns[0].column_uuid.canonical,
-                      persisted.descriptor.columns[1].column_uuid.canonical},
+                  std::vector<api::EngineUuid>{
+                      persisted.descriptor.columns[0].column_uuid,
+                      persisted.descriptor.columns[1].column_uuid},
           "full-width acquisition lost exact shape or counter evidence");
   for (std::size_t ordinal = 0; ordinal < 2; ++ordinal) {
     Require(acquired.output_batch.columns[ordinal].stable_name ==
@@ -3044,7 +3052,7 @@ void ValidateFullWidthHeapMatrix(Fixture& fixture) {
                     persisted.descriptor.columns[ordinal].canonical_name_key &&
                 metadata.descriptor_uuid == persisted.descriptor.columns[ordinal]
                                                 .value_descriptor
-                                                .descriptor_uuid.canonical &&
+                                                .descriptor_uuid &&
                 metadata.type_uuid == kTypeUuid,
             "selected full-width metadata is not in persisted ordinal order");
   }
@@ -3216,12 +3224,12 @@ void ValidateFullWidthHeapRefusals(Fixture& fixture) {
   require_post_read_refusal(mutated, "persisted name drift was accepted");
   mutated = baseline;
   mutated.relational_dag.descriptors[1].descriptor_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 789);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 789);
   require_post_read_refusal(mutated,
                             "persisted value-descriptor UUID drift was accepted");
   mutated = baseline;
   mutated.relational_dag.descriptors[1].type_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 790);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 790);
   require_post_read_refusal(mutated, "persisted type drift was accepted");
   mutated = baseline;
   mutated.relational_dag.descriptors[1].nullability =
@@ -3230,7 +3238,7 @@ void ValidateFullWidthHeapRefusals(Fixture& fixture) {
                             "persisted nullability drift was accepted");
   mutated = baseline;
   mutated.relational_dag.descriptors[1].collation_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 791);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 791);
   require_post_read_refusal(mutated, "persisted collation drift was accepted");
   mutated = baseline;
   mutated.relational_dag.descriptors[1].timezone_profile_id = "UTC";
@@ -3256,7 +3264,7 @@ void ValidateFullWidthHeapRefusals(Fixture& fixture) {
   ReleaseRequest(&acquisition);
   Rollback(reader);
 
-  const std::vector<std::pair<std::string, std::string>> malformed_relations{
+  const std::vector<std::pair<api::EngineUuid, std::string>> malformed_relations{
       {fixture.missing_later_column_table_uuid, "missing"},
       {fixture.duplicate_later_column_table_uuid, "duplicate"},
       {fixture.malformed_later_column_table_uuid, "malformed"}};
@@ -3297,12 +3305,12 @@ void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
   };
 
   auto mutated = baseline;
-  mutated.context.statement_uuid.canonical.clear();
+  mutated.context.statement_uuid = {};
   require_preflight_refusal(mutated,
                             "missing context statement UUID was accepted");
 
   mutated = baseline;
-  mutated.execution_attempt_uuid.clear();
+  mutated.execution_attempt_uuid = {};
   auto result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
   RequireAtomicSelectedFailure(result,
                                "missing execution attempt UUID was accepted");
@@ -3310,7 +3318,7 @@ void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
           "missing execution attempt UUID reached heap data");
 
   mutated = baseline;
-  mutated.transaction_effect_evidence_uuid = "NOT-A-UUID";
+  mutated.transaction_effect_evidence_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-0000-000000420001");
   result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
   RequireAtomicSelectedFailure(
       result, "malformed transaction-effect evidence UUID was accepted");
@@ -3318,7 +3326,7 @@ void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
           "malformed transaction-effect UUID reached heap data");
 
   mutated = baseline;
-  mutated.execution_attempt_uuid = mutated.context.statement_uuid.canonical;
+  mutated.execution_attempt_uuid = mutated.context.statement_uuid;
   result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
   RequireAtomicSelectedFailure(result,
                                "equal statement/execution UUIDs were accepted");
@@ -3367,12 +3375,12 @@ void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
                             "result expression identity drift was accepted");
 
   mutated = baseline;
-  mutated.relational_dag.expressions.front().bound_name_uuid = "bad-uuid";
+  mutated.relational_dag.expressions.front().bound_name_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-0000-000000420001");
   require_preflight_refusal(mutated,
                             "bound column UUID drift was accepted");
 
   mutated = baseline;
-  mutated.relational_dag.descriptors.front().descriptor_uuid = "bad-uuid";
+  mutated.relational_dag.descriptors.front().descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-0000-000000420001");
   require_preflight_refusal(mutated,
                             "result descriptor UUID drift was accepted");
 
@@ -3405,7 +3413,7 @@ void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
           "non-heap implementation reached heap data");
 
   mutated = baseline;
-  mutated.selected_physical_dag.nodes.front().executor_capability_uuid.clear();
+  mutated.selected_physical_dag.nodes.front().executor_capability_uuid = {};
   require_preflight_refusal(mutated,
                             "missing selected capability UUID was accepted");
   mutated = baseline;
@@ -3449,11 +3457,11 @@ void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
 
   mutated = baseline;
   api::EngineMaterializedAuthorizationPolicy policy;
-  policy.policy_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 630);
+  policy.policy_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 630);
   policy.subject_uuid = mutated.context.principal_uuid;
   policy.subject_kind = "principal";
-  policy.target_uuid.canonical = fixture.main_table_uuid;
+  policy.target_uuid = fixture.main_table_uuid;
   policy.right = "SELECT";
   policy.requires_runtime_recheck = true;
   policy.policy_epoch = mutated.context.authorization_context.policy_epoch;
@@ -3590,7 +3598,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
       ->nodes.front()
       .required_object_uuids.push_back(
-          NewUuidText(platform::UuidKind::object, fixture.salt + 339));
+          NewNativeUuid(platform::UuidKind::object, fixture.salt + 339));
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
                        "multiple relation UUIDs were accepted");
   *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
@@ -3618,7 +3626,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
       ->expressions.front()
       .bound_name_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 340);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 340);
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
                        "wrong bound column UUID was accepted");
   *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
@@ -3627,7 +3635,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   mutated = baseline;
   const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
       ->descriptors.front()
-      .type_uuid = NewUuidText(platform::UuidKind::object,
+      .type_uuid = NewNativeUuid(platform::UuidKind::object,
                               fixture.salt + 341);
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
                        "wrong bound type UUID was accepted");
@@ -3637,7 +3645,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   mutated = baseline;
   const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
       ->descriptors.front()
-      .descriptor_uuid = NewUuidText(platform::UuidKind::object,
+      .descriptor_uuid = NewNativeUuid(platform::UuidKind::object,
                                     fixture.salt + 342);
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
                        "wrong bound descriptor UUID was accepted");
@@ -3646,7 +3654,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
 
   auto missing_transaction_context = reader;
   missing_transaction_context.local_transaction_id = 0;
-  missing_transaction_context.transaction_uuid.canonical.clear();
+  missing_transaction_context.transaction_uuid = {};
   mutated = baseline;
   mutated.context = &missing_transaction_context;
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
@@ -3683,7 +3691,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
 
   mutated = baseline;
   const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
-      ->statement_uuid = NewUuidText(platform::UuidKind::object,
+      ->statement_uuid = NewNativeUuid(platform::UuidKind::object,
                                     fixture.salt + 4990);
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
                        "substituted relational statement identity was accepted");
@@ -3698,7 +3706,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
                        "mismatched statement snapshot was accepted");
 
   auto prepared_context = reader;
-  prepared_context.prepared_metadata_required_object_uuid.canonical =
+  prepared_context.prepared_metadata_required_object_uuid =
       fixture.main_table_uuid;
   prepared_context.prepared_metadata_required_executable_generation = 1;
   prepared_context.prepared_metadata_required_metadata_epoch = 1;
@@ -3736,8 +3744,8 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
                        "explicit SELECT denial was accepted");
 
   auto wrong_principal = reader;
-  wrong_principal.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 343);
+  wrong_principal.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 343);
   mutated = baseline;
   mutated.context = &wrong_principal;
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
@@ -3745,11 +3753,11 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
 
   auto policy_context = reader;
   api::EngineMaterializedAuthorizationPolicy policy;
-  policy.policy_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 344);
+  policy.policy_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 344);
   policy.subject_uuid = policy_context.principal_uuid;
   policy.subject_kind = "principal";
-  policy.target_uuid.canonical = fixture.main_table_uuid;
+  policy.target_uuid = fixture.main_table_uuid;
   policy.right = "SELECT";
   policy.requires_runtime_recheck = true;
   policy.policy_epoch = policy_context.authorization_context.policy_epoch;
@@ -3759,11 +3767,11 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
                        "indeterminate runtime policy recheck was accepted");
 
-  const std::string invisible_relation_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 345);
+  const api::EngineUuid invisible_relation_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 345);
   auto invisible_context = reader;
   invisible_context.authorization_context.grants.front()
-      .target_uuid.canonical = invisible_relation_uuid;
+      .target_uuid = invisible_relation_uuid;
   mutated = baseline;
   mutated.context = &invisible_context;
   const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
@@ -3821,15 +3829,15 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
 
   auto temporary_context = reader;
   temporary_context.authorization_context.grants.front()
-      .target_uuid.canonical = fixture.temporary_table_uuid;
+      .target_uuid = fixture.temporary_table_uuid;
   auto temporary = RequestFor(temporary_context,
                               fixture.temporary_table_uuid,
                               fixture.salt + 360);
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(temporary),
                        "temporary relation entered ordinary heap profile");
   auto other_session_context = temporary_context;
-  other_session_context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 361);
+  other_session_context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 361);
   temporary.context = &other_session_context;
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(temporary),
                        "other session acquired the temporary relation");
@@ -3837,7 +3845,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
 
   auto malformed_context = reader;
   malformed_context.authorization_context.grants.front()
-      .target_uuid.canonical = fixture.malformed_table_uuid;
+      .target_uuid = fixture.malformed_table_uuid;
   auto malformed = RequestFor(malformed_context,
                               fixture.malformed_table_uuid,
                               fixture.salt + 380);
@@ -3882,30 +3890,30 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
   Require(before == after,
           "successful heap optimizer admission mutated database files");
   Require(result.current_relation_descriptor_uuid ==
-                  persisted.descriptor.descriptor_uuid.canonical &&
+                  persisted.descriptor.descriptor_uuid &&
               result.current_relation_descriptor_generation ==
                   persisted.descriptor.descriptor_generation,
           "admission lost the exact current descriptor identity");
   Require(result.request.logical_graph.nodes.size() == 1 &&
               result.request.logical_graph.nodes.front().required_object_uuids ==
-                  std::vector<std::string>{fixture.full_width_table_uuid} &&
+                  std::vector<api::EngineUuid>{fixture.full_width_table_uuid} &&
               result.request.logical_properties.properties.empty() &&
               result.request.catalog.object_uuids ==
-                  std::vector<std::string>{fixture.full_width_table_uuid} &&
+                  std::vector<api::EngineUuid>{fixture.full_width_table_uuid} &&
               result.request.security.authorized_object_uuids ==
-                  std::vector<std::string>{fixture.full_width_table_uuid} &&
+                  std::vector<api::EngineUuid>{fixture.full_width_table_uuid} &&
               result.request.catalog.descriptor_ids ==
                   std::vector<std::uint32_t>({1, 2}),
           "admission did not preserve exact object/descriptor coverage");
   Require(result.request.catalog.snapshot_uuid ==
-                  reader.statement_metadata_snapshot_uuid.canonical &&
+                  reader.statement_metadata_snapshot_uuid &&
               result.request.catalog.catalog_epoch_uuid ==
-                  reader.catalog_epoch_uuid.canonical &&
+                  reader.catalog_epoch_uuid &&
               result.request.catalog.catalog_generation ==
                   reader.catalog_generation_id &&
               result.request.catalog.engine_owned &&
               result.request.security.security_context_uuid ==
-                  reader.authorization_context.authority_uuid.canonical &&
+                  reader.authorization_context.authority_uuid &&
               result.request.security.security_epoch == reader.security_epoch &&
               result.request.security.policy_epoch ==
                   reader.authorization_context.policy_epoch &&
@@ -3917,23 +3925,23 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
               result.request.mga.statement_snapshot_id ==
                   reader.snapshot_visible_through_local_transaction_id &&
               result.request.mga.metadata_snapshot_uuid ==
-                  reader.statement_metadata_snapshot_uuid.canonical &&
+                  reader.statement_metadata_snapshot_uuid &&
               result.request.mga.transaction_active &&
               result.request.mga.statement_snapshot_fixed &&
               result.request.mga.engine_owned &&
               !result.request.mga.finality_authority_claimed &&
               result.request.policy_capability.policy_snapshot_uuid ==
-                  reader.authorization_context.authority_uuid.canonical &&
+                  reader.authorization_context.authority_uuid &&
               result.request.policy_capability.policy_epoch ==
                   reader.authorization_context.policy_epoch &&
               result.request.policy_capability.capability_snapshot_uuid ==
-                  reader.optimizer_capability_snapshot_uuid.canonical &&
+                  reader.optimizer_capability_snapshot_uuid &&
               result.request.policy_capability.capability_abi_version == 1 &&
               !result.request.policy_capability.supported_node_kinds.empty() &&
               result.request.policy_capability.engine_owned &&
               !result.request.policy_capability.cluster_capability_claimed &&
               result.request.resource.resource_snapshot_uuid ==
-                  reader.optimizer_resource_snapshot_uuid.canonical &&
+                  reader.optimizer_resource_snapshot_uuid &&
               result.request.resource.resource_epoch == reader.resource_epoch &&
               result.request.resource.memory_budget_bytes ==
                   reader.optimizer_memory_budget_bytes &&
@@ -3949,14 +3957,14 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
                   reader.optimizer_spill_allowed &&
               result.request.resource.engine_owned &&
               result.request.statistics.statistics_snapshot_uuid ==
-                  reader.statement_uuid.canonical &&
+                  reader.statement_uuid &&
               result.request.statistics.catalog_epoch_uuid ==
-                  reader.catalog_epoch_uuid.canonical &&
+                  reader.catalog_epoch_uuid &&
               result.request.statistics.statistics_generation ==
                   reader.catalog_generation_id &&
               result.request.statistics.admitted_at_monotonic_ns == 1 &&
               result.request.route.route_snapshot_uuid ==
-                  reader.optimizer_route_snapshot_uuid.canonical &&
+                  reader.optimizer_route_snapshot_uuid &&
               result.request.route.route_epoch ==
                   reader.optimizer_route_epoch &&
               result.request.route.route_generation ==
@@ -3973,17 +3981,17 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
               result.admission.bound_sblr_tree_uuid ==
                   request.relational_dag.bound_sblr_tree_uuid &&
               result.admission.catalog_epoch_uuid ==
-                  reader.catalog_epoch_uuid.canonical &&
+                  reader.catalog_epoch_uuid &&
               result.admission.security_context_uuid ==
-                  reader.authorization_context.authority_uuid.canonical &&
+                  reader.authorization_context.authority_uuid &&
               result.admission.capability_snapshot_uuid ==
-                  reader.optimizer_capability_snapshot_uuid.canonical &&
+                  reader.optimizer_capability_snapshot_uuid &&
               result.admission.resource_snapshot_uuid ==
-                  reader.optimizer_resource_snapshot_uuid.canonical &&
+                  reader.optimizer_resource_snapshot_uuid &&
               result.admission.statistics_snapshot_uuid ==
-                  reader.statement_uuid.canonical &&
+                  reader.statement_uuid &&
               result.admission.route_snapshot_uuid ==
-                  reader.optimizer_route_snapshot_uuid.canonical &&
+                  reader.optimizer_route_snapshot_uuid &&
               result.admission.local_transaction_id ==
                   reader.local_transaction_id &&
               result.admission.statement_snapshot_id ==
@@ -4028,9 +4036,9 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
               !estimate.derived_from_runtime_actuals &&
               !estimate.benchmark_clean_authority_claimed &&
               estimate.catalog_epoch_uuid ==
-                  reader.catalog_epoch_uuid.canonical &&
+                  reader.catalog_epoch_uuid &&
               estimate.statistics_snapshot_uuid ==
-                  reader.statement_uuid.canonical &&
+                  reader.statement_uuid &&
               estimate.statistics_generation == reader.catalog_generation_id &&
               estimate.admitted_at_monotonic_ns == 1 &&
               result.request.statistics.captured_before_data_access &&
@@ -4044,11 +4052,11 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
     logical_node.required_object_uuids.clear();
   }
   opt::CanonicalNativeObjectFreeAdmissionContext object_free_context;
-  object_free_context.statement_uuid = reader.statement_uuid.canonical;
+  object_free_context.statement_uuid = reader.statement_uuid;
   object_free_context.catalog_snapshot_uuid =
-      reader.statement_metadata_snapshot_uuid.canonical;
+      reader.statement_metadata_snapshot_uuid;
   object_free_context.security_context_uuid =
-      reader.authorization_context.authority_uuid.canonical;
+      reader.authorization_context.authority_uuid;
   object_free_context.catalog_generation = reader.catalog_generation_id;
   object_free_context.authorization_catalog_generation =
       reader.authorization_context.catalog_generation_id;
@@ -4056,11 +4064,11 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
   object_free_context.policy_epoch = reader.authorization_context.policy_epoch;
   object_free_context.resource_epoch = reader.resource_epoch;
   object_free_context.capability_snapshot_uuid =
-      reader.optimizer_capability_snapshot_uuid.canonical;
+      reader.optimizer_capability_snapshot_uuid;
   object_free_context.resource_snapshot_uuid =
-      reader.optimizer_resource_snapshot_uuid.canonical;
+      reader.optimizer_resource_snapshot_uuid;
   object_free_context.route_snapshot_uuid =
-      reader.optimizer_route_snapshot_uuid.canonical;
+      reader.optimizer_route_snapshot_uuid;
   object_free_context.route_epoch = reader.optimizer_route_epoch;
   object_free_context.route_generation = reader.optimizer_route_generation;
   object_free_context.memory_budget_bytes =
@@ -4122,7 +4130,7 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
       };
 
   const auto alternate_object_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3350);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3350);
   opt::CanonicalNativeObjectAdmissionContext object_context;
   object_context.catalog_object_uuids = {fixture.full_width_table_uuid};
   object_context.authorized_object_uuids = {fixture.full_width_table_uuid};
@@ -4182,7 +4190,7 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
   auto two_object_graph = result.request.logical_graph;
   two_object_graph.nodes.front().required_object_uuids = {
       fixture.full_width_table_uuid, alternate_object_uuid};
-  std::vector<std::string> canonical_two_objects{
+  std::vector<api::EngineUuid> canonical_two_objects{
       fixture.full_width_table_uuid, alternate_object_uuid};
   std::ranges::sort(canonical_two_objects);
   object_context.catalog_object_uuids = canonical_two_objects;
@@ -4233,7 +4241,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
   mutated = baseline;
   mutated.relational_dag.nodes.front().required_object_uuids.push_back(
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3440));
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3440));
   expect_refusal(mutated, "multiple relation objects were admitted");
 
   mutated = baseline;
@@ -4284,7 +4292,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
   mutated = baseline;
   api::RelationalPropertyRecord property;
   property.property_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3447);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3447);
   property.property_kind = api::RelationalPropertyKind::kOrdering;
   property.origin_node_id = 1;
   property.expression_ids = {1};
@@ -4303,21 +4311,21 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
   mutated = baseline;
   mutated.relational_dag.expressions.front().function_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3448);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3448);
   expect_refusal(mutated, "identifier expression function carrier was admitted");
 
   mutated = baseline;
-  mutated.relational_dag.nodes.front().required_object_uuids = {"not-a-uuid"};
+  mutated.relational_dag.nodes.front().required_object_uuids = {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-0000-000000420001")};
   expect_refusal(mutated, "noncanonical relation identity was admitted");
 
   mutated = baseline;
   mutated.relational_dag.nodes.front().required_object_uuids = {
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3441)};
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3441)};
   expect_refusal(mutated, "missing relation identity was admitted");
 
   mutated = baseline;
   mutated.relational_dag.expressions.front().bound_name_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3442);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3442);
   expect_refusal(mutated, "stale column UUID binding was admitted");
 
   mutated = baseline;
@@ -4326,12 +4334,12 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
   mutated = baseline;
   mutated.relational_dag.descriptors.front().descriptor_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3443);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3443);
   expect_refusal(mutated, "stale descriptor UUID was admitted");
 
   mutated = baseline;
   mutated.relational_dag.descriptors.front().type_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3444);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3444);
   expect_refusal(mutated, "stale type UUID was admitted");
 
   mutated = baseline;
@@ -4341,7 +4349,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
   mutated = baseline;
   mutated.relational_dag.descriptors.front().collation_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3445);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3445);
   expect_refusal(mutated, "stale collation was admitted");
 
   mutated = baseline;
@@ -4363,11 +4371,11 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
   mutated = baseline;
   api::EngineMaterializedAuthorizationPolicy policy;
-  policy.policy_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3446);
+  policy.policy_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3446);
   policy.subject_uuid = mutated.context.principal_uuid;
   policy.subject_kind = "principal";
-  policy.target_uuid.canonical = fixture.full_width_table_uuid;
+  policy.target_uuid = fixture.full_width_table_uuid;
   policy.right = "SELECT";
   policy.policy_kind = "heap_admission_runtime_recheck";
   policy.requires_runtime_recheck = true;
@@ -4384,14 +4392,14 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
          candidate.context.database_path.clear();
        }},
       {"missing database UUID was admitted", [](auto& candidate) {
-         candidate.context.database_uuid.canonical.clear();
+         candidate.context.database_uuid = {};
        }},
       {"missing statement UUID was admitted", [](auto& candidate) {
-         candidate.context.statement_uuid.canonical.clear();
+         candidate.context.statement_uuid = {};
        }},
       {"stale transaction UUID was admitted", [&](auto& candidate) {
-         candidate.context.transaction_uuid.canonical =
-             NewUuidText(platform::UuidKind::transaction,
+         candidate.context.transaction_uuid =
+             NewNativeUuid(platform::UuidKind::transaction,
                          fixture.salt + 3500);
        }},
       {"stale local transaction ID was admitted", [](auto& candidate) {
@@ -4401,8 +4409,8 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
          candidate.context.statement_metadata_snapshot_engine_owned = false;
        }},
       {"stale metadata snapshot UUID was admitted", [&](auto& candidate) {
-         candidate.context.statement_metadata_snapshot_uuid.canonical =
-             NewUuidText(platform::UuidKind::object, fixture.salt + 3501);
+         candidate.context.statement_metadata_snapshot_uuid =
+             NewNativeUuid(platform::UuidKind::object, fixture.salt + 3501);
        }},
       {"missing security context was admitted", [](auto& candidate) {
          candidate.context.security_context_present = false;
@@ -4412,12 +4420,12 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
          candidate.context.authorization_context.present = false;
        }},
       {"stale authorization authority was admitted", [&](auto& candidate) {
-         candidate.context.authorization_context.authority_uuid.canonical =
-             NewUuidText(platform::UuidKind::object, fixture.salt + 3502);
+         candidate.context.authorization_context.authority_uuid =
+             NewNativeUuid(platform::UuidKind::object, fixture.salt + 3502);
        }},
       {"authorization principal mismatch was admitted", [&](auto& candidate) {
-         candidate.context.authorization_context.principal_uuid.canonical =
-             NewUuidText(platform::UuidKind::principal,
+         candidate.context.authorization_context.principal_uuid =
+             NewNativeUuid(platform::UuidKind::principal,
                          fixture.salt + 3503);
        }},
       {"stale authorization catalog generation was admitted",
@@ -4434,10 +4442,10 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
          candidate.context.resource_epoch = 0;
        }},
       {"missing resource snapshot was admitted", [](auto& candidate) {
-         candidate.context.optimizer_resource_snapshot_uuid.canonical.clear();
+         candidate.context.optimizer_resource_snapshot_uuid = {};
        }},
       {"missing route snapshot was admitted", [](auto& candidate) {
-         candidate.context.optimizer_route_snapshot_uuid.canonical.clear();
+         candidate.context.optimizer_route_snapshot_uuid = {};
        }},
       {"missing route generation was admitted", [](auto& candidate) {
          candidate.context.optimizer_route_generation = 0;
@@ -4484,7 +4492,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
   expect_refusal(mutated, "missing optimizer memory bound was admitted");
 
   mutated = baseline;
-  mutated.context.optimizer_capability_snapshot_uuid.canonical.clear();
+  mutated.context.optimizer_capability_snapshot_uuid = {};
   expect_refusal(mutated, "missing capability snapshot was admitted");
 
   mutated = baseline;
@@ -4496,7 +4504,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
   expect_refusal(mutated, "missing monotonic admission time was admitted");
 
   mutated = baseline;
-  mutated.context.prepared_metadata_required_object_uuid.canonical =
+  mutated.context.prepared_metadata_required_object_uuid =
       fixture.full_width_table_uuid;
   expect_refusal(mutated, "prepared metadata object state was admitted");
 
@@ -4549,7 +4557,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
   auto invisible_writer = Begin(fixture, "qow-heap-admission-invisible-writer");
   const auto invisible_relation_uuid =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 3520);
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 3520);
   PersistTable(fixture, invisible_writer, invisible_relation_uuid, false, true);
   const auto writer_descriptor = api::LoadMgaRelationStorageDescriptor(
       invisible_writer, invisible_relation_uuid);
@@ -4572,8 +4580,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
 void ValidateCanonicalInt128GroupedSumMatrix() {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d714";
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714");
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int128";
   descriptor.encoded_descriptor =
@@ -4638,8 +4645,7 @@ void ValidateCanonicalInt128GroupedSumMatrix() {
           "grouped SUM accepted or mutated an overflowing negative transition");
 
   auto malformed_descriptor = descriptor;
-  malformed_descriptor.descriptor_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d711";
+  malformed_descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
   finalized = exec::FinalizeCanonicalInt128SumV1(widened,
                                                   malformed_descriptor);
   Require(!finalized.diagnostic.ok &&

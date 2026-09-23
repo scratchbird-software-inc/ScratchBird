@@ -97,7 +97,7 @@ PreparedRecursiveCteTerm PrepareLiveRecursiveCteTerm(
 bool LiveRecursiveCteTermNodeBound(
     const PreparedRecursiveCteTerm& prepared,
     const exec::PhysicalNodeRecord& node,
-    std::string_view capability_uuid);
+    core::platform::Uuid capability_uuid);
 
 LiveRecursiveCteTermExecution ExecutePreparedRecursiveCteTerm(
     const PreparedRecursiveCteTerm& prepared,
@@ -113,7 +113,7 @@ LiveRecursiveCteTermExecution ExecutePreparedRecursiveCteTerm(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveRecursiveCteTermRegistration(
     PreparedRecursiveCteTerm prepared,
-    std::string capability_uuid,
+    core::platform::Uuid capability_uuid,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);
 
 // Registers the bounded recursive root over optimizer-published memory and
@@ -121,8 +121,8 @@ MakeLiveRecursiveCteTermRegistration(
 // MGA statement context.
 exec::CanonicalPhysicalExecutorRegistration MakeLiveRecursiveCteRegistration(
     PreparedRecursiveCteRoot prepared,
-    std::string recursive_term_capability_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid recursive_term_capability_uuid,
+    core::platform::Uuid capability_uuid,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);
 
 }  // namespace scratchbird::engine::sblr

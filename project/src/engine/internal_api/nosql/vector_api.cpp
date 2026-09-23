@@ -18,6 +18,8 @@
 #include "nosql/nosql_surface_support.hpp"
 #include "security/security_model.hpp"
 #include "uuid.hpp"
+#include "nosql/native_descriptor_fields.hpp"
+#include <set>
 #include "vector_index_generation_publication.hpp"
 
 #include <algorithm>
@@ -60,6 +62,9 @@ TResult DiagnosticResult(const EngineRequestContext& context,
 
 void AddSelectionEvidence(const EngineNoSqlPhysicalProviderSelection& selection,
                           EngineApiResult* result) {
+  if (!selection.generation_uuid.is_nil()) {
+    result->evidence.push_back({"provider_generation_uuid", selection.generation_uuid});
+  }
   for (const auto& item : selection.evidence) {
     AddApiBehaviorEvidence(result, "vector_physical_provider", item);
   }
@@ -491,46 +496,13 @@ EngineVectorSearchResult PhysicalVectorSearch(
   return result;
 }
 
-bool CanonicalBoundVectorUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const char ch = value[index];
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-      return false;
-    }
-  }
-  return true;
+bool CanonicalBoundVectorUuid(const EngineUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
-std::string BoundVectorDescriptorField(const std::string_view descriptor,
-                                       const std::string_view name) {
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto end = descriptor.find(';', offset);
-    const auto field = descriptor.substr(
-        offset, end == std::string_view::npos ? descriptor.size() - offset
-                                              : end - offset);
-    const auto equals = field.find('=');
-    if (equals != std::string_view::npos && field.substr(0, equals) == name) {
-      return std::string(field.substr(equals + 1));
-    }
-    if (end == std::string_view::npos) break;
-    offset = end + 1;
-  }
-  return {};
-}
+EngineUuid BoundVectorTypeUuid(const EngineDescriptor& descriptor) { return descriptor.type_uuid; }
 
-std::string BoundVectorTypeUuid(const EngineDescriptor& descriptor) {
-  return BoundVectorDescriptorField(descriptor.encoded_descriptor,
-                                    "type_uuid");
-}
-
-std::string ExactBoundVectorCoreTypeUuid(const std::string_view stable_name) {
+EngineUuid ExactBoundVectorCoreTypeUuid(const std::string_view stable_name) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -544,51 +516,23 @@ std::string ExactBoundVectorCoreTypeUuid(const std::string_view stable_name) {
       !found->descriptor_uuid.valid()) {
     return {};
   }
-  const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
-      found->descriptor_uuid.value);
+  const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          "019d0000-0000-7000-8000-00000000d701",
+          scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
           manifest.manifest.catalog_epoch, 1, descriptor_uuid,
           found->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
-bool ExactBoundVectorDescriptorFields(
-    const EngineDescriptor& descriptor,
-    const std::initializer_list<std::pair<std::string_view, std::string_view>>&
-        expected) {
-  std::map<std::string_view, std::string_view> fields;
-  const auto encoded = std::string_view(descriptor.encoded_descriptor);
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto end = encoded.find(';', offset);
-    const auto field = encoded.substr(
-        offset, end == std::string_view::npos ? std::string_view::npos
-                                              : end - offset);
-    const auto equal = field.find('=');
-    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
-        equal + 1 == field.size() ||
-        !fields.emplace(field.substr(0, equal), field.substr(equal + 1)).second) {
-      return false;
-    }
-    if (end == std::string_view::npos) break;
-    offset = end + 1;
-  }
-  if (fields.size() != expected.size()) return false;
-  return std::ranges::all_of(expected, [&](const auto& field) {
-    const auto found = fields.find(field.first);
-    return found != fields.end() && found->second == field.second;
-  });
-}
 
 bool ExactBoundVectorStorageDescriptorImpl(
     const MgaRelationStorageDescriptor& descriptor,
-    const std::string_view collection_uuid) {
+    const EngineUuid& collection_uuid) {
   const auto vector_type_uuid = ExactBoundVectorCoreTypeUuid("dense_vector");
   const auto text_type_uuid = ExactBoundVectorCoreTypeUuid("character");
   if (descriptor.relation_uuid != collection_uuid ||
-      vector_type_uuid.empty() || text_type_uuid.empty() ||
+      vector_type_uuid.is_nil() || text_type_uuid.is_nil() ||
       !CanonicalBoundVectorUuid(descriptor.database_uuid) ||
       !CanonicalBoundVectorUuid(descriptor.schema_uuid) ||
       descriptor.relation_kind != "table" ||
@@ -606,12 +550,12 @@ bool ExactBoundVectorStorageDescriptorImpl(
          embedding.storage_class == "inline_row_value" &&
          embedding.max_inline_bytes == 4096 &&
          embedding.overflow_policy == "mga_large_value_locator" &&
-         embedding.charset_uuid.empty() && embedding.collation_uuid.empty() &&
+         embedding.charset_uuid.is_nil() && embedding.collation_uuid.is_nil() &&
          embedding.character_length == 0 &&
          embedding.value_descriptor.descriptor_kind ==
              "canonical_type_descriptor" &&
          embedding.value_descriptor.canonical_type_name == "dense_vector" &&
-         ExactBoundVectorDescriptorFields(
+         ExactNativeDescriptorFields(
              embedding.value_descriptor,
              {{"canonical", "dense_vector"},
               {"type_uuid", vector_type_uuid},
@@ -624,7 +568,7 @@ bool ExactBoundVectorStorageDescriptorImpl(
          metadata.storage_class == "inline_row_value" &&
          metadata.max_inline_bytes == 4096 &&
          metadata.overflow_policy == "mga_large_value_locator" &&
-         metadata.charset_uuid.empty() && metadata.collation_uuid.empty() &&
+         metadata.charset_uuid.is_nil() && metadata.collation_uuid.is_nil() &&
          metadata.character_length == 0 &&
          metadata.value_descriptor.descriptor_kind ==
              "canonical_type_descriptor" &&
@@ -640,18 +584,18 @@ bool ExactBoundVectorStorageDescriptorImpl(
          embedding.column_uuid != metadata.column_uuid &&
          embedding.value_descriptor.descriptor_uuid !=
              metadata.value_descriptor.descriptor_uuid &&
-         ExactBoundVectorDescriptorFields(
+         ExactNativeDescriptorFields(
              metadata.value_descriptor,
              {{"canonical", "text"},
               {"type_uuid", text_type_uuid},
               {"nullable", "false"},
               {"column_uuid", metadata.column_uuid},
               {"datatype_descriptor_uuid",
-               "019d0000-0000-7000-8000-00000000d718"},
+               EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x18}}},
               {"datatype_descriptor_generation", "1"},
               {"type_generation", "1"},
               {"codec_uuid",
-               "019d0000-0000-7000-8000-00000000d71a"},
+               EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x1a}}},
               {"codec_id", "datatype.text.utf8.v1"},
               {"codec_version", "1"},
               {"codec_generation", "1"},
@@ -664,15 +608,15 @@ bool ExactBoundVectorOutputDescriptors(
   if (descriptors.size() != 3) return false;
   static constexpr std::array<std::string_view, 3> kTypes{
       "uuid", "real64", "real64"};
-  std::unordered_set<std::string> descriptor_uuids;
+  std::set<EngineUuid> descriptor_uuids;
   for (std::size_t index = 0; index < descriptors.size(); ++index) {
     const auto& descriptor = descriptors[index];
     const auto type_uuid = ExactBoundVectorCoreTypeUuid(kTypes[index]);
     if (!CanonicalBoundVectorUuid(descriptor.descriptor_uuid) ||
         !descriptor_uuids.insert(descriptor.descriptor_uuid).second ||
-        descriptor.descriptor_kind != "scalar" || type_uuid.empty() ||
+        descriptor.descriptor_kind != "scalar" || type_uuid.is_nil() ||
         descriptor.canonical_type_name != kTypes[index] ||
-        !ExactBoundVectorDescriptorFields(
+        !ExactNativeDescriptorFields(
             descriptor,
             {{"type_uuid", type_uuid}, {"nullability", "non_null"}})) {
       return false;
@@ -812,7 +756,7 @@ const char* BoundVectorMetricName(const EngineBoundVectorMetricV1 metric) {
 }
 
 struct BoundVectorScoredRow {
-  std::string row_uuid;
+  EngineUuid row_uuid;
   double distance = 0.0;
   double score = 0.0;
   std::string encoded_distance;
@@ -878,7 +822,7 @@ bool BoundVectorCarrierContextMatches(
     const EngineNoSqlProviderGenerationMetadata& carrier) {
   const auto& context = request.context;
   return carrier.family == EngineNoSqlProviderFamily::kVector &&
-         carrier.provider_id == request.selected_provider_uuid &&
+         carrier.provider_uuid == request.selected_provider_uuid &&
          carrier.vector_ann_capability_uuid ==
              request.selected_capability_uuid &&
          carrier.database_identity ==
@@ -944,7 +888,7 @@ bool BoundVectorCarrierDescriptorMatches(
 
 bool ExactBoundVectorStorageDescriptorV1(
     const MgaRelationStorageDescriptor& descriptor,
-    const std::string_view collection_uuid) {
+    const EngineUuid& collection_uuid) {
   return ExactBoundVectorStorageDescriptorImpl(descriptor, collection_uuid);
 }
 
@@ -1221,7 +1165,7 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
 
   std::vector<BoundVectorScoredRow> scored_rows;
   scored_rows.reserve(read.visible_rows.size());
-  std::unordered_set<std::string> visible_row_uuids;
+  std::set<EngineUuid> visible_row_uuids;
   std::uint64_t filtered_rows = 0;
   std::uint64_t accounted_memory = preflight_bytes;
   for (const auto& base_row : read.visible_rows) {
@@ -1280,7 +1224,7 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
           "current MGA-visible vector failed exact metric validation");
     }
     std::uint64_t row_memory = sizeof(BoundVectorScoredRow);
-    if (!CheckedBoundVectorAdd(row_memory, scored.row_uuid.size(),
+    if (!CheckedBoundVectorAdd(row_memory, scored.row_uuid.bytes.size(),
                                &row_memory) ||
         !CheckedBoundVectorAdd(row_memory, scored.encoded_distance.size(),
                                &row_memory) ||
@@ -1334,7 +1278,7 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
       return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
                     "vector execution cancelled during result materialization");
     }
-    std::uint64_t row_bytes = scored.row_uuid.size();
+    std::uint64_t row_bytes = scored.row_uuid.bytes.size();
     if (!CheckedBoundVectorAdd(row_bytes, scored.encoded_distance.size(),
                                &row_bytes) ||
         !CheckedBoundVectorAdd(row_bytes, scored.encoded_score.size(),

@@ -23,6 +23,8 @@ namespace scratchbird::engine::internal_api {
 struct EngineAgentRuntimeEvidenceRecord {
   std::string source_surface;
   std::string agent_type_id;
+  // Binary identity carriers: exactly 16 bytes; empty is allowed only for optional references.
+  // Text UUIDs are rejected before metric, audit, or result publication.
   std::string agent_uuid;
   std::string filespace_uuid;
   std::string policy_uuid;

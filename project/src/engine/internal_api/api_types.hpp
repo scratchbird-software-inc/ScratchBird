@@ -455,7 +455,7 @@ struct EngineRequestContext {
   std::string transaction_isolation_level = "read_committed";
   std::string current_sqlstate = "00000";
   EngineUuid current_diagnostic_uuid;
-  std::string client_protocol_uuid;
+  EngineUuid client_protocol_uuid;
   std::string application_name;
   EngineApiU64 snapshot_visible_through_local_transaction_id = 0;
   // Metadata and data visibility are separate statement boundaries.  A
@@ -580,6 +580,9 @@ struct EngineApiDiagnostic {
   // Callers must not infer semantics by parsing `detail`; exact presentation
   // adapters key on the diagnostic code and declared fields instead.
   std::vector<EngineApiDiagnosticField> fields;
+  // Native private diagnostic operands. Presentation adapters must not flatten
+  // these system identities into string fields.
+  std::vector<std::pair<std::string, EngineUuid>> identity_fields;
   // Source occurrence, never a registry code UUID. Default copy/move retains
   // it; adapters must carry it instead of constructing a replacement record.
   std::array<std::uint8_t, 16> occurrence_uuid =

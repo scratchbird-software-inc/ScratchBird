@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "uuid.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -25,11 +27,11 @@ namespace {
 
 // SEARCH_KEY: SB_TEST_CANONICAL_QUERY_SHARED_SUPPORT_BOUNDARY_MATRIX
 
-api::EngineDescriptor Descriptor(std::string uuid,
+api::EngineDescriptor Descriptor(api::EngineUuid uuid,
                                  std::string type,
                                  std::string encoded = {}) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = std::move(uuid);
+  descriptor.descriptor_uuid = std::move(uuid);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::move(type);
   descriptor.encoded_descriptor = std::move(encoded);
@@ -47,13 +49,11 @@ int main() {
     }
   };
 
-  const std::string uuid = "019d0000-0000-7000-8000-000000000001";
-  expect(query::CanonicalUuidText(uuid), "canonical UUID was refused");
-  expect(!query::CanonicalUuidText("019D0000-0000-7000-8000-000000000001"),
-         "uppercase UUID was admitted");
-  expect(query::DerivedCanonicalUuid("scope", "purpose") ==
-             query::DerivedCanonicalUuid("scope", "purpose"),
-         "derived UUID was not deterministic");
+  constexpr auto uuid = scratchbird::tests::FixtureUuid(1161, 4);
+  expect(scratchbird::core::uuid::IsEngineIdentityUuid(uuid), "native UUID was refused");
+  const auto first = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  const auto second = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  expect(first && second && *first != *second, "issued execution identities collided");
 
   api::EngineTypedValue integer;
   integer.descriptor = Descriptor(uuid, "int64");

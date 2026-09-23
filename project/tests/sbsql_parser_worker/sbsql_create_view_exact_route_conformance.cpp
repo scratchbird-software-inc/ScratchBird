@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -73,7 +75,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -90,10 +92,10 @@ void PrintMessages(const MessageVectorSet& messages) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000278601";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000278602";
-  session.database_uuid = "019f0000-0000-7000-8000-000000278603";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278601");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278602");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278603");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 51;
   session.security_policy_epoch = 52;
   session.descriptor_epoch = 53;
@@ -104,7 +106,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000278604";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278604");
   config.bundle_contract_id = "sbp_sbsql@create-view-route-test";
   config.build_id = "sbsql-create-view-route-test";
   return config;
@@ -127,7 +129,7 @@ PipelineArtifacts RunPipeline() {
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            {std::string(kSourceUuid)});
+                            {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278503")});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -292,7 +294,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -310,23 +312,22 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "CREATE VIEW engine dispatch test database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-create-view-exact-route";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000278701";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000278702";
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278701");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278702");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278502");
   context.security_context_present = true;
   context.authorization_context.present = true;
   context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.authority_uuid.canonical =
-      "019f0000-0000-7000-8000-000000278703";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278703");
   api::EngineAuthorizationSubject subject;
   subject.subject_uuid = context.principal_uuid;
   subject.subject_kind = "user";
@@ -334,7 +335,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   api::EngineMaterializedAuthorizationGrant catalog_mutate;
   catalog_mutate.subject_uuid = context.principal_uuid;
   catalog_mutate.subject_kind = "user";
-  catalog_mutate.target_uuid.canonical = "*";
+  catalog_mutate.target_uuid = {}; // Global grant uses the native nil target.
   catalog_mutate.right = "CATALOG_MUTATE";
   context.authorization_context.grants.push_back(std::move(catalog_mutate));
   context.catalog_generation_id = 1;
@@ -347,7 +348,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid) {
+                                                 const api::EngineUuid& database_uuid) {
   auto context = EngineContext(path, database_uuid);
   auto envelope = scratchbird::test::sbsql::
       BuildCanonicalEngineSblrEnvelopeForTest(
@@ -404,13 +405,13 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
 
 api::EngineApiRequest EngineCreateViewApiRequest() {
   api::EngineApiRequest request;
-  request.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278502");
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = std::string(kViewUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278501");
   request.target_object.object_kind = "view";
   request.localized_names.push_back({"en", "primary", "", "active_customer_ids", true});
   api::EngineObjectReference source;
-  source.uuid.canonical = std::string(kSourceUuid);
+  source.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278503");
   source.object_kind = "relation";
   request.related_objects.push_back(std::move(source));
   request.option_envelopes.push_back("view_query_shape:filtered_relation");
@@ -462,13 +463,13 @@ void RequireEngineDispatch() {
           "EngineCreateView returned wrong operation id");
   Require(result.api_result.primary_object.object_kind == "view",
           "EngineCreateView did not return view primary object");
-  Require(result.api_result.primary_object.uuid.canonical == kViewUuid,
+  Require(result.api_result.primary_object.uuid == scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278501"),
           "EngineCreateView returned wrong view UUID");
-  Require(HasEvidence(result.api_result, "view", kViewUuid),
+  Require(std::any_of(result.api_result.evidence.begin(), result.api_result.evidence.end(), [](const auto& evidence) { return evidence.evidence_kind == "view" && scratchbird::tests::EvidenceIdentityEquals(evidence.evidence_id, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000278501")); }),
           "EngineCreateView missing view descriptor evidence");
   Require(HasEvidence(result.api_result, "name_registry", kViewUuid),
           "EngineCreateView missing name registry evidence");
-  Require(!result.api_result.catalog_row_uuid.canonical.empty(),
+  Require(!result.api_result.catalog_row_uuid.is_nil(),
           "EngineCreateView missing catalog row UUID evidence");
   RemoveDatabaseArtifacts(path);
 }

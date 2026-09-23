@@ -65,34 +65,34 @@ class TransactionalRelationStore {
 
   MgaRelationStoreResult LoadDiagnosticFullState() const;
   MgaRelationStoreResult LoadDeferredConstraintValidationFullState() const;
-  MgaRelationStoreResult LoadInsertTarget(const std::string& table_uuid) const;
+  MgaRelationStoreResult LoadInsertTarget(const EngineUuid& table_uuid) const;
   MgaRelationStoreResult LoadInsertTargetMetadata(
-      const std::string& table_uuid) const;
+      const EngineUuid& table_uuid) const;
   MgaRelationStoreResult LoadInsertTargetIndexes(
-      const std::string& table_uuid) const;
+      const EngineUuid& table_uuid) const;
   MgaRelationStoreResult LoadMutationTarget(
-      const std::string& table_uuid) const;
+      const EngineUuid& table_uuid) const;
   MgaRelationStoreResult LoadMutationTargets(
-      const std::vector<std::string>& table_uuids) const;
+      const std::vector<EngineUuid>& table_uuids) const;
   MgaRelationStoreResult LoadMutationTargetRows(
-      const std::string& table_uuid) const;
+      const EngineUuid& table_uuid) const;
   MgaRelationStoreResult LoadMutationTargetRows(
-      const std::vector<std::string>& table_uuids) const;
+      const std::vector<EngineUuid>& table_uuids) const;
   MgaRelationStoreResult OpenRelationScan(
-      const std::string& table_uuid) const;
+      const EngineUuid& table_uuid) const;
   MgaRelationStoreResult OpenRelationScans(
-      const std::vector<std::string>& table_uuids) const;
+      const std::vector<EngineUuid>& table_uuids) const;
   MgaRelationStoreResult OpenRelationPointCursor(
-      const std::string& table_uuid,
-      const std::string& row_uuid) const;
+      const EngineUuid& table_uuid,
+      const EngineUuid& row_uuid) const;
   MgaRelationStoreResult OpenRelationIndexCursor(
-      const std::string& table_uuid) const;
+      const EngineUuid& table_uuid) const;
   MgaRelationStoreResult LoadConstraintScope(
-      const std::string& table_uuid) const;
+      const EngineUuid& table_uuid) const;
   MgaRelationStoreResult LoadConstraintScopes(
-      const std::vector<std::string>& table_uuids) const;
+      const std::vector<EngineUuid>& table_uuids) const;
   MgaRelationStoreResult LoadTriggerMetadataScope(
-      const std::string& table_uuid) const;
+      const EngineUuid& table_uuid) const;
   MgaRelationStorageDescriptorLoadResult LoadRelationDescriptor(
       const EngineUuid& relation_uuid) const;
 
@@ -104,7 +104,7 @@ class TransactionalRelationStore {
       std::uint64_t* written_event_sequence) const;
   EngineApiDiagnostic AppendIndexEntriesForRowsWithIndexes(
       const std::vector<CrudIndexRecord>& indexes,
-      const std::string& table_uuid,
+      const EngineUuid& table_uuid,
       const std::vector<MgaIndexEntryRowInput>& rows) const;
   EngineApiDiagnostic AppendSecondaryIndexDeltaLedgerEntries(
       const std::vector<MgaSecondaryIndexDeltaLedgerEntryInput>& entries,

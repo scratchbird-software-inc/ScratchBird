@@ -1,3 +1,7 @@
+#include "../agents/agent_binary_identity_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -41,8 +45,8 @@ const opt::PlanCandidate* FindCandidate(const std::vector<opt::PlanCandidate>& c
 
 opt::OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid) {
   opt::OptimizerStatsIdentity identity;
-  identity.object_uuid = object_uuid;
-  identity.statistic_uuid = object_uuid + ":stats";
+  identity.object_uuid = NativeFixtureIdentity(object_uuid);
+  identity.statistic_uuid = NativeFixtureIdentity(scratchbird::tests::FixtureIdentityForLabel(object_uuid + ":stats"));
   identity.stats_epoch = 23;
   identity.catalog_epoch = 23;
   identity.transaction_visibility_epoch = 23;
@@ -64,11 +68,11 @@ opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
 
 opt::IndexStats IndexStats(const std::string& relation_uuid) {
   opt::IndexStats index;
-  index.identity = FreshIdentity("11111111-1111-4111-8111-111111111111");
-  index.index_uuid = "idx.odf023.amount";
-  index.relation_uuid = relation_uuid;
+  index.identity = FreshIdentity(BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 1118483)));
+  index.index_uuid = scratchbird::tests::FixtureUuid(1274, 1001);
+  index.relation_uuid = NativeFixtureIdentity(relation_uuid);
   index.index_family = "btree";
-  index.key_column_uuids = {"col.amount"};
+  index.key_column_uuids = {scratchbird::tests::FixtureUuid(1632, 1)};
   index.height = 3;
   index.leaf_pages = 100;
   index.distinct_keys = 50000;
@@ -98,7 +102,7 @@ opt::OptimizerPrunePredicate Predicate() {
 
 opt::AccessPathPlanningRequest BaseAccessRequest(const std::string& relation_uuid) {
   opt::AccessPathPlanningRequest request;
-  request.relation_uuid = relation_uuid;
+  request.relation_uuid = NativeFixtureIdentity(relation_uuid);
   request.predicate_kind = "scalar_range";
   request.predicate_text = "amount between 50 and 60";
   request.visibility_proven = true;
@@ -157,8 +161,8 @@ idx::TimeRangeSummaryDescriptor TimeSummary(const std::string& uuid,
                                             std::uint32_t page_count) {
   idx::TimeRangeSummaryDescriptor summary;
   summary.table_uuid = relation_uuid;
-  summary.index_uuid = "22222222-2222-4222-8222-222222222222";
-  summary.range_family_uuid = "33333333-3333-4333-8333-333333333333";
+  summary.index_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 2236964));
+  summary.range_family_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 3355445));
   summary.summary_uuid = uuid;
   summary.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   summary.range.first_page_id = first_page;
@@ -198,7 +202,7 @@ idx::TimeRangeSummaryPredicate TimePredicate() {
 }
 
 bool AcceptedPartitionSegmentPlacementPruningIsBeforeCosting() {
-  const std::string relation_uuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const std::string relation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 11184812));
   auto request = BaseAccessRequest(relation_uuid);
   request.partition_segment_prune.partitions = {
       {"partition.old", Boundary("001", "010"), 200, true, true, true},
@@ -248,7 +252,7 @@ bool AcceptedPartitionSegmentPlacementPruningIsBeforeCosting() {
 }
 
 bool ConservativeFallbackReasonsAreExact() {
-  const std::string relation_uuid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const std::string relation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 12303293));
   opt::OptimizerPartitionSegmentPruneRequest request;
   request.requested = true;
   request.relation_uuid = relation_uuid;
@@ -283,7 +287,7 @@ bool ConservativeFallbackReasonsAreExact() {
 }
 
 bool AccessPathTopLevelRecheckFlagsGatePartitionPruning() {
-  const std::string relation_uuid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const std::string relation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 15658736));
   auto request = BaseAccessRequest(relation_uuid);
   request.base_row_mga_recheck_planned = false;
   request.base_row_security_recheck_planned = false;
@@ -310,7 +314,7 @@ bool AccessPathTopLevelRecheckFlagsGatePartitionPruning() {
 }
 
 opt::OptimizerPartitionSegmentPruneRequest SummaryBridgeRequest() {
-  const std::string relation_uuid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const std::string relation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 13421774));
   opt::OptimizerPartitionSegmentPruneRequest request;
   request.requested = true;
   request.relation_uuid = relation_uuid;
@@ -319,14 +323,14 @@ opt::OptimizerPartitionSegmentPruneRequest SummaryBridgeRequest() {
   request.summaries.page_summary.format = Format();
   request.summaries.page_summary.predicate = PagePredicate();
   request.summaries.page_summary.summaries = {
-      PageSummary("44444444-4444-4444-8444-444444444444", relation_uuid, "001", "010", 0, 64),
-      PageSummary("55555555-5555-4555-8555-555555555555", relation_uuid, "055", "070", 64, 64)};
+      PageSummary(BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 4473926)), relation_uuid, "001", "010", 0, 64),
+      PageSummary(BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 5592407)), relation_uuid, "055", "070", 64, 64)};
   request.summaries.time_summary_requested = true;
   request.summaries.time_summary.format = Format();
   request.summaries.time_summary.predicate = TimePredicate();
   request.summaries.time_summary.summaries = {
-      TimeSummary("66666666-6666-4666-8666-666666666666", relation_uuid, "001", "010", 128, 32),
-      TimeSummary("77777777-7777-4777-8777-777777777777", relation_uuid, "055", "070", 160, 32)};
+      TimeSummary(BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 6710888)), relation_uuid, "001", "010", 128, 32),
+      TimeSummary(BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 7829369)), relation_uuid, "055", "070", 160, 32)};
   return request;
 }
 
@@ -386,7 +390,7 @@ bool SummaryRefusalsAreExact() {
 }
 
 bool NoRuntimeDocsExecution_PlanDependencyLeaksIntoPlanEvidence() {
-  const std::string relation_uuid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const std::string relation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 14540255));
   auto request = BaseAccessRequest(relation_uuid);
   request.partition_segment_prune.partitions = {
       {"partition.old", Boundary("001", "010"), 10, true, true, true}};

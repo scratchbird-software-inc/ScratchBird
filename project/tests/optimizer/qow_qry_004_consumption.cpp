@@ -1,3 +1,4 @@
+#include <stdexcept>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -36,11 +37,18 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
-std::string Uuid(const std::uint64_t suffix) {
-  auto text = std::string("019f0000-0000-7500-8000-000000000000");
-  const auto digits = std::to_string(suffix);
-  text.replace(text.size() - digits.size(), digits.size(), digits);
-  return text;
+scratchbird::core::platform::Uuid Uuid(std::uint64_t suffix) {
+  // Retain the original fixture's decimal digits in the UUID's low nibbles.
+  scratchbird::core::platform::Uuid id{};
+  id.bytes[0] = 0x01; id.bytes[1] = 0x9f;
+  id.bytes[6] = 0x75; id.bytes[8] = 0x80;
+  for (unsigned i = 0; i < 6; ++i) {
+    const auto low = suffix % 10; suffix /= 10;
+    const auto high = suffix % 10; suffix /= 10;
+    id.bytes[15 - i] = static_cast<std::uint8_t>((high << 4) | low);
+  }
+  if (suffix != 0) throw std::out_of_range("UUID fixture suffix");
+  return id;
 }
 
 exec::CanonicalExecutionMgaAuthority ClosureAuthority(
@@ -232,12 +240,14 @@ exec::CanonicalScanAccessRequest ScanRequest(
 
 exec::DescriptorBatch ScanBatch() {
   auto key = exec::MakeExecutorDescriptor(
-      "int64", "type_uuid=" + Uuid(641) + ";nullability=non_null");
-  key.descriptor_uuid.canonical = Uuid(642);
+      "int64", "nullability=non_null");
+  key.type_uuid = Uuid(641);
+  key.descriptor_uuid = Uuid(642);
   key.descriptor_kind = "scalar";
   auto label = exec::MakeExecutorDescriptor(
-      "text", "type_uuid=" + Uuid(643) + ";nullability=non_null");
-  label.descriptor_uuid.canonical = Uuid(644);
+      "text", "nullability=non_null");
+  label.type_uuid = Uuid(643);
+  label.descriptor_uuid = Uuid(644);
   label.descriptor_kind = "scalar";
   return exec::MakeDescriptorBatch(
       {{"key", key, false, 411}, {"label", label, false, 412}},
@@ -255,9 +265,9 @@ exec::DescriptorBatch BatchForNode(const exec::PhysicalNodeRecord& node,
   columns.reserve(node.output_descriptor_ids.size());
   for (const auto descriptor_id : node.output_descriptor_ids) {
     auto descriptor = exec::MakeExecutorDescriptor(
-        "int64", "type_uuid=" + Uuid(10000 + descriptor_id) +
-                     ";nullability=non_null");
-    descriptor.descriptor_uuid.canonical = Uuid(20000 + descriptor_id);
+        "int64", "nullability=non_null");
+  descriptor.type_uuid = Uuid(10000 + descriptor_id);
+    descriptor.descriptor_uuid = Uuid(20000 + descriptor_id);
     descriptor.descriptor_kind = "scalar";
     columns.push_back({"value_" + std::to_string(descriptor_id), descriptor,
                        false, descriptor_id});
@@ -590,7 +600,7 @@ bool ValidateCompletePreflightMgaRefusalMatrix() {
                        result.executed_steps.empty() &&
                        result.root_result_handle_id == 0 &&
                        result.root_output_descriptor_ids.empty() &&
-                       result.selected_plan_uuid.empty() &&
+                       result.selected_plan_uuid.is_nil() &&
                        result.executed_root_physical_node_id == 0 &&
                        result.root_causal_counter_id == 0 &&
                        !exec::PhysicalMgaStatementContextValid(
@@ -611,7 +621,7 @@ bool ValidateCompletePreflightMgaRefusalMatrix() {
       "missing current resolver reached a physical executor");
   passed &= expect_refusal(
       [](auto& request) {
-        request.mga_authority.statement_context.statement_uuid.clear();
+        request.mga_authority.statement_context.statement_uuid = {};
       },
       "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
       "malformed carried context reached a physical executor");
@@ -833,8 +843,9 @@ bool ValidateFetchFinalRevalidationScrubsOutput() {
   BindPublishedNodeContexts(&dag);
 
   auto descriptor = exec::MakeExecutorDescriptor(
-      "int64", "type_uuid=" + Uuid(6102) + ";nullability=non_null");
-  descriptor.descriptor_uuid.canonical = Uuid(6101);
+      "int64", "nullability=non_null");
+  descriptor.type_uuid = Uuid(6102);
+  descriptor.descriptor_uuid = Uuid(6101);
   descriptor.descriptor_kind = "scalar";
 
   exec::CanonicalDescriptorFetchProfileRequest request;
@@ -865,10 +876,10 @@ bool ValidateFetchFinalRevalidationScrubsOutput() {
           result.diagnostic.diagnostic_code ==
               "QOW-DIAG-MGA-RUNTIME-CURRENT-V1" &&
           result.output_batch.columns.empty() && result.output_batch.rows.empty() &&
-          result.selected_plan_uuid.empty() &&
+          result.selected_plan_uuid.is_nil() &&
           result.executed_physical_node_id == 0 &&
           result.causal_counter_id == 0 &&
-          result.mga_statement_context.statement_uuid.empty(),
+          result.mga_statement_context.statement_uuid.is_nil(),
       "final FETCH MGA refusal exposed output or execution evidence");
 }
 

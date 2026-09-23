@@ -10,6 +10,9 @@
 
 #include "crud_support/crud_store.hpp"
 #include "uuid.hpp"
+#include "hash_digest.hpp"
+#include "catalog/binary_catalog_metadata.hpp"
+#include <mutex>
 
 #include <algorithm>
 #include <cctype>
@@ -27,46 +30,10 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 constexpr const char* kMagic = "SBDOCPATH";
-constexpr std::uint64_t kFormatVersion = 1;
-using PairList = std::vector<std::pair<std::string, std::string>>;
-
-std::uint64_t Fnva64(const std::string& text) {
-  std::uint64_t hash = 1469598103934665603ull;
-  for (const unsigned char ch : text) {
-    hash ^= ch;
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
-std::string Hex64(std::uint64_t value) {
-  std::ostringstream out;
-  out << std::hex << std::setw(16) << std::setfill('0') << value;
-  return out.str();
-}
-
-std::string StableProviderUuid(scratchbird::core::platform::UuidKind kind,
-                               std::string seed) {
-  if (seed.empty()) {
-    seed = "scratchbird.document_path_provider.transient";
-  }
-  const auto left = Hex64(Fnva64(seed + ":left"));
-  auto right = Hex64(Fnva64(seed + ":right"));
-  std::string hex = left + right;
-  hex[12] = '7';
-  hex[16] = '8';
-  auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
-      kind,
-      hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" +
-          hex.substr(12, 4) + "-" + hex.substr(16, 4) + "-" +
-          hex.substr(20, 12));
-  if (parsed.ok()) {
-    return scratchbird::core::uuid::UuidToString(parsed.value.value);
-  }
-  return GenerateCrudEngineUuid(kind == scratchbird::core::platform::UuidKind::database
-                                    ? "database"
-                                    : "object");
-}
+constexpr std::uint32_t kFormatVersion = 2;
+using PairValue = std::variant<std::string, EngineUuid>;
+using PairList = std::vector<std::pair<std::string, PairValue>>;
+using PairValues = std::map<std::string, PairValue>;
 
 std::uint64_t ParseU64(const std::string& value) {
   try {
@@ -94,36 +61,27 @@ bool ParseBool(const std::string& value) {
   return value == "true" || value == "1" || value == "TRUE";
 }
 
-std::string ValueOr(const std::map<std::string, std::string>& values,
+std::string ValueOr(const PairValues& values,
                     const std::string& key,
                     const std::string& fallback = {}) {
   const auto it = values.find(key);
-  return it == values.end() ? fallback : it->second;
+  return it == values.end() || !std::holds_alternative<std::string>(it->second) ? fallback : std::get<std::string>(it->second);
 }
 
-std::map<std::string, std::string> PairMap(const PairList& pairs) {
-  std::map<std::string, std::string> values;
+PairValues PairMap(const PairList& pairs) {
+  PairValues values;
   for (const auto& [key, value] : pairs) {
     values[key] = value;
   }
   return values;
 }
 
-bool IsHex(char ch) {
-  return std::isxdigit(static_cast<unsigned char>(ch)) != 0;
+EngineUuid IdentityOr(const PairValues& values, const std::string& key) {
+  const auto found = values.find(key);
+  return found == values.end() || !std::holds_alternative<EngineUuid>(found->second)
+      ? EngineUuid{} : std::get<EngineUuid>(found->second);
 }
-
-bool IsValidUuid(const std::string& value) {
-  if (value.size() != 36) { return false; }
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (i == 8 || i == 13 || i == 18 || i == 23) {
-      if (value[i] != '-') { return false; }
-    } else if (!IsHex(value[i])) {
-      return false;
-    }
-  }
-  return true;
-}
+bool IsValidUuid(const EngineUuid& value) { return core::uuid::IsEngineIdentityUuid(value); }
 
 std::vector<std::string> Split(const std::string& value, char delimiter) {
   std::vector<std::string> parts;
@@ -281,11 +239,11 @@ PairList IdentityPairs(const DocumentPathProviderIdentity& identity) {
 DocumentPathProviderIdentity IdentityFromPairs(const PairList& pairs) {
   const auto values = PairMap(pairs);
   DocumentPathProviderIdentity identity;
-  identity.database_uuid = ValueOr(values, "database_uuid");
-  identity.relation_uuid = ValueOr(values, "relation_uuid");
-  identity.index_uuid = ValueOr(values, "index_uuid");
+  identity.database_uuid = IdentityOr(values, "database_uuid");
+  identity.relation_uuid = IdentityOr(values, "relation_uuid");
+  identity.index_uuid = IdentityOr(values, "index_uuid");
   identity.provider_id = ValueOr(values, "provider_id");
-  identity.segment_uuid = ValueOr(values, "segment_uuid");
+  identity.segment_uuid = IdentityOr(values, "segment_uuid");
   identity.provider_generation = ParseU64(ValueOr(values, "provider_generation"));
   identity.catalog_epoch = ParseU64(ValueOr(values, "catalog_epoch"));
   identity.security_epoch = ParseU64(ValueOr(values, "security_epoch"));
@@ -360,9 +318,9 @@ DocumentPathProviderPosting PostingFromPairs(const PairList& pairs) {
   posting.path_id = ParseU64(ValueOr(values, "path_id"));
   posting.scalar_type = ValueOr(values, "scalar_type");
   posting.encoded_value = ValueOr(values, "encoded_value");
-  posting.document_uuid = ValueOr(values, "document_uuid");
-  posting.row_uuid = ValueOr(values, "row_uuid");
-  posting.version_uuid = ValueOr(values, "version_uuid");
+  posting.document_uuid = IdentityOr(values, "document_uuid");
+  posting.row_uuid = IdentityOr(values, "row_uuid");
+  posting.version_uuid = IdentityOr(values, "version_uuid");
   posting.row_ordinal = ParseU64(ValueOr(values, "row_ordinal"));
   posting.concrete_path = ValueOr(values, "concrete_path");
   posting.array_position = ParseI64(ValueOr(values, "array_position"));
@@ -587,43 +545,37 @@ DocumentPathProviderArtifact BuildArtifact(
   return artifact;
 }
 
-std::string BodyForArtifact(const DocumentPathProviderArtifact& artifact) {
-  std::ostringstream body;
-  body << "IDENT\t" << EncodeCrudPairs(IdentityPairs(artifact.identity)) << '\n';
-  for (const auto& path : artifact.path_dictionary) {
-    body << "PATH\t" << EncodeCrudPairs(PathPairs(path)) << '\n';
+bool AppendArtifactRecord(std::string* body, std::uint8_t tag, const PairList& pairs) {
+  BinaryCatalogMetadata fields;
+  for (const auto& [key, value] : pairs) {
+    if (const auto* uuid = std::get_if<EngineUuid>(&value)) {
+      if (!fields.identities.emplace(key, *uuid).second) return false;
+    } else if (!fields.text.emplace(key, std::get<std::string>(value)).second) return false;
   }
-  for (const auto& shape : artifact.shape_dictionary) {
-    body << "SHAPE\t" << EncodeCrudPairs(ShapePairs(shape)) << '\n';
-  }
-  for (const auto& posting : artifact.postings) {
-    body << "POST\t" << EncodeCrudPairs(PostingPairs(posting)) << '\n';
-  }
-  for (const auto& expansion : artifact.array_expansions) {
-    body << "ARRAY\t" << EncodeCrudPairs(ArrayPairs(expansion)) << '\n';
-  }
-  body << "STATS\t" << EncodeCrudPairs(StatsPairs(artifact.stats)) << '\n';
-  body << "EVIDENCE\t"
-       << EncodeCrudPairs({{"candidate_provider_evidence_only", "true"},
-                           {"mga_security_redaction_exact_recheck_required",
-                            "true"},
-                           {"parser_finality_authority", "false"},
-                           {"reference_finality_authority", "false"},
-                           {"provider_finality_authority", "false"},
-                           {"write_ahead_log_finality_authority", "false"}})  // wal-not-authority
-       << '\n';
-  return body.str();
+  std::string encoded;
+  if (!EncodeBinaryCatalogMetadata(fields, "document.path.record.v2", &encoded)) return false;
+  AppendBinaryU8(body, tag); AppendBinaryU32(body, static_cast<std::uint32_t>(encoded.size()));
+  body->append(encoded); return true;
 }
-
 std::string SerializeArtifact(const DocumentPathProviderArtifact& artifact) {
-  const auto body = BodyForArtifact(artifact);
-  std::ostringstream out;
-  out << kMagic << '\n';
-  out << "VERSION\t" << kFormatVersion << '\n';
-  out << "CHECKSUM\t" << Hex64(Fnva64(body)) << '\n';
-  out << body;
-  out << "END\n";
-  return out.str();
+  std::string body;
+  if (!AppendArtifactRecord(&body, 1, IdentityPairs(artifact.identity))) return {};
+  for (const auto& item : artifact.path_dictionary)
+    if (!AppendArtifactRecord(&body, 2, PathPairs(item))) return {};
+  for (const auto& item : artifact.shape_dictionary)
+    if (!AppendArtifactRecord(&body, 3, ShapePairs(item))) return {};
+  for (const auto& item : artifact.postings)
+    if (!AppendArtifactRecord(&body, 4, PostingPairs(item))) return {};
+  for (const auto& item : artifact.array_expansions)
+    if (!AppendArtifactRecord(&body, 5, ArrayPairs(item))) return {};
+  if (!AppendArtifactRecord(&body, 6, StatsPairs(artifact.stats))) return {};
+  const auto digest = core::hash::ComputeSha256Digest(
+      reinterpret_cast<const core::platform::byte*>(body.data()), body.size());
+  if (!digest.ok() || digest.digest_bytes != 32) return {};
+  std::string bytes = kMagic;
+  AppendBinaryU32(&bytes, kFormatVersion); AppendBinaryU64(&bytes, body.size());
+  bytes.append(reinterpret_cast<const char*>(digest.digest.data()), 32);
+  bytes += body; return bytes;
 }
 
 std::optional<const char*> ValidateParsedArtifact(
@@ -671,14 +623,14 @@ std::optional<const char*> ValidateParsedArtifact(
   std::set<std::tuple<std::uint64_t,
                       std::string,
                       std::string,
-                      std::string,
-                      std::string,
-                      std::string,
+                      EngineUuid,
+                      EngineUuid,
+                      EngineUuid,
                       std::uint64_t,
                       std::string,
                       std::int64_t>>
       posting_keys;
-  std::set<std::tuple<std::string, std::string, std::uint64_t>> row_keys;
+  std::set<std::tuple<EngineUuid, EngineUuid, std::uint64_t>> row_keys;
   for (const auto& posting : artifact.postings) {
     const auto path_it = paths.find(posting.path_id);
     if (posting.path_id == 0 || path_it == paths.end() ||
@@ -754,69 +706,53 @@ std::optional<const char*> ValidateParsedArtifact(
   return std::nullopt;
 }
 
-DocumentPathProviderResult ParseArtifactText(
-    const std::string& text,
-    const DocumentPathProviderOpenRequest& request) {
-  const auto first_newline = text.find('\n');
-  if (first_newline == std::string::npos ||
-      text.substr(0, first_newline) != kMagic) {
+DocumentPathProviderResult ParseArtifactBinary(
+    const std::string& bytes, const DocumentPathProviderOpenRequest& request) {
+  const std::size_t magic_size = std::char_traits<char>::length(kMagic);
+  if (bytes.size() < magic_size + 44 || bytes.compare(0, magic_size, kMagic) != 0)
     return Failure(kDocumentPathPhysicalProviderStaleFormat);
-  }
-  if (text.size() < 4 || text.rfind("END\n") != text.size() - 4) {
+  const std::span<const std::uint8_t> input(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
+  std::size_t cursor = magic_size;
+  std::uint32_t version = 0; std::uint64_t body_size = 0;
+  if (!ReadBinaryU32(input, &cursor, &version) || version != kFormatVersion)
+    return Failure(kDocumentPathPhysicalProviderStaleFormat);
+  if (!ReadBinaryU64(input, &cursor, &body_size) || body_size != input.size() - cursor - 32)
     return Failure(kDocumentPathPhysicalProviderTruncatedPayload);
-  }
-
-  std::istringstream lines(text);
-  std::string line;
-  std::getline(lines, line);
-  std::getline(lines, line);
-  if (line != "VERSION\t1") {
-    return Failure(kDocumentPathPhysicalProviderStaleFormat);
-  }
-  std::getline(lines, line);
-  if (line.rfind("CHECKSUM\t", 0) != 0) {
+  const auto expected_digest = input.subspan(cursor, 32); cursor += 32;
+  const auto digest = core::hash::ComputeSha256Digest(input.data() + cursor, body_size);
+  if (!digest.ok() || !std::equal(expected_digest.begin(), expected_digest.end(), digest.digest.begin()))
     return Failure(kDocumentPathPhysicalProviderBadChecksum);
-  }
-  const auto expected_checksum = line.substr(9);
-
-  std::string body;
-  while (std::getline(lines, line)) {
-    if (line == "END") { break; }
-    body += line;
-    body.push_back('\n');
-  }
-  if (Hex64(Fnva64(body)) != expected_checksum) {
-    return Failure(kDocumentPathPhysicalProviderBadChecksum);
-  }
-
   DocumentPathProviderArtifact artifact;
-  bool saw_ident = false;
-  bool saw_stats = false;
-  std::istringstream body_lines(body);
-  while (std::getline(body_lines, line)) {
-    const auto tab = line.find('\t');
-    if (tab == std::string::npos) { continue; }
-    const auto tag = line.substr(0, tab);
-    const auto pairs = DecodeCrudPairs(line.substr(tab + 1));
-    if (tag == "IDENT") {
-      artifact.identity = IdentityFromPairs(pairs);
-      saw_ident = true;
-    } else if (tag == "PATH") {
-      artifact.path_dictionary.push_back(PathFromPairs(pairs));
-    } else if (tag == "SHAPE") {
-      artifact.shape_dictionary.push_back(ShapeFromPairs(pairs));
-    } else if (tag == "POST") {
-      artifact.postings.push_back(PostingFromPairs(pairs));
-    } else if (tag == "ARRAY") {
-      artifact.array_expansions.push_back(ArrayFromPairs(pairs));
-    } else if (tag == "STATS") {
-      artifact.stats = StatsFromPairs(pairs);
-      saw_stats = true;
+  bool saw_ident = false, saw_stats = false;
+  while (cursor < input.size()) {
+    std::uint8_t tag = 0; std::uint32_t size = 0;
+    if (!ReadBinaryU8(input, &cursor, &tag) || !ReadBinaryU32(input, &cursor, &size) ||
+        size > input.size() - cursor) return Failure(kDocumentPathPhysicalProviderTruncatedPayload);
+    BinaryCatalogMetadata fields;
+    const std::string_view record(reinterpret_cast<const char*>(input.data() + cursor), size);
+    if (!DecodeBinaryCatalogMetadata(record, "document.path.record.v2", &fields))
+      return Failure(kDocumentPathPhysicalProviderStaleFormat);
+    cursor += size;
+    PairList pairs;
+    for (const auto& field : fields.text) pairs.emplace_back(field.first, field.second);
+    for (const auto& field : fields.identities) pairs.emplace_back(field.first, field.second);
+    PairList canonical;
+    switch (tag) {
+      case 1:
+        if (saw_ident) return Failure(kDocumentPathPhysicalProviderStaleFormat);
+        artifact.identity = IdentityFromPairs(pairs); canonical = IdentityPairs(artifact.identity); saw_ident = true; break;
+      case 2: artifact.path_dictionary.push_back(PathFromPairs(pairs)); canonical = PathPairs(artifact.path_dictionary.back()); break;
+      case 3: artifact.shape_dictionary.push_back(ShapeFromPairs(pairs)); canonical = ShapePairs(artifact.shape_dictionary.back()); break;
+      case 4: artifact.postings.push_back(PostingFromPairs(pairs)); canonical = PostingPairs(artifact.postings.back()); break;
+      case 5: artifact.array_expansions.push_back(ArrayFromPairs(pairs)); canonical = ArrayPairs(artifact.array_expansions.back()); break;
+      case 6:
+        if (saw_stats) return Failure(kDocumentPathPhysicalProviderStaleFormat);
+        artifact.stats = StatsFromPairs(pairs); canonical = StatsPairs(artifact.stats); saw_stats = true; break;
+      default: return Failure(kDocumentPathPhysicalProviderStaleFormat);
     }
+    if (PairMap(pairs) != PairMap(canonical)) return Failure(kDocumentPathPhysicalProviderStaleFormat);
   }
-  if (!saw_ident || !saw_stats) {
-    return Failure(kDocumentPathPhysicalProviderTruncatedPayload);
-  }
+  if (!saw_ident || !saw_stats) return Failure(kDocumentPathPhysicalProviderTruncatedPayload);
   if (auto invalid = ValidateParsedArtifact(artifact)) {
     return Failure(*invalid);
   }
@@ -847,7 +783,7 @@ DocumentPathProviderResult ParseArtifactText(
 
 std::vector<DocumentPathRowEvidence> RowsFromArtifact(
     const DocumentPathProviderArtifact& artifact) {
-  std::map<std::tuple<std::string, std::string, std::uint64_t>,
+  std::map<std::tuple<EngineUuid, EngineUuid, std::uint64_t>,
            DocumentPathRowEvidence>
       rows;
   std::map<std::uint64_t, DocumentPathProviderPathEntry> paths;
@@ -929,7 +865,7 @@ std::pair<std::uint64_t, std::uint64_t> ShapeInfoForCandidate(
     return {0, 0};
   }
 
-  std::set<std::tuple<std::string, std::string, std::uint64_t>> matching_rows;
+  std::set<std::tuple<EngineUuid, EngineUuid, std::uint64_t>> matching_rows;
   for (const auto& posting : artifact.postings) {
     const auto path = paths.find(posting.path_id);
     if (path == paths.end() || path->second.path_kind != "normalized") {
@@ -1030,47 +966,49 @@ std::string DocumentPathPhysicalProviderPath(
 }
 
 DocumentPathProviderIdentity DocumentPathProviderIdentityForContext(
-    const EngineRequestContext& context,
-    std::uint64_t provider_generation,
-    const std::string& index_uuid) {
-  DocumentPathProviderIdentity identity;
-  const bool database_uuid_valid = IsValidUuid(context.database_uuid);
-  const bool relation_uuid_valid =
-      IsValidUuid(context.current_schema_uuid);
-  std::string database_seed;
-  if (database_uuid_valid) {
-    database_seed = context.database_uuid;
-  } else if (!context.database_path.empty()) {
-    database_seed = context.database_path;
-  } else if (!context.database_uuid.is_nil()) {
-    database_seed = context.database_uuid;
-  } else {
-    database_seed = "embedded_transient_database";
+    const EngineRequestContext& context, std::uint64_t provider_generation,
+    const EngineUuid& index_uuid) {
+  if (!IsValidUuid(context.database_uuid) || provider_generation == 0 ||
+      (!context.current_schema_uuid.is_nil() && !IsValidUuid(context.current_schema_uuid)) ||
+      (!index_uuid.is_nil() && !IsValidUuid(index_uuid))) return {};
+  using Key = std::tuple<std::string, EngineUuid, EngineUuid, EngineUuid>;
+  static std::mutex mutex;
+  static std::map<Key, DocumentPathProviderIdentity> identities;
+  std::lock_guard lock(mutex);
+  const Key key{context.database_path, context.database_uuid, context.current_schema_uuid, index_uuid};
+  auto found = identities.find(key);
+  if (found == identities.end()) {
+    DocumentPathProviderIdentity identity;
+    const auto path = DocumentPathPhysicalProviderPath(context);
+    std::error_code error;
+    const bool exists = !path.empty() && std::filesystem::exists(path, error);
+    if (error) return {};
+    if (exists) {
+      std::ifstream in(path, std::ios::binary);
+      if (!in) return {};
+      const std::string bytes((std::istreambuf_iterator<char>(in)), {});
+      DocumentPathProviderOpenRequest request; request.require_expected_identity = false;
+      const auto loaded = ParseArtifactBinary(bytes, request);
+      if (!loaded.ok) return {};
+      identity = loaded.artifact.identity;
+      if (identity.database_uuid != context.database_uuid ||
+          (!context.current_schema_uuid.is_nil() && identity.relation_uuid != context.current_schema_uuid) ||
+          (!index_uuid.is_nil() && identity.index_uuid != index_uuid)) return {};
+    } else {
+      identity.database_uuid = context.database_uuid;
+      identity.relation_uuid = context.current_schema_uuid;
+      identity.index_uuid = index_uuid;
+      for (auto* uuid : {&identity.relation_uuid, &identity.index_uuid, &identity.segment_uuid}) {
+        if (!uuid->is_nil()) continue;
+        const auto issued = core::uuid::IssueRuntimeIdentityV7();
+        if (!issued) return {};
+        *uuid = *issued;
+      }
+      identity.provider_id = kDocumentPathPhysicalProviderId;
+    }
+    found = identities.emplace(key, identity).first;
   }
-  identity.database_uuid = database_uuid_valid
-                               ? context.database_uuid
-                               : StableProviderUuid(
-                                     scratchbird::core::platform::UuidKind::database,
-                                     database_seed + "|database");
-  identity.relation_uuid =
-      relation_uuid_valid
-          ? context.current_schema_uuid
-          : StableProviderUuid(
-                scratchbird::core::platform::UuidKind::object,
-                database_seed + "|document_relation");
-  identity.index_uuid =
-      !index_uuid.empty() && IsValidUuid(index_uuid)
-          ? index_uuid
-          : StableProviderUuid(
-                scratchbird::core::platform::UuidKind::object,
-                database_seed + "|" + identity.relation_uuid +
-                    "|document_path_index");
-  identity.provider_id = kDocumentPathPhysicalProviderId;
-  identity.segment_uuid =
-      StableProviderUuid(
-          scratchbird::core::platform::UuidKind::object,
-          database_seed + "|" + identity.relation_uuid + "|" +
-              identity.index_uuid + "|document_path_segment");
+  auto identity = found->second;
   identity.provider_generation = provider_generation;
   identity.catalog_epoch = NonZeroEpoch(context.catalog_generation_id);
   identity.security_epoch = NonZeroEpoch(context.security_epoch);
@@ -1108,9 +1046,11 @@ DocumentPathProviderResult BuildDocumentPathPhysicalProvider(
   if (request.artifact_path.empty()) {
     return Failure(kDocumentPathPhysicalProviderIdentityMismatch);
   }
+  const auto encoded_artifact = SerializeArtifact(artifact);
+  if (encoded_artifact.empty()) return Failure(kDocumentPathPhysicalProviderInvalidUuid);
   std::ofstream out(request.artifact_path, std::ios::binary | std::ios::trunc);
   if (!out) { return Failure(kDocumentPathPhysicalProviderIdentityMismatch); }
-  out << SerializeArtifact(artifact);
+  out.write(encoded_artifact.data(), encoded_artifact.size());
   out.flush();
   if (!out) { return Failure(kDocumentPathPhysicalProviderIdentityMismatch); }
 
@@ -1190,7 +1130,7 @@ DocumentPathProviderResult OpenDocumentPathPhysicalProvider(
   }
   std::ostringstream text;
   text << in.rdbuf();
-  auto result = ParseArtifactText(text.str(), request);
+  auto result = ParseArtifactBinary(text.str(), request);
   if (!result.ok && request.repair_admitted) {
     if (request.authoritative_source_rows.empty()) {
       return Failure(kDocumentPathPhysicalProviderRepairSourceRequired);

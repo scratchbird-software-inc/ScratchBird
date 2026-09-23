@@ -319,8 +319,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus TikvLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuTikvPackageUuid) {
+scratchbird::udr::runtime::UdrStatus TikvLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuTikvPackageIdentity) {
     return {false, "UDR.TIKV.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -533,7 +533,7 @@ UdrResult sbu_tikv_debug_capabilities(std::string_view render_policy) {
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_tikv_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuTikvPackageUuid);
+  descriptor.package_uuid = kSbuTikvPackageIdentity;
   descriptor.package_name = std::string(kSbuTikvPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "tikv-parser-support-beta-closure";

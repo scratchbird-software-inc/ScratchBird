@@ -184,14 +184,8 @@ std::unordered_map<std::string, const CsvRow*> IndexUnique(const CsvTable& table
   return index;
 }
 
-bool LooksLikeUuidV7(std::string_view uuid) {
-  if (uuid.size() != 36) return false;
-  for (const auto index : {8u, 13u, 18u, 23u}) {
-    if (uuid[index] != '-') return false;
-  }
-  if (uuid[14] != '7') return false;
-  return uuid[19] == '8' || uuid[19] == '9' || uuid[19] == 'a' || uuid[19] == 'b' ||
-         uuid[19] == 'A' || uuid[19] == 'B';
+bool LooksLikeUuidV7(const scratchbird::core::platform::Uuid& uuid) {
+  return (uuid.bytes[6] >> 4) == 7 && (uuid.bytes[8] & 0xc0) == 0x80;
 }
 
 std::filesystem::path FindRepoRoot(std::filesystem::path start) {
@@ -366,14 +360,14 @@ FunctionSeedCounts ValidateCanonicalFunctionSeeds(Harness* harness) {
   harness->Check(!package.name_rows.empty(), "live function name seed registry is empty");
 
   std::set<std::string> runtime_ids;
-  std::set<std::string> runtime_uuids;
+  std::set<scratchbird::core::platform::Uuid> runtime_uuids;
   for (const auto& entry : runtime_entries) {
     harness->Check(!entry.function_id.empty() && LooksLikeUuidV7(entry.function_uuid),
                    entry.function_id + " has an invalid live function identity");
     harness->Check(runtime_ids.insert(entry.function_id).second,
                    "duplicate live function id " + entry.function_id);
     harness->Check(runtime_uuids.insert(entry.function_uuid).second,
-                   "duplicate live function UUID " + entry.function_uuid);
+                   "duplicate live function UUID for " + entry.function_id);
     const auto* by_id = package.registry.Lookup(entry.function_id);
     const auto* by_uuid = package.registry.LookupByUuid(entry.function_uuid);
     harness->Check(by_id != nullptr && by_uuid != nullptr &&
@@ -385,12 +379,12 @@ FunctionSeedCounts ValidateCanonicalFunctionSeeds(Harness* harness) {
   }
 
   std::set<std::string> catalog_ids;
-  std::set<std::string> catalog_uuids;
+  std::set<scratchbird::core::platform::Uuid> catalog_uuids;
   for (const auto& entry : catalog_entries) {
     harness->Check(catalog_ids.insert(entry.function_id).second,
                    "duplicate catalog function id " + entry.function_id);
     harness->Check(catalog_uuids.insert(entry.function_uuid).second,
-                   "duplicate catalog function UUID " + entry.function_uuid);
+                   "duplicate catalog function UUID for " + entry.function_id);
     const auto* runtime = package.registry.Lookup(entry.function_id);
     const auto* by_uuid = package.catalog_registry.LookupByUuid(entry.function_uuid);
     harness->Check(runtime != nullptr && by_uuid != nullptr &&

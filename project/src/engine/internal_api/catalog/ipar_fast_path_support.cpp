@@ -45,12 +45,17 @@ std::string UInt64Hex(std::uint64_t value) {
 std::string StableDigest(const std::vector<std::string>& parts) {
   std::uint64_t hash = 1469598103934665603ull;
   for (const auto& part : parts) {
+    // Length framing keeps raw UUID bytes (including 0xff) distinct from
+    // boundaries between fields.
+    const auto size = static_cast<std::uint64_t>(part.size());
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      hash ^= (size >> shift) & 0xffu;
+      hash *= 1099511628211ull;
+    }
     for (const unsigned char ch : part) {
       hash ^= static_cast<std::uint64_t>(ch);
       hash *= 1099511628211ull;
     }
-    hash ^= 0xffu;
-    hash *= 1099511628211ull;
   }
   return "fnv1a64:" + UInt64Hex(hash);
 }
@@ -87,8 +92,12 @@ std::uint32_t AlignUp(std::uint32_t value, std::uint32_t alignment) {
   return value + (alignment - remainder);
 }
 
-std::string SlotDigestText(const IparRowLayoutSlot& slot) {
-  return slot.column_uuid + ":" + std::to_string(slot.ordinal) + ":" +
+std::string IdentityBytes(const EngineUuid& value) {
+  return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
+}
+
+std::string SlotDigestBytes(const IparRowLayoutSlot& slot) {
+  return IdentityBytes(slot.column_uuid) + ":" + std::to_string(slot.ordinal) + ":" +
          std::to_string(slot.fixed_offset) + ":" +
          std::to_string(slot.fixed_width_bytes) + ":" +
          std::to_string(slot.variable_index) + ":" +
@@ -192,12 +201,12 @@ std::vector<IparNoopBranchDecision> BuildIparNoopBranchTable(
 }
 
 IparRowLayoutBuildResult BuildIparRowLayoutDescriptor(
-    std::string table_uuid,
-    std::string statement_uuid,
+    EngineUuid table_uuid,
+    EngineUuid statement_uuid,
     IparCompressedEpochVector epoch,
     std::vector<IparRowLayoutColumn> columns) {
   IparRowLayoutBuildResult result;
-  if (table_uuid.empty() || statement_uuid.empty() || !epoch.complete ||
+  if (table_uuid.is_nil() || statement_uuid.is_nil() || !epoch.complete ||
       columns.empty()) {
     result.diagnostic_code = "SB_IPAR_ROW_LAYOUT.REQUEST_INVALID";
     result.detail = "table_statement_epoch_and_columns_required";
@@ -219,7 +228,7 @@ IparRowLayoutBuildResult BuildIparRowLayoutDescriptor(
   result.layout.fixed_row_bytes = result.layout.null_bitmap_bytes;
   std::uint32_t variable_index = 0;
   for (const auto& column : columns) {
-    if (column.column_uuid.empty() ||
+    if (column.column_uuid.is_nil() ||
         column.descriptor.descriptor_uuid.is_nil() ||
         column.descriptor.canonical_type_name.empty()) {
       result.diagnostic_code = "SB_IPAR_ROW_LAYOUT.COLUMN_INVALID";
@@ -249,22 +258,21 @@ IparRowLayoutBuildResult BuildIparRowLayoutDescriptor(
     }
     result.layout.slots.push_back(slot);
     result.layout.parameter_bind_map.push_back(
-        column.column_uuid + ":" + std::to_string(column.ordinal) + ":" +
-        std::to_string(slot.fixed_offset));
+        {column.column_uuid, column.ordinal, slot.fixed_offset});
   }
   result.layout.variable_column_count = variable_index;
 
   std::vector<std::string> digest_parts = {
       kRowLayoutAnchor,
       kAuthorityScope,
-      result.layout.table_uuid,
-      result.layout.statement_uuid,
+      IdentityBytes(result.layout.table_uuid),
+      IdentityBytes(result.layout.statement_uuid),
       result.layout.epoch.digest,
       std::to_string(result.layout.fixed_row_bytes),
       std::to_string(result.layout.null_bitmap_bytes),
       std::to_string(result.layout.variable_column_count)};
   for (const auto& slot : result.layout.slots) {
-    digest_parts.push_back(SlotDigestText(slot));
+    digest_parts.push_back(SlotDigestBytes(slot));
   }
   result.layout.encoder_digest = StableDigest(digest_parts);
   result.ok = true;
@@ -273,18 +281,17 @@ IparRowLayoutBuildResult BuildIparRowLayoutDescriptor(
   return result;
 }
 
-std::string IparRowLayoutCacheKey(const std::string& table_uuid,
-                                  const std::string& statement_uuid,
+IparRowLayoutKey IparRowLayoutCacheKey(const EngineUuid& table_uuid,
+                                  const EngineUuid& statement_uuid,
                                   const IparCompressedEpochVector& epoch,
                                   const std::string& encoder_digest) {
-  return table_uuid + "|" + statement_uuid + "|" + epoch.digest + "|" +
-         encoder_digest;
+  return {table_uuid, statement_uuid, epoch.digest, encoder_digest};
 }
 
 IparParameterEncoderLookupResult IparParameterEncoderCache::Put(
     IparRowLayoutDescriptor layout) {
-  if (layout.table_uuid.empty() ||
-      layout.statement_uuid.empty() ||
+  if (layout.table_uuid.is_nil() ||
+      layout.statement_uuid.is_nil() ||
       !layout.epoch.complete ||
       layout.encoder_digest.empty() ||
       !layout.security_recheck_required ||
@@ -293,7 +300,7 @@ IparParameterEncoderLookupResult IparParameterEncoderCache::Put(
     return Refusal("SB_IPAR_ENCODER_CACHE.UNSAFE_OR_INVALID",
                    "layout requires table, statement, complete epoch, digest, and rechecks");
   }
-  const std::string key = IparRowLayoutCacheKey(
+  const auto key = IparRowLayoutCacheKey(
       layout.table_uuid, layout.statement_uuid, layout.epoch, layout.encoder_digest);
   std::lock_guard<std::mutex> lock(mutex_);
   entries_[key] = std::move(layout);
@@ -304,16 +311,16 @@ IparParameterEncoderLookupResult IparParameterEncoderCache::Put(
 }
 
 IparParameterEncoderLookupResult IparParameterEncoderCache::Lookup(
-    const std::string& table_uuid,
-    const std::string& statement_uuid,
+    const EngineUuid& table_uuid,
+    const EngineUuid& statement_uuid,
     const IparCompressedEpochVector& epoch,
     const std::string& encoder_digest) {
-  if (table_uuid.empty() || statement_uuid.empty() || !epoch.complete ||
+  if (table_uuid.is_nil() || statement_uuid.is_nil() || !epoch.complete ||
       encoder_digest.empty()) {
     return Refusal("SB_IPAR_ENCODER_CACHE.REQUEST_INVALID",
                    "table_statement_epoch_and_digest_required");
   }
-  const std::string key =
+  const auto key =
       IparRowLayoutCacheKey(table_uuid, statement_uuid, epoch, encoder_digest);
   std::lock_guard<std::mutex> lock(mutex_);
   const auto found = entries_.find(key);
@@ -356,7 +363,7 @@ void IparParameterEncoderCache::Clear() {
 IparWarmProfilePlan PlanIparDatabaseOpenWarmProfile(
     IparWarmProfileRequest request) {
   IparWarmProfilePlan plan;
-  if (request.database_uuid.empty() || !request.open_epoch.complete ||
+  if (request.database_uuid.is_nil() || !request.open_epoch.complete ||
       request.budget_bytes == 0) {
     plan.diagnostic_code = "SB_IPAR_WARM_OPEN.REQUEST_INVALID";
     return plan;
@@ -372,7 +379,7 @@ IparWarmProfilePlan PlanIparDatabaseOpenWarmProfile(
             });
   for (const auto& item : request.items) {
     if (item.item_id.empty() || item.item_kind.empty() ||
-        item.object_uuid.empty()) {
+        item.object_uuid.is_nil()) {
       plan.skipped.push_back("identity_required");
       continue;
     }

@@ -11,6 +11,7 @@
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_registry.hpp"
+#include "catalog/binary_view_options.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "dml/select_api.hpp"
@@ -40,7 +41,7 @@ constexpr const char* kOperation = "catalog.relation_descriptor_projection";
 struct ProjectionViewDefinition {
   std::string variant;
   std::string source_relation_name;
-  std::string function_uuid;
+  EngineUuid function_uuid;
 };
 
 std::string LowerAscii(std::string value) {
@@ -114,7 +115,7 @@ EngineApiDiagnostic ValidateExactReadableTransaction(
       context.transaction_uuid.is_nil()) {
     return ProjectionDiagnostic("exact_active_transaction_identity_required");
   }
-  const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
+  const auto parsed_transaction = scratchbird::core::uuid::MakeTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
       context.transaction_uuid);
   if (!parsed_transaction.ok()) {
@@ -204,27 +205,8 @@ std::string PayloadFieldValue(const std::string& payload,
 }
 
 std::vector<std::string> PayloadOptions(const std::string& payload) {
-  const std::string prefix = "options=";
-  std::size_t options_offset = 0;
-  if (payload.rfind(prefix, 0) == 0) {
-    options_offset = prefix.size();
-  } else {
-    const auto found = payload.find(";" + prefix);
-    if (found == std::string::npos) return {};
-    options_offset = found + 1 + prefix.size();
-  }
-
   std::vector<std::string> options;
-  std::size_t offset = options_offset;
-  while (offset <= payload.size()) {
-    const auto delimiter = payload.find(';', offset);
-    const auto end =
-        delimiter == std::string::npos ? payload.size() : delimiter;
-    const std::string option = payload.substr(offset, end - offset);
-    if (!option.empty()) options.push_back(option);
-    if (delimiter == std::string::npos) break;
-    offset = delimiter + 1;
-  }
+  if (!DecodeBinaryViewOptions(payload, &options)) return {};
   return options;
 }
 
@@ -259,9 +241,9 @@ std::optional<ProjectionViewDefinition> ParseCanonicalViewOptions(
       options.size() == 5 &&
       options[4].rfind("view_projection_1:function_uuid:", 0) == 0) {
     definition.variant = kRelationDescriptorProjectionTypeInventoryVariantV1;
-    definition.function_uuid = options[4].substr(
-        std::string("view_projection_1:function_uuid:").size());
-    if (definition.function_uuid.empty()) return std::nullopt;
+    definition.function_uuid = BinaryViewUuid(options[4].substr(
+        std::string("view_projection_1:function_uuid:").size()));
+    if (definition.function_uuid.is_nil()) return std::nullopt;
     return definition;
   }
   return std::nullopt;
@@ -321,9 +303,9 @@ bool CreatorInsideMetadataBoundary(const EngineRequestContext& context,
 
 bool NameEntryMatches(const NameRegistryEntry& entry,
                       const EngineRequestContext& context,
-                      const std::string& object_uuid,
+                      const EngineUuid& object_uuid,
                       const std::string& object_class,
-                      const std::string& schema_uuid,
+                      const EngineUuid& schema_uuid,
                       const std::string& expected_name) {
   if (entry.object_uuid != object_uuid ||
       entry.object_class != object_class || entry.deleted ||
@@ -331,7 +313,7 @@ bool NameEntryMatches(const NameRegistryEntry& entry,
       !CreatorInsideMetadataBoundary(context, entry.creator_tx)) {
     return false;
   }
-  if (!schema_uuid.empty() && entry.scope_uuid != schema_uuid &&
+  if (!schema_uuid.is_nil() && entry.scope_uuid != schema_uuid &&
       entry.parent_schema_uuid != schema_uuid) {
     return false;
   }
@@ -348,9 +330,9 @@ bool NameEntryMatches(const NameRegistryEntry& entry,
 }
 
 EngineApiDiagnostic ValidateRegisteredName(const EngineRequestContext& context,
-                                           const std::string& object_uuid,
+                                           const EngineUuid& object_uuid,
                                            const std::string& object_class,
-                                           const std::string& schema_uuid,
+                                           const EngineUuid& schema_uuid,
                                            const std::string& expected_name,
                                            const std::string& detail) {
   const auto loaded =
@@ -371,26 +353,17 @@ EngineApiDiagnostic ValidateRegisteredName(const EngineRequestContext& context,
 
 std::string ExecutablePayloadField(const std::string& payload,
                                    const std::string& prefix) {
-  std::size_t offset = 0;
-  while (offset <= payload.size()) {
-    const auto delimiter = payload.find(';', offset);
-    const auto end =
-        delimiter == std::string::npos ? payload.size() : delimiter;
-    const std::string field = payload.substr(offset, end - offset);
-    if (field.rfind(prefix, 0) == 0) {
-      return field.substr(prefix.size());
-    }
-    if (delimiter == std::string::npos) break;
-    offset = delimiter + 1;
-  }
+  std::vector<std::string> options;
+  if(!DecodeBinaryViewOptions(payload,&options))return {};
+  for(const auto& option:options)if(option.starts_with(prefix))return option.substr(prefix.size());
   return {};
 }
 
 EngineApiDiagnostic ValidateTypeNameFunction(
     const EngineRequestContext& context,
-    const std::string& function_uuid,
+    const EngineUuid& function_uuid,
     std::uint64_t latest_allowed_creator_tx) {
-  if (function_uuid.empty()) {
+  if (function_uuid.is_nil()) {
     return ProjectionDiagnostic("type_name_function_uuid_required");
   }
   const auto loaded = LoadExecutableObjectLifecycleState(context);
@@ -434,6 +407,16 @@ EngineTypedValue ScalarValue(const EngineDescriptor& descriptor,
   EngineTypedValue typed;
   typed.descriptor = descriptor;
   typed.encoded_value = std::move(value);
+  typed.is_null = false;
+  typed.state = EngineValueState::value;
+  return typed;
+}
+
+EngineTypedValue ScalarValue(const EngineDescriptor& descriptor,
+                             const EngineUuid& value) {
+  EngineTypedValue typed;
+  typed.descriptor = descriptor;
+  typed.binary_value.assign(value.bytes.begin(), value.bytes.end());
   typed.is_null = false;
   typed.state = EngineValueState::value;
   return typed;
@@ -487,10 +470,10 @@ EngineApiDiagnostic ResolveColumnResources(
   if (resources == nullptr) {
     return ProjectionDiagnostic("column_resource_output_required");
   }
-  if (column.charset_uuid.empty() && !column.collation_uuid.empty()) {
+  if (column.charset_uuid.is_nil() && !column.collation_uuid.is_nil()) {
     return ProjectionDiagnostic("collation_requires_charset");
   }
-  if (!column.charset_uuid.empty()) {
+  if (!column.charset_uuid.is_nil()) {
     EngineUuid charset_uuid;
     charset_uuid = column.charset_uuid;
     const auto charset = LookupEngineResourceDescriptorByUuid(
@@ -505,7 +488,7 @@ EngineApiDiagnostic ResolveColumnResources(
     resources->charset_name =
         charset.resource_descriptor.canonical_name;
   }
-  if (!column.collation_uuid.empty()) {
+  if (!column.collation_uuid.is_nil()) {
     EngineUuid collation_uuid;
     collation_uuid = column.collation_uuid;
     const auto collation = LookupEngineResourceDescriptorByUuid(
@@ -535,7 +518,7 @@ bool CanonicalRelationColumns(
                    [](const auto& left, const auto& right) {
                      return left.ordinal < right.ordinal;
                    });
-  std::set<std::string> column_uuids;
+  std::set<EngineUuid> column_uuids;
   std::set<std::string> column_names;
   for (std::size_t i = 0; i < columns->size(); ++i) {
     const auto& column = (*columns)[i];
@@ -614,8 +597,8 @@ EngineApiDiagnostic ValidateRelationDescriptorProjectionViewCreate(
       return ProjectionDiagnostic("type_name_function_uuid_required");
     }
     definition.function_uuid =
-        dependency.substr(std::string("function_uuid:").size());
-    if (definition.function_uuid.empty()) {
+        BinaryViewUuid(dependency.substr(std::string("function_uuid:").size()));
+    if (definition.function_uuid.is_nil()) {
       return ProjectionDiagnostic("type_name_function_uuid_required");
     }
   } else if (projection_zero ==
@@ -678,10 +661,10 @@ std::vector<std::string> CanonicalRelationDescriptorProjectionViewOptions(
 EngineCatalogRelationProjectionViewDescriptor
 DescribeEngineCatalogRelationProjectionView(
     const EngineRequestContext& context,
-    const std::string& view_uuid) {
+    const EngineUuid& view_uuid) {
   EngineCatalogRelationProjectionViewDescriptor descriptor;
   descriptor.diagnostic = OkDiagnostic();
-  if (view_uuid.empty()) {
+  if (view_uuid.is_nil()) {
     descriptor.diagnostic = ProjectionDiagnostic("projection_view_uuid_required");
     return descriptor;
   }
@@ -700,6 +683,10 @@ DescribeEngineCatalogRelationProjectionView(
     return descriptor;
   }
   const auto options = PayloadOptions(view->payload);
+  if (options.empty() && view->payload.starts_with("SBVIEW02")) {
+    descriptor.diagnostic = ProjectionDiagnostic("projection_view_definition_invalid");
+    return descriptor;
+  }
   if (!PayloadRequestsRelationDescriptorProjection(options)) {
     // An ordinary persisted view is not an error for this classifier.
     return descriptor;
@@ -715,9 +702,9 @@ DescribeEngineCatalogRelationProjectionView(
   }
 
   const auto definition = ParseCanonicalViewOptions(options);
-  const std::string view_schema_uuid =
-      PayloadFieldValue(view->payload, "schema=");
-  if (!definition || view_schema_uuid.empty()) {
+  const EngineUuid view_schema_uuid =
+      view->target_schema_uuid;
+  if (!definition || view_schema_uuid.is_nil()) {
     descriptor.diagnostic =
         ProjectionDiagnostic("projection_view_definition_invalid");
     return descriptor;
@@ -740,7 +727,7 @@ DescribeEngineCatalogRelationProjectionView(
       descriptor.diagnostic = dependency;
       return descriptor;
     }
-  } else if (!definition->function_uuid.empty()) {
+  } else if (!definition->function_uuid.is_nil()) {
     descriptor.diagnostic =
         ProjectionDiagnostic("charset_projection_function_forbidden");
     return descriptor;
@@ -788,15 +775,15 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
     return ProjectionFailure<EngineSelectRowsResult>(
         request.context, ProjectionDiagnostic("projection_variant_invalid"));
   }
-  const std::string view_uuid = request.target_object.uuid;
-  const std::string relation_uuid =
-      SingleOptionValue(request, "source_uuid:");
-  const std::string expected_descriptor_uuid =
-      SingleOptionValue(request, "source_fingerprint:");
+  const EngineUuid view_uuid = request.target_object.uuid;
+  const EngineUuid relation_uuid =
+      BinaryViewUuid(SingleOptionValue(request, "source_uuid:"));
+  const EngineUuid expected_descriptor_uuid =
+      BinaryViewUuid(SingleOptionValue(request, "source_fingerprint:"));
   const auto expected_descriptor_generation =
       ParseU64Strict(SingleOptionValue(request, "source_position:"));
-  if (view_uuid.empty() || relation_uuid.empty() ||
-      expected_descriptor_uuid.empty() ||
+  if (view_uuid.is_nil() || relation_uuid.is_nil() ||
+      expected_descriptor_uuid.is_nil() ||
       !expected_descriptor_generation ||
       *expected_descriptor_generation == 0 || view_uuid == relation_uuid) {
     return ProjectionFailure<EngineSelectRowsResult>(
@@ -822,13 +809,13 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
   const auto persisted_definition =
       ParseCanonicalViewOptions(PayloadOptions(view->payload));
   if (!persisted_definition || persisted_definition->variant != variant ||
-      PayloadFieldValue(view->payload, "schema=").empty()) {
+      view->target_schema_uuid.is_nil()) {
     return ProjectionFailure<EngineSelectRowsResult>(
         request.context,
         ProjectionDiagnostic("projection_view_definition_invalid"));
   }
-  const std::string view_schema_uuid =
-      PayloadFieldValue(view->payload, "schema=");
+  const EngineUuid view_schema_uuid =
+      view->target_schema_uuid;
   const auto view_name = ValidateRegisteredName(request.context,
                                                 view_uuid,
                                                 "view",
@@ -848,7 +835,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
       return ProjectionFailure<EngineSelectRowsResult>(
           request.context, dependency);
     }
-  } else if (!persisted_definition->function_uuid.empty()) {
+  } else if (!persisted_definition->function_uuid.is_nil()) {
     return ProjectionFailure<EngineSelectRowsResult>(
         request.context,
         ProjectionDiagnostic("charset_projection_function_forbidden"));
@@ -946,22 +933,22 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
                            std::to_string(column.character_length))});
     row.fields.push_back(
         {"charset_uuid",
-         column.charset_uuid.empty()
+         column.charset_uuid.is_nil()
              ? NullValue(uuid_descriptor)
              : ScalarValue(uuid_descriptor, column.charset_uuid)});
     row.fields.push_back(
         {"charset_canonical_name",
-         column.charset_uuid.empty()
+         column.charset_uuid.is_nil()
              ? NullValue(text_descriptor)
              : ScalarValue(text_descriptor, resources.charset_name)});
     row.fields.push_back(
         {"collation_uuid",
-         column.collation_uuid.empty()
+         column.collation_uuid.is_nil()
              ? NullValue(uuid_descriptor)
              : ScalarValue(uuid_descriptor, column.collation_uuid)});
     row.fields.push_back(
         {"collation_canonical_name",
-         column.collation_uuid.empty()
+         column.collation_uuid.is_nil()
              ? NullValue(text_descriptor)
              : ScalarValue(text_descriptor, resources.collation_name)});
     row.fields.push_back(
@@ -1013,7 +1000,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
   result.evidence.push_back(
       {"catalog_projection_view_creator_transaction",
        std::to_string(view->creator_tx)});
-  if (!persisted_definition->function_uuid.empty()) {
+  if (!persisted_definition->function_uuid.is_nil()) {
     result.evidence.push_back(
         {"catalog_projection_function_uuid",
          persisted_definition->function_uuid});

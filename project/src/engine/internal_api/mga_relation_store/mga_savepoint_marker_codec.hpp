@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "../../../core/platform/runtime_platform.hpp"
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -13,6 +15,8 @@ namespace scratchbird::engine::internal_api {
 struct MgaSavepointMarkerRecord {
   std::uint8_t kind = 0; // 1=create, 2=release, 3=rollback
   bool uuid_identity = false;
+  scratchbird::core::platform::Uuid uuid;
+  // Named SQL label only; empty for a native UUID marker.
   std::string identity;
   std::uint64_t transaction = 0;
   std::uint64_t cutoffs[3]{};
@@ -26,6 +30,10 @@ bool DecodeMgaSavepointMarker(std::string_view bytes,
                              MgaSavepointMarkerRecord* record);
 // Zero means incomplete header; UINT32_MAX means invalid framing.
 std::uint32_t MgaSavepointMarkerFrameSize(std::string_view prefix);
-std::string MgaSavepointUuidKey(std::string_view uuid);
+// Private tagged byte key: one NUL discriminator followed by raw UUID(16).
+// Nil identities cannot form a valid key; named labels cannot contain NUL.
+std::string MgaSavepointUuidKey(const scratchbird::core::platform::Uuid& uuid);
+bool DecodeMgaSavepointUuidKey(std::string_view key,
+                              scratchbird::core::platform::Uuid* uuid);
 
 }  // namespace scratchbird::engine::internal_api

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "crud_support/crud_store.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "database_lifecycle.hpp"
@@ -87,7 +88,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -105,24 +106,23 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "advanced datatype closure database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-advanced-datatype-operation-closure";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000080811";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000080812";
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080811");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080812");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080801");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
@@ -148,7 +148,7 @@ std::string FirstDetail(const api::EngineApiResult& result);
 void CreateSchema(const api::EngineRequestContext& context) {
   api::EngineCreateSchemaRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = std::string(kSchemaUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080801");
   request.target_object.object_kind = "schema";
   request.localized_names.push_back(Name("cbq008_schema"));
   const auto result = api::EngineCreateSchema(request);
@@ -176,7 +176,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) { return true; }
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) { return true; }
   }
   return false;
 }
@@ -235,8 +235,8 @@ sblr::SblrOperationEnvelope QueryEnvelope(std::string operation_id,
   envelope.opcode_code = registry_entry->code;
   envelope.result_shape = registry_entry->result_contract;
   envelope.diagnostic_shape = "diagnostic_vector";
-  envelope.parser_package_uuid = std::string(kSblrProducerUuid);
-  envelope.registry_snapshot_uuid = std::string(kSblrRegistryUuid);
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080821");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080822");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.requires_cluster_authority = false;
@@ -399,8 +399,8 @@ void RequireSblrDescriptorAuthorityBoundary(
 
 sblr::SblrExecutionContext SblrContext() {
   sblr::SblrExecutionContext context;
-  context.database_uuid = "CBQ-008-ADVANCED-DATATYPE-OPERATION-CLOSURE-db";
-  context.transaction_uuid = "CBQ-008-ADVANCED-DATATYPE-OPERATION-CLOSURE-tx";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 4101);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 4102);
   context.transaction_context_present = true;
   return context;
 }
@@ -511,8 +511,8 @@ api::EngineLocalizedName Name(std::string text) {
 
 api::EngineColumnDefinition Column(std::string name, std::string type, std::uint32_t ordinal) {
   api::EngineColumnDefinition column;
-  column.requested_column_uuid.canonical =
-      "019f0000-0000-7000-8000-000000081" + std::to_string(ordinal + 100);
+  column.requested_column_uuid =
+      scratchbird::tests::FixtureUuid(1385, ordinal + 1);
   column.names.push_back(Name(std::move(name)));
   column.descriptor = Descriptor(std::move(type));
   if (column.descriptor.canonical_type_name == "text") {
@@ -523,12 +523,12 @@ api::EngineColumnDefinition Column(std::string name, std::string type, std::uint
   return column;
 }
 
-api::EngineIndexDefinition Index(std::string uuid_text,
+api::EngineIndexDefinition Index(api::EngineUuid index_uuid,
                                  std::string name,
                                  std::string index_kind,
                                  std::vector<std::string> keys) {
   api::EngineIndexDefinition index;
-  index.requested_index_uuid.canonical = std::move(uuid_text);
+  index.requested_index_uuid = index_uuid;
   index.names.push_back(Name(std::move(name)));
   index.index_kind = std::move(index_kind);
   index.key_envelopes = std::move(keys);
@@ -539,9 +539,9 @@ api::EngineCreateTableResult CreateTable(const api::EngineRequestContext& contex
                                          std::vector<api::EngineIndexDefinition> inline_indexes = {}) {
   api::EngineCreateTableRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080801");
   request.target_schema.object_kind = "schema";
-  request.requested_table_uuid.canonical = std::string(kTableUuid);
+  request.requested_table_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080802");
   request.table_names.push_back(Name("cbq008_table"));
   request.table_columns.push_back(Column("id", "int64", 0));
   request.table_columns.push_back(Column("geom", "point", 1));
@@ -558,14 +558,14 @@ api::EngineCreateIndexResult CreateIndex(const api::EngineRequestContext& contex
                                          api::EngineIndexDefinition index) {
   api::EngineCreateIndexRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = std::string(kTableUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080802");
   request.target_object.object_kind = "table";
   request.indexes.push_back(std::move(index));
   return api::EngineCreateIndex(request);
 }
 
 void RequireIndexFamilyPersisted(const api::EngineRequestContext& context,
-                                 std::string_view index_uuid,
+                                 const api::EngineUuid& index_uuid,
                                  std::string_view family) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "MGA relation metadata load failed");
@@ -580,48 +580,48 @@ void RequireIndexFamilyPersisted(const api::EngineRequestContext& context,
 }
 
 void RequireAdvancedIndexDDL(const api::EngineRequestContext& context) {
-  const auto table = CreateTable(context, {Index(std::string(kInlineIndexUuid), "inline_geom_idx", "rtree", {"geom"})});
+  const auto table = CreateTable(context, {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080803"), "inline_geom_idx", "rtree", {"geom"})});
   if (!table.ok) { std::cerr << FirstDetail(table) << '\n'; }
   Require(table.ok, "create table with inline advanced index failed");
   Require(HasEvidence(table, "inline_index_create", kInlineIndexUuid),
           "inline index create evidence missing");
-  RequireIndexFamilyPersisted(context, kInlineIndexUuid, "rtree");
+  RequireIndexFamilyPersisted(context, scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080803"), "rtree");
 
   const std::vector<std::pair<api::EngineIndexDefinition, std::string>> positive_indexes = {
-      {Index("019f0000-0000-7000-8000-000000080821", "embedding_hnsw_idx", "hnsw", {"embedding"}), "vector_hnsw"},
-      {Index("019f0000-0000-7000-8000-000000080822", "embedding_ivfflat_idx", "ivfflat", {"embedding"}), "vector_ivf"},
-      {Index("019f0000-0000-7000-8000-000000080823", "body_inverted_idx", "inverted", {"body"}), "inverted"},
-      {Index("019f0000-0000-7000-8000-000000080824", "observed_time_partition_idx", "time_partition", {"observed_at"}), "columnar_zone"},
-      {Index("019f0000-0000-7000-8000-000000080825", "body_expression_idx", "expression", {"lower:body"}), "expression"},
-      {Index("019f0000-0000-7000-8000-000000080826", "id_partial_idx", "partial", {"id", "where_eq:id=42"}), "partial"},
-      {Index("019f0000-0000-7000-8000-000000080827", "graph_adjacency_idx", "adjacency", {"graph_path"}), "graph_adjacency"},
-      {Index("019f0000-0000-7000-8000-000000080828", "graph_adjacency_profile_idx", "graph_adjacency", {"graph_path"}), "graph_adjacency"},
-      {Index("019f0000-0000-7000-8000-000000080834", "full_partial_idx", "partial", {"id"}), "partial"},
-      {Index("019f0000-0000-7000-8000-000000080836", "policy_blocked_idx", "policy_blocked", {"id"}), "policy_blocked"},
+      {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080821"), "embedding_hnsw_idx", "hnsw", {"embedding"}), "vector_hnsw"},
+      {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080822"), "embedding_ivfflat_idx", "ivfflat", {"embedding"}), "vector_ivf"},
+      {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080823"), "body_inverted_idx", "inverted", {"body"}), "inverted"},
+      {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080824"), "observed_time_partition_idx", "time_partition", {"observed_at"}), "columnar_zone"},
+      {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080825"), "body_expression_idx", "expression", {"lower:body"}), "expression"},
+      {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080826"), "id_partial_idx", "partial", {"id", "where_eq:id=42"}), "partial"},
+      {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080827"), "graph_adjacency_idx", "adjacency", {"graph_path"}), "graph_adjacency"},
+      {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080828"), "graph_adjacency_profile_idx", "graph_adjacency", {"graph_path"}), "graph_adjacency"},
+      {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080834"), "full_partial_idx", "partial", {"id"}), "partial"},
+      {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080836"), "policy_blocked_idx", "policy_blocked", {"id"}), "policy_blocked"},
   };
   for (const auto& [definition, expected_family] : positive_indexes) {
-    const std::string uuid_text = definition.requested_index_uuid.canonical;
+    const auto index_uuid = definition.requested_index_uuid;
     const auto result = CreateIndex(context, definition);
     if (!result.ok) { std::cerr << expected_family << ':' << FirstDetail(result) << '\n'; }
     Require(result.ok, "supported advanced create-index family failed");
     Require(HasEvidence(result, "index_family", expected_family),
             "create-index family evidence drifted");
-    RequireIndexFamilyPersisted(context, uuid_text, expected_family);
+    RequireIndexFamilyPersisted(context, index_uuid, expected_family);
   }
 
-  auto rejected = CreateIndex(context, Index("019f0000-0000-7000-8000-000000080831", "bad_profile_idx", "mystery", {"id"}));
+  auto rejected = CreateIndex(context, Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080831"), "bad_profile_idx", "mystery", {"id"}));
   Require(!rejected.ok && FirstDetail(rejected) == "ddl.create_index:unsupported_index_profile",
           "unsupported index profile diagnostic drifted");
 
-  rejected = CreateIndex(context, Index("019f0000-0000-7000-8000-000000080832", "missing_key_idx", "hnsw", {}));
+  rejected = CreateIndex(context, Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080832"), "missing_key_idx", "hnsw", {}));
   Require(!rejected.ok && FirstDetail(rejected) == "ddl.create_index:at_least_one_key_envelope_required",
           "missing key envelope diagnostic drifted");
 
-  rejected = CreateIndex(context, Index("019f0000-0000-7000-8000-000000080833", "bad_expression_idx", "expression", {"substr:body"}));
+  rejected = CreateIndex(context, Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080833"), "bad_expression_idx", "expression", {"substr:body"}));
   Require(!rejected.ok && FirstDetail(rejected) == "ddl.create_index:unsupported_expression_index_envelope",
           "unsupported expression index diagnostic drifted");
 
-  rejected = CreateIndex(context, Index("019f0000-0000-7000-8000-000000080835", "opaque_idx", "btree", {"secret_payload"}));
+  rejected = CreateIndex(context, Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080835"), "opaque_idx", "btree", {"secret_payload"}));
   Require(!rejected.ok && FirstDetail(rejected) == "ddl.create_index:opaque_column_index_denied",
           "opaque column index diagnostic drifted");
 }

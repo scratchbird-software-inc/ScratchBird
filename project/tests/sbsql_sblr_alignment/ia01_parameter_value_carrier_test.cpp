@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "parsers/sbsql_worker/wire/sbsql_test_wire.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -11,10 +12,8 @@ using scratchbird::parser::sbsql::PreparedParameterPayloadEncoding;
 using scratchbird::parser::sbsql::PreparedParameterWireValue;
 
 namespace {
-constexpr std::string_view kDescriptor =
-    "019d0000-0000-7000-8000-00000000d711";
-constexpr std::string_view kType =
-    "019d0000-0000-7000-8000-00000000d712";
+constexpr auto kDescriptor = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
+constexpr auto kType = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
 void Require(bool value, const char* message) {
   if (!value) { std::cerr << message << '\n'; std::exit(EXIT_FAILURE); }
 }
@@ -63,7 +62,7 @@ int main() {
               value.diagnostic_code == "DATATYPE.CONVERSION_FAILED",
           "noncanonical text int64 was not refused");
   value = CanonicalizePreparedParameterWireValue(
-      binary, "019d0000-0000-7000-8000-00000000d799", kType, false);
+      binary, scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d799"), kType, false);
   Require(!value.accepted &&
               value.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID",
           "unnegotiated datatype identity was not refused");

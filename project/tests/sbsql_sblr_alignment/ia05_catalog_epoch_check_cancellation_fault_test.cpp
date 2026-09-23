@@ -18,7 +18,7 @@ namespace {
 
 sblr::SblrOperationEnvelope CatalogEpochCheckMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const std::vector<std::uint8_t>& descriptor_bytes) {
   auto member = sblr::MakeSblrEnvelope(
       "engine.op.catalog_epoch_check", "SBLR_CATALOG_EPOCH_CHECK",
@@ -58,8 +58,8 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
   };
   if (!cleanup_after_capture) finish_other_transaction();
   auto context = BeginTransaction(fixture, &probes);
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 36320));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 36320));
+  context.current_package_uuid = parser_uuid;
   context.query_cancellation_requested = [&] {
     const auto ordinal = probes.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto target = cancel_on_probe.load(std::memory_order_relaxed);
@@ -68,7 +68,7 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;
@@ -78,9 +78,9 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
           "003632 live statement receipt acquisition failed");
   if (result != nullptr) (void)sb_engine_result_release(result);
   Require(view.catalog_epoch_check_executor_availability_generation != 0 &&
-              !view.catalog_epoch_check_redaction_profile_uuid.empty() &&
+              !view.catalog_epoch_check_redaction_profile_uuid.is_nil() &&
               view.catalog_epoch_check_redaction_generation != 0 &&
-              !view.catalog_epoch_check_policy_snapshot_uuid.empty() &&
+              !view.catalog_epoch_check_policy_snapshot_uuid.is_nil() &&
               view.catalog_epoch_check_policy_generation != 0,
           "003632 receipt omitted catalog-epoch authority");
 
@@ -141,7 +141,7 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
   journal_context.statement_metadata_snapshot_engine_owned = true;
   journal_context.trace_tags.push_back("private_catalog_epoch_check_journal");
   api::SblrCatalogEpochCheckJournalKeyV1 journal_key;
-  journal_key.database_uuid = RawUuid(context.database_uuid.canonical);
+  journal_key.database_uuid = RawUuid(context.database_uuid);
   journal_key.statement_receipt_uuid = descriptor.statement_receipt_uuid;
   journal_key.check_uuid = descriptor.check_uuid;
   journal_key.descriptor_sha256 = descriptor.descriptor_sha256;

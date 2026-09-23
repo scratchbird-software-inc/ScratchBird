@@ -1,3 +1,6 @@
+#include "wire/binary_status_packet.hpp"
+#include "uuid.hpp"
+#include <algorithm>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -25,6 +28,14 @@
 namespace scratchbird::server {
 
 namespace {
+
+scratchbird::core::platform::Uuid BinaryIdentity(std::string_view bytes) {
+  scratchbird::core::platform::Uuid id;
+  if (bytes.size() != id.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), id.bytes.size(), id.bytes.begin());
+  return scratchbird::core::uuid::IsEngineIdentityUuid(id) ? id : scratchbird::core::platform::Uuid{};
+}
+
 
 // Server process lifetime, not a copyable HostedEngineState or a path namespace.
 // Serialize acquisition before any filesystem activity and permanently bind
@@ -229,15 +240,13 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
     const auto bootstrap_security =
         scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
             snapshot.database_path);
-    const std::string sysarch_role_uuid = bootstrap_security.ok()
-        ? scratchbird::core::uuid::UuidToString(
-              bootstrap_security.state.sysarch_role_uuid.value)
-        : std::string{};
+    constexpr scratchbird::core::platform::Uuid canonical_sysarch_role{{
+        0x01,0x8f,0x7a,0x10,0x12,0x80,0x70,0x00,0x80,0,0,0,0,0,0x01,0x05}};
+    const auto sysarch_role_uuid = bootstrap_security.state.sysarch_role_uuid.value;
     if (!bootstrap_security.ok() || !bootstrap_security.state.present ||
         !bootstrap_security.state.committed_by_inventory ||
         bootstrap_security.state.credential_fingerprint.empty() ||
-        sysarch_role_uuid !=
-            scratchbird::storage::database::kCanonicalSysarchRoleObjectUuid) {
+        sysarch_role_uuid != canonical_sysarch_role) {
       snapshot.state = HostedDatabaseState::kFailed;
       snapshot.diagnostic_code = "BOOTSTRAP.SECURITY_DATABASE_UNAVAILABLE";
       snapshot.diagnostic_message_key =
@@ -441,7 +450,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
   }
   if (lifecycle_open.state.engine_agent_health_present) {
     snapshot.database_engine_agent_instance_uuid =
-        lifecycle_open.state.engine_agent_health.engine_instance_uuid;
+        BinaryIdentity(lifecycle_open.state.engine_agent_health.engine_instance_uuid);
     snapshot.selected_agent_type_ids =
         lifecycle_open.state.engine_agent_health.selected_agent_type_ids;
     snapshot.database_engine_agent_state =
@@ -508,7 +517,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
 }
 
 std::string HostedEngineStatusJson(const HostedEngineState& state) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "{\"engine_host\":{\"active\":" << (state.engine_context_active ? "true" : "false")
       << ",\"databases\":[";
   for (std::size_t i = 0; i < state.databases.size(); ++i) {
@@ -517,10 +526,10 @@ std::string HostedEngineStatusJson(const HostedEngineState& state) {
     out << "{\"state\":\"" << HostedDatabaseStateName(database.state) << "\","
         << "\"database_path\":\"" << JsonEscape(database.database_path) << "\","
         << "\"database_uuid\":\""
-        << JsonEscape(scratchbird::core::uuid::UuidToString(database.database_uuid))
+        << scratchbird::wire::binary_status::Identity(database.database_uuid)
         << "\","
         << "\"filespace_uuid\":\""
-        << JsonEscape(scratchbird::core::uuid::UuidToString(database.filespace_uuid))
+        << scratchbird::wire::binary_status::Identity(database.filespace_uuid)
         << "\","
         << "\"page_size_bytes\":" << database.page_size_bytes << ","
         << "\"database_created\":" << (database.database_created ? "true" : "false") << ","
@@ -532,8 +541,7 @@ std::string HostedEngineStatusJson(const HostedEngineState& state) {
         << "\"database_engine_agent_state\":\""
         << JsonEscape(database.database_engine_agent_state) << "\","
         << "\"database_engine_agent_instance_uuid\":\""
-        << JsonEscape(scratchbird::core::uuid::UuidToString(
-               database.database_engine_agent_instance_uuid)) << "\","
+        << scratchbird::wire::binary_status::Identity(database.database_engine_agent_instance_uuid) << "\","
         << "\"database_engine_agent_health_generation\":"
         << database.database_engine_agent_health_generation << ","
         << "\"database_engine_agent_ordinary_admission_allowed\":"

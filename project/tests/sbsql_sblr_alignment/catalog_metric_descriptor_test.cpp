@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_metric_descriptor.hpp"
+#include "catalog_metric_current_value.hpp"
 #include <openssl/sha.h>
 #include <algorithm>
 #include <array>
@@ -314,6 +315,52 @@ void Limits(){
     Invalid(r);
   }
 }
+void CurrentValues() {
+  c::CatalogMetricCurrentValue r;
+  r.object_uuid=Id(p::UuidKind::object,40);
+  r.database_uuid=Id(p::UuidKind::database,41);
+  r.descriptor=Descriptor();
+  r.value.family=r.descriptor.definition.family;
+  r.value.type=r.descriptor.definition.type;
+  r.value.value=p::u64(9007199254740993ULL);
+  r.value.labels={{"database",r.database_uuid.value},{"tag",std::string("native labels")}};
+  const auto encoded=c::EncodeCatalogMetricCurrentValue(r);
+  Check(encoded.ok(),"current observation encode");
+  if(!encoded.ok())return;
+  const std::string bytes(encoded.bytes.begin(),encoded.bytes.end());
+  const auto decoded=c::DecodeCatalogMetricCurrentValue(bytes);
+  Check(decoded.ok(),"current observation decode");
+  if(decoded.ok()) {
+    Check(decoded.record->value.labels.size()==r.value.labels.size(),"native label count roundtrip");
+    for(const auto& expected:r.value.labels) {
+      const auto it=std::find_if(decoded.record->value.labels.begin(),decoded.record->value.labels.end(),
+          [&](const auto& actual){return actual.key==expected.key;});
+      Check(it!=decoded.record->value.labels.end()&&it->value==expected.value,"native UUID label roundtrip");
+    }
+    Check(decoded.record->value.value==r.value.value,"integer beyond float exactness roundtrip");
+    Check(decoded.record->descriptor.binding==r.descriptor.binding,"exact descriptor bindings retained");
+    Check(decoded.record->descriptor.origin_transaction_uuid.value==r.descriptor.origin_transaction_uuid.value,
+        "native MGA origin retained");
+  }
+  for(std::size_t n=0;n<bytes.size();++n)
+    Check(!c::DecodeCatalogMetricCurrentValue(std::string_view(bytes).substr(0,n)).ok(),
+        "truncated current observation rejected");
+  Check(!c::DecodeCatalogMetricCurrentValue(bytes+"x").ok(),"trailing bytes rejected");
+  c::CatalogTypedRecord catalog;
+  catalog.header.kind=c::CatalogRecordKind::metric_current_value;
+  catalog.header.object_uuid=r.object_uuid;
+  catalog.header.row_uuid=Id(p::UuidKind::row,42);
+  catalog.header.parent_uuid=Id(p::UuidKind::object,43);
+  catalog.payload=bytes;
+  Check(c::EncodeCatalogTypedRecord(catalog,1).ok(),"native observation catalog record accepted");
+  catalog.header.object_uuid=Id(p::UuidKind::object,44);
+  Check(!c::EncodeCatalogTypedRecord(catalog,1).ok(),"mismatched observation identity rejected");
+  catalog.header.object_uuid=r.object_uuid;
+  catalog.payload="database_uuid=human-readable-identity\n";
+  Check(!c::EncodeCatalogTypedRecord(catalog,1).ok(),"legacy textual observation rejected");
+  r.value.labels={{"database",std::string("human-readable-identity")}};
+  Check(!c::EncodeCatalogMetricCurrentValue(r).ok(),"text in system UUID label rejected");
+}
 void AllocationFailures(){
   auto r=Descriptor();r.definition.family=std::string(256,'f');r.definition.help=std::string(512,'h');
   r.definition.aliases={std::string(256,'a'),std::string(256,'b')};r.definition.labels[0].key=std::string(256,'k');
@@ -339,4 +386,4 @@ void AllocationFailures(){
   }
 }
 }
-int main(){Shapes();Malformed();Binding();Limits();AllocationFailures();std::cout<<"metric descriptor native checks="<<checks<<" failures="<<failures<<'\n';return failures?1:0;}
+int main(){CurrentValues();Shapes();Malformed();Binding();Limits();AllocationFailures();std::cout<<"metric descriptor native checks="<<checks<<" failures="<<failures<<'\n';return failures?1:0;}

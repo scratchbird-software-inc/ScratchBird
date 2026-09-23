@@ -8,23 +8,16 @@
 
 namespace scratchbird::engine::internal_api {
 namespace {
-// This remaining legacy point-lookup boundary is not a binary companion
-// adapter. Its migration belongs with the native relation-reader ownership.
-bool BulkImportPublicationUuidV1(std::string_view text) {
-  const auto parsed=core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() && core::uuid::IsEngineIdentityUuid(parsed.value) &&
-      core::uuid::UuidToString(parsed.value)==text;
-}
 EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK","engine.api.ok",{},false);
 }
 }
 MgaBulkImportRowLineageResultV1 ProbeMgaBulkImportRowIdentityLineageV1(
-    const EngineRequestContext& context, const std::string& table_uuid,
-    const std::string& row_uuid) {
+    const EngineRequestContext& context, const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid) {
   MgaBulkImportRowLineageResultV1 result;
-  if (context.database_path.empty() || !BulkImportPublicationUuidV1(table_uuid) ||
-      !BulkImportPublicationUuidV1(row_uuid)) {
+  if (context.database_path.empty() || !core::uuid::IsEngineIdentityUuid(table_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(row_uuid)) {
     result.diagnostic = MakeEngineApiDiagnostic(
         "SBLR.OPERAND_INVALID", "mga.bulk_import.row_lineage_lookup_invalid",
         "database, table, and row identities are required", true);

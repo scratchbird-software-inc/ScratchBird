@@ -26,8 +26,8 @@ namespace api = scratchbird::engine::internal_api;
 // SEARCH_KEY: SB_ENGINE_CANONICAL_QUERY_WINDOW_REGISTRATION_AUTHORITY
 exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
     exec::ExecutorColumnDescriptor row_number_column,
-    std::string deterministic_order_evidence_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid deterministic_order_evidence_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t maximum_input_row_count,
     api::EngineRequestContext mga_context,
     const api::EngineRequestContext* borrowed_mga_context,
@@ -36,7 +36,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
       borrowed_mga_context != nullptr && borrowed_mga_authority != nullptr;
   std::uint64_t registration_retained_bytes =
       strict_dispatcher_memory
-          ? sizeof(exec::ExecutorColumnDescriptor) + sizeof(std::string) +
+          ? sizeof(exec::ExecutorColumnDescriptor) + sizeof(core::platform::Uuid) +
                 sizeof(api::EngineRequestContext) + 8 * sizeof(void*) + 512
           : 0;
   const auto account_string = [&](const std::string& value) {
@@ -47,13 +47,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
   };
   if (!strict_dispatcher_memory ||
       !account_string(row_number_column.stable_name) ||
-      !account_string(
-          row_number_column.descriptor.descriptor_uuid) ||
       !account_string(row_number_column.descriptor.descriptor_kind) ||
       !account_string(
           row_number_column.descriptor.canonical_type_name) ||
-      !account_string(row_number_column.descriptor.encoded_descriptor) ||
-      !account_string(deterministic_order_evidence_uuid)) {
+      !account_string(row_number_column.descriptor.encoded_descriptor)) {
     registration_retained_bytes = 0;
   }
   exec::CanonicalPhysicalExecutorRegistration registration;
@@ -181,9 +178,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
     exec::ExecutorColumnDescriptor ntile_column,
     exec::CanonicalDescriptorOrderTerm order_term,
     api::EngineTypedValue bucket_count_operand,
-    std::string function_uuid,
-    std::string deterministic_order_evidence_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid function_uuid,
+    core::platform::Uuid deterministic_order_evidence_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t maximum_input_row_count,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
@@ -340,8 +337,8 @@ exec::CanonicalPhysicalExecutorRegistration
 MakeLivePeerRankingRegistration(
     exec::ExecutorColumnDescriptor ranking_column,
     exec::CanonicalDescriptorOrderTerm order_term,
-    std::string deterministic_order_evidence_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid deterministic_order_evidence_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::size_t maximum_peer_comparisons,
     const GlobalRankingWindowProfile profile,
@@ -410,7 +407,7 @@ MakeLivePeerRankingRegistration(
         request.ranking_column = ranking_column;
         request.function_abi_version = 1;
         request.builtin_id = std::string(profile.builtin_id);
-        request.function_uuid = std::string(profile.function_uuid);
+        request.function_uuid = profile.function_uuid;
         request.deterministic_order_evidence_uuid =
             deterministic_order_evidence_uuid;
         request.maximum_peer_comparisons = maximum_peer_comparisons;
@@ -500,10 +497,10 @@ MakeLiveNavigationWindowRegistration(
     exec::CanonicalDescriptorOrderTerm order_term,
     const std::size_t value_column,
     std::optional<api::EngineTypedValue> nth_value_position_operand,
-    std::string window_frame_descriptor_uuid,
-    std::string deterministic_order_evidence_uuid,
-    std::string frame_property_binding_evidence_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid window_frame_descriptor_uuid,
+    core::platform::Uuid deterministic_order_evidence_uuid,
+    core::platform::Uuid frame_property_binding_evidence_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::size_t maximum_pair_comparisons,
     const std::size_t maximum_effective_row_references,
@@ -585,7 +582,7 @@ MakeLiveNavigationWindowRegistration(
             profile.builtin_id == "sb.window.nth_value";
         request.function_abi_version = 1;
         request.builtin_id = std::string(profile.builtin_id);
-        request.function_uuid = std::string(profile.function_uuid);
+        request.function_uuid = profile.function_uuid;
         request.window_frame_descriptor_uuid =
             window_frame_descriptor_uuid;
         request.deterministic_order_evidence_uuid =
@@ -688,10 +685,10 @@ MakeLiveAggregateWindowRegistration(
     exec::CanonicalDescriptorOrderTerm order_term,
     std::optional<std::size_t> value_column,
     exec::CanonicalAggregateDescriptor aggregate_descriptor,
-    std::string window_frame_descriptor_uuid,
-    std::string deterministic_order_evidence_uuid,
-    std::string frame_property_binding_evidence_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid window_frame_descriptor_uuid,
+    core::platform::Uuid deterministic_order_evidence_uuid,
+    core::platform::Uuid frame_property_binding_evidence_uuid,
+    core::platform::Uuid capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::size_t maximum_pair_comparisons,
     const std::size_t maximum_effective_row_references,

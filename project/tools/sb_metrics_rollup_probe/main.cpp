@@ -28,8 +28,10 @@ int main() {
   ok &= Require(AppendMetricRawSample(path, *descriptor, value, 60000000).ok, "first raw sample appended");
   value.value = 20.0;
   ok &= Require(AppendMetricRawSample(path, *descriptor, value, 120000000).ok, "second raw sample appended");
-  ok &= Require(GenerateMetricRollups(path, MetricRollupGrain::one_minute).ok, "minute rollup generated");
-  ok &= Require(GenerateMetricRollups(path, MetricRollupGrain::one_minute).ok, "minute rollup idempotent rerun");
+  ok &= Require(GenerateMetricRollups(path, MetricRollupGrain::one_minute,
+      MetricsContext().principal_uuid, MetricsContext().transaction_uuid).ok, "minute rollup generated");
+  ok &= Require(GenerateMetricRollups(path, MetricRollupGrain::one_minute,
+      MetricsContext().principal_uuid, MetricsContext().transaction_uuid).ok, "minute rollup idempotent rerun");
   auto store = LoadMetricHistoryStore(path);
   ok &= Require(store.rollups.size() == 2, "one rollup per minute window without duplicates");
   RemoveTempHistory(path);

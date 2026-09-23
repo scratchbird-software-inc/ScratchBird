@@ -211,22 +211,27 @@ agents::FeatureGateDecision EvaluateParserCapability(
 std::optional<ServerDiagnostic> ValidateParserSupportUdrDependency(
     const ParserPackageRegistryEntry& entry) {
   if (!entry.parser_support_udr_required) return std::nullopt;
-  if (!entry.parser_support_udr_available || entry.parser_support_udr_uuid.empty()) {
-    return ParserPackageDiagnostic(
+  const auto dependency_diagnostic = [&](std::string code, std::string message,
+                                        std::vector<ServerDiagnosticField> fields) {
+    auto diagnostic = ParserPackageDiagnostic(std::move(code), std::move(message),
+                                               std::move(fields));
+    diagnostic.identity_fields.emplace_back("parser_support_udr_uuid",
+                                            entry.parser_support_udr_uuid);
+    return diagnostic;
+  };
+  if (!entry.parser_support_udr_available || entry.parser_support_udr_uuid.is_nil()) {
+    return dependency_diagnostic(
         "SERVER.PARSER.SUPPORT_UDR_MISSING",
         "A required parser-support UDR dependency is unavailable.",
-        {{"parser_package_uuid", entry.parser_package_uuid},
-         {"parser_support_udr_uuid",
-          entry.parser_support_udr_uuid.empty() ? "missing" : entry.parser_support_udr_uuid}});
+        {{"parser_package_uuid", entry.parser_package_uuid}});
   }
 
   const auto state = udr_runtime::GetPackageState(entry.parser_support_udr_uuid);
   if (!state || !state->registered || !state->loaded) {
-    return ParserPackageDiagnostic(
+    return dependency_diagnostic(
         "SERVER.PARSER.SUPPORT_UDR_MISSING",
         "The required parser-support UDR is not loaded in the trusted runtime.",
         {{"parser_package_uuid", entry.parser_package_uuid},
-         {"parser_support_udr_uuid", entry.parser_support_udr_uuid},
          {"runtime_state", state ? "registered_not_loaded" : "not_registered"}});
   }
 
@@ -240,11 +245,10 @@ std::optional<ServerDiagnostic> ValidateParserSupportUdrDependency(
        state->signature_policy != entry.parser_support_udr_signature_policy) ||
       (!entry.parser_support_udr_capability_role.empty() &&
        state->capability_role != entry.parser_support_udr_capability_role)) {
-    return ParserPackageDiagnostic(
+    return dependency_diagnostic(
         "SERVER.PARSER.SUPPORT_UDR_REJECTED",
         "The parser-support UDR runtime descriptor does not match registry authority.",
         {{"parser_package_uuid", entry.parser_package_uuid},
-         {"parser_support_udr_uuid", entry.parser_support_udr_uuid},
          {"runtime_abi", state->abi_version},
          {"runtime_source_revision", state->source_revision},
          {"runtime_capability_role", state->capability_role}});
@@ -300,7 +304,27 @@ ParserPackageRegistry LoadParserPackageRegistry(const ServerBootstrapConfig& con
   entry.dev_hash_bypass = ParseBool(values["dev_hash_bypass"], entry.dev_hash_bypass);
   entry.parser_support_udr_required = ParseBool(values["parser_support_udr_required"], entry.parser_support_udr_required);
   entry.parser_support_udr_available = ParseBool(values["parser_support_udr_available"], entry.parser_support_udr_available);
-  entry.parser_support_udr_uuid = values.contains("parser_support_udr_uuid") ? values["parser_support_udr_uuid"] : entry.parser_support_udr_uuid;
+  // The client writes this binding as exactly 16 bytes. Registry text holds
+  // only its file path; UUID spelling is never accepted as server authority.
+  if (values.contains("parser_support_udr_uuid")) {
+    registry.diagnostics.push_back(ParserPackageDiagnostic(
+        "SERVER.PARSER.SUPPORT_UDR_BINARY_IDENTITY_REQUIRED",
+        "Parser-support UDR identity requires a binary16 binding file."));
+    return registry;
+  }
+  if (values.contains("parser_support_udr_identity_file")) {
+    auto path = std::filesystem::path(values["parser_support_udr_identity_file"]);
+    if (path.is_relative()) path = config.parser_registry_path.parent_path() / path;
+    std::ifstream identity_file(path, std::ios::binary);
+    identity_file.read(reinterpret_cast<char*>(entry.parser_support_udr_uuid.bytes.data()), 16);
+    if (!identity_file || identity_file.peek() != std::char_traits<char>::eof() ||
+        entry.parser_support_udr_uuid.is_nil()) {
+      registry.diagnostics.push_back(ParserPackageDiagnostic(
+          "SERVER.PARSER.SUPPORT_UDR_BINARY_IDENTITY_INVALID",
+          "Parser-support UDR binding must contain exactly one non-nil binary16 UUID."));
+      return registry;
+    }
+  }
   entry.parser_support_udr_abi = values.contains("parser_support_udr_abi") ? values["parser_support_udr_abi"] : entry.parser_support_udr_abi;
   entry.parser_support_udr_source_revision = values.contains("parser_support_udr_source_revision") ? values["parser_support_udr_source_revision"] : entry.parser_support_udr_source_revision;
   entry.parser_support_udr_binary_hash = values.contains("parser_support_udr_binary_hash") ? values["parser_support_udr_binary_hash"] : entry.parser_support_udr_binary_hash;
@@ -448,14 +472,14 @@ std::string ParserPackageRegistryStatusJson(const ParserPackageRegistry& registr
         << ",\"dev_hash_bypass\":" << (entry.dev_hash_bypass ? "true" : "false")
         << ",\"parser_support_udr_required\":" << (entry.parser_support_udr_required ? "true" : "false")
         << ",\"parser_support_udr_available\":" << (entry.parser_support_udr_available ? "true" : "false")
-        << ",\"parser_support_udr_uuid\":\"" << JsonEscape(entry.parser_support_udr_uuid)
-        << "\",\"parser_support_udr_abi\":\"" << JsonEscape(entry.parser_support_udr_abi)
+        << ",\"parser_support_udr_identity_bound\":" << (!entry.parser_support_udr_uuid.is_nil() ? "true" : "false")
+        << ",\"parser_support_udr_abi\":\"" << JsonEscape(entry.parser_support_udr_abi)
         << "\",\"parser_support_udr_source_revision\":\""
         << JsonEscape(entry.parser_support_udr_source_revision)
         << "\",\"parser_support_udr_capability_role\":\""
         << JsonEscape(entry.parser_support_udr_capability_role)
         << "\",\"parser_support_udr_runtime_loaded\":";
-    const auto support_udr_state = entry.parser_support_udr_uuid.empty()
+    const auto support_udr_state = entry.parser_support_udr_uuid.is_nil()
                                        ? std::nullopt
                                        : udr_runtime::GetPackageState(entry.parser_support_udr_uuid);
     out << (support_udr_state && support_udr_state->loaded ? "true" : "false")

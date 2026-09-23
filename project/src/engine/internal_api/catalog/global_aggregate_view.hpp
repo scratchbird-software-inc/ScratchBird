@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "catalog/binary_view_options.hpp"
 
 #include <cstdint>
 #include <string>
@@ -69,7 +70,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request);
 // diagnostic; a malformed bounded descriptor fails closed.
 EngineGlobalAggregateViewDescriptor DescribeEngineGlobalAggregateView(
     const EngineRequestContext& context,
-    const std::string& view_uuid);
+    const EngineUuid& view_uuid);
 
 // Bounded semantic descriptor returned by neutral name resolution. It exposes
 // the marker, view descriptor identity/generation, and result details only;

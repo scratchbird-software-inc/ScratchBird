@@ -59,6 +59,8 @@ struct LlvmMemoryAccountingRequest {
   HierarchicalMemoryBudgetProvenance provenance;
   ForeignMemoryAuthority authority;
   std::vector<std::string> evidence;
+  MemoryBinaryUuid binary_owner_uuid{};
+  MemoryBinaryUuid binary_owning_scope_uuid{};
 };
 
 struct LlvmMemoryAccountingSnapshot {

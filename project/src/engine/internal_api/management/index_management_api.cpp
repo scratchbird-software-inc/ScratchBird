@@ -14,6 +14,8 @@
 #include "security/authorization_api.hpp"
 #include "security/security_model.hpp"
 #include "uuid.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <stdexcept>
 
 #include <initializer_list>
 #include <sstream>
@@ -46,9 +48,26 @@ std::string FirstNonEmpty(std::initializer_list<std::string> values) {
   return {};
 }
 
-platform::TypedUuid ParseTyped(platform::UuidKind kind, const std::string& text) {
-  if (text.empty()) return {};
-  const auto parsed = uuid::ParseTypedUuid(kind, text);
+EngineUuid OptionIdentity(const EngineApiRequest& request, std::string_view prefix) {
+  const auto bytes = OptionValue(request, prefix);
+  if (bytes.empty()) return {};
+  EngineUuid identity;
+  if (!ReadMetadataUuid(bytes, &identity)) {
+    throw std::invalid_argument("index_management_binary_identity_required");
+  }
+  return identity;
+}
+
+EngineUuid FirstIdentity(std::initializer_list<EngineUuid> values) {
+  for (const auto& value : values) {
+    if (!value.is_nil()) return value;
+  }
+  return {};
+}
+
+platform::TypedUuid ParseTyped(platform::UuidKind kind, const EngineUuid& identity) {
+  if (identity.is_nil()) return {};
+  const auto parsed = uuid::MakeTypedUuid(kind, identity);
   return parsed.ok() ? parsed.value : platform::TypedUuid{};
 }
 
@@ -205,10 +224,10 @@ IndexAuthorizationPolicy AuthorizationPolicyFor(std::string_view operation_id) {
   return {{"OBS_MANAGEMENT_CONTROL"}, "unknown_index_management_control", true};
 }
 
-std::string AuthorizationTargetUuid(const EngineIndexManagementRequest& request) {
-  return FirstNonEmpty({OptionValue(request, "index_uuid:"),
-                        OptionValue(request, "index_object_uuid:"),
-                        OptionValue(request, "target_object_uuid:"),
+EngineUuid AuthorizationTargetUuid(const EngineIndexManagementRequest& request) {
+  return FirstIdentity({OptionIdentity(request, "index_uuid:"),
+                        OptionIdentity(request, "index_object_uuid:"),
+                        OptionIdentity(request, "target_object_uuid:"),
                         request.target_object.uuid});
 }
 
@@ -217,7 +236,7 @@ IndexAuthorizationDecision AuthorizeIndexOperation(
     std::string_view operation_id) {
   IndexAuthorizationDecision decision;
   decision.policy = AuthorizationPolicyFor(operation_id);
-  const std::string target_uuid = AuthorizationTargetUuid(request);
+  const EngineUuid target_uuid = AuthorizationTargetUuid(request);
   for (const auto& right : decision.policy.rights) {
     EngineAuthorizeRequest authorize;
     EngineApiRequest& authorize_base = authorize;
@@ -294,23 +313,23 @@ idx::IndexValidationRepairRequest ValidationRequestFrom(
   out.validation_family = ValidationFamilyForRequest(request);
   out.target.database_uuid = ParseTyped(
       platform::UuidKind::database,
-      FirstNonEmpty({OptionValue(request, "database_uuid:"),
+      FirstIdentity({OptionIdentity(request, "database_uuid:"),
                      request.target_database.uuid,
                      request.context.database_uuid}));
   out.target.table_uuid = ParseTyped(
       platform::UuidKind::object,
-      FirstNonEmpty({OptionValue(request, "table_uuid:"),
-                     OptionValue(request, "target_table_uuid:")}));
+      FirstIdentity({OptionIdentity(request, "table_uuid:"),
+                     OptionIdentity(request, "target_table_uuid:")}));
   out.target.index_uuid = ParseTyped(
       platform::UuidKind::object,
-      FirstNonEmpty({OptionValue(request, "index_uuid:"),
-                     OptionValue(request, "index_object_uuid:"),
-                     OptionValue(request, "target_object_uuid:"),
+      FirstIdentity({OptionIdentity(request, "index_uuid:"),
+                     OptionIdentity(request, "index_object_uuid:"),
+                     OptionIdentity(request, "target_object_uuid:"),
                      request.target_object.uuid}));
   out.target.generation_uuid = ParseTyped(
       platform::UuidKind::object,
-      FirstNonEmpty({OptionValue(request, "generation_uuid:"),
-                     OptionValue(request, "index_generation_uuid:")}));
+      FirstIdentity({OptionIdentity(request, "generation_uuid:"),
+                     OptionIdentity(request, "index_generation_uuid:")}));
   out.target.physical_family = IndexFamilyForRequest(request);
   out.target.names_resolved_to_uuids =
       OptionBool(request, "names_resolved_to_uuids:",
@@ -344,7 +363,7 @@ EngineIndexManagementResult ResultFromValidation(
   auto result = MakeApiBehaviorSuccess<EngineIndexManagementResult>(
       request.context, operation_id);
   result.result_shape.result_kind = "index.management.route_surface.v1";
-  result.primary_object.uuid = OptionValue(request, "index_uuid:");
+  result.primary_object.uuid = AuthorizationTargetUuid(request);
   result.primary_object.object_kind = "index";
   AddApiBehaviorEvidence(&result, "route_surface", "sblr");
   AddApiBehaviorEvidence(&result, "engine_api_function",
@@ -384,7 +403,7 @@ EngineIndexManagementResult ResultFromManagementPlan(
   auto result = MakeApiBehaviorSuccess<EngineIndexManagementResult>(
       request.context, operation_id);
   result.result_shape.result_kind = "index.management.route_surface.v1";
-  result.primary_object.uuid = OptionValue(request, "index_uuid:");
+  result.primary_object.uuid = AuthorizationTargetUuid(request);
   result.primary_object.object_kind = "index";
   AddApiBehaviorEvidence(&result, "route_surface", "sblr");
   AddApiBehaviorEvidence(&result, "engine_api_function",
@@ -443,9 +462,9 @@ EngineIndexManagementResult EngineIndexManagementOperation(
   management_request.operation = ManagementOperationFor(operation_id);
   management_request.index_uuid = ParseTyped(
       platform::UuidKind::object,
-      FirstNonEmpty({OptionValue(request, "index_uuid:"),
-                     OptionValue(request, "index_object_uuid:"),
-                     OptionValue(request, "target_object_uuid:"),
+      FirstIdentity({OptionIdentity(request, "index_uuid:"),
+                     OptionIdentity(request, "index_object_uuid:"),
+                     OptionIdentity(request, "target_object_uuid:"),
                      request.target_object.uuid}));
   management_request.family = IndexFamilyForRequest(request);
   management_request.caller = idx::IndexSubsystemOwner::management_api;

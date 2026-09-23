@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -125,8 +126,8 @@ agents::AgentRuntimeContext RuntimeContext() {
   context.security_context_present = true;
   context.private_features_available = true;
   context.standalone_edition = true;
-  context.principal_uuid = "018f0000-0000-7000-8000-000000073020";
-  context.database_uuid = "018f0000-0000-7000-8000-000000073021";
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000073020");
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-000000073021");
   context.monotonic_now_microseconds = kNowMicros;
   context.wall_now_microseconds = kNowMicros;
   return context;

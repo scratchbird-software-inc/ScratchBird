@@ -8,19 +8,19 @@
 #include <charconv>
 #include <locale>
 namespace {
-using XE=m::MetricExportError;
-m::MetricExportContext Context(){return {Id(1),Id(2),Id(3),1,100,200,"local"};}
-m::MetricExportSample ExportSample(m::MetricScalar value=U(9007199254740993ULL)){
-  m::MetricExportSample s;s.descriptor=Descriptor(m::MetricScalarTypeOf(value));
+using XE=scratchbird::client::metrics::MetricExportError;
+scratchbird::client::metrics::MetricExportContext Context(){return {Id(1),Id(2),Id(3),1,100,200,"local"};}
+scratchbird::client::metrics::MetricExportSample ExportSample(m::MetricScalar value=U(9007199254740993ULL)){
+  scratchbird::client::metrics::MetricExportSample s;s.descriptor=Descriptor(m::MetricScalarTypeOf(value));
   s.descriptor.metric_uuid=Id(4);s.descriptor.descriptor_generation=1;s.descriptor.help="example";
   if(s.descriptor.value_type==T::enumeration)s.descriptor.enum_values={std::get<m::MetricEnumValue>(value).code};
   s.value=Value(s.descriptor,std::move(value));s.export_name="example";return s;
 }
-m::MetricExportResult Render(const m::MetricExportSample& s,std::size_t limit=m::kMetricExportMaximumBytes){
-  return m::RenderOpenMetricsProjection(Context(),std::span(&s,1),limit);
+scratchbird::client::metrics::MetricExportResult Render(const scratchbird::client::metrics::MetricExportSample& s,std::size_t limit=scratchbird::client::metrics::kMetricExportMaximumBytes){
+  return scratchbird::client::metrics::RenderOpenMetricsProjection(Context(),std::span(&s,1),limit);
 }
-void ExportRefused(const m::MetricExportResult& r){Check(!r.ok()&&r.text.empty(),"invalid export exposed an output prefix");}
-void Has(const m::MetricExportResult& r,const std::string& text){Check(r.ok()&&r.text.find(text)!=std::string::npos,"missing exact export bytes");}
+void ExportRefused(const scratchbird::client::metrics::MetricExportResult& r){Check(!r.ok()&&r.text.empty(),"invalid export exposed an output prefix");}
+void Has(const scratchbird::client::metrics::MetricExportResult& r,const std::string& text){Check(r.ok()&&r.text.find(text)!=std::string::npos,"missing exact export bytes");}
 void ProjectionBasics(){
   auto s=ExportSample();const auto r=Render(s);
   const std::string expected=
@@ -34,12 +34,12 @@ void ProjectionBasics(){
   Check(r.ok()&&r.text==expected,"full export differs from independent byte oracle");
   Check(Render(s,expected.size()).text==expected,"exact export limit rejected");
   for(std::size_t n=0;n<expected.size();++n)ExportRefused(Render(s,n));
-  ExportRefused(Render(s,m::kMetricExportMaximumBytes+1));
+  ExportRefused(Render(s,scratchbird::client::metrics::kMetricExportMaximumBytes+1));
   for(unsigned n=0;n<9;++n){auto c=Context();
     if(n==0)c.export_profile_uuid={};if(n==1)c.source_scope_uuid=Id(2,4);if(n==2)c.redaction_policy_uuid.bytes[8]=0;
     if(n==3)c.schema_version=2;if(n==4)c.observation_time_utc_ns=0;if(n==5)c.export_time_utc_ns=0;
     if(n==6)c.residency_decision="";if(n==7)c.residency_decision="x\n# EOF";if(n==8)c.residency_decision=std::string("a\0b",3);
-    ExportRefused(m::RenderOpenMetricsProjection(c,std::span(&s,1)));
+    ExportRefused(scratchbird::client::metrics::RenderOpenMetricsProjection(c,std::span(&s,1)));
   }
   for(const auto& name:{"","_total","a.b","x\n# EOF","1bad","x:y"}){auto bad=s;bad.export_name=name;
     if(bad.export_name=="_total"){bad.descriptor.type=bad.value.type=m::MetricType::counter;}
@@ -50,7 +50,7 @@ void ProjectionBasics(){
   bad=s;bad.descriptor.help=std::string("\xc0\xaf",2);ExportRefused(Render(bad));
   bad=s;bad.export_name=std::string(257,'a');ExportRefused(Render(bad));
   s.descriptor.help="h\\\n# EOF";Has(Render(s),"# HELP example h\\\\\\n# EOF\n# TYPE example gauge");
-  const auto empty=m::RenderOpenMetricsProjection(Context(),{});
+  const auto empty=scratchbird::client::metrics::RenderOpenMetricsProjection(Context(),{});
   Check(empty.ok()&&empty.text.ends_with("# EOF\n")&&empty.text.find("# TYPE")==std::string::npos,"empty selected projection manufactured a sample");
 }
 void ProjectionScalars(){
@@ -109,12 +109,12 @@ void ProjectionLabelsAndCollisions(){
   bad=s;bad.label_rules.pop_back();ExportRefused(Render(bad));
   bad=s;bad.label_rules[1].source_key="unknown";ExportRefused(Render(bad));
   bad=s;bad.label_rules[1].export_key="bad\nkey";ExportRefused(Render(bad));
-  std::vector<m::MetricExportSample> all{s,s};ExportRefused(m::RenderOpenMetricsProjection(Context(),all));
-  all[1].value.labels[0].value=Id(45);ExportRefused(m::RenderOpenMetricsProjection(Context(),all));
-  all[1].value.labels[1].value=std::string("other");Check(m::RenderOpenMetricsProjection(Context(),all).ok(),"distinct nonredacted series refused");
-  all[1].descriptor.help="conflicting";ExportRefused(m::RenderOpenMetricsProjection(Context(),all));
+  std::vector<scratchbird::client::metrics::MetricExportSample> all{s,s};ExportRefused(scratchbird::client::metrics::RenderOpenMetricsProjection(Context(),all));
+  all[1].value.labels[0].value=Id(45);ExportRefused(scratchbird::client::metrics::RenderOpenMetricsProjection(Context(),all));
+  all[1].value.labels[1].value=std::string("other");Check(scratchbird::client::metrics::RenderOpenMetricsProjection(Context(),all).ok(),"distinct nonredacted series refused");
+  all[1].descriptor.help="conflicting";ExportRefused(scratchbird::client::metrics::RenderOpenMetricsProjection(Context(),all));
   all={ExportSample(U(1)),ExportSample(U(2))};all[0].descriptor.type=all[0].value.type=m::MetricType::counter;
-  all[1].descriptor.metric_uuid=Id(5);all[1].export_name="example_total";ExportRefused(m::RenderOpenMetricsProjection(Context(),all));
+  all[1].descriptor.metric_uuid=Id(5);all[1].export_name="example_total";ExportRefused(scratchbird::client::metrics::RenderOpenMetricsProjection(Context(),all));
   auto info=ExportSample(std::string("test"));info.descriptor.labels={{"optional",false,false,m::MetricLabelType::text}};
   info.label_rules={{"optional","sb_value",false}};ExportRefused(Render(info));
   s=ExportSample();s.descriptor.labels={{"\xc3\xa9",true,false,m::MetricLabelType::text}};
@@ -126,7 +126,7 @@ void ProjectionLabelsAndCollisions(){
 }
 struct CommaPunctuation:std::numpunct<char>{char do_decimal_point()const override{return ',';}char do_thousands_sep()const override{return '.';}std::string do_grouping()const override{return "\3";}};
 void ProjectionEnvironment(){
-  const std::vector<m::MetricExportSample> samples={ExportSample(1.2345678901234567),ExportSample(U(-1)),
+  const std::vector<scratchbird::client::metrics::MetricExportSample> samples={ExportSample(1.2345678901234567),ExportSample(U(-1)),
       ExportSample(Decimal("1234567890123456789012345678901234",-17)),ExportSample(Binary("1e4000"))};
   std::vector<std::string> expected;for(const auto& s:samples)expected.push_back(Render(s).text);
   const auto locale=std::locale();std::locale::global(std::locale(locale,new CommaPunctuation));

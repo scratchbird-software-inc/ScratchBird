@@ -17,6 +17,7 @@
 #include "query/expression_api.hpp"
 #include "security/security_model.hpp"
 #include "uuid.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -97,6 +98,9 @@ TResult DiagnosticResult(const EngineRequestContext& context,
 
 void AddSelectionEvidence(const EngineNoSqlPhysicalProviderSelection& selection,
                           EngineApiResult* result) {
+  if (!selection.generation_uuid.is_nil()) {
+    result->evidence.push_back({"provider_generation_uuid", selection.generation_uuid});
+  }
   for (const auto& item : selection.evidence) {
     AddApiBehaviorEvidence(result, "time_series_physical_provider", item);
   }
@@ -599,11 +603,22 @@ bool AccountTimeSeriesMemory(const std::uint64_t bytes,
   return CheckedTimeSeriesAdd(bytes, retained) && *retained <= limit;
 }
 
-bool CheckedTimeSeriesOwnedStringBytes(const std::string& value,
+bool CheckedTimeSeriesOwnedDynamicBytes(const std::string& value,
                                        std::uint64_t* total) {
   return value.capacity() < std::numeric_limits<std::uint64_t>::max() &&
          CheckedTimeSeriesAdd(
              static_cast<std::uint64_t>(value.capacity()) + 1, total);
+}
+
+bool CheckedTimeSeriesOwnedDynamicBytes(const EngineUuid&, std::uint64_t*) {
+  return true;  // Inline binary16 storage is counted in the containing object.
+}
+
+bool CheckedTimeSeriesOwnedDynamicBytes(const EngineEvidenceValue& value,
+                                       std::uint64_t* total) {
+  return std::visit([&](const auto& item) {
+    return CheckedTimeSeriesOwnedDynamicBytes(item, total);
+  }, value);
 }
 
 bool AccountTimeSeriesDiagnosticMemoryV1(
@@ -613,14 +628,14 @@ bool AccountTimeSeriesDiagnosticMemoryV1(
           static_cast<std::uint64_t>(diagnostic.fields.capacity()),
           sizeof(EngineApiDiagnosticField), &field_bytes) ||
       !CheckedTimeSeriesAdd(field_bytes, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(diagnostic.code, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(diagnostic.message_key, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(diagnostic.detail, total)) {
+      !CheckedTimeSeriesOwnedDynamicBytes(diagnostic.code, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(diagnostic.message_key, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(diagnostic.detail, total)) {
     return false;
   }
   for (const auto& field : diagnostic.fields) {
-    if (!CheckedTimeSeriesOwnedStringBytes(field.key, total) ||
-        !CheckedTimeSeriesOwnedStringBytes(field.value, total)) {
+    if (!CheckedTimeSeriesOwnedDynamicBytes(field.key, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(field.value, total)) {
       return false;
     }
   }
@@ -629,36 +644,36 @@ bool AccountTimeSeriesDiagnosticMemoryV1(
 
 bool AccountTimeSeriesEngineDescriptorMemoryV1(
     const EngineDescriptor& descriptor, std::uint64_t* total) {
-  return CheckedTimeSeriesOwnedStringBytes(
+  return CheckedTimeSeriesOwnedDynamicBytes(
              descriptor.descriptor_uuid, total) &&
-         CheckedTimeSeriesOwnedStringBytes(descriptor.descriptor_kind,
+         CheckedTimeSeriesOwnedDynamicBytes(descriptor.descriptor_kind,
                                            total) &&
-         CheckedTimeSeriesOwnedStringBytes(descriptor.canonical_type_name,
+         CheckedTimeSeriesOwnedDynamicBytes(descriptor.canonical_type_name,
                                            total) &&
-         CheckedTimeSeriesOwnedStringBytes(descriptor.encoded_descriptor,
+         CheckedTimeSeriesOwnedDynamicBytes(descriptor.encoded_descriptor,
                                            total);
 }
 
 bool AccountTimeSeriesStorageDescriptorMemoryV1(
     const MgaRelationStorageDescriptor& descriptor, std::uint64_t* total) {
   const auto account_uuid = [&](const EngineUuid& uuid) {
-    return CheckedTimeSeriesOwnedStringBytes(uuid, total);
+    return CheckedTimeSeriesOwnedDynamicBytes(uuid, total);
   };
   if (!account_uuid(descriptor.descriptor_uuid) ||
       !account_uuid(descriptor.database_uuid) ||
       !account_uuid(descriptor.schema_uuid) ||
       !account_uuid(descriptor.relation_uuid) ||
       !account_uuid(descriptor.primary_filespace_uuid) ||
-      !CheckedTimeSeriesOwnedStringBytes(descriptor.relation_kind, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(descriptor.storage_profile, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(descriptor.row_identity_rule, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(descriptor.version_identity_rule,
+      !CheckedTimeSeriesOwnedDynamicBytes(descriptor.relation_kind, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(descriptor.storage_profile, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(descriptor.row_identity_rule, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(descriptor.version_identity_rule,
                                          total) ||
-      !CheckedTimeSeriesOwnedStringBytes(descriptor.mutation_rule, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(descriptor.visibility_rule, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(descriptor.cleanup_rule, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(descriptor.recovery_rule, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(descriptor.descriptor_status, total)) {
+      !CheckedTimeSeriesOwnedDynamicBytes(descriptor.mutation_rule, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(descriptor.visibility_rule, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(descriptor.cleanup_rule, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(descriptor.recovery_rule, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(descriptor.descriptor_status, total)) {
     return false;
   }
   std::uint64_t allocation_bytes = 0;
@@ -679,24 +694,24 @@ bool AccountTimeSeriesStorageDescriptorMemoryV1(
   }
   for (const auto& column : descriptor.columns) {
     if (!account_uuid(column.column_uuid) ||
-        !CheckedTimeSeriesOwnedStringBytes(column.canonical_name_key, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(column.canonical_name_key, total) ||
         !AccountTimeSeriesEngineDescriptorMemoryV1(column.value_descriptor,
                                                    total) ||
-        !CheckedTimeSeriesOwnedStringBytes(column.storage_class, total) ||
-        !CheckedTimeSeriesOwnedStringBytes(column.charset_uuid, total) ||
-        !CheckedTimeSeriesOwnedStringBytes(column.collation_uuid, total) ||
-        !CheckedTimeSeriesOwnedStringBytes(column.overflow_policy, total)) {
+        !CheckedTimeSeriesOwnedDynamicBytes(column.storage_class, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(column.charset_uuid, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(column.collation_uuid, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(column.overflow_policy, total)) {
       return false;
     }
   }
   for (const auto& index : descriptor.indexes) {
     if (!account_uuid(index.index_uuid) ||
-        !CheckedTimeSeriesOwnedStringBytes(index.family, total) ||
-        !CheckedTimeSeriesOwnedStringBytes(index.profile, total) ||
-        !CheckedTimeSeriesOwnedStringBytes(index.predicate_kind, total) ||
-        !CheckedTimeSeriesOwnedStringBytes(index.predicate_column, total) ||
-        !CheckedTimeSeriesOwnedStringBytes(index.predicate_value, total) ||
-        !CheckedTimeSeriesOwnedStringBytes(index.residency_policy, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(index.family, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(index.profile, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(index.predicate_kind, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(index.predicate_column, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(index.predicate_value, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(index.residency_policy, total) ||
         !CheckedTimeSeriesMultiply(
             static_cast<std::uint64_t>(index.key_envelopes.capacity()),
             sizeof(std::string), &allocation_bytes) ||
@@ -708,14 +723,14 @@ bool AccountTimeSeriesStorageDescriptorMemoryV1(
       return false;
     }
     for (const auto& value : index.key_envelopes) {
-      if (!CheckedTimeSeriesOwnedStringBytes(value, total)) return false;
+      if (!CheckedTimeSeriesOwnedDynamicBytes(value, total)) return false;
     }
     for (const auto& value : index.include_columns) {
-      if (!CheckedTimeSeriesOwnedStringBytes(value, total)) return false;
+      if (!CheckedTimeSeriesOwnedDynamicBytes(value, total)) return false;
     }
   }
   for (const auto& evidence : descriptor.required_evidence_kinds) {
-    if (!CheckedTimeSeriesOwnedStringBytes(evidence, total)) return false;
+    if (!CheckedTimeSeriesOwnedDynamicBytes(evidence, total)) return false;
   }
   return true;
 }
@@ -727,16 +742,16 @@ bool AccountTimeSeriesCrudRowMemoryV1(const CrudRowVersionRecord& row,
           static_cast<std::uint64_t>(row.values.capacity()),
           sizeof(std::pair<std::string, std::string>), &value_bytes) ||
       !CheckedTimeSeriesAdd(value_bytes, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(row.table_uuid, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(row.row_uuid, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(row.version_uuid, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(row.temporary_session_uuid, total) ||
-      !CheckedTimeSeriesOwnedStringBytes(row.previous_version_uuid, total)) {
+      !CheckedTimeSeriesOwnedDynamicBytes(row.table_uuid, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(row.row_uuid, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(row.version_uuid, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(row.temporary_session_uuid, total) ||
+      !CheckedTimeSeriesOwnedDynamicBytes(row.previous_version_uuid, total)) {
     return false;
   }
   for (const auto& [key, value] : row.values) {
-    if (!CheckedTimeSeriesOwnedStringBytes(key, total) ||
-        !CheckedTimeSeriesOwnedStringBytes(value, total)) {
+    if (!CheckedTimeSeriesOwnedDynamicBytes(key, total) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(value, total)) {
       return false;
     }
   }
@@ -763,8 +778,8 @@ std::optional<std::uint64_t> TimeSeriesMgaReadCarrierMemoryBytesV1(
     if (!AccountTimeSeriesCrudRowMemoryV1(row, &bytes)) return std::nullopt;
   }
   for (const auto& evidence : read.evidence) {
-    if (!CheckedTimeSeriesOwnedStringBytes(evidence.evidence_kind, &bytes) ||
-        !CheckedTimeSeriesOwnedStringBytes(evidence.evidence_id, &bytes)) {
+    if (!CheckedTimeSeriesOwnedDynamicBytes(evidence.evidence_kind, &bytes) ||
+        !CheckedTimeSeriesOwnedDynamicBytes(evidence.evidence_id, &bytes)) {
       return std::nullopt;
     }
   }
@@ -798,21 +813,8 @@ class ScopedTimeSeriesNearestRounding {
   bool active_{false};
 };
 
-bool CanonicalTimeSeriesUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto byte = static_cast<unsigned char>(value[index]);
-    if (!((byte >= '0' && byte <= '9') ||
-          (byte >= 'a' && byte <= 'f'))) {
-      return false;
-    }
-  }
-  return true;
+bool CanonicalTimeSeriesUuid(const EngineUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool WellFormedTimeSeriesUtf8(const std::string_view value) {
@@ -1333,8 +1335,8 @@ TagParseStatus CanonicalizeTimeSeriesTags(const std::string_view input,
 
 bool ExactTimeSeriesValueDescriptor(
     const EngineDescriptor& descriptor, const std::string_view expected_type,
-    const std::string_view expected_type_uuid,
-    const std::string_view expected_column_uuid,
+    const EngineUuid& expected_type_uuid,
+    const EngineUuid& expected_column_uuid,
     const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1*
         expected_registry_identity) {
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
@@ -1342,52 +1344,40 @@ bool ExactTimeSeriesValueDescriptor(
       descriptor.canonical_type_name != expected_type) {
     return false;
   }
-  std::map<std::string_view, std::string_view> fields;
-  const auto encoded = std::string_view(descriptor.encoded_descriptor);
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto end = encoded.find(';', offset);
-    const auto field = encoded.substr(
-        offset, end == std::string_view::npos ? std::string_view::npos
-                                              : end - offset);
-    const auto equal = field.find('=');
-    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
-        equal + 1 == field.size() ||
-        !fields.emplace(field.substr(0, equal), field.substr(equal + 1)).second) {
-      return false;
-    }
-    if (end == std::string_view::npos) break;
-    offset = end + 1;
-  }
+  CatalogColumnMetadata metadata;
+  if (!DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &metadata) ||
+      descriptor.type_uuid != expected_type_uuid) return false;
+  const auto& fields = metadata.text;
+  const auto& identities = metadata.identities;
   const bool contextual_text = expected_type == "text";
-  if (fields.size() != (contextual_text ? 12U :
-                       expected_type == "timestamp_tz" ? 3U : 3U) &&
-      !(expected_type == "timestamp_tz" && fields.size() == 4U)) {
+  if ((identities.size() != (contextual_text ? 4U : 1U) ||
+       fields.size() != (contextual_text ? 8U : 2U)) &&
+      !(expected_type == "timestamp_tz" && fields.size() == 3U && identities.size() == 1U)) {
     return false;
   }
   if (
-      !fields.contains("canonical") || !fields.contains("type_uuid") ||
+      !fields.contains("canonical") || !identities.contains("type_uuid") ||
       !fields.contains("nullable") ||
       fields.at("canonical") != expected_type ||
-      fields.at("type_uuid") != expected_type_uuid ||
+      identities.at("type_uuid") != expected_type_uuid ||
       fields.at("nullable") != "false") {
     return false;
   }
   const auto timezone = fields.find("timezone_profile_id");
-  const auto column_uuid = fields.find("column_uuid");
+  const auto column_uuid = identities.find("column_uuid");
   if (expected_type == "timestamp_tz") {
-    return column_uuid == fields.end() && (fields.size() == 3 ||
-           (fields.size() == 4 && timezone != fields.end() &&
+    return column_uuid == identities.end() && (fields.size() == 2 ||
+           (fields.size() == 3 && timezone != fields.end() &&
             timezone->second == "UTC"));
   }
   if (expected_type == "text") {
     return expected_registry_identity != nullptr && timezone == fields.end() &&
-           column_uuid != fields.end() &&
+           column_uuid != identities.end() &&
            column_uuid->second == expected_column_uuid &&
            descriptor.descriptor_uuid ==
                expected_column_uuid &&
-           fields.contains("datatype_descriptor_uuid") &&
-           fields.at("datatype_descriptor_uuid") ==
+           identities.contains("datatype_descriptor_uuid") &&
+           identities.at("datatype_descriptor_uuid") ==
                expected_registry_identity->descriptor_uuid &&
            fields.contains("datatype_descriptor_generation") &&
            fields.at("datatype_descriptor_generation") ==
@@ -1396,8 +1386,8 @@ bool ExactTimeSeriesValueDescriptor(
            fields.contains("type_generation") &&
            fields.at("type_generation") ==
                std::to_string(expected_registry_identity->type_generation) &&
-           fields.contains("codec_uuid") &&
-           fields.at("codec_uuid") == expected_registry_identity->codec_uuid &&
+           identities.contains("codec_uuid") &&
+           identities.at("codec_uuid") == expected_registry_identity->codec_uuid &&
            fields.contains("codec_id") &&
            fields.at("codec_id") == expected_registry_identity->codec_id &&
            fields.contains("codec_version") &&
@@ -1410,8 +1400,8 @@ bool ExactTimeSeriesValueDescriptor(
            fields.at("null_encoding") ==
                std::to_string(expected_registry_identity->null_encoding_code);
   }
-  return fields.size() == 3 && timezone == fields.end() &&
-         column_uuid == fields.end();
+  return fields.size() == 2 && timezone == fields.end() &&
+         column_uuid == identities.end();
 }
 
 bool ExactTimeSeriesStorageDescriptorImpl(
@@ -1424,8 +1414,8 @@ bool ExactTimeSeriesStorageDescriptorImpl(
   const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return false;
-  std::unordered_set<std::string> column_uuids;
-  std::unordered_set<std::string> descriptor_uuids;
+  std::set<EngineUuid> column_uuids;
+  std::set<EngineUuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = descriptor.columns[ordinal];
     const auto type_id =
@@ -1441,11 +1431,10 @@ bool ExactTimeSeriesStorageDescriptorImpl(
     }
     const auto& descriptor_row =
         type_row.manifest.descriptor_rows.front();
-    const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
-        descriptor_row.descriptor_uuid.value);
+    const auto descriptor_uuid = descriptor_row.descriptor_uuid.value;
     const auto codec_identity =
         scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-            "019d0000-0000-7000-8000-00000000d701",
+            scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
             manifest.manifest.catalog_epoch, 1, descriptor_uuid,
             descriptor_row.descriptor_epoch);
     const auto expected_type_uuid =
@@ -1469,7 +1458,7 @@ bool ExactTimeSeriesStorageDescriptorImpl(
         !descriptor_uuids
              .insert(column.value_descriptor.descriptor_uuid)
              .second ||
-        !column.charset_uuid.empty() || !column.collation_uuid.empty() ||
+        !column.charset_uuid.is_nil() || !column.collation_uuid.is_nil() ||
         column.character_length != 0 ||
         !ExactTimeSeriesValueDescriptor(column.value_descriptor,
                                         kTypes[ordinal],
@@ -1542,8 +1531,8 @@ std::optional<std::uint64_t> BoundTimeSeriesResultLogicalMemoryBytesV1(
   const auto account = [&](const std::uint64_t amount) {
     return CheckedTimeSeriesAdd(amount, &bytes);
   };
-  const auto account_string = [&](const std::string& value) {
-    return CheckedTimeSeriesOwnedStringBytes(value, &bytes);
+  const auto account_string = [&](const auto& value) {
+    return CheckedTimeSeriesOwnedDynamicBytes(value, &bytes);
   };
   const auto account_array = [&](const std::size_t count,
                                  const std::uint64_t width) {
@@ -1863,9 +1852,9 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
     }
     return accounted;
   };
-  const auto account_working_string = [&](const std::string& value) {
+  const auto account_working_string = [&](const auto& value) {
     std::uint64_t bytes = 0;
-    return CheckedTimeSeriesOwnedStringBytes(value, &bytes) &&
+    return CheckedTimeSeriesOwnedDynamicBytes(value, &bytes) &&
            account_working(bytes);
   };
   if (!read_carrier_memory.has_value() ||
@@ -1952,9 +1941,15 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
         stored_value == nullptr || *metric == "<NULL>" ||
         *timestamp == "<NULL>" || *tags == "<NULL>" ||
         *stored_value == "<NULL>" ||
-        !CanonicalTimeSeriesUuid(*metric)) {
+        metric->size() != 16) {
       return refuse("SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1",
                     "time-series selected row has null or invalid identity fields");
+    }
+    EngineUuid metric_identity{};
+    std::copy(metric->begin(), metric->end(), metric_identity.bytes.begin());
+    if (!CanonicalTimeSeriesUuid(metric_identity)) {
+      return refuse("SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1",
+                    "time-series metric identity is not a native engine UUID");
     }
     EngineApiI64 point_ns = 0;
     if (!ParseTimeSeriesTimestamp(*timestamp, &point_ns)) {
@@ -2016,13 +2011,13 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
                       "time-series raw output row count exceeded its bound");
       }
       std::uint64_t retained_strings = 0;
-      if (!CheckedTimeSeriesOwnedStringBytes(row.row_uuid,
+      if (!CheckedTimeSeriesOwnedDynamicBytes(row.row_uuid,
                                              &retained_strings) ||
-          !CheckedTimeSeriesOwnedStringBytes(request.object_uuid,
+          !CheckedTimeSeriesOwnedDynamicBytes(request.object_uuid,
                                              &retained_strings) ||
-          !CheckedTimeSeriesOwnedStringBytes(*metric, &retained_strings) ||
+          !CheckedTimeSeriesOwnedDynamicBytes(*metric, &retained_strings) ||
           !CheckedTimeSeriesAdd(31, &retained_strings) ||
-          !CheckedTimeSeriesOwnedStringBytes(canonical_tags,
+          !CheckedTimeSeriesOwnedDynamicBytes(canonical_tags,
                                              &retained_strings) ||
           !account_working(retained_strings)) {
         return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
@@ -2030,7 +2025,7 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
       }
       selected.push_back({row.row_uuid,
                           request.object_uuid,
-                          *metric,
+                          metric_identity,
                           point_ns,
                           FormatTimeSeriesTimestamp(point_ns),
                           std::move(canonical_tags),
@@ -2042,10 +2037,10 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
   std::ranges::sort(selected, [&](const auto& left, const auto& right) {
     if (!row_sort_cancelled && cancelled()) row_sort_cancelled = true;
     if (left.series_uuid != right.series_uuid) {
-      return UnsignedTextLess(left.series_uuid, right.series_uuid);
+      return left.series_uuid.bytes < right.series_uuid.bytes;
     }
     if (left.metric_uuid != right.metric_uuid) {
-      return UnsignedTextLess(left.metric_uuid, right.metric_uuid);
+      return left.metric_uuid.bytes < right.metric_uuid.bytes;
     }
     if (left.point_timestamp_ns != right.point_timestamp_ns) {
       return left.point_timestamp_ns < right.point_timestamp_ns;
@@ -2053,7 +2048,7 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
     if (left.tags != right.tags) {
       return UnsignedTextLess(left.tags, right.tags);
     }
-    return UnsignedTextLess(left.row_uuid, right.row_uuid);
+    return left.row_uuid.bytes < right.row_uuid.bytes;
   });
   if (row_sort_cancelled) {
     return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
@@ -2068,8 +2063,8 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
                     "time-series raw output row count exceeded its bound");
     }
     for (const auto& row : selected) {
-      const std::uint64_t bytes = row.row_uuid.size() + row.series_uuid.size() +
-                                  row.metric_uuid.size() +
+      const std::uint64_t bytes = row.row_uuid.bytes.size() + row.series_uuid.bytes.size() +
+                                  row.metric_uuid.bytes.size() +
                                   row.point_timestamp.size() + row.tags.size() +
                                   sizeof(row.value) + 6;
       if (!CheckedTimeSeriesAdd(bytes, &result_bytes) ||
@@ -2081,8 +2076,8 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
     result.rows = std::move(selected);
   } else {
     struct GroupState {
-      std::string series_uuid;
-      std::string metric_uuid;
+      EngineUuid series_uuid;
+      EngineUuid metric_uuid;
       EngineApiI64 bucket_start_ns{0};
       EngineApiI64 bucket_end_ns{0};
       std::string tags;
@@ -2093,14 +2088,14 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
       bool initialized{false};
     };
     using GroupKey =
-        std::tuple<std::string, std::string, std::string, EngineApiI64>;
+        std::tuple<EngineUuid, EngineUuid, std::string, EngineApiI64>;
     struct GroupKeyLess {
       bool operator()(const GroupKey& left, const GroupKey& right) const {
         if (std::get<0>(left) != std::get<0>(right)) {
-          return UnsignedTextLess(std::get<0>(left), std::get<0>(right));
+          return std::get<0>(left).bytes < std::get<0>(right).bytes;
         }
         if (std::get<1>(left) != std::get<1>(right)) {
-          return UnsignedTextLess(std::get<1>(left), std::get<1>(right));
+          return std::get<1>(left).bytes < std::get<1>(right).bytes;
         }
         if (std::get<2>(left) != std::get<2>(right)) {
           return UnsignedTextLess(std::get<2>(left), std::get<2>(right));
@@ -2125,11 +2120,11 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
       std::uint64_t group_lookup_projection = working_memory_bytes;
       if (!CheckedTimeSeriesAdd(sizeof(GroupKey),
                                 &group_lookup_projection) ||
-          !CheckedTimeSeriesOwnedStringBytes(row.series_uuid,
+          !CheckedTimeSeriesOwnedDynamicBytes(row.series_uuid,
                                              &group_lookup_projection) ||
-          !CheckedTimeSeriesOwnedStringBytes(row.metric_uuid,
+          !CheckedTimeSeriesOwnedDynamicBytes(row.metric_uuid,
                                              &group_lookup_projection) ||
-          !CheckedTimeSeriesOwnedStringBytes(row.tags,
+          !CheckedTimeSeriesOwnedDynamicBytes(row.tags,
                                              &group_lookup_projection) ||
           group_lookup_projection > request.maximum_memory_bytes) {
         return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
@@ -2154,10 +2149,10 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
             sizeof(GroupKey) + sizeof(GroupState) + 5 * sizeof(void*);
         const auto duplicated_string_bytes = [&]() {
           std::uint64_t bytes = 0;
-          return CheckedTimeSeriesOwnedStringBytes(row.series_uuid, &bytes) &&
-                         CheckedTimeSeriesOwnedStringBytes(row.metric_uuid,
+          return CheckedTimeSeriesOwnedDynamicBytes(row.series_uuid, &bytes) &&
+                         CheckedTimeSeriesOwnedDynamicBytes(row.metric_uuid,
                                                            &bytes) &&
-                         CheckedTimeSeriesOwnedStringBytes(row.tags, &bytes)
+                         CheckedTimeSeriesOwnedDynamicBytes(row.tags, &bytes)
                      ? std::optional<std::uint64_t>(bytes)
                      : std::nullopt;
         }();
@@ -2216,11 +2211,11 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
     for (const auto& [key, group] : groups) {
       (void)key;
       std::uint64_t output_dynamic_bytes = 0;
-      if (!CheckedTimeSeriesOwnedStringBytes(group.series_uuid,
+      if (!CheckedTimeSeriesOwnedDynamicBytes(group.series_uuid,
                                              &output_dynamic_bytes) ||
-          !CheckedTimeSeriesOwnedStringBytes(group.metric_uuid,
+          !CheckedTimeSeriesOwnedDynamicBytes(group.metric_uuid,
                                              &output_dynamic_bytes) ||
-          !CheckedTimeSeriesOwnedStringBytes(group.tags,
+          !CheckedTimeSeriesOwnedDynamicBytes(group.tags,
                                              &output_dynamic_bytes) ||
           !CheckedTimeSeriesAdd(62, &output_dynamic_bytes) ||
           !account_working(output_dynamic_bytes)) {
@@ -2262,7 +2257,7 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
                       "time-series aggregate result is non-finite");
       }
       const std::uint64_t bytes =
-          output.series_uuid.size() + output.metric_uuid.size() +
+          output.series_uuid.bytes.size() + output.metric_uuid.bytes.size() +
           output.bucket_start.size() + output.bucket_end.size() +
           output.tags.size() + sizeof(output.sample_count) +
           sizeof(output.aggregate_count) + sizeof(output.aggregate_value) + 7;
@@ -2299,7 +2294,7 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
       result.selected_access_path_id);
   AddApiBehaviorEvidence(&result, "time_series_ordering", result.ordering_id);
   std::uint64_t evidence_memory_bytes = 0;
-  if (!CheckedTimeSeriesOwnedStringBytes(result.operation_id,
+  if (!CheckedTimeSeriesOwnedDynamicBytes(result.operation_id,
                                          &evidence_memory_bytes)) {
     return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "time-series result metadata memory receipt overflowed");
@@ -2314,9 +2309,9 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
   }
   for (const auto& evidence : result.evidence) {
     std::uint64_t item_bytes = 0;
-    if (!CheckedTimeSeriesOwnedStringBytes(evidence.evidence_kind,
+    if (!CheckedTimeSeriesOwnedDynamicBytes(evidence.evidence_kind,
                                            &item_bytes) ||
-        !CheckedTimeSeriesOwnedStringBytes(evidence.evidence_id,
+        !CheckedTimeSeriesOwnedDynamicBytes(evidence.evidence_id,
                                            &item_bytes) ||
         !CheckedTimeSeriesAdd(item_bytes, &evidence_memory_bytes)) {
       return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",

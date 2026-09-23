@@ -141,17 +141,10 @@ void WriteMatrix(const std::filesystem::path& output) {
   Require(file.good(), "ELER-088 matrix output write failed");
 }
 
-std::string MakeUuid(UuidKind kind, u64 offset) {
-  const auto generated =
-      uuid::GenerateEngineIdentityV7(kind, kBaseMillis + offset);
-  Require(generated.ok(), "ELER-088 durable UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
-}
-
 api::EngineUuid EngineUuid(UuidKind kind, u64 offset) {
-  api::EngineUuid out;
-  out.canonical = MakeUuid(kind, offset);
-  return out;
+  const auto generated = uuid::GenerateEngineIdentityV7(kind, kBaseMillis + offset);
+  Require(generated.ok(), "ELER-088 durable UUID generation failed");
+  return generated.value.value;
 }
 
 api::EngineRequestContext SupportContext() {
@@ -203,7 +196,9 @@ std::string FlattenApiResult(const api::EngineApiResult& result) {
   }
   for (const auto& evidence : result.evidence) {
     out << "evidence.kind=" << evidence.evidence_kind << '\n'
-        << "evidence.id=" << evidence.evidence_id << '\n';
+        << "evidence.id=" << (std::holds_alternative<std::string>(evidence.evidence_id)
+            ? std::get<std::string>(evidence.evidence_id)
+            : uuid::UuidToString(std::get<api::EngineUuid>(evidence.evidence_id))) << '\n';
   }
   for (const auto& row : result.result_shape.rows) {
     for (const auto& field : row.fields) {
@@ -308,10 +303,10 @@ void ListenerSupportBundleCanaryProof(const std::vector<std::string>& canaries) 
 api::EngineSupportBundleAgentEvidenceSource AgentCanaryEvidence() {
   api::EngineSupportBundleAgentEvidenceSource source;
   source.agent_type_id = "reference_connector_supportability_probe";
-  source.agent_uuid = MakeUuid(UuidKind::object, 20);
-  source.filespace_uuid = MakeUuid(UuidKind::filespace, 21);
-  source.policy_uuid = MakeUuid(UuidKind::object, 22);
-  source.evidence_uuid = MakeUuid(UuidKind::object, 23);
+  source.agent_uuid = EngineUuid(UuidKind::object, 20);
+  source.filespace_uuid = EngineUuid(UuidKind::filespace, 21);
+  source.policy_uuid = EngineUuid(UuidKind::object, 22);
+  source.evidence_uuid = EngineUuid(UuidKind::object, 23);
   source.evidence_kind =
       "agent_runtime_evidence secret-canary-eler088-reference-connector";
   source.result_state = "success";
@@ -461,6 +456,7 @@ void MemorySupportBundleCanaryProof(const std::vector<std::string>& canaries) {
   request.snapshot.contexts.push_back(
       {"statement",
        "secret-canary-eler088-memory protected_reference",
+       std::nullopt,
        2048,
        4096,
        1,
@@ -545,7 +541,7 @@ api::ClusterSupportBundleProjectionSource ClusterProjection(
   source.sensitivity = sensitivity;
   source.projection_id = "eler088-cluster-projection";
   source.projection_source = "reference_connector_supportability_projection";
-  source.target_uuid = MakeUuid(UuidKind::object, 80);
+  source.target_uuid = EngineUuid(UuidKind::object, 80);
   source.retention_policy_ref = "support.cluster.retention.redacted";
   source.support_bundle_policy_ref = "support.cluster.bundle.redacted";
   source.retention_evidence_present = true;

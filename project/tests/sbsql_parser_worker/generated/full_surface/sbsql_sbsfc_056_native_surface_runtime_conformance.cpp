@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -60,8 +61,8 @@ functions::FunctionArgument Arg(std::string name, SblrValue value) {
 
 sblr::SblrExecutionContext BaseSblrContext() {
   sblr::SblrExecutionContext context;
-  context.session_uuid = kSessionUuid;
-  context.user_uuid = kPrincipalUuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f5600-0000-7000-8000-000000000002");
+  context.user_uuid = scratchbird::tests::FixtureUuidLiteral("019f5600-0000-7000-8000-000000000003");
   context.application_name = "sbsfc056-native-surface";
   context.security_context_present = true;
   context.transaction_context_present = true;
@@ -178,8 +179,8 @@ sblr::SblrOperationEnvelope ProjectionEnvelope(
 api::EngineRequestContext ProjectionContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsfc056-native-surface-projection";
-  context.session_uuid.canonical = kSessionUuid;
-  context.principal_uuid.canonical = kPrincipalUuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f5600-0000-7000-8000-000000000002");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f5600-0000-7000-8000-000000000003");
   context.local_transaction_id = kLocalTransactionId;
   context.snapshot_visible_through_local_transaction_id = kLocalTransactionId;
   context.application_name = "sbsfc056-native-surface";

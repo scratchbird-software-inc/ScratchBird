@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "../../core/platform/runtime_platform.hpp"
+
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -17,7 +19,7 @@ namespace scratchbird::engine::optimizer {
 
 struct BulkPlacementOrderRow {
   std::uint64_t source_ordinal = 0;
-  std::string row_uuid;
+  scratchbird::core::platform::Uuid row_uuid;
   std::string placement_key;
 };
 

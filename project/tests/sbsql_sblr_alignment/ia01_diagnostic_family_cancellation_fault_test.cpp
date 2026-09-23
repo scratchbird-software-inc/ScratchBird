@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_dispatch.hpp"
 
 #include <array>
@@ -50,8 +51,8 @@ sblr::SblrOperationEnvelope ExactEnvelope(const OperationSpec& spec) {
   envelope.opcode_code = spec.opcode_code;
   envelope.result_shape = spec.result_shape;
   envelope.diagnostic_shape = "diagnostic_vector";
-  envelope.parser_package_uuid = "018f1000-0000-7000-8000-000000003852";
-  envelope.registry_snapshot_uuid = "018f1000-0000-7000-8000-000000003856";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("018f1000-0000-7000-8000-000000003852");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("018f1000-0000-7000-8000-000000003856");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = spec.requires_transaction;
   envelope.parser_resolved_names_to_uuids = true;
@@ -70,8 +71,7 @@ sblr::SblrDispatchRequest Request(const OperationSpec& spec,
                                   std::atomic<unsigned>* cancellation_probes) {
   sblr::SblrDispatchRequest request;
   request.context.security_context_present = true;
-  request.context.transaction_uuid.canonical =
-      "018f1000-0000-7000-8000-000000003854";
+  request.context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("018f1000-0000-7000-8000-000000003854");
   request.context.local_transaction_id = 1;
   request.context.query_cancellation_requested = [cancellation_probes] {
     cancellation_probes->fetch_add(1, std::memory_order_relaxed);

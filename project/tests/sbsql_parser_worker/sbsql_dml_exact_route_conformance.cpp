@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -42,9 +43,9 @@ namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000002101";
-constexpr std::string_view kRelatedUuid = "019f0000-0000-7000-8000-000000002102";
-constexpr std::string_view kThirdRelationUuid = "019f0000-0000-7000-8000-000000002103";
+constexpr auto kTargetUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002101");
+constexpr auto kRelatedUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002102");
+constexpr auto kThirdRelationUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002103");
 constexpr std::string_view kBoundedOrderedSelectSql =
     "SELECT * FROM customer ORDER BY id DESC LIMIT 2 OFFSET 1";
 constexpr std::string_view kBoundedTopSelectSql = "SELECT TOP 2 * FROM customer";
@@ -54,9 +55,9 @@ constexpr std::string_view kBoundedFetchNextSelectSql =
     "SELECT * FROM customer FETCH NEXT 2 ROW ONLY";
 constexpr std::string_view kBoundedWhereEqualitySelectSql =
     "SELECT * FROM customer WHERE id = 1";
-constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000002130";
-constexpr std::string_view kColumnIdUuid = "019f0000-0000-7000-8000-000000002131";
-constexpr std::string_view kColumnNameUuid = "019f0000-0000-7000-8000-000000002132";
+constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002130");
+constexpr auto kColumnIdUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002131");
+constexpr auto kColumnNameUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002132");
 // The authenticated SBPS/public-ABI row, full IPEV, and no-query-handle leg is
 // exhaustively owned by this adjacent non-QOW target. This executable proves
 // its own parser surface and exact typed engine-dispatch leg.
@@ -879,9 +880,9 @@ void PrintMessageSet(const MessageVectorSet& messages) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000002111";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000002112";
-  session.database_uuid = "019f0000-0000-7000-8000-000000002113";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002111");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002112");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002113");
   session.catalog_epoch = 7;
   session.security_policy_epoch = 11;
   session.descriptor_epoch = 13;
@@ -891,10 +892,21 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-000000002114";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002114");
   config.bundle_contract_id = "sbp_sbsql@dml-route-test";
   config.build_id = "sbsql-dml-route-test";
   return config;
+}
+
+bool HasIdentityOperand(const SblrEnvelope& envelope, std::string_view name,
+                        const api::EngineUuid& identity) {
+  for (const auto& operand : envelope.operands) {
+    if (operand.name == name && operand.type == "uuid" && operand.value.empty() &&
+        operand.canonical_value_kind == static_cast<std::uint16_t>(sblr::SblrValueKind::uuid_ref) &&
+        operand.canonical_value_body.size() == 16 &&
+        std::equal(identity.bytes.begin(), identity.bytes.end(), operand.canonical_value_body.begin())) return true;
+  }
+  return false;
 }
 
 struct PipelineArtifacts {
@@ -905,7 +917,7 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
-PipelineArtifacts RunPipeline(std::string_view sql, std::vector<std::string> resolved = {}) {
+PipelineArtifacts RunPipeline(std::string_view sql, std::vector<api::EngineUuid> resolved = {}) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
@@ -942,7 +954,7 @@ void RequireCentralImportExactRefusals() {
                 route.canonical_name == row.canonical_name &&
                 route.diagnostic_id == "SBSQL.IMPL.NOT_AVAILABLE",
             "central import refusal classification drifted");
-    const auto artifacts = RunPipeline(row.sql, {std::string(kTargetUuid)});
+    const auto artifacts = RunPipeline(row.sql, {kTargetUuid});
     Require(artifacts.envelope.exact_emulated_diagnostic,
             "central import gated surface did not retain exact refusal metadata");
     Require(artifacts.envelope.operation_id ==
@@ -997,7 +1009,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabaseForEngineDispatch() {
+api::EngineUuid CreateMinimalDatabaseForEngineDispatch() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
   db::DatabaseCreateConfig create;
@@ -1017,23 +1029,22 @@ std::string CreateMinimalDatabaseForEngineDispatch() {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "DML exact-route engine dispatch database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
-api::EngineRequestContext EngineContextForDatabase(const std::string& database_uuid) {
+api::EngineRequestContext EngineContextForDatabase(const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-dml-exact-route";
   context.database_path = TestDatabasePath().string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000002122";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000002123";
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002122");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002123");
   context.security_context_present = true;
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002130");
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
@@ -1049,12 +1060,12 @@ void ApplyRegisteredFixtureEnvelopeIdentity(
           "fixture operation lacked a registered numeric identity");
   envelope->opcode = operation->opcode;
   envelope->opcode_code = operation->code;
-  envelope->parser_package_uuid = std::string(kRelatedUuid);
-  envelope->registry_snapshot_uuid = std::string(kThirdRelationUuid);
+  envelope->parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002102");
+  envelope->registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002103");
   envelope->parser_resolved_names_to_uuids = true;
 }
 
-api::EngineRequestContext BeginEngineTransaction(const std::string& database_uuid) {
+api::EngineRequestContext BeginEngineTransaction(const api::EngineUuid& database_uuid) {
   auto context = EngineContextForDatabase(database_uuid);
   auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
                                          "SBLR_TRANSACTION_BEGIN",
@@ -1084,14 +1095,14 @@ api::EngineRequestContext BeginEngineTransaction(const std::string& database_uui
 
 api::EngineApiRequest EngineCreateCustomerTableApiRequest() {
   api::EngineApiRequest request;
-  request.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002130");
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = std::string(kTargetUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002101");
   request.target_object.object_kind = "table";
   request.localized_names.push_back({"en", "primary", "", "customer", true});
 
   api::EngineColumnDefinition id_column;
-  id_column.requested_column_uuid.canonical = std::string(kColumnIdUuid);
+  id_column.requested_column_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002131");
   id_column.names.push_back({"en", "primary", "", "id", true});
   id_column.descriptor.descriptor_kind = "scalar";
   id_column.descriptor.canonical_type_name = "text";
@@ -1101,7 +1112,7 @@ api::EngineApiRequest EngineCreateCustomerTableApiRequest() {
   request.columns.push_back(std::move(id_column));
 
   api::EngineColumnDefinition name_column;
-  name_column.requested_column_uuid.canonical = std::string(kColumnNameUuid);
+  name_column.requested_column_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002132");
   name_column.names.push_back({"en", "primary", "", "name", true});
   name_column.descriptor.descriptor_kind = "scalar";
   name_column.descriptor.canonical_type_name = "text";
@@ -1114,7 +1125,7 @@ api::EngineApiRequest EngineCreateCustomerTableApiRequest() {
 
 api::EngineApiRequest EngineCreateSchemaApiRequest() {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::string(kSchemaUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002130");
   request.target_object.object_kind = "schema";
   request.localized_names.push_back({"en", "primary", "", "dml_exact_route", true});
   return request;
@@ -1332,9 +1343,9 @@ void RequireExactLowering(std::string_view sql,
                           std::string_view opcode,
                           std::string_view required_right,
                           std::string_view surface_variant) {
-  std::vector<std::string> resolved{std::string(kTargetUuid)};
+  std::vector<api::EngineUuid> resolved{kTargetUuid};
   if (operation_id == "dml.merge_rows") {
-    resolved.push_back(std::string(kRelatedUuid));
+    resolved.push_back(kRelatedUuid);
   }
   const auto artifacts = RunPipeline(sql, resolved);
   if (!artifacts.bound.bound) {
@@ -1369,14 +1380,13 @@ void RequireExactLowering(std::string_view sql,
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_storage_or_finality"),
           "parser no-storage/finality authority step missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.catalog.object_descriptor"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.catalog.object_descriptor"),
           "DML/query object descriptor ref missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.storage.row_descriptor"),
+  Require(HasValue(artifacts.envelope.descriptor_requirements, "sys.storage.row_descriptor"),
           "DML/query row descriptor ref missing");
   Require(Contains(artifacts.envelope.payload, "\"dml_envelope_kind\""),
           "DML/query payload missing DML envelope marker");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "DML/query target UUID missing from payload");
   Require(Contains(artifacts.envelope.payload,
                    std::string("\"dml_surface_variant\":\"") + std::string(surface_variant) + "\""),
@@ -1461,7 +1471,7 @@ void RequireCopySourceExactRouteEvidence() {
   RequireRegistryEvidence(kBoundedCopySourceRow);
 
   constexpr std::string_view kCopySourceSql = "COPY customer FROM STDIN";
-  const auto artifacts = RunPipeline(kCopySourceSql, {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline(kCopySourceSql, {kTargetUuid});
   Require(artifacts.bound.bound,
           EvidenceMessage(kBoundedCopySourceRow, "parser_bind_lower",
                           "COPY source route did not bind after UUID resolution"));
@@ -1494,8 +1504,7 @@ void RequireCopySourceExactRouteEvidence() {
                    "authority.parser.no_storage_or_finality"),
           EvidenceMessage(kBoundedCopySourceRow, "parser_bind_lower",
                           "COPY source parser no-storage/finality authority step missing"));
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           EvidenceMessage(kBoundedCopySourceRow, "parser_bind_lower",
                           "COPY source target UUID missing from payload"));
   Require(Contains(artifacts.envelope.payload,
@@ -1561,7 +1570,7 @@ void RequireCopyFormatExactRouteEvidence() {
   RequireRegistryEvidence(kBoundedCopyFormatRow);
 
   constexpr std::string_view kCopyFormatSql = "COPY customer FROM STDIN JSONL";
-  const auto artifacts = RunPipeline(kCopyFormatSql, {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline(kCopyFormatSql, {kTargetUuid});
   Require(artifacts.bound.bound,
           EvidenceMessage(kBoundedCopyFormatRow, "parser_bind_lower",
                           "COPY format route did not bind after UUID resolution"));
@@ -1594,8 +1603,7 @@ void RequireCopyFormatExactRouteEvidence() {
                    "authority.parser.no_storage_or_finality"),
           EvidenceMessage(kBoundedCopyFormatRow, "parser_bind_lower",
                           "COPY format parser no-storage/finality authority step missing"));
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           EvidenceMessage(kBoundedCopyFormatRow, "parser_bind_lower",
                           "COPY format target UUID missing from payload"));
   Require(Contains(artifacts.envelope.payload,
@@ -1661,7 +1669,7 @@ void RequireCopyOptionsExactRouteEvidence() {
   RequireRegistryEvidence(kBoundedCopyOptionsRow);
 
   constexpr std::string_view kCopyOptionsSql = "COPY customer FROM STDIN WITH HEADER";
-  const auto artifacts = RunPipeline(kCopyOptionsSql, {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline(kCopyOptionsSql, {kTargetUuid});
   Require(artifacts.bound.bound,
           EvidenceMessage(kBoundedCopyOptionsRow, "parser_bind_lower",
                           "COPY options route did not bind after UUID resolution"));
@@ -1694,8 +1702,7 @@ void RequireCopyOptionsExactRouteEvidence() {
                    "authority.parser.no_storage_or_finality"),
           EvidenceMessage(kBoundedCopyOptionsRow, "parser_bind_lower",
                           "COPY options parser no-storage/finality authority step missing"));
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           EvidenceMessage(kBoundedCopyOptionsRow, "parser_bind_lower",
                           "COPY options target UUID missing from payload"));
   Require(Contains(artifacts.envelope.payload,
@@ -1773,7 +1780,7 @@ void RequireCopyEndpointExactRouteEvidence() {
   RequireRegistryEvidence(kBoundedCopyEndpointRow);
 
   constexpr std::string_view kCopyEndpointSql = "COPY customer FROM STDIN";
-  const auto artifacts = RunPipeline(kCopyEndpointSql, {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline(kCopyEndpointSql, {kTargetUuid});
   Require(artifacts.bound.bound,
           EvidenceMessage(kBoundedCopyEndpointRow, "parser_bind_lower",
                           "COPY endpoint route did not bind after UUID resolution"));
@@ -1806,8 +1813,7 @@ void RequireCopyEndpointExactRouteEvidence() {
                    "authority.parser.no_storage_or_finality"),
           EvidenceMessage(kBoundedCopyEndpointRow, "parser_bind_lower",
                           "COPY endpoint parser no-storage/finality authority step missing"));
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           EvidenceMessage(kBoundedCopyEndpointRow, "parser_bind_lower",
                           "COPY endpoint target UUID missing from payload"));
   Require(Contains(artifacts.envelope.payload,
@@ -1885,14 +1891,19 @@ sblr::SblrOperationEnvelope EngineEnvelope(std::string operation_id, std::string
   envelope.requires_cluster_authority = false;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back({"text", "target_object_uuid", std::string(kTargetUuid)});
+  sblr::SblrOperand target;
+  target.type = "uuid";
+  target.name = "target_object_uuid";
+  target.value_kind = sblr::SblrValueKind::uuid_ref;
+  target.value_body.assign(kTargetUuid.bytes.begin(), kTargetUuid.bytes.end());
+  envelope.operands.push_back(std::move(target));
   envelope.operands.push_back({"text", "target_object_kind", "table"});
   return envelope;
 }
 
 api::EngineApiRequest EngineApiRequestForDml(std::string_view operation_id) {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = std::string(kTargetUuid);
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002101");
   request.target_object.object_kind = "table";
   if (operation_id == "dml.select_rows") {
     request.predicate.predicate_kind = "column_equals";
@@ -1906,7 +1917,7 @@ api::EngineApiRequest EngineApiRequestForDml(std::string_view operation_id) {
   }
   if (operation_id == "dml.insert_rows" || operation_id == "dml.merge_rows") {
     api::EngineRowValue row;
-    row.requested_row_uuid.canonical = "019f0000-0000-7000-8000-000000002125";
+    row.requested_row_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002125");
     api::EngineTypedValue value;
     value.encoded_value = "1";
     row.fields.push_back({"id", value});
@@ -1930,18 +1941,18 @@ bool ApiDiagnosticContains(const api::EngineApiResult& result, std::string_view 
   return false;
 }
 
-std::string PlanFixtureUuid(std::uint64_t salt) {
+api::EngineUuid PlanFixtureUuid(std::uint64_t salt) {
   const auto generated = uuid::GenerateEngineIdentityV7(
       UuidKind::object, 1779821700000ull + salt);
   Require(generated.ok(), "plan-import fixture UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 api::EngineRequestContext AttachPlanStatementAuthority(
     api::EngineRequestContext context) {
   const auto salt = context.local_transaction_id * 32;
-  context.statement_uuid.canonical = PlanFixtureUuid(salt + 1);
-  context.statement_snapshot_uuid.canonical.clear();
+  context.statement_uuid = PlanFixtureUuid(salt + 1);
+  context.statement_snapshot_uuid = {};
   api::EnginePublishStatementSnapshotRequest publish;
   publish.context = context;
   const auto snapshot = api::EnginePublishStatementSnapshot(publish);
@@ -1951,8 +1962,8 @@ api::EngineRequestContext AttachPlanStatementAuthority(
       snapshot.snapshot_vector.publication_inventory_next_local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_receipt_uuid.canonical = PlanFixtureUuid(salt + 2);
-  context.statement_metadata_snapshot_uuid.canonical = PlanFixtureUuid(salt + 3);
+  context.statement_receipt_uuid = PlanFixtureUuid(salt + 2);
+  context.statement_metadata_snapshot_uuid = PlanFixtureUuid(salt + 3);
   context.statement_metadata_snapshot_engine_owned = true;
   context.statement_metadata_snapshot_visible_through_local_transaction_id =
       snapshot.snapshot_vector.visible_committed_high_watermark;
@@ -1960,13 +1971,13 @@ api::EngineRequestContext AttachPlanStatementAuthority(
       snapshot.snapshot_vector.active_excluded_local_transaction_ids;
   context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
       snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
-  context.transaction_policy_snapshot_uuid.canonical = PlanFixtureUuid(salt + 4);
+  context.transaction_policy_snapshot_uuid = PlanFixtureUuid(salt + 4);
   context.transaction_policy_snapshot_generation = 1;
-  context.resource_admission_uuid.canonical = PlanFixtureUuid(salt + 5);
+  context.resource_admission_uuid = PlanFixtureUuid(salt + 5);
 
   auto& authorization = context.authorization_context;
   authorization.present = true;
-  authorization.authority_uuid.canonical = PlanFixtureUuid(salt + 6);
+  authorization.authority_uuid = PlanFixtureUuid(salt + 6);
   authorization.security_context_generation = 1;
   authorization.principal_uuid = context.principal_uuid;
   authorization.security_epoch = context.security_epoch;
@@ -1977,10 +1988,10 @@ api::EngineRequestContext AttachPlanStatementAuthority(
       {context.principal_uuid, "principal"});
   authorization.grants.clear();
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = PlanFixtureUuid(salt + 7);
+  grant.grant_uuid = PlanFixtureUuid(salt + 7);
   grant.subject_uuid = context.principal_uuid;
   grant.subject_kind = "principal";
-  grant.target_uuid.canonical = std::string(kTargetUuid);
+  grant.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002101");
   grant.right = "INSERT";
   grant.security_epoch = context.security_epoch;
   authorization.grants.push_back(std::move(grant));
@@ -2070,7 +2081,7 @@ void RequireExactPlanImportDispatch() {
   api::EngineCreateImportRowsPlanDescriptorRequestV1 bind;
   bind.context = binder_context;
   bind.structural_occurrence_id = 1;
-  bind.target_table_uuid.canonical = std::string(kTargetUuid);
+  bind.target_table_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002101");
   bind.source_kind = sblr::PlanImportRowsSourceKindV1::native_sbsql_import;
   bind.source_fingerprint_present = false;
   bind.mappings.clear();
@@ -2112,7 +2123,7 @@ void RequireExactPlanImportDispatch() {
   const std::string opaque_operand(
       request.envelope.operands.front().value_body.begin(),
       request.envelope.operands.front().value_body.end());
-  Require(!Contains(opaque_operand, kTargetUuid) &&
+  Require(!Contains(opaque_operand, std::string(reinterpret_cast<const char*>(kTargetUuid.bytes.data()), 16)) &&
               !Contains(opaque_operand, "customer") &&
               !Contains(opaque_operand, "COPY"),
           "exact descriptor-ref operand leaked UUID/name/SQL text");
@@ -2142,7 +2153,7 @@ void RequireExactPlanImportDispatch() {
                   static_cast<std::uint16_t>(
                       sblr::PlanImportRowsFormatFamilyV1::csv) &&
               plan.mapped_column_count == 0 &&
-              !plan.validated_request_descriptor_uuid.canonical.empty() &&
+              !plan.validated_request_descriptor_uuid.is_nil() &&
               plan.validated_request_descriptor_generation ==
                   bound.descriptor_ref.descriptor_generation &&
               std::any_of(
@@ -2163,9 +2174,9 @@ void RequireExactPlanImportDispatch() {
   Require(plan.evidence.size() == 1 &&
               plan.evidence.front().evidence_kind ==
                   "accepted_executor_evidence" &&
-              Contains(plan.evidence.front().evidence_id, "@1#sha256:") &&
-              !Contains(plan.evidence.front().evidence_id, "customer") &&
-              !Contains(plan.evidence.front().evidence_id, kTargetUuid),
+              std::holds_alternative<api::EngineUuid>(plan.evidence.front().evidence_id) &&
+              std::get<api::EngineUuid>(plan.evidence.front().evidence_id).bytes ==
+                  plan.accepted_executor_evidence.evidence_uuid,
           "exact canonical accepted planning evidence missing or unredacted");
   auto missing_operand = request;
   missing_operand.envelope.operands.clear();
@@ -2227,7 +2238,7 @@ void RequireInsertSourceExactRouteEvidence() {
   Require(registry_row->sblr_operation_family == "sblr.dml.operation.v3",
           "SBSQL-FC67CA158753 SBLR family drift");
 
-  const auto artifacts = RunPipeline("INSERT INTO customer VALUES (1)", {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline("INSERT INTO customer VALUES (1)", {kTargetUuid});
   Require(artifacts.bound.bound, "insert_source route did not bind after UUID resolution");
   Require(artifacts.verifier.admitted, "insert_source SBLR verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.dml.operation.v3",
@@ -2236,8 +2247,7 @@ void RequireInsertSourceExactRouteEvidence() {
           "insert_source operation id mismatch");
   Require(artifacts.envelope.sblr_opcode == "SBLR_DML_INSERT_ROWS",
           "insert_source opcode mismatch");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "insert_source target UUID missing from payload");
   Require(Contains(artifacts.envelope.payload, "\"dml_surface_variant\":\"insert\""),
           "insert_source payload missing bounded insert route marker");
@@ -2266,7 +2276,7 @@ void RequireInsertValuesKeywordStringLiteralEvidence() {
       "('grant_direct_select', 'user_direct', 'principal', 'object_direct', 'SELECT', FALSE, TRUE, 11), "
       "('grant_role_update', 'role_reporting', 'role', 'object_role', 'UPDATE', FALSE, TRUE, 11), "
       "('grant_security_reader', 'role_security_reader', 'role', 'object_security_catalog', 'VISIBLE', FALSE, TRUE, 11)",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(grants.bound.bound, "keyword-string INSERT route did not bind");
   Require(grants.verifier.admitted, "keyword-string INSERT verifier rejected exact route");
   Require(grants.envelope.operation_id == "dml.insert_rows",
@@ -2291,7 +2301,7 @@ void RequireInsertValuesKeywordStringLiteralEvidence() {
       "INSERT INTO customer VALUES "
       "('case_replay_cross_user', 'user_nested', 'user_none', 'object_nested', 'SELECT', 'SECURITY.AUTHORIZATION.PRINCIPAL_MISMATCH'), "
       "('case_replay_role_change', 'user_role_nested', 'user_direct', 'object_role', 'UPDATE', 'SECURITY.AUTHORIZATION.PRINCIPAL_MISMATCH')",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(replay.bound.bound, "diagnostic-string INSERT route did not bind");
   Require(replay.verifier.admitted, "diagnostic-string INSERT verifier rejected exact route");
   Require(replay.envelope.operation_id == "dml.insert_rows",
@@ -2306,7 +2316,7 @@ void RequireInsertValuesKeywordStringLiteralEvidence() {
       "INSERT INTO customer VALUES "
       "('SBSQL-SURFACE-671B00230945', 'SBSQL-E57785E2BD95', "
       "'SBSQL_SURFACE_REPLAY SBSQL-E57785E2BD95')",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(replay_command_literal.bound.bound,
           "surface-replay command literal INSERT route did not bind");
   Require(replay_command_literal.verifier.admitted,
@@ -2327,7 +2337,7 @@ void RequireInsertValuesKeywordStringLiteralEvidence() {
   const auto quoted_system_variable_literal = RunPipeline(
       "INSERT INTO customer VALUES "
       "('SBSQL-SURFACE-F63A40BE0271', 'SBSQL-4798C99894E7', '@@tx_isolation')",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(quoted_system_variable_literal.bound.bound,
           "quoted system-variable literal INSERT route did not bind");
   Require(quoted_system_variable_literal.verifier.admitted,
@@ -2351,7 +2361,7 @@ void RequireInsertValuesKeywordStringLiteralEvidence() {
       "'accepted-or-exact-canonical-refusal;admit_revalidate_route_stream_cancel_and_return_message_vector', "
       "'execute-sblr-internal-procedure-only-no-sql-text', "
       "'project/tests/sbsql_parser_worker/generated/replay/DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl#SBSQL-SURFACE-F63A40BE0271')",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(generated_surface_manifest_literal.bound.bound,
           "generated surface manifest literal INSERT route did not bind");
   Require(generated_surface_manifest_literal.verifier.admitted,
@@ -2378,7 +2388,7 @@ void RequireInsertValuesKeywordStringLiteralEvidence() {
       "'accepted-or-exact-canonical-refusal;admit_revalidate_route_stream_cancel_and_return_message_vector', "
       "'execute-sblr-internal-procedure-only-no-sql-text', "
       "'project/tests/sbsql_parser_worker/generated/replay/DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl#SBSQL-SURFACE-5091F71AEE3D')",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(generated_cast_manifest_literal.bound.bound,
           "generated CAST manifest literal INSERT route did not bind");
   Require(generated_cast_manifest_literal.verifier.admitted,
@@ -2398,7 +2408,7 @@ void RequireUnresolvedNamesFailClosed() {
 }
 
 void RequireSelectOrderLimitLowering() {
-  const auto artifacts = RunPipeline(kBoundedOrderedSelectSql, {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline(kBoundedOrderedSelectSql, {kTargetUuid});
   Require(artifacts.bound.bound, "SELECT ORDER/LIMIT statement did not bind");
   Require(artifacts.verifier.admitted, "SELECT ORDER/LIMIT verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
@@ -2456,8 +2466,7 @@ void RequireSelectOrderLimitLowering() {
             OrderedSelectEvidenceMessage(row, "fixture", "secondary payload marker missing"));
     Require(Contains(artifacts.envelope.payload, row.descriptor_payload_marker),
             OrderedSelectEvidenceMessage(row, "fixture", "descriptor payload marker missing"));
-    Require(Contains(artifacts.envelope.payload,
-                     std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+    Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
             OrderedSelectEvidenceMessage(row, "fixture", "target UUID missing"));
     Require(Contains(artifacts.envelope.payload, "\"name_text_included\":false"),
             OrderedSelectEvidenceMessage(row, "fixture", "payload did not prove no name text"));
@@ -2475,7 +2484,7 @@ void RequireSelectOrderLimitLowering() {
 void RequireContextualKeywordExactRouteEvidence() {
   RequireContextualKeywordRegistryEvidence();
 
-  const auto simple_select = RunPipeline("SELECT * FROM customer", {std::string(kTargetUuid)});
+  const auto simple_select = RunPipeline("SELECT * FROM customer", {kTargetUuid});
   Require(simple_select.bound.bound, "contextual SELECT/FROM keyword route did not bind");
   Require(simple_select.verifier.admitted,
           "contextual SELECT/FROM keyword verifier rejected exact route");
@@ -2487,7 +2496,7 @@ void RequireContextualKeywordExactRouteEvidence() {
           "contextual FROM keyword payload marker missing");
 
   const auto where_select =
-      RunPipeline(kBoundedWhereEqualitySelectSql, {std::string(kTargetUuid)});
+      RunPipeline(kBoundedWhereEqualitySelectSql, {kTargetUuid});
   Require(where_select.bound.bound, "contextual WHERE keyword route did not bind");
   Require(where_select.verifier.admitted,
           "contextual WHERE keyword verifier rejected exact route");
@@ -2497,7 +2506,7 @@ void RequireContextualKeywordExactRouteEvidence() {
           "contextual WHERE keyword payload missing predicate proof");
 
   const auto ordered_select =
-      RunPipeline(kBoundedOrderedSelectSql, {std::string(kTargetUuid)});
+      RunPipeline(kBoundedOrderedSelectSql, {kTargetUuid});
   Require(ordered_select.bound.bound, "contextual ORDER/LIMIT/OFFSET route did not bind");
   Require(ordered_select.verifier.admitted,
           "contextual ORDER/LIMIT/OFFSET verifier rejected exact route");
@@ -2516,7 +2525,7 @@ void RequireContextualKeywordExactRouteEvidence() {
 
   const auto group_select = RunPipeline(
       "SELECT id, SUM(amount) FROM sales GROUP BY id",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(group_select.bound.bound, "contextual GROUP keyword route did not bind");
   Require(group_select.verifier.admitted,
           "contextual GROUP keyword verifier rejected exact route");
@@ -2528,7 +2537,7 @@ void RequireContextualKeywordExactRouteEvidence() {
           "contextual GROUP keyword payload missing group route proof");
 
   const auto fetch_select =
-      RunPipeline(kBoundedFetchFirstSelectSql, {std::string(kTargetUuid)});
+      RunPipeline(kBoundedFetchFirstSelectSql, {kTargetUuid});
   Require(fetch_select.bound.bound, "contextual FETCH keyword route did not bind");
   Require(fetch_select.verifier.admitted,
           "contextual FETCH keyword verifier rejected exact route");
@@ -2539,7 +2548,7 @@ void RequireContextualKeywordExactRouteEvidence() {
 
   const auto having_select = RunPipeline(
       "SELECT id, SUM(total) FROM customer GROUP BY id HAVING SUM(total) > 1",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(having_select.bound.bound, "contextual HAVING keyword route did not bind");
   Require(having_select.verifier.admitted,
           "contextual HAVING keyword verifier rejected exact route");
@@ -2550,7 +2559,7 @@ void RequireContextualKeywordExactRouteEvidence() {
 
   const auto join_select = RunPipeline(
       "SELECT * FROM customer JOIN orders ON customer.id = orders.id",
-      {std::string(kTargetUuid), std::string(kRelatedUuid)});
+      {kTargetUuid, kRelatedUuid});
   Require(join_select.bound.bound, "contextual JOIN keyword route did not bind");
   Require(join_select.verifier.admitted,
           "contextual JOIN keyword verifier rejected exact route");
@@ -2560,7 +2569,7 @@ void RequireContextualKeywordExactRouteEvidence() {
           "contextual JOIN keyword payload missing join route proof");
 
   const auto insert_route =
-      RunPipeline("INSERT INTO customer VALUES (1)", {std::string(kTargetUuid)});
+      RunPipeline("INSERT INTO customer VALUES (1)", {kTargetUuid});
   Require(insert_route.bound.bound, "contextual INSERT keyword route did not bind");
   Require(insert_route.verifier.admitted,
           "contextual INSERT keyword verifier rejected exact route");
@@ -2570,7 +2579,7 @@ void RequireContextualKeywordExactRouteEvidence() {
           "contextual INSERT keyword payload missing insert variant proof");
 
   const auto update_route =
-      RunPipeline("UPDATE customer SET name = 'x'", {std::string(kTargetUuid)});
+      RunPipeline("UPDATE customer SET name = 'x'", {kTargetUuid});
   Require(update_route.bound.bound, "contextual UPDATE keyword route did not bind");
   Require(update_route.verifier.admitted,
           "contextual UPDATE keyword verifier rejected exact route");
@@ -2580,7 +2589,7 @@ void RequireContextualKeywordExactRouteEvidence() {
           "contextual UPDATE keyword payload missing update variant proof");
 
   const auto delete_route =
-      RunPipeline("DELETE FROM customer", {std::string(kTargetUuid)});
+      RunPipeline("DELETE FROM customer", {kTargetUuid});
   Require(delete_route.bound.bound, "contextual DELETE keyword route did not bind");
   Require(delete_route.verifier.admitted,
           "contextual DELETE keyword verifier rejected exact route");
@@ -2591,7 +2600,7 @@ void RequireContextualKeywordExactRouteEvidence() {
 
   const auto merge_route = RunPipeline(
       "MERGE INTO customer USING staging ON customer.id = staging.id WHEN MATCHED THEN UPDATE SET name = staging.name",
-      {std::string(kTargetUuid), std::string(kRelatedUuid)});
+      {kTargetUuid, kRelatedUuid});
   Require(merge_route.bound.bound, "contextual MERGE keyword route did not bind");
   Require(merge_route.verifier.admitted,
           "contextual MERGE keyword verifier rejected exact route");
@@ -2619,7 +2628,7 @@ void RequireContextualKeywordExactRouteEvidence() {
 }
 
 void RequireTopClauseLowering() {
-  const auto artifacts = RunPipeline(kBoundedTopSelectSql, {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline(kBoundedTopSelectSql, {kTargetUuid});
   Require(artifacts.bound.bound, "SELECT TOP statement did not bind");
   Require(artifacts.verifier.admitted, "SELECT TOP verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
@@ -2636,8 +2645,7 @@ void RequireTopClauseLowering() {
           "SELECT TOP payload missing limit proof");
   Require(Contains(artifacts.envelope.payload, "\"bounded_top_clause\":true"),
           "SELECT TOP payload missing bounded top marker");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "SELECT TOP payload missing target UUID");
   Require(Contains(artifacts.envelope.payload, "\"dml_surface_variant\":\"select\""),
           "SELECT TOP payload missing SELECT surface variant");
@@ -2717,7 +2725,7 @@ void RequireTopClauseLowering() {
       "SELECT TOP 2 WITH TIES * FROM customer",
       "SELECT TOP 2 * FROM customer WITH TIES"};
   for (const auto sql : kUnsupportedTopSql) {
-    const auto unsupported = RunPipeline(sql, {std::string(kTargetUuid)});
+    const auto unsupported = RunPipeline(sql, {kTargetUuid});
     Require(!unsupported.bound.bound || unsupported.envelope.messages.has_errors() ||
                 unsupported.verifier.messages.has_errors(),
             "unsupported TOP variant did not fail closed");
@@ -2725,7 +2733,7 @@ void RequireTopClauseLowering() {
 }
 
 void RequireFetchClauseLowering() {
-  const auto artifacts = RunPipeline(kBoundedFetchFirstSelectSql, {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline(kBoundedFetchFirstSelectSql, {kTargetUuid});
   Require(artifacts.bound.bound, "SELECT FETCH FIRST statement did not bind");
   Require(artifacts.verifier.admitted, "SELECT FETCH FIRST verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
@@ -2740,8 +2748,7 @@ void RequireFetchClauseLowering() {
           "SELECT FETCH FIRST opcode mismatch");
   Require(Contains(artifacts.envelope.payload, "\"limit\":\"2\""),
           "SELECT FETCH FIRST payload missing limit proof");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "SELECT FETCH FIRST payload missing target UUID");
   Require(Contains(artifacts.envelope.payload, "\"dml_surface_variant\":\"select\""),
           "SELECT FETCH FIRST payload missing SELECT surface variant");
@@ -2755,7 +2762,7 @@ void RequireFetchClauseLowering() {
   Require(!Contains(artifacts.envelope.payload, "\"source_text\""),
           "SELECT FETCH FIRST envelope embedded source_text");
 
-  const auto next_artifacts = RunPipeline(kBoundedFetchNextSelectSql, {std::string(kTargetUuid)});
+  const auto next_artifacts = RunPipeline(kBoundedFetchNextSelectSql, {kTargetUuid});
   Require(next_artifacts.bound.bound, "SELECT FETCH NEXT statement did not bind");
   Require(next_artifacts.verifier.admitted, "SELECT FETCH NEXT verifier rejected exact route");
   Require(next_artifacts.envelope.operation_id == "dml.select_rows",
@@ -2832,7 +2839,7 @@ void RequireFetchClauseLowering() {
       "SELECT * FROM customer FETCH FIRST 2 ROWS WITH TIES",
       "SELECT * FROM customer FETCH FIRST 2 PERCENT ROWS ONLY"};
   for (const auto sql : kUnsupportedFetchSql) {
-    const auto unsupported = RunPipeline(sql, {std::string(kTargetUuid)});
+    const auto unsupported = RunPipeline(sql, {kTargetUuid});
     Require(!unsupported.bound.bound || unsupported.envelope.messages.has_errors() ||
                 unsupported.verifier.messages.has_errors(),
             "unsupported FETCH variant did not fail closed");
@@ -2841,7 +2848,7 @@ void RequireFetchClauseLowering() {
 
 void RequireWhereEqualityPredicateLowering() {
   const auto artifacts =
-      RunPipeline(kBoundedWhereEqualitySelectSql, {std::string(kTargetUuid)});
+      RunPipeline(kBoundedWhereEqualitySelectSql, {kTargetUuid});
   Require(artifacts.bound.bound, "SELECT WHERE equality statement did not bind");
   Require(artifacts.verifier.admitted,
           "SELECT WHERE equality verifier rejected bounded exact route");
@@ -2864,8 +2871,7 @@ void RequireWhereEqualityPredicateLowering() {
           "SELECT WHERE equality payload missing descriptor predicate binding");
   Require(Contains(artifacts.envelope.payload, "\"predicate_descriptor_bound\":true"),
           "SELECT WHERE equality payload missing descriptor-bound predicate marker");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "SELECT WHERE equality payload missing target UUID");
   Require(!Contains(artifacts.envelope.payload, "customer"),
           "SELECT WHERE equality envelope embedded source table name");
@@ -2912,7 +2918,7 @@ void RequireWhereEqualityPredicateLowering() {
 
   const auto like_artifacts =
       RunPipeline("SELECT * FROM customer WHERE note LIKE 'a%'",
-                  {std::string(kTargetUuid)});
+                  {kTargetUuid});
   Require(like_artifacts.bound.bound, "SELECT WHERE LIKE statement did not bind");
   Require(like_artifacts.verifier.admitted,
           "SELECT WHERE LIKE verifier rejected bounded exact route");
@@ -2952,7 +2958,7 @@ void RequireWhereEqualityPredicateLowering() {
 }
 
 void RequireSimpleSelectSkeletonLowering() {
-  const auto artifacts = RunPipeline("SELECT * FROM customer", {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline("SELECT * FROM customer", {kTargetUuid});
   Require(artifacts.bound.bound, "simple SELECT skeleton statement did not bind");
   Require(artifacts.verifier.admitted, "simple SELECT skeleton verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
@@ -2969,8 +2975,7 @@ void RequireSimpleSelectSkeletonLowering() {
           "simple SELECT skeleton payload missing DML envelope marker");
   Require(Contains(artifacts.envelope.payload, "\"dml_surface_variant\":\"select\""),
           "simple SELECT skeleton payload missing select variant");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "simple SELECT skeleton payload missing target UUID");
   Require(!Contains(artifacts.envelope.payload, "customer"),
           "simple SELECT skeleton envelope embedded source table name");
@@ -3032,7 +3037,7 @@ void RequireSimpleSelectSkeletonLowering() {
 void RequireTableJoinLowering() {
   const auto artifacts = RunPipeline(
       "SELECT * FROM customer JOIN orders ON customer.id = orders.id",
-      {std::string(kTargetUuid), std::string(kRelatedUuid)});
+      {kTargetUuid, kRelatedUuid});
   Require(artifacts.bound.bound, "table join statement did not bind");
   Require(artifacts.verifier.admitted, "table join verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
@@ -3051,11 +3056,9 @@ void RequireTableJoinLowering() {
           "table join payload marker missing");
   Require(Contains(artifacts.envelope.payload, "\"query_operation\":\"inner_join\""),
           "table join payload missing query operation");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "table join payload missing left UUID");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"related_object_0_uuid\":\"") + std::string(kRelatedUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "related_object_0_uuid", kRelatedUuid),
           "table join payload missing right UUID");
   Require(Contains(artifacts.envelope.payload, "\"left_key_field\":\"id\""),
           "table join payload missing left key field");
@@ -3092,7 +3095,7 @@ void RequireTableJoinLowering() {
   const auto count_assertion = RunPipeline(
       "SELECT 'join_count' AS assertion_id, COUNT(*) AS actual_count, "
       "2 AS expected_count FROM customer JOIN orders ON customer.id = orders.id",
-      {std::string(kTargetUuid), std::string(kRelatedUuid)});
+      {kTargetUuid, kRelatedUuid});
   Require(count_assertion.bound.bound, "table join count assertion did not bind");
   Require(count_assertion.verifier.admitted,
           "table join count assertion verifier rejected exact route");
@@ -3129,7 +3132,7 @@ void RequireTableSetOperationLowering() {
   for (const auto& test : kCases) {
     const auto artifacts = RunPipeline(
         test.sql,
-        {std::string(kTargetUuid), std::string(kRelatedUuid)});
+        {kTargetUuid, kRelatedUuid});
     Require(artifacts.bound.bound, "table set operation statement did not bind");
     Require(artifacts.verifier.admitted, "table set operation verifier rejected exact route");
     Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
@@ -3144,7 +3147,7 @@ void RequireTableSetOperationLowering() {
     Require(HasValue(artifacts.envelope.required_authority_steps,
                      "authority.engine.mga_snapshot_visibility_required"),
             "table set operation MGA visibility authority step missing");
-    Require(HasValue(artifacts.envelope.descriptor_refs,
+    Require(HasValue(artifacts.envelope.descriptor_requirements,
                      "sys.query.table_set_operation_descriptor"),
             "table set operation descriptor ref missing");
     Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"table_set_operation\""),
@@ -3152,11 +3155,9 @@ void RequireTableSetOperationLowering() {
     Require(Contains(artifacts.envelope.payload,
                      std::string("\"set_operation\":\"") + std::string(test.operation) + "\""),
             "table set operation payload missing operation");
-    Require(Contains(artifacts.envelope.payload,
-                     std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+    Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
             "table set operation payload missing left UUID");
-    Require(Contains(artifacts.envelope.payload,
-                     std::string("\"related_object_0_uuid\":\"") + std::string(kRelatedUuid) + "\""),
+    Require(HasIdentityOperand(artifacts.envelope, "related_object_0_uuid", kRelatedUuid),
             "table set operation payload missing right UUID");
     Require(Contains(artifacts.envelope.payload,
                      test.by_name ? "\"set_by_name\":true" : "\"set_by_name\":false"),
@@ -3201,9 +3202,9 @@ void RequireTableSetOperationLowering() {
       "UNION ALL "
       "SELECT case_id FROM security_uuid_resolution_cases"
       ") AS security_case_union",
-      {std::string(kTargetUuid),
-       std::string(kRelatedUuid),
-       std::string(kThirdRelationUuid)});
+      {kTargetUuid,
+       kRelatedUuid,
+       kThirdRelationUuid});
   Require(count_union.bound.bound, "set-operation count assertion did not bind");
   Require(count_union.verifier.admitted,
           "set-operation count assertion verifier rejected exact route");
@@ -3218,17 +3219,11 @@ void RequireTableSetOperationLowering() {
           "set-operation count assertion payload missing union_all");
   Require(Contains(count_union.envelope.payload, "\"relation_count\":\"3\""),
           "set-operation count assertion payload missing relation count");
-  Require(Contains(count_union.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") +
-                       std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(count_union.envelope, "target_object_uuid", kTargetUuid),
           "set-operation count assertion payload missing first relation UUID");
-  Require(Contains(count_union.envelope.payload,
-                   std::string("\"related_object_0_uuid\":\"") +
-                       std::string(kRelatedUuid) + "\""),
+  Require(HasIdentityOperand(count_union.envelope, "related_object_0_uuid", kRelatedUuid),
           "set-operation count assertion payload missing second relation UUID");
-  Require(Contains(count_union.envelope.payload,
-                   std::string("\"related_object_1_uuid\":\"") +
-                       std::string(kThirdRelationUuid) + "\""),
+  Require(HasIdentityOperand(count_union.envelope, "related_object_1_uuid", kThirdRelationUuid),
           "set-operation count assertion payload missing third relation UUID");
   Require(Contains(count_union.envelope.payload, "\"result_projection\":\"count_assertion\""),
           "set-operation count assertion payload missing count projection");
@@ -3254,7 +3249,7 @@ void RequireRowNumberWindowLowering() {
 
   const auto artifacts = RunPipeline(
       "SELECT row_number() OVER (ORDER BY id) FROM customer",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(artifacts.bound.bound, "row_number window statement did not bind");
   Require(artifacts.verifier.admitted, "row_number window verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
@@ -3269,15 +3264,14 @@ void RequireRowNumberWindowLowering() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.engine.mga_snapshot_visibility_required"),
           "row_number window MGA visibility authority step missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.query.window_descriptor"),
           "row_number window descriptor ref missing");
   Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"table_row_number_window\""),
           "row_number window payload marker missing");
   Require(Contains(artifacts.envelope.payload, "\"query_operation\":\"row_number_window\""),
           "row_number window payload missing query operation");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "row_number window payload missing table UUID");
   Require(Contains(artifacts.envelope.payload, "\"order_by\":\"id\""),
           "row_number window payload missing order field");
@@ -3325,7 +3319,7 @@ void RequireRowNumberWindowLowering() {
 
   const auto count_partition = RunPipeline(
       "SELECT count(*) OVER (PARTITION BY dept) FROM sales",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(count_partition.bound.bound,
           "count partition window statement did not bind");
   Require(count_partition.verifier.admitted,
@@ -3342,7 +3336,7 @@ void RequireRowNumberWindowLowering() {
   Require(HasValue(count_partition.envelope.required_authority_steps,
                    "authority.engine.mga_snapshot_visibility_required"),
           "count partition window MGA visibility authority step missing");
-  Require(HasValue(count_partition.envelope.descriptor_refs,
+  Require(HasValue(count_partition.envelope.descriptor_requirements,
                    "sys.query.window_descriptor"),
           "count partition window descriptor ref missing");
   Require(Contains(count_partition.envelope.payload,
@@ -3351,8 +3345,7 @@ void RequireRowNumberWindowLowering() {
   Require(Contains(count_partition.envelope.payload,
                    "\"query_operation\":\"partition_count_window\""),
           "count partition window payload missing operation");
-  Require(Contains(count_partition.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(count_partition.envelope, "target_object_uuid", kTargetUuid),
           "count partition window payload missing table UUID");
   Require(Contains(count_partition.envelope.payload, "\"partition_by\":\"dept\""),
           "count partition window payload missing partition field");
@@ -3408,7 +3401,7 @@ void RequireRowNumberWindowLowering() {
 
   const auto qualified_row_number = RunPipeline(
       "SELECT sb.window.row_number() OVER (ORDER BY id) FROM customer",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(qualified_row_number.bound.bound,
           "qualified canonical row_number window statement did not bind");
   Require(qualified_row_number.verifier.admitted,
@@ -3471,7 +3464,7 @@ void RequireRowNumberWindowLowering() {
       {"SELECT sb.window.nth_value(id, 2) OVER (ORDER BY id) FROM customer", "nth_value", true, true,
        "engine_row_descriptor_field_typed_nullable_route"}};
   for (const auto& test : kCases) {
-    const auto window_artifacts = RunPipeline(test.sql, {std::string(kTargetUuid)});
+    const auto window_artifacts = RunPipeline(test.sql, {kTargetUuid});
     Require(window_artifacts.bound.bound, "navigation window statement did not bind");
     Require(window_artifacts.verifier.admitted,
             "navigation window verifier rejected exact route");
@@ -3509,7 +3502,7 @@ void RequireRowNumberWindowLowering() {
 void RequireGroupByAggregateLowering() {
   const auto artifacts = RunPipeline(
       "SELECT id, SUM(amount) FROM sales GROUP BY id",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   for (const auto& row : kBoundedGroupByGrammarRows) {
     RequireGroupByGrammarRegistryEvidence(row);
   }
@@ -3527,7 +3520,7 @@ void RequireGroupByAggregateLowering() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.engine.mga_snapshot_visibility_required"),
           "grouped aggregate MGA visibility authority step missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.query.aggregate_descriptor"),
           "grouped aggregate descriptor ref missing");
   Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"table_group_sum\""),
@@ -3543,8 +3536,7 @@ void RequireGroupByAggregateLowering() {
                      "\"aggregate_function\":\"sb.aggregate.sum\""),
             GroupByEvidenceMessage(row, "lowering", "canonical SUM aggregate missing"));
   }
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "grouped aggregate payload missing table UUID");
   Require(Contains(artifacts.envelope.payload, "\"group_key_field\":\"id\""),
           "grouped aggregate payload missing group key field");
@@ -3581,7 +3573,7 @@ void RequireGroupByAggregateLowering() {
 
   const auto field_artifacts = RunPipeline(
       "SELECT dept, SUM(cost) FROM sales GROUP BY dept",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(field_artifacts.bound.bound,
           "descriptor-field grouped aggregate statement did not bind");
   Require(field_artifacts.verifier.admitted,
@@ -3598,7 +3590,7 @@ void RequireGroupByAggregateLowering() {
 
   const auto canonical_sum_artifacts = RunPipeline(
       "SELECT dept, sb.aggregate.sum(cost) FROM sales GROUP BY dept",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(canonical_sum_artifacts.bound.bound,
           "canonical sb.aggregate.sum grouped aggregate statement did not bind");
   Require(canonical_sum_artifacts.verifier.admitted,
@@ -3614,7 +3606,7 @@ void RequireGroupByAggregateLowering() {
 
   const auto sum_distinct_artifacts = RunPipeline(
       "SELECT dept, SUM(DISTINCT cost) FROM sales GROUP BY dept",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(sum_distinct_artifacts.bound.bound,
           "SUM(DISTINCT) fail-closed proof did not bind before route refusal");
   Require(sum_distinct_artifacts.envelope.messages.has_errors() ||
@@ -3852,7 +3844,7 @@ void RequireGroupByAggregateLowering() {
   };
   for (const auto& test : typed_cases) {
     const auto stat_artifacts = RunPipeline(std::string(test.sql),
-                                            {std::string(kTargetUuid)});
+                                            {kTargetUuid});
     Require(stat_artifacts.bound.bound,
             "typed grouped aggregate statement did not bind");
     Require(stat_artifacts.verifier.admitted,
@@ -3920,7 +3912,7 @@ void RequireGroupByAggregateLowering() {
       {"SELECT dept, AVG(DISTINCT cost) FROM sales GROUP BY dept",
        "avg_distinct_requires_distinct_aggregate_execution_route"}};
   for (const auto& test : distinct_refusals) {
-    const auto distinct_artifacts = RunPipeline(test.sql, {std::string(kTargetUuid)});
+    const auto distinct_artifacts = RunPipeline(test.sql, {kTargetUuid});
     Require(distinct_artifacts.bound.bound,
             "DISTINCT aggregate fail-closed proof did not bind before route refusal");
     Require(distinct_artifacts.envelope.messages.has_errors() ||
@@ -3940,7 +3932,7 @@ void RequireGroupByAggregateLowering() {
   const auto listagg_artifacts = RunPipeline(
       "SELECT dept, LISTAGG(flag, '|' ON OVERFLOW TRUNCATE '...' WITHOUT COUNT) "
       "WITHIN GROUP (ORDER BY id) FROM sales GROUP BY dept",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(listagg_artifacts.bound.bound,
           "LISTAGG WITHIN GROUP statement did not bind");
   Require(listagg_artifacts.verifier.admitted,
@@ -4001,7 +3993,7 @@ void RequireGroupByAggregateLowering() {
        "sb.aggregate.string_agg("},
   };
   for (const auto& test : string_agg_routes) {
-    const auto string_agg_artifacts = RunPipeline(test.sql, {std::string(kTargetUuid)});
+    const auto string_agg_artifacts = RunPipeline(test.sql, {kTargetUuid});
     Require(string_agg_artifacts.bound.bound,
             "STRING_AGG grouped route statement did not bind");
     Require(string_agg_artifacts.verifier.admitted,
@@ -4058,7 +4050,7 @@ void RequireGroupByAggregateLowering() {
        "string_agg_overflow_clause_not_supported_current_route"},
   };
   for (const auto& test : string_agg_refusals) {
-    const auto refused = RunPipeline(test.sql, {std::string(kTargetUuid)});
+    const auto refused = RunPipeline(test.sql, {kTargetUuid});
     Require(refused.bound.bound,
             "STRING_AGG fail-closed proof did not bind before route refusal");
     Require(refused.envelope.messages.has_errors() ||
@@ -4086,7 +4078,7 @@ void RequireGroupByAggregateLowering() {
        "sb.aggregate.json_agg("},
   };
   for (const auto& test : json_agg_routes) {
-    const auto json_agg_artifacts = RunPipeline(test.sql, {std::string(kTargetUuid)});
+    const auto json_agg_artifacts = RunPipeline(test.sql, {kTargetUuid});
     Require(json_agg_artifacts.bound.bound,
             "JSON_AGG grouped route statement did not bind");
     Require(json_agg_artifacts.verifier.admitted,
@@ -4147,7 +4139,7 @@ void RequireGroupByAggregateLowering() {
        "json_agg_within_group_not_supported_current_route"},
   };
   for (const auto& test : json_agg_refusals) {
-    const auto refused = RunPipeline(test.sql, {std::string(kTargetUuid)});
+    const auto refused = RunPipeline(test.sql, {kTargetUuid});
     Require(refused.bound.bound,
             "JSON_AGG fail-closed proof did not bind before route refusal");
     Require(refused.envelope.messages.has_errors() ||
@@ -4175,7 +4167,7 @@ void RequireGroupByAggregateLowering() {
        "sb.aggregate.json_object_agg("},
   };
   for (const auto& test : json_object_agg_routes) {
-    const auto artifacts = RunPipeline(test.sql, {std::string(kTargetUuid)});
+    const auto artifacts = RunPipeline(test.sql, {kTargetUuid});
     Require(artifacts.bound.bound,
             "JSON_OBJECT_AGG grouped route statement did not bind");
     Require(artifacts.verifier.admitted,
@@ -4241,7 +4233,7 @@ void RequireGroupByAggregateLowering() {
        "json_object_agg_within_group_not_supported_current_route"},
   };
   for (const auto& test : json_object_agg_refusals) {
-    const auto refused = RunPipeline(test.sql, {std::string(kTargetUuid)});
+    const auto refused = RunPipeline(test.sql, {kTargetUuid});
     Require(refused.bound.bound,
             "JSON_OBJECT_AGG fail-closed proof did not bind before route refusal");
     Require(refused.envelope.messages.has_errors() ||
@@ -4269,7 +4261,7 @@ void RequireGroupByAggregateLowering() {
        "sb.aggregate.array_agg("},
   };
   for (const auto& test : array_agg_routes) {
-    const auto array_agg_artifacts = RunPipeline(test.sql, {std::string(kTargetUuid)});
+    const auto array_agg_artifacts = RunPipeline(test.sql, {kTargetUuid});
     Require(array_agg_artifacts.bound.bound,
             "ARRAY_AGG grouped route statement did not bind");
     Require(array_agg_artifacts.verifier.admitted,
@@ -4330,7 +4322,7 @@ void RequireGroupByAggregateLowering() {
        "array_agg_within_group_not_supported_current_route"},
   };
   for (const auto& test : array_agg_refusals) {
-    const auto refused = RunPipeline(test.sql, {std::string(kTargetUuid)});
+    const auto refused = RunPipeline(test.sql, {kTargetUuid});
     Require(refused.bound.bound,
             "ARRAY_AGG fail-closed proof did not bind before route refusal");
     Require(refused.envelope.messages.has_errors() ||
@@ -4350,7 +4342,7 @@ void RequireGroupByAggregateLowering() {
 
 void RequireTableCountLowering() {
   const auto count_all = RunPipeline("SELECT COUNT(*) FROM customer",
-                                     {std::string(kTargetUuid)});
+                                     {kTargetUuid});
   Require(count_all.bound.bound, "COUNT(*) statement did not bind");
   Require(count_all.verifier.admitted, "COUNT(*) verifier rejected exact route");
   Require(count_all.envelope.operation_family == "sblr.query.relational.v3",
@@ -4374,8 +4366,7 @@ void RequireTableCountLowering() {
   Require(Contains(count_all.envelope.payload,
                    "\"aggregate_function\":\"sb.aggregate.count\""),
           "COUNT(*) payload missing canonical aggregate function");
-  Require(Contains(count_all.envelope.payload,
-                   "\"target_object_uuid\":\"" + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(count_all.envelope, "target_object_uuid", kTargetUuid),
           "COUNT(*) payload missing target UUID");
   Require(!Contains(count_all.envelope.payload, "customer"),
           "COUNT(*) payload embedded source table name");
@@ -4383,7 +4374,7 @@ void RequireTableCountLowering() {
           "COUNT(*) payload embedded SQL text");
 
   const auto count_field = RunPipeline("SELECT COUNT(id) FROM customer",
-                                       {std::string(kTargetUuid)});
+                                       {kTargetUuid});
   Require(count_field.bound.bound, "COUNT(field) statement did not bind");
   Require(count_field.verifier.admitted, "COUNT(field) verifier rejected exact route");
   Require(Contains(count_field.envelope.payload,
@@ -4399,7 +4390,7 @@ void RequireTableCountLowering() {
   const auto count_like = RunPipeline(
       "SELECT 'SBDFS-100-002' AS assertion_id, COUNT(*) AS actual_full_route_rows, "
       "2560 AS expected_full_route_rows FROM customer WHERE route_set LIKE '%full_route%'",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(count_like.bound.bound, "COUNT LIKE assertion statement did not bind");
   Require(count_like.verifier.admitted, "COUNT LIKE assertion verifier rejected exact route");
   Require(Contains(count_like.envelope.payload,
@@ -4421,7 +4412,7 @@ void RequireTableCountLowering() {
       "SELECT 'SBDFS-100-004' AS assertion_id, COUNT(*) AS actual_statement_surface_rows, "
       "1083 AS expected_statement_surface_rows FROM customer "
       "WHERE surface_kind NOT IN ('function', 'operator', 'variable')",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(count_not_in.bound.bound, "COUNT NOT IN assertion statement did not bind");
   Require(count_not_in.verifier.admitted,
           "COUNT NOT IN assertion verifier rejected exact route");
@@ -4498,7 +4489,7 @@ void RequireTableCountLowering() {
 void RequireMaterializedCteLowering() {
   const auto artifacts = RunPipeline(
       "WITH c AS (SELECT * FROM customer) SELECT * FROM c",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(artifacts.bound.bound, "materialized CTE statement did not bind");
   Require(artifacts.verifier.admitted, "materialized CTE verifier rejected exact route");
   Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
@@ -4513,15 +4504,14 @@ void RequireMaterializedCteLowering() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.engine.mga_snapshot_visibility_required"),
           "materialized CTE MGA visibility authority step missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.query.cte_descriptor"),
           "materialized CTE descriptor ref missing");
   Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"table_materialized_cte\""),
           "materialized CTE payload marker missing");
   Require(Contains(artifacts.envelope.payload, "\"query_operation\":\"materialized_cte\""),
           "materialized CTE payload missing query operation");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "materialized CTE payload missing source table UUID");
   Require(Contains(artifacts.envelope.payload, "\"cte_strategy\":\"materialized\""),
           "materialized CTE payload missing strategy");
@@ -4633,10 +4623,10 @@ void RequireRecursiveCteLowering() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_storage_or_finality"),
           "recursive CTE parser finality boundary missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.query.recursive_cte_descriptor"),
           "recursive CTE descriptor ref missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.query.values_rowset_descriptor"),
           "recursive CTE values descriptor ref missing");
   Require(Contains(artifacts.envelope.payload,
@@ -4701,9 +4691,9 @@ void RequireBenchmarkDmlShapeLowering() {
       "(seq * 1.5) AS metric_value "
       "FROM (SELECT ROW_NUMBER() OVER () AS seq FROM orders o "
       "CROSS JOIN order_items oi LIMIT 100000) sub",
-      {std::string(kTargetUuid),
-       std::string(kRelatedUuid),
-       std::string(kThirdRelationUuid)});
+      {kTargetUuid,
+       kRelatedUuid,
+       kThirdRelationUuid});
   Require(insert_select.bound.bound,
           "benchmark insert-select row_number route did not bind");
   Require(insert_select.verifier.admitted,
@@ -4735,13 +4725,9 @@ void RequireBenchmarkDmlShapeLowering() {
   Require(Contains(insert_select.envelope.payload,
                    "\"insert_select_projection_2\":\"counter_multiply:1.5:1\""),
           "benchmark insert-select multiply projection missing");
-  Require(Contains(insert_select.envelope.payload,
-                   std::string("\"insert_select_source_uuid_0\":\"") +
-                       std::string(kRelatedUuid) + "\""),
+  Require(HasIdentityOperand(insert_select.envelope, "insert_select_source_uuid_0", kRelatedUuid),
           "benchmark insert-select first source UUID missing");
-  Require(Contains(insert_select.envelope.payload,
-                   std::string("\"insert_select_source_uuid_1\":\"") +
-                       std::string(kThirdRelationUuid) + "\""),
+  Require(HasIdentityOperand(insert_select.envelope, "insert_select_source_uuid_1", kThirdRelationUuid),
           "benchmark insert-select second source UUID missing");
   Require(!Contains(insert_select.envelope.payload, "ROW_NUMBER"),
           "benchmark insert-select payload embedded source SQL window text");
@@ -4755,7 +4741,7 @@ void RequireBenchmarkDmlShapeLowering() {
       "WHEN quantity >= 10 THEN 10.0 "
       "ELSE 5.0 END "
       "WHERE discount_pct < 5.0 OR discount_pct IS NULL",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(update_case.bound.bound,
           "benchmark CASE update route did not bind");
   Require(update_case.verifier.admitted,
@@ -4783,7 +4769,7 @@ void RequireBenchmarkDmlShapeLowering() {
       "UPDATE orders SET total_amount = total_amount * 0.95 "
       "WHERE customer_id IN ("
       "SELECT customer_id FROM customers WHERE account_balance > 10000)",
-      {std::string(kTargetUuid), std::string(kRelatedUuid)});
+      {kTargetUuid, kRelatedUuid});
   Require(update_join.bound.bound,
           "benchmark update-subquery route did not bind");
   Require(update_join.verifier.admitted,
@@ -4810,9 +4796,7 @@ void RequireBenchmarkDmlShapeLowering() {
   Require(Contains(update_join.envelope.payload,
                    "\"subquery_predicate_value\":\"10000\""),
           "benchmark update-subquery inner predicate value missing");
-  Require(Contains(update_join.envelope.payload,
-                   std::string("\"source_uuid\":\"") +
-                       std::string(kRelatedUuid) + "\""),
+  Require(HasIdentityOperand(update_join.envelope, "source_uuid", kRelatedUuid),
           "benchmark update-subquery source UUID missing");
   Require(!Contains(update_join.envelope.payload, "SELECT customer_id"),
           "benchmark update-subquery payload embedded source SQL text");
@@ -4821,7 +4805,7 @@ void RequireBenchmarkDmlShapeLowering() {
 void RequireScalarSubqueryLowering() {
   const auto artifacts = RunPipeline(
       "SELECT (SELECT id FROM customer)",
-      {std::string(kTargetUuid)});
+      {kTargetUuid});
   Require(artifacts.bound.bound, "scalar subquery statement did not bind");
   if (!artifacts.verifier.admitted) {
     for (const auto& diagnostic : artifacts.verifier.messages.diagnostics) {
@@ -4845,15 +4829,14 @@ void RequireScalarSubqueryLowering() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.engine.mga_snapshot_visibility_required"),
           "scalar subquery MGA visibility authority step missing");
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.query.subquery_descriptor"),
           "scalar subquery descriptor ref missing");
   Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"table_scalar_subquery\""),
           "scalar subquery payload marker missing");
   Require(Contains(artifacts.envelope.payload, "\"query_operation\":\"scalar_subquery\""),
           "scalar subquery payload missing query operation");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
+  Require(HasIdentityOperand(artifacts.envelope, "target_object_uuid", kTargetUuid),
           "scalar subquery payload missing source table UUID");
   Require(Contains(artifacts.envelope.payload, "\"projected_field\":\"id\""),
           "scalar subquery payload missing projected field");
@@ -4887,7 +4870,7 @@ void RequireHavingClauseLowering() {
   const auto& row = kBoundedHavingClauseRow;
   RequireHavingClauseRegistryEvidence(row);
 
-  const auto artifacts = RunPipeline(row.sql_fixture, {std::string(kTargetUuid)});
+  const auto artifacts = RunPipeline(row.sql_fixture, {kTargetUuid});
   Require(artifacts.bound.bound,
           HavingClauseEvidenceMessage(row, "binder", "HAVING statement did not bind"));
   Require(artifacts.verifier.admitted,
@@ -4907,10 +4890,10 @@ void RequireHavingClauseLowering() {
   Require(HasValue(artifacts.envelope.required_authority_steps,
                    "authority.parser.no_sql_text_execution"),
           HavingClauseEvidenceMessage(row, "authority", "HAVING parser SQL execution boundary missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.query.aggregate_descriptor"),
           HavingClauseEvidenceMessage(row, "lowering", "HAVING aggregate descriptor ref missing"));
-  Require(HasValue(artifacts.envelope.descriptor_refs,
+  Require(HasValue(artifacts.envelope.descriptor_requirements,
                    "sys.storage.row_descriptor"),
           HavingClauseEvidenceMessage(row, "lowering", "HAVING row descriptor ref missing"));
   Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"table_group_sum\""),
@@ -4980,7 +4963,7 @@ void RequireUnsupportedQueryFamiliesFailClosed() {
       "SELECT * FROM customer WHERE id = 1 AND note = 'x'",
       "SELECT * FROM customer WHERE EXISTS (SELECT id FROM customer)"};
   for (const auto sql : kUnsupportedSql) {
-    const auto artifacts = RunPipeline(sql, {std::string(kTargetUuid)});
+    const auto artifacts = RunPipeline(sql, {kTargetUuid});
     Require(!artifacts.bound.bound || artifacts.envelope.messages.has_errors() ||
                 artifacts.verifier.messages.has_errors(),
             std::string("unsupported query row family did not fail closed: ") +
@@ -4990,7 +4973,7 @@ void RequireUnsupportedQueryFamiliesFailClosed() {
 
 void RequireNativeQueryContextFailClosed() {
   const auto artifacts =
-      RunPipeline("SELECT * FROM customer", {std::string(kTargetUuid)});
+      RunPipeline("SELECT * FROM customer", {kTargetUuid});
   Require(!artifacts.bound.bound,
           "native SELECT accepted a parser/test-owned resolved UUID vector");
   Require(DiagnosticsContain(artifacts.bound.messages,
@@ -5004,7 +4987,7 @@ void RequireResidualDmlFailClosed(std::string_view sql,
                                   std::string_view canonical_parent_operation,
                                   std::string_view canonical_parent_opcode) {
   const auto artifacts = RunPipeline(
-      sql, {std::string(kTargetUuid), std::string(kRelatedUuid)});
+      sql, {kTargetUuid, kRelatedUuid});
   Require(artifacts.bound.bound,
           "residual DML refusal did not retain its bound syntax evidence");
   Require(!artifacts.verifier.admitted,

@@ -1,3 +1,4 @@
+#include "catalog/constraint_metadata_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
@@ -67,7 +69,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -81,10 +83,10 @@ void DumpDiagnostics(const MessageVectorSet& messages) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000021101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000021102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000021103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000021101");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000021102");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000021103");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 21;
   session.security_policy_epoch = 22;
   session.descriptor_epoch = 23;
@@ -95,7 +97,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_name_resolver";
-  config.parser_uuid = "019f0000-0000-7000-8000-000000021104";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000021104");
   config.bundle_contract_id = "sbp_sbsql@column-constraint-route-test";
   config.build_id = "sbsql-column-constraint-route-test";
   return config;
@@ -262,7 +264,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -280,18 +282,18 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << '\n';
   }
   Require(created.ok(), "column_constraint test database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const std::string& database_uuid) {
+                                      const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-column-constraint-exact-route";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000021202";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000021203";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000021205";
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000021202");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000021203");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000021205");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -304,7 +306,7 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginTransaction(const std::filesystem::path& path,
-                                           const std::string& database_uuid) {
+                                           const api::EngineUuid& database_uuid) {
   api::EngineBeginTransactionRequest begin;
   begin.context = BaseContext(path, database_uuid);
   begin.isolation_level = "read_committed";
@@ -337,30 +339,58 @@ api::EngineLocalizedName Name(std::string value) {
 
 api::EngineCatalogCreateObjectRequest CreateObjectRequest(
     const api::EngineRequestContext& context,
-    std::string object_uuid,
+    api::EngineUuid object_uuid,
     std::string object_kind,
-    std::string schema_uuid,
+    api::EngineUuid schema_uuid,
     std::string name) {
   api::EngineCatalogCreateObjectRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = std::move(object_uuid);
+  request.target_object.uuid = std::move(object_uuid);
   request.target_object.object_kind = std::move(object_kind);
-  request.target_schema.uuid.canonical = std::move(schema_uuid);
+  request.target_schema.uuid = std::move(schema_uuid);
   request.localized_names.push_back(Name(std::move(name)));
   return request;
 }
 
+constexpr auto kSchemaAppIdentity = scratchbird::tests::FixtureUuid(1521, 1);
+constexpr auto kTableCustomerIdentity = scratchbird::tests::FixtureUuid(1521, 2);
+constexpr auto kColumnCustomerIdIdentity = scratchbird::tests::FixtureUuid(1521, 3);
+constexpr auto kConstraintCustomerIdNotNullIdentity = scratchbird::tests::FixtureUuid(1521, 4);
+constexpr auto kConstraintCustomerPkIdentity = scratchbird::tests::FixtureUuid(1521, 5);
+constexpr auto kPolicyLocalColumnConstraintIdentity = scratchbird::tests::FixtureUuid(1521, 6);
+constexpr auto kSubjectCustomerIdNotNullIdentity = scratchbird::tests::FixtureUuid(1521, 7);
+constexpr auto kDiagColumnConstraintIdentity = scratchbird::tests::FixtureUuid(1521, 8);
+constexpr auto kMetricsColumnConstraintIdentity = scratchbird::tests::FixtureUuid(1521, 9);
+constexpr auto kConformanceColumnConstraintIdentity = scratchbird::tests::FixtureUuid(1521, 10);
+constexpr auto kPolicyLocalTableConstraintIdentity = scratchbird::tests::FixtureUuid(1521, 11);
+constexpr auto kIndexCustomerPkIdentity = scratchbird::tests::FixtureUuid(1521, 12);
+constexpr auto kSupportCustomerPkIdentity = scratchbird::tests::FixtureUuid(1521, 13);
+constexpr auto kKeyCustomerPkIdentity = scratchbird::tests::FixtureUuid(1521, 14);
+constexpr auto kEncodingInt64Identity = scratchbird::tests::FixtureUuid(1521, 15);
+constexpr auto kSubjectCustomerPkIdentity = scratchbird::tests::FixtureUuid(1521, 16);
+constexpr auto kDiagTableConstraintIdentity = scratchbird::tests::FixtureUuid(1521, 17);
+constexpr auto kMetricsTableConstraintIdentity = scratchbird::tests::FixtureUuid(1521, 18);
+constexpr auto kConformanceTableConstraintIdentity = scratchbird::tests::FixtureUuid(1521, 19);
+
+std::string ConstraintFixtureMetadata(std::map<std::string,std::string> text,
+    std::map<std::string,api::EngineUuid> identities) {
+  api::CatalogConstraintMetadata fields{std::move(text),std::move(identities)};
+  std::string bytes;
+  Require(api::EncodeCatalogConstraintMetadata(fields,&bytes), "constraint fixture encode failed");
+  return bytes;
+}
+
 void SeedCatalogTarget(const api::EngineRequestContext& context) {
-  auto schema = CreateObjectRequest(context, "schema-app", "schema", "", "app");
+  auto schema = CreateObjectRequest(context, kSchemaAppIdentity, "schema", {}, "app");
   const auto created_schema = api::EngineCatalogCreateObject(schema);
   for (const auto& diagnostic : created_schema.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
   Require(created_schema.ok, "column_constraint schema seed failed");
 
-  auto table = CreateObjectRequest(context, "table-customer", "table", "schema-app", "customer");
+  auto table = CreateObjectRequest(context, kTableCustomerIdentity, "table", kSchemaAppIdentity, "customer");
   api::EngineColumnDefinition id_column;
-  id_column.requested_column_uuid.canonical = "column-customer-id";
+  id_column.requested_column_uuid = kColumnCustomerIdIdentity;
   id_column.names.push_back(Name("id"));
   id_column.descriptor.descriptor_kind = "scalar";
   id_column.descriptor.canonical_type_name = "int";
@@ -377,48 +407,30 @@ void SeedCatalogTarget(const api::EngineRequestContext& context) {
 
 api::EngineApiRequest EngineConstraintRequest() {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = "table-customer";
+  request.target_object.uuid = kTableCustomerIdentity;
   request.target_object.object_kind = "table";
   api::EngineConstraintDefinition constraint;
-  constraint.requested_constraint_uuid.canonical = "constraint-customer-id-not-null";
+  constraint.requested_constraint_uuid = kConstraintCustomerIdNotNullIdentity;
   constraint.names.push_back(Name("customer_id_not_null"));
   constraint.constraint_kind = "not_null_constraint";
-  constraint.canonical_constraint_envelope =
-      "constraint_hash=customer_id_not_null_hash;"
-      "constraint_policy_version_uuid=policy-local-column-constraint;"
-      "enforcement_timing=immediate;validation_state=validated;trust_state=trusted;"
-      "support_requirement=optional;subject_uuid=subject-customer-id-not-null;"
-      "subject_kind=column;subject_object_uuid=column-customer-id;subject_descriptor=id;"
-      "diagnostic_profile_uuid=diag-column-constraint;"
-      "metrics_profile_uuid=metrics-column-constraint;"
-      "conformance_profile_uuid=conformance-column-constraint";
+  constraint.canonical_constraint_envelope = ConstraintFixtureMetadata(
+      {{"constraint_hash", "customer_id_not_null_hash"}, {"enforcement_timing", "immediate"}, {"validation_state", "validated"}, {"trust_state", "trusted"}, {"support_requirement", "optional"}, {"subject_kind", "column"}, {"subject_descriptor", "id"}},
+      {{"constraint_policy_version_uuid", kPolicyLocalColumnConstraintIdentity}, {"subject_uuid", kSubjectCustomerIdNotNullIdentity}, {"subject_object_uuid", kColumnCustomerIdIdentity}, {"diagnostic_profile_uuid", kDiagColumnConstraintIdentity}, {"metrics_profile_uuid", kMetricsColumnConstraintIdentity}, {"conformance_profile_uuid", kConformanceColumnConstraintIdentity}});
   request.constraints.push_back(std::move(constraint));
   return request;
 }
 
 api::EngineApiRequest EngineTableConstraintRequest() {
   api::EngineApiRequest request;
-  request.target_object.uuid.canonical = "table-customer";
+  request.target_object.uuid = kTableCustomerIdentity;
   request.target_object.object_kind = "table";
   api::EngineConstraintDefinition constraint;
-  constraint.requested_constraint_uuid.canonical = "constraint-customer-pk";
+  constraint.requested_constraint_uuid = kConstraintCustomerPkIdentity;
   constraint.names.push_back(Name("customer_pk"));
   constraint.constraint_kind = "primary_key";
-  constraint.canonical_constraint_envelope =
-      "constraint_hash=customer_pk_hash;"
-      "constraint_policy_version_uuid=policy-local-table-constraint;"
-      "enforcement_timing=immediate;validation_state=validated;trust_state=trusted;"
-      "support_requirement=required;support_uuid=index-customer-pk;"
-      "support_family=rowstore_scalar_btree_v1;"
-      "support_binding_uuid=support-customer-pk;"
-      "key_descriptor_uuid=key-customer-pk;key_class=primary_key;"
-      "component_order_hash=id;comparison_profile_hash=int64;"
-      "null_policy=not_null;canonical_encoding_uuid=encoding-int64;"
-      "subject_uuid=subject-customer-pk;subject_kind=owner_object;"
-      "subject_object_uuid=table-customer;subject_descriptor=primary_key(id);"
-      "diagnostic_profile_uuid=diag-table-constraint;"
-      "metrics_profile_uuid=metrics-table-constraint;"
-      "conformance_profile_uuid=conformance-table-constraint";
+  constraint.canonical_constraint_envelope = ConstraintFixtureMetadata(
+      {{"constraint_hash", "customer_pk_hash"}, {"enforcement_timing", "immediate"}, {"validation_state", "validated"}, {"trust_state", "trusted"}, {"support_requirement", "required"}, {"support_family", "rowstore_scalar_btree_v1"}, {"key_class", "primary_key"}, {"component_order_hash", "id"}, {"comparison_profile_hash", "int64"}, {"null_policy", "not_null"}, {"subject_kind", "owner_object"}, {"subject_descriptor", "primary_key(id)"}},
+      {{"constraint_policy_version_uuid", kPolicyLocalTableConstraintIdentity}, {"support_uuid", kIndexCustomerPkIdentity}, {"support_binding_uuid", kSupportCustomerPkIdentity}, {"key_descriptor_uuid", kKeyCustomerPkIdentity}, {"canonical_encoding_uuid", kEncodingInt64Identity}, {"subject_uuid", kSubjectCustomerPkIdentity}, {"subject_object_uuid", kTableCustomerIdentity}, {"diagnostic_profile_uuid", kDiagTableConstraintIdentity}, {"metrics_profile_uuid", kMetricsTableConstraintIdentity}, {"conformance_profile_uuid", kConformanceTableConstraintIdentity}});
   request.constraints.push_back(std::move(constraint));
   return request;
 }
@@ -437,7 +449,7 @@ void RequireEngineDispatch() {
   Require(result.ok, "EngineCreateConstraint component did not return success");
   Require(result.operation_id == kInternalConstraintOperationId,
           "EngineCreateConstraint operation id mismatch");
-  Require(result.primary_object.uuid.canonical == "table-customer",
+  Require(result.primary_object.uuid == kTableCustomerIdentity,
           "EngineCreateConstraint target object UUID mismatch");
   Require(HasEvidence(result, "constraint_catalog_route", "sys.constraint_descriptor"),
           "EngineCreateConstraint missing constraint catalog evidence");
@@ -449,19 +461,19 @@ void RequireEngineDispatch() {
   bool saw_constraint = false;
   bool saw_subject = false;
   for (const auto& constraint : loaded.state.constraints) {
-    if (constraint.constraint_uuid == "constraint-customer-id-not-null" &&
+    if (constraint.constraint_uuid == kConstraintCustomerIdNotNullIdentity &&
         constraint.constraint_class == "not_null_constraint" &&
-        constraint.owner_object_uuid == "table-customer" &&
+        constraint.owner_object_uuid == kTableCustomerIdentity &&
         constraint.constraint_hash == "customer_id_not_null_hash" &&
         constraint.enforcement_timing == "immediate") {
       saw_constraint = true;
     }
   }
   for (const auto& subject : loaded.state.constraint_subjects) {
-    if (subject.subject_uuid == "subject-customer-id-not-null" &&
-        subject.constraint_uuid == "constraint-customer-id-not-null" &&
+    if (subject.subject_uuid == kSubjectCustomerIdNotNullIdentity &&
+        subject.constraint_uuid == kConstraintCustomerIdNotNullIdentity &&
         subject.subject_kind == "column" &&
-        subject.subject_object_uuid == "column-customer-id") {
+        subject.subject_object_uuid == kColumnCustomerIdIdentity) {
       saw_subject = true;
     }
   }
@@ -496,41 +508,41 @@ void RequireTableConstraintEngineDispatch() {
   bool saw_support = false;
   bool saw_name = false;
   for (const auto& constraint : loaded.state.constraints) {
-    if (constraint.constraint_uuid == "constraint-customer-pk" &&
+    if (constraint.constraint_uuid == kConstraintCustomerPkIdentity &&
         constraint.constraint_class == "primary_key" &&
-        constraint.owner_object_uuid == "table-customer" &&
+        constraint.owner_object_uuid == kTableCustomerIdentity &&
         constraint.constraint_hash == "customer_pk_hash" &&
         constraint.support_requirement == "required") {
       saw_constraint = true;
     }
   }
   for (const auto& subject : loaded.state.constraint_subjects) {
-    if (subject.subject_uuid == "subject-customer-pk" &&
-        subject.constraint_uuid == "constraint-customer-pk" &&
+    if (subject.subject_uuid == kSubjectCustomerPkIdentity &&
+        subject.constraint_uuid == kConstraintCustomerPkIdentity &&
         subject.subject_kind == "owner_object" &&
-        subject.subject_object_uuid == "table-customer" &&
+        subject.subject_object_uuid == kTableCustomerIdentity &&
         subject.subject_descriptor == "primary_key(id)") {
       saw_subject = true;
     }
   }
   for (const auto& key : loaded.state.key_descriptors) {
-    if (key.key_descriptor_uuid == "key-customer-pk" &&
-        key.constraint_uuid == "constraint-customer-pk" &&
+    if (key.key_descriptor_uuid == kKeyCustomerPkIdentity &&
+        key.constraint_uuid == kConstraintCustomerPkIdentity &&
         key.key_class == "primary_key" &&
-        key.owner_object_uuid == "table-customer") {
+        key.owner_object_uuid == kTableCustomerIdentity) {
       saw_key = true;
     }
   }
   for (const auto& support : loaded.state.constraint_support_structures) {
-    if (support.support_binding_uuid == "support-customer-pk" &&
-        support.constraint_uuid == "constraint-customer-pk" &&
-        support.support_uuid == "index-customer-pk" &&
+    if (support.support_binding_uuid == kSupportCustomerPkIdentity &&
+        support.constraint_uuid == kConstraintCustomerPkIdentity &&
+        support.support_uuid == kIndexCustomerPkIdentity &&
         support.support_family == "rowstore_scalar_btree_v1") {
       saw_support = true;
     }
   }
   for (const auto& name : loaded.state.names) {
-    if (name.object_uuid == "constraint-customer-pk" &&
+    if (name.object_uuid == kConstraintCustomerPkIdentity &&
         name.object_kind == "constraint" &&
         name.display_name == "customer_pk") {
       saw_name = true;

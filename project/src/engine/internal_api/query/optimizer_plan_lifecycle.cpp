@@ -10,6 +10,10 @@
 
 #include "api_diagnostics.hpp"
 #include "uuid.hpp"
+#include "catalog/binary_catalog_metadata.hpp"
+#include "behavior_support/api_behavior_store.hpp"
+#include "crud_support/crud_store.hpp"
+#include <filesystem>
 
 #include <algorithm>
 #include <cctype>
@@ -25,63 +29,19 @@
 namespace scratchbird::engine::internal_api {
 namespace {
 
+using PlanField = std::variant<std::string, EngineUuid, std::vector<EngineUuid>>;
+using PlanFields = std::map<std::string, PlanField>;
 struct RawPlanEvent {
   std::uint64_t event_sequence = 0;
   std::uint32_t event_schema_version = 0;
   std::string event_kind;
-  std::map<std::string, std::string> fields;
+  PlanFields fields;
   bool malformed = false;
   bool legacy = false;
 };
 
 std::string EventPath(const EngineRequestContext& context) {
   return context.database_path + ".sb.optimizer_plan_events";
-}
-
-std::vector<std::string> Split(const std::string& value, char delimiter) {
-  std::vector<std::string> parts;
-  std::string current;
-  std::istringstream in(value);
-  while (std::getline(in, current, delimiter)) {
-    parts.push_back(current);
-  }
-  return parts;
-}
-
-std::string HexEncode(const std::string& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(value.size() * 2);
-  for (unsigned char c : value) {
-    out.push_back(kHex[(c >> 4) & 0x0f]);
-    out.push_back(kHex[c & 0x0f]);
-  }
-  return out;
-}
-
-int HexValue(char c) {
-  if (c >= '0' && c <= '9') { return c - '0'; }
-  if (c >= 'a' && c <= 'f') { return 10 + c - 'a'; }
-  if (c >= 'A' && c <= 'F') { return 10 + c - 'A'; }
-  return -1;
-}
-
-bool HexDecode(const std::string& value, std::string* out) {
-  out->clear();
-  if ((value.size() % 2) != 0) {
-    return false;
-  }
-  out->reserve(value.size() / 2);
-  for (std::size_t i = 0; i < value.size(); i += 2) {
-    const int hi = HexValue(value[i]);
-    const int lo = HexValue(value[i + 1]);
-    if (hi < 0 || lo < 0) {
-      out->clear();
-      return false;
-    }
-    out->push_back(static_cast<char>((hi << 4) | lo));
-  }
-  return true;
 }
 
 std::optional<std::uint64_t> ParseU64(const std::string& value) {
@@ -96,7 +56,7 @@ std::optional<std::uint64_t> ParseU64(const std::string& value) {
     }
     parsed = parsed * 10 + digit;
   }
-  return parsed;
+  return std::to_string(parsed) == value ? std::optional(parsed) : std::nullopt;
 }
 
 std::optional<bool> ParseBool(const std::string& value) {
@@ -109,114 +69,61 @@ std::string BoolText(bool value) {
   return value ? "1" : "0";
 }
 
-const std::string* Field(const std::map<std::string, std::string>& fields,
+const std::string* Field(const PlanFields& fields,
                          const std::string& key) {
   const auto it = fields.find(key);
-  return it == fields.end() ? nullptr : &it->second;
+  return it == fields.end() ? nullptr : std::get_if<std::string>(&it->second);
 }
 
 std::optional<std::uint64_t> FieldU64(
-    const std::map<std::string, std::string>& fields,
+    const PlanFields& fields,
     const std::string& key) {
   const auto* value = Field(fields, key);
   return value == nullptr ? std::nullopt : ParseU64(*value);
 }
 
 std::optional<bool> FieldBool(
-    const std::map<std::string, std::string>& fields,
+    const PlanFields& fields,
     const std::string& key) {
   const auto* value = Field(fields, key);
   return value == nullptr ? std::nullopt : ParseBool(*value);
 }
 
-bool ExactFields(const std::map<std::string, std::string>& fields,
+bool ExactFields(const PlanFields& fields,
                  std::initializer_list<const char*> required) {
   if (fields.size() != required.size()) return false;
   return std::all_of(required.begin(), required.end(), [&](const char* key) {
-    return fields.contains(key);
+    const auto it = fields.find(key);
+    if (it == fields.end()) return false;
+    const std::string_view name(key);
+    if (name == "object_dependency_uuids") return std::holds_alternative<std::vector<EngineUuid>>(it->second);
+    if (name.ends_with("_uuid")) return std::holds_alternative<EngineUuid>(it->second);
+    return std::holds_alternative<std::string>(it->second);
   });
 }
 
-bool CanonicalUuid(const std::string& value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
+bool CanonicalUuid(const EngineUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
-
-std::optional<std::vector<std::string>> ParseUuidVector(
-    const std::string& encoded) {
-  if (encoded.empty() || encoded.front() == ',' || encoded.back() == ',' ||
-      encoded.find(",,") != std::string::npos) {
-    return std::nullopt;
-  }
-  auto values = Split(encoded, ',');
-  if (values.empty() || !std::ranges::is_sorted(values) ||
-      std::adjacent_find(values.begin(), values.end()) != values.end() ||
-      !std::ranges::all_of(values, CanonicalUuid)) {
-    return std::nullopt;
-  }
-  return values;
+const EngineUuid* FieldUuid(const PlanFields& fields, const std::string& key) {
+  const auto it = fields.find(key);
+  return it == fields.end() ? nullptr : std::get_if<EngineUuid>(&it->second);
 }
-
-std::uint64_t StableHash(std::string_view value, std::uint64_t seed) {
-  std::uint64_t hash = seed;
-  for (const auto ch : value) {
-    hash ^= static_cast<unsigned char>(ch);
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
-std::string DeterministicCanonicalUuid(std::string_view seed) {
-  const std::uint64_t left = StableHash(seed, 1469598103934665603ull);
-  const std::uint64_t right =
-      StableHash(seed, 1099511628211ull ^ 0x9e3779b97f4a7c15ull);
-  const auto part1 = static_cast<std::uint32_t>(left >> 32);
-  const auto part2 = static_cast<std::uint16_t>(left >> 16);
-  const auto part3 = static_cast<std::uint16_t>((left & 0x0fffull) | 0x7000ull);
-  const auto part4 =
-      static_cast<std::uint16_t>(((right >> 48) & 0x3fffull) | 0x8000ull);
-  const auto part5 = right & 0x0000ffffffffffffull;
-  std::ostringstream out;
-  out << std::hex << std::setfill('0') << std::nouppercase
-      << std::setw(8) << part1 << '-' << std::setw(4) << part2 << '-'
-      << std::setw(4) << part3 << '-' << std::setw(4) << part4 << '-'
-      << std::setw(12) << part5;
-  return out.str();
-}
-
-std::optional<std::vector<std::string>> CanonicalObjectDependencies(
-    std::vector<std::string> values) {
+std::optional<std::vector<EngineUuid>> CanonicalObjectDependencies(std::vector<EngineUuid> values) {
   if (values.empty() || !std::ranges::all_of(values, CanonicalUuid) ||
-      !std::ranges::is_sorted(values)) {
-    return std::nullopt;
-  }
-  if (std::adjacent_find(values.begin(), values.end()) != values.end()) {
-    return std::nullopt;
-  }
+      !std::ranges::is_sorted(values) || std::adjacent_find(values.begin(), values.end()) != values.end()) return std::nullopt;
   return values;
 }
-
-std::string JoinUuidVector(const std::vector<std::string>& values) {
-  std::ostringstream out;
-  for (std::size_t index = 0; index < values.size(); ++index) {
-    if (index != 0) out << ',';
-    out << values[index];
-  }
-  return out.str();
+std::optional<std::vector<EngineUuid>> FieldDependencies(const PlanFields& fields) {
+  const auto it = fields.find("object_dependency_uuids");
+  if (it == fields.end()) return std::nullopt;
+  const auto* values = std::get_if<std::vector<EngineUuid>>(&it->second);
+  return values ? CanonicalObjectDependencies(*values) : std::nullopt;
 }
 
 EngineOptimizerPlanDependencyIdentity DependencyIdentityFromDag(
     const plan_executor::TypedPhysicalNodeDag& dag,
-    std::vector<std::string> object_dependencies) {
+    std::vector<EngineUuid> object_dependencies) {
   EngineOptimizerPlanDependencyIdentity identity;
   identity.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
   identity.catalog_epoch_uuid = dag.catalog_epoch_uuid;
@@ -274,39 +181,13 @@ bool DependencyIdentityComplete(
 }
 
 bool CatalogIdentityIndependent(
-    const std::string& catalog_epoch_uuid,
+    const EngineUuid& catalog_epoch_uuid,
     const plan_executor::PhysicalMgaStatementContext& context) {
   return CanonicalUuid(catalog_epoch_uuid) &&
          catalog_epoch_uuid != context.statement_uuid &&
          catalog_epoch_uuid != context.owning_transaction_uuid &&
          catalog_epoch_uuid != context.statement_snapshot_uuid &&
          catalog_epoch_uuid != context.statement_metadata_snapshot_uuid;
-}
-
-std::string StatementContextText(
-    const plan_executor::PhysicalMgaStatementContext& context) {
-  std::ostringstream out;
-  out << context.statement_uuid << '|' << context.owning_transaction_uuid
-      << '|' << context.statement_snapshot_uuid << '|'
-      << context.statement_metadata_snapshot_uuid << '|'
-      << context.owning_local_transaction_id << '|'
-      << context.visible_committed_high_watermark << '|'
-      << context.oldest_active_transaction_id << '|'
-      << context.oldest_interesting_transaction_id << '|'
-      << context.oldest_snapshot_transaction_id << '|'
-      << context.retention_horizon_transaction_id << '|';
-  for (const auto value : context.active_excluded_local_transaction_ids) {
-    out << value << ',';
-  }
-  out << '|';
-  for (const auto value : context.in_doubt_excluded_local_transaction_ids) {
-    out << value << ',';
-  }
-  out << '|' << context.snapshot_kind << '|'
-      << context.publication_inventory_next_local_transaction_id << '|'
-      << context.inventory_authoritative << '|' << context.complete << '|'
-      << context.current;
-  return out.str();
 }
 
 EngineApiDiagnostic PlanDiagnostic(const char* code, std::string detail = {}, bool error = true) {
@@ -349,7 +230,7 @@ std::optional<EngineApiDiagnostic> ValidateStatementBinding(
     const EngineRequestContext& context,
     const plan_executor::CanonicalExecutionMgaAuthority& authority,
     const plan_executor::TypedPhysicalNodeDag& dag,
-    const std::string& selected_catalog_epoch_uuid) {
+    const EngineUuid& selected_catalog_epoch_uuid) {
   if (authority.origin !=
           plan_executor::CanonicalMgaAuthorityOrigin::
               kEngineTransactionInventory ||
@@ -438,27 +319,12 @@ TResult DiagnosticResult(const EngineRequestContext& context,
   return result;
 }
 
-EngineTypedValue TextValue(std::string value) {
-  EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
-  typed.encoded_value = std::move(value);
-  return typed;
-}
-
-void AddRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
-  EngineRowValue row;
-  row.requested_row_uuid =
-      "optimizer-plan-row-" + std::to_string(result->result_shape.rows.size() + 1);
-  for (auto& field : fields) {
-    row.fields.push_back({std::move(field.first), TextValue(std::move(field.second))});
-  }
+void AddRow(EngineApiResult* result, ApiBehaviorFields fields) {
+  AddApiBehaviorRow(result, std::move(fields));
   result->result_shape.result_kind = "optimizer_plan_lifecycle_rows";
-  result->result_shape.rows.push_back(std::move(row));
 }
-
-void AddEvidence(EngineApiResult* result, std::string kind, std::string id) {
-  result->evidence.push_back({std::move(kind), std::move(id)});
+void AddEvidence(EngineApiResult* result, std::string kind, EngineEvidenceValue id) {
+  AddApiBehaviorEvidence(result, std::move(kind), std::move(id));
 }
 
 bool ValidateMutatingContext(const EngineRequestContext& context, EngineApiDiagnostic* diagnostic) {
@@ -474,101 +340,112 @@ bool ValidateMutatingContext(const EngineRequestContext& context, EngineApiDiagn
   return true;
 }
 
-std::string MakeEvent(std::string event_kind,
-                      std::vector<std::pair<std::string, std::string>> fields) {
-  std::string out = std::string(kOptimizerPlanLifecycleEventMagic) + "\t" +
-                    std::to_string(kOptimizerPlanLifecycleEventSchemaVersion) +
-                    "\t" + std::move(event_kind);
-  for (auto& field : fields) {
-    out.push_back('\t');
-    out += field.first;
-    out.push_back('=');
-    out += HexEncode(field.second);
+// Every record is framed. UUID fields use the identity section; dependency
+// arrays retain native elements. No parser or persisted metadata grants finality.
+std::string MakeEvent(const EngineRequestContext& context, std::string event_kind,
+                      const PlanFields& fields) {
+  if (!CanonicalUuid(context.database_uuid)) return {};
+  BinaryCatalogMetadata metadata;
+  metadata.identities.emplace("database_uuid", context.database_uuid);
+  metadata.text.emplace("event_kind", std::move(event_kind));
+  for (const auto& [key, value] : fields) {
+    if (key == "database_uuid" || key == "event_kind" || key.starts_with("dependency_element.")) return {};
+    if (const auto* text = std::get_if<std::string>(&value)) metadata.text.emplace(key, *text);
+    else if (const auto* uuid = std::get_if<EngineUuid>(&value)) metadata.identities.emplace(key, *uuid);
+    else {
+      if (key != "object_dependency_uuids") return {};
+      const auto& values = std::get<std::vector<EngineUuid>>(value);
+      metadata.text.emplace(key, std::to_string(values.size()));
+      for (std::size_t n=0; n<values.size(); ++n) metadata.identities.emplace("dependency_element."+std::to_string(n), values[n]);
+    }
   }
-  return out;
+  std::string bytes;
+  if (!EncodeBinaryCatalogMetadata(metadata, "optimizer.plan.event.v3", &bytes)) return {};
+  return bytes;
 }
 
-EngineApiDiagnostic AppendEvent(const EngineRequestContext& context,
-                                std::string event_kind,
-                                std::vector<std::pair<std::string, std::string>> fields) {
-  if (context.database_path.empty()) {
-    return PlanDiagnostic(kOptimizerPlanDiagnosticDatabasePathRequired, "database_path");
+bool DecodeEvent(std::string_view bytes, const EngineRequestContext& context, RawPlanEvent* event) {
+  BinaryCatalogMetadata metadata;
+  if (!DecodeBinaryCatalogMetadata(bytes, "optimizer.plan.event.v3", &metadata) ||
+      !CanonicalUuid(context.database_uuid) || BinaryCatalogUuid(metadata, "database_uuid") != context.database_uuid ||
+      !metadata.text.contains("event_kind")) return false;
+  event->event_kind = metadata.text.at("event_kind");
+  metadata.text.erase("event_kind"); metadata.identities.erase("database_uuid");
+  if (metadata.text.contains("object_dependency_uuids")) {
+    const auto count = ParseU64(metadata.text.at("object_dependency_uuids"));
+    if (!count || *count > metadata.identities.size()) return false;
+    std::vector<EngineUuid> values;
+    for (std::uint64_t n=0; n<*count; ++n) {
+      const auto key = "dependency_element."+std::to_string(n);
+      const auto it = metadata.identities.find(key);
+      if (it == metadata.identities.end()) return false;
+      values.push_back(it->second); metadata.identities.erase(it);
+    }
+    event->fields.emplace("object_dependency_uuids", std::move(values));
+    metadata.text.erase("object_dependency_uuids");
   }
-  std::ofstream out(EventPath(context), std::ios::binary | std::ios::app);
-  if (!out) {
-    return PlanDiagnostic(kOptimizerPlanDiagnosticWriteFailed, "open");
-  }
-  out << MakeEvent(std::move(event_kind), std::move(fields)) << '\n';
-  out.flush();
-  if (!out) {
-    return PlanDiagnostic(kOptimizerPlanDiagnosticWriteFailed, "flush");
-  }
-  return OkDiagnostic();
+  for (const auto& [key, value] : metadata.text) if (!event->fields.emplace(key, value).second) return false;
+  for (const auto& [key, value] : metadata.identities) if (!event->fields.emplace(key, value).second) return false;
+  if (MakeEvent(context, event->event_kind, event->fields) != bytes) return false;
+  event->event_schema_version = kOptimizerPlanLifecycleEventSchemaVersion;
+  return true;
 }
 
 EngineLoadOptimizerPlanLifecycleStateResult ReadRawEvents(
-    const EngineRequestContext& context,
-    std::vector<RawPlanEvent>* events) {
+    const EngineRequestContext& context, std::vector<RawPlanEvent>* events) {
   EngineLoadOptimizerPlanLifecycleStateResult result;
-  if (context.database_path.empty()) {
-    result.diagnostic =
-        PlanDiagnostic(kOptimizerPlanDiagnosticDatabasePathRequired, "database_path");
+  const auto refuse = [&](const char* detail) {
+    result.diagnostic = PlanDiagnostic(kOptimizerPlanDiagnosticCacheInvalidated, detail);
     return result;
-  }
+  };
+  if (context.database_path.empty()) return refuse("database_path");
+  std::error_code ec;
+  const bool exists = std::filesystem::exists(EventPath(context), ec);
+  if (ec) return refuse("event_file_stat_failed");
+  if (!exists) { result.ok = true; result.diagnostic = OkDiagnostic(); return result; }
   std::ifstream in(EventPath(context), std::ios::binary);
-  if (!in) {
-    result.ok = true;
-    result.diagnostic = OkDiagnostic();
-    return result;
+  if (!in) return refuse("event_file_open_failed");
+  const std::string bytes((std::istreambuf_iterator<char>(in)), {});
+  if (in.bad()) return refuse("event_file_read_failed");
+  const std::string_view magic(kOptimizerPlanLifecycleEventMagic);
+  if (!bytes.starts_with(magic)) {
+    RawPlanEvent event; event.legacy = bytes.starts_with("SBPLANL1") || bytes.starts_with("SBPLANL2");
+    event.malformed = !event.legacy; events->push_back(std::move(event));
+    result.ok = true; result.diagnostic = OkDiagnostic(); return result;
   }
+  std::span<const std::uint8_t> input(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
+  std::size_t cursor = magic.size();
+  std::uint64_t sequence = 0;
+  while (cursor < input.size()) {
+    RawPlanEvent event; event.event_sequence = ++sequence;
+    std::uint32_t size = 0;
+    if (!ReadBinaryU32(input, &cursor, &size) || size > input.size()-cursor) {
+      event.malformed = true; events->push_back(std::move(event)); break;
+    }
+    event.malformed = !DecodeEvent(std::string_view(bytes).substr(cursor,size), context, &event);
+    cursor += size; events->push_back(std::move(event));
+  }
+  result.ok = true; result.diagnostic = OkDiagnostic(); return result;
+}
 
-  std::string line;
-  std::uint64_t event_sequence = 0;
-  while (std::getline(in, line)) {
-    ++event_sequence;
-    const auto parts = Split(line, '\t');
-    RawPlanEvent event;
-    event.event_sequence = event_sequence;
-    if (!parts.empty() &&
-        parts[0] == kOptimizerPlanLifecycleLegacyEventMagic) {
-      event.legacy = true;
-      if (parts.size() > 1) {
-        event.event_kind = parts[1];
-      }
-      events->push_back(std::move(event));
-      continue;
-    }
-    if (parts.size() < 4 ||
-        parts[0] != kOptimizerPlanLifecycleEventMagic ||
-        parts[1] !=
-            std::to_string(kOptimizerPlanLifecycleEventSchemaVersion) ||
-        parts[2].empty()) {
-      event.malformed = true;
-      events->push_back(std::move(event));
-      continue;
-    }
-    event.event_schema_version = kOptimizerPlanLifecycleEventSchemaVersion;
-    event.event_kind = parts[2];
-    for (std::size_t i = 3; i < parts.size(); ++i) {
-      const auto pos = parts[i].find('=');
-      if (pos == std::string::npos || pos == 0) {
-        event.malformed = true;
-        break;
-      }
-      const std::string key = parts[i].substr(0, pos);
-      std::string value;
-      if (event.fields.contains(key) ||
-          !HexDecode(parts[i].substr(pos + 1), &value)) {
-        event.malformed = true;
-        break;
-      }
-      event.fields.emplace(key, std::move(value));
-    }
-    events->push_back(std::move(event));
-  }
-  result.ok = true;
-  result.diagnostic = OkDiagnostic();
-  return result;
+EngineApiDiagnostic AppendEvent(const EngineRequestContext& context,
+                                std::string event_kind, PlanFields fields) {
+  const auto before = LoadOptimizerPlanLifecycleState(context);
+  if (!before.ok) return before.diagnostic;
+  const auto bytes = MakeEvent(context, std::move(event_kind), fields);
+  if (bytes.empty() || bytes.size() > std::numeric_limits<std::uint32_t>::max())
+    return PlanDiagnostic(kOptimizerPlanDiagnosticWriteFailed, "event_encoding_failed");
+  std::error_code ec;
+  const bool exists = std::filesystem::exists(EventPath(context), ec);
+  if (ec) return PlanDiagnostic(kOptimizerPlanDiagnosticWriteFailed, "event_file_stat_failed");
+  std::string frame;
+  if (!exists) frame = kOptimizerPlanLifecycleEventMagic;
+  AppendBinaryU32(&frame, static_cast<std::uint32_t>(bytes.size())); frame += bytes;
+  std::ofstream out(EventPath(context), std::ios::binary | std::ios::app);
+  if (!out) return PlanDiagnostic(kOptimizerPlanDiagnosticWriteFailed, "open");
+  out.write(frame.data(), frame.size()); out.flush();
+  if (!out) return PlanDiagnostic(kOptimizerPlanDiagnosticWriteFailed, "flush");
+  return OkDiagnostic();
 }
 
 bool CachePlanEventSchemaValid(const RawPlanEvent& event) {
@@ -619,11 +496,11 @@ bool CachePlanEventSchemaValid(const RawPlanEvent& event) {
   const auto dependency_route_generation =
       FieldU64(event.fields, "dependency_route_generation");
   const auto dependencies =
-      ParseUuidVector(*Field(event.fields, "object_dependency_uuids"));
-  const auto& relation_uuid = *Field(event.fields, "relation_uuid");
-  const auto& index_uuid = *Field(event.fields, "index_uuid");
+      FieldDependencies(event.fields);
+  const auto& relation_uuid = *FieldUuid(event.fields, "relation_uuid");
+  const auto& index_uuid = *FieldUuid(event.fields, "index_uuid");
   if (*Field(event.fields, "record_schema") !=
-          "optimizer_plan_metadata_v2" ||
+          "optimizer_plan_metadata_v3" ||
       !metadata_only.value_or(false) || invalidated.value_or(true) ||
       !plan_cache_epoch || *plan_cache_epoch == 0 ||
       !index_generation || *index_generation == 0 ||
@@ -651,7 +528,7 @@ bool CachePlanEventSchemaValid(const RawPlanEvent& event) {
         "security_context_uuid", "capability_snapshot_uuid",
         "resource_snapshot_uuid", "statistics_snapshot_uuid",
         "route_snapshot_uuid"}) {
-    if (!CanonicalUuid(*Field(event.fields, key))) return false;
+    if (!CanonicalUuid(*FieldUuid(event.fields, key))) return false;
   }
   return !Field(event.fields, "query_fingerprint")->empty() &&
          !Field(event.fields, "catalog_physical_profile_key")->empty() &&
@@ -675,10 +552,10 @@ bool InvalidationEventSchemaValid(const RawPlanEvent& event) {
   const auto invalidate_all = FieldBool(event.fields, "invalidate_all");
   const auto plan_cache_epoch = FieldU64(event.fields, "plan_cache_epoch");
   if (*Field(event.fields, "record_schema") !=
-          "optimizer_plan_invalidation_v2" ||
+          "optimizer_plan_invalidation_v3" ||
       !metadata_only.value_or(false) || !invalidate_all ||
       !plan_cache_epoch || *plan_cache_epoch == 0 ||
-      !CanonicalUuid(*Field(event.fields, "event_uuid")) ||
+      !CanonicalUuid(*FieldUuid(event.fields, "event_uuid")) ||
       Field(event.fields, "reason")->empty()) {
     return false;
   }
@@ -689,8 +566,8 @@ bool InvalidationEventSchemaValid(const RawPlanEvent& event) {
     const auto value = FieldU64(event.fields, key);
     if (!value || *value == 0) return false;
   }
-  const auto& index_uuid = *Field(event.fields, "index_uuid");
-  return *invalidate_all ? (index_uuid.empty() || CanonicalUuid(index_uuid))
+  const auto& index_uuid = *FieldUuid(event.fields, "index_uuid");
+  return *invalidate_all ? (index_uuid.is_nil() || CanonicalUuid(index_uuid))
                          : CanonicalUuid(index_uuid);
 }
 
@@ -706,11 +583,11 @@ bool RecoveryEventSchemaValid(const RawPlanEvent& event) {
   const auto metadata_only = FieldBool(event.fields, "metadata_only");
   const auto plan_cache_epoch = FieldU64(event.fields, "plan_cache_epoch");
   return *Field(event.fields, "record_schema") ==
-             "optimizer_plan_recovery_v2" &&
+             "optimizer_plan_recovery_v3" &&
          metadata_only.value_or(false) && plan_cache_epoch &&
          *plan_cache_epoch != 0 &&
-         CanonicalUuid(*Field(event.fields, "event_uuid")) &&
-         CanonicalUuid(*Field(event.fields, "recovery_snapshot_uuid"));
+         CanonicalUuid(*FieldUuid(event.fields, "event_uuid")) &&
+         CanonicalUuid(*FieldUuid(event.fields, "recovery_snapshot_uuid"));
 }
 
 bool CorrectedEventSchemaValid(const RawPlanEvent& event) {
@@ -729,13 +606,13 @@ std::optional<EngineOptimizerPlanCacheEntry> EntryFromFields(
   if (!CachePlanEventSchemaValid(event)) return std::nullopt;
   EngineOptimizerPlanCacheEntry entry;
   entry.event_schema_version = event.event_schema_version;
-  entry.event_uuid = *Field(event.fields, "event_uuid");
+  entry.event_uuid = *FieldUuid(event.fields, "event_uuid");
   entry.event_sequence = event.event_sequence;
   entry.plan_cache_epoch = *FieldU64(event.fields, "plan_cache_epoch");
-  entry.plan_uuid = *Field(event.fields, "plan_uuid");
+  entry.plan_uuid = *FieldUuid(event.fields, "plan_uuid");
   entry.query_fingerprint = *Field(event.fields, "query_fingerprint");
-  entry.relation_uuid = *Field(event.fields, "relation_uuid");
-  entry.index_uuid = *Field(event.fields, "index_uuid");
+  entry.relation_uuid = *FieldUuid(event.fields, "relation_uuid");
+  entry.index_uuid = *FieldUuid(event.fields, "index_uuid");
   entry.catalog_physical_profile_key =
       *Field(event.fields, "catalog_physical_profile_key");
   entry.plan_shape_digest = *Field(event.fields, "plan_shape_digest");
@@ -748,19 +625,19 @@ std::optional<EngineOptimizerPlanCacheEntry> EntryFromFields(
   entry.charset_epoch = *FieldU64(event.fields, "charset_epoch");
   entry.collation_epoch = *FieldU64(event.fields, "collation_epoch");
   entry.dependencies.bound_sblr_tree_uuid =
-      *Field(event.fields, "bound_sblr_tree_uuid");
+      *FieldUuid(event.fields, "bound_sblr_tree_uuid");
   entry.dependencies.catalog_epoch_uuid =
-      *Field(event.fields, "catalog_epoch_uuid");
+      *FieldUuid(event.fields, "catalog_epoch_uuid");
   entry.dependencies.security_context_uuid =
-      *Field(event.fields, "security_context_uuid");
+      *FieldUuid(event.fields, "security_context_uuid");
   entry.dependencies.capability_snapshot_uuid =
-      *Field(event.fields, "capability_snapshot_uuid");
+      *FieldUuid(event.fields, "capability_snapshot_uuid");
   entry.dependencies.resource_snapshot_uuid =
-      *Field(event.fields, "resource_snapshot_uuid");
+      *FieldUuid(event.fields, "resource_snapshot_uuid");
   entry.dependencies.statistics_snapshot_uuid =
-      *Field(event.fields, "statistics_snapshot_uuid");
+      *FieldUuid(event.fields, "statistics_snapshot_uuid");
   entry.dependencies.route_snapshot_uuid =
-      *Field(event.fields, "route_snapshot_uuid");
+      *FieldUuid(event.fields, "route_snapshot_uuid");
   entry.dependencies.catalog_generation_id =
       *FieldU64(event.fields, "dependency_catalog_generation_id");
   entry.dependencies.security_epoch =
@@ -776,32 +653,32 @@ std::optional<EngineOptimizerPlanCacheEntry> EntryFromFields(
   entry.dependencies.route_generation =
       *FieldU64(event.fields, "dependency_route_generation");
   entry.dependencies.object_dependency_uuids =
-      *ParseUuidVector(*Field(event.fields, "object_dependency_uuids"));
+      *FieldDependencies(event.fields);
   entry.metadata_only = true;
   entry.invalidated = false;
   return entry;
 }
 
 bool EntryMatches(const EngineOptimizerPlanCacheEntry& entry,
-                  const std::string& plan_uuid,
+                  const EngineUuid& plan_uuid,
                   const std::string& query_fingerprint,
-                  const std::string& index_uuid) {
-  if (!plan_uuid.empty() && entry.plan_uuid != plan_uuid) {
+                  const EngineUuid& index_uuid) {
+  if (!plan_uuid.is_nil() && entry.plan_uuid != plan_uuid) {
     return false;
   }
   if (!query_fingerprint.empty() && entry.query_fingerprint != query_fingerprint) {
     return false;
   }
-  if (!index_uuid.empty() && entry.index_uuid != index_uuid) {
+  if (!index_uuid.is_nil() && entry.index_uuid != index_uuid) {
     return false;
   }
-  return !plan_uuid.empty() || !query_fingerprint.empty() || !index_uuid.empty();
+  return !plan_uuid.is_nil() || !query_fingerprint.empty() || !index_uuid.is_nil();
 }
 
 const EngineOptimizerPlanCacheEntry* FindEntry(const EngineOptimizerPlanLifecycleState& state,
-                                               const std::string& plan_uuid,
+                                               const EngineUuid& plan_uuid,
                                                const std::string& query_fingerprint,
-                                               const std::string& index_uuid) {
+                                               const EngineUuid& index_uuid) {
   for (auto it = state.entries.rbegin(); it != state.entries.rend(); ++it) {
     if (EntryMatches(*it, plan_uuid, query_fingerprint, index_uuid)) {
       return &*it;
@@ -812,7 +689,7 @@ const EngineOptimizerPlanCacheEntry* FindEntry(const EngineOptimizerPlanLifecycl
 
 const EngineOptimizerPlanCacheEntry* FindEntryByEventUuid(
     const EngineOptimizerPlanLifecycleState& state,
-    const std::string& event_uuid) {
+    const EngineUuid& event_uuid) {
   for (auto it = state.entries.rbegin(); it != state.entries.rend(); ++it) {
     if (it->event_uuid == event_uuid) return &*it;
   }
@@ -821,7 +698,7 @@ const EngineOptimizerPlanCacheEntry* FindEntryByEventUuid(
 
 void ApplyInvalidation(EngineOptimizerPlanLifecycleState* state, const RawPlanEvent& event) {
   const bool invalidate_all = *FieldBool(event.fields, "invalidate_all");
-  const std::string& index_uuid = *Field(event.fields, "index_uuid");
+  const EngineUuid& index_uuid = *FieldUuid(event.fields, "index_uuid");
   const std::string& reason = *Field(event.fields, "reason");
   const std::uint64_t plan_cache_epoch =
       *FieldU64(event.fields, "plan_cache_epoch");
@@ -856,7 +733,7 @@ void ApplyInvalidation(EngineOptimizerPlanLifecycleState* state, const RawPlanEv
     entry.plan_cache_epoch = std::max(entry.plan_cache_epoch, plan_cache_epoch);
     touched = true;
   }
-  if (touched || invalidate_all || !index_uuid.empty()) {
+  if (touched || invalidate_all || !index_uuid.is_nil()) {
     ++state->invalidation_events;
   }
   state->plan_cache_epoch = std::max(state->plan_cache_epoch, plan_cache_epoch);
@@ -867,7 +744,7 @@ void ApplyRecoverySnapshot(EngineOptimizerPlanLifecycleState* state, const RawPl
       std::max(state->plan_cache_epoch,
                *FieldU64(event.fields, "plan_cache_epoch"));
   state->recovered_from_persisted_evidence = true;
-  state->recovery_snapshot_uuid = *Field(event.fields, "recovery_snapshot_uuid");
+  state->recovery_snapshot_uuid = *FieldUuid(event.fields, "recovery_snapshot_uuid");
   for (auto& entry : state->entries) {
     entry.recovered_from_persisted_evidence = true;
   }
@@ -922,13 +799,11 @@ EngineApiDiagnostic ValidateCacheRequest(const EngineOptimizerCachePlanRequest& 
   }
   if (!request.index_descriptor.index_uuid.valid() ||
       !request.index_descriptor.table_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          request.index_descriptor.index_uuid.value) != request.index_uuid ||
-      scratchbird::core::uuid::UuidToString(
-          request.index_descriptor.table_uuid.value) !=
+      request.index_descriptor.index_uuid.value != request.index_uuid ||
+      request.index_descriptor.table_uuid.value !=
           request.relation_uuid ||
       !request.statistics.index_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(request.statistics.index_uuid.value) !=
+      request.statistics.index_uuid.value !=
           request.index_uuid) {
     return PlanDiagnostic(kOptimizerPlanDiagnosticDependencyMismatch,
                           "index and relation UUID dependencies differ");
@@ -1021,7 +896,7 @@ EngineLoadOptimizerPlanLifecycleStateResult LoadOptimizerPlanLifecycleState(
     result.state.plan_cache_epoch = 0;
     result.state.invalidation_events = 0;
     result.state.recovered_from_persisted_evidence = false;
-    result.state.recovery_snapshot_uuid.clear();
+    result.state.recovery_snapshot_uuid = {};
     result.ok = false;
     result.diagnostic = PlanDiagnostic(
         kOptimizerPlanDiagnosticCacheInvalidated,
@@ -1085,14 +960,11 @@ EngineOptimizerCachePlanResult EngineOptimizerCachePlan(
   const auto dependencies = DependencyIdentityFromDag(
       request.selected_physical_dag, object_dependencies);
   const std::uint64_t plan_cache_epoch = NextPlanCacheEpoch(before.state, request);
-  const std::string event_uuid = DeterministicCanonicalUuid(
-      "optimizer-plan-cache-event-v2|" + request.context.database_path + "|" +
-      request.plan_uuid + "|" + std::to_string(plan_cache_epoch) + "|" +
-      dependencies.statistics_snapshot_uuid);
+  const EngineUuid event_uuid = GenerateCrudEngineUuid("object");
   const auto appended = AppendEvent(
       request.context,
       "CACHE_PLAN",
-      {{"record_schema", "optimizer_plan_metadata_v2"},
+      {{"record_schema", "optimizer_plan_metadata_v3"},
        {"event_uuid", event_uuid},
        {"metadata_only", "1"},
        {"plan_cache_epoch", std::to_string(plan_cache_epoch)},
@@ -1127,7 +999,7 @@ EngineOptimizerCachePlanResult EngineOptimizerCachePlan(
        {"dependency_route_epoch", std::to_string(dependencies.route_epoch)},
        {"dependency_route_generation",
         std::to_string(dependencies.route_generation)},
-       {"object_dependency_uuids", JoinUuidVector(object_dependencies)},
+       {"object_dependency_uuids", object_dependencies},
        {"invalidated", "0"}});
   if (appended.error) {
     return DiagnosticResult<EngineOptimizerCachePlanResult>(request.context, kOperation, appended);
@@ -1158,9 +1030,7 @@ EngineOptimizerCachePlanResult EngineOptimizerCachePlan(
   auto publication_receipt =
       std::shared_ptr<EngineOptimizerPlanStatementUseReceipt>(
           new EngineOptimizerPlanStatementUseReceipt());
-  publication_receipt->receipt_id_ = DeterministicCanonicalUuid(
-      "optimizer-plan-publication-receipt-v2|" + event_uuid + "|" +
-      StatementContextText(request.mga_authority.statement_context));
+  publication_receipt->receipt_id_ = GenerateCrudEngineUuid("object");
   publication_receipt->plan_uuid_ = entry->plan_uuid;
   publication_receipt->dependencies_ = entry->dependencies;
   publication_receipt->statement_context_ =
@@ -1239,7 +1109,7 @@ EngineOptimizerValidateCachedPlanResult EngineOptimizerValidateCachedPlan(
       FindEntry(loaded.state, request.plan_uuid, request.query_fingerprint, request.index_uuid);
   if (entry == nullptr) {
     return refuse(PlanDiagnostic(kOptimizerPlanDiagnosticCacheMiss,
-                                 request.index_uuid));
+                                 "requested_index"));
   }
   if (entry->invalidated) {
     return refuse(PlanDiagnostic(kOptimizerPlanDiagnosticCacheInvalidated,
@@ -1248,12 +1118,12 @@ EngineOptimizerValidateCachedPlanResult EngineOptimizerValidateCachedPlan(
   }
   if (request.require_current_statistics && request.statistics_stale) {
     return refuse(PlanDiagnostic(kOptimizerPlanDiagnosticStatisticsStale,
-                                 request.index_uuid),
+                                 "requested_index"),
                   true);
   }
   if (!EntryEpochsMatch(*entry, request.current_resource_epochs)) {
     return refuse(PlanDiagnostic(kOptimizerPlanDiagnosticEpochMismatch,
-                                 request.index_uuid),
+                                 "requested_index"),
                   true);
   }
   if (!entry->metadata_only ||
@@ -1286,9 +1156,7 @@ EngineOptimizerValidateCachedPlanResult EngineOptimizerValidateCachedPlan(
 
   auto receipt = std::shared_ptr<EngineOptimizerPlanStatementUseReceipt>(
       new EngineOptimizerPlanStatementUseReceipt());
-  receipt->receipt_id_ = DeterministicCanonicalUuid(
-      "optimizer-plan-statement-use-receipt-v2|" + entry->event_uuid + "|" +
-      StatementContextText(request.mga_authority.statement_context));
+  receipt->receipt_id_ = GenerateCrudEngineUuid("object");
   receipt->plan_uuid_ = entry->plan_uuid;
   receipt->dependencies_ = entry->dependencies;
   receipt->statement_context_ = request.mga_authority.statement_context;
@@ -1371,8 +1239,9 @@ EngineOptimizerPlanUseValidationResult RevalidateOptimizerPlanStatementUse(
   result.ok = true;
   result.diagnostic_code = kOptimizerPlanDiagnosticOk;
   result.executable_receipt = receipt;
+  result.identity_evidence.emplace_back("optimizer_plan_statement_use_receipt", receipt->receipt_id_);
   result.evidence = {
-      "optimizer_plan_statement_use_receipt=" + receipt->receipt_id_,
+      "optimizer_plan_statement_use_receipt_present=true",
       "optimizer_plan_statement_use_receipt_executable=true",
       "optimizer_plan_metadata_authority=none",
       "optimizer_plan_mga_authority=engine_transaction_inventory",
@@ -1389,7 +1258,7 @@ EngineOptimizerInvalidatePlanCacheResult EngineOptimizerInvalidatePlanCache(
     return DiagnosticResult<EngineOptimizerInvalidatePlanCacheResult>(
         request.context, kOperation, context_diagnostic);
   }
-  if ((!request.invalidate_all || !request.index_uuid.empty()) &&
+  if ((!request.invalidate_all || !request.index_uuid.is_nil()) &&
       !CanonicalUuid(request.index_uuid)) {
     return DiagnosticResult<EngineOptimizerInvalidatePlanCacheResult>(
         request.context,
@@ -1433,20 +1302,11 @@ EngineOptimizerInvalidatePlanCacheResult EngineOptimizerInvalidatePlanCache(
                 request.new_resource_epochs.collation_epoch});
   const std::string reason =
       request.reason.empty() ? "explicit_invalidation" : request.reason;
-  const std::string event_uuid = DeterministicCanonicalUuid(
-      "optimizer-plan-invalidation-event-v2|" + request.context.database_path +
-      "|" + std::to_string(plan_cache_epoch) + "|" + request.index_uuid +
-      "|" + BoolText(request.invalidate_all) + "|" +
-      std::to_string(request.new_index_generation) + "|" +
-      std::to_string(request.new_statistics_generation) + "|" +
-      std::to_string(request.new_catalog_generation_id) + "|" +
-      std::to_string(request.new_resource_epochs.resource_epoch) + "|" +
-      std::to_string(request.new_resource_epochs.charset_epoch) + "|" +
-      std::to_string(request.new_resource_epochs.collation_epoch));
+  const EngineUuid event_uuid = GenerateCrudEngineUuid("object");
   const auto appended = AppendEvent(
       request.context,
       "INVALIDATE",
-      {{"record_schema", "optimizer_plan_invalidation_v2"},
+      {{"record_schema", "optimizer_plan_invalidation_v3"},
        {"event_uuid", event_uuid},
        {"metadata_only", "1"},
        {"plan_cache_epoch", std::to_string(plan_cache_epoch)},
@@ -1505,18 +1365,12 @@ EngineOptimizerRecoverPlanCacheResult EngineOptimizerRecoverPlanCache(
                        "plan_cache_epoch_exhausted"));
   }
   const std::uint64_t plan_cache_epoch = before.state.plan_cache_epoch + 1;
-  const std::string event_uuid = DeterministicCanonicalUuid(
-      "optimizer-plan-recovery-event-v2|" + request.context.database_path +
-      "|" + std::to_string(plan_cache_epoch) + "|" +
-      std::to_string(before.state.max_event_sequence + 1) + "|" +
-      std::to_string(request.context.local_transaction_id));
-  const std::string snapshot_uuid = DeterministicCanonicalUuid(
-      "optimizer-plan-recovery-snapshot-v2|" + request.context.database_path +
-      "|" + std::to_string(plan_cache_epoch) + "|" + event_uuid);
+  const EngineUuid event_uuid = GenerateCrudEngineUuid("object");
+  const EngineUuid snapshot_uuid = GenerateCrudEngineUuid("object");
   const auto appended = AppendEvent(
       request.context,
       "RECOVERY_SNAPSHOT",
-      {{"record_schema", "optimizer_plan_recovery_v2"},
+      {{"record_schema", "optimizer_plan_recovery_v3"},
        {"event_uuid", event_uuid},
        {"metadata_only", "1"},
        {"plan_cache_epoch", std::to_string(plan_cache_epoch)},

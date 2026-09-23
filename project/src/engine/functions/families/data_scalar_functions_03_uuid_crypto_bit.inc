@@ -59,7 +59,9 @@ FunctionCallResult DispatchDataScalarFunction(const FunctionCallRequest& request
     }
     scratchbird::engine::sblr::SblrSequenceRequest sequence_request;
     sequence_request.context = request.context.sblr_context;
-    sequence_request.sequence_uuid = ValueAsText(request.arguments[0].value);
+    if (!scratchbird::engine::sblr::BindSblrSequenceArgumentIdentity(
+            request.arguments[0].value, &sequence_request))
+      return RefuseFunctionInvalidInput(request, "sequence requires a binary UUID or a name argument");
     sequence_request.result_descriptor_id = "int64";
     if (request.arguments.size() > 1 && !IsSqlNull(request.arguments[1].value)) {
       std::int64_t increment = 0;
@@ -79,7 +81,9 @@ FunctionCallResult DispatchDataScalarFunction(const FunctionCallRequest& request
     }
     scratchbird::engine::sblr::SblrSequenceRequest sequence_request;
     sequence_request.context = request.context.sblr_context;
-    sequence_request.sequence_uuid = ValueAsText(request.arguments[0].value);
+    if (!scratchbird::engine::sblr::BindSblrSequenceArgumentIdentity(
+            request.arguments[0].value, &sequence_request))
+      return RefuseFunctionInvalidInput(request, "sequence requires a binary UUID or a name argument");
     sequence_request.result_descriptor_id = "int64";
     if (request.arguments.size() > 1 && !IsSqlNull(request.arguments[1].value)) {
       std::int64_t increment = 0;
@@ -99,7 +103,9 @@ FunctionCallResult DispatchDataScalarFunction(const FunctionCallRequest& request
     }
     scratchbird::engine::sblr::SblrSequenceRequest sequence_request;
     sequence_request.context = request.context.sblr_context;
-    sequence_request.sequence_uuid = ValueAsText(request.arguments[0].value);
+    if (!scratchbird::engine::sblr::BindSblrSequenceArgumentIdentity(
+            request.arguments[0].value, &sequence_request))
+      return RefuseFunctionInvalidInput(request, "sequence requires a binary UUID or a name argument");
     sequence_request.result_descriptor_id = "int64";
     return FunctionCallResult{scratchbird::engine::sblr::CurrentSblrSequenceValue(
         &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(), sequence_request)};
@@ -123,7 +129,9 @@ FunctionCallResult DispatchDataScalarFunction(const FunctionCallRequest& request
     }
     scratchbird::engine::sblr::SblrSequenceRequest sequence_request;
     sequence_request.context = request.context.sblr_context;
-    sequence_request.sequence_uuid = ValueAsText(request.arguments[0].value);
+    if (!scratchbird::engine::sblr::BindSblrSequenceArgumentIdentity(
+            request.arguments[0].value, &sequence_request))
+      return RefuseFunctionInvalidInput(request, "sequence requires a binary UUID or a name argument");
     sequence_request.result_descriptor_id = "int64";
     sequence_request.set_value = set_value;
     sequence_request.is_called = is_called;
@@ -143,7 +151,11 @@ FunctionCallResult DispatchDataScalarFunction(const FunctionCallRequest& request
     }
     scratchbird::engine::sblr::SblrDomainRequest domain_request;
     domain_request.context = request.context.sblr_context;
-    domain_request.domain_uuid = ValueAsText(request.arguments[0].value);
+    std::vector<std::uint8_t> domain_uuid_bytes;
+    if (!scratchbird::engine::sblr::CopySblrUuidPayload(request.arguments[0].value, &domain_uuid_bytes) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(request.arguments[0].value.uuid_value))
+      return RefuseFunctionInvalidInput(request, "domain helper requires a binary system UUID");
+    domain_request.domain_uuid = request.arguments[0].value.uuid_value;
     domain_request.value = request.arguments[1].value;
     if (IdIs(id, {"domain.method", "data.domain.method"})) {
       if (request.arguments.size() < 3 || IsSqlNull(request.arguments[2].value)) {

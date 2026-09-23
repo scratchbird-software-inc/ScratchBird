@@ -20,7 +20,7 @@ namespace {
 
 sblr::SblrOperationEnvelope OptimizerStatsDropMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const std::vector<std::uint8_t>& descriptor_bytes) {
   auto member = sblr::MakeSblrEnvelope(
       "engine.op.optimizer_stats_drop", "SBLR_OPTIMIZER_STATS_DROP",
@@ -51,13 +51,13 @@ int main() {
   std::atomic<unsigned> probes{0};
   std::atomic<unsigned> cancel_on_probe{0};
   auto context = BeginTransaction(fixture, &probes);
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 36240));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 36240));
+  context.current_package_uuid = parser_uuid;
   context.trace_tags.push_back("right:OBS_MANAGEMENT_CONTROL");
   context.authorization_context.security_context_generation = 1;
   api::EngineMaterializedAuthorizationGrant management_grant;
-  management_grant.grant_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object, 36242));
+  management_grant.grant_uuid =
+      Identity(NewUuid(platform::UuidKind::object, 36242));
   management_grant.subject_uuid = context.principal_uuid;
   management_grant.subject_kind = "principal";
   management_grant.target_uuid = context.database_uuid;
@@ -72,7 +72,7 @@ int main() {
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;
@@ -95,7 +95,7 @@ int main() {
               << ";key=" << DiagnosticKey(result) << '\n';
   }
   Require(bind_status == SB_ENGINE_STATUS_OK &&
-              authority.occurrence == 1 && !authority.effect_uuid.empty() &&
+              authority.occurrence == 1 && !authority.effect_uuid.is_nil() &&
               !authority.canonical_descriptor_bytes.empty(),
           "003624 engine optimizer-stats DROP binding failed");
   if (result != nullptr) (void)sb_engine_result_release(result);
@@ -261,13 +261,13 @@ int main() {
   cancel_on_probe.store(0, std::memory_order_relaxed);
   auto next_context = BeginTransaction(fixture, &probes);
   const auto next_parser_uuid =
-      Text(NewUuid(platform::UuidKind::object, 36241));
-  next_context.current_package_uuid.canonical = next_parser_uuid;
+      Identity(NewUuid(platform::UuidKind::object, 36241));
+  next_context.current_package_uuid = next_parser_uuid;
   next_context.trace_tags.push_back("right:OBS_MANAGEMENT_CONTROL");
   next_context.authorization_context.security_context_generation = 1;
   api::EngineMaterializedAuthorizationGrant next_management_grant;
-  next_management_grant.grant_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object, 36243));
+  next_management_grant.grant_uuid =
+      Identity(NewUuid(platform::UuidKind::object, 36243));
   next_management_grant.subject_uuid = next_context.principal_uuid;
   next_management_grant.subject_kind = "principal";
   next_management_grant.target_uuid = next_context.database_uuid;
@@ -279,7 +279,7 @@ int main() {
   bridge::StatementContextAcquireRequest next_acquire;
   next_acquire.engine_context = &next_context;
   next_acquire.exact_transaction_uuid =
-      next_context.transaction_uuid.canonical;
+      next_context.transaction_uuid;
   bridge::StatementContextReceiptHandle next_receipt;
   bridge::StatementContextReceiptView next_view;
   result = nullptr;

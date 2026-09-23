@@ -22,7 +22,7 @@ namespace w = scratchbird::wire;
 using Bytes = std::vector<std::uint8_t>;
 static unsigned checks = 0;
 static void Check(bool value, const char* reason) { ++checks; f::Check(value, reason); }
-static std::string Text(unsigned id) { return e::datatype_operator_projection::UuidText(f::Uuid(id)); }
+static e::EngineUuid Value(unsigned id) { return e::datatype_operator_projection::UuidValue(f::Uuid(id)); }
 static w::TypedUpdateHash Hash(std::string_view value) {
   auto result = scratchbird::core::hash::ComputeSha256Digest(
       reinterpret_cast<const std::uint8_t*>(value.data()), value.size());
@@ -39,10 +39,10 @@ static e::DmlDeleteDurableAuthorityBundleV1 Bundle(unsigned profile) {
   b.bundle_generation = 1; b.owner_context_sha256 = Hash("synthetic owner");
   b.reserved_statement_savepoint_uuid = f::Uuid(112);
   auto& d = b.descriptor; auto& s = b.security; auto& effect = b.effects;
-  s.snapshot_uuid = Text(8); s.snapshot_generation = 1;
-  s.authenticated_statement_receipt_uuid = Text(2); s.security_context_uuid = Text(7);
+  s.snapshot_uuid = Value(8); s.snapshot_generation = 1;
+  s.authenticated_statement_receipt_uuid = Value(2); s.security_context_uuid = Value(7);
   s.security_context_generation = 1; s.security_generation = 1; s.policy_generation = 1;
-  s.target_relation_uuid = Text(9); b.matched_grant_uuids = {Text(104), Text(105)};
+  s.target_relation_uuid = Value(9); b.matched_grant_uuids = {Value(104), Value(105)};
   d.row_policy_set_uuid = d.security_snapshot_uuid;
   Check(e::ComputeDmlDeleteSecuritySnapshotHashV1(s, b.matched_grant_uuids, &d.row_policy_set_sha256), "security hash");
   effect.snapshot_uuid = f::Uuid(106); effect.generation = 1;
@@ -76,7 +76,7 @@ static e::DmlDeleteDurableAuthorityBundleV1 Bundle(unsigned profile) {
   recovery.statement_savepoint_profile_uuid = f::Uuid(110); recovery.statement_savepoint_profile_generation = 1;
   recovery.durable_registry_uuid = b.bundle_uuid; recovery.durable_registry_generation = 1;
   auto& x = b.executor;
-  x.snapshot_uuid = Text(111); x.generation = 1; x.database_uuid = Text(100);
+  x.snapshot_uuid = Value(111); x.generation = 1; x.database_uuid = Value(100);
   x.installed = true; x.availability_state = e::SblrExecutorAvailabilityState::installed;
   x.row_identity_sha256 = e::HashSblrExecutorRowIdentityMaterial(
       {"dml.delete_rows", 784, "1.0", "dml_delete_rows_descriptor", "mutation_result", 1});
@@ -85,27 +85,27 @@ static e::DmlDeleteDurableAuthorityBundleV1 Bundle(unsigned profile) {
 }
 static e::EngineRequestContext Context(const e::DmlDeleteDurableAuthorityBundleV1& b) {
   e::EngineRequestContext c;
-  const auto text = e::datatype_operator_projection::UuidText;
+  const auto native = e::datatype_operator_projection::UuidValue;
   c.database_path = "synthetic_database";
-  c.database_uuid.canonical = text(b.database_uuid); c.session_uuid.canonical = text(b.session_uuid);
-  c.principal_uuid.canonical = text(b.principal_uuid);
-  c.transaction_uuid.canonical = text(b.descriptor.owning_transaction_uuid);
+  c.database_uuid = native(b.database_uuid); c.session_uuid = native(b.session_uuid);
+  c.principal_uuid = native(b.principal_uuid);
+  c.transaction_uuid = native(b.descriptor.owning_transaction_uuid);
   c.local_transaction_id = b.descriptor.owning_local_transaction_id;
-  c.statement_uuid.canonical = Text(120);
-  c.statement_receipt_uuid.canonical = text(b.descriptor.authenticated_statement_receipt_uuid);
-  c.statement_snapshot_uuid.canonical = text(b.descriptor.statement_snapshot_uuid);
+  c.statement_uuid = Value(120);
+  c.statement_receipt_uuid = native(b.descriptor.authenticated_statement_receipt_uuid);
+  c.statement_snapshot_uuid = native(b.descriptor.statement_snapshot_uuid);
   c.statement_snapshot_generation = 1;
-  c.statement_metadata_snapshot_uuid.canonical = text(b.descriptor.catalog_snapshot_uuid);
+  c.statement_metadata_snapshot_uuid = native(b.descriptor.catalog_snapshot_uuid);
   c.statement_metadata_snapshot_engine_owned = true; c.catalog_generation_id = 1;
   c.security_context_present = true; c.security_epoch = 1;
   c.authorization_context.present = true;
-  c.authorization_context.authority_uuid.canonical = b.security.security_context_uuid;
+  c.authorization_context.authority_uuid = b.security.security_context_uuid;
   c.authorization_context.principal_uuid = c.principal_uuid;
   c.authorization_context.security_context_generation = b.security.security_context_generation;
   c.authorization_context.catalog_generation_id = 1;
   c.authorization_context.security_epoch = c.authorization_context.policy_epoch = 1;
-  c.resource_admission_uuid.canonical = Text(121); c.resource_epoch = 1;
-  c.datatype_catalog_snapshot_uuid.canonical = text(b.datatypes.identity.vector_uuid);
+  c.resource_admission_uuid = Value(121); c.resource_epoch = 1;
+  c.datatype_catalog_snapshot_uuid = native(b.datatypes.identity.vector_uuid);
   c.datatype_catalog_generation = c.datatype_registry_generation = 1;
   c.transaction_isolation_level = "snapshot";
   return c;
@@ -131,17 +131,17 @@ static void VerifyOwnerAndStorage() {
     Check(!e::MatchesDmlDeleteDurableAuthorityOwnerV1(wrong, b), "different owner refused");
   };
   refuse([](auto& c) { c.database_path += "_different"; });
-  refuse([](auto& c) { c.session_uuid.canonical = Text(200); });
-  refuse([](auto& c) { c.statement_uuid.canonical = Text(200); });
-  refuse([](auto& c) { c.principal_uuid.canonical = Text(200); });
-  refuse([](auto& c) { c.statement_receipt_uuid.canonical = Text(200); });
+  refuse([](auto& c) { c.session_uuid = Value(200); });
+  refuse([](auto& c) { c.statement_uuid = Value(200); });
+  refuse([](auto& c) { c.principal_uuid = Value(200); });
+  refuse([](auto& c) { c.statement_receipt_uuid = Value(200); });
   refuse([](auto& c) { ++c.local_transaction_id; });
   refuse([](auto& c) { ++c.statement_snapshot_generation; });
   refuse([](auto& c) { ++c.snapshot_visible_through_local_transaction_id; });
   refuse([](auto& c) { c.statement_metadata_snapshot_active_excluded_local_transaction_ids.push_back(1); });
   refuse([](auto& c) { c.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids.push_back(1); });
-  refuse([](auto& c) { c.current_role_uuid.canonical = Text(200); });
-  refuse([](auto& c) { c.transaction_policy_snapshot_uuid.canonical = Text(200); });
+  refuse([](auto& c) { c.current_role_uuid = Value(200); });
+  refuse([](auto& c) { c.transaction_policy_snapshot_uuid = Value(200); });
   refuse([](auto& c) { ++c.resource_epoch; });
   refuse([](auto& c) { ++c.authorization_context.policy_epoch; });
   refuse([](auto& c) { c.cluster_transaction_active = true; });
@@ -172,7 +172,7 @@ static void VerifyOwnerAndStorage() {
   b.descriptor.owning_transaction_uuid = transaction.value.value.bytes;
   b.descriptor.owning_local_transaction_id = begin.entry.identity.local_id.value;
   b.resource_budget.owning_transaction_uuid = b.recovery.owning_transaction_uuid = b.descriptor.owning_transaction_uuid;
-  b.executor.database_uuid = uuid::UuidToString(database.value.value);
+  b.executor.database_uuid = database.value.value;
   c = Context(b); c.database_path = config.path; c.database_page_size_bytes = 16384;
   Check(e::ComputeDmlDeleteOwnerContextHashV1(c, &b.owner_context_sha256), "real owner hash");
   e::EngineApiDiagnostic diagnostic;
@@ -189,7 +189,7 @@ static void VerifyOwnerAndStorage() {
   Check(!store->StoreAuthorityBundle(conflict, &diagnostic), "immutable conflict");
   Check(store->LoadAuthorityBundle(&loaded, &diagnostic) && loaded.exact_bytes == exact, "conflict leaves bytes unchanged");
   store.reset();
-  auto wrong = c; wrong.session_uuid.canonical = Text(200);
+  auto wrong = c; wrong.session_uuid = Value(200);
   store = e::MgaDmlDeleteDurableStoreV1::Open(wrong, b.descriptor.descriptor_uuid, 1, &diagnostic);
   Check(store && !store->LoadAuthorityBundle(&loaded, &diagnostic), "reopened foreign session refused");
   store.reset();
@@ -209,10 +209,10 @@ static void VerifyOwnerAndStorage() {
   w::TypedDeleteJournalRecord head;
   w::TypedDeleteCarrierError codec_error;
   Check(w::DecodeAndValidateTypedDeleteJournal(store->chain().back(), nullptr, &head, &codec_error), "decode bound");
-  const auto marker_key = e::MgaSavepointUuidKey(Text(112));
+  const auto marker_key = e::MgaSavepointUuidKey(Value(112));
   Check(!e::ObserveUniqueMgaSavepointMarkerV1(c, "SQL_label").ok &&
-            !e::ObserveUniqueMgaSavepointMarkerV1(c, e::MgaSavepointUuidKey("malformed")).ok &&
-            !e::ObserveUniqueMgaSavepointMarkerV1(c, e::MgaSavepointUuidKey("00000000-0000-0000-0000-000000000000")).ok,
+            !e::ObserveUniqueMgaSavepointMarkerV1(c, std::string(1, '\0') + "malformed").ok &&
+            !e::ObserveUniqueMgaSavepointMarkerV1(c, e::MgaSavepointUuidKey({})).ok,
         "reserved-marker observation requires a nonzero canonical native UUID");
   auto native = e::ObserveUniqueMgaSavepointMarkerV1(c, marker_key);
   Check(native.ok && native.lifecycle == e::MgaSavepointMarkerLifecycle::missing && !native.creation_ordinal,
@@ -231,7 +231,7 @@ static void VerifyOwnerAndStorage() {
   Check(store->AbortBeforePublication() == e::MgaDmlDeleteAbortStatusV1::aborted, "abort exact bound statement");
   Check(store->LoadAuthorityBundle(&loaded, &diagnostic) && loaded.exact_bytes == exact,
         "immutable bundle survives aborted journal");
-  const auto repeated_key = e::MgaSavepointUuidKey(Text(202));
+  const auto repeated_key = e::MgaSavepointUuidKey(Value(202));
   Check(!e::CreateMgaSavepointMarker(c, repeated_key).error && !e::ReleaseMgaSavepointMarker(c, repeated_key).error &&
         !e::CreateMgaSavepointMarker(c, repeated_key).error, "duplicate-identity observation fixture");
   Check(!e::ObserveUniqueMgaSavepointMarkerV1(c, repeated_key).ok,
@@ -256,7 +256,7 @@ int main() try {
     Check(decoded.exact_bytes == bytes && decoded.descriptor.descriptor_uuid == source.descriptor.descriptor_uuid,
           "exact evidence");
     Check(std::equal(source.database_uuid.begin(), source.database_uuid.end(), bytes.begin() + 40), "binary database UUID");
-    const auto database_text = Text(100);
+    const auto database_text = scratchbird::core::uuid::UuidToString(Value(100));
     Check(std::search(bytes.begin(), bytes.end(), database_text.begin(), database_text.end()) == bytes.end(), "no text UUID");
     // Every single-byte corruption and every truncation must fail transactionally.
     for (std::size_t n = 0; n < bytes.size(); ++n) {
@@ -287,8 +287,8 @@ int main() try {
     refuse([](auto& b) { b.reserved_statement_savepoint_uuid = {}; });
     refuse([](auto& b) { b.reserved_statement_savepoint_uuid = b.descriptor.descriptor_uuid; });
     refuse([](auto& b) { b.recovery.operation_uuid = f::Uuid(201); });
-    refuse([](auto& b) { b.security.target_relation_uuid = Text(201); });
-    refuse([](auto& b) { b.security.security_context_uuid = Text(201); });
+    refuse([](auto& b) { b.security.target_relation_uuid = Value(201); });
+    refuse([](auto& b) { b.security.security_context_uuid = Value(201); });
     refuse([](auto& b) { ++b.security.security_generation; });
     refuse([](auto& b) { std::swap(b.matched_grant_uuids[0], b.matched_grant_uuids[1]); });
     refuse([](auto& b) { b.matched_grant_uuids[1] = b.matched_grant_uuids[0]; });
@@ -298,7 +298,7 @@ int main() try {
     refuse([](auto& b) { b.effects.constraint_set_sha256.fill(1); });
     refuse([](auto& b) { b.effects.target_relation_uuid = f::Uuid(201); });
     refuse([](auto& b) { b.executor.installed = false; });
-    refuse([](auto& b) { b.executor.database_uuid = Text(201); });
+    refuse([](auto& b) { b.executor.database_uuid = Value(201); });
     refuse([](auto& b) { ++b.executor.generation; });
     refuse([](auto& b) { b.executor.row_identity_sha256 = e::HashSblrExecutorRowIdentityMaterial(
         {"dml.delete", 770, "1.0", "dml_delete_descriptor", "mutation_result", 1}); });

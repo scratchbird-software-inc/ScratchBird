@@ -109,7 +109,10 @@ bool AppendLine(const std::string& path, const std::string& line) {
   record.kind = fields[1] == "SAVEPOINT" ? 1 : fields[1] == "RELEASE_SAVEPOINT" ? 2 : 3;
   record.identity = DecodeCrudTextLocal(fields[3]);
   record.uuid_identity = !record.identity.empty() && record.identity.front() == '\0';
-  if (record.uuid_identity) record.identity.erase(0, 1);
+  if (record.uuid_identity) {
+    if (!DecodeMgaSavepointUuidKey(record.identity, &record.uuid)) return false;
+    record.identity.clear();
+  }
   if (!ParseU64(fields[2], &record.transaction)) return false;
   for (unsigned i = 0; i < 3; ++i) {
     if (!ParseU64(fields[4 + i], &record.cutoffs[i])) return false;
@@ -193,6 +196,10 @@ bool ApplySavepointRecordLine(const std::string& line,
   if (!ParseU64(fields[2], &tx) || tx == 0) return false;
   const std::string name = DecodeCrudTextLocal(fields[3]);
   if (name.empty() || EncodeCrudText(name) != fields[3]) return false;
+  if (name.front() == '\0') {
+    scratchbird::core::platform::Uuid uuid;
+    if (!DecodeMgaSavepointUuidKey(name, &uuid)) return false;
+  }
   SavepointCutoffs cutoffs;
   if (!ParseU64(fields[4], &cutoffs.row_event_sequence) ||
       !ParseU64(fields[5], &cutoffs.metadata_event_sequence) ||
@@ -320,7 +327,7 @@ void ConsumeMarkerBytes(std::string* pending, SavepointParsedState* state,
           kRowStoreMagic, record.kind == 1 ? "SAVEPOINT" :
               record.kind == 2 ? "RELEASE_SAVEPOINT" : "ROLLBACK_TO_SAVEPOINT",
           std::to_string(record.transaction), EncodeCrudText(record.uuid_identity
-              ? MgaSavepointUuidKey(record.identity) : record.identity)};
+              ? MgaSavepointUuidKey(record.uuid) : record.identity)};
       for (auto value : record.cutoffs) fields.push_back(std::to_string(value));
       if (record.kind == 3)
         for (auto value : record.upper) fields.push_back(std::to_string(value));
@@ -418,12 +425,9 @@ MgaSavepointMarkerObservation ObserveUniqueMgaSavepointMarkerV1(
   MgaSavepointMarkerObservation result;
   result.transaction = context.local_transaction_id; result.identity = identity;
   result.require_unique_identity = true;
-  const auto uuid = scratchbird::core::uuid::ParseUuid(
-      identity.size() == 37 && identity.front() == '\0'
-          ? identity.substr(1) : std::string{});
-  if (context.database_path.empty() || !result.transaction || !uuid.ok() ||
-      scratchbird::core::uuid::IsNilUuid(uuid.value) ||
-      identity.substr(1) != scratchbird::core::uuid::UuidToString(uuid.value)) {
+  scratchbird::core::platform::Uuid uuid;
+  if (context.database_path.empty() || !result.transaction ||
+      !DecodeMgaSavepointUuidKey(identity, &uuid)) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.savepoint.observe", "reserved_marker_identity_required");
     return result;
   }

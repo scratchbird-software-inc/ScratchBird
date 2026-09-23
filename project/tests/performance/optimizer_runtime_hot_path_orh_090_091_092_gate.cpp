@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -44,7 +46,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
                       std::string_view id) {
   for (const auto& item : result.evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -105,8 +107,8 @@ platform::TypedUuid NewTypedUuid(platform::UuidKind kind,
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewTypedUuid(kind, salt).value);
+api::EngineUuid NativeIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewTypedUuid(kind, salt).value;
 }
 
 template <typename TResult>
@@ -144,15 +146,15 @@ std::filesystem::path UniqueTempDir(std::string_view name) {
 struct TempDatabase {
   std::filesystem::path dir;
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string collection_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid collection_uuid;
 
   explicit TempDatabase(std::string_view name) : dir(UniqueTempDir(name)) {
     path = dir / "orh090.sbdb";
     auto database = NewTypedUuid(platform::UuidKind::database, 100);
     auto filespace = NewTypedUuid(platform::UuidKind::filespace, 101);
-    database_uuid = uuid::UuidToString(database.value);
-    collection_uuid = NewUuidText(platform::UuidKind::object, 102);
+    database_uuid = database.value;
+    collection_uuid = NativeIdentity(platform::UuidKind::object, 102);
 
     db::DatabaseCreateConfig create;
     create.path = path.string();
@@ -173,15 +175,12 @@ struct TempDatabase {
 };
 
 api::EngineRequestContext Context(const std::filesystem::path& database_path,
-                                  std::uint64_t tx,
-                                  const std::string& database_uuid,
-                                  const std::string& collection_uuid) {
+                                  const api::EngineUuid& database_uuid,
+                                  const api::EngineUuid& collection_uuid) {
   api::EngineRequestContext context;
   context.database_path = database_path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.current_schema_uuid.canonical = collection_uuid;
-  context.transaction_uuid.canonical = "orh090-tx-" + std::to_string(tx);
-  context.local_transaction_id = tx;
+  context.database_uuid = database_uuid;
+  context.current_schema_uuid = collection_uuid;
   context.security_context_present = true;
   context.resource_epoch = 901;
   context.security_epoch = 902;
@@ -195,14 +194,14 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
 api::EngineRequestContext BaseContext(const TempDatabase& db,
                                       std::string request_id,
                                       std::uint64_t epoch = 901) {
-  auto context = Context(db.path, 0, db.database_uuid, db.collection_uuid);
+  auto context = Context(db.path, db.database_uuid, db.collection_uuid);
   context.request_id = std::move(request_id);
-  context.transaction_uuid.canonical.clear();
+  context.transaction_uuid = {};
   context.local_transaction_id = 0;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, epoch + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, epoch + 101);
+  context.principal_uuid =
+      NativeIdentity(platform::UuidKind::principal, epoch + 100);
+  context.session_uuid =
+      NativeIdentity(platform::UuidKind::object, epoch + 101);
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -259,11 +258,11 @@ void AddFragment(api::EngineDocumentInsertRequest* request,
 
 api::EngineDocumentInsertResult InsertDocument(
     const api::EngineRequestContext& context,
-    std::string uuid,
+    api::EngineUuid uuid,
     std::vector<std::pair<std::string, std::string>> fragments) {
   api::EngineDocumentInsertRequest insert;
   insert.context = context;
-  insert.target_object.uuid.canonical = std::move(uuid);
+  insert.target_object.uuid = std::move(uuid);
   for (const auto& [path, value] : fragments) {
     AddFragment(&insert, path, value);
   }
@@ -290,7 +289,7 @@ api::EngineNoSqlProviderGenerationMetadata CurrentDocumentGeneration(
           "generation family mismatch");
   Require(metadata.provider_id == "nosql.local.document.path_provider",
           "generation provider id mismatch");
-  Require(metadata.collection_uuid == context.current_schema_uuid.canonical,
+  Require(metadata.collection_uuid == context.current_schema_uuid,
           "generation collection identity mismatch");
   Require(metadata.generation_id != 0, "generation id missing");
   Require(!metadata.backup_metadata_ref.empty(),
@@ -365,7 +364,7 @@ api::EngineDocumentPhysicalProof DocumentProof(
   proof.provider_contract.provider_generation.provider_id =
       generation.provider_id;
   proof.provider_contract.provider_generation.database_uuid =
-      context.database_uuid.canonical;
+      context.database_uuid;
   proof.provider_contract.provider_generation.collection_uuid =
       generation.collection_uuid;
   proof.provider_contract.provider_generation.publish_state = "published";
@@ -398,7 +397,7 @@ void RequireNoForbiddenAuthorityEvidence(const api::EngineApiResult& result) {
           "client_autocommit_authority=true",
           "wal_recovery_authority=true"}) {
       Require(item.evidence_kind.find(forbidden) == std::string::npos &&
-                  item.evidence_id.find(forbidden) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFind(item.evidence_id, forbidden) == std::string::npos,
               "forbidden authority evidence leaked");
     }
   }
@@ -410,7 +409,7 @@ std::vector<api::DocumentPathRowEvidence> RowsFromArtifact(
   for (const auto& path : artifact.path_dictionary) {
     paths[path.path_id] = path;
   }
-  std::map<std::tuple<std::string, std::string, std::uint64_t>,
+  std::map<std::tuple<api::EngineUuid, api::EngineUuid, std::uint64_t>,
            api::DocumentPathRowEvidence>
       rows;
   for (const auto& posting : artifact.postings) {
@@ -502,13 +501,13 @@ void ProvePersistentGenerationAndIndexedProviderUse() {
   TempDatabase db("persistent_generation");
   auto writer = Begin(db, "orh091-writer");
   InsertDocument(writer,
-                 "orh090-doc-a",
+                 scratchbird::tests::FixtureUuid(1499, 1),
                  {{"tenant.id", "T1"},
                   {"status", "active"},
                   {"line_items.0.sku", "SKU-1"},
                   {"line_items.1.sku", "SKU-2"}});
   InsertDocument(writer,
-                 "orh090-doc-b",
+                 scratchbird::tests::FixtureUuid(1499, 2),
                  {{"tenant.id", "T2"},
                   {"status", "inactive"},
                   {"line_items.0.sku", "SKU-3"}});
@@ -576,7 +575,7 @@ void ProvePersistentGenerationAndIndexedProviderUse() {
   api::EngineDocumentFindRequest false_claim = find;
   false_claim.physical_proof.document_path_index_runtime_proven = true;
   false_claim.physical_proof.provider_contract.index_generation.index_uuid =
-      "not-the-completed-document-path-index";
+      scratchbird::tests::FixtureUuid(1499, 5);
   result = api::EngineDocumentFind(false_claim);
   Require(!result.ok,
           "caller-supplied index runtime proof bypassed route validation");
@@ -628,7 +627,7 @@ void ProvePersistentGenerationAndIndexedProviderUse() {
   auto delete_tx = Begin(db, "orh091-delete");
   api::EngineDocumentDeleteRequest delete_request;
   delete_request.context = delete_tx;
-  delete_request.target_object.uuid.canonical = "orh090-doc-b";
+  delete_request.target_object.uuid = scratchbird::tests::FixtureUuid(1499, 2);
   auto delete_result = api::EngineDocumentDelete(delete_request);
   Require(delete_result.ok, "document delete did not publish provider generation");
   Require(EvidenceContains(delete_result,
@@ -645,7 +644,7 @@ void ProveRollbackReopenRepairAndMgaRecheck() {
   TempDatabase db("rollback_reopen_repair");
   auto committed_writer = Begin(db, "orh091-committed-writer");
   InsertDocument(committed_writer,
-                 "orh091-committed-doc",
+                 scratchbird::tests::FixtureUuid(1499, 3),
                  {{"tenant.id", "T-COMMITTED"},
                   {"status", "active"},
                   {"line_items.0.sku", "SKU-COMMITTED"}});
@@ -653,7 +652,7 @@ void ProveRollbackReopenRepairAndMgaRecheck() {
 
   auto rolled_back_writer = Begin(db, "orh091-rollback-writer");
   InsertDocument(rolled_back_writer,
-                 "orh091-rolled-back-doc",
+                 scratchbird::tests::FixtureUuid(1499, 4),
                  {{"tenant.id", "T-ROLLBACK"},
                   {"status", "rolled_back"},
                   {"line_items.0.sku", "SKU-ROLLBACK"}});
@@ -746,8 +745,8 @@ void ProveLifecycleCleanupAndDatabaseIsolation() {
   TempDatabase b("lifecycle_b");
   auto ctx_a = Begin(a, "orh091-lifecycle-a");
   auto ctx_b = Begin(b, "orh091-lifecycle-b");
-  InsertDocument(ctx_a, "orh090-doc-a", {{"tenant.id", "A"}});
-  InsertDocument(ctx_b, "orh090-doc-b", {{"tenant.id", "B"}});
+  InsertDocument(ctx_a, scratchbird::tests::FixtureUuid(1499, 1), {{"tenant.id", "A"}});
+  InsertDocument(ctx_b, scratchbird::tests::FixtureUuid(1499, 2), {{"tenant.id", "B"}});
   Commit(ctx_a);
   Commit(ctx_b);
   const auto gen_a = CurrentDocumentGeneration(ctx_a);

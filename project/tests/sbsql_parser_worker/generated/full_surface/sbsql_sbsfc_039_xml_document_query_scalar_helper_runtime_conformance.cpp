@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -53,8 +54,8 @@ SblrResult Run(const FunctionRegistry& registry,
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
-  request.context.sblr_context.database_uuid = "SBSFC-039-xml-document-query-runtime-db";
-  request.context.sblr_context.transaction_uuid = "SBSFC-039-xml-document-query-runtime-tx";
+  request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuid(1156, 39);
+  request.context.sblr_context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 40);
   request.context.sblr_context.transaction_context_present = true;
   request.context.sblr_context.local_transaction_id = 39039;
   for (std::size_t index = 0; index < arguments.size(); ++index) {
@@ -75,7 +76,10 @@ bool ExpectOkScalar(const SblrResult& result, std::string_view case_id) {
     for (const auto& diagnostic : result.diagnostics) {
       std::cerr << "  diagnostic=" << diagnostic.diagnostic_id << "\n";
       for (const auto& field : diagnostic.fields) {
-        std::cerr << "    " << field.key << "=" << field.value << "\n";
+        std::cerr << "    " << field.key << "=";
+        if (const auto* text = std::get_if<std::string>(&field.value)) std::cerr << *text;
+        else std::cerr << "<binary16 UUID>";
+        std::cerr << "\n";
       }
     }
     return false;

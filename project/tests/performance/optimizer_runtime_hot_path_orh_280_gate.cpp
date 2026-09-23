@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_hot_path_execution.hpp"
 
 #include "resource_governance_admission.hpp"
@@ -64,18 +65,15 @@ std::string HashValues(const std::vector<std::int64_t>& values) {
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.request_id = "orh280-sblr-hot-path";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000280001";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-000000280002";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000280003";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000280004";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000280005";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000280006";
-  context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7000-8000-000000280007";
-  context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7000-8000-000000280008";
-  context.catalog_epoch_uuid.canonical =
-      "019f0000-0000-7000-8000-000000280009";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280001");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280002");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280003");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280004");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280005");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280006");
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280007");
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280008");
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280009");
   context.local_transaction_id = 280;
   context.snapshot_visible_through_local_transaction_id = 0;
   context.transaction_isolation_level = "snapshot";
@@ -92,12 +90,12 @@ api::EngineRequestContext Context() {
 exec::PhysicalMgaStatementContext StatementContext(
     const api::EngineRequestContext& context) {
   exec::PhysicalMgaStatementContext statement;
-  statement.statement_uuid = context.statement_uuid.canonical;
-  statement.owning_transaction_uuid = context.transaction_uuid.canonical;
+  statement.statement_uuid = context.statement_uuid;
+  statement.owning_transaction_uuid = context.transaction_uuid;
   statement.statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   statement.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   statement.owning_local_transaction_id = context.local_transaction_id;
   statement.visible_committed_high_watermark =
       context.snapshot_visible_through_local_transaction_id;
@@ -132,8 +130,7 @@ exec::CanonicalExecutionMgaAuthority Authority(
 
 api::EngineDescriptor Descriptor() {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical =
-      "019f0000-0000-7000-8000-000000280100";
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280100");
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
   descriptor.encoded_descriptor = "type=int64";
@@ -146,9 +143,9 @@ sblr::SblrOperationEnvelope Envelope() {
                                          "trace.orh280.hot_path");
   envelope.opcode_code = 0x1207;
   envelope.parser_package_uuid =
-      "019f0000-0000-7000-8000-000000280010";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280010");
   envelope.registry_snapshot_uuid =
-      "019f0000-0000-7000-8000-000000280011";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280011");
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.contains_sql_text = false;
@@ -160,8 +157,7 @@ api::EngineApiRequest ApiRequest(const api::EngineRequestContext& context) {
   api::EngineApiRequest request;
   request.context = context;
   request.operation_id = "query.execute";
-  request.target_object.uuid.canonical =
-      "019f0000-0000-7000-8000-000000280200";
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000280200");
   request.target_object.object_kind = "table";
   request.descriptors.push_back(Descriptor());
   api::EngineTypedValue parameter;
@@ -327,7 +323,7 @@ void RequireAccepted(const sblr::SblrHotPathExecutionResult& result) {
               result.executable_statement_use_receipt != nullptr,
           "prepared statement-use receipt was not revalidated before execution");
   Require(result.executable_statement_use_receipt->statement_context()
-                  .statement_uuid == Context().statement_uuid.canonical,
+                  .statement_uuid == Context().statement_uuid,
           "successful hot path did not retain exact statement identity");
   Require(result.executable_statement_use_receipt->statement_context()
                   .visible_committed_high_watermark == 0,

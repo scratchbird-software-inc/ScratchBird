@@ -9,6 +9,10 @@
 // SBSQL source-layout fragment. Included only by crud_store.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "crud_support/crud_store.hpp"
+#include "catalog/binary_catalog_metadata.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include <iterator>
+#include <charconv>
 #include "dml/dml_target_access_plan.hpp"
 
 #include "local_transaction_store.hpp"
@@ -35,10 +39,70 @@
 namespace scratchbird::engine::internal_api {
 namespace {
 
-constexpr const char* kCrudMagic = "SBCRUD1";
+constexpr const char* kCrudMagic = "SBCRUD2";
 constexpr char kCompositeSeparator = '\x1f';
-constexpr const char* kCrudLargeValueLocatorPrefix = "@SB_OVERFLOW_V1:";
+constexpr const char* kCrudLargeValueLocatorPrefix = "SBCRLV02";
 constexpr std::size_t kCrudLargeValueChunkBytes = 2048;
+
+// Compatibility event records are subordinate projections. The durable MGA
+// inventory overlay below owns transaction finality, including replay.
+bool ValidateCrudBinaryEvent(const std::vector<std::string>& fields) {
+  if (fields.size()<3 || fields[0]!=kCrudMagic) return false;
+  const auto& kind=fields[1];
+  const std::map<std::string,std::size_t> widths={
+    {"TX_BEGIN",4},{"TX_PREPARE",3},{"TX_COMMIT",3},{"TX_ROLLBACK",3},
+    {"SAVEPOINT",5},{"RELEASE_SAVEPOINT",4},{"ROLLBACK_TO_SAVEPOINT",4},
+    {"TABLE_CREATE",6},{"TABLE_CREATE_V2",10},{"ROW_VERSION",8},{"ROW_VERSION_V2",10},
+    {"INDEX_CREATE",8},{"INDEX_CREATE_V2",15},{"INDEX_ENTRY",9},{"INDEX_ENTRY_V2",12},
+    {"OVERFLOW_VALUE",11},{"OVERFLOW_CHUNK",7}};
+  const auto width=widths.find(kind);
+  if(width==widths.end() || fields.size()!=width->second) return false;
+  const auto number=[](const std::string& value) {
+    std::uint64_t n=0;
+    const auto parsed=std::from_chars(value.data(),value.data()+value.size(),n);
+    return parsed.ec==std::errc{} && parsed.ptr==value.data()+value.size() && std::to_string(n)==value;
+  };
+  if(!number(fields[2])) return false;
+  const auto uuid=[&](std::size_t index,bool optional=false) {
+    EngineUuid value; return ReadMetadataUuid(fields[index],&value,optional);
+  };
+  if(kind=="TX_BEGIN") return uuid(3);
+  if(kind=="TABLE_CREATE") return uuid(3);
+  if(kind=="TABLE_CREATE_V2") return uuid(3) && uuid(8,true);
+  if(kind=="ROW_VERSION") return uuid(3)&&uuid(4)&&uuid(5);
+  if(kind=="ROW_VERSION_V2") return uuid(3)&&uuid(4)&&uuid(5)&&uuid(7,true)&&number(fields[8]);
+  if(kind=="INDEX_CREATE"||kind=="INDEX_CREATE_V2") return uuid(3)&&uuid(4);
+  if(kind=="INDEX_ENTRY") return uuid(3)&&uuid(4)&&uuid(7)&&uuid(8);
+  if(kind=="INDEX_ENTRY_V2") return uuid(3)&&uuid(4)&&uuid(10)&&uuid(11);
+  if(kind=="OVERFLOW_VALUE") return uuid(3)&&uuid(4)&&uuid(5)&&uuid(6)&&number(fields[8]);
+  if(kind=="OVERFLOW_CHUNK") return uuid(3)&&number(fields[4])&&number(fields[6]);
+  if(kind=="SAVEPOINT") return number(fields[4]);
+  return true;
+}
+EngineUuid CrudBinaryIdentity(std::string_view bytes, bool optional=false) {
+  EngineUuid id;
+  if (!ReadMetadataUuid(bytes,&id,optional)) throw std::invalid_argument("crud_binary_identity_required");
+  return id;
+}
+bool ReadCrudBinaryEvents(const std::string& path, std::vector<std::vector<std::string>>* output) {
+  std::error_code error;
+  const bool exists=std::filesystem::exists(path,error);
+  if(error || !output) return false;
+  if(!exists) { output->clear(); return true; }
+  std::ifstream in(path,std::ios::binary);
+  if(!in) return false;
+  const std::string bytes((std::istreambuf_iterator<char>(in)),{});
+  if(in.bad()) return false;
+  std::vector<std::string> records;
+  if(!DecodeMgaMetadataStream({reinterpret_cast<const std::uint8_t*>(bytes.data()),bytes.size()},&records)) return false;
+  std::vector<std::vector<std::string>> staged;
+  for(const auto& record:records) {
+    std::vector<std::string> fields;
+    if(!DecodeMgaMetadataFields(record,&fields)||!ValidateCrudBinaryEvent(fields)) return false;
+    staged.push_back(std::move(fields));
+  }
+  output->swap(staged); return true;
+}
 
 // SEARCH_KEY: SB_MGA_CRUD_SUBORDINATE_TXN_AUTHORITY
 using scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase;

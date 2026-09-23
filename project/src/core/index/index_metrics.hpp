@@ -12,6 +12,7 @@
 
 #include "index_access_method.hpp"
 #include "metric_registry.hpp"
+#include "metric_support_projection.hpp"
 
 #include <cstdint>
 #include <string>
@@ -24,7 +25,7 @@ using scratchbird::core::metrics::MetricValue;
 using scratchbird::core::platform::u64;
 
 struct IndexMetricIdentity {
-  std::string index_uuid;
+  scratchbird::core::metrics::MetricUuid index_uuid;
   std::string index_family;
   std::string route_kind = "unspecified";
   std::string index_generation;
@@ -40,7 +41,7 @@ struct IndexMetricIdentity {
   std::string result = "ok";
   std::string reason = "none";
   std::string page_family = "index";
-  std::string filespace_uuid = "none";
+  scratchbird::core::metrics::MetricUuid filespace_uuid;
   std::string agent_class = "none";
 };
 
@@ -184,6 +185,7 @@ struct IndexOperationMetricSample {
 };
 
 struct IndexOperationMetricPublishResult {
+  scratchbird::core::metrics::MetricUuid index_uuid;
   bool ok = false;
   std::string diagnostic_code;
   std::string detail;
@@ -202,10 +204,11 @@ struct IndexOperationMetricSupportBundleLimits {
 
 struct IndexOperationMetricSupportBundleRow {
   std::string key;
-  std::string value;
+  scratchbird::core::metrics::MetricScalar value;
   std::string metric_family;
-  std::string labels;
-  std::string index_uuid;
+  scratchbird::core::metrics::MetricLabelSet labels;
+  scratchbird::core::metrics::MetricSupportProjection metric;
+  scratchbird::core::metrics::MetricUuid index_uuid;
   std::string index_family;
   std::string route_kind;
   std::string operation;
@@ -242,7 +245,7 @@ struct IndexOperationMetricSupportBundleRequest {
   std::vector<MetricValue> metrics;
   IndexOperationMetricSupportBundleLimits limits;
   IndexOperationMetricAuthorityBoundary authority_boundary;
-  std::string filter_index_uuid;
+  scratchbird::core::metrics::MetricUuid filter_index_uuid;
   bool require_all_operation_counters = true;
   bool descriptor_only_static_evidence = false;
   bool local_cluster_participation = false;

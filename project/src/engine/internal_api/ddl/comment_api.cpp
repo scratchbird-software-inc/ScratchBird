@@ -15,7 +15,7 @@ namespace scratchbird::engine::internal_api {
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DDL_COMMENT_API_BEHAVIOR
 EngineCommentOnObjectResult EngineCommentOnObject(const EngineCommentOnObjectRequest& request) {
   auto comment_request = request;
-  const std::string comment_target_uuid = request.target_object.uuid;
+  const EngineUuid comment_target_uuid = request.target_object.uuid;
   const std::string comment_target_kind =
       request.target_object.object_kind.empty() ? "object" : request.target_object.object_kind;
 

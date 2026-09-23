@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "mga_relation_store/mga_relation_locator.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
@@ -62,47 +63,29 @@ std::string ScopedRelationStoreRoot(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_relation_scope";
 }
 
-std::string ScopedRelationSegmentName(const std::string& table_uuid) {
-  std::string name;
-  name.reserve(table_uuid.size());
-  for (const char ch : table_uuid) {
-    const bool safe = (ch >= 'a' && ch <= 'z') ||
-                      (ch >= 'A' && ch <= 'Z') ||
-                      (ch >= '0' && ch <= '9') ||
-                      ch == '-' || ch == '_';
-    name.push_back(safe ? ch : '_');
-  }
-  return name.empty() ? std::string("unknown") : name;
-}
-
 std::string ScopedRowStorePath(const EngineRequestContext& context,
-                               const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".rows";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".rows", false);
 }
 
 std::string ScopedRowBinaryStorePath(const EngineRequestContext& context,
-                                     const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".rows.sbnr";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".rows.sbnr", false);
 }
 
 std::string ScopedIndexStorePath(const EngineRequestContext& context,
-                                 const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".indexes";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".indexes", false);
 }
 
 std::string ScopedIndexBinaryStorePath(const EngineRequestContext& context,
-                                       const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".indexes.sbnx";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".indexes.sbnx", false);
 }
 
 std::string ScopedSummaryStorePath(const EngineRequestContext& context,
-                                   const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".summary";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".summary", false);
 }
 
 std::string SecondaryIndexDeltaLedgerStorePath(
@@ -127,48 +110,6 @@ bool FileExistsAndNotEmpty(const std::string& path) {
   std::error_code error;
   return std::filesystem::exists(path, error) &&
          std::filesystem::file_size(path, error) != 0;
-}
-
-std::vector<std::string> ReadLines(const std::string& path) {
-  std::vector<std::string> lines;
-  std::ifstream in(path, std::ios::binary);
-  std::string line;
-  while (std::getline(in, line)) {
-    if (!line.empty() && line.back() == '\r') {
-      line.pop_back();
-    }
-    if (!line.empty()) {
-      lines.push_back(std::move(line));
-    }
-  }
-  return lines;
-}
-
-std::vector<std::string> SplitTabs(const std::string& line) {
-  std::vector<std::string> fields;
-  std::size_t begin = 0;
-  while (begin <= line.size()) {
-    const auto end = line.find('\t', begin);
-    fields.push_back(line.substr(begin, end == std::string::npos
-                                           ? std::string::npos
-                                           : end - begin));
-    if (end == std::string::npos) {
-      break;
-    }
-    begin = end + 1;
-  }
-  return fields;
-}
-
-std::string JoinLine(const std::vector<std::string>& fields) {
-  std::string line;
-  for (std::size_t i = 0; i < fields.size(); ++i) {
-    if (i != 0) {
-      line.push_back('\t');
-    }
-    line += fields[i];
-  }
-  return line;
 }
 
 std::uint64_t ParseU64(const std::string& value) {
@@ -205,14 +146,14 @@ bool IsUniqueMgaIndex(const CrudIndexRecord& index) {
              index.key_envelopes.end();
 }
 
-EngineApiDiagnostic ParseLedgerTypedUuid(const std::string& text,
+EngineApiDiagnostic ParseLedgerTypedUuid(const EngineUuid& identity,
                                          scratchbird::core::platform::UuidKind kind,
                                          idx::TypedUuid* out) {
-  if (text.empty() || out == nullptr) {
+  if (identity.is_nil() || out == nullptr) {
     return MakeInvalidRequestDiagnostic("mga.secondary_index_delta_ledger",
                                         "typed_uuid_required");
   }
-  const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(kind, text);
+  const auto parsed = scratchbird::core::uuid::MakeTypedUuid(kind, identity);
   if (!parsed.ok()) {
     return DiagnosticFromSecondaryIndexDeltaLedger(
         parsed.diagnostic,
@@ -243,13 +184,9 @@ std::string MakeSecondaryIndexDeltaEvidenceReference(
     const EngineRequestContext& context,
     const MgaSecondaryIndexDeltaLedgerEntryInput& input,
     const std::string& key) {
-  const std::string request_id = context.request_id.empty() ? "request_uuid_unset"
-                                                           : context.request_id;
-  return "engine.dml.secondary_index_delta:" + request_id +
-         ":index=" + input.index.index_uuid +
-         ":row=" + input.row_uuid +
-         ":version=" + input.version_uuid +
-         ":key_hash=" + std::to_string(ChecksumText(key));
+  return EncodeMgaMetadataFields({"secondary.index.delta.evidence.v2", context.request_id,
+      MetadataUuidBytes(input.index.index_uuid), MetadataUuidBytes(input.row_uuid),
+      MetadataUuidBytes(input.version_uuid), std::to_string(ChecksumText(key))});
 }
 
 std::uint64_t MaxCommittedLocalTransactionId(const RelationReadSnapshot& state) {
@@ -333,10 +270,10 @@ bool OverlayEntryMatchesPredicate(const idx::SecondaryIndexOverlayEntry& entry,
 
 bool LedgerRecordRelevantToIndex(const idx::SecondaryIndexDeltaLedgerRecord& record,
                                  const CrudIndexRecord& index,
-                                 const std::string& table_uuid) {
-  return scratchbird::core::uuid::UuidToString(record.delta.index_uuid.value) ==
+                                 const EngineUuid& table_uuid) {
+  return record.delta.index_uuid.value ==
              index.index_uuid &&
-         scratchbird::core::uuid::UuidToString(record.delta.table_uuid.value) ==
+         record.delta.table_uuid.value ==
              table_uuid;
 }
 
@@ -358,7 +295,7 @@ EngineApiDiagnostic OverlayLookupDiagnostic(
 }
 
 std::optional<CrudIndexRecord> SelectCrudIndexForPredicate(const RelationReadSnapshot& state,
-                                                           const std::string& table_uuid,
+                                                           const EngineUuid& table_uuid,
                                                            const EnginePredicateEnvelope& predicate,
                                                            std::uint64_t observer_tx) {
   for (const auto& index : VisibleCrudIndexesForTable(state, table_uuid, observer_tx)) {
@@ -429,7 +366,7 @@ EngineApiDiagnostic Dpc024MergeDiagnostic(const std::string& code,
 
 void AddMergeEvidence(std::vector<EngineEvidenceReference>* evidence,
                       const std::string& kind,
-                      const std::string& value) {
+                      const EngineEvidenceValue& value) {
   if (evidence == nullptr) { return; }
   evidence->push_back({kind, value});
 }
@@ -442,7 +379,7 @@ EngineApiDiagnostic Dpc025RecoveryDiagnostic(const std::string& code,
 
 void AddRecoveryEvidence(std::vector<EngineEvidenceReference>* evidence,
                          const std::string& kind,
-                         const std::string& value) {
+                         const EngineEvidenceValue& value) {
   if (evidence == nullptr) { return; }
   evidence->push_back({kind, value});
 }
@@ -456,7 +393,7 @@ EngineApiDiagnostic Dpc033CleanupDiagnostic(const std::string& code,
 
 void AddIndexGarbageCleanupEvidence(std::vector<EngineEvidenceReference>* evidence,
                                     const std::string& kind,
-                                    const std::string& value) {
+                                    const EngineEvidenceValue& value) {
   if (evidence == nullptr) { return; }
   evidence->push_back({kind, value});
 }
@@ -511,13 +448,13 @@ bool Dpc025DeltaRequiresPublishedBase(idx::SecondaryIndexDeltaKind kind) {
 
 bool Dpc025PublishedBaseContainsRecord(const RelationReadSnapshot& state,
                                        const CrudIndexRecord& index,
-                                       const std::string& table_uuid,
+                                       const EngineUuid& table_uuid,
                                        const idx::SecondaryIndexDeltaLedgerRecord& record,
                                        EngineApiDiagnostic* diagnostic) {
-  const std::string row_uuid =
-      scratchbird::core::uuid::UuidToString(record.delta.row_uuid.value);
-  const std::string version_uuid =
-      scratchbird::core::uuid::UuidToString(record.delta.version_uuid.value);
+  const EngineUuid row_uuid =
+      record.delta.row_uuid.value;
+  const EngineUuid version_uuid =
+      record.delta.version_uuid.value;
   for (const auto& entry : state.index_entries) {
     if (entry.index_uuid != index.index_uuid ||
         entry.table_uuid != table_uuid ||
@@ -579,8 +516,8 @@ EngineApiDiagnostic Dpc033TableSnapshotEntryForCleanup(
 }
 
 std::optional<CrudIndexRecord> FindVisibleCrudIndexByUuid(const RelationReadSnapshot& state,
-                                                          const std::string& table_uuid,
-                                                          const std::string& index_uuid,
+                                                          const EngineUuid& table_uuid,
+                                                          const EngineUuid& index_uuid,
                                                           std::uint64_t observer_tx) {
   for (const auto& index : VisibleCrudIndexesForTable(state, table_uuid, observer_tx)) {
     if (index.index_uuid == index_uuid) { return index; }
@@ -590,8 +527,8 @@ std::optional<CrudIndexRecord> FindVisibleCrudIndexByUuid(const RelationReadSnap
 
 bool LedgerRecordBelongsToUniqueIndex(const idx::SecondaryIndexDeltaLedgerRecord& record,
                                       const RelationReadSnapshot& state) {
-  const std::string index_uuid =
-      scratchbird::core::uuid::UuidToString(record.delta.index_uuid.value);
+  const EngineUuid index_uuid =
+      record.delta.index_uuid.value;
   for (const auto& index : state.indexes) {
     if (index.index_uuid == index_uuid && IsUniqueMgaIndex(index)) {
       return true;
@@ -609,8 +546,8 @@ EngineApiDiagnostic CrudIndexEntryForMergedBase(const CrudIndexRecord& index,
   }
   CrudIndexEntryRecord entry;
   entry.creator_tx = base.committed_local_transaction_id;
-  entry.index_uuid = scratchbird::core::uuid::UuidToString(base.index_uuid.value);
-  entry.table_uuid = scratchbird::core::uuid::UuidToString(base.table_uuid.value);
+  entry.index_uuid = base.index_uuid.value;
+  entry.table_uuid = base.table_uuid.value;
   entry.column_name = index.column_name;
   entry.family = DeltaPayloadField(base.key_payload, "family");
   if (entry.family.empty()) {
@@ -620,10 +557,10 @@ EngineApiDiagnostic CrudIndexEntryForMergedBase(const CrudIndexRecord& index,
   entry.entry_kind = "exact";
   entry.key_value = DeltaPayloadField(base.key_payload, "key");
   entry.payload_value = DeltaPayloadField(base.key_payload, "payload");
-  entry.row_uuid = scratchbird::core::uuid::UuidToString(base.row_uuid.value);
-  entry.version_uuid = scratchbird::core::uuid::UuidToString(base.version_uuid.value);
-  if (entry.index_uuid.empty() || entry.table_uuid.empty() || entry.row_uuid.empty() ||
-      entry.version_uuid.empty() || entry.key_value.empty()) {
+  entry.row_uuid = base.row_uuid.value;
+  entry.version_uuid = base.version_uuid.value;
+  if (entry.index_uuid.is_nil() || entry.table_uuid.is_nil() || entry.row_uuid.is_nil() ||
+      entry.version_uuid.is_nil() || entry.key_value.empty()) {
     return Dpc024MergeDiagnostic("corrupt_ledger_refused",
                                  "mga.secondary_index_delta_merge.corrupt_base_entry_refused",
                                  "merged base index entry lost required identity or key payload");
@@ -636,7 +573,7 @@ EngineApiDiagnostic RewriteMgaIndexEntriesForMergedIndex(
     const EngineRequestContext& context,
     const RelationReadSnapshot& state,
     const CrudIndexRecord& index,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<idx::SecondaryIndexBaseEntry>& base_entries) {
   // New writes are relation-scoped and readers deliberately prefer the
   // scoped segment over the legacy database-wide sidecar.  Publishing a
@@ -645,7 +582,11 @@ EngineApiDiagnostic RewriteMgaIndexEntriesForMergedIndex(
   // the same physical authority that supplied this relation's base entries;
   // retain the legacy path only for databases that have not yet created a
   // scoped segment.
-  const std::string scoped_path = ScopedIndexStorePath(context, table_uuid);
+  const auto general_path = ScopedIndexStorePath(context, table_uuid);
+  const auto binary_path = ScopedIndexBinaryStorePath(context, table_uuid);
+  if (FileExistsAndNotEmpty(general_path) && FileExistsAndNotEmpty(binary_path))
+    return MakeInvalidRequestDiagnostic("mga.index_store", "mixed_index_segments_require_consolidation");
+  const std::string scoped_path = FileExistsAndNotEmpty(general_path) ? general_path : binary_path;
   const bool relation_uses_scoped_storage =
       FileExistsAndNotEmpty(ScopedRowStorePath(context, table_uuid)) ||
       FileExistsAndNotEmpty(ScopedRowBinaryStorePath(context, table_uuid)) ||
@@ -655,61 +596,47 @@ EngineApiDiagnostic RewriteMgaIndexEntriesForMergedIndex(
   const std::string path = relation_uses_scoped_storage
                                ? scoped_path
                                : IndexStorePath(context);
-  const auto existing_lines = ReadLines(path);
-  std::vector<std::string> output_lines;
-  output_lines.reserve(existing_lines.size() + base_entries.size());
+  std::vector<idx::byte> bytes;
+  std::vector<CrudIndexEntryRecord> existing;
+  if (!ReadCompleteMgaBinaryFile(path, &bytes) || !DecodeScopedIndexBinaryBytes(bytes, &existing))
+    return Dpc024MergeDiagnostic("corrupt_ledger_refused", "mga.secondary_index_delta_merge.index_store_invalid", "binary index segment cannot be decoded");
+  std::string output_bytes;
   std::uint64_t max_sequence = 0;
-  for (const auto& line : existing_lines) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() >= 13 && fields[0] == kRowStoreMagic &&
-        fields[1] == "INDEX_ENTRY") {
-      max_sequence = std::max(max_sequence, ParseU64(fields[3]));
-      if (fields[4] == index.index_uuid && fields[5] == table_uuid) {
-        const std::uint64_t creator_tx = ParseU64(fields[2]);
-        const auto tx = state.transactions.find(creator_tx);
-        const bool transaction_still_live =
-            tx != state.transactions.end() &&
-            (tx->second == "active" || tx->second == "prepared");
-        if (!CrudCreatorVisible(state, creator_tx, ParseU64(fields[3]), 0) &&
-            transaction_still_live) {
-          output_lines.push_back(line);
-        }
-        continue;
-      }
+  const auto append = [&](const CrudIndexEntryRecord& entry) {
+    return AppendScopedIndexEntryBinaryRecord(&output_bytes, entry.creator_tx, entry.event_sequence,
+        entry.index_uuid, entry.table_uuid, entry.column_name, entry.family, entry.entry_kind,
+        entry.key_value, entry.payload_value, entry.row_uuid, entry.version_uuid);
+  };
+  for (const auto& entry : existing) {
+    max_sequence = std::max(max_sequence, entry.event_sequence);
+    if (entry.index_uuid == index.index_uuid && entry.table_uuid == table_uuid) {
+      const auto tx = state.transactions.find(entry.creator_tx);
+      const bool live = tx != state.transactions.end() && (tx->second == "active" || tx->second == "prepared");
+      if (CrudCreatorVisible(state, entry.creator_tx, entry.event_sequence, 0) || !live) continue;
     }
-    output_lines.push_back(line);
+    if (!append(entry)) return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_invalid");
   }
-
-  std::uint64_t event_sequence = max_sequence + 1;
+  std::uint64_t event_sequence = 0;
+  if (!base_entries.empty()) {
+    const auto reserved = ReserveEventSequenceRange(context, "index_entries", IndexStorePath(context),
+        static_cast<std::uint64_t>(base_entries.size()), [&context, max_sequence]() {
+          const auto scanned = ScanNextIndexEventSequence(context);
+          return scanned == 0 || max_sequence == UINT64_MAX ? 0 : std::max(scanned, max_sequence + 1);
+        });
+    if (!reserved.ok) return reserved.diagnostic;
+    event_sequence = reserved.first;
+  }
   for (const auto& base : base_entries) {
-    if (scratchbird::core::uuid::UuidToString(base.index_uuid.value) != index.index_uuid ||
-        scratchbird::core::uuid::UuidToString(base.table_uuid.value) != table_uuid ||
-        base.deleted) {
-      continue;
-    }
+    if (base.index_uuid.value != index.index_uuid || base.table_uuid.value != table_uuid || base.deleted) continue;
     CrudIndexEntryRecord entry;
     const auto converted = CrudIndexEntryForMergedBase(index, base, &entry);
-    if (converted.error) { return converted; }
-    entry.event_sequence = event_sequence++;
-    entry.sequence = entry.event_sequence;
-    output_lines.push_back(JoinLine({kRowStoreMagic,
-                                     "INDEX_ENTRY",
-                                     std::to_string(entry.creator_tx),
-                                     std::to_string(entry.event_sequence),
-                                     entry.index_uuid,
-                                     entry.table_uuid,
-                                     entry.column_name,
-                                     entry.family,
-                                     entry.entry_kind,
-                                     entry.key_value,
-                                     entry.payload_value,
-                                     entry.row_uuid,
-                                     entry.version_uuid}));
+    if (converted.error) return converted;
+    entry.sequence = entry.event_sequence = event_sequence++;
+    if (!append(entry)) return MakeInvalidRequestDiagnostic("mga.index_store", "merged_index_entry_invalid");
   }
-
   const std::string tmp_path = path + ".tmp.merge." +
       std::to_string(context.local_transaction_id) + "." +
-      std::to_string(output_lines.size());
+      std::to_string(output_bytes.size());
   {
     std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
     if (!out) {
@@ -717,9 +644,7 @@ EngineApiDiagnostic RewriteMgaIndexEntriesForMergedIndex(
                                    "mga.secondary_index_delta_merge.index_store_rewrite_failed",
                                    "temporary index-entry sidecar could not be opened");
     }
-    for (const auto& line : output_lines) {
-      out << line << '\n';
-    }
+    out.write(output_bytes.data(), static_cast<std::streamsize>(output_bytes.size()));
     out.flush();
     if (!out) {
       return Dpc024MergeDiagnostic("corrupt_ledger_refused",
@@ -762,7 +687,7 @@ EngineApiDiagnostic BuildSecondaryIndexDeltaLedgerRecord(
                                     scratchbird::core::platform::UuidKind::object,
                                     &record.delta.index_uuid);
   if (diagnostic.error) { return diagnostic; }
-  diagnostic = ParseLedgerTypedUuid(input.table_uuid.empty() ? input.index.table_uuid
+  diagnostic = ParseLedgerTypedUuid(input.table_uuid.is_nil() ? input.index.table_uuid
                                                             : input.table_uuid,
                                     scratchbird::core::platform::UuidKind::object,
                                     &record.delta.table_uuid);
@@ -953,9 +878,9 @@ EngineApiDiagnostic AppendMgaSecondaryIndexDeltaLedgerEntries(
     AddEventSequenceReservationEvidence(evidence, reservation);
     for (const auto& record : staged_records) {
       evidence->push_back({"mga_secondary_index_delta_ledger",
-                           scratchbird::core::uuid::UuidToString(record.delta.delta_id.value)});
+                           record.delta.delta_id.value});
       evidence->push_back({"mga_secondary_index_delta_index",
-                           scratchbird::core::uuid::UuidToString(record.delta.index_uuid.value)});
+                           record.delta.index_uuid.value});
       evidence->push_back({"mga_secondary_index_delta_kind",
                            idx::SecondaryIndexDeltaKindName(record.delta.delta_kind)});
     }
@@ -1384,7 +1309,7 @@ MgaSecondaryIndexDeltaRecoveryRepairResult ValidateAndRepairMgaSecondaryIndexDel
     return result;
   };
 
-  if (request.index_uuid.empty() || request.table_uuid.empty()) {
+  if (request.index_uuid.is_nil() || request.table_uuid.is_nil()) {
     return refuse("secondary_index_delta_recovery_invalid_request",
                   "mga.secondary_index_delta_recovery.invalid_request",
                   "index_uuid and table_uuid are required");
@@ -1652,7 +1577,7 @@ MgaSecondaryIndexGarbageCleanupResult CleanupMgaSecondaryIndexGarbageForIndex(
     return result;
   };
 
-  if (request.index_uuid.empty() || request.table_uuid.empty()) {
+  if (request.index_uuid.is_nil() || request.table_uuid.is_nil()) {
     return refuse("INDEX_GARBAGE_CLEANUP.INVALID_IDENTITY",
                   "mga.secondary_index_garbage_cleanup.invalid_identity",
                   "index_uuid and table_uuid are required");
@@ -1845,7 +1770,7 @@ MgaSecondaryIndexGarbageCleanupResult CleanupMgaSecondaryIndexGarbageForIndex(
 
 MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
     const RelationReadSnapshot& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EnginePredicateEnvelope& predicate,
     const EngineRequestContext& context,
     std::uint64_t limit) {
@@ -2021,14 +1946,14 @@ MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
                                 "mga.secondary_index_delta_overlay.refused"));
   }
 
-  std::set<std::string> seen_candidates;
+  std::set<EngineUuid> seen_candidates;
   std::size_t candidate_count = 0;
   for (const auto& entry : overlay.entries) {
     if (!OverlayEntryMatchesPredicate(entry, predicate)) {
       continue;
     }
-    const std::string row_uuid =
-        scratchbird::core::uuid::UuidToString(entry.row_uuid.value);
+    const EngineUuid row_uuid =
+        entry.row_uuid.value;
     if (!seen_candidates.insert(row_uuid).second) {
       continue;
     }

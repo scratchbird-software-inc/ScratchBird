@@ -42,7 +42,11 @@ info::SysInformationProjectionContext Context() {
 std::string Field(const info::SysInformationProjectionRow& row,
                   std::string_view name) {
   for (const auto& [field_name, value] : row.fields) {
-    if (field_name == name) { return value; }
+    if (field_name == name) {
+      const auto* text = std::get_if<std::string>(&value);
+      Require(text != nullptr, "expected text projection field");
+      return *text;
+    }
   }
   return {};
 }
@@ -113,7 +117,10 @@ info::SysInformationProjectionResult BuildContentionQuotaProjection(
 
 void RequireNoPrivateLeak(const info::SysInformationProjectionResult& result) {
   for (const auto& row : result.rows) {
-    for (const auto& [field_name, value] : row.fields) {
+    for (const auto& [field_name, typed_value] : row.fields) {
+      const auto* text = std::get_if<std::string>(&typed_value);
+      Require(text != nullptr, "IPAR public projection exposed non-text identity data");
+      const auto& value = *text;
       Require(value.find("/tmp/private") == std::string::npos,
               "private path leaked in " + field_name);
       Require(value.find("secret=") == std::string::npos,

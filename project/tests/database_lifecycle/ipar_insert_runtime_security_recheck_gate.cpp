@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -28,10 +30,10 @@ namespace db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr const char* kSchemaUuid = "019f2000-0000-7000-8000-000000000001";
-constexpr const char* kTableUuid = "019f2000-0000-7000-8000-000000000101";
-constexpr const char* kPrincipalUuid = "019f2000-0000-7000-8000-000000000201";
-constexpr const char* kGroupUuid = "019f2000-0000-7000-8000-000000000202";
+constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000001");
+constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
+constexpr auto kPrincipalUuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000201");
+constexpr auto kGroupUuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000202");
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -58,7 +60,7 @@ bool HasEvidence(const api::EngineApiResult& result,
       continue;
     }
     if (needle.empty() ||
-        evidence.evidence_id.find(needle) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(evidence.evidence_id, needle) != std::string::npos) {
       return true;
     }
   }
@@ -74,7 +76,7 @@ std::filesystem::path MakeTempPath() {
           std::to_string(static_cast<long long>(getpid())) + ".sbdb");
 }
 
-std::string CreateDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -92,37 +94,35 @@ std::string CreateDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "IPAR runtime security database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
-api::EngineAuthorizationSubject Subject(std::string uuid, std::string kind) {
+api::EngineAuthorizationSubject Subject(api::EngineUuid uuid, std::string kind) {
   api::EngineAuthorizationSubject subject;
-  subject.subject_uuid.canonical = std::move(uuid);
+  subject.subject_uuid = std::move(uuid);
   subject.subject_kind = std::move(kind);
   return subject;
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const std::string& database_uuid,
-                                      std::string session_suffix) {
+                                      const api::EngineUuid& database_uuid,
+                                      api::EngineUuid session_uuid) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "ipar-runtime-security";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = kPrincipalUuid;
-  context.session_uuid.canonical =
-      "019f2000-0000-7000-8000-000000000" + std::move(session_suffix);
-  context.current_schema_uuid.canonical = kSchemaUuid;
-  context.default_root_uuid.canonical = "019f2000-0000-7000-8000-000000000203";
+  context.database_uuid = database_uuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000201");
+  context.session_uuid = session_uuid;
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000001");
+  context.default_root_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000203");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical =
-      "019f2000-0000-7000-8000-000000000204";
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000204");
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = context.security_epoch;
   context.authorization_context.policy_epoch = context.resource_epoch;
@@ -133,19 +133,19 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
       Subject(kGroupUuid, "group"));
 
   api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical = "019f2000-0000-7000-8000-000000000301";
-  grant.subject_uuid.canonical = kGroupUuid;
+  grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000301");
+  grant.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000202");
   grant.subject_kind = "group";
-  grant.target_uuid.canonical = kTableUuid;
+  grant.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
   grant.right = "INSERT";
   grant.security_epoch = context.security_epoch;
   context.authorization_context.grants.push_back(std::move(grant));
 
   api::EngineMaterializedAuthorizationPolicy policy;
-  policy.policy_uuid.canonical = "019f2000-0000-7000-8000-000000000302";
-  policy.subject_uuid.canonical = kGroupUuid;
+  policy.policy_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000302");
+  policy.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000202");
   policy.subject_kind = "group";
-  policy.target_uuid.canonical = kTableUuid;
+  policy.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
   policy.right = "INSERT";
   policy.policy_kind = "rls_filter";
   policy.requires_runtime_recheck = true;
@@ -156,10 +156,10 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext Begin(const std::filesystem::path& path,
-                                const std::string& database_uuid,
-                                std::string session_suffix) {
+                                const api::EngineUuid& database_uuid,
+                                api::EngineUuid session_uuid) {
   api::EngineBeginTransactionRequest request;
-  request.context = BaseContext(path, database_uuid, std::move(session_suffix));
+  request.context = BaseContext(path, database_uuid, session_uuid);
   request.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(request);
   if (!begun.ok) {
@@ -194,9 +194,9 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineRowValue Row(std::string row_uuid, std::string tenant) {
+api::EngineRowValue Row(api::EngineUuid row_uuid, std::string tenant) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"payload", TextValue("payload")});
   row.fields.push_back({"tenant", TextValue(std::move(tenant))});
   return row;
@@ -204,7 +204,7 @@ api::EngineRowValue Row(std::string row_uuid, std::string tenant) {
 
 void SeedMetadata(const api::EngineRequestContext& context) {
   api::CrudTableRecord table;
-  table.table_uuid = kTableUuid;
+  table.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
   table.default_name = "ipar_runtime_security";
   table.columns.push_back({"tenant", "type=text;nullable=false"});
   table.columns.push_back({"payload", "type=text"});
@@ -216,9 +216,9 @@ api::EngineInsertRowsResult Insert(const api::EngineRequestContext& context,
                                    api::EngineRowValue row) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = kTableUuid;
+  request.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
   request.target_table.object_kind = "table";
-  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000101");
   request.target_object.object_kind = "table";
   request.input_rows.push_back(std::move(row));
   return api::EngineInsertRows(request);
@@ -228,14 +228,14 @@ void VerifyRuntimeSecurityRecheck() {
   const auto path = MakeTempPath();
   const auto database_uuid = CreateDatabase(path);
 
-  auto setup = Begin(path, database_uuid, "401");
+  auto setup = Begin(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000401"));
   SeedMetadata(setup);
   Commit(setup);
 
-  auto allowed_context = Begin(path, database_uuid, "402");
+  auto allowed_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000402"));
   const auto allowed = Insert(
       allowed_context,
-      Row("019f2000-0000-7000-8000-000000000501", "tenant_a"));
+      Row(scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000501"), "tenant_a"));
   if (!allowed.ok) {
     for (const auto& diagnostic : allowed.diagnostics) {
       std::cerr << diagnostic.code << ":" << diagnostic.detail << '\n';
@@ -248,10 +248,10 @@ void VerifyRuntimeSecurityRecheck() {
           "IPAR runtime security filter recheck evidence missing");
   Commit(allowed_context);
 
-  auto denied_context = Begin(path, database_uuid, "403");
+  auto denied_context = Begin(path, database_uuid, scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000403"));
   const auto denied = Insert(
       denied_context,
-      Row("019f2000-0000-7000-8000-000000000502", "tenant_b"));
+      Row(scratchbird::tests::FixtureUuidLiteral("019f2000-0000-7000-8000-000000000502"), "tenant_b"));
   Require(!denied.ok, "IPAR runtime security denied insert was admitted");
   Require(HasDiagnostic(denied, "SECURITY.RLS.DENIED"),
           "IPAR runtime security denied insert diagnostic mismatch");

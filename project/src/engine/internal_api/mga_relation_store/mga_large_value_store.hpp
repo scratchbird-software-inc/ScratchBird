@@ -24,7 +24,7 @@ namespace scratchbird::engine::internal_api {
 // are visible; locator presence never decides transaction finality.
 struct MgaLargeValueReclaimLoadResult {
   EngineApiDiagnostic diagnostic;
-  std::set<std::string> overflow_uuids;
+  std::set<EngineUuid> overflow_uuids;
 };
 
 struct MgaTemporaryLargeValueRecoveryResult {
@@ -40,7 +40,7 @@ MgaLargeValueReclaimLoadResult LoadVisibleMgaLargeValueReclaims(
     const EngineRequestContext& context);
 MgaTemporaryLargeValueRecoveryResult ClassifyMgaTemporaryLargeValueRecovery(
     const EngineRequestContext& context,
-    const std::set<std::string>& temporary_tables,
+    const std::set<EngineUuid>& temporary_tables,
     const std::map<std::uint64_t, std::string>& transaction_states);
 bool RowsContainLargeValueLocators(
     const std::vector<CrudRowVersionRecord>& rows);
@@ -60,7 +60,7 @@ EngineApiDiagnostic AppendMgaLargeValueReclaimMarkersForRowVersion(
     std::uint64_t local_transaction_id,
     const CrudRowVersionRecord& row,
     const std::string& cleanup_reason,
-    std::set<std::string>* already_reclaimed_overflow_uuids,
+    std::set<EngineUuid>* already_reclaimed_overflow_uuids,
     std::uint64_t* reclaimed_count);
 
 }  // namespace scratchbird::engine::internal_api

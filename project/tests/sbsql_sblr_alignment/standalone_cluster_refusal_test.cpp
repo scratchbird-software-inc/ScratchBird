@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
@@ -43,14 +44,14 @@ void CheckRefusal(const api::EngineApiResult& result,
   Check(result.result_shape.rows.empty() && result.result_shape.columns.empty() &&
             result.result_shape.result_kind.empty(),
         "standalone refusal fabricated a typed result or UUID-bearing column");
-  Check(result.catalog_row_uuid.canonical.empty() &&
-            result.transaction_uuid.canonical.empty() &&
+  Check(result.catalog_row_uuid.is_nil() &&
+            result.transaction_uuid.is_nil() &&
             result.local_transaction_id == 0,
         "standalone refusal fabricated catalog or transaction authority");
   Check(std::any_of(result.evidence.begin(), result.evidence.end(),
                     [](const auto& e) {
                       return e.evidence_kind == "cluster_provider_type" &&
-                             e.evidence_id == expected_provider;
+                             scratchbird::tests::EvidenceTextEquals(e.evidence_id, expected_provider);
                     }), "refusal lost host provider evidence");
 }
 }  // namespace

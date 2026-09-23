@@ -6,6 +6,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../agents/agent_binary_identity_fixture.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+using scratchbird::tests::BinaryFixtureIdentity;
+using scratchbird::tests::NativeFixtureIdentity;
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "disk_device.hpp"
@@ -99,8 +104,8 @@ std::filesystem::path MakeTempDir() {
   return std::filesystem::path(made);
 }
 
-std::string UuidText(const scratchbird::core::platform::TypedUuid& value) {
-  return uuid::UuidToString(value.value);
+std::string UuidBytes(const scratchbird::core::platform::TypedUuid& value) {
+  return BinaryFixtureIdentity(value.value);
 }
 
 struct Fixture {
@@ -139,8 +144,8 @@ Fixture CreateOpenCleanDatabase(const std::filesystem::path& path,
 
   Fixture fixture;
   fixture.path = path;
-  fixture.database_uuid = UuidText(create.database_uuid);
-  fixture.filespace_uuid = UuidText(create.filespace_uuid);
+  fixture.database_uuid = UuidBytes(create.database_uuid);
+  fixture.filespace_uuid = UuidBytes(create.filespace_uuid);
   fixture.page_size = created.state.header.page_size;
   return fixture;
 }
@@ -174,8 +179,8 @@ void MutateStartup(const Fixture& fixture, Mutator mutator) {
 db::DatabaseLifecycleOperationConfig OperationConfig(const Fixture& fixture) {
   db::DatabaseLifecycleOperationConfig config;
   config.path = fixture.path.string();
-  config.operation_uuid = "dblc010-operation";
-  config.actor_uuid = "dblc010-actor";
+  config.operation_uuid = scratchbird::tests::FixtureUuid(1259, 1);
+  config.actor_uuid = scratchbird::tests::FixtureUuid(1259, 2);
   config.write_evidence = true;
   return config;
 }
@@ -185,8 +190,8 @@ db::DatabaseLifecycleRepairConfig RepairConfig(const Fixture& fixture,
                                                bool admitted) {
   db::DatabaseLifecycleRepairConfig config;
   config.path = fixture.path.string();
-  config.operation_uuid = "dblc010-repair";
-  config.actor_uuid = "dblc010-actor";
+  config.operation_uuid = scratchbird::tests::FixtureUuid(1259, 3);
+  config.actor_uuid = scratchbird::tests::FixtureUuid(1259, 4);
   config.repair_plan_id = std::string(plan);
   config.expected_database_uuid = fixture.database_uuid;
   config.expected_filespace_uuid = fixture.filespace_uuid;
@@ -459,9 +464,9 @@ api::EngineRequestContext EngineContext(
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "dblc010-engine-request";
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = "019e1080-a100-7000-8000-000000000101";
-  context.session_uuid.canonical = "019e1080-a100-7000-8000-000000000102";
+  context.database_uuid = NativeFixtureIdentity(fixture.database_uuid);
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e1080-a100-7000-8000-000000000101");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e1080-a100-7000-8000-000000000102");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -491,8 +496,8 @@ sblr::SblrOperationEnvelope LifecycleEnvelope(std::string operation_id,
                                          std::move(opcode),
                                          "trace.dblc010.lifecycle.repair");
   envelope.opcode_code = registry_entry->code;
-  envelope.parser_package_uuid = "019f0000-0000-7000-8000-000000db1001";
-  envelope.registry_snapshot_uuid = "019f0000-0000-7000-8000-000000db1002";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000db1001");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000db1002");
   envelope.requires_security_context = registry_entry->requires_security_context;
   envelope.requires_transaction_context = registry_entry->requires_transaction_context;
   envelope.requires_cluster_authority = registry_entry->requires_cluster_authority;
@@ -713,7 +718,7 @@ ServerSessionRegistry RegistryWithPrincipal(const Fixture& fixture,
   session.session_uuid = sbps::MakeUuidV7Bytes();
   session.principal_claim = std::string(principal);
   session.database_path = fixture.path.string();
-  session.database_uuid = fixture.database_uuid;
+  session.database_uuid = NativeFixtureIdentity(fixture.database_uuid);
   session.effective_user_uuid = sbps::MakeUuidV7Bytes();
   session.embedded_in_process = true;
   if (principal == "admin") {

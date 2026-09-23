@@ -17,6 +17,7 @@ namespace scratchbird::udr::dolt_parser_support {
 
 inline constexpr std::string_view kSbuDoltPackageUuid =
     "019e13c0-0000-7000-8000-000000000315";
+inline constexpr scratchbird::udr::runtime::UdrUuid kSbuDoltPackageIdentity{{0x01, 0x9e, 0x13, 0xc0, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x15}};
 inline constexpr std::string_view kSbuDoltPackageName = "sbup_dolt";
 
 struct UdrResult {

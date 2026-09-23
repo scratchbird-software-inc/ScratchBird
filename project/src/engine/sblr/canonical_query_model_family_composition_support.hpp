@@ -45,10 +45,10 @@ struct Rcp079CapturedModelLegV1 {
   std::uint32_t logical_node_id{0};
   std::string family_id;
   std::string implementation_id;
-  std::string capability_uuid;
+  core::platform::Uuid capability_uuid;
   std::string transformation_rule_id;
   std::string compatibility_profile_id;
-  std::string current_relation_descriptor_uuid;
+  core::platform::Uuid current_relation_descriptor_uuid;
   std::uint64_t current_relation_descriptor_generation{0};
   plan::CanonicalLogicalRelationalNodeKind logical_node_kind{
       plan::CanonicalLogicalRelationalNodeKind::kRelationSource};
@@ -72,10 +72,9 @@ enum class LiveCancellationProbeState : std::uint8_t {
 opt::ModelFamilyCapabilitySnapshotV1
 MakeModelFamilyCapabilitySnapshotForCompositionV1(
     const opt::ModelFamilyCoordinatorRequestV1& planning,
-    std::string_view identity_scope,
     opt::ModelFamilyAlternativeRouteClassV1 route_class,
-    std::string provider_uuid,
-    std::string capability_uuid,
+    core::platform::Uuid provider_uuid,
+    core::platform::Uuid capability_uuid,
     std::uint64_t provider_generation,
     bool available,
     std::uint64_t work_units,
@@ -85,7 +84,6 @@ MakeModelFamilyCapabilitySnapshotForCompositionV1(
 opt::ModelFamilyCoordinatorResultV1
 PlanCanonicalModelFamilySourceForCompositionV1(
     opt::ModelFamilyCoordinatorRequestV1 planning,
-    std::string identity_scope,
     std::vector<opt::ModelFamilyCapabilitySnapshotV1> snapshots);
 
 void CaptureRcp079ModelLegV1(
@@ -95,7 +93,7 @@ void CaptureRcp079ModelLegV1(
     std::string implementation_id,
     std::string transformation_rule_id,
     std::string compatibility_profile_id,
-    std::string relation_descriptor_uuid,
+    core::platform::Uuid relation_descriptor_uuid,
     std::uint64_t relation_descriptor_generation,
     plan::CanonicalLogicalRelationalNodeKind logical_node_kind,
     exec::PhysicalNodeKind physical_node_kind,

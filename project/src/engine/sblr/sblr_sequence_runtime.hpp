@@ -22,7 +22,7 @@
 namespace scratchbird::engine::sblr {
 
 struct SblrSequenceDefinition {
-  std::string sequence_uuid;
+  SblrUuid sequence_uuid;
   std::string descriptor_id = "int64";
   std::int64_t start_value = 1;
   std::int64_t increment = 1;
@@ -42,10 +42,10 @@ struct SblrSequenceState {
 
 struct SblrSequenceEvidenceRecord {
   std::uint64_t evidence_sequence = 0;
-  std::string sequence_uuid;
+  SblrUuid sequence_uuid;
   std::string action;
   std::string value;
-  std::string transaction_uuid;
+  SblrUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
   std::string policy;
 };
@@ -53,14 +53,14 @@ struct SblrSequenceEvidenceRecord {
 struct SblrSequenceRegistry {
   std::mutex mutex;
   std::vector<SblrSequenceState> states;
-  std::vector<std::pair<std::string, std::string>> aliases;
+  std::vector<std::pair<std::string, SblrUuid>> aliases;
   std::vector<SblrSequenceEvidenceRecord> evidence;
   std::uint64_t next_evidence_sequence = 1;
 };
 
 struct SblrSequenceRequest {
   SblrExecutionContext context;
-  std::string sequence_uuid;
+  SblrUuid sequence_uuid;
   std::string sequence_name_hint;
   std::string result_descriptor_id = "int64";
   std::int64_t increment_override = 0;
@@ -70,7 +70,8 @@ struct SblrSequenceRequest {
 };
 
 struct SblrSequenceAlteration {
-  std::string sequence_uuid;
+  SblrUuid sequence_uuid;
+  std::string sequence_name_hint;
   std::optional<std::int64_t> minimum_value;
   std::optional<std::int64_t> maximum_value;
   std::optional<std::uint64_t> cache_size;
@@ -88,12 +89,18 @@ struct SblrSequenceOptimizerMetadata {
   std::string descriptor_rule = "sequence descriptor";
 };
 
+// Explicit function-argument boundary. A UUID value stays binary; a textual
+// UUID is parsed once and a name remains a separate alias hint. This does not
+// register a name or confer storage/transaction authority.
+bool BindSblrSequenceArgumentIdentity(const SblrValue& argument,
+                                      SblrSequenceRequest* request);
+
 SblrSequenceRegistry& ProcessSblrSequenceRegistry();
 SblrResult RegisterSblrSequence(SblrSequenceRegistry* registry,
                                 const SblrSequenceDefinition& definition,
                                 const SblrExecutionContext& context);
 SblrResult RegisterSblrSequenceAlias(SblrSequenceRegistry* registry,
-                                     std::string canonical_sequence_uuid,
+                                     SblrUuid canonical_sequence_uuid,
                                      std::string alias_key,
                                      const SblrExecutionContext& context);
 SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
@@ -104,6 +111,6 @@ SblrResult CurrentSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSe
 SblrResult SetSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSequenceRequest& request);
 SblrResult IdentityCurrentValue(const SblrExecutionContext& context);
 SblrSequenceOptimizerMetadata SequenceOptimizerMetadata();
-SblrResult RefuseSblrSequenceHook(const SblrExecutionContext& context, std::string sequence_uuid);
+SblrResult RefuseSblrSequenceHook(const SblrExecutionContext& context, SblrUuid sequence_uuid);
 
 }  // namespace scratchbird::engine::sblr

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "catalog/name_registry.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
@@ -83,17 +84,17 @@ std::uint64_t NowMillis() {
           .count());
 }
 
-std::string GeneratedUuid(UuidKind kind, std::uint64_t offset) {
+api::EngineUuid GeneratedUuid(UuidKind kind, std::uint64_t offset) {
   const auto generated =
       uuid::GenerateEngineIdentityV7(kind, NowMillis() + offset);
   Require(generated.ok(), "test identity UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 struct DatabaseFixture {
   std::filesystem::path directory;
   std::filesystem::path path;
-  std::string database_uuid;
+  api::EngineUuid database_uuid;
 
   DatabaseFixture() = default;
   DatabaseFixture(const DatabaseFixture&) = delete;
@@ -139,30 +140,29 @@ DatabaseFixture CreateDatabase() {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "composite-key database create failed");
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   return fixture;
 }
 
 api::EngineRequestContext BaseContext(const DatabaseFixture& fixture,
-                                      const std::string& schema_uuid,
+                                      const api::EngineUuid& schema_uuid,
                                       std::uint64_t session_ordinal) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "sblr-composite-key-authority";
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical = GeneratedUuid(UuidKind::object, 100);
-  context.session_uuid.canonical =
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid = GeneratedUuid(UuidKind::object, 100);
+  context.session_uuid =
       GeneratedUuid(UuidKind::object, 200 + session_ordinal);
-  context.current_schema_uuid.canonical = schema_uuid;
-  context.default_root_uuid.canonical = GeneratedUuid(UuidKind::object, 300);
+  context.current_schema_uuid = schema_uuid;
+  context.default_root_uuid = GeneratedUuid(UuidKind::object, 300);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.security_epoch = 1;
@@ -173,7 +173,7 @@ api::EngineRequestContext BaseContext(const DatabaseFixture& fixture,
 }
 
 api::EngineRequestContext Begin(const DatabaseFixture& fixture,
-                                const std::string& schema_uuid,
+                                const api::EngineUuid& schema_uuid,
                                 std::uint64_t session_ordinal) {
   api::EngineBeginTransactionRequest request;
   request.context = BaseContext(fixture, schema_uuid, session_ordinal);
@@ -238,12 +238,12 @@ api::EngineCreateTableResult CreateTableComponent(
 }
 
 api::EngineCreateTableRequest TableRequest(
-    const std::string& schema_uuid,
+    const api::EngineUuid& schema_uuid,
     std::string table_name,
     std::vector<api::EngineColumnDefinition> columns,
     std::vector<api::EngineIndexDefinition> indexes) {
   api::EngineCreateTableRequest request;
-  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.uuid = schema_uuid;
   request.target_schema.object_kind = "schema";
   request.table_names.push_back(Name(std::move(table_name)));
   request.table_columns = std::move(columns);
@@ -326,11 +326,11 @@ api::EngineRowValue OrderRow(api::EngineTypedValue tenant,
 }
 
 api::EngineInsertRowsResult Insert(const api::EngineRequestContext& context,
-                                   const std::string& table_uuid,
+                                   const api::EngineUuid& table_uuid,
                                    api::EngineRowValue row) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(std::move(row));
   request.option_envelopes.push_back("direct_physical_insert=disabled");
@@ -339,16 +339,16 @@ api::EngineInsertRowsResult Insert(const api::EngineRequestContext& context,
 
 api::EngineSelectRowsResult SelectAll(
     const api::EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const api::EngineUuid& table_uuid) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = table_uuid;
+  request.source_object.uuid = table_uuid;
   request.source_object.object_kind = "table";
   return api::EngineSelectRows(request);
 }
 
 bool HasRegistryName(const api::NameRegistryState& state,
-                     std::string_view object_uuid,
+                     const api::EngineUuid& object_uuid,
                      std::string_view name) {
   return std::any_of(state.entries.begin(), state.entries.end(),
                      [&](const auto& entry) {
@@ -380,12 +380,12 @@ std::vector<std::string> MetadataKeyColumns(const api::CrudIndexRecord& index) {
 
 int main() {
   auto fixture = CreateDatabase();
-  const std::string schema_uuid = GeneratedUuid(UuidKind::schema, 10);
+  const api::EngineUuid schema_uuid = GeneratedUuid(UuidKind::schema, 10);
 
   auto setup = Begin(fixture, schema_uuid, 1);
   api::EngineCreateSchemaRequest schema;
   schema.context = setup;
-  schema.target_object.uuid.canonical = schema_uuid;
+  schema.target_object.uuid = schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("composite_key_schema"));
   RequireOk(api::EngineCreateSchema(schema),
@@ -558,8 +558,8 @@ int main() {
                     Column(3, "region_id", false)},
                    CompositeIndexes()));
   Require(created.ok, "composite-key table create failed");
-  const std::string table_uuid = created.table_object.uuid.canonical;
-  Require(uuid::ParseDurableEngineIdentityUuid(UuidKind::object, table_uuid).ok(),
+  const api::EngineUuid table_uuid = created.table_object.uuid;
+  Require(uuid::IsEngineIdentityUuid(table_uuid),
           "table UUID was not engine-generated durable object identity");
   Commit(setup);
 
@@ -595,15 +595,9 @@ int main() {
               MetadataKeyColumns(*unique) ==
                   std::vector<std::string>({"external_id", "region_id"}),
           "ordered composite UNIQUE metadata drifted");
-  Require(uuid::ParseDurableEngineIdentityUuid(UuidKind::object,
-                                                primary->index_uuid)
-              .ok() &&
-              uuid::ParseDurableEngineIdentityUuid(UuidKind::object,
-                                                    unique->index_uuid)
-                  .ok() &&
-              primary->index_uuid != unique->index_uuid &&
-              primary->index_uuid != primary->default_name &&
-              unique->index_uuid != unique->default_name,
+  Require(uuid::IsEngineIdentityUuid(primary->index_uuid) &&
+              uuid::IsEngineIdentityUuid(unique->index_uuid) &&
+              primary->index_uuid != unique->index_uuid,
           "inline index UUID authority escaped the engine");
   const auto names = api::LoadNameRegistryState(
       metadata_reader, metadata_reader.local_transaction_id);

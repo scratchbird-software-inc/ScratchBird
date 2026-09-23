@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "datatype_operations.hpp"
 #include "query/expression_api.hpp"
 #include "runtime_capabilities.hpp"
@@ -42,9 +43,9 @@ void Require(bool condition, std::string_view message) {
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsql-numeric-backend-reconciliation";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000170001";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000170002";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000170003";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000170001");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000170002");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000170003");
   context.security_context_present = true;
   context.trace_tags.push_back("numeric_backend_reconciliation");
   return context;
@@ -74,7 +75,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) { return true; }
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) { return true; }
   }
   return false;
 }
@@ -98,9 +99,9 @@ sblr::SblrOperationEnvelope NumericEnvelope() {
       "trace.cbq017.numeric_backend.query.apply_numeric_operation");
   envelope.opcode_code = registry_entry->code;
   envelope.parser_package_uuid =
-      "019f0000-0000-7000-8000-000000170011";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000170011");
   envelope.registry_snapshot_uuid =
-      "019f0000-0000-7000-8000-000000170012";
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000170012");
   envelope.result_shape = "typed_value";
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.requires_security_context = true;

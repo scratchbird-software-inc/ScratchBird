@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "api_types.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
@@ -71,8 +73,8 @@ namespace uuid = scratchbird::core::uuid;
 #define SB_PERF_SEED_PACK_ROOT "project/resources/seed-packs/initial-resource-pack"
 #endif
 
-constexpr const char* kSchemaUuid = "019e07f0-0000-7000-8000-000000000101";
-constexpr const char* kTableUuid = "019e07f0-0000-7000-8000-000000000102";
+constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000101");
+constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000102");
 
 struct Thresholds {
   double startup_open_latency_ms_max = 5000.0;
@@ -157,8 +159,13 @@ void PrintApiResultDiagnostics(const api::EngineApiResult& result, std::string_v
               << " reason=" << unsupported.reason << '\n';
   }
   for (const auto& evidence : result.evidence) {
-    std::cerr << "  evidence kind=" << evidence.evidence_kind
-              << " id=" << evidence.evidence_id << '\n';
+    std::cerr << "  evidence kind=" << evidence.evidence_kind << " id=";
+    if (const auto* text = std::get_if<std::string>(&evidence.evidence_id)) {
+      std::cerr << *text;
+    } else {
+      std::cerr << "[binary UUID]";
+    }
+    std::cerr << '\n';
   }
 }
 
@@ -344,20 +351,19 @@ MeasurementStats MeasureRepeatedMs(Fn&& fn, std::uint64_t repeat_count) {
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
-                                      std::string session_suffix = "001") {
+                                      std::uint32_t session_ordinal = 1) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "phase7m-performance-baseline";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = "019e07f0-0000-7000-8000-000000000001";
-  context.principal_uuid.canonical = "019e07f0-0000-7000-8000-000000000002";
-  context.session_uuid.canonical = "019e07f0-0000-7000-8000-000000000" + std::move(session_suffix);
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000001");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000002");
+  context.session_uuid = scratchbird::tests::FixtureUuid(1539, session_ordinal);
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
@@ -377,8 +383,8 @@ sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcod
   envelope.opcode_code = registry_entry->code;
   envelope.result_shape = registry_entry->result_contract;
   envelope.diagnostic_shape = "diagnostic_vector";
-  envelope.parser_package_uuid = "019e07f0-0000-7000-8000-000000000010";
-  envelope.registry_snapshot_uuid = "019e07f0-0000-7000-8000-000000000011";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000010");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000011");
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = true;
@@ -411,7 +417,7 @@ sblr::SblrDispatchResult Dispatch(const std::filesystem::path& database_path,
 
 bool HasEvidence(const api::EngineApiResult& result, std::string_view kind, std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && (id.empty() || evidence.evidence_id == id)) { return true; }
+    if (evidence.evidence_kind == kind && (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) { return true; }
   }
   return false;
 }
@@ -420,7 +426,7 @@ std::uint64_t EvidenceU64(const api::EngineApiResult& result, std::string_view k
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind != kind) { continue; }
     try {
-      return static_cast<std::uint64_t>(std::stoull(evidence.evidence_id));
+      return static_cast<std::uint64_t>(std::stoull(std::get<std::string>(evidence.evidence_id)));
     } catch (...) {
       return 0;
     }
@@ -443,12 +449,12 @@ api::EngineLocalizedName Name(std::string name) {
 api::EngineColumnDefinition Column(std::uint32_t ordinal,
                                    std::string name,
                                    std::string type,
-                                   std::string uuid_suffix) {
+                                   std::uint32_t identity_ordinal) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
-  column.requested_column_uuid.canonical = "019e07f0-0000-7000-8000-0000000002" + uuid_suffix;
+  column.requested_column_uuid = scratchbird::tests::FixtureUuid(1540, identity_ordinal);
   column.names.push_back(Name(std::move(name)));
-  column.descriptor.descriptor_uuid.canonical = "019e07f0-0000-7000-8000-0000000003" + uuid_suffix;
+  column.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1541, identity_ordinal);
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
   column.descriptor.encoded_descriptor = "type=" + column.descriptor.canonical_type_name;
@@ -457,9 +463,8 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal,
 
 api::EngineRowValue Row(std::uint64_t index) {
   api::EngineRowValue row;
-  char suffix[33];
-  std::snprintf(suffix, sizeof(suffix), "%012llu", static_cast<unsigned long long>(index + 1));
-  row.requested_row_uuid.canonical = "019e07f0-0000-7000-8000-" + std::string(suffix);
+  Require(index < UINT32_MAX, "performance row fixture ordinal overflow");
+  row.requested_row_uuid = scratchbird::tests::FixtureUuid(1542, static_cast<std::uint32_t>(index + 1));
   row.fields.push_back({"id", TextValue("perf-" + std::to_string(index))});
   row.fields.push_back({"note", TextValue("baseline row " + std::to_string(index))});
   return row;
@@ -471,8 +476,8 @@ struct BaselineTransaction {
 };
 
 BaselineTransaction BeginTransaction(const std::filesystem::path& database_path,
-                                     std::string session_suffix) {
-  auto context = BaseContext(database_path, std::move(session_suffix));
+                                     std::uint32_t session_ordinal) {
+  auto context = BaseContext(database_path, session_ordinal);
   auto envelope = Envelope("engine.op.txn_begin", "SBLR_TXN_BEGIN");
   envelope.requires_transaction_context = false;
 
@@ -506,7 +511,7 @@ BaselineTransaction BeginTransaction(const std::filesystem::path& database_path,
               admitted.dispatched_to_api && admitted.api_result.ok,
           "canonical transaction-begin admission failed");
   Require(admitted.api_result.local_transaction_id == 0 &&
-              admitted.api_result.transaction_uuid.canonical.empty(),
+              admitted.api_result.transaction_uuid.is_nil(),
           "transaction-begin admission published engine MGA state");
 
   api::EngineBeginTransactionRequest begin;
@@ -515,7 +520,7 @@ BaselineTransaction BeginTransaction(const std::filesystem::path& database_path,
   begin.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(begin);
   Require(begun.ok && begun.local_transaction_id != 0 &&
-              !begun.transaction_uuid.canonical.empty(),
+              !begun.transaction_uuid.is_nil(),
           "engine-owned transaction begin failed after canonical admission");
   context.local_transaction_id = begun.local_transaction_id;
   context.transaction_uuid = begun.transaction_uuid;
@@ -531,12 +536,11 @@ void Commit(const std::filesystem::path& database_path,
   auto envelope = Envelope("engine.op.txn_commit", "SBLR_TXN_COMMIT");
   envelope.requires_transaction_context = true;
 
-  const auto parsed_transaction =
-      uuid::ParseUuid(transaction.context.transaction_uuid.canonical);
-  Require(parsed_transaction.ok(), "transaction UUID is not canonical");
+  Require(uuid::IsEngineIdentityUuid(transaction.context.transaction_uuid),
+          "transaction UUID must be a native engine identity");
   sblr::SblrTransactionCommitOptionsV1 options;
-  std::copy(parsed_transaction.value.bytes.begin(),
-            parsed_transaction.value.bytes.end(),
+  std::copy(transaction.context.transaction_uuid.bytes.begin(),
+            transaction.context.transaction_uuid.bytes.end(),
             options.transaction_uuid.begin());
   options.local_transaction_id = transaction.context.local_transaction_id;
   options.admitted_handle_evidence_sha256 = transaction.begin_admission_sha256;
@@ -579,25 +583,25 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path,
   api::EngineCreateSchemaRequest schema_request;
   schema_request.context = context;
   schema_request.operation_id = "ddl.create_schema";
-  schema_request.target_object.uuid.canonical = kSchemaUuid;
+  schema_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000101");
   schema_request.target_object.object_kind = "schema";
   schema_request.localized_names.push_back(Name("phase7m_perf_schema"));
   const auto schema = api::EngineCreateSchema(schema_request);
   Require(schema.ok, "engine-owned schema create failed");
-  Require(schema.primary_object.uuid.canonical == kSchemaUuid,
+  Require(schema.primary_object.uuid == kSchemaUuid,
           "schema UUID not preserved");
 
   api::EngineCreateTableRequest table_request;
   table_request.context = context;
   table_request.operation_id = "ddl.create_table";
-  table_request.target_schema.uuid.canonical = kSchemaUuid;
+  table_request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000101");
   table_request.target_schema.object_kind = "schema";
-  table_request.requested_table_uuid.canonical = kTableUuid;
-  table_request.target_object.uuid.canonical = kTableUuid;
+  table_request.requested_table_uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000102");
+  table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000102");
   table_request.target_object.object_kind = "table";
   table_request.table_names.push_back(Name("phase7m_perf_table"));
-  table_request.table_columns.push_back(Column(0, "id", "text", "01"));
-  table_request.table_columns.push_back(Column(1, "note", "text", "02"));
+  table_request.table_columns.push_back(Column(0, "id", "text", 1));
+  table_request.table_columns.push_back(Column(1, "note", "text", 2));
   const auto table = api::EngineCreateTable(table_request);
   if (!table.ok) {
     for (const auto& diagnostic : table.diagnostics) {
@@ -606,7 +610,7 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path,
     }
   }
   Require(table.ok, "engine-owned table create failed");
-  Require(table.table_object.uuid.canonical == kTableUuid,
+  Require(table.table_object.uuid == kTableUuid,
           "table UUID not preserved");
 }
 
@@ -617,7 +621,7 @@ void InsertRows(const std::filesystem::path& database_path,
   api::EngineInsertRowsRequest request;
   request.context = context;
   request.operation_id = "dml.insert_rows";
-  request.target_table.uuid.canonical = kTableUuid;
+  request.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000102");
   request.target_table.object_kind = "table";
   for (std::uint64_t i = 0; i < row_count; ++i) {
     request.input_rows.push_back(Row(i));
@@ -637,7 +641,7 @@ std::size_t SelectById(const std::filesystem::path& database_path,
   api::EngineSelectRowsRequest request;
   request.context = context;
   request.operation_id = "dml.select_rows";
-  request.source_object.uuid.canonical = kTableUuid;
+  request.source_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000102");
   request.source_object.object_kind = "table";
   request.select_predicate.predicate_kind = "column_equals";
   request.select_predicate.canonical_predicate_envelope = "id";
@@ -656,7 +660,7 @@ std::size_t SelectAll(const std::filesystem::path& database_path,
   api::EngineSelectRowsRequest request;
   request.context = context;
   request.operation_id = "dml.select_rows";
-  request.source_object.uuid.canonical = kTableUuid;
+  request.source_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e07f0-0000-7000-8000-000000000102");
   request.source_object.object_kind = "table";
   request.limit = limit;
   request.select_projection.canonical_projection_envelopes.push_back("id");
@@ -936,15 +940,15 @@ int main() {
   });
 
   measurements.session_begin_commit_latency_ms = MeasureMs([&]() {
-    auto transaction = BeginTransaction(database_path, "101");
+    auto transaction = BeginTransaction(database_path, 101);
     Commit(database_path, transaction);
   });
 
-  auto ddl_transaction = BeginTransaction(database_path, "201");
+  auto ddl_transaction = BeginTransaction(database_path, 201);
   CreateSchemaAndTable(database_path, ddl_transaction.context);
   Commit(database_path, ddl_transaction);
 
-  auto insert_transaction = BeginTransaction(database_path, "202");
+  auto insert_transaction = BeginTransaction(database_path, 202);
   const double insert_ms = MeasureMs([&]() {
     InsertRows(database_path, insert_transaction.context, thresholds.sample_rows);
   });
@@ -953,7 +957,7 @@ int main() {
   measurements.insert_rows_per_second =
       insert_ms > 0.0 ? (static_cast<double>(thresholds.sample_rows) * 1000.0 / insert_ms) : thresholds.sample_rows;
 
-  auto query_transaction = BeginTransaction(database_path, "203");
+  auto query_transaction = BeginTransaction(database_path, 203);
   measurements.simple_query_stats = MeasureRepeatedMs([&]() {
     Require(SelectById(database_path, query_transaction.context,
                        "perf-" + std::to_string(thresholds.sample_rows / 2)) == 1,

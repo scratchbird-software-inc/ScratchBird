@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -46,9 +48,9 @@ info::SysInformationProjectionContext Context() {
 info::EngineRequestContext EngineContext() {
   info::EngineRequestContext context;
   context.database_path = "/tmp/ipar_observability_projection_gate.sbdb";
-  context.database_uuid.canonical = "database:ipar-observability";
-  context.principal_uuid.canonical = "principal:sysarch";
-  context.session_uuid.canonical = "session:ipar-observability";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 1901);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1902);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 1903);
   context.catalog_generation_id = 7;
   context.security_epoch = 7;
   context.resource_epoch = 7;
@@ -63,7 +65,11 @@ info::EngineRequestContext EngineContext() {
 std::string Field(const info::SysInformationProjectionRow& row,
                   std::string_view name) {
   for (const auto& [field_name, value] : row.fields) {
-    if (field_name == name) { return value; }
+    if (field_name == name) {
+      const auto* text = std::get_if<std::string>(&value);
+      Require(text != nullptr, "expected text projection field");
+      return *text;
+    }
   }
   return {};
 }
@@ -81,7 +87,7 @@ bool HasEvidence(const info::EngineApiResult& result,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        (id.empty() || evidence.evidence_id == id)) {
+        (id.empty() || scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id))) {
       return true;
     }
   }
@@ -138,7 +144,10 @@ void RequireOk(const info::EngineApiResult& result,
 
 void RequireNoPrivateLeak(const info::SysInformationProjectionResult& result) {
   for (const auto& row : result.rows) {
-    for (const auto& [field_name, value] : row.fields) {
+    for (const auto& [field_name, typed_value] : row.fields) {
+      const auto* text = std::get_if<std::string>(&typed_value);
+      Require(text != nullptr, "IPAR public projection exposed non-text identity data");
+      const auto& value = *text;
       Require(value.find("/tmp/private") == std::string::npos,
               "private path leaked in " + field_name);
       Require(value.find("secret=") == std::string::npos,
@@ -432,9 +441,9 @@ void TestMemoryOverheadSamplingBounds() {
   request.snapshot.deallocation_count = 32;
   request.snapshot.failure_count = 1;
   request.snapshot.contexts.push_back(
-      {"query", "query-ipar-overhead-a", 8192, 16384, 8, 4, 1, 2});
+      {"query", "query-ipar-overhead-a", std::nullopt, 8192, 16384, 8, 4, 1, 2});
   request.snapshot.contexts.push_back(
-      {"query", "query-ipar-overhead-b", 4096, 8192, 4, 2, 1, 2});
+      {"query", "query-ipar-overhead-b", std::nullopt, 4096, 8192, 4, 2, 1, 2});
   request.snapshot.categories.push_back(
       {mem::MemoryCategory::executor_query_reserved, 8192, 16384, 8, 4, 1, 2});
   request.snapshot.categories.push_back(

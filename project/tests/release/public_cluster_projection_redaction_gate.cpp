@@ -55,12 +55,9 @@ api::EngineRequestContext Context(std::vector<std::string> rights) {
   context.cluster_authority_available = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
-  context.database_uuid.canonical =
-      "database:public-cluster-projection-redaction-pcr106";
-  context.cluster_uuid.canonical =
-      "cluster:public-cluster-projection-redaction-pcr106";
-  context.principal_uuid.canonical =
-      "principal:public-cluster-projection-redaction-pcr106";
+  context.database_uuid = scratchbird::tests::FixtureUuid(106, 1);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(106, 2);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(106, 3);
   context.trace_tags.push_back("public_cluster_projection_redaction_gate");
   for (const auto& right : rights) {
     context.trace_tags.push_back("right:" + right);
@@ -103,9 +100,7 @@ api::EngineEvaluateClusterProjectionRedactionRequest ProjectionRequest(
   request.projection_source = "cluster.sys.catalog." +
                               api::ClusterProjectionRedactionSensitivityName(
                                   sensitivity);
-  request.target_uuid =
-      "cluster-target:" + api::ClusterProjectionRedactionSensitivityName(
-                              sensitivity);
+  request.target_uuid = scratchbird::tests::FixtureUuid(106, 10 + static_cast<unsigned>(sensitivity));
   request.retention_policy_ref = "retention.cluster.projection.90d";
   request.support_bundle_policy_ref = "support.cluster.projection.redacted";
   request.retention_evidence_present = true;
@@ -125,9 +120,7 @@ api::ClusterSupportBundleProjectionSource BundleProjection(
   source.projection_source = "cluster.sys.catalog." +
                              api::ClusterProjectionRedactionSensitivityName(
                                  sensitivity);
-  source.target_uuid =
-      "bundle-cluster-target:" +
-      api::ClusterProjectionRedactionSensitivityName(sensitivity);
+  source.target_uuid = scratchbird::tests::FixtureUuid(106, 20 + static_cast<unsigned>(sensitivity));
   source.retention_policy_ref = "retention.cluster.projection.90d";
   source.support_bundle_policy_ref = "support.cluster.projection.redacted";
   source.retention_evidence_present = true;
@@ -176,6 +169,42 @@ void TestAuthorizedClusterProjectionVisibility() {
     Require(result.required_right == right,
             "projection required-right mapping changed");
   }
+}
+
+void TestBinaryTargetAuthorization() {
+  const auto sensitivity = api::ClusterProjectionRedactionSensitivity::topology;
+  auto request = ProjectionRequest(sensitivity, Context({}));
+  const auto target = request.target_uuid;
+  scratchbird::tests::release::GrantMaterializedRight(
+      &request.context, api::ClusterProjectionRedactionRequiredRight(sensitivity), target);
+  request.target_object.uuid = scratchbird::tests::FixtureUuid(106, 999);
+  const auto allowed = api::EngineEvaluateClusterProjectionRedaction(request);
+  Require(allowed.ok && allowed.visible && !allowed.redacted,
+          "binary target grant was not matched");
+  bool found_target = false;
+  for (const auto& row : allowed.result_shape.rows) {
+    for (const auto& [name, value] : row.fields) {
+      if (name != "target_uuid") continue;
+      found_target = true;
+      Require(value.encoded_value.empty() && value.binary_value.size() == 16 &&
+                  std::equal(value.binary_value.begin(), value.binary_value.end(),
+                             target.bytes.begin()),
+              "projection target result lost raw16 identity");
+    }
+  }
+  Require(found_target, "projection result omitted target identity");
+  for (unsigned bit = 0; bit < 128; ++bit) {
+    request.target_uuid = target;
+    request.target_uuid.bytes[bit / 8] ^= static_cast<unsigned char>(1u << (bit % 8));
+    const auto denied = api::EngineEvaluateClusterProjectionRedaction(request);
+    Require(!denied.visible && denied.redacted &&
+                denied.fields.front().value != ClearValue(sensitivity),
+            "a changed UUID bit matched the targeted grant");
+  }
+  request.target_uuid = {};
+  request.target_object.uuid = target;
+  Require(api::EngineEvaluateClusterProjectionRedaction(request).visible,
+          "binary object fallback did not match targeted grant");
 }
 
 void TestClusterProjectionFailClosedInputs() {
@@ -267,6 +296,7 @@ void TestSupportBundleRequiresSupportExport() {
 int main() {
   TestUnauthorizedClusterProjectionRedaction();
   TestAuthorizedClusterProjectionVisibility();
+  TestBinaryTargetAuthorization();
   TestClusterProjectionFailClosedInputs();
   TestSupportBundleProjectionRedaction();
   TestSupportBundleRequiresSupportExport();

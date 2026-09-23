@@ -17,6 +17,7 @@ namespace scratchbird::udr::neo4j_parser_support {
 
 inline constexpr std::string_view kSbuNeo4jPackageUuid =
     "019e13c0-0000-7000-8000-000000000312";
+inline constexpr scratchbird::udr::runtime::UdrUuid kSbuNeo4jPackageIdentity{{0x01, 0x9e, 0x13, 0xc0, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x12}};
 inline constexpr std::string_view kSbuNeo4jPackageName = "sbup_neo4j";
 
 struct UdrResult {

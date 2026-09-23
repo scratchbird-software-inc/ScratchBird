@@ -1,3 +1,4 @@
+#include "security/native_identity_option.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -40,8 +41,9 @@ EngineSyncExternalGroupsResult EngineSyncExternalGroups(const EngineSyncExternal
         MakeSecurityDiagnostic("SECURITY.GROUP.EXTERNAL_UNSYNCED", "provider_has_no_group_or_claim_capability:" + provider));
   }
   const std::string external_group = SecurityOptionValue(request, "external_group:");
-  const std::string internal_group_uuid = SecurityOptionValue(request, "internal_group_uuid:");
-  if (external_group.empty() || internal_group_uuid.empty()) {
+  EngineUuid internal_group_uuid;
+  if (external_group.empty() ||
+      !ReadSecurityIdentityOption(request, "internal_group_uuid", &internal_group_uuid)) {
     return SecurityFailure<EngineSyncExternalGroupsResult>(
         request.context,
         "security.sync_external_groups",

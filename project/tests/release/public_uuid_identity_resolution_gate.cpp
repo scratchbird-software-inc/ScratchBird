@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "backup_archive/backup_archive_api.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "database_lifecycle.hpp"
@@ -87,8 +88,8 @@ std::string UuidText(const TypedUuid& typed_uuid) {
   return uuid::UuidToString(typed_uuid.value);
 }
 
-bool IsGeneratedObjectUuid(const std::string& value) {
-  return uuid::ParseTypedUuid(UuidKind::object, value).ok();
+bool IsGeneratedObjectUuid(const api::EngineUuid& value) {
+  return uuid::MakeTypedUuid(UuidKind::object, value).ok();
 }
 
 memory::AllocationPolicy MemoryPolicy() {
@@ -156,16 +157,15 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
-  context.database_uuid.canonical = UuidText(fixture.database_uuid);
-  context.principal_uuid.canonical = UuidText(MakeUuid(UuidKind::principal, 20));
-  context.session_uuid.canonical = UuidText(MakeUuid(UuidKind::object, 21));
+  context.database_uuid = fixture.database_uuid.value;
+  context.principal_uuid = MakeUuid(UuidKind::principal, 20).value;
+  context.session_uuid = MakeUuid(UuidKind::object, 21).value;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.security_epoch = 1;
@@ -218,7 +218,7 @@ void Commit(api::EngineRequestContext* context) {
   const auto committed = api::EngineCommitTransaction(request);
   RequireApiOk(committed, "PCR-008 transaction commit failed");
   context->local_transaction_id = 0;
-  context->transaction_uuid.canonical.clear();
+  context->transaction_uuid = {};
 }
 
 void Rollback(const api::EngineRequestContext& context) {
@@ -232,12 +232,12 @@ api::EngineCreateSchemaResult CreateGeneratedSchema(api::EngineRequestContext co
   api::EngineCreateSchemaRequest request;
   request.context = std::move(context);
   request.localized_names.push_back(Name("pcr008_schema"));
-  Require(request.target_object.uuid.canonical.empty(),
+  Require(request.target_object.uuid.is_nil(),
           "PCR-008 schema request unexpectedly carried a literal object UUID");
 
   const auto created = api::EngineCreateSchema(request);
   RequireApiOk(created, "PCR-008 generated schema create failed");
-  Require(IsGeneratedObjectUuid(created.primary_object.uuid.canonical),
+  Require(IsGeneratedObjectUuid(created.primary_object.uuid),
           "PCR-008 schema create did not return a generated object UUID");
   Require(created.primary_object.object_kind == "schema",
           "PCR-008 schema create returned wrong object kind");
@@ -259,21 +259,21 @@ api::EngineCreateTableResult CreateGeneratedTable(
   id_column.ordinal = 0;
   id_column.nullable = false;
   request.table_columns.push_back(std::move(id_column));
-  Require(request.requested_table_uuid.canonical.empty(),
+  Require(request.requested_table_uuid.is_nil(),
           "PCR-008 table request unexpectedly carried a literal table UUID");
 
   const auto created = api::EngineCreateTable(request);
   RequireApiOk(created, "PCR-008 generated table create failed");
-  Require(IsGeneratedObjectUuid(created.table_object.uuid.canonical),
+  Require(IsGeneratedObjectUuid(created.table_object.uuid),
           "PCR-008 table create did not return a generated object UUID");
   Require(created.table_object.object_kind == "table",
           "PCR-008 table create returned wrong object kind");
-  Require(created.primary_object.uuid.canonical == created.table_object.uuid.canonical,
+  Require(created.primary_object.uuid == created.table_object.uuid,
           "PCR-008 table primary object and table object diverged");
   Require(!created.created_catalog_records.empty(),
           "PCR-008 table create omitted returned catalog record identity");
-  Require(created.created_catalog_records.front().uuid.canonical ==
-              created.table_object.uuid.canonical,
+  Require(created.created_catalog_records.front().uuid ==
+              created.table_object.uuid,
           "PCR-008 returned catalog record did not carry generated table UUID");
   return created;
 }
@@ -324,7 +324,7 @@ void RequireResolveGeneratedTable(const DatabaseFixture& fixture,
                                   std::string request_id,
                                   std::string_view phase) {
   auto read_context = Begin(fixture, std::move(request_id));
-  if (!schema.uuid.canonical.empty()) {
+  if (!schema.uuid.is_nil()) {
     read_context.current_schema_uuid = schema.uuid;
   }
   const auto resolved =
@@ -333,12 +333,12 @@ void RequireResolveGeneratedTable(const DatabaseFixture& fixture,
       "PCR-009 resolver failed for generated table during " +
       std::string(phase);
   RequireApiOk(resolved, resolve_message);
-  Require(resolved.bound_object_identity.object_uuid.canonical ==
-              table.uuid.canonical,
+  Require(resolved.bound_object_identity.object_uuid ==
+              table.uuid,
           "PCR-009 name resolver did not return generated table UUID");
-  if (!schema.uuid.canonical.empty()) {
-    Require(resolved.bound_object_identity.resolved_schema_uuid.canonical ==
-                schema.uuid.canonical,
+  if (!schema.uuid.is_nil()) {
+    Require(resolved.bound_object_identity.resolved_schema_uuid ==
+                schema.uuid,
             "PCR-009 resolver did not bind the generated schema UUID");
   }
 
@@ -347,8 +347,8 @@ void RequireResolveGeneratedTable(const DatabaseFixture& fixture,
       "PCR-009 UUID-to-name map failed for generated table during " +
       std::string(phase);
   RequireApiOk(mapped, map_message);
-  Require(mapped.bound_object_identity.object_uuid.canonical ==
-              table.uuid.canonical,
+  Require(mapped.bound_object_identity.object_uuid ==
+              table.uuid,
           "PCR-009 UUID-to-name map returned the wrong object UUID");
   Rollback(read_context);
 }
@@ -407,7 +407,7 @@ void ProveGeneratedObjectUuidResolution(const std::filesystem::path& work_dir) {
   const auto created_schema = CreateGeneratedSchema(create_context);
   const auto created_table =
       CreateGeneratedTable(create_context, created_schema.primary_object);
-  const std::string generated_table_uuid = created_table.table_object.uuid.canonical;
+  const api::EngineUuid generated_table_uuid = created_table.table_object.uuid;
   Commit(&create_context);
 
   RequireResolveGeneratedTable(source,
@@ -424,7 +424,7 @@ void ProveGeneratedObjectUuidResolution(const std::filesystem::path& work_dir) {
                                "reopen");
 
   const auto backup = StartLogicalBackup(source, manifest_path);
-  Require(!backup.backup_uuid.canonical.empty(),
+  Require(!backup.backup_uuid.is_nil(),
           "PCR-009 logical backup did not return backup UUID");
 
   RestoreLogicalBackup(target, manifest_path);

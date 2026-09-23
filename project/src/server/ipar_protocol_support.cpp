@@ -27,33 +27,51 @@ std::string Digest(std::string_view payload) {
   return digest.empty() ? std::string{} : "sha256:" + digest;
 }
 
-std::string UuidBytesPayload(const std::array<std::uint8_t, 16>& value) {
-  std::ostringstream out;
-  out << std::hex;
-  for (const std::uint8_t byte : value) {
-    if (byte < 16) out << '0';
-    out << static_cast<unsigned int>(byte);
+// Typed, length-delimited cache preimages preserve embedded NULs and prevent
+// field-boundary collisions. UUID payloads are always exactly 16 binary bytes.
+void AppendLength(std::ostringstream* out, std::uint64_t value) {
+  for (unsigned shift = 0; shift < 64; shift += 8) {
+    out->put(static_cast<char>((value >> shift) & 0xff));
   }
-  return out.str();
 }
 
 void AppendField(std::ostringstream* out, std::string_view name,
                  std::string_view value) {
-  (*out) << name << '=' << value << '\n';
+  out->put('s');
+  AppendLength(out, name.size());
+  out->write(name.data(), name.size());
+  AppendLength(out, value.size());
+  out->write(value.data(), value.size());
 }
 
 void AppendField(std::ostringstream* out, std::string_view name,
                  std::uint64_t value) {
-  (*out) << name << '=' << value << '\n';
+  out->put('n');
+  AppendLength(out, name.size());
+  out->write(name.data(), name.size());
+  AppendLength(out, value);
+}
+
+void AppendField(std::ostringstream* out, std::string_view name,
+                 const std::array<std::uint8_t, 16>& value) {
+  out->put('u');
+  AppendLength(out, name.size());
+  out->write(name.data(), name.size());
+  out->write(reinterpret_cast<const char*>(value.data()), value.size());
+}
+
+void AppendField(std::ostringstream* out, std::string_view name,
+                 const core::platform::Uuid& value) {
+  AppendField(out, name, value.bytes);
 }
 
 void AppendScopePayload(std::ostringstream* out,
                         const IparSupportSessionScope& scope) {
-  AppendField(out, "session_uuid", UuidBytesPayload(scope.session_uuid));
-  AppendField(out, "auth_context_uuid", UuidBytesPayload(scope.auth_context_uuid));
-  AppendField(out, "principal_uuid", UuidBytesPayload(scope.principal_uuid));
+  AppendField(out, "session_uuid", scope.session_uuid);
+  AppendField(out, "auth_context_uuid", scope.auth_context_uuid);
+  AppendField(out, "principal_uuid", scope.principal_uuid);
   AppendField(out, "effective_user_uuid",
-              UuidBytesPayload(scope.effective_user_uuid));
+              scope.effective_user_uuid);
   AppendField(out, "database_uuid", scope.database_uuid);
   AppendField(out, "catalog_generation", scope.epoch.catalog_generation);
   AppendField(out, "security_epoch", scope.epoch.security_epoch);
@@ -85,23 +103,6 @@ std::string LowerAscii(std::string_view value) {
                    return static_cast<char>(std::tolower(ch));
                  });
   return lowered;
-}
-
-bool IsHex(char ch) {
-  return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
-         (ch >= 'A' && ch <= 'F');
-}
-
-bool LooksLikeCanonicalUuidText(std::string_view value) {
-  if (value.size() != 36) return false;
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (i == 8 || i == 13 || i == 18 || i == 23) {
-      if (value[i] != '-') return false;
-      continue;
-    }
-    if (!IsHex(value[i])) return false;
-  }
-  return true;
 }
 
 bool LooksLikeSqlAuthorityText(std::string_view payload) {
@@ -353,8 +354,8 @@ bool DependenciesValid(const std::vector<IparUuidDependency>& dependencies,
     return false;
   }
   for (const IparUuidDependency& dep : dependencies) {
-    if (!LooksLikeCanonicalUuidText(dep.object_uuid) ||
-        !LooksLikeCanonicalUuidText(dep.descriptor_uuid)) {
+    if (!core::uuid::IsEngineIdentityUuid(dep.object_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(dep.descriptor_uuid)) {
       if (detail != nullptr) *detail = "ipar_template_uuid_dependency_invalid";
       return false;
     }
@@ -827,8 +828,8 @@ IparCacheStatus IparServerProtocolSupport::StoreResolvedDescriptor(
     ++metrics_.authority_rejections;
     return status;
   }
-  if (!LooksLikeCanonicalUuidText(request.object_uuid) ||
-      !LooksLikeCanonicalUuidText(request.descriptor_uuid) ||
+  if (!core::uuid::IsEngineIdentityUuid(request.object_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(request.descriptor_uuid) ||
       request.descriptor_hash.empty() || request.operation_id.empty() ||
       request.resolved_name.empty() || request.object_kind.empty()) {
     status = {};

@@ -68,8 +68,7 @@ bool ValidPolicyMutationKind(const std::string& kind) {
   return kind == "create" || kind == "modify" || kind == "remove";
 }
 
-constexpr std::string_view kPolicyBlockedDiagnosticUuid =
-    "cd16f861-90a2-520e-97a7-79d2f28cc355";
+constexpr EngineUuid kPolicyBlockedDiagnosticUuid{{0xcd,0x16,0xf8,0x61,0x90,0xa2,0x52,0x0e,0x97,0xa7,0x79,0xd2,0xf2,0x8c,0xc3,0x55}};
 
 bool UuidPresent(const EngineUuid& value) {
   return !value.is_nil();
@@ -309,7 +308,7 @@ EnginePolicyMutationResult EngineMutatePolicy(const EnginePolicyMutationRequest&
       request.context.security_epoch >= request.context.catalog_generation_id
           ? request.context.security_epoch + 1
           : request.context.catalog_generation_id + 1;
-  const std::string target_uuid = request.target_object.uuid;
+  const EngineUuid target_uuid = request.target_object.uuid;
   const std::string payload =
       "mutation_kind=" + mutation_kind +
       ";policy_area=" + policy_area +

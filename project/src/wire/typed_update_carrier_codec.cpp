@@ -4858,8 +4858,11 @@ bool EncodeTypedUpdateResultEvidenceMaterial(
   std::size_t total_bytes = 64;
   for (u32 index = 0; index < evidence.size(); ++index) {
     const auto& row = evidence[index];
+    const bool binary = row.identity.has_value();
     if (!ValidUtf8EvidenceField(row.evidence_kind, true) ||
-        !ValidUtf8EvidenceField(row.evidence_id, false)) {
+        (binary ? (!row.evidence_id.empty() ||
+                   (row.identity.has_value() && !SystemUuid(*row.identity)))
+                : !ValidUtf8EvidenceField(row.evidence_id, false))) {
       return Fail(
           error,
           TypedUpdateCarrierErrorCode::result_evidence_material_invalid,
@@ -4873,7 +4876,26 @@ bool EncodeTypedUpdateResultEvidenceMaterial(
                   kResourceExceeded, carrier, "evidence_record_bytes", index,
                   "evidence record extent overflows size_t");
     }
+    if (binary && (row.evidence_kind.size() > kTypedUpdateMaximumCanonicalValueBytesPerValue)) {
+      return Fail(error, TypedUpdateCarrierErrorCode::resource_limit_exceeded,
+                  kResourceExceeded, carrier, "binary_evidence_extent", index,
+                  "binary evidence exceeds the carrier extent limit");
+    }
     std::vector<byte> encoded_record;
+    if (binary) {
+      // NUL cannot start a canonical UTF-8 label record. The discriminator and
+      // explicit extents bind binary operands without delimiter ambiguity.
+      encoded_record.push_back(0);
+      encoded_record.push_back(1);
+      const auto append_extent = [&](u64 extent) {
+        for (unsigned shift = 0; shift < 64; shift += 8)
+          encoded_record.push_back(static_cast<byte>(extent >> shift));
+      };
+      append_extent(row.evidence_kind.size());
+      encoded_record.insert(encoded_record.end(), row.evidence_kind.begin(), row.evidence_kind.end());
+      append_extent(16);
+      encoded_record.insert(encoded_record.end(), row.identity->begin(), row.identity->end());
+    } else {
     encoded_record.reserve(row.evidence_kind.size() + row.evidence_id.size() +
                            1);
     encoded_record.insert(encoded_record.end(), row.evidence_kind.begin(),
@@ -4881,6 +4903,7 @@ bool EncodeTypedUpdateResultEvidenceMaterial(
     encoded_record.push_back(static_cast<byte>('='));
     encoded_record.insert(encoded_record.end(), row.evidence_id.begin(),
                           row.evidence_id.end());
+    }
     if (encoded_record.size() > maximum_size - 1 ||
         total_bytes > maximum_size - encoded_record.size() - 1) {
       return Fail(error, TypedUpdateCarrierErrorCode::extent_invalid,

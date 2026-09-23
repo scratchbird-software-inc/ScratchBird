@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -171,8 +172,8 @@ bool OptimizerSupportServicesCloseP4Rows() {
   key.compatibility_epoch = 10;
   key.format_compatibility_epoch = 11;
   key.route_epoch = 12;
-  key.object_uuids = {"table.customer"};
-  key.index_uuids = {"index.customer.pk"};
+  key.object_uuids = {scratchbird::tests::FixtureUuid(1232, 1)};
+  key.index_uuids = {scratchbird::tests::FixtureUuid(1232, 2)};
   key.dependency_digests = {"sha256:dep-customer"};
   optimizer::CachedOptimizerPlan cached;
   cached.key_input = key;

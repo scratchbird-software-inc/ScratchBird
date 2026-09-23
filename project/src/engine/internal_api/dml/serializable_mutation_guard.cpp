@@ -6,6 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "mga_relation_store/mga_relation_metadata_store.hpp"
+#include <stdexcept>
 #include "dml/serializable_mutation_guard.hpp"
 #include "dml/dml_target_access_plan.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
@@ -221,13 +224,9 @@ std::vector<std::string> SplitTabs(const std::string& line) {
   return parts;
 }
 
-TypedUuid ParseRelationUuid(const std::string& relation_uuid) {
-  const auto parsed = uuid::ParseTypedUuid(UuidKind::object, relation_uuid);
+TypedUuid ParseRelationUuid(const EngineUuid& relation_uuid) {
+  const auto parsed = uuid::MakeTypedUuid(UuidKind::object, relation_uuid);
   return parsed.ok() ? parsed.value : TypedUuid{};
-}
-
-std::string RelationUuidText(const TypedUuid& relation_uuid) {
-  return relation_uuid.valid() ? uuid::UuidToString(relation_uuid.value) : std::string{};
 }
 
 mga::SerializableAccessKind AccessKindFromText(const std::string& text) {
@@ -444,27 +443,34 @@ bool DecodeLedgerLine(const std::string& line,
   if (!access) {
     return false;
   }
-  const auto parts = SplitTabs(line);
-  if (parts.size() != 13 || parts[0] != "SBSER001") {
+  std::vector<std::string> parts;
+  if (!DecodeMgaMetadataFields(line,&parts)) return false;
+  if (parts.size() != 13 || parts[0] != "SBSER002") {
     return false;
   }
   const u64 local_id = ParseU64(parts[2]);
+  const u64 sequence = ParseU64(parts[1]);
+  if(local_id==0 || sequence==0 || std::to_string(local_id)!=parts[2] || std::to_string(sequence)!=parts[1]) return false;
+  for(std::size_t n=7;n<=11;++n) if(parts[n]!="0" && parts[n]!="1") return false;
+  if(AccessKindFromText(parts[3])==mga::SerializableAccessKind::unknown)return false;
   const auto lookup = mga::LookupLocalTransaction(inventory,
                                                   mga::MakeLocalTransactionId(local_id));
-  access->sequence = ParseU64(parts[1]);
+  access->sequence = sequence;
   access->record.local_id = mga::MakeLocalTransactionId(local_id);
   access->record.transaction_state =
       lookup.ok() ? lookup.entry.state : mga::TransactionState::recovering;
   access->record.kind = AccessKindFromText(parts[3]);
-  access->record.range.relation_uuid = ParseRelationUuid(parts[4]);
-  access->record.range.lower_bound = HexDecode(parts[5]);
-  access->record.range.upper_bound = HexDecode(parts[6]);
+  EngineUuid relation_uuid;
+  if (!ReadMetadataUuid(parts[4],&relation_uuid)) return false;
+  access->record.range.relation_uuid = ParseRelationUuid(relation_uuid);
+  access->record.range.lower_bound = parts[5];
+  access->record.range.upper_bound = parts[6];
   access->record.range.lower_unbounded = ParseBool(parts[7]);
   access->record.range.upper_unbounded = ParseBool(parts[8]);
   access->record.range.lower_inclusive = ParseBool(parts[9]);
   access->record.range.upper_inclusive = ParseBool(parts[10]);
   access->record.range.full_relation = ParseBool(parts[11]);
-  access->record.range.predicate_digest = HexDecode(parts[12]);
+  access->record.range.predicate_digest = parts[12];
   access->record.durable_inventory_authoritative = true;
   access->record.sequence = access->sequence;
   return access->sequence != 0 && access->record.local_id.valid();
@@ -482,16 +488,15 @@ std::vector<LedgerAccess> LoadLedger(const EngineRequestContext& context,
     }
     return accesses;
   }
-  std::ifstream input(path);
-  std::string line;
-  while (std::getline(input, line)) {
+  std::vector<std::string> records;
+  if(!ReadCompleteMgaMetadataRecords(path,&records)) throw std::runtime_error("serializable_ledger_frame_invalid");
+  for(const auto& line:records) {
     LedgerAccess access;
-    if (!DecodeLedgerLine(line, inventory, &access)) {
-      continue;
-    }
-    max_sequence = std::max(max_sequence, access.sequence);
+    if(!DecodeLedgerLine(line,inventory,&access)) throw std::runtime_error("serializable_ledger_record_invalid");
+    max_sequence=std::max(max_sequence,access.sequence);
     accesses.push_back(std::move(access));
   }
+  if(max_sequence==UINT64_MAX) throw std::runtime_error("serializable_ledger_sequence_exhausted");
   if (next_sequence) {
     *next_sequence = max_sequence + 1;
   }
@@ -499,21 +504,17 @@ std::vector<LedgerAccess> LoadLedger(const EngineRequestContext& context,
 }
 
 std::string EncodeLedgerLine(const mga::SerializableAccessRecord& access) {
-  std::ostringstream out;
-  out << "SBSER001\t"
-      << access.sequence << '\t'
-      << access.local_id.value << '\t'
-      << mga::SerializableAccessKindName(access.kind) << '\t'
-      << RelationUuidText(access.range.relation_uuid) << '\t'
-      << HexEncode(access.range.lower_bound) << '\t'
-      << HexEncode(access.range.upper_bound) << '\t'
-      << (access.range.lower_unbounded ? "1" : "0") << '\t'
-      << (access.range.upper_unbounded ? "1" : "0") << '\t'
-      << (access.range.lower_inclusive ? "1" : "0") << '\t'
-      << (access.range.upper_inclusive ? "1" : "0") << '\t'
-      << (access.range.full_relation ? "1" : "0") << '\t'
-      << HexEncode(access.range.predicate_digest) << '\n';
-  return out.str();
+  if(access.sequence==0 || !access.local_id.valid() || access.kind==mga::SerializableAccessKind::unknown ||
+      !access.range.relation_uuid.valid() || !core::uuid::IsEngineIdentityUuid(access.range.relation_uuid.value))
+    throw std::invalid_argument("serializable_relation_identity_invalid");
+  const auto frame=EncodeMgaMetadataFields({"SBSER002",std::to_string(access.sequence),
+      std::to_string(access.local_id.value),mga::SerializableAccessKindName(access.kind),
+      MetadataUuidBytes(access.range.relation_uuid.value),access.range.lower_bound,access.range.upper_bound,
+      access.range.lower_unbounded?"1":"0",access.range.upper_unbounded?"1":"0",
+      access.range.lower_inclusive?"1":"0",access.range.upper_inclusive?"1":"0",
+      access.range.full_relation?"1":"0",access.range.predicate_digest});
+  if(frame.empty())throw std::invalid_argument("serializable_access_extent_invalid");
+  return frame;
 }
 
 SerializableDmlAdmissionResult AppendLedgerRecords(
@@ -619,7 +620,7 @@ mga::SerializableAccessRecord AccessRecord(
 SerializableDmlAdmissionResult BuildRecords(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     mga::SerializableAccessKind kind,
     const std::vector<mga::SerializableKeyRange>& ranges,
     bool read_access,
@@ -698,7 +699,7 @@ SerializableDmlAdmissionResult CheckRecords(
 SerializableDmlAdmissionResult RecordReadOrWrite(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     mga::SerializableAccessKind kind,
     const std::vector<mga::SerializableKeyRange>& ranges,
     bool read_access,
@@ -753,7 +754,7 @@ SerializableDmlAdmissionResult RecordReadOrWrite(
 SerializableDmlAdmissionResult CheckWriteOnly(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     mga::SerializableAccessKind kind,
     const std::vector<mga::SerializableKeyRange>& ranges,
     bool parser_or_reference_authority) {
@@ -800,7 +801,7 @@ void AddPredicateEvidence(const EnginePredicateEnvelope& predicate,
 SerializableDmlAdmissionResult RecordSerializableSelectRead(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     const EnginePredicateEnvelope& predicate,
     std::span<const std::string> option_envelopes) {
   if (const auto* error = DmlRowIdentityPredicateError(predicate))
@@ -831,7 +832,7 @@ SerializableDmlAdmissionResult RecordSerializableSelectRead(
 SerializableDmlAdmissionResult CheckSerializableInsertMutation(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     std::span<const EngineRowValue> rows,
     std::span<const std::string> option_envelopes) {
   if (!IsSerializableContext(context)) {
@@ -851,7 +852,7 @@ SerializableDmlAdmissionResult CheckSerializableInsertMutation(
 SerializableDmlAdmissionResult RecordSerializableInsertMutation(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     std::span<const EngineRowValue> rows,
     std::span<const std::string> option_envelopes) {
   if (!IsSerializableContext(context)) {
@@ -873,7 +874,7 @@ SerializableDmlAdmissionResult RecordSerializableInsertMutation(
 SerializableDmlAdmissionResult CheckSerializablePredicateMutation(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     const EnginePredicateEnvelope& predicate,
     bool delete_row,
     std::span<const std::string> option_envelopes) {
@@ -897,7 +898,7 @@ SerializableDmlAdmissionResult CheckSerializablePredicateMutation(
 SerializableDmlAdmissionResult RecordSerializablePredicateMutation(
     const EngineRequestContext& context,
     std::string operation_id,
-    std::string relation_uuid,
+    EngineUuid relation_uuid,
     const EnginePredicateEnvelope& predicate,
     bool delete_row,
     std::span<const std::string> option_envelopes) {

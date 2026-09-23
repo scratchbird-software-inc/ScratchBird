@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/import_execution_api.hpp"
@@ -78,16 +79,16 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid id_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -117,7 +118,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextFields(item.evidence_id) == id) {
       return true;
     }
   }
@@ -129,7 +130,7 @@ bool EvidenceKindContains(const std::vector<api::EngineEvidenceReference>& evide
                           std::string_view token) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind &&
-        item.evidence_id.find(token) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFields(item.evidence_id).find(token) != std::string::npos) {
       return true;
     }
   }
@@ -142,7 +143,7 @@ void AssertNoRuntimeDocLeaks(const std::vector<api::EngineEvidenceReference>& ev
   for (const auto& item : evidence) {
     for (const auto token : forbidden) {
       Require(item.evidence_kind.find(token) == std::string::npos &&
-                  item.evidence_id.find(token) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFields(item.evidence_id).find(token) == std::string::npos,
               "ODF-044 runtime evidence leaked documentation token");
     }
   }
@@ -154,11 +155,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -237,9 +238,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt, bool with_index) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-044 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
+  fixture.id_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "odf044-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)),
@@ -259,7 +260,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     bool sorted_build) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
   request.source.source_position = "row:0";
@@ -290,13 +291,13 @@ void CoreBuilderSortsAndRefusesUniqueDuplicates() {
   request.metadata.unique = false;
   request.metadata.rebuild = true;
   request.rows.push_back({"b",
-                          uuid::UuidToString(NewUuid(platform::UuidKind::row, 44002).value),
-                          uuid::UuidToString(NewUuid(platform::UuidKind::row, 44003).value),
+                          NewUuid(platform::UuidKind::row, 44002).value,
+                          NewUuid(platform::UuidKind::row, 44003).value,
                           "b",
                           0});
   request.rows.push_back({"a",
-                          uuid::UuidToString(NewUuid(platform::UuidKind::row, 44004).value),
-                          uuid::UuidToString(NewUuid(platform::UuidKind::row, 44005).value),
+                          NewUuid(platform::UuidKind::row, 44004).value,
+                          NewUuid(platform::UuidKind::row, 44005).value,
                           "a",
                           1});
   const auto built = idx::BuildSortedExactBulkIndex(request);
@@ -370,14 +371,14 @@ void CreateIndexBackfillsWithSortedExactBuild() {
   Commit(insert_context);
 
   auto ddl_context = Begin(fixture, "odf044-create-index");
-  const std::string city_index_uuid =
-      NewUuidText(platform::UuidKind::object, 44250);
+  const platform::Uuid city_index_uuid =
+      NewNativeUuid(platform::UuidKind::object, 44250);
   api::EngineCreateIndexRequest request;
   request.context = ddl_context;
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   api::EngineIndexDefinition definition;
-  definition.requested_index_uuid.canonical = city_index_uuid;
+  definition.requested_index_uuid = city_index_uuid;
   definition.physical_profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
   definition.key_envelopes.push_back("city");
   api::EngineLocalizedName name;

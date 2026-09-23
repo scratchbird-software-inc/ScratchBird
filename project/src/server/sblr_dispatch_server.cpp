@@ -1,3 +1,4 @@
+#include "wire/public_result_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -11,6 +12,8 @@
 #include "sblr_dispatch_server.hpp"
 #include "../wire/parser_server_ipc/binary_identity_io.hpp"
 #include "hash_digest.hpp"
+#include "../wire/language_bundle_identity.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 
 #include "sblr_admission.hpp"
 #include "sblr_dispatch_command.hpp"
@@ -64,6 +67,43 @@
 namespace scratchbird::server {
 
 namespace {
+namespace public_result = scratchbird::wire::public_result;
+using NativeUuid = scratchbird::core::platform::Uuid;
+std::string IdentityBytes(const NativeUuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+std::string IdentityBytes(const std::array<std::uint8_t, 16>& id) { return IdentityBytes(NativeUuid{id}); }
+NativeUuid BinaryIdentity(std::string_view bytes) {
+  NativeUuid id;
+  if (bytes.size() != id.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), id.bytes.size(), id.bytes.begin());
+  return scratchbird::core::uuid::IsEngineIdentityUuid(id) ? id : NativeUuid{};
+}
+std::string ResultRecord(std::vector<public_result::Field> fields) {
+  std::string bytes;
+  if (!public_result::Encode(fields, &bytes)) throw std::invalid_argument("public_result_record_invalid");
+  return bytes;
+}
+public_result::Field TextEvidence(std::string kind, std::string value) {
+  return {"evidence", public_result::Kind::evidence,
+          ResultRecord({{std::move(kind), public_result::Kind::text, std::move(value)}})};
+}
+void AppendResultFields(std::string* payload, std::vector<public_result::Field> extra) {
+  if (!payload) return;
+  std::vector<public_result::Field> fields;
+  if (!payload->empty() && !public_result::Decode(*payload, &fields)) {
+    if (payload->starts_with(public_result::kMagic))
+      throw std::invalid_argument("public_result_append_packet_invalid");
+    fields.push_back({"engine_result", public_result::Kind::bytes, *payload});
+  }
+  fields.insert(fields.end(), std::make_move_iterator(extra.begin()), std::make_move_iterator(extra.end()));
+  *payload = ResultRecord(std::move(fields));
+}
+NativeUuid ResultIdentity(std::string_view payload, std::string_view name) {
+  const auto field = public_result::Find(payload, name);
+  return field && field->kind == public_result::Kind::uuid ? BinaryIdentity(field->value) : NativeUuid{};
+}
+
 
 namespace agents = scratchbird::core::agents;
 namespace engine_api = scratchbird::engine::internal_api;
@@ -631,6 +671,8 @@ std::uint64_t BulkStreamEventCount(std::uint64_t rejected_rows) {
 }
 
 std::optional<std::string> SemicolonFieldValue(std::string_view encoded, std::string_view key) {
+  if (encoded.starts_with(public_result::kMagic)) return public_result::Value(encoded, key);
+
   std::size_t start = 0;
   while (start <= encoded.size()) {
     const std::size_t end = encoded.find(';', start);
@@ -659,11 +701,17 @@ std::optional<std::uint64_t> SemicolonFieldU64(std::string_view encoded, std::st
 
 std::vector<std::string> ImportRejectRecordsFromPayload(std::string_view payload) {
   std::vector<std::string> records;
-  std::size_t start = 0;
-  while (start <= payload.size()) {
-    const std::size_t end = payload.find('\n', start);
-    const std::string_view line =
-        payload.substr(start, end == std::string_view::npos ? payload.size() - start : end - start);
+  std::vector<std::string> lines;
+  if (payload.starts_with(public_result::kMagic)) {
+    std::vector<public_result::Field> fields;
+    if (!public_result::Decode(payload, &fields)) return {};
+    for (const auto& field : fields)
+      if (field.kind == public_result::Kind::row) lines.push_back(field.name + "=" + field.value);
+  } else {
+    std::istringstream input{std::string(payload)}; std::string line;
+    while (std::getline(input, line)) lines.push_back(std::move(line));
+  }
+  for (const auto& line : lines) {
     if (line.starts_with("row[")) {
       const std::size_t equals = line.find('=');
       if (equals != std::string_view::npos) {
@@ -689,8 +737,6 @@ std::vector<std::string> ImportRejectRecordsFromPayload(std::string_view payload
         }
       }
     }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
   }
   return records;
 }
@@ -1417,7 +1463,7 @@ JobSchedulerContext EnsureJobScheduler(ServerSessionRegistry* registry,
   auto& scheduler = registry->job_schedulers_by_database_uuid[session.database_uuid];
   if (scheduler.state() == agents::BackgroundJobSchedulerState::not_started) {
     agents::BackgroundJobSchedulerStartup startup;
-    startup.database_uuid = session.database_uuid;
+    startup.database_uuid = IdentityBytes(session.database_uuid);
     startup.policy_generation = std::max<std::uint64_t>(1, session.policy_generation);
     startup.tx2_activation_committed = true;
     startup.startup_admitted = true;
@@ -1516,7 +1562,7 @@ engine_api::EngineRequestContext ArchiveReplicationEngineContext(
   context.trust_mode = session.embedded_in_process
                            ? engine_api::EngineTrustMode::embedded_in_process
                            : engine_api::EngineTrustMode::server_isolated;
-  context.request_id = UuidBytesToText(request_uuid);
+  context.request_id = IdentityBytes(request_uuid);
   context.database_path = session.database_path;
   context.database_uuid = session.database_uuid;
   context.principal_uuid.bytes = session.effective_user_uuid;
@@ -1598,15 +1644,21 @@ void AddArchiveReplicationDeltaOptions(engine_api::EngineApiRequest* request,
 std::string ArchiveReplicationResultDetail(const engine_api::EngineApiResult& result,
                                            std::string_view manifest_uri,
                                            std::string_view archive_operation) {
-  std::ostringstream out;
-  out << "archive_replication_route=backup_archive_api;engine_operation="
-      << result.operation_id << ";archive_operation=" << archive_operation
-      << ";manifest_uri=" << manifest_uri
-      << ";evidence_count=" << result.evidence.size();
+  std::vector<std::string> fields{
+      "archive.replication.result.v2", result.operation_id,
+      std::string(archive_operation), std::string(manifest_uri),
+      std::to_string(result.evidence.size())};
   for (const auto& evidence : result.evidence) {
-    out << '\n' << evidence.evidence_kind << '=' << evidence.evidence_id;
+    fields.push_back(evidence.evidence_kind);
+    if (const auto* identity = std::get_if<engine_api::EngineUuid>(&evidence.evidence_id)) {
+      fields.emplace_back("uuid16");
+      fields.push_back(engine_api::MetadataUuidBytes(*identity));
+    } else {
+      fields.emplace_back("text");
+      fields.push_back(std::get<std::string>(evidence.evidence_id));
+    }
   }
-  return out.str();
+  return engine_api::EncodeMgaMetadataFields(fields);
 }
 
 std::string ArchiveReplicationDiagnosticDetail(const engine_api::EngineApiResult& result) {
@@ -1638,10 +1690,10 @@ std::string PreparedInnerEnvelopeFromControl(std::string encoded) {
   return encoded;
 }
 
-std::string PreparedAuthorityExpectedDependencyUuid(
+engine_api::EngineUuid PreparedAuthorityExpectedDependencyUuid(
     const ServerPreparedStatementRecord& prepared) {
   if (!prepared.target_object_uuid.is_nil()) return prepared.target_object_uuid;
-  return prepared.database_uuid.is_nil() ? UuidBytesToText(prepared.session_uuid)
+  return prepared.database_uuid.is_nil() ? engine_api::EngineUuid{prepared.session_uuid}
                                         : prepared.database_uuid;
 }
 
@@ -1666,43 +1718,55 @@ std::string PreparedAuthorityExpectedDependencyColumnHash(
                                                  : prepared.target_column_set_hash;
 }
 
-void AppendPreparedAuthorityProofField(std::ostringstream* out,
+void AppendPreparedAuthorityProofField(std::vector<std::string>* out,
                                        std::string_view key,
                                        std::string_view value) {
   if (out == nullptr) return;
-  *out << key << '=' << value << '\n';
+  out->emplace_back(key);
+  out->emplace_back(value);
 }
 
-void AppendPreparedAuthorityProofField(std::ostringstream* out,
+void AppendPreparedAuthorityProofField(std::vector<std::string>* out,
                                        std::string_view key,
                                        std::uint64_t value) {
-  if (out == nullptr) return;
-  *out << key << '=' << value << '\n';
+  AppendPreparedAuthorityProofField(out, key, std::to_string(value));
+}
+
+void AppendPreparedAuthorityProofField(std::vector<std::string>* out,
+                                       std::string_view key,
+                                       const engine_api::EngineUuid& value) {
+  AppendPreparedAuthorityProofField(out, key, engine_api::MetadataUuidBytes(value));
+}
+
+void AppendPreparedAuthorityProofField(std::vector<std::string>* out,
+                                       std::string_view key,
+                                       const std::array<std::uint8_t, 16>& value) {
+  AppendPreparedAuthorityProofField(out, key, engine_api::EngineUuid{value});
 }
 
 std::string PreparedAuthorityProofPayload(const ServerPreparedStatementRecord& prepared,
                                           const ServerSessionRecord& session) {
-  std::ostringstream out;
+  std::vector<std::string> out;
   const auto language = ServerLanguageContextForSession(session);
-  AppendPreparedAuthorityProofField(&out, "version", "server.prepared.authority.v1");
+  AppendPreparedAuthorityProofField(&out, "version", "server.prepared.authority.v2");
   AppendPreparedAuthorityProofField(&out,
                                     "prepared_statement_uuid",
-                                    UuidBytesToText(prepared.prepared_statement_uuid));
+                                    prepared.prepared_statement_uuid);
   AppendPreparedAuthorityProofField(&out,
                                     "client_statement_uuid",
-                                    UuidBytesToText(prepared.client_statement_uuid));
+                                    prepared.client_statement_uuid);
   AppendPreparedAuthorityProofField(&out,
                                     "session_uuid",
-                                    UuidBytesToText(session.session_uuid));
+                                    session.session_uuid);
   AppendPreparedAuthorityProofField(&out,
                                     "auth_context_uuid",
-                                    UuidBytesToText(session.auth_context_uuid));
+                                    session.auth_context_uuid);
   AppendPreparedAuthorityProofField(&out,
                                     "principal_uuid",
-                                    UuidBytesToText(session.principal_uuid));
+                                    session.principal_uuid);
   AppendPreparedAuthorityProofField(&out,
                                     "effective_user_uuid",
-                                    UuidBytesToText(session.effective_user_uuid));
+                                    session.effective_user_uuid);
   AppendPreparedAuthorityProofField(&out, "database_uuid", session.database_uuid);
   AppendPreparedAuthorityProofField(&out, "operation_family", prepared.operation_family);
   AppendPreparedAuthorityProofField(&out, "operation_id", prepared.operation_id);
@@ -1783,7 +1847,7 @@ std::string PreparedAuthorityProofPayload(const ServerPreparedStatementRecord& p
   AppendPreparedAuthorityProofField(&out,
                                     "resource_version_identity",
                                     language.resource_version_identity);
-  return out.str();
+  return engine_api::EncodeMgaMetadataFields(out);
 }
 
 std::string PreparedAuthorityProofHash(const ServerPreparedStatementRecord& prepared,
@@ -2159,6 +2223,13 @@ void ClearStablePublicRelationNameCacheForMutation(ServerSessionRegistry* regist
 
 std::optional<std::string> PipeDelimitedField(std::string_view row_packet,
                                               std::size_t ordinal) {
+  if (row_packet.starts_with(public_result::kMagic)) {
+    const auto row = public_result::Find(row_packet, "row[0]");
+    std::vector<public_result::Field> fields;
+    if (!row || row->kind != public_result::Kind::row ||
+        !public_result::Decode(row->value, &fields) || ordinal >= fields.size()) return std::nullopt;
+    return fields[ordinal].value;
+  }
   const std::size_t line_end = row_packet.find('\n');
   std::string_view line =
       row_packet.substr(0, line_end == std::string_view::npos ? row_packet.size() : line_end);
@@ -2179,6 +2250,11 @@ std::optional<std::string> PipeDelimitedField(std::string_view row_packet,
 std::optional<std::string> ServerApiPayloadRowField(std::string_view payload,
                                                     std::size_t row_index,
                                                     std::string_view field_name) {
+  if (payload.starts_with(public_result::kMagic)) {
+    const auto row = public_result::Find(payload, "row[" + std::to_string(row_index) + "]");
+    if (!row || row->kind != public_result::Kind::row) return std::nullopt;
+    return public_result::Value(row->value, field_name);
+  }
   const std::string prefix = "row[" + std::to_string(row_index) + "]=";
   std::size_t start = 0;
   while (start <= payload.size()) {
@@ -2194,24 +2270,8 @@ std::optional<std::string> ServerApiPayloadRowField(std::string_view payload,
   return std::nullopt;
 }
 
-bool LooksLikeUuidText(std::string_view text) {
-  std::size_t hex_count = 0;
-  for (const char ch : text) {
-    if (ch == '-') continue;
-    if (!std::isxdigit(static_cast<unsigned char>(ch))) return false;
-    ++hex_count;
-  }
-  return hex_count == 32;
-}
-
-std::string NormalizeUuidText(std::string_view text) {
-  std::string normalized;
-  normalized.reserve(text.size());
-  for (const unsigned char ch : text) {
-    normalized.push_back(static_cast<char>(std::tolower(ch)));
-  }
-  return normalized;
-}
+bool LooksLikeBinaryUuid(std::string_view bytes) { return !BinaryIdentity(bytes).is_nil(); }
+std::string NormalizeBinaryUuid(std::string_view bytes) { return LooksLikeBinaryUuid(bytes) ? std::string(bytes) : std::string{}; }
 
 std::string StablePublicRelationNameSeedKey(const ServerSessionRecord& session,
                                             std::string_view presented_name,
@@ -2219,45 +2279,41 @@ std::string StablePublicRelationNameSeedKey(const ServerSessionRecord& session,
   const bool qualified = presented_name.find('.') != std::string_view::npos;
   const std::string_view stable_search_path_hash =
       qualified ? std::string_view("<qualified>") : std::string_view(session.search_path_hash);
-  std::ostringstream key;
-  key << "stable_relation_v1"
-      << "|db=" << session.database_uuid
-      << "|user=" << UuidBytesToText(session.effective_user_uuid)
-      << "|presented=" << presented_name
-      << "|quoted=0"
-      << "|class=" << object_class
-      << "|dialect=sbsql_v3"
-      << "|identifier_profile=sbsql_v3"
-      << "|request_language="
-      << (session.default_language_tag.empty() ? std::string_view("en")
-                                               : std::string_view(session.default_language_tag))
-      << "|request_search_path=" << (qualified ? std::string_view("<qualified>")
-                                               : std::string_view("sys,public"))
-      << "|security=" << session.security_epoch
-      << "|grant=" << session.grant_epoch
-      << "|policy=" << session.policy_generation
-      << "|role_hash=" << session.role_set_hash
-      << "|group_hash=" << session.group_set_hash
-      << "|search_path_hash=" << stable_search_path_hash
-      << "|language_profile=" << session.language_profile
-      << "|language_tag=" << session.language_tag
-      << "|input_syntax=" << session.input_syntax_profile
-      << "|input_fallback=" << session.input_language_fallback_tag
-      << "|common_resource=" << session.common_resource_hash
-      << "|language_resource=" << session.language_resource_epoch
-      << "|localized_name=" << session.localized_name_epoch
-      << "|message_resource=" << session.message_resource_epoch
-      << "|resource_compat=" << session.resource_compatibility_identity
-      << "|resource_version=" << session.resource_version_identity;
-  return key.str();
+  return engine_api::EncodeMgaMetadataFields({
+      "ps.name.stable.cache.v2",
+      engine_api::MetadataUuidBytes(session.database_uuid),
+      std::string(reinterpret_cast<const char*>(session.effective_user_uuid.data()), session.effective_user_uuid.size()),
+      std::string(presented_name),
+      "0",
+      std::string(object_class),
+      engine_api::MetadataUuidBytes(engine_api::EngineUuid{session.admitted_dialect_profile_uuid}),
+      session.input_syntax_profile == "sbsql.syntax.standard" ? "sbsql_v3" : session.input_syntax_profile,
+      session.default_language_tag.empty() ? "en" : session.default_language_tag,
+      qualified ? std::string("<qualified>") : std::string("sys,public"),
+      std::to_string(session.security_epoch),
+      std::to_string(session.grant_epoch),
+      std::to_string(session.policy_generation),
+      session.role_set_hash,
+      session.group_set_hash,
+      std::string(stable_search_path_hash),
+      session.language_profile,
+      session.language_tag,
+      session.input_syntax_profile,
+      session.input_language_fallback_tag,
+      session.common_resource_hash,
+      std::to_string(session.language_resource_epoch),
+      std::to_string(session.localized_name_epoch),
+      std::to_string(session.message_resource_epoch),
+      session.resource_compatibility_identity,
+      session.resource_version_identity});
 }
 
 void StoreStablePublicRelationNameSeed(ServerSessionRegistry* registry,
                                        const ServerSessionRecord& session,
                                        std::string_view presented_name,
-                                       std::string_view object_uuid,
+                                       const engine_api::EngineUuid& object_uuid,
                                        std::string_view object_class) {
-  if (registry == nullptr || presented_name.empty() || object_uuid.empty() ||
+  if (registry == nullptr || presented_name.empty() || object_uuid.is_nil() ||
       object_class.empty()) {
     return;
   }
@@ -2267,7 +2323,7 @@ void StoreStablePublicRelationNameSeed(ServerSessionRegistry* registry,
       StablePublicRelationNameSeedKey(session, presented_name, object_class);
   record.effective_user_uuid = session.effective_user_uuid;
   record.database_uuid = session.database_uuid;
-  record.object_uuid = std::string(object_uuid);
+  record.object_uuid = object_uuid;
   record.canonical_name = std::string(presented_name);
   record.object_class = std::string(object_class);
   record.catalog_generation = session.catalog_generation;
@@ -2298,19 +2354,14 @@ void StoreStablePublicRelationNameSeed(ServerSessionRegistry* registry,
       trace_path != nullptr && *trace_path != '\0') {
     std::ofstream out(trace_path, std::ios::app | std::ios::binary);
     if (out) {
-      out << "layer=server_public_name_resolution_seed"
-          << "\tpresented=" << ServerTraceField(presented_name)
-          << "\tclass=" << ServerTraceField(object_class)
-          << "\tobject_uuid=" << ServerTraceField(object_uuid)
-          << "\tstable_cache_key=" << ServerTraceField(cache_key)
-          << "\tstable_cache_entries="
-          << registry->stable_public_name_resolution_cache_by_key.size()
-          << "\tdatabase_uuid=" << ServerTraceField(session.database_uuid)
-          << "\tuser_uuid=" << UuidBytesToText(session.effective_user_uuid)
-          << "\tsearch_path_hash=" << ServerTraceField(session.search_path_hash)
-          << "\tlanguage_tag=" << ServerTraceField(session.language_tag)
-          << "\tdefault_language_tag=" << ServerTraceField(session.default_language_tag)
-          << '\n';
+      const auto record = engine_api::EncodeMgaMetadataFields({
+          "server.public_name_resolution_seed.v2", std::string(presented_name),
+          std::string(object_class), engine_api::MetadataUuidBytes(object_uuid),
+          cache_key, std::to_string(registry->stable_public_name_resolution_cache_by_key.size()),
+          engine_api::MetadataUuidBytes(session.database_uuid),
+          engine_api::MetadataUuidBytes(engine_api::EngineUuid{session.effective_user_uuid}),
+          session.search_path_hash, session.language_tag, session.default_language_tag});
+      out.write(record.data(), static_cast<std::streamsize>(record.size()));
     }
   }
   registry->stable_public_name_resolution_cache_lru.erase(
@@ -2328,28 +2379,29 @@ void StoreStablePublicRelationNameSeed(ServerSessionRegistry* registry,
   }
 }
 
+engine_api::EngineUuid ResolveObjectPathForDispatch(
+    const ServerSessionRecord& session, std::string_view path,
+    std::string_view expected_kind);
+
 void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
                                                const ServerSessionRecord& session,
                                                std::string_view operation_id,
                                                std::string_view encoded,
                                                std::string_view row_packet) {
   auto trace_skip = [&](std::string_view reason,
-                        std::string_view object_uuid,
+                        const engine_api::EngineUuid& object_uuid,
                         std::string_view object_name,
                         std::string_view schema_parent_path) {
     if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_NAME_RESOLUTION_TRACE_FILE");
         trace_path != nullptr && *trace_path != '\0') {
       std::ofstream out(trace_path, std::ios::app | std::ios::binary);
       if (out) {
-        out << "layer=server_public_name_resolution_seed_skip"
-            << "\toperation=" << ServerTraceField(operation_id)
-            << "\treason=" << ServerTraceField(reason)
-            << "\tobject_uuid=" << ServerTraceField(object_uuid)
-            << "\tobject_name=" << ServerTraceField(object_name)
-            << "\tschema_parent_path=" << ServerTraceField(schema_parent_path)
-            << "\tencoded_bytes=" << encoded.size()
-            << "\trow_packet_bytes=" << row_packet.size()
-            << '\n';
+        const auto record = engine_api::EncodeMgaMetadataFields({
+            "server.public_name_resolution_seed_skip.v2", std::string(operation_id),
+            std::string(reason), engine_api::MetadataUuidBytes(object_uuid),
+            std::string(object_name), std::string(schema_parent_path),
+            std::to_string(encoded.size()), std::to_string(row_packet.size())});
+        out.write(record.data(), static_cast<std::streamsize>(record.size()));
       }
     }
   };
@@ -2359,20 +2411,9 @@ void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
         TextLineValue(encoded, field).value_or(
             JsonTextField(encoded, field).value_or("")));
   };
-  auto seed_security_name = [&](std::string_view uuid_field,
+  auto seed_security_name = [&](std::string_view object_kind,
                                 std::string_view name_field,
                                 const std::vector<std::string_view>& classes) {
-    std::string object_uuid = seed_field_value(uuid_field);
-    if (object_uuid.empty()) object_uuid = seed_field_value("principal_uuid");
-    if (object_uuid.empty()) object_uuid = seed_field_value("target_object_uuid");
-    if (object_uuid.empty()) {
-      object_uuid = ServerApiPayloadRowField(row_packet, 0, uuid_field).value_or("");
-    }
-    if (object_uuid.empty()) {
-      object_uuid = ServerApiPayloadRowField(row_packet, 0, "object_uuid").value_or("");
-    }
-    if (IsPublicRegistryPlaceholder(object_uuid)) object_uuid.clear();
-    if (!object_uuid.empty() && !LooksLikeUuidText(object_uuid)) object_uuid.clear();
     std::string object_name = seed_field_value(name_field);
     if (object_name.empty()) {
       object_name = ServerApiPayloadRowField(row_packet, 0, name_field).value_or("");
@@ -2380,7 +2421,10 @@ void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
     if (object_name.empty()) {
       object_name = ServerApiPayloadRowField(row_packet, 0, "name").value_or("");
     }
-    if (object_uuid.empty() || object_name.empty()) {
+    // Cache only an identity resolved from the engine's admitted catalog view.
+    // UUID-shaped text in a result packet is never cache authority.
+    const auto object_uuid = ResolveObjectPathForDispatch(session, object_name, object_kind);
+    if (object_uuid.is_nil() || object_name.empty()) {
       trace_skip("missing_security_seed_field", object_uuid, object_name, "");
       return;
     }
@@ -2393,11 +2437,11 @@ void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
     }
   };
   if (operation_id == "security.role.create") {
-    seed_security_name("role_uuid", "role_name", {"role", "security_role", "principal"});
+    seed_security_name("role", "role_name", {"role", "security_role", "principal"});
     return;
   }
   if (operation_id == "security.group.create") {
-    seed_security_name("group_uuid", "group_name", {"group", "security_group", "principal"});
+    seed_security_name("group", "group_name", {"group", "security_group", "principal"});
     return;
   }
   if (operation_id == "security.policy.create") {
@@ -2415,7 +2459,7 @@ void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
         effect_upper.find("ROW") != std::string::npos) {
       classes.push_back("rls");
     }
-    seed_security_name("policy_uuid", "policy_name", classes);
+    seed_security_name("policy", "policy_name", classes);
     return;
   }
   if (operation_id != "ddl.create_table" && operation_id != "ddl.create_view") return;
@@ -2425,20 +2469,11 @@ void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
       TextBoolField(encoded, "temporary_table", false) ||
       TextBoolField(encoded, "temporary", false);
   if (temporary) {
-    trace_skip("temporary_relation", "", "", "");
+    trace_skip("temporary_relation", {}, "", "");
     return;
   }
   const std::string object_kind =
       operation_id == "ddl.create_view" ? "view" : "table";
-  std::string object_uuid = seed_field_value(object_kind + std::string("_object_uuid"));
-  if (object_uuid.empty()) object_uuid = seed_field_value("target_object_uuid");
-  if (IsPublicRegistryPlaceholder(object_uuid)) object_uuid.clear();
-  if (!object_uuid.empty() && !LooksLikeUuidText(object_uuid)) object_uuid.clear();
-  if (object_uuid.empty()) {
-    object_uuid = ServerApiPayloadRowField(row_packet, 0, "object_uuid").value_or("");
-  }
-  if (object_uuid.empty()) object_uuid = PipeDelimitedField(row_packet, 0).value_or("");
-  if (!object_uuid.empty() && !LooksLikeUuidText(object_uuid)) object_uuid.clear();
   std::string object_name = seed_field_value(object_kind + std::string("_name"));
   if (object_name.empty()) object_name = seed_field_value("name");
   if (object_name.empty()) {
@@ -2449,11 +2484,12 @@ void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
   }
   if (object_name.empty()) object_name = PipeDelimitedField(row_packet, 3).value_or("");
   std::string schema_parent_path = seed_field_value("schema_parent_path");
-  if (object_uuid.empty() || object_name.empty() || schema_parent_path.empty()) {
+  const std::string presented_name = schema_parent_path + "." + object_name;
+  const auto object_uuid = ResolveObjectPathForDispatch(session, presented_name, object_kind);
+  if (object_uuid.is_nil() || object_name.empty() || schema_parent_path.empty()) {
     trace_skip("missing_seed_field", object_uuid, object_name, schema_parent_path);
     return;
   }
-  const std::string presented_name = schema_parent_path + "." + object_name;
   StoreStablePublicRelationNameSeed(registry,
                                     session,
                                     presented_name,
@@ -2552,9 +2588,20 @@ bool LanguageBundleManifestAdmitted(std::string_view encoded) {
 
 ServerLanguageBundleRecord LanguageBundleRecordFromEnvelope(
     std::string_view encoded,
-    const ServerSessionRecord& session) {
+    const ServerSessionRecord& session,
+    std::span<const std::uint8_t> identity_packet) {
   ServerLanguageBundleRecord record;
-  record.bundle_uuid = JsonTextField(encoded, "bundle_uuid").value_or("");
+  // Bundle, dialect, and topology identity occupy exactly three UUID16 slots.
+  // Display names and resource hashes remain scalar manifest metadata.
+  if (identity_packet.size() != 48 ||
+      JsonTextField(encoded, "bundle_uuid").has_value() ||
+      JsonTextField(encoded, "dialect_profile_uuid").has_value() ||
+      JsonTextField(encoded, "topology_profile_uuid").has_value()) return {};
+  scratchbird::wire::LanguageBundleIdentityV1 identity;
+  if (!scratchbird::wire::DecodeLanguageBundleIdentityV1(identity_packet, &identity)) return {};
+  record.bundle_uuid = identity.bundle_uuid;
+  record.dialect_profile_uuid = identity.dialect_profile_uuid;
+  record.topology_profile_uuid = identity.topology_profile_uuid;
   record.language_profile_id =
       JsonTextField(encoded, "language_profile_id")
           .value_or(JsonTextField(encoded, "target_language_profile")
@@ -2562,10 +2609,6 @@ ServerLanguageBundleRecord LanguageBundleRecordFromEnvelope(
   record.language_tag =
       JsonTextField(encoded, "language_tag")
           .value_or(JsonTextField(encoded, "exact_tag").value_or(""));
-  record.dialect_profile_uuid =
-      JsonTextField(encoded, "dialect_profile_uuid").value_or("");
-  record.topology_profile_uuid =
-      JsonTextField(encoded, "topology_profile_uuid").value_or("");
   record.common_resource_hash =
       JsonTextField(encoded, "common_resource_hash")
           .value_or(session.common_resource_hash);
@@ -2588,27 +2631,26 @@ std::string LanguageBundleRegistryPacket(std::string_view operation_id,
                                          const ServerLanguageBundleRecord& record,
                                          std::string_view outcome,
                                          bool mutated) {
-  std::ostringstream out;
-  out << "operation_id=" << operation_id << "\n"
-      << "result_kind=language.bundle_registry.v1\n"
-      << "outcome=" << outcome << "\n"
-      << "mutated_language_bundle_registry=" << (mutated ? "true" : "false") << "\n"
-      << "server_language_resource_registry_authority=true\n"
-      << "parser_language_library_admission=false\n"
-      << "load_or_unload_effects_executed_by_parser=false\n"
-      << "row_storage_touched=false\n"
-      << "mga_finality_claimed=false\n"
-      << "bundle_uuid=" << record.bundle_uuid << "\n"
-      << "language_profile_id=" << record.language_profile_id << "\n"
-      << "language_tag=" << record.language_tag << "\n"
-      << "dialect_profile_uuid=" << record.dialect_profile_uuid << "\n"
-      << "topology_profile_uuid=" << record.topology_profile_uuid << "\n"
-      << "common_resource_hash=" << record.common_resource_hash << "\n"
-      << "resource_hash=" << record.resource_hash << "\n"
-      << "loaded=" << (record.loaded ? "true" : "false") << "\n"
-      << "required_profile=" << (record.required_profile ? "true" : "false") << "\n"
-      << "language_resource_epoch=" << record.language_resource_epoch << "\n";
-  return out.str();
+  return engine_api::EncodeMetadataPairs({
+      {"operation_id", std::string(operation_id)},
+      {"result_kind", "language.bundle_registry.v2"},
+      {"outcome", std::string(outcome)},
+      {"mutated_language_bundle_registry", mutated ? "true" : "false"},
+      {"server_language_resource_registry_authority", "true"},
+      {"parser_language_library_admission", "false"},
+      {"load_or_unload_effects_executed_by_parser", "false"},
+      {"row_storage_touched", "false"},
+      {"mga_finality_claimed", "false"},
+      {"bundle_uuid", engine_api::MetadataUuidBytes(record.bundle_uuid)},
+      {"language_profile_id", record.language_profile_id},
+      {"language_tag", record.language_tag},
+      {"dialect_profile_uuid", engine_api::MetadataUuidBytes(record.dialect_profile_uuid)},
+      {"topology_profile_uuid", engine_api::MetadataUuidBytes(record.topology_profile_uuid)},
+      {"common_resource_hash", record.common_resource_hash},
+      {"resource_hash", record.resource_hash},
+      {"loaded", record.loaded ? "true" : "false"},
+      {"required_profile", record.required_profile ? "true" : "false"},
+      {"language_resource_epoch", std::to_string(record.language_resource_epoch)}});
 }
 
 bool LanguageResourceDirectoryManifestAdmitted(std::string_view encoded) {
@@ -2782,6 +2824,8 @@ std::string DecodedBinaryOperationEnvelopeText(std::string_view encoded) {
 }
 
 std::optional<std::string> TextLineValue(std::string_view encoded, std::string_view key) {
+  if (encoded.starts_with(public_result::kMagic)) return public_result::Value(encoded, key);
+
   std::size_t start = 0;
   while (start <= encoded.size()) {
     const std::size_t end = encoded.find('\n', start);
@@ -2946,6 +2990,24 @@ engine_api::EngineIdentifierAtom DispatchIdentifierAtom(
   return atom;
 }
 
+engine_api::EngineUuid ResolveObjectPathForDispatch(
+    const ServerSessionRecord& session, std::string_view path,
+    std::string_view expected_kind) {
+  const auto parts = SplitDispatchIdentifierPath(path);
+  if (parts.empty()) return {};
+  engine_api::EngineResolveNameRequest request;
+  request.context = PublicAbiDispatchEngineContext(session);
+  request.sql_object_reference.expected_object_type = std::string(expected_kind);
+  request.sql_object_reference.path_type = parts.size() > 1 ? "qualified" : "unqualified";
+  request.sql_object_reference.no_search_path = parts.size() > 1;
+  for (std::size_t index = 0; index + 1 < parts.size(); ++index) {
+    request.sql_object_reference.path_components.push_back(DispatchIdentifierAtom(parts[index]));
+  }
+  request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
+  const auto resolved = engine_api::EngineResolveName(request);
+  return resolved.ok ? resolved.primary_object.uuid : engine_api::EngineUuid{};
+}
+
 std::unordered_map<std::string, std::string>& DispatchSchemaParentPathCache() {
   thread_local std::unordered_map<std::string, std::string> cache;
   return cache;
@@ -2959,9 +3021,9 @@ std::string DispatchSchemaParentPathCacheKey(const ServerSessionRecord& session,
                                              std::string_view schema_parent_path) {
   std::ostringstream key;
   key << "schema_parent_path_v1"
-      << "|db=" << session.database_uuid
-      << "|user=" << UuidBytesToText(session.effective_user_uuid)
-      << "|role=" << UuidBytesToText(session.active_role_uuid)
+      << "|db=" << IdentityBytes(session.database_uuid)
+      << "|user=" << IdentityBytes(session.effective_user_uuid)
+      << "|role=" << IdentityBytes(session.active_role_uuid)
       << "|security=" << session.security_epoch
       << "|grant=" << session.grant_epoch
       << "|policy=" << session.policy_generation
@@ -3004,8 +3066,8 @@ std::string ResolveSchemaParentPathForDispatch(
   if (cache.size() > 4096) {
     cache.clear();
   }
-  cache[cache_key] = resolved.primary_object.uuid;
-  return resolved.primary_object.uuid;
+  cache[cache_key] = IdentityBytes(resolved.primary_object.uuid);
+  return IdentityBytes(resolved.primary_object.uuid);
 }
 
 std::string ResolveDefaultSchemaForDispatch(const ServerSessionRecord& session) {
@@ -3045,13 +3107,13 @@ std::string ResolveDomainTypePathForDispatch(const ServerSessionRecord& session,
         for (const auto& domain : domains.domains) {
           const auto visible =
               engine_api::FindVisibleDomain(context, domain.domain_uuid, observer_tx);
-          if (!visible || visible->schema_uuid != schema_uuid) continue;
+          if (!visible || visible->schema_uuid != BinaryIdentity(schema_uuid)) continue;
           if (engine_api::NameRegistryLookupKey(visible->default_name, profile, false) !=
               wanted_key) {
             continue;
           }
-          if (!match.empty() && match != visible->domain_uuid) return {};
-          match = visible->domain_uuid;
+          if (!match.empty() && match != IdentityBytes(visible->domain_uuid)) return {};
+          match = IdentityBytes(visible->domain_uuid);
         }
         if (!match.empty()) return match;
       }
@@ -3069,13 +3131,13 @@ std::string ResolveDomainTypePathForDispatch(const ServerSessionRecord& session,
   request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
   const auto resolved = engine_api::EngineResolveName(request);
   if (!resolved.ok || resolved.primary_object.object_kind != "domain") return {};
-  return resolved.primary_object.uuid;
+  return IdentityBytes(resolved.primary_object.uuid);
 }
 
 std::string ResolveSequencePathForDispatch(const ServerSessionRecord& session,
                                            std::string_view sequence_path) {
   if (sequence_path.empty()) return {};
-  if (LooksLikeUuidText(sequence_path)) return NormalizeUuidText(sequence_path);
+  if (LooksLikeBinaryUuid(sequence_path)) return NormalizeBinaryUuid(sequence_path);
   const auto parts = SplitDispatchIdentifierPath(sequence_path);
   if (parts.empty()) return {};
   engine_api::EngineResolveNameRequest request;
@@ -3090,13 +3152,13 @@ std::string ResolveSequencePathForDispatch(const ServerSessionRecord& session,
   request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
   const auto resolved = engine_api::EngineResolveName(request);
   if (!resolved.ok || resolved.primary_object.object_kind != "sequence") return {};
-  return resolved.primary_object.uuid;
+  return IdentityBytes(resolved.primary_object.uuid);
 }
 
 std::string ResolveRelationPathForDispatch(const ServerSessionRecord& session,
                                            std::string_view relation_path) {
   if (relation_path.empty()) return {};
-  if (LooksLikeUuidText(relation_path)) return NormalizeUuidText(relation_path);
+  if (LooksLikeBinaryUuid(relation_path)) return NormalizeBinaryUuid(relation_path);
   const auto parts = SplitDispatchIdentifierPath(relation_path);
   if (parts.empty()) return {};
   for (const auto expected : {"table", "view", "materialized_view", "relation"}) {
@@ -3113,7 +3175,7 @@ std::string ResolveRelationPathForDispatch(const ServerSessionRecord& session,
     request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
     const auto resolved = engine_api::EngineResolveName(request);
     if (resolved.ok && !resolved.primary_object.uuid.is_nil()) {
-      return resolved.primary_object.uuid;
+      return IdentityBytes(resolved.primary_object.uuid);
     }
   }
   return {};
@@ -3284,7 +3346,7 @@ std::optional<DispatchViewDescriptor> LoadDispatchViewDescriptor(
   const auto context = PublicAbiDispatchEngineContext(session);
   const auto record = engine_api::FindVisibleApiBehaviorRecord(
       context,
-      std::string(view_uuid),
+      BinaryIdentity(view_uuid),
       context.local_transaction_id, diagnostic);
   if (diagnostic.error) return std::nullopt;
   if (!record.has_value()) return std::nullopt;
@@ -3295,7 +3357,7 @@ std::optional<DispatchViewDescriptor> LoadDispatchViewDescriptor(
   descriptor.found = true;
   descriptor.materialized = record->object_kind == "materialized_view";
   descriptor.view_uuid = record->object_uuid;
-  descriptor.source_uuid = BehaviorPayloadField(record->payload, "view_source_uuid").value_or("");
+  descriptor.source_uuid = BinaryIdentity(BehaviorPayloadField(record->payload, "view_source_uuid").value_or(""));
   descriptor.predicate_kind =
       BehaviorPayloadField(record->payload, "view_predicate_kind").value_or("");
   descriptor.predicate_column =
@@ -3356,6 +3418,7 @@ void AppendOperationOperand(std::string* operation_envelope,
   *operation_envelope += EscapeOperationOperandField(value);
   *operation_envelope += "\n";
 }
+
 
 void AppendViewPredicateOperands(const DispatchViewDescriptor& descriptor,
                                  std::string_view encoded,
@@ -3458,13 +3521,13 @@ std::vector<std::string> VisibleInsertColumnNamesForTarget(
   const auto context = PublicAbiDispatchEngineContext(session);
   const auto loaded =
       engine_api::LoadMgaRelationStoreMetadataForRelation(
-          context, target_object_uuid);
+          context, BinaryIdentity(target_object_uuid));
   if (!loaded.ok) return {};
   const engine_api::MgaRelationReadView state =
       engine_api::BuildMgaRelationReadView(loaded.state);
   const auto table = engine_api::FindVisibleMgaTable(
       state,
-      target_object_uuid,
+      BinaryIdentity(target_object_uuid),
       context.local_transaction_id);
   if (!table) return {};
   std::vector<std::string> columns;
@@ -3760,7 +3823,7 @@ void AppendDmlInsertValueOperands(const ServerSessionRecord& session,
   }
 
   for (std::uint64_t row = 0; row < row_count; ++row) {
-    const std::string row_uuid = engine_api::GenerateCrudEngineUuid("row");
+    const std::string row_uuid = IdentityBytes(engine_api::GenerateCrudEngineUuid("row"));
     for (std::uint64_t column = 0; column < column_count; ++column) {
       const auto& cell = insert_cells[static_cast<std::size_t>(
           row * column_count + column)];
@@ -3791,6 +3854,15 @@ void AppendDmlInsertValueOperands(const ServerSessionRecord& session,
 }
 
 std::optional<std::uint64_t> EvidenceU64(std::string_view encoded, std::string_view evidence_kind) {
+  if (encoded.starts_with(public_result::kMagic)) {
+    const auto field = public_result::Evidence(encoded, evidence_kind);
+    if (!field) return std::nullopt;
+    if (field->kind == public_result::Kind::unsigned_integer) return public_result::AsUnsigned(*field);
+    if (field->kind != public_result::Kind::text) return std::nullopt;
+    std::uint64_t value = 0;
+    const auto [end, error] = std::from_chars(field->value.data(), field->value.data() + field->value.size(), value);
+    return error == std::errc{} && end == field->value.data() + field->value.size() ? std::optional<std::uint64_t>(value) : std::nullopt;
+  }
   const std::string prefix = "evidence=" + std::string(evidence_kind) + ":";
   std::size_t start = 0;
   while (start <= encoded.size()) {
@@ -3807,6 +3879,10 @@ std::optional<std::uint64_t> EvidenceU64(std::string_view encoded, std::string_v
 }
 
 std::optional<std::string> EvidenceText(std::string_view encoded, std::string_view evidence_kind) {
+  if (encoded.starts_with(public_result::kMagic)) {
+    const auto field = public_result::Evidence(encoded, evidence_kind);
+    return field ? std::optional<std::string>(field->value) : std::nullopt;
+  }
   const std::string prefix = "evidence=" + std::string(evidence_kind) + ":";
   std::size_t start = 0;
   while (start <= encoded.size()) {
@@ -4300,18 +4376,18 @@ std::string ServerVirtualProjectionFromUuid(std::string_view target_uuid) {
   }
   if (EqualsAsciiInsensitive(
           target_uuid,
-          UuidBytesToText(ServerVirtualSyntheticUuid("sys.version")))) {
+          IdentityBytes(ServerVirtualSyntheticUuid("sys.version")))) {
     return "sys.version";
   }
   if (EqualsAsciiInsensitive(
           target_uuid,
-          UuidBytesToText(ServerVirtualSyntheticUuid("sys.catalog")))) {
+          IdentityBytes(ServerVirtualSyntheticUuid("sys.catalog")))) {
     return "sys.catalog_readable.object_tree";
   }
   for (const auto& definition : engine_api::BuiltinSysInformationProjectionDefinitions()) {
     if (EqualsAsciiInsensitive(
             target_uuid,
-            UuidBytesToText(ServerVirtualSyntheticUuid(definition.view_path)))) {
+            IdentityBytes(ServerVirtualSyntheticUuid(definition.view_path)))) {
       return definition.view_path;
     }
     static constexpr std::string_view kCanonicalPrefix = "sys.information.";
@@ -4320,7 +4396,7 @@ std::string ServerVirtualProjectionFromUuid(std::string_view target_uuid) {
           "sys.information_schema." + definition.view_path.substr(kCanonicalPrefix.size());
       if (EqualsAsciiInsensitive(
               target_uuid,
-              UuidBytesToText(ServerVirtualSyntheticUuid(legacy_alias)))) {
+              IdentityBytes(ServerVirtualSyntheticUuid(legacy_alias)))) {
         return definition.view_path;
       }
     }
@@ -4349,7 +4425,7 @@ std::string ServerVirtualProjectionForTarget(std::string_view encoded) {
   }
   for (const std::string_view virtual_name : {"sys.version", "sys.catalog"}) {
     const std::string virtual_uuid =
-        UuidBytesToText(ServerVirtualSyntheticUuid(virtual_name));
+        IdentityBytes(ServerVirtualSyntheticUuid(virtual_name));
     if (!ContainsAsciiInsensitive(encoded, virtual_uuid)) { continue; }
     if (const std::string projection = ServerVirtualProjectionFromUuid(virtual_uuid);
         !projection.empty()) {
@@ -4358,14 +4434,14 @@ std::string ServerVirtualProjectionForTarget(std::string_view encoded) {
   }
   for (const auto& definition : engine_api::BuiltinSysInformationProjectionDefinitions()) {
     const std::string virtual_uuid =
-        UuidBytesToText(ServerVirtualSyntheticUuid(definition.view_path));
+        IdentityBytes(ServerVirtualSyntheticUuid(definition.view_path));
     if (ContainsAsciiInsensitive(encoded, virtual_uuid)) { return definition.view_path; }
     static constexpr std::string_view kCanonicalPrefix = "sys.information.";
     if (definition.view_path.rfind(kCanonicalPrefix, 0) == 0) {
       const std::string legacy_alias =
           "sys.information_schema." + definition.view_path.substr(kCanonicalPrefix.size());
       const std::string alias_uuid =
-          UuidBytesToText(ServerVirtualSyntheticUuid(legacy_alias));
+          IdentityBytes(ServerVirtualSyntheticUuid(legacy_alias));
       if (ContainsAsciiInsensitive(encoded, alias_uuid)) { return definition.view_path; }
     }
   }
@@ -4578,7 +4654,10 @@ const HostedDatabaseSnapshot* HostedDatabaseForSession(const HostedEngineState& 
 std::string EngineEvidenceValue(const engine_api::EngineApiResult& result,
                                 std::string_view evidence_kind) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == evidence_kind) return evidence.evidence_id;
+    if (evidence.evidence_kind == evidence_kind) {
+      const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+      return text == nullptr ? std::string{} : *text;
+    }
   }
   return {};
 }
@@ -4588,7 +4667,7 @@ std::string JoinUuidList(const std::vector<std::array<std::uint8_t, 16>>& values
   for (const auto& value : values) {
     if (sbps::IsZeroUuid(value)) { continue; }
     if (!out.empty()) { out.push_back(';'); }
-    out += UuidBytesToText(value);
+    out += IdentityBytes(value);
   }
   return out;
 }
@@ -4693,7 +4772,7 @@ engine_api::EngineRequestContext ReplacementTransactionContext(
   context.trust_mode = session.embedded_in_process
                            ? engine_api::EngineTrustMode::embedded_in_process
                            : engine_api::EngineTrustMode::server_isolated;
-  context.request_id = UuidBytesToText(request_uuid);
+  context.request_id = IdentityBytes(request_uuid);
   context.database_path = session.database_path.empty() ? database.database_path : session.database_path;
   context.database_uuid =
       session.database_uuid.is_nil() ? database.database_uuid : session.database_uuid;
@@ -5036,9 +5115,8 @@ std::optional<ServerTransactionState> TransactionStateFromResultPayload(
     std::string_view payload,
     const ServerSessionRecord& session) {
   const auto local_id = TextLineU64(payload, "local_transaction_id");
-  const std::string transaction_uuid =
-      TextLineValue(payload, "transaction_uuid").value_or("");
-  if (!local_id || *local_id == 0 || transaction_uuid.empty()) {
+  const auto transaction_uuid = ResultIdentity(payload, "transaction_uuid");
+  if (!local_id || *local_id == 0 || transaction_uuid.is_nil()) {
     return std::nullopt;
   }
   ServerTransactionState transaction;
@@ -5135,24 +5213,23 @@ AutocommitBoundaryResult FinalizeAutocommitBoundaryForSession(
   }
 
   result.ok = true;
-  result.evidence += statement_succeeded
-                         ? "evidence=autocommit_statement_succeeded:committed\n"
-                         : "evidence=autocommit_statement_failed:rolled_back\n";
-  result.evidence += "autocommit_finalized_local_transaction_id=" +
-                     std::to_string(finalized_local_transaction_id) + "\n";
-  result.evidence += "replacement_local_transaction_id=" +
-                     std::to_string(session->local_transaction_id) + "\n";
-  result.evidence += "replacement_snapshot_visible_through_local_transaction_id=" +
-                     std::to_string(session->snapshot_visible_through_local_transaction_id) + "\n";
-  if (!session->transaction_uuid.is_nil()) {
-    result.evidence += "replacement_transaction_uuid=" + session->transaction_uuid + "\n";
-  }
-  result.evidence += "evidence=always_active_transaction_replacement:" +
-                     std::to_string(session->local_transaction_id) + "\n";
-  result.evidence += "evidence=parser_finality:false\n";
+  std::vector<public_result::Field> fields = {
+      TextEvidence(statement_succeeded ? "autocommit_statement_succeeded" : "autocommit_statement_failed",
+                   statement_succeeded ? "committed" : "rolled_back"),
+      {"autocommit_finalized_local_transaction_id", public_result::Kind::text, std::to_string(finalized_local_transaction_id)},
+      {"replacement_local_transaction_id", public_result::Kind::text, std::to_string(session->local_transaction_id)},
+      {"replacement_snapshot_visible_through_local_transaction_id", public_result::Kind::text, std::to_string(session->snapshot_visible_through_local_transaction_id)},
+      TextEvidence("always_active_transaction_replacement", std::to_string(session->local_transaction_id)),
+      TextEvidence("parser_finality", "false")};
+  if (!session->transaction_uuid.is_nil())
+    fields.push_back({"replacement_transaction_uuid", public_result::Kind::uuid, IdentityBytes(session->transaction_uuid)});
   for (const auto& item : finalized.evidence) {
-    result.evidence += "evidence=" + item.evidence_kind + ":" + item.evidence_id + "\n";
+    if (const auto* id = std::get_if<NativeUuid>(&item.evidence_id))
+      fields.push_back({"evidence", public_result::Kind::evidence,
+                       ResultRecord({{item.evidence_kind, public_result::Kind::uuid, IdentityBytes(*id)}})});
+    else fields.push_back(TextEvidence(item.evidence_kind, std::get<std::string>(item.evidence_id)));
   }
+  result.evidence = ResultRecord(std::move(fields));
   return result;
 }
 
@@ -5164,42 +5241,36 @@ bool AutocommitEmulationRequested(std::string_view encoded) {
 std::string SessionTransactionStatePayload(std::string_view operation_id,
                                            const ServerSessionRecord& session,
                                            std::string_view state) {
-  std::ostringstream out;
-  out << "operation_id=" << operation_id << "\n"
-      << "result_kind=transaction.state.v1\n"
-      << "row_count=0\n"
-      << "evidence=transaction_state:active\n"
-      << "evidence=transaction_adoption:" << state << "\n"
-      << "evidence=always_active_session:true\n"
-      << "local_transaction_id=" << session.local_transaction_id << "\n"
-      << "snapshot_visible_through_local_transaction_id="
-      << session.snapshot_visible_through_local_transaction_id << "\n";
-  if (!session.transaction_uuid.is_nil()) {
-    out << "transaction_uuid=" << session.transaction_uuid << "\n";
-  }
-  if (!session.transaction_timestamp.empty()) {
-    out << "transaction_timestamp=" << session.transaction_timestamp << "\n";
-  }
-  return out.str();
+  std::vector<public_result::Field> fields = {
+      {"operation_id", public_result::Kind::text, std::string(operation_id)},
+      {"result_kind", public_result::Kind::text, "transaction.state.v1"},
+      {"row_count", public_result::Kind::text, "0"},
+      {"local_transaction_id", public_result::Kind::text, std::to_string(session.local_transaction_id)},
+      {"snapshot_visible_through_local_transaction_id", public_result::Kind::text,
+       std::to_string(session.snapshot_visible_through_local_transaction_id)}};
+  fields.push_back(TextEvidence("transaction_state", "active"));
+  fields.push_back(TextEvidence("transaction_adoption", std::string(state)));
+  fields.push_back(TextEvidence("always_active_session", "true"));
+  if (!session.transaction_uuid.is_nil()) fields.push_back({"transaction_uuid", public_result::Kind::uuid, IdentityBytes(session.transaction_uuid)});
+  if (!session.transaction_timestamp.empty()) fields.push_back({"transaction_timestamp", public_result::Kind::text, session.transaction_timestamp});
+  return ResultRecord(std::move(fields));
 }
 
 std::string ExplicitTransactionStatePayload(
     std::string_view operation_id,
     const ServerTransactionState& transaction,
     std::string_view state) {
-  std::ostringstream out;
-  out << "operation_id=" << operation_id << "\n"
-      << "result_kind=transaction.state.v2\n"
-      << "row_count=0\n"
-      << "transaction_state=" << state << "\n"
-      << "local_transaction_id=" << transaction.local_transaction_id << "\n"
-      << "snapshot_visible_through_local_transaction_id="
-      << transaction.snapshot_visible_through_local_transaction_id << "\n"
-      << "transaction_uuid=" << transaction.transaction_uuid << "\n";
-  if (!transaction.transaction_timestamp.empty()) {
-    out << "transaction_timestamp=" << transaction.transaction_timestamp << "\n";
-  }
-  return out.str();
+  std::vector<public_result::Field> fields = {
+      {"operation_id", public_result::Kind::text, std::string(operation_id)},
+      {"result_kind", public_result::Kind::text, "transaction.state.v2"},
+      {"row_count", public_result::Kind::text, "0"},
+      {"local_transaction_id", public_result::Kind::text, std::to_string(transaction.local_transaction_id)},
+      {"snapshot_visible_through_local_transaction_id", public_result::Kind::text,
+       std::to_string(transaction.snapshot_visible_through_local_transaction_id)}};
+  fields.push_back({"transaction_state", public_result::Kind::text, std::string(state)});
+  if (!transaction.transaction_uuid.is_nil()) fields.push_back({"transaction_uuid", public_result::Kind::uuid, IdentityBytes(transaction.transaction_uuid)});
+  if (!transaction.transaction_timestamp.empty()) fields.push_back({"transaction_timestamp", public_result::Kind::text, transaction.transaction_timestamp});
+  return ResultRecord(std::move(fields));
 }
 
 void CloseCursorsOwnedByTransaction(
@@ -5229,42 +5300,29 @@ void CloseCursorsOwnedByTransaction(
 
 void AppendReplacementTransactionState(std::string* payload,
                                        const ServerSessionRecord& session) {
-  if (payload == nullptr) return;
-  if (!payload->empty() && payload->back() != '\n') payload->push_back('\n');
-  *payload += "replacement_local_transaction_id=" + std::to_string(session.local_transaction_id) + "\n";
-  *payload += "replacement_snapshot_visible_through_local_transaction_id=" +
-              std::to_string(session.snapshot_visible_through_local_transaction_id) + "\n";
-  if (!session.transaction_uuid.is_nil()) {
-    *payload += "replacement_transaction_uuid=" + session.transaction_uuid + "\n";
-  }
-  if (!session.transaction_timestamp.empty()) {
-    *payload += "replacement_transaction_timestamp=" + session.transaction_timestamp + "\n";
-  }
-  *payload += "evidence=always_active_transaction_replacement:" +
-              std::to_string(session.local_transaction_id) + "\n";
+  if (!payload) return;
+  std::vector<public_result::Field> fields = {
+      {"replacement_local_transaction_id", public_result::Kind::text, std::to_string(session.local_transaction_id)},
+      {"replacement_snapshot_visible_through_local_transaction_id", public_result::Kind::text,
+       std::to_string(session.snapshot_visible_through_local_transaction_id)},
+      TextEvidence("always_active_transaction_replacement", std::to_string(session.local_transaction_id))};
+  if (!session.transaction_uuid.is_nil()) fields.push_back({"replacement_transaction_uuid", public_result::Kind::uuid, IdentityBytes(session.transaction_uuid)});
+  if (!session.transaction_timestamp.empty()) fields.push_back({"replacement_transaction_timestamp", public_result::Kind::text, session.transaction_timestamp});
+  AppendResultFields(payload, std::move(fields));
 }
 
 void AppendReplacementTransactionState(
     std::string* payload,
     const ServerTransactionState& transaction) {
-  if (payload == nullptr) return;
-  if (!payload->empty() && payload->back() != '\n') payload->push_back('\n');
-  *payload += "replacement_local_transaction_id=" +
-              std::to_string(transaction.local_transaction_id) + "\n";
-  *payload += "replacement_snapshot_visible_through_local_transaction_id=" +
-              std::to_string(
-                  transaction.snapshot_visible_through_local_transaction_id) +
-              "\n";
-  if (!transaction.transaction_uuid.is_nil()) {
-    *payload += "replacement_transaction_uuid=" +
-                transaction.transaction_uuid + "\n";
-  }
-  if (!transaction.transaction_timestamp.empty()) {
-    *payload += "replacement_transaction_timestamp=" +
-                transaction.transaction_timestamp + "\n";
-  }
-  *payload += "evidence=transaction_replacement:" +
-              std::to_string(transaction.local_transaction_id) + "\n";
+  if (!payload) return;
+  std::vector<public_result::Field> fields = {
+      {"replacement_local_transaction_id", public_result::Kind::text, std::to_string(transaction.local_transaction_id)},
+      {"replacement_snapshot_visible_through_local_transaction_id", public_result::Kind::text,
+       std::to_string(transaction.snapshot_visible_through_local_transaction_id)},
+      TextEvidence("transaction_replacement", std::to_string(transaction.local_transaction_id))};
+  if (!transaction.transaction_uuid.is_nil()) fields.push_back({"replacement_transaction_uuid", public_result::Kind::uuid, IdentityBytes(transaction.transaction_uuid)});
+  if (!transaction.transaction_timestamp.empty()) fields.push_back({"replacement_transaction_timestamp", public_result::Kind::text, transaction.transaction_timestamp});
+  AppendResultFields(payload, std::move(fields));
 }
 
 void AppendTransactionPressureRestartEvidence(std::string* payload,
@@ -5273,14 +5331,13 @@ void AppendTransactionPressureRestartEvidence(std::string* payload,
   const bool pressure_restart = JsonBoolField(encoded, "transaction_pressure_restart", false) ||
                                 TextBoolField(encoded, "transaction_pressure_restart", false);
   if (payload == nullptr || !pressure_restart) return;
-  if (!payload->empty() && payload->back() != '\n') payload->push_back('\n');
-  *payload += "diagnostic_code=SERVER.TRANSACTION_PRESSURE.RESTART_FORCED\n";
-  *payload += "diagnostic_detail=long_idle_transaction_forced_restart\n";
-  *payload += "evidence=transaction_pressure_restart:forced\n";
-  *payload += "evidence=transaction_pressure_policy:long_idle_restart\n";
-  *payload += "evidence=parser_finality:false\n";
-  *payload += "pressure_replacement_local_transaction_id=" +
-              std::to_string(session.local_transaction_id) + "\n";
+  AppendResultFields(payload, {
+      {"diagnostic_code", public_result::Kind::text, "SERVER.TRANSACTION_PRESSURE.RESTART_FORCED"},
+      {"diagnostic_detail", public_result::Kind::text, "long_idle_transaction_forced_restart"},
+      TextEvidence("transaction_pressure_restart", "forced"),
+      TextEvidence("transaction_pressure_policy", "long_idle_restart"),
+      TextEvidence("parser_finality", "false"),
+      {"pressure_replacement_local_transaction_id", public_result::Kind::text, std::to_string(session.local_transaction_id)}});
 }
 
 SessionOperationResult TransactionAdmissionFailure(
@@ -5440,2164 +5497,17 @@ std::optional<SessionOperationResult> ValidateTransactionAdmission(
   return std::nullopt;
 }
 
-std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
+std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord&,
                                          std::string_view encoded,
-                                         std::string_view operation_id,
-                                         std::string_view operation_family,
+                                         std::string_view,
+                                         std::string_view,
                                          std::optional<engine_bridge::EngineDiagnosticSnapshot>& read_failure) {
   read_failure.reset();
-  std::string_view dispatch_operation_id = operation_id;
-  std::string_view dispatch_operation_family = operation_family;
-  std::string virtual_projection;
-  const std::string decoded_operation_text =
-      LooksLikeBinarySblrEnvelope(encoded)
-          ? DecodedBinaryOperationEnvelopeText(encoded)
-          : std::string{};
-  const std::string_view inspection_text =
-      decoded_operation_text.empty()
-          ? encoded
-          : std::string_view(decoded_operation_text.data(),
-                             decoded_operation_text.size());
-  std::string lowered_inspection_text(inspection_text);
-  std::transform(lowered_inspection_text.begin(), lowered_inspection_text.end(),
-                 lowered_inspection_text.begin(), [](const unsigned char ch) {
-                   return static_cast<char>(std::tolower(ch));
-                 });
-  constexpr std::string_view kRetiredExpectationFields[] = {
-      "assertion_id",
-      "actual_source_column",
-      "actual_column_name",
-      "expected_column_name",
-      "expected_count",
-      "expected_value",
-      "expected_value_is_null",
-      "count_compare_op",
-      "count_compare_value"};
-  for (const auto field : kRetiredExpectationFields) {
-    if (ExistingTextOperandValue(lowered_inspection_text, field).has_value() ||
-        JsonTextField(lowered_inspection_text, field).has_value() ||
-        TextLineValue(lowered_inspection_text, field).has_value()) {
-      return {};
-    }
-  }
-  const std::string requested_result_shape =
-      ExistingTextOperandValue(lowered_inspection_text,
-                               "result_projection").value_or(
-          JsonTextField(lowered_inspection_text, "result_projection").value_or(
-              TextLineValue(lowered_inspection_text,
-                            "result_projection").value_or("")));
-  if (requested_result_shape == "count_assertion" ||
-      requested_result_shape == "field_assertion" ||
-      requested_result_shape == "aggregate_assertion" ||
-      requested_result_shape == "window_assertion") {
-    return {};
-  }
-  if (operation_id == "dml.select_rows") {
-    virtual_projection = ServerVirtualProjectionForDispatch(encoded, inspection_text);
-  }
-  if (LooksLikeBinarySblrEnvelope(encoded) && virtual_projection.empty() &&
-      !operation_id.starts_with("security.")) {
-    return std::string(encoded);
-  }
-  if (operation_id == "dml.select_rows" && virtual_projection == "sys.version") {
-    dispatch_operation_id = "observability.show_version";
-    dispatch_operation_family = "sblr.management.report.v3";
-  } else if (operation_id == "dml.select_rows" && !virtual_projection.empty()) {
-    dispatch_operation_id = "observability.show_catalog";
-    dispatch_operation_family = "sblr.catalog.introspect.v3";
-  }
-  const char* opcode = PublicAbiOpcodeForOperation(dispatch_operation_id);
-  if (opcode == nullptr) return std::string(encoded);
-
-  const auto phase_start = ServerSteadyClock::now();
-  auto phase_last = phase_start;
-  std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
-  phase_micros.reserve(8);
-  const auto mark_phase = [&](std::string phase) {
-    const auto now = ServerSteadyClock::now();
-    phase_micros.push_back(
-        {std::move(phase), ServerElapsedMicros(phase_last, now)});
-    phase_last = now;
-  };
-
-  std::string operation_envelope;
-  operation_envelope += "operation_id=";
-  operation_envelope += dispatch_operation_id;
-  operation_envelope += "\n";
-  operation_envelope += "opcode=";
-  operation_envelope += opcode;
-  operation_envelope += "\n";
-  operation_envelope += "sblr_operation_family=";
-  operation_envelope += dispatch_operation_family;
-  operation_envelope += "\n";
-  operation_envelope += "result_shape=engine.api.result.v1\n";
-  operation_envelope += "diagnostic_shape=engine.diagnostic.v1\n";
-  operation_envelope += "trace_key=sbsql.parser.full_route.transaction\n";
-  operation_envelope += "contains_sql_text=false\n";
-  operation_envelope += "parser_resolved_names_to_uuids=true\n";
-  const std::string parser_identifier_profile =
-      EncodedTextField(encoded, "identifier_profile_uuid");
-  if (!parser_identifier_profile.empty()) {
-    AppendOperationOperand(&operation_envelope,
-                           "identifier_profile_uuid",
-                           parser_identifier_profile);
-  }
-  operation_envelope += "requires_security_context=true\n";
-  operation_envelope += OperationNeedsTransactionContext(dispatch_operation_id)
-                            ? "requires_transaction_context=true\n"
-                            : "requires_transaction_context=false\n";
-  operation_envelope += IsClusterDispatchOperation(dispatch_operation_id) ||
-                                dispatch_operation_family == "sblr.cluster.control.v3" ||
-                                dispatch_operation_family == "sblr.cluster.report.v3" ||
-                                dispatch_operation_family == "sblr.replication.consumer.v3"
-                            ? "requires_cluster_authority=true\n"
-                            : "requires_cluster_authority=false\n";
-  mark_phase("header");
-  if (!virtual_projection.empty()) {
-    operation_envelope += "operand=text\tprojection\t";
-    operation_envelope += EscapeOperationOperandField(virtual_projection);
-    operation_envelope += "\n";
-    operation_envelope += "operand=text\tcatalog_projection\t";
-    operation_envelope += EscapeOperationOperandField(virtual_projection);
-    operation_envelope += "\n";
-    constexpr std::string_view kVirtualQueryFields[] = {
-        "result_projection",
-        "aggregate_function",
-        "predicate_kind",
-        "predicate_column",
-        "predicate_value",
-        "predicate_value_type",
-        "additional_predicate_kind",
-        "additional_predicate_column",
-        "additional_predicate_value",
-        "additional_predicate_value_type",
-        "subquery_projection",
-        "subquery_select_column",
-        "subquery_predicate_kind",
-        "subquery_predicate_column",
-        "subquery_predicate_value",
-        "subquery_predicate_value_type",
-        "subquery_additional_predicate_kind",
-        "subquery_additional_predicate_column",
-        "subquery_additional_predicate_value",
-        "subquery_additional_predicate_value_type",
-        "subquery_nested_projection",
-        "subquery_nested_select_column",
-        "subquery_nested_predicate_kind",
-        "subquery_nested_predicate_column",
-        "subquery_nested_predicate_value",
-        "subquery_nested_predicate_value_type"};
-    for (const auto field : kVirtualQueryFields) {
-      const std::string value = EncodedTextField(inspection_text, std::string(field));
-      if (!value.empty()) {
-        AppendOperationOperand(&operation_envelope, field, value);
-      }
-    }
-  }
-  if (dispatch_operation_id == "observability.show_catalog" && virtual_projection.empty()) {
-    constexpr std::string_view kCatalogProjectionFields[] = {
-        "projection",
-        "catalog_projection",
-        "result_projection",
-        "aggregate_function",
-        "predicate_kind",
-        "predicate_column",
-        "predicate_value",
-        "predicate_value_type",
-        "additional_predicate_kind",
-        "additional_predicate_column",
-        "additional_predicate_value",
-        "additional_predicate_value_type",
-        "subquery_projection",
-        "subquery_select_column",
-        "subquery_predicate_kind",
-        "subquery_predicate_column",
-        "subquery_predicate_value",
-        "subquery_predicate_value_type",
-        "subquery_additional_predicate_kind",
-        "subquery_additional_predicate_column",
-        "subquery_additional_predicate_value",
-        "subquery_additional_predicate_value_type",
-        "subquery_nested_projection",
-        "subquery_nested_select_column",
-        "subquery_nested_predicate_kind",
-        "subquery_nested_predicate_column",
-        "subquery_nested_predicate_value",
-        "subquery_nested_predicate_value_type"};
-    for (const auto field : kCatalogProjectionFields) {
-      const std::string value = JsonTextField(encoded, std::string(field)).value_or(
-          TextLineValue(encoded, std::string(field)).value_or(""));
-      if (value.empty()) { continue; }
-      AppendOperationOperand(&operation_envelope, field, value);
-    }
-  }
-  auto append_session_operand = [&operation_envelope](std::string_view name,
-                                                      const std::string& value) {
-    if (value.empty()) { return; }
-    operation_envelope += "operand=text\t";
-    operation_envelope += name;
-    operation_envelope += "\t";
-    operation_envelope += EscapeOperationOperandField(value);
-    operation_envelope += "\n";
-  };
-  append_session_operand("principal_name", session.principal_claim);
-  append_session_operand("requested_role_name", session.requested_role_name);
-  append_session_operand("active_role_name", session.requested_role_name);
-  if (!sbps::IsZeroUuid(session.active_role_uuid)) {
-    append_session_operand("current_role_uuid", UuidBytesToText(session.active_role_uuid));
-  }
-  append_session_operand("effective_role_uuid_set", JoinUuidList(session.effective_role_uuids));
-  append_session_operand("effective_group_uuid_set", JoinUuidList(session.effective_group_uuids));
-  if (const auto savepoint_name = SavepointOperandForDispatch(encoded, dispatch_operation_id)) {
-    operation_envelope += "savepoint_name=";
-    operation_envelope += EscapeOperationOperandField(*savepoint_name);
-    operation_envelope += "\n";
-    operation_envelope += "operand=text\tsavepoint_name\t";
-    operation_envelope += EscapeOperationOperandField(*savepoint_name);
-    operation_envelope += "\n";
-  }
-  const auto append_dml_operands = [&]() {
-    if (dispatch_operation_id == "dml.insert_rows") {
-      AppendDmlInsertValueOperands(session, encoded, &operation_envelope);
-      mark_phase("dml_insert_value_operands");
-    }
-    constexpr std::string_view kDmlFields[] = {
-        "target_object_uuid", "target_object_kind", "dml_surface_variant",
-        "source_kind", "source_uuid", "source_fingerprint", "source_position",
-        "routine_object_uuid", "routine_argument_count",
-        "routine_argument_0_type", "routine_argument_0_binding", "routine_argument_0_value",
-        "routine_argument_1_type", "routine_argument_1_binding", "routine_argument_1_value",
-        "routine_argument_2_type", "routine_argument_2_binding", "routine_argument_2_value",
-        "routine_argument_3_type", "routine_argument_3_binding", "routine_argument_3_value",
-        "redacted_source_handle", "source_handle_sensitive", "format_family",
-        "encoding", "line_ending", "delimiter", "quote", "escape",
-        "header_policy", "estimated_row_count", "order_by", "order_direction", "order_nulls",
-        "limit", "offset",
-        "batch_on_column", "batch_limit", "series_name",
-        "result_projection", "projection_count",
-        "projection_0", "projection_1", "projection_2", "projection_3",
-        "projection_4", "projection_5", "projection_6", "projection_7",
-        "projection_8", "projection_9", "projection_10", "projection_11",
-        "projection_12", "projection_13", "projection_14", "projection_15",
-        "aggregate_function", "aggregate_source_column",
-        "predicate_kind", "predicate_column", "predicate_value",
-        "predicate_value_type", "assignment_column", "assignment_value",
-        "subquery_projection", "subquery_select_column",
-        "subquery_predicate_kind", "subquery_predicate_column",
-        "subquery_predicate_value", "subquery_predicate_value_type",
-        "subquery_additional_predicate_kind", "subquery_additional_predicate_column",
-        "subquery_additional_predicate_value", "subquery_additional_predicate_value_type",
-        "subquery_nested_projection", "subquery_nested_select_column",
-        "subquery_nested_predicate_kind", "subquery_nested_predicate_column",
-        "subquery_nested_predicate_value", "subquery_nested_predicate_value_type",
-        "assignment_value_type", "assignment_plan",
-        "on_conflict_action", "conflict_target_column",
-        "on_conflict_update_column", "on_conflict_update_source_column",
-        "on_conflict_assignment_plan",
-        "strict_bulk_load_requested", "reference_relaxed_semantics_requested",
-        "bulk.allow_opaque_columns", "bulk.allow_triggers",
-        "bulk.allow_foreign_keys", "bulk.target_empty_required",
-        "duplicate_mode", "insert_mode", "require_generated_row_uuid", "reject_mode",
-        "insert_select_source_kind", "insert_select_cte_name",
-        "insert_select_counter_column", "insert_select_counter_start",
-        "insert_select_counter_step", "insert_select_counter_limit",
-        "insert_select_counter_predicate", "insert_select_projection_count",
-        "insert_select_source_uuid_0", "insert_select_source_uuid_1",
-        "insert_select_projection_0", "insert_select_projection_1",
-        "insert_select_projection_2", "insert_select_projection_3",
-        "insert_select_projection_4", "insert_select_projection_5",
-        "insert_select_projection_6", "insert_select_projection_7",
-        "insert_select_projection_8", "insert_select_projection_9",
-        "insert_default_values_row_count",
-        "reject_limit_rows", "reject_limit_percent", "reject_payload_policy",
-        "native_bulk_ingest_enabled", "native_bulk_ingest",
-        "result_payload_policy", "resume_policy", "reject_target_uuid", "reject_target_kind",
-        "checkpoint_mode", "checkpoint_interval_rows", "checkpoint_interval_bytes",
-        "checkpoint_interval_millis", "checkpoint_resume_policy", "replay_policy",
-        "failure_action", "checkpoint_target_uuid", "checkpoint_target_kind",
-        "require_source_fingerprint", "require_source_position"};
-    for (const auto field : kDmlFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    mark_phase("dml_field_scan");
-  };
-  const auto finish_operation_envelope = [&]() -> std::string {
-    AppendExistingOperationOperands(encoded, &operation_envelope);
-    mark_phase("append_existing_operands");
-
-    if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_ABI_ENVELOPE_TRACE");
-        trace_path != nullptr && trace_path[0] != '\0') {
-      std::ofstream trace(trace_path, std::ios::app);
-      if (trace) {
-        trace << "----- " << CurrentUtcTimestampText() << " -----\n";
-        trace << operation_envelope;
-        if (!operation_envelope.empty() && operation_envelope.back() != '\n') {
-          trace << '\n';
-        }
-      }
-    }
-
-    const auto binary = scratchbird::engine::sblr::EnvelopeBuilder()
-                            .operation(PublicAbiFamilyForServerFamily(dispatch_operation_family), 1)
-                            .append_bytes(reinterpret_cast<const std::uint8_t*>(operation_envelope.data()),
-                                          operation_envelope.size())
-                            .encode();
-    mark_phase("envelope_encode");
-    WritePublicAbiPhaseTrace(dispatch_operation_id,
-                             encoded,
-                             phase_micros,
-                             binary.size());
-    return std::string(reinterpret_cast<const char*>(binary.data()), binary.size());
-  };
-  if (dispatch_operation_id.starts_with("dml.")) {
-    mark_phase("pre_dml_bridge");
-    append_dml_operands();
-    return finish_operation_envelope();
-  }
-  if (dispatch_operation_id == "transaction.begin") {
-    const std::string isolation = JsonTextField(encoded, "transaction_isolation_level").value_or(
-        TextLineValue(encoded, "transaction_isolation_level").value_or(""));
-    if (isolation.empty() && !session.default_transaction_isolation_level.empty()) {
-      operation_envelope += "operand=text\ttransaction_isolation_level\t";
-      operation_envelope += EscapeOperationOperandField(session.default_transaction_isolation_level);
-      operation_envelope += "\n";
-    }
-    if (!TransactionBeginRequestsReadOnly(encoded)) {
-      operation_envelope += "operand=text\ttransaction_read_only\t";
-      operation_envelope += session.default_transaction_read_only ? "true\n" : "false\n";
-      operation_envelope += "operand=text\ttransaction_read_mode\t";
-      operation_envelope += session.default_transaction_read_only ? "read_only\n" : "read_write\n";
-    }
-  }
-  if (dispatch_operation_id == "transaction.set_characteristics") {
-    constexpr std::string_view kTransactionCharacteristicFields[] = {
-        "transaction_read_mode",
-        "transaction_read_only",
-        "transaction_isolation_level"};
-    for (const auto field : kTransactionCharacteristicFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "transaction.execute_block") {
-    // This is a deliberately finite neutral SBLR contract bridge. Parser-owned
-    // dialect syntax and presentation metadata must not enter the engine, and
-    // a generic procedural_* prefix copy would silently expand server
-    // admission whenever a parser invents a new field. Keep the v1 execution
-    // operands and the forbidden source-payload markers explicit so valid
-    // blocks reach the engine while partial/source-bearing blocks remain
-    // present and are rejected by the engine decoder instead of falling back
-    // to the legacy contract-absent behavior-row route.
-    constexpr std::string_view kProceduralBlockV1Fields[] = {
-        "procedural_ir_contract",
-        "procedural_block_kind",
-        "procedural_input_count",
-        "procedural_local_count",
-        "procedural_output_count",
-        "procedural_slot_count",
-        "procedural_instruction_count",
-        "procedural_yield_count",
-        "procedural_slot_0_id",
-        "procedural_slot_0_kind",
-        "procedural_slot_0_type",
-        "procedural_slot_0_nullable",
-        "procedural_slot_0_character_length",
-        "procedural_slot_1_id",
-        "procedural_slot_1_kind",
-        "procedural_slot_1_type",
-        "procedural_slot_1_nullable",
-        "procedural_slot_1_character_length",
-        "procedural_instruction_0_kind",
-        "procedural_instruction_0_target_slot",
-        "procedural_instruction_0_expression_kind",
-        "procedural_instruction_0_source_kind",
-        "procedural_instruction_0_source_id",
-        "procedural_instruction_0_source_cast_type",
-        "procedural_instruction_0_start_kind",
-        "procedural_instruction_0_start_value",
-        "procedural_instruction_0_length_kind",
-        "sql",
-        "source_sql",
-        "raw_sql",
-        "parser_ast",
-        "parser_plan",
-        "sql_text",
-        "source_sql_text",
-        "raw_sql_text",
-        "parser_sql_text"};
-    for (const auto field : kProceduralBlockV1Fields) {
-      const auto json_value = JsonTextField(encoded, field);
-      if (json_value.has_value()) {
-        AppendOperationOperand(&operation_envelope, field, *json_value);
-        continue;
-      }
-      const auto text_value = TextLineValue(encoded, field);
-      if (text_value.has_value()) {
-        AppendOperationOperand(&operation_envelope, field, *text_value);
-      }
-    }
-  }
-  if (dispatch_operation_id.starts_with("lifecycle.")) {
-    const std::string database_name =
-        JsonTextField(encoded, "database_name")
-            .value_or(JsonTextField(encoded, "target_database_name").value_or(""));
-    append_session_operand("database_name", database_name);
-    append_session_operand("database_path",
-                           DerivedLifecycleDatabasePath(session, encoded));
-  }
-  if (dispatch_operation_id == "lifecycle.repair_database") {
-    append_session_operand("repair_plan_id",
-                           JsonTextField(encoded, "repair_plan_id").value_or(""));
-    append_session_operand("repair_admission_proven", "true");
-    append_session_operand("restricted_or_maintenance_admission", "true");
-    append_session_operand("allow_repair", "true");
-    append_session_operand("allow_mutation", "true");
-    append_session_operand("engine_read_identity_proof", "true");
-  }
-  if (dispatch_operation_id == "lifecycle.drop_database") {
-    append_session_operand("drop_mode",
-                           JsonTextField(encoded, "drop_mode").value_or("logical"));
-    append_session_operand("drop_safety_preconditions", "true");
-    append_session_operand("session_drain_complete", "true");
-    append_session_operand("ownership_release_verified", "true");
-    append_session_operand("retention_policy_satisfied", "true");
-    append_session_operand("backup_coverage_verified", "true");
-    append_session_operand("legal_hold_clear", "true");
-  }
-  if (dispatch_operation_id == "artifact.external_git.export_snapshot" ||
-      dispatch_operation_id == "artifact.external_git.diff_snapshot" ||
-      dispatch_operation_id == "artifact.external_git.rollback_plan") {
-    AppendOperationOperand(&operation_envelope, "external_git_policy", "enabled");
-    AppendOperationOperand(&operation_envelope, "git_runtime_authority", "false");
-    AppendOperationOperand(&operation_envelope, "external_git_repository_authority", "false");
-    if (dispatch_operation_id == "artifact.external_git.diff_snapshot" ||
-        dispatch_operation_id == "artifact.external_git.rollback_plan") {
-      constexpr std::string_view row_uuid = "external-git-candidate-row-1";
-      AppendOperationRowTextField(&operation_envelope, row_uuid, "artifact_format",
-                                  "sb.external_git.catalog_snapshot.v1");
-      AppendOperationRowTextField(&operation_envelope, row_uuid, "snapshot_entry_kind",
-                                  "object");
-      AppendOperationRowTextField(&operation_envelope, row_uuid, "object_uuid",
-                                  "019f0000-0000-7000-8000-00000000e901");
-      AppendOperationRowTextField(&operation_envelope, row_uuid, "object_kind",
-                                  "schema");
-      AppendOperationRowTextField(&operation_envelope, row_uuid, "default_name",
-                                  "external_git_candidate");
-      AppendOperationRowTextField(&operation_envelope, row_uuid, "payload",
-                                  "localized_name=en,default,external_git_candidate,external_git_candidate,default");
-    }
-  }
-  if (dispatch_operation_id == "security.privilege.grant" ||
-      dispatch_operation_id == "security.privilege.revoke") {
-    constexpr std::string_view kSecurityFields[] = {
-        "target_object_uuid", "target_object_kind", "grantee_uuid",
-        "grantee_kind", "privilege", "grant_effect", "grant_uuid"};
-    for (const auto field : kSecurityFields) {
-      const auto value = JsonTextField(inspection_text, field).value_or(
-          TextLineValue(inspection_text, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "security.membership.grant" ||
-      dispatch_operation_id == "security.membership.revoke") {
-    constexpr std::string_view kSecurityMembershipFields[] = {
-        "membership_uuid", "member_principal_uuid", "container_uuid", "container_kind"};
-    for (const auto field : kSecurityMembershipFields) {
-      const auto value = JsonTextField(inspection_text, field).value_or(
-          TextLineValue(inspection_text, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "security.session.set_role") {
-    constexpr std::string_view kSecurityRoleFields[] = {"role_uuid", "role_mode"};
-    for (const auto field : kSecurityRoleFields) {
-      const auto value = JsonTextField(inspection_text, field).value_or(
-          TextLineValue(inspection_text, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id.starts_with("filespace.")) {
-    constexpr std::string_view kFilespaceFields[] = {
-        "target_object_uuid", "target_object_kind", "target_filespace_uuid",
-        "requested_pages", "requested_bytes",
-        "filespace.page_size_bytes", "filespace.current_pages",
-        "filespace.preallocated_pages", "filespace.maximum_pages",
-        "filespace.path", "filespace.role", "filespace.physical_id",
-        "filespace.total_pages", "filespace.free_pages",
-        "filespace.allocation_root_page", "filespace.header_generation",
-        "filespace.merge_target_uuid", "filespace.lifecycle.operation",
-        "filespace.allow_primary_detach", "filespace.allow_primary_replacement",
-        "filespace.allow_promotion",
-        "filespace.require_no_active_pins_for_detach",
-        "filespace.require_no_active_pins_for_promote",
-        "filespace.require_no_active_pins_for_quarantine",
-        "filespace.require_no_active_pins_for_move",
-        "filespace.require_no_active_pins_for_merge",
-        "filespace.require_no_active_pins_for_delete_physical",
-        "filespace.require_no_active_pins_for_repair",
-        "filespace.require_no_active_pins_for_rebuild",
-        "filespace.require_no_active_pins_for_salvage",
-        "filespace.allow_filespace_move", "filespace.allow_filespace_merge",
-        "filespace.allow_filespace_repair", "filespace.allow_filespace_rebuild",
-        "filespace.allow_filespace_salvage",
-        "filespace.allow_physical_filespace_delete",
-        "filespace.require_physical_header_for_attach",
-        "filespace.require_physical_header_for_promote",
-        "filespace.allow_archive_owner_assignment"};
-    for (const auto field : kFilespaceFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      AppendOperationOperand(&operation_envelope, field, value);
-    }
-    const std::string target_uuid = JsonTextField(encoded, "target_object_uuid").value_or(
-        TextLineValue(encoded, "target_object_uuid").value_or(""));
-    const std::string filespace_uuid = JsonTextField(encoded, "target_filespace_uuid").value_or(
-        TextLineValue(encoded, "target_filespace_uuid").value_or(""));
-    if (!target_uuid.empty() && filespace_uuid.empty()) {
-      AppendOperationOperand(&operation_envelope, "target_filespace_uuid", target_uuid);
-    }
-    const std::string target_kind = JsonTextField(encoded, "target_object_kind").value_or(
-        TextLineValue(encoded, "target_object_kind").value_or(""));
-    if (!target_uuid.empty() && target_kind.empty()) {
-      AppendOperationOperand(&operation_envelope, "target_object_kind", "filespace");
-    }
-  }
-  if (dispatch_operation_id == "security.role.create" ||
-      dispatch_operation_id == "security.role.drop" ||
-      dispatch_operation_id == "security.group.create" ||
-      dispatch_operation_id == "security.group.drop" ||
-      dispatch_operation_id == "security.principal.create" ||
-      dispatch_operation_id == "security.principal.alter") {
-    constexpr std::string_view kSecurityPrincipalFields[] = {
-        "principal_uuid", "role_uuid", "group_uuid",
-        "principal_name", "role_name", "group_name",
-        "principal_kind", "lifecycle_state",
-        "credential_protected_material_ref", "credential_fingerprint"};
-    for (const auto field : kSecurityPrincipalFields) {
-      const auto value = JsonTextField(inspection_text, field).value_or(
-          TextLineValue(inspection_text, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "security.policy.attach" ||
-      dispatch_operation_id == "security.policy.create" ||
-      dispatch_operation_id == "security.policy.alter" ||
-      dispatch_operation_id == "security.policy.drop" ||
-      dispatch_operation_id == "security.policy.lifecycle_drop" ||
-      dispatch_operation_id == "security.mask.drop" ||
-      dispatch_operation_id == "security.rls.drop" ||
-      dispatch_operation_id == "security.policy.activate" ||
-      dispatch_operation_id == "security.policy.deactivate" ||
-      dispatch_operation_id == "security.policy.validate" ||
-      dispatch_operation_id == "security.policy.show") {
-    constexpr std::string_view kSecurityPolicyFields[] = {
-        "policy_uuid", "mask_uuid", "rls_uuid",
-        "policy_name", "target_schema_uuid", "schema_uuid",
-        "target_object_uuid", "target_object_kind",
-        "policy_scope", "policy_effect", "predicate_envelope",
-        "definer_principal_uuid", "lifecycle_state", "observed_policy_generation",
-        "observed_cache_invalidation_epoch", "include_rows"};
-    for (const auto field : kSecurityPolicyFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    if (dispatch_operation_id == "security.policy.create" &&
-        !JsonTextField(encoded, "policy_uuid").has_value() &&
-        !TextLineValue(encoded, "policy_uuid").has_value()) {
-      const std::string policy_seed =
-          std::string("security.policy.create:") + std::string(encoded);
-      operation_envelope += "operand=text\tpolicy_uuid\t";
-      operation_envelope += UuidBytesToText(ServerVirtualSyntheticUuid(policy_seed));
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "op.sbsql.surface_replay") {
-    constexpr std::string_view kReplayFields[] = {
-        "surface_key", "target_ref", "target_ref_kind", "surface_id"};
-    for (const auto field : kReplayFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "op.migration.begin_from_reference" ||
-      dispatch_operation_id == "op.migration.alter" ||
-      dispatch_operation_id == "op.show.migration") {
-    auto migration_field_value = [encoded](std::string_view field) -> std::string {
-      auto value = ExistingTextOperandValue(encoded, field).value_or(
-          JsonTextField(encoded, field).value_or(TextLineValue(encoded, field).value_or("")));
-      if (field == "reference_profile" && (value.empty() || IsPublicRegistryPlaceholder(value))) {
-        value = ExistingTextOperandValue(encoded, "target_ref").value_or(
-            JsonTextField(encoded, "target_ref").value_or(TextLineValue(encoded, "target_ref").value_or("")));
-      } else if (field == "reference_package" &&
-                 (value.empty() || IsPublicRegistryPlaceholder(value))) {
-        value = ExistingTextOperandValue(encoded, "secondary_ref").value_or(
-            JsonTextField(encoded, "secondary_ref").value_or(
-                TextLineValue(encoded, "secondary_ref").value_or("")));
-      } else if (field == "migration_ref" && (value.empty() || IsPublicRegistryPlaceholder(value))) {
-        value = ExistingTextOperandValue(encoded, "target_ref").value_or(
-            JsonTextField(encoded, "target_ref").value_or(TextLineValue(encoded, "target_ref").value_or("")));
-      } else if (field == "migration_action" && (value.empty() || IsPublicRegistryPlaceholder(value))) {
-        value = ExistingTextOperandValue(encoded, "secondary_ref").value_or(
-            JsonTextField(encoded, "secondary_ref").value_or(
-                TextLineValue(encoded, "secondary_ref").value_or("")));
-      }
-      return value;
-    };
-    const std::vector<std::string_view> migration_fields =
-        dispatch_operation_id == "op.migration.begin_from_reference"
-            ? std::vector<std::string_view>{"reference_profile", "reference_package"}
-        : dispatch_operation_id == "op.migration.alter"
-            ? std::vector<std::string_view>{"migration_ref", "migration_action"}
-            : std::vector<std::string_view>{"migration_ref"};
-    for (const auto field : migration_fields) {
-      const auto value = migration_field_value(field);
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "catalog.get_descriptor") {
-    constexpr std::string_view kCatalogDescriptorFields[] = {
-        "target_object_uuid", "target_object_kind", "descriptor_uuid",
-        "descriptor_kind", "show_create_target_kind", "descriptor_rendering"};
-    for (const auto field : kCatalogDescriptorFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id.starts_with("catalog.mutation.")) {
-    constexpr std::string_view kCatalogDescriptorMutationFields[] = {
-        "target_object_uuid", "target_object_kind", "catalog_authority",
-        "descriptor_ref", "catalog_action", "ddl_operation_id",
-        "target_name_parts", "name", "schema_parent_path",
-        "name_text_authority",
-        "catalog_descriptor_read_only", "mga_catalog_commit_required",
-        "parser_executes_sql", "surface_id", "surface_name"};
-    for (const auto field : kCatalogDescriptorMutationFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "event.channel.create" ||
-      dispatch_operation_id == "event.channel.listen" ||
-      dispatch_operation_id == "event.channel.unlisten" ||
-      dispatch_operation_id == "event.channel.notify" ||
-      dispatch_operation_id == "event.subscription.list" ||
-      dispatch_operation_id == "event.delivery.poll" ||
-      dispatch_operation_id == "event.delivery.ack" ||
-      dispatch_operation_id == "session.notification.unlisten" ||
-      dispatch_operation_id == "session.notification.unlisten_all") {
-    constexpr std::string_view kEventFields[] = {
-        "target_object_uuid", "target_object_kind", "channel_uuid", "channel",
-        "payload", "payload_descriptor_uuid", "queue_policy_uuid", "visibility",
-        "redaction_policy", "delivery_profile", "subscription_uuid",
-        "principal_uuid", "session_uuid", "event_uuid", "source_object_uuid",
-        "max_payload_bytes", "admin_scope"};
-    for (const auto field : kEventFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    const std::string channel_uuid = JsonTextField(encoded, "channel_uuid").value_or(
-        TextLineValue(encoded, "channel_uuid").value_or(""));
-    if (!channel_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      operation_envelope += "operand=text\ttarget_object_uuid\t";
-      operation_envelope += EscapeOperationOperandField(channel_uuid);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\ttarget_object_kind\tevent_channel\n";
-    }
-    const std::string channel_name = JsonTextField(encoded, "channel_name").value_or(
-        TextLineValue(encoded, "channel_name").value_or(""));
-    if (!channel_name.empty() &&
-        JsonTextField(encoded, "channel").value_or(
-            TextLineValue(encoded, "channel").value_or("")).empty()) {
-      operation_envelope += "operand=text\tchannel\t";
-      operation_envelope += EscapeOperationOperandField(channel_name);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "ddl.create_index") {
-    constexpr std::string_view kIndexFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "index_object_uuid", "index_name",
-        "index_target_uuid", "index_target_kind",
-        "target_table_uuid", "index_profile",
-        "index_key_envelope", "index_key_column",
-        "index_key_count", "index_unique"};
-    for (const auto field : kIndexFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      AppendOperationOperand(&operation_envelope, field, value);
-    }
-    const std::string index_uuid = JsonTextField(encoded, "index_object_uuid").value_or(
-        TextLineValue(encoded, "index_object_uuid").value_or(""));
-    if (!index_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      operation_envelope += "operand=text\ttarget_object_uuid\t";
-      operation_envelope += EscapeOperationOperandField(index_uuid);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\ttarget_object_kind\tindex\n";
-    }
-    const std::string index_name = JsonTextField(encoded, "index_name").value_or(
-        TextLineValue(encoded, "index_name").value_or(""));
-    if (!index_name.empty()) {
-      operation_envelope += "operand=text\tname\t";
-      operation_envelope += EscapeOperationOperandField(index_name);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "ddl.create_schema") {
-    constexpr std::string_view kSchemaFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "schema_object_uuid", "schema_name",
-        "target_schema_uuid", "schema_uuid",
-        "schema_parent_uuid", "schema_parent_path",
-        "name"};
-    for (const auto field : kSchemaFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      AppendOperationOperand(&operation_envelope, field, value);
-    }
-    const std::string schema_uuid = JsonTextField(encoded, "schema_object_uuid").value_or(
-        TextLineValue(encoded, "schema_object_uuid").value_or(""));
-    const std::string target_uuid = JsonTextField(encoded, "target_object_uuid").value_or(
-        TextLineValue(encoded, "target_object_uuid").value_or(""));
-    if (!schema_uuid.empty() &&
-        target_uuid.empty()) {
-      AppendOperationOperand(&operation_envelope, "target_object_uuid", schema_uuid);
-      AppendOperationOperand(&operation_envelope, "target_object_kind", "schema");
-    } else if (schema_uuid.empty() && target_uuid.empty()) {
-      const std::string generated_schema_uuid = engine_api::GenerateCrudEngineUuid("schema");
-      if (!generated_schema_uuid.empty()) {
-        AppendOperationOperand(&operation_envelope, "target_object_uuid", generated_schema_uuid);
-        AppendOperationOperand(&operation_envelope, "schema_object_uuid", generated_schema_uuid);
-        AppendOperationOperand(&operation_envelope, "target_object_kind", "schema");
-      }
-    }
-    const std::string schema_name = JsonTextField(encoded, "schema_name").value_or(
-        TextLineValue(encoded, "schema_name").value_or(""));
-    if (!schema_name.empty() &&
-        JsonTextField(encoded, "name").value_or(
-            TextLineValue(encoded, "name").value_or("")).empty()) {
-      AppendOperationOperand(&operation_envelope, "name", schema_name);
-    }
-    const std::string parent_uuid = JsonTextField(encoded, "schema_parent_uuid").value_or(
-        TextLineValue(encoded, "schema_parent_uuid").value_or(""));
-    if (!parent_uuid.empty() &&
-        JsonTextField(encoded, "target_schema_uuid").value_or(
-            TextLineValue(encoded, "target_schema_uuid").value_or("")).empty()) {
-      AppendOperationOperand(&operation_envelope, "target_schema_uuid", parent_uuid);
-    } else if (parent_uuid.empty() &&
-               JsonTextField(encoded, "target_schema_uuid").value_or(
-                   TextLineValue(encoded, "target_schema_uuid").value_or("")).empty()) {
-      const std::string schema_parent_path = JsonTextField(encoded, "schema_parent_path").value_or(
-          TextLineValue(encoded, "schema_parent_path").value_or(""));
-      const std::string resolved_parent_uuid =
-          ResolveSchemaParentPathForDispatch(session, schema_parent_path);
-      if (!resolved_parent_uuid.empty()) {
-        AppendOperationOperand(&operation_envelope, "schema_parent_uuid", resolved_parent_uuid);
-        AppendOperationOperand(&operation_envelope, "target_schema_uuid", resolved_parent_uuid);
-      }
-    }
-  }
-  if (dispatch_operation_id == "ddl.create_table") {
-    std::unordered_map<std::string, std::string> table_field_cache;
-    auto table_field_value = [&](std::string_view field) -> std::string {
-      const std::string cache_key(field);
-      const auto cached = table_field_cache.find(cache_key);
-      if (cached != table_field_cache.end()) {
-        return cached->second;
-      }
-      std::string value = ExistingTextOperandValue(encoded, field).value_or(
-          JsonTextField(encoded, field).value_or(
-              JsonPrimitiveField(encoded, field).value_or(
-                  TextLineValue(encoded, field).value_or(""))));
-      table_field_cache.emplace(cache_key, value);
-      return value;
-    };
-    constexpr std::string_view kTableFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "table_object_uuid", "table_name",
-        "target_schema_uuid", "schema_uuid",
-        "schema_parent_uuid", "schema_parent_path",
-        "column_count", "column_definition_count",
-        "physical_profile",
-        "canonical_type_name"};
-    for (const auto field : kTableFields) {
-      const auto value = table_field_value(field);
-      if (value.empty()) continue;
-      AppendOperationOperand(&operation_envelope, field, value);
-    }
-    const std::string column_count_value = JsonPrimitiveField(encoded, "column_count").value_or(
-        ExistingTextOperandValue(encoded, "column_count").value_or(
-            TextLineValue(encoded, "column_count").value_or("")));
-    const std::uint64_t column_count = ParseU64Text(column_count_value);
-    for (std::uint64_t ordinal = 0; ordinal < column_count; ++ordinal) {
-      const std::string prefix = "column_" + std::to_string(ordinal) + "_";
-      const std::string column_type = table_field_value(prefix + "type");
-      std::string column_descriptor = table_field_value(prefix + "descriptor");
-      std::string raw_column_default = table_field_value(prefix + "default");
-      if (raw_column_default.empty()) {
-        raw_column_default = DescriptorFieldValue(column_descriptor, "default");
-      }
-      const std::string column_default =
-          ResolveColumnDefaultForDispatch(session, raw_column_default);
-      const std::string domain_uuid =
-          ResolveColumnDomainUuidForDispatch(session, column_type, column_descriptor);
-      if (!domain_uuid.empty()) {
-        if (column_descriptor.empty()) {
-          column_descriptor = column_type.empty() ? "type=domain" : "type=" + column_type;
-        }
-        AppendDescriptorField(&column_descriptor, "domain_uuid", domain_uuid);
-      }
-      if (!column_default.empty()) {
-        if (column_descriptor.empty()) {
-          column_descriptor = column_type.empty() ? "type=scalar" : "type=" + column_type;
-        }
-        SetDescriptorField(&column_descriptor, "default", column_default);
-      }
-      for (const auto suffix : {"name", "type", "nullable", "default"}) {
-        const std::string field = prefix + suffix;
-        const std::string value =
-            std::string_view(suffix) == "default" ? column_default : table_field_value(field);
-        if (value.empty()) continue;
-        AppendOperationOperand(&operation_envelope, field, value);
-      }
-      if (!column_descriptor.empty()) {
-        AppendOperationOperand(&operation_envelope, prefix + "descriptor", column_descriptor);
-      }
-    }
-    const std::string explicit_target_schema_uuid = table_field_value("target_schema_uuid");
-    const std::string explicit_schema_uuid = table_field_value("schema_uuid");
-    const std::string explicit_parent_uuid = table_field_value("schema_parent_uuid");
-    const std::string schema_parent_path = table_field_value("schema_parent_path");
-    if (explicit_target_schema_uuid.empty() &&
-        explicit_schema_uuid.empty() &&
-        explicit_parent_uuid.empty() &&
-        !schema_parent_path.empty()) {
-      const std::string resolved_parent_uuid =
-          ResolveSchemaParentPathForDispatch(session, schema_parent_path);
-      if (!resolved_parent_uuid.empty()) {
-        AppendOperationOperand(&operation_envelope, "schema_parent_uuid", resolved_parent_uuid);
-        AppendOperationOperand(&operation_envelope, "target_schema_uuid", resolved_parent_uuid);
-        AppendOperationOperand(&operation_envelope, "schema_uuid", resolved_parent_uuid);
-      } else {
-        AppendOperationOperand(&operation_envelope,
-                               "unresolved_schema_parent_path",
-                               schema_parent_path);
-      }
-    }
-    const bool has_explicit_schema_target =
-        !explicit_target_schema_uuid.empty() ||
-        !explicit_schema_uuid.empty() ||
-        !explicit_parent_uuid.empty() ||
-        !schema_parent_path.empty();
-    if (!has_explicit_schema_target) {
-      const std::string default_schema_uuid = ResolveDefaultSchemaForDispatch(session);
-      if (!default_schema_uuid.empty()) {
-        AppendOperationOperand(&operation_envelope, "target_schema_uuid", default_schema_uuid);
-        AppendOperationOperand(&operation_envelope, "schema_uuid", default_schema_uuid);
-      }
-    }
-    const std::string table_uuid = table_field_value("table_object_uuid");
-    if (!table_uuid.empty() &&
-        table_field_value("target_object_uuid").empty()) {
-      AppendOperationOperand(&operation_envelope, "target_object_uuid", table_uuid);
-      AppendOperationOperand(&operation_envelope, "target_object_kind", "table");
-    }
-    const std::string table_name = table_field_value("table_name");
-    if (!table_name.empty()) {
-      AppendOperationOperand(&operation_envelope, "name", table_name);
-    }
-    const bool temporary =
-        JsonBoolField(encoded, "temporary_table", false) ||
-        JsonBoolField(encoded, "temporary", false) ||
-        TextBoolField(encoded, "temporary_table", false) ||
-        TextBoolField(encoded, "temporary", false);
-    if (temporary) {
-      AppendOperationOperand(&operation_envelope, "temporary", "true");
-      const std::string scope = JsonTextField(encoded, "temporary_scope").value_or(
-          TextLineValue(encoded, "temporary_scope").value_or("private"));
-      AppendOperationOperand(&operation_envelope, "temporary_scope",
-                             scope.empty() ? "session" : scope);
-      const std::string on_commit = JsonTextField(encoded, "on_commit_action").value_or(
-          JsonTextField(encoded, "on_commit").value_or(
-              TextLineValue(encoded, "on_commit_action").value_or(
-                  TextLineValue(encoded, "on_commit").value_or("delete_rows"))));
-      AppendOperationOperand(&operation_envelope, "on_commit",
-                             on_commit.empty() ? "delete_rows" : on_commit);
-    }
-  }
-  if (dispatch_operation_id == "ddl.create_index_template") {
-    constexpr std::string_view kIndexTemplateFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "index_template_object_uuid", "index_template_name",
-        "index_template_kind", "index_template_pattern_count",
-        "index_template_composed_of_count", "template_document_present",
-        "meta_document_present", "priority_present", "version_present"};
-    for (const auto field : kIndexTemplateFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    const std::string template_uuid = JsonTextField(encoded, "index_template_object_uuid").value_or(
-        TextLineValue(encoded, "index_template_object_uuid").value_or(""));
-    if (!template_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      operation_envelope += "operand=text\ttarget_object_uuid\t";
-      operation_envelope += EscapeOperationOperandField(template_uuid);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\ttarget_object_kind\t";
-      operation_envelope += EscapeOperationOperandField(
-          JsonTextField(encoded, "index_template_kind").value_or("index_template"));
-      operation_envelope += "\n";
-    }
-    const std::string template_name = JsonTextField(encoded, "index_template_name").value_or(
-        TextLineValue(encoded, "index_template_name").value_or(""));
-    if (!template_name.empty()) {
-      operation_envelope += "operand=text\tname\t";
-      operation_envelope += EscapeOperationOperandField(template_name);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "ddl.comment_on_object") {
-    constexpr std::string_view kCommentFields[] = {
-        "target_object_uuid", "target_object_kind", "comment_target_uuid",
-        "comment_target_kind", "comment_is_null", "comment_text",
-        "comment_language"};
-    for (const auto field : kCommentFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    const std::string comment_target_uuid = JsonTextField(encoded, "comment_target_uuid").value_or(
-        TextLineValue(encoded, "comment_target_uuid").value_or(""));
-    if (!comment_target_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      operation_envelope += "operand=text\ttarget_object_uuid\t";
-      operation_envelope += EscapeOperationOperandField(comment_target_uuid);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\ttarget_object_kind\t";
-      operation_envelope += EscapeOperationOperandField(
-          JsonTextField(encoded, "comment_target_kind").value_or("object"));
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "ddl.alter_object") {
-	    constexpr std::string_view kAlterObjectFields[] = {
-	        "target_object_uuid", "target_object_kind", "rename_target_uuid",
-	        "rename_target_kind", "new_name", "rename_new_name",
-	        "target_schema_uuid", "schema_uuid",
-	        "domain_target_uuid", "default_expression", "check_constraint",
-	        "check_constraint_append", "nullable",
-	        "table_alter_action", "column_name", "new_column_name", "column_descriptor",
-	        "sequence_target_uuid", "sequence_lookup_key",
-	        "sequence_cache", "sequence_max_value", "sequence_restart_value"};
-    for (const auto field : kAlterObjectFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    const std::string rename_target_uuid = JsonTextField(encoded, "rename_target_uuid").value_or(
-        TextLineValue(encoded, "rename_target_uuid").value_or(""));
-    if (!rename_target_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      operation_envelope += "operand=text\ttarget_object_uuid\t";
-      operation_envelope += EscapeOperationOperandField(rename_target_uuid);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\ttarget_object_kind\t";
-      operation_envelope += EscapeOperationOperandField(
-          JsonTextField(encoded, "rename_target_kind").value_or("object"));
-      operation_envelope += "\n";
-    }
-    const std::string rename_new_name = JsonTextField(encoded, "rename_new_name").value_or(
-        TextLineValue(encoded, "rename_new_name").value_or(""));
-    if (!rename_new_name.empty()) {
-      operation_envelope += "operand=text\tname\t";
-      operation_envelope += EscapeOperationOperandField(rename_new_name);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id.starts_with("ddl.constraint.")) {
-    constexpr std::string_view kConstraintFields[] = {
-        "target_object_uuid", "target_object_kind", "owner_object_uuid",
-        "constraint_name", "constraint_kind",
-        "canonical_constraint_envelope", "enforcement_timing"};
-    for (const auto field : kConstraintFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      AppendOperationOperand(&operation_envelope, field, value);
-    }
-    const std::string owner_uuid = JsonTextField(encoded, "owner_object_uuid").value_or(
-        TextLineValue(encoded, "owner_object_uuid").value_or(""));
-    if (!owner_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      AppendOperationOperand(&operation_envelope, "target_object_uuid", owner_uuid);
-      AppendOperationOperand(&operation_envelope, "target_object_kind", "table");
-    }
-  }
-  if (dispatch_operation_id == "ddl.drop_object") {
-    constexpr std::string_view kDropObjectFields[] = {
-        "target_object_uuid", "target_object_kind", "drop_target_uuid",
-        "drop_target_kind"};
-    for (const auto field : kDropObjectFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "ddl.create_statistics") {
-    constexpr std::string_view kStatisticsFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "statistics_object_uuid", "statistics_name",
-        "statistics_target_uuid", "statistics_target_kind",
-        "target_table_uuid", "statistics_kind",
-        "statistics_expression_count", "statistics_expression"};
-    for (const auto field : kStatisticsFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    const std::string statistics_uuid = JsonTextField(encoded, "statistics_object_uuid").value_or(
-        TextLineValue(encoded, "statistics_object_uuid").value_or(""));
-    if (!statistics_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      operation_envelope += "operand=text\ttarget_object_uuid\t";
-      operation_envelope += EscapeOperationOperandField(statistics_uuid);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\ttarget_object_kind\tstatistics\n";
-    }
-    const std::string statistics_name = JsonTextField(encoded, "statistics_name").value_or(
-        TextLineValue(encoded, "statistics_name").value_or(""));
-    if (!statistics_name.empty()) {
-      operation_envelope += "operand=text\tname\t";
-      operation_envelope += EscapeOperationOperandField(statistics_name);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "ddl.create_sequence") {
-    constexpr std::string_view kSequenceFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "sequence_object_uuid", "sequence_name", "sequence_lookup_key",
-        "target_schema_uuid", "schema_uuid", "schema_parent_path",
-        "sequence_type",
-        "sequence_start_value", "sequence_increment",
-        "sequence_min_value", "sequence_max_value",
-        "sequence_cache", "sequence_no_cache",
-        "sequence_cycle", "sequence_descriptor"};
-    for (const auto field : kSequenceFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    const std::string sequence_uuid = JsonTextField(encoded, "sequence_object_uuid").value_or(
-        TextLineValue(encoded, "sequence_object_uuid").value_or(""));
-    if (!sequence_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      operation_envelope += "operand=text\ttarget_object_uuid\t";
-      operation_envelope += EscapeOperationOperandField(sequence_uuid);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\ttarget_object_kind\tsequence\n";
-    }
-    const std::string sequence_name = JsonTextField(encoded, "sequence_name").value_or(
-        TextLineValue(encoded, "sequence_name").value_or(""));
-    if (!sequence_name.empty()) {
-      operation_envelope += "operand=text\tname\t";
-      operation_envelope += EscapeOperationOperandField(sequence_name);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "ddl.create_domain") {
-    constexpr std::string_view kDomainFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "domain_object_uuid", "domain_name",
-        "target_schema_uuid", "schema_uuid",
-        "schema_parent_uuid", "schema_parent_path",
-        "base_descriptor_uuid", "base_descriptor_kind",
-        "base_canonical_type_name", "base_encoded_descriptor",
-        "default_expression", "check_constraint", "nullable"};
-    for (const auto field : kDomainFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    const std::string domain_uuid = JsonTextField(encoded, "domain_object_uuid").value_or(
-        TextLineValue(encoded, "domain_object_uuid").value_or(""));
-    if (!domain_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      operation_envelope += "operand=text\ttarget_object_uuid\t";
-      operation_envelope += EscapeOperationOperandField(domain_uuid);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\ttarget_object_kind\tdomain\n";
-    }
-    const std::string domain_name = JsonTextField(encoded, "domain_name").value_or(
-        TextLineValue(encoded, "domain_name").value_or(""));
-    if (!domain_name.empty() &&
-        JsonTextField(encoded, "name").value_or(
-            TextLineValue(encoded, "name").value_or("")).empty()) {
-      AppendOperationOperand(&operation_envelope, "name", domain_name);
-    }
-    const std::string parent_uuid = JsonTextField(encoded, "schema_parent_uuid").value_or(
-        TextLineValue(encoded, "schema_parent_uuid").value_or(""));
-    if (!parent_uuid.empty() &&
-        JsonTextField(encoded, "target_schema_uuid").value_or(
-            TextLineValue(encoded, "target_schema_uuid").value_or("")).empty()) {
-      AppendOperationOperand(&operation_envelope, "target_schema_uuid", parent_uuid);
-    }
-  }
-  if (dispatch_operation_id == "ddl.create_view") {
-    constexpr std::string_view kViewFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "view_object_uuid", "view_name",
-        "target_schema_uuid", "schema_uuid", "schema_parent_path",
-        "view_projection_count", "view_query_shape", "view_materialized",
-        "view_source_path", "view_source_uuid", "view_source_name",
-        "view_predicate_kind", "view_predicate_column",
-        "view_predicate_value", "view_predicate_value_type",
-        "view_group_key_field", "view_aggregate_function",
-        "view_aggregate_value_field"};
-    for (const auto field : kViewFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      AppendOperationOperand(&operation_envelope, field, value);
-    }
-    const std::string view_uuid = JsonTextField(encoded, "view_object_uuid").value_or(
-        TextLineValue(encoded, "view_object_uuid").value_or(""));
-    if (!view_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      AppendOperationOperand(&operation_envelope, "target_object_uuid", view_uuid);
-    }
-    if (JsonTextField(encoded, "target_object_kind").value_or(
-            TextLineValue(encoded, "target_object_kind").value_or("")).empty()) {
-      AppendOperationOperand(&operation_envelope,
-                             "target_object_kind",
-                             JsonBoolField(encoded, "view_materialized", false) ||
-                                     TextBoolField(encoded, "view_materialized", false)
-                                 ? "materialized_view"
-                                 : "view");
-    }
-    const std::string view_name = JsonTextField(encoded, "view_name").value_or(
-        TextLineValue(encoded, "view_name").value_or(""));
-    if (!view_name.empty() &&
-        JsonTextField(encoded, "name").value_or(
-            TextLineValue(encoded, "name").value_or("")).empty()) {
-      AppendOperationOperand(&operation_envelope, "name", view_name);
-    }
-    const std::string schema_parent_path = JsonTextField(encoded, "schema_parent_path").value_or(
-        TextLineValue(encoded, "schema_parent_path").value_or(""));
-    if (!schema_parent_path.empty() &&
-        JsonTextField(encoded, "target_schema_uuid").value_or(
-            TextLineValue(encoded, "target_schema_uuid").value_or("")).empty() &&
-        JsonTextField(encoded, "schema_uuid").value_or(
-            TextLineValue(encoded, "schema_uuid").value_or("")).empty()) {
-      const std::string resolved_parent_uuid =
-          ResolveSchemaParentPathForDispatch(session, schema_parent_path);
-      if (!resolved_parent_uuid.empty()) {
-        AppendOperationOperand(&operation_envelope, "target_schema_uuid", resolved_parent_uuid);
-        AppendOperationOperand(&operation_envelope, "schema_uuid", resolved_parent_uuid);
-      }
-    }
-    const std::string source_path = JsonTextField(encoded, "view_source_path").value_or(
-        TextLineValue(encoded, "view_source_path").value_or(""));
-    if (!source_path.empty() &&
-        JsonTextField(encoded, "view_source_uuid").value_or(
-            TextLineValue(encoded, "view_source_uuid").value_or("")).empty()) {
-      const std::string source_uuid = ResolveRelationPathForDispatch(session, source_path);
-      if (!source_uuid.empty()) {
-        AppendOperationOperand(&operation_envelope, "view_source_uuid", source_uuid);
-      }
-    }
-    const std::string projection_count_text = JsonPrimitiveField(encoded, "view_projection_count").value_or(
-        JsonTextField(encoded, "view_projection_count").value_or(
-            TextLineValue(encoded, "view_projection_count").value_or("0")));
-    std::optional<std::uint64_t> bounded_projection_count;
-    if (!projection_count_text.empty() &&
-        (projection_count_text.size() == 1 ||
-         projection_count_text.front() != '0')) {
-      std::uint64_t parsed_count = 0;
-      bool canonical = true;
-      for (const unsigned char ch : projection_count_text) {
-        if (!std::isdigit(ch) || parsed_count > (16u - (ch - '0')) / 10u) {
-          canonical = false;
-          break;
-        }
-        parsed_count = parsed_count * 10u +
-                       static_cast<std::uint64_t>(ch - '0');
-      }
-      if (canonical && parsed_count <= 16u) {
-        bounded_projection_count = parsed_count;
-      }
-    }
-    // The original count operand remains in the neutral envelope.  Invalid,
-    // noncanonical, or oversized counts deliberately omit projection operands
-    // so the typed operation decoder rejects the request without truncation or
-    // an attacker-controlled loop.
-    if (bounded_projection_count) {
-      for (std::uint64_t projection = 0;
-           projection < *bounded_projection_count;
-           ++projection) {
-        const std::string field =
-            "view_projection_" + std::to_string(projection);
-        const auto value = JsonTextField(encoded, field).value_or(
-            TextLineValue(encoded, field).value_or(""));
-        if (value.empty()) continue;
-        AppendOperationOperand(&operation_envelope, field, value);
-      }
-    }
-  }
-  if (dispatch_operation_id == "ddl.create_function" ||
-      dispatch_operation_id == "ddl.create_procedure" ||
-      dispatch_operation_id == "ddl.create_trigger") {
-    const std::string object_kind =
-        dispatch_operation_id == "ddl.create_function" ? "function" :
-        (dispatch_operation_id == "ddl.create_procedure" ? "procedure" : "trigger");
-    const std::string object_uuid_field = object_kind + "_object_uuid";
-    const std::string object_name_field = object_kind + "_name";
-    constexpr std::string_view kExecutableFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "target_schema_uuid", "schema_uuid",
-        "schema_parent_path",
-        "executable_object_kind", "descriptor_kind",
-        "signature_descriptor_kind", "signature_descriptor_uuid",
-        "signature_descriptor", "routine_language",
-        "routine_parameter_descriptor_present", "routine_parameter_count",
-        "routine_parameter_0_name_descriptor", "routine_parameter_0_type",
-        "routine_parameter_0_mode", "routine_parameter_0_descriptor_kind",
-        "routine_return_descriptor_present", "routine_return_count",
-        "body_compilation_included", "executable_descriptor_kind",
-        "executor", "sblr_hash", "sblr_provenance",
-        "internal_procedure_id", "side_effect_class",
-        "compiled_body_provenance", "compiled_body_descriptor",
-        "trigger_timing", "trigger_event", "trigger_scope",
-        "trigger_target_table_uuid", "trigger_target_table_name",
-        "routine_cursor_argument", "routine_cursor_argument_binding",
-        "routine_cursor_argument_parser_executes_cursor"};
-    for (const auto field : kExecutableFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    for (std::size_t related = 0; related < 64; ++related) {
-      const std::string prefix = "related_object_" + std::to_string(related);
-      const auto uuid = JsonTextField(encoded, prefix + "_uuid").value_or("");
-      if (uuid.empty() && !JsonTextField(encoded, prefix + "_kind").has_value()) break;
-      if (!uuid.empty()) AppendOperationOperand(&operation_envelope, prefix + "_uuid", uuid);
-      if (const auto kind = JsonTextField(encoded, prefix + "_kind")) {
-        AppendOperationOperand(&operation_envelope, prefix + "_kind", *kind);
-      }
-    }
-    for (std::size_t index = 0; index < 64; ++index) {
-      const std::string prefix = "routine_parameter_" + std::to_string(index);
-      const auto name = JsonTextField(encoded, prefix + "_name").value_or("");
-      const auto type = JsonTextField(encoded, prefix + "_type").value_or("");
-      const auto mode = JsonTextField(encoded, prefix + "_mode").value_or("");
-      const auto descriptor_kind = JsonTextField(encoded, prefix + "_descriptor_kind").value_or("");
-      if (name.empty() && type.empty() && mode.empty() && descriptor_kind.empty()) break;
-      if (!name.empty()) AppendOperationOperand(&operation_envelope, prefix + "_name", name);
-      if (!type.empty()) AppendOperationOperand(&operation_envelope, prefix + "_type", type);
-      if (!mode.empty()) AppendOperationOperand(&operation_envelope, prefix + "_mode", mode);
-      if (!descriptor_kind.empty()) {
-        AppendOperationOperand(&operation_envelope, prefix + "_descriptor_kind", descriptor_kind);
-      }
-    }
-    for (std::size_t index = 0; index < 64; ++index) {
-      const std::string prefix = "routine_return_" + std::to_string(index);
-      const auto name = JsonTextField(encoded, prefix + "_name").value_or("");
-      const auto type = JsonTextField(encoded, prefix + "_type").value_or("");
-      if (name.empty() && type.empty()) break;
-      if (!name.empty()) AppendOperationOperand(&operation_envelope, prefix + "_name", name);
-      if (!type.empty()) AppendOperationOperand(&operation_envelope, prefix + "_type", type);
-    }
-    std::string object_uuid = JsonTextField(encoded, object_uuid_field).value_or(
-        TextLineValue(encoded, object_uuid_field).value_or(""));
-    const std::string executable_descriptor_kind =
-        JsonTextField(encoded, "executable_descriptor_kind").value_or(
-            TextLineValue(encoded, "executable_descriptor_kind").value_or(""));
-    const bool engine_allocates_create_or_alter_identity =
-        object_kind == "procedure" &&
-        executable_descriptor_kind == "create_or_alter_procedure";
-    if (object_uuid.empty() && !engine_allocates_create_or_alter_identity) {
-      object_uuid = engine_api::GenerateCrudEngineUuid("object");
-    }
-    if (!object_uuid.empty()) {
-      operation_envelope += "operand=text\t";
-      operation_envelope += object_uuid_field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(object_uuid);
-      operation_envelope += "\n";
-    }
-    if (!object_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      operation_envelope += "operand=text\ttarget_object_uuid\t";
-      operation_envelope += EscapeOperationOperandField(object_uuid);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\ttarget_object_kind\t";
-      operation_envelope += object_kind;
-      operation_envelope += "\n";
-    }
-    const std::string explicit_target_schema_uuid = JsonTextField(encoded, "target_schema_uuid").value_or(
-        TextLineValue(encoded, "target_schema_uuid").value_or(""));
-    const std::string explicit_schema_uuid = JsonTextField(encoded, "schema_uuid").value_or(
-        TextLineValue(encoded, "schema_uuid").value_or(""));
-    const std::string schema_parent_path = JsonTextField(encoded, "schema_parent_path").value_or(
-        TextLineValue(encoded, "schema_parent_path").value_or(""));
-    if (explicit_target_schema_uuid.empty() && explicit_schema_uuid.empty()) {
-      scratchbird::core::platform::Uuid resolved_schema_uuid;
-      if (!schema_parent_path.empty()) {
-        resolved_schema_uuid = ResolveSchemaParentPathForDispatch(session, schema_parent_path);
-      }
-      if (resolved_schema_uuid.is_nil()) {
-        resolved_schema_uuid = ResolveDefaultSchemaForDispatch(session);
-      }
-      if (!resolved_schema_uuid.is_nil()) {
-        AppendOperationOperand(&operation_envelope, "target_schema_uuid", resolved_schema_uuid);
-        AppendOperationOperand(&operation_envelope, "schema_uuid", resolved_schema_uuid);
-      }
-    }
-    const std::string object_name = JsonTextField(encoded, object_name_field).value_or(
-        TextLineValue(encoded, object_name_field).value_or(""));
-    if (!object_name.empty()) {
-      operation_envelope += "operand=text\t";
-      operation_envelope += object_name_field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(object_name);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\tname\t";
-      operation_envelope += EscapeOperationOperandField(object_name);
-      operation_envelope += "\n";
-    }
-    AppendOperationOperand(&operation_envelope, "permission", "manage_executable");
-  }
-  if (dispatch_operation_id == "routine.procedure_invoke" ||
-      dispatch_operation_id == "routine.function_invoke") {
-    constexpr std::string_view kRoutineInvokeFields[] = {
-        "target_object_uuid", "object_uuid", "routine_object_uuid",
-        "target_object_kind", "routine_invocation_kind", "routine_argument_count",
-        "routine_name", "target_schema_uuid"};
-    for (const auto field : kRoutineInvokeFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      AppendOperationOperand(&operation_envelope, std::string(field), value);
-    }
-    for (std::size_t argument = 0; argument < 64; ++argument) {
-      const std::string prefix = "routine_argument_" + std::to_string(argument);
-      const auto value = JsonTextField(encoded, prefix + "_value").value_or("");
-      if (value.empty() && !JsonTextField(encoded, prefix + "_binding").has_value()) break;
-      AppendOperationOperand(&operation_envelope, prefix + "_value", value);
-      if (const auto type = JsonTextField(encoded, prefix + "_type")) {
-        AppendOperationOperand(&operation_envelope, prefix + "_type", *type);
-      }
-      if (const auto binding = JsonTextField(encoded, prefix + "_binding")) {
-        AppendOperationOperand(&operation_envelope, prefix + "_binding", *binding);
-      }
-      if (const auto descriptor_kind = JsonTextField(encoded, prefix + "_descriptor_kind")) {
-        AppendOperationOperand(&operation_envelope,
-                               prefix + "_descriptor_kind",
-                               *descriptor_kind);
-      }
-    }
-    const std::string target_uuid = JsonTextField(encoded, "target_object_uuid").value_or(
-        TextLineValue(encoded, "target_object_uuid").value_or(""));
-    const std::string object_uuid = JsonTextField(encoded, "object_uuid").value_or(
-        TextLineValue(encoded, "object_uuid").value_or(""));
-    if (!target_uuid.empty() && object_uuid.empty()) {
-      AppendOperationOperand(&operation_envelope, "object_uuid", target_uuid);
-    }
-    AppendOperationOperand(&operation_envelope, "permission", "invoke_executable");
-  }
-  if (dispatch_operation_id.starts_with("agents.")) {
-    const std::string agent_type = JsonTextField(encoded, "agent_type").value_or(
-        TextLineValue(encoded, "agent_type").value_or(""));
-    if (!agent_type.empty()) {
-      operation_envelope += "operand=text\tagent_type\t";
-      operation_envelope += EscapeOperationOperandField(agent_type);
-      operation_envelope += "\n";
-    }
-    operation_envelope += "operand=text\twall_now_us\t1\n";
-    operation_envelope += "operand=text\tmonotonic_now_us\t1\n";
-    operation_envelope += "operand=text\tprivate_features\ttrue\n";
-    operation_envelope += "operand=text\tstandalone_edition\ttrue\n";
-  }
-  if (dispatch_operation_id == "management.inspect_runtime" ||
-      dispatch_operation_id == "management.control_runtime") {
-    const std::string runtime_component = JsonTextField(encoded, "runtime_component").value_or(
-        TextLineValue(encoded, "runtime_component").value_or(""));
-    const std::string runtime_target_name = JsonTextField(encoded, "runtime_target_name").value_or(
-        TextLineValue(encoded, "runtime_target_name").value_or(""));
-    if (!runtime_component.empty()) {
-      operation_envelope += "operand=text\truntime_component\t";
-      operation_envelope += EscapeOperationOperandField(runtime_component);
-      operation_envelope += "\n";
-    }
-    if (!runtime_target_name.empty()) {
-      operation_envelope += "operand=text\truntime_target_name\t";
-      operation_envelope += EscapeOperationOperandField(runtime_target_name);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id.starts_with("extensibility.register_udr_package") ||
-      dispatch_operation_id.starts_with("extensibility.alter_udr_package") ||
-      dispatch_operation_id.starts_with("extensibility.load_udr_package") ||
-      dispatch_operation_id.starts_with("extensibility.unload_udr_package") ||
-      dispatch_operation_id.starts_with("extensibility.drop_udr_package") ||
-      dispatch_operation_id.starts_with("extensibility.inspect_udr_packages") ||
-      dispatch_operation_id.starts_with("extensibility.invoke_udr_package")) {
-    constexpr std::string_view kUdrFields[] = {
-        "target_object_uuid", "target_object_kind", "udr_package_name",
-        "runtime_component", "permission", "right", "trust", "abi",
-        "linked_udr_package", "source_revision", "binary_hash",
-        "signature_policy", "capability_role", "entrypoint", "payload",
-        "context_packet", "memory_budget_bytes", "cpu_budget_microseconds",
-        "operation_family"};
-    for (const auto field : kUdrFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    if (dispatch_operation_id == "extensibility.inspect_udr_packages") {
-      operation_envelope += "operand=text\tpermission\tinspect_udr\n";
-    }
-  }
-  if (dispatch_operation_id == "query.evaluate_projection") {
-    const auto projection_count_value = JsonTextField(encoded, "projection_count").value_or(
-        TextLineValue(encoded, "projection_count").value_or(""));
-    std::uint64_t projection_count = 0;
-    bool projection_count_valid = !projection_count_value.empty();
-    for (const unsigned char ch : projection_count_value) {
-      if (!std::isdigit(ch)) {
-        projection_count_valid = false;
-        break;
-      }
-      projection_count = projection_count * 10u + static_cast<std::uint64_t>(ch - '0');
-    }
-    if (projection_count_valid) {
-      operation_envelope += "operand=text\tprojection_count\t";
-      operation_envelope += EscapeOperationOperandField(projection_count_value);
-      operation_envelope += "\n";
-      for (std::uint64_t index = 0; index < projection_count; ++index) {
-        const std::string prefix = "projection_" + std::to_string(index) + "_";
-        AppendOperationOperand(&operation_envelope, prefix + "name", EncodedTextField(encoded, prefix + "name"));
-        AppendProjectionExpressionOperands(encoded, prefix, &operation_envelope);
-      }
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"values_rowset\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=values_rowset") != std::string_view::npos)) {
-    auto parse_u64 = [](const std::string& value) -> std::optional<std::uint64_t> {
-      if (value.empty()) return std::nullopt;
-      std::uint64_t parsed = 0;
-      for (const unsigned char ch : value) {
-        if (!std::isdigit(ch)) return std::nullopt;
-        parsed = parsed * 10u + static_cast<std::uint64_t>(ch - '0');
-      }
-      return parsed;
-    };
-    const auto row_count = parse_u64(JsonTextField(encoded, "values_row_count").value_or(
-        TextLineValue(encoded, "values_row_count").value_or("")));
-    const auto column_count = parse_u64(JsonTextField(encoded, "values_column_count").value_or(
-        TextLineValue(encoded, "values_column_count").value_or("")));
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\tvalues\n";
-    if (row_count && column_count) {
-      for (std::uint64_t row = 0; row < *row_count; ++row) {
-        for (std::uint64_t column = 0; column < *column_count; ++column) {
-          const std::string prefix =
-              "values_" + std::to_string(row) + "_" + std::to_string(column) + "_";
-          const std::string name = JsonTextField(encoded, prefix + "name").value_or(
-              TextLineValue(encoded, prefix + "name").value_or("c" + std::to_string(column)));
-          const std::string type = JsonTextField(encoded, prefix + "type").value_or(
-              TextLineValue(encoded, prefix + "type").value_or("text"));
-          const std::string value = JsonTextField(encoded, prefix + "value").value_or(
-              TextLineValue(encoded, prefix + "value").value_or(""));
-          const std::string is_null = JsonTextField(encoded, prefix + "is_null").value_or(
-              TextLineValue(encoded, prefix + "is_null").value_or("false"));
-          operation_envelope += "operand=";
-          operation_envelope += (is_null == "true" || is_null == "1") ? "row_null_field:" : "row_field:";
-          operation_envelope += EscapeOperationOperandField(type.empty() ? "text" : type);
-          operation_envelope += "\tvalues-row-";
-          operation_envelope += std::to_string(row);
-          operation_envelope += "|";
-          operation_envelope += EscapeOperationOperandField(name.empty() ? "c" + std::to_string(column) : name);
-          operation_envelope += "\t";
-          operation_envelope += EscapeOperationOperandField(value);
-          operation_envelope += "\n";
-        }
-      }
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"values_set_operation\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=values_set_operation") != std::string_view::npos)) {
-    auto parse_u64 = [](const std::string& value) -> std::optional<std::uint64_t> {
-      if (value.empty()) return std::nullopt;
-      std::uint64_t parsed = 0;
-      for (const unsigned char ch : value) {
-        if (!std::isdigit(ch)) return std::nullopt;
-        parsed = parsed * 10u + static_cast<std::uint64_t>(ch - '0');
-      }
-      return parsed;
-    };
-    const auto column_count = parse_u64(JsonTextField(encoded, "values_column_count").value_or(
-        TextLineValue(encoded, "values_column_count").value_or("")));
-    const std::string set_operation = JsonTextField(encoded, "set_operation").value_or(
-        TextLineValue(encoded, "set_operation").value_or("union_distinct"));
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\t";
-    operation_envelope += EscapeOperationOperandField(set_operation.empty() ? "union_distinct" : set_operation);
-    operation_envelope += "\n";
-    operation_envelope += "operand=text\tset_operation\t";
-    operation_envelope += EscapeOperationOperandField(set_operation.empty() ? "union_distinct" : set_operation);
-    operation_envelope += "\n";
-    if (column_count) {
-      for (std::uint64_t relation = 0; relation < 2; ++relation) {
-        const auto row_count = parse_u64(JsonTextField(encoded, "relation_" + std::to_string(relation) + "_row_count").value_or(
-            TextLineValue(encoded, "relation_" + std::to_string(relation) + "_row_count").value_or("")));
-        if (!row_count) continue;
-        for (std::uint64_t row = 0; row < *row_count; ++row) {
-          for (std::uint64_t column = 0; column < *column_count; ++column) {
-            const std::string prefix = "relation_" + std::to_string(relation) + "_" +
-                                       std::to_string(row) + "_" + std::to_string(column) + "_";
-            const std::string name = JsonTextField(encoded, prefix + "name").value_or(
-                TextLineValue(encoded, prefix + "name").value_or("c" + std::to_string(column)));
-            const std::string type = JsonTextField(encoded, prefix + "type").value_or(
-                TextLineValue(encoded, prefix + "type").value_or("bigint"));
-            const std::string value = JsonTextField(encoded, prefix + "value").value_or(
-                TextLineValue(encoded, prefix + "value").value_or(""));
-            const std::string is_null = JsonTextField(encoded, prefix + "is_null").value_or(
-                TextLineValue(encoded, prefix + "is_null").value_or("false"));
-            operation_envelope += "operand=";
-            operation_envelope += (is_null == "true" || is_null == "1") ? "row_null_field:" : "row_field:";
-            operation_envelope += EscapeOperationOperandField(type.empty() ? "bigint" : type);
-            operation_envelope += "\trelation-";
-            operation_envelope += std::to_string(relation);
-            operation_envelope += "-row-";
-            operation_envelope += std::to_string(row);
-            operation_envelope += "|";
-            operation_envelope += EscapeOperationOperandField(name.empty() ? "c" + std::to_string(column) : name);
-            operation_envelope += "\t";
-            operation_envelope += EscapeOperationOperandField(value);
-            operation_envelope += "\n";
-          }
-        }
-      }
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"values_materialized_cte\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=values_materialized_cte") != std::string_view::npos)) {
-    auto parse_u64 = [](const std::string& value) -> std::optional<std::uint64_t> {
-      if (value.empty()) return std::nullopt;
-      std::uint64_t parsed = 0;
-      for (const unsigned char ch : value) {
-        if (!std::isdigit(ch)) return std::nullopt;
-        parsed = parsed * 10u + static_cast<std::uint64_t>(ch - '0');
-      }
-      return parsed;
-    };
-    const auto column_count = parse_u64(JsonTextField(encoded, "values_column_count").value_or(
-        TextLineValue(encoded, "values_column_count").value_or("")));
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\tmaterialized_cte\n";
-    constexpr std::string_view kMaterializedCteFields[] = {
-        "result_projection",
-        "aggregate_function",
-        "aggregate_value_field",
-        "aggregate_pair_value_field",
-        "order_by",
-        "aggregate_fraction",
-        "aggregate_limit",
-        "listagg_separator",
-        "listagg_overflow_mode",
-        "listagg_max_output_bytes",
-        "listagg_truncation_indicator",
-        "listagg_with_count",
-        "hypothetical_value",
-        "hypothetical_value_type",
-        "window_function",
-        "window_value_field",
-        "window_n",
-        "window_offset",
-        "window_default_value",
-        "window_default_type",
-        "window_default_is_null",
-        "window_lookup_field",
-        "window_lookup_value",
-        "window_limit_first",
-        "window_filter_present",
-        "window_filter_field",
-        "window_filter_min",
-        "window_filter_max"};
-    for (const auto field : kMaterializedCteFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    if (column_count) {
-      const auto row_count = parse_u64(JsonTextField(encoded, "relation_0_row_count").value_or(
-          TextLineValue(encoded, "relation_0_row_count").value_or("")));
-      if (row_count) {
-        for (std::uint64_t row = 0; row < *row_count; ++row) {
-          for (std::uint64_t column = 0; column < *column_count; ++column) {
-            const std::string prefix = "relation_0_" +
-                                       std::to_string(row) + "_" +
-                                       std::to_string(column) + "_";
-            const std::string name = JsonTextField(encoded, prefix + "name").value_or(
-                TextLineValue(encoded, prefix + "name").value_or("c" + std::to_string(column)));
-            const std::string type = JsonTextField(encoded, prefix + "type").value_or(
-                TextLineValue(encoded, prefix + "type").value_or("bigint"));
-            const std::string value = JsonTextField(encoded, prefix + "value").value_or(
-                TextLineValue(encoded, prefix + "value").value_or(""));
-            const std::string is_null = JsonTextField(encoded, prefix + "is_null").value_or(
-                TextLineValue(encoded, prefix + "is_null").value_or("false"));
-            operation_envelope += "operand=";
-            operation_envelope += (is_null == "true" || is_null == "1") ? "row_null_field:" : "row_field:";
-            operation_envelope += EscapeOperationOperandField(type.empty() ? "bigint" : type);
-            operation_envelope += "\trelation-0-row-";
-            operation_envelope += std::to_string(row);
-            operation_envelope += "|";
-            operation_envelope += EscapeOperationOperandField(name.empty() ? "c" + std::to_string(column) : name);
-            operation_envelope += "\t";
-            operation_envelope += EscapeOperationOperandField(value);
-            operation_envelope += "\n";
-          }
-        }
-      }
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"values_recursive_cte\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=values_recursive_cte") != std::string_view::npos)) {
-    auto parse_u64 = [](const std::string& value) -> std::optional<std::uint64_t> {
-      if (value.empty()) return std::nullopt;
-      std::uint64_t parsed = 0;
-      for (const unsigned char ch : value) {
-        if (!std::isdigit(ch)) return std::nullopt;
-        parsed = parsed * 10u + static_cast<std::uint64_t>(ch - '0');
-      }
-      return parsed;
-    };
-    const auto column_count = parse_u64(JsonTextField(encoded, "values_column_count").value_or(
-        TextLineValue(encoded, "values_column_count").value_or("")));
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\trecursive_cte\n";
-    const std::string recursive_iterations = JsonTextField(encoded, "recursive_iterations").value_or(
-        TextLineValue(encoded, "recursive_iterations").value_or("32"));
-    operation_envelope += "operand=text\trecursive_iterations\t";
-    operation_envelope += EscapeOperationOperandField(recursive_iterations.empty() ? "32" : recursive_iterations);
-    operation_envelope += "\n";
-    constexpr std::string_view kRecursiveCteFields[] = {
-        "recursive_step_mode",
-        "recursive_counter_column",
-        "recursive_counter_step",
-        "recursive_counter_limit",
-        "recursive_counter_predicate",
-        "result_projection",
-        "aggregate_function",
-        "aggregate_value_field",
-        "aggregate_pair_value_field",
-        "order_by",
-        "aggregate_fraction",
-        "aggregate_limit",
-        "listagg_separator",
-        "listagg_overflow_mode",
-        "listagg_max_output_bytes",
-        "listagg_truncation_indicator",
-        "listagg_with_count",
-        "hypothetical_value",
-        "hypothetical_value_type"};
-    for (const auto field : kRecursiveCteFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    if (column_count) {
-      for (std::uint64_t relation = 0; relation < 2; ++relation) {
-        const auto row_count = parse_u64(JsonTextField(encoded, "relation_" + std::to_string(relation) + "_row_count").value_or(
-            TextLineValue(encoded, "relation_" + std::to_string(relation) + "_row_count").value_or("")));
-        if (!row_count) continue;
-        for (std::uint64_t row = 0; row < *row_count; ++row) {
-          for (std::uint64_t column = 0; column < *column_count; ++column) {
-            const std::string prefix = "relation_" + std::to_string(relation) + "_" +
-                                       std::to_string(row) + "_" + std::to_string(column) + "_";
-            const std::string name = JsonTextField(encoded, prefix + "name").value_or(
-                TextLineValue(encoded, prefix + "name").value_or("c" + std::to_string(column)));
-            const std::string type = JsonTextField(encoded, prefix + "type").value_or(
-                TextLineValue(encoded, prefix + "type").value_or("bigint"));
-            const std::string value = JsonTextField(encoded, prefix + "value").value_or(
-                TextLineValue(encoded, prefix + "value").value_or(""));
-            const std::string is_null = JsonTextField(encoded, prefix + "is_null").value_or(
-                TextLineValue(encoded, prefix + "is_null").value_or("false"));
-            operation_envelope += "operand=";
-            operation_envelope += (is_null == "true" || is_null == "1") ? "row_null_field:" : "row_field:";
-            operation_envelope += EscapeOperationOperandField(type.empty() ? "bigint" : type);
-            operation_envelope += "\trelation-";
-            operation_envelope += std::to_string(relation);
-            operation_envelope += "-row-";
-            operation_envelope += std::to_string(row);
-            operation_envelope += "|";
-            operation_envelope += EscapeOperationOperandField(name.empty() ? "c" + std::to_string(column) : name);
-            operation_envelope += "\t";
-            operation_envelope += EscapeOperationOperandField(value);
-            operation_envelope += "\n";
-          }
-        }
-      }
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"table_inner_join\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=table_inner_join") != std::string_view::npos)) {
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\t";
-    operation_envelope += EscapeOperationOperandField(JsonTextField(encoded, "query_operation").value_or(
-        TextLineValue(encoded, "query_operation").value_or("inner_join")));
-    operation_envelope += "\n";
-    operation_envelope += "operand=text\tjoin_algorithm\t";
-    operation_envelope += EscapeOperationOperandField(JsonTextField(encoded, "join_algorithm").value_or(
-        TextLineValue(encoded, "join_algorithm").value_or("hash")));
-    operation_envelope += "\n";
-    constexpr std::string_view kJoinFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "related_object_0_uuid", "related_object_0_kind",
-        "projection", "catalog_projection",
-        "left_key_field", "right_key_field",
-        "left_key_column", "right_key_column", "right_key_offset",
-        "left_null_filter_field", "right_null_filter_field",
-        "group_key_field", "aggregate_value_field",
-        "lateral_filter_value", "cross_join_equality_filter",
-        "distinct_count_field",
-        "left_filter_count",
-        "left_filter_0_kind", "left_filter_0_column",
-        "left_filter_0_value", "left_filter_0_value_type",
-        "left_filter_1_kind", "left_filter_1_column",
-        "left_filter_1_value", "left_filter_1_value_type",
-        "left_filter_2_kind", "left_filter_2_column",
-        "left_filter_2_value", "left_filter_2_value_type",
-        "left_filter_3_kind", "left_filter_3_column",
-        "left_filter_3_value", "left_filter_3_value_type",
-        "left_filter_4_kind", "left_filter_4_column",
-        "left_filter_4_value", "left_filter_4_value_type",
-        "left_filter_5_kind", "left_filter_5_column",
-        "left_filter_5_value", "left_filter_5_value_type",
-        "left_filter_6_kind", "left_filter_6_column",
-        "left_filter_6_value", "left_filter_6_value_type",
-        "left_filter_7_kind", "left_filter_7_column",
-        "left_filter_7_value", "left_filter_7_value_type",
-        "having_threshold",
-        "partition_key_field", "order_by",
-        "limit", "offset", "order_column", "order",
-        "result_projection", "aggregate_function"};
-    for (const auto field : kJoinFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"table_set_operation\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=table_set_operation") != std::string_view::npos)) {
-    const std::string set_operation = JsonTextField(encoded, "set_operation").value_or(
-        TextLineValue(encoded, "set_operation").value_or("union_distinct"));
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\t";
-    operation_envelope += EscapeOperationOperandField(set_operation.empty() ? "union_distinct" : set_operation);
-    operation_envelope += "\n";
-    operation_envelope += "operand=text\tset_operation\t";
-    operation_envelope += EscapeOperationOperandField(set_operation.empty() ? "union_distinct" : set_operation);
-    operation_envelope += "\n";
-    constexpr std::string_view kTableSetFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "related_object_0_uuid", "related_object_0_kind",
-        "set_by_name", "left_project_field", "right_project_field",
-        "result_projection", "aggregate_function", "aggregate_value_field",
-        "limit", "offset"};
-    for (const auto field : kTableSetFields) {
-      std::string value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty() && field == std::string_view("set_by_name")) {
-        const std::string true_needle = "\"" + std::string(field) + "\":true";
-        const std::string false_needle = "\"" + std::string(field) + "\":false";
-        if (encoded.find(true_needle) != std::string_view::npos) {
-          value = "true";
-        } else if (encoded.find(false_needle) != std::string_view::npos) {
-          value = "false";
-        }
-      }
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    for (std::size_t index = 1; index < 16; ++index) {
-      const std::string prefix = "related_object_" + std::to_string(index) + "_";
-      for (const auto suffix : {"uuid", "kind"}) {
-        const std::string field = prefix + suffix;
-        const auto value = JsonTextField(encoded, field).value_or(
-            TextLineValue(encoded, field).value_or(""));
-        if (value.empty()) continue;
-        operation_envelope += "operand=text\t";
-        operation_envelope += field;
-        operation_envelope += "\t";
-        operation_envelope += EscapeOperationOperandField(value);
-        operation_envelope += "\n";
-      }
-    }
-    for (std::size_t index = 0; index < 16; ++index) {
-      const std::string field = "relation_" + std::to_string(index) + "_project_field";
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    for (std::size_t index = 0; index < 16; ++index) {
-      const std::string field = "relation_" + std::to_string(index) + "_not_null_filter_field";
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    for (std::size_t index = 0; index < 16; ++index) {
-      for (const auto suffix : {"filter_kind", "filter_field", "filter_value",
-                                "filter_value_type"}) {
-        const std::string field = "relation_" + std::to_string(index) + "_" + suffix;
-        const auto value = JsonTextField(encoded, field).value_or(
-            TextLineValue(encoded, field).value_or(""));
-        if (value.empty()) continue;
-        operation_envelope += "operand=text\t";
-        operation_envelope += field;
-        operation_envelope += "\t";
-        operation_envelope += EscapeOperationOperandField(value);
-        operation_envelope += "\n";
-      }
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"table_row_number_window\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=table_row_number_window") != std::string_view::npos ||
-       encoded.find("\"query_envelope_kind\":\"table_window\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=table_window") != std::string_view::npos ||
-       encoded.find("\"query_envelope_kind\":\"table_partition_count_window\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=table_partition_count_window") != std::string_view::npos)) {
-    const std::string query_operation = JsonTextField(encoded, "query_operation").value_or(
-        TextLineValue(encoded, "query_operation").value_or("row_number_window"));
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\t";
-    operation_envelope += EscapeOperationOperandField(query_operation.empty() ? "row_number_window" : query_operation);
-    operation_envelope += "\n";
-    constexpr std::string_view kWindowFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "order_by", "order_column", "window_function",
-        "window_value_field", "window_value_column",
-        "partition_by", "partition_column",
-        "window_n", "window_bucket_count",
-        "limit", "offset"};
-    for (const auto field : kWindowFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"table_group_sum\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=table_group_sum") != std::string_view::npos ||
-       encoded.find("\"query_envelope_kind\":\"table_group_aggregate\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=table_group_aggregate") != std::string_view::npos)) {
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\tgroup_by\n";
-    constexpr std::string_view kGroupFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "group_key_field", "aggregate_value_field", "aggregate_function",
-        "group_key_column", "aggregate_value_column",
-        "aggregate_pair_value_field", "aggregate_pair_value_column",
-        "aggregate_fraction", "aggregate_limit",
-        "order_by", "order_column",
-        "having_predicate", "having_threshold",
-        "having_aggregate_function", "having_value_field",
-        "having_value_column",
-        "listagg_separator", "listagg_overflow_mode", "listagg_max_output_bytes",
-        "listagg_truncation_indicator", "listagg_with_count",
-        "limit", "offset"};
-    for (const auto field : kGroupFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"table_count\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=table_count") != std::string_view::npos)) {
-    const std::string original_target_uuid = JsonTextField(encoded, "target_object_uuid").value_or(
-        TextLineValue(encoded, "target_object_uuid").value_or(""));
-    std::optional<DispatchViewDescriptor> view_descriptor;
-    if (!original_target_uuid.empty()) {
-      engine_api::EngineApiDiagnostic diagnostic;
-      view_descriptor = LoadDispatchViewDescriptor(session, original_target_uuid, diagnostic);
-      if (diagnostic.error) {
-        // No C ABI result exists for this direct internal read. Preserve its
-        // occurrence, registration and private native cause in the same trusted
-        // carrier; do not reinterpret a failed read as a base-table dispatch.
-        engine_bridge::EngineDiagnosticSnapshot source;
-        source.occurrence_uuid = diagnostic.occurrence_uuid;
-        source.code = diagnostic.code;
-        source.message_key = diagnostic.message_key;
-        source.safe_detail = diagnostic.detail;
-        source.canonical_metadata = diagnostic.canonical_metadata;
-        source.native_source = diagnostic.native_source;
-        for (const auto& field : diagnostic.fields)
-          source.fields.push_back({field.key, field.value});
-        read_failure = std::move(source);
-        return {};
-      }
-    }
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\tcount_all\n";
-    if (view_descriptor) {
-      AppendOperationOperand(&operation_envelope, "target_object_uuid", view_descriptor->source_uuid);
-      AppendOperationOperand(&operation_envelope, "target_object_kind", "table");
-      AppendViewPredicateOperands(*view_descriptor, encoded, &operation_envelope);
-    }
-    constexpr std::string_view kCountFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "aggregate_function", "aggregate_value_field",
-        "count_all", "count_distinct", "count_distinct_include_null", "limit", "offset",
-        "result_projection", "result_column_name",
-        "predicate_kind", "predicate_column", "predicate_value",
-        "predicate_value_type"};
-    for (const auto field : kCountFields) {
-      if (view_descriptor &&
-          (field == "target_object_uuid" || field == "target_object_kind" ||
-           field == "predicate_kind" || field == "predicate_column" ||
-           field == "predicate_value" || field == "predicate_value_type")) {
-        continue;
-      }
-      const auto value = JsonTextField(encoded, field).value_or(
-          JsonPrimitiveField(encoded, field).value_or(
-              TextLineValue(encoded, field).value_or("")));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"table_materialized_cte\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=table_materialized_cte") != std::string_view::npos)) {
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\tmaterialized_cte\n";
-    constexpr std::string_view kCteFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "limit", "offset"};
-    for (const auto field : kCteFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  if (dispatch_operation_id == "query.plan_operation" &&
-      (encoded.find("\"query_envelope_kind\":\"table_scalar_subquery\"") != std::string_view::npos ||
-       encoded.find("query_envelope_kind=table_scalar_subquery") != std::string_view::npos)) {
-    operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\tscalar_subquery\n";
-    constexpr std::string_view kSubqueryFields[] = {
-        "target_object_uuid", "target_object_kind",
-        "project_columns", "limit", "offset"};
-    for (const auto field : kSubqueryFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-  }
-  mark_phase("pre_dml_bridge");
-  return finish_operation_envelope();
+  // Parser lowering owns UUID-resolved canonical SBLR. The server must not
+  // reinterpret it as text or manufacture an operation from JSON fields.
+  // The engine validates the forwarded envelope and its authorization context.
+  if (!LooksLikeBinarySblrEnvelope(encoded)) return {};
+  return std::string(encoded);
 }
 
 void ApplyTransactionResultToSession(std::string_view operation_id,
@@ -7651,12 +5561,11 @@ void ApplyTransactionResultToSession(std::string_view operation_id,
   if (operation_id == "transaction.commit" || operation_id == "transaction.rollback") {
     if (const auto replacement_id = TextLineU64(payload, "replacement_local_transaction_id")) {
       const auto found = session->transactions_by_local_id.find(*replacement_id);
-      const std::string replacement_uuid =
-          TextLineValue(payload, "replacement_transaction_uuid").value_or("");
+      const auto replacement_uuid = ResultIdentity(payload, "replacement_transaction_uuid");
       if (found == session->transactions_by_local_id.end() ||
           found->second.lifecycle_state !=
               ServerTransactionLifecycleState::kActive ||
-          (!replacement_uuid.empty() &&
+          (!replacement_uuid.is_nil() &&
            found->second.transaction_uuid != replacement_uuid)) {
         ClearLegacyDefaultTransactionProjection(session);
         return;
@@ -7874,16 +5783,15 @@ bool IsDmlMutationCompletionOperation(std::string_view operation_id) {
 
 std::string ServerApiRowValue(const engine_api::EngineApiResult& api_result,
                               std::size_t row_index) {
-  std::ostringstream out;
-  bool first = true;
-  for (const auto& field : api_result.result_shape.rows[row_index].fields) {
-    if (!first) {
-      out << ";";
-    }
-    first = false;
-    out << field.first << "=" << field.second.encoded_value;
+  std::vector<public_result::Field> fields;
+  for (const auto& [name, value] : api_result.result_shape.rows[row_index].fields) {
+    auto kind = public_result::Kind::text;
+    const auto& type = value.descriptor.canonical_type_name;
+    if (!value.is_null && (type == "uuid" || type == "uuid16")) kind = public_result::Kind::uuid;
+    else if (type == "bytea" || type == "binary" || type == "varbinary") kind = public_result::Kind::bytes;
+    fields.push_back({name, kind, value.encoded_value});
   }
-  return out.str();
+  return ResultRecord(std::move(fields));
 }
 
 std::string ServerApiRowMetadataValue(const engine_api::EngineApiResult& api_result,
@@ -7911,22 +5819,23 @@ std::string ServerApiRowMetadataValue(const engine_api::EngineApiResult& api_res
 }
 
 std::string ServerApiResultPayload(const engine_api::EngineApiResult& api_result) {
-  std::ostringstream out;
-  const std::uint64_t row_count =
-      static_cast<std::uint64_t>(api_result.result_shape.rows.size());
-  out << "operation_id=" << api_result.operation_id << "\n";
-  out << "result_kind=" << api_result.result_shape.result_kind << "\n";
-  out << "row_count=" << row_count << "\n";
-  for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
-    const auto index = static_cast<std::size_t>(row_index);
-    out << "row[" << row_index << "]=" << ServerApiRowValue(api_result, index) << "\n";
-    out << "row_meta[" << row_index << "]="
-        << ServerApiRowMetadataValue(api_result, index) << "\n";
+  std::vector<public_result::Field> fields = {
+      {"operation_id", public_result::Kind::text, api_result.operation_id},
+      {"result_kind", public_result::Kind::text, api_result.result_shape.result_kind},
+      {"row_count", public_result::Kind::text, std::to_string(api_result.result_shape.rows.size())}};
+  for (std::size_t i = 0; i < api_result.result_shape.rows.size(); ++i) {
+    fields.push_back({"row[" + std::to_string(i) + "]", public_result::Kind::row, ServerApiRowValue(api_result, i)});
+    fields.push_back({"row_meta[" + std::to_string(i) + "]", public_result::Kind::text, ServerApiRowMetadataValue(api_result, i)});
   }
-  for (const auto& evidence : api_result.evidence) {
-    out << "evidence=" << evidence.evidence_kind << ":" << evidence.evidence_id << "\n";
+  for (const auto& item : api_result.evidence) {
+    if (const auto* id = std::get_if<NativeUuid>(&item.evidence_id))
+      fields.push_back({"evidence", public_result::Kind::evidence,
+                       ResultRecord({{item.evidence_kind, public_result::Kind::uuid, IdentityBytes(*id)}})});
+    else fields.push_back(TextEvidence(item.evidence_kind, std::get<std::string>(item.evidence_id)));
   }
-  return out.str();
+  if (api_result.local_transaction_id) fields.push_back({"local_transaction_id", public_result::Kind::text, std::to_string(api_result.local_transaction_id)});
+  if (!api_result.transaction_uuid.is_nil()) fields.push_back({"transaction_uuid", public_result::Kind::uuid, IdentityBytes(api_result.transaction_uuid)});
+  return ResultRecord(std::move(fields));
 }
 
 std::string EncodedOrOperandTextField(std::string_view encoded, std::string_view field) {
@@ -8613,8 +6522,6 @@ struct EngineCursorBatch {
   std::string diagnostic_detail;
 };
 
-std::optional<std::array<std::uint8_t, 16>> ParseUuidTextForDispatch(
-    std::string_view text);
 
 EngineCursorBatch FetchEngineCursorBatch(sb_engine_result_t result,
                                          std::uint64_t max_rows,
@@ -8761,67 +6668,42 @@ std::string CursorMetadataDetail(const ServerCursorRecord& cursor) {
   return out.str();
 }
 
-std::optional<std::array<std::uint8_t, 16>> ParseUuidTextForDispatch(
-    std::string_view text) {
-  std::array<std::uint8_t, 16> out{};
-  auto hex_value = [](char ch) -> int {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-    return -1;
-  };
-  std::size_t nibble = 0;
-  for (const char ch : text) {
-    if (ch == '-') continue;
-    const int value = hex_value(ch);
-    if (value < 0 || nibble >= 32) return std::nullopt;
-    if ((nibble % 2) == 0) {
-      out[nibble / 2] = static_cast<std::uint8_t>(value << 4);
-    } else {
-      out[nibble / 2] = static_cast<std::uint8_t>(out[nibble / 2] | value);
-    }
-    ++nibble;
-  }
-  if (nibble != 32) return std::nullopt;
-  return out;
-}
 
 std::string RoutineCursorInvocationDetail(const ServerCursorRecord& cursor,
                                           std::string_view context_kind,
                                           std::string_view action,
                                           std::string_view borrow_policy,
                                           std::string_view cleanup_state) {
-  std::ostringstream out;
-  out << "{\"routine_cursor_argument\":{\"contract\":\"routine.cursor_argument.v1\","
-      << "\"cursor_uuid\":\"" << JsonEscape(UuidBytesToText(cursor.cursor_uuid))
-      << "\",\"context_kind\":\"" << JsonEscape(context_kind)
-      << "\",\"action\":\"" << JsonEscape(action)
-      << "\",\"borrow_policy\":\"" << JsonEscape(borrow_policy)
-      << "\",\"cleanup_state\":\"" << JsonEscape(cleanup_state)
-      << "\",\"descriptor_bound\":true,"
-      << "\"security_rechecked\":true,"
-      << "\"protected_material_rechecked\":true,"
-      << "\"parser_executes_cursor\":false,"
-      << "\"fetch_count\":" << cursor.fetch_count
-      << ",\"next_row_index\":" << cursor.next_row_index
-      << ",\"total_rows\":" << cursor.total_row_count
-      << ",\"closed\":" << (cursor.closed ? "true" : "false")
-      << ",\"exhausted\":" << (cursor.exhausted ? "true" : "false")
-      << "}}";
-  return out.str();
+  using K = public_result::Kind;
+  return ResultRecord({
+      {"contract", K::text, "routine.cursor_argument.v2"},
+      {"cursor_uuid", K::uuid, IdentityBytes(cursor.cursor_uuid)},
+      {"context_kind", K::text, std::string(context_kind)},
+      {"action", K::text, std::string(action)},
+      {"borrow_policy", K::text, std::string(borrow_policy)},
+      {"cleanup_state", K::text, std::string(cleanup_state)},
+      {"descriptor_bound", K::text, "true"},
+      {"security_rechecked", K::text, "true"},
+      {"protected_material_rechecked", K::text, "true"},
+      {"parser_executes_cursor", K::text, "false"},
+      {"fetch_count", K::unsigned_integer, public_result::Unsigned(cursor.fetch_count)},
+      {"next_row_index", K::unsigned_integer, public_result::Unsigned(cursor.next_row_index)},
+      {"total_rows", K::unsigned_integer, public_result::Unsigned(cursor.total_row_count)},
+      {"closed", K::text, cursor.closed ? "true" : "false"},
+      {"exhausted", K::text, cursor.exhausted ? "true" : "false"}});
 }
 
 std::string StreamFinalityPacket(const ServerCursorRecord& cursor,
                                  const std::string& state,
                                  const std::string& reason) {
-  std::ostringstream out;
-  out << "{\"stream_finality\":{\"cursor_uuid\":\"" << JsonEscape(UuidBytesToText(cursor.cursor_uuid))
-      << "\",\"operation_id\":\"" << JsonEscape(cursor.operation_id)
-      << "\",\"state\":\"" << JsonEscape(state)
-      << "\",\"reason\":\"" << JsonEscape(reason)
-      << "\",\"fetch_count\":" << cursor.fetch_count
-      << ",\"deterministic\":true}}\n";
-  return out.str();
+  using K = public_result::Kind;
+  return ResultRecord({
+      {"contract", K::text, "stream_finality.v2"},
+      {"cursor_uuid", K::uuid, IdentityBytes(cursor.cursor_uuid)},
+      {"operation_id", K::text, cursor.operation_id},
+      {"state", K::text, state}, {"reason", K::text, reason},
+      {"fetch_count", K::unsigned_integer, public_result::Unsigned(cursor.fetch_count)},
+      {"deterministic", K::text, "true"}});
 }
 
 void MarkCursorFinality(ServerSessionRegistry* registry,
@@ -9175,13 +7057,12 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
           canonical_ingress.envelope.fields[11].size() == 17 &&
           canonical_ingress.envelope.fields[11][0] == 1) {
         const auto* uuid = canonical_ingress.envelope.fields[11].data() + 1;
-        admission_request.authenticated_principal_uuid = UuidBytesToText(
-            *reinterpret_cast<const std::array<std::uint8_t, 16>*>(uuid));
+        std::copy_n(uuid, 16, admission_request.authenticated_principal_uuid.bytes.begin());
       }
     }
     admission_request.admitted_parser_package_uuid =
         admission_request.admitted_parser_package_uuid.is_nil()
-            ? UuidBytesToText(session->admitted_parser_package_uuid)
+            ? engine_api::EngineUuid{session->admitted_parser_package_uuid}
             : admission_request.admitted_parser_package_uuid;
     admission_request.admitted_parser_package_version_major =
         session->admitted_parser_package_version_major;
@@ -9192,26 +7073,26 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
     admission_request.admitted_registry_snapshot_uuid =
         admission_request.admitted_registry_snapshot_uuid.is_nil()
             ? (session->database_uuid.is_nil()
-                   ? UuidBytesToText(session->session_uuid)
+                   ? engine_api::EngineUuid{session->session_uuid}
                    : session->database_uuid)
             : admission_request.admitted_registry_snapshot_uuid;
     admission_request.authenticated_principal_uuid =
         admission_request.authenticated_principal_uuid.is_nil()
-            ? UuidBytesToText(session->effective_user_uuid)
+            ? engine_api::EngineUuid{session->effective_user_uuid}
             : admission_request.authenticated_principal_uuid;
     admission_request.catalog_snapshot_uuid =
         session->database_uuid.is_nil()
-            ? UuidBytesToText(session->session_uuid)
+            ? engine_api::EngineUuid{session->session_uuid}
             : session->database_uuid;
     admission_request.engine_mga_statement_uuid =
-        UuidBytesToText(decoded->client_statement_uuid);
+        engine_api::EngineUuid{decoded->client_statement_uuid};
     admission_request.engine_mga_snapshot_uuid =
-        UuidBytesToText(session->session_uuid);
+        engine_api::EngineUuid{session->session_uuid};
     admission_request.catalog_epoch = session->catalog_generation;
     admission_request.security_epoch = session->security_epoch;
     admission_request.resource_epoch = session->resource_epoch;
     admission_request.security_snapshot_uuid =
-        UuidBytesToText(session->auth_context_uuid);
+        engine_api::EngineUuid{session->auth_context_uuid};
     admission_request.security_observation_generation = session->security_epoch;
     admission_request.package_reservation_deferred = true;
   } else {
@@ -10214,7 +8095,7 @@ SessionOperationResult HandleExecuteSblrImpl(
     }
 
     ServerLanguageBundleRecord record =
-        LanguageBundleRecordFromEnvelope(encoded, *session);
+        LanguageBundleRecordFromEnvelope(encoded, *session, decoded->data_packet);
     if (!LanguageBundleRecordIsComplete(record)) {
       CompleteServerRequestLifecycle(registry,
                                      request_record.request_uuid,
@@ -10806,7 +8687,7 @@ SessionOperationResult HandleExecuteSblrImpl(
         agents::BackgroundJobDefinition definition;
         definition.job_uuid = job_uuid;
         definition.job_type = "sbsql.manual_job";
-        definition.database_uuid = session->database_uuid;
+        definition.database_uuid = IdentityBytes(session->database_uuid);
         definition.pool_id = "background";
         definition.workload_class = agents::WorkloadClass::background;
         definition.source = agents::WorkloadAdmissionSource::engine;
@@ -11111,17 +8992,23 @@ SessionOperationResult HandleExecuteSblrImpl(
           "routine_cursor_borrowed_close_refused");
     }
 
-    const std::string cursor_uuid_text =
-        JsonTextField(encoded, "routine_cursor_uuid").value_or("");
-    const auto parsed_cursor_uuid = ParseUuidTextForDispatch(cursor_uuid_text);
-    if (!parsed_cursor_uuid) {
+    scratchbird::core::platform::Uuid cursor_uuid;
+    if (decoded->data_packet.size() != cursor_uuid.bytes.size() ||
+        JsonTextField(encoded, "routine_cursor_uuid").has_value()) {
       return fail_routine_cursor(
           "PARSER_SERVER_IPC.ROUTINE_CURSOR_HANDLE_INVALID",
-          "Routine cursor invocation requires a valid cursor handle UUID.",
+          "Routine cursor invocation requires a binary 16-byte cursor handle.",
           "routine_cursor_uuid_invalid");
     }
-    auto cursor_it =
-        registry->cursors_by_uuid.find(scratchbird::core::platform::Uuid{*parsed_cursor_uuid});
+    std::copy(decoded->data_packet.begin(), decoded->data_packet.end(),
+              cursor_uuid.bytes.begin());
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(cursor_uuid)) {
+      return fail_routine_cursor(
+          "PARSER_SERVER_IPC.ROUTINE_CURSOR_HANDLE_INVALID",
+          "Routine cursor invocation requires a valid engine cursor identity.",
+          "routine_cursor_uuid_invalid");
+    }
+    auto cursor_it = registry->cursors_by_uuid.find(cursor_uuid);
     if (cursor_it == registry->cursors_by_uuid.end() || cursor_it->second.closed ||
         cursor_it->second.session_uuid != decoded->session_uuid) {
       return fail_routine_cursor(
@@ -12193,7 +10080,7 @@ SessionOperationResult HandleExecuteSblrImpl(
               (public_abi.diagnostic_detail.empty()
                    ? "engine_dispatch_rejected"
                    : public_abi.diagnostic_detail) +
-              std::string(";") + autocommit.evidence;
+              std::string(";autocommit_rollback_replacement_completed");
           return FailureWithDiagnostics(
               static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
               response_schema,
@@ -12395,10 +10282,8 @@ SessionOperationResult HandleExecuteSblrImpl(
                     .executor_availability_generation ||
             !live_statement_context ||
             epoch_result.redaction_profile_uuid !=
-                ParseUuidTextForDispatch(
-                    live_statement_context->view
-                        .catalog_epoch_check_redaction_profile_uuid)
-                    .value_or(std::array<std::uint8_t, 16>{}) ||
+                live_statement_context->view
+                    .catalog_epoch_check_redaction_profile_uuid.bytes ||
             ((epoch_result.status == 1 || epoch_result.status == 2) &&
              (epoch_result.visibility != 1 ||
               epoch_result.observed_catalog_epoch_uuid !=
@@ -12520,10 +10405,8 @@ SessionOperationResult HandleExecuteSblrImpl(
         }
       }
       if (public_abi.affected_rows_present) {
-        if (!row_packet.empty() && row_packet.back() != '\n') {
-          row_packet.push_back('\n');
-        }
-        row_packet += "server_affected_rows=" + std::to_string(public_abi.affected_rows) + "\n";
+        AppendResultFields(&row_packet, {{"server_affected_rows", public_result::Kind::text,
+                                           std::to_string(public_abi.affected_rows)}});
       }
       mark_execute_phase("public_abi_result_adopt");
       engine_result = public_abi.result_handle;
@@ -12800,8 +10683,9 @@ SessionOperationResult HandleExecuteSblrImpl(
                              ? "autocommit_commit_replacement_failed"
                              : autocommit.diagnostic_detail);
         }
-        if (!row_packet.empty() && row_packet.back() != '\n') row_packet.push_back('\n');
-        row_packet += autocommit.evidence;
+        std::vector<public_result::Field> finality_fields;
+        if (!public_result::Decode(autocommit.evidence, &finality_fields)) throw std::logic_error("autocommit_result_packet_invalid");
+        AppendResultFields(&row_packet, std::move(finality_fields));
         mark_execute_phase("autocommit_finality_boundary");
       }
     }
@@ -13678,7 +11562,7 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
                             it->second.engine_result != nullptr);
     if (cancelled) {
       const auto cancel = CancelServerRequestLifecycle(registry,
-                                                       UuidBytesToText(decoded->cursor_uuid),
+                                                       IdentityBytes(decoded->cursor_uuid),
                                                        *session,
                                                        false,
                                                        5000);

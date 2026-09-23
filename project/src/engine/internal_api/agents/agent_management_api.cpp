@@ -28,6 +28,17 @@
 
 namespace scratchbird::engine::internal_api {
 namespace {
+EngineUuid BinaryIdentity(std::string_view bytes) {
+  EngineUuid id;
+  if (bytes.size() != id.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), id.bytes.size(), id.bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(id) ? id : EngineUuid{};
+}
+std::string IdentityBytes(const EngineUuid& id) {
+  if (id.is_nil()) return {};
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+
 
 using scratchbird::core::agents::AgentActionClass;
 using scratchbird::core::agents::AgentActionRequest;
@@ -299,12 +310,13 @@ bool StrictObservedMetricSnapshotEvidencePresent(
   const auto digest = OptionValue(request, "agent_metric_snapshot_digest:");
   const auto snapshot_id = OptionValue(request, "agent_metric_snapshot_id:");
   const auto evidence_uuid =
-      OptionValue(request, "agent_metric_snapshot_evidence_uuid:");
+      BinaryIdentity(OptionValue(request, "agent_metric_snapshot_evidence_uuid:"));
+  if (evidence_uuid.is_nil()) return false;
   const auto source_quality =
       SecurityLower(OptionValue(request, "agent_metric_snapshot_source_quality:"));
   return SecurityOptionBool(request, "agent_metric_snapshot_observed:", false) &&
          SecurityOptionBool(request, "agent_metric_snapshot_trusted:", false) &&
-         !digest.empty() && !snapshot_id.empty() && !evidence_uuid.empty() &&
+         !digest.empty() && !snapshot_id.empty() && !evidence_uuid.is_nil() &&
          (source_quality == "trusted" ||
           source_quality == "cluster_confirmed");
 }
@@ -329,7 +341,8 @@ std::vector<AgentObservedMetricSnapshot> ObservedMetricSnapshotsFromRequest(
   const auto digest = OptionValue(request, "agent_metric_snapshot_digest:");
   const auto snapshot_id = OptionValue(request, "agent_metric_snapshot_id:");
   const auto evidence_uuid =
-      OptionValue(request, "agent_metric_snapshot_evidence_uuid:");
+      BinaryIdentity(OptionValue(request, "agent_metric_snapshot_evidence_uuid:"));
+  if (evidence_uuid.is_nil()) return snapshots;
   const auto trust_provenance =
       OptionValue(request, "agent_metric_snapshot_trust_provenance:").empty()
           ? "engine_metric_registry"
@@ -339,7 +352,8 @@ std::vector<AgentObservedMetricSnapshot> ObservedMetricSnapshotsFromRequest(
   const auto scope_uuid =
       OptionValue(request, "agent_metric_snapshot_scope_uuid:").empty()
           ? context.database_uuid
-          : OptionValue(request, "agent_metric_snapshot_scope_uuid:");
+          : BinaryIdentity(OptionValue(request, "agent_metric_snapshot_scope_uuid:"));
+  if (scope_uuid.is_nil()) return snapshots;
   const auto source_quorum =
       std::max<platform::u64>(
           1,
@@ -395,7 +409,7 @@ std::vector<AgentObservedMetricSnapshot> ObservedMetricSnapshotsFromRequest(
           dependency.cluster_only && context.cluster_authority_available;
       snapshot.trust_provenance = trust_provenance;
       snapshot.provenance_record =
-          "agent_metric_snapshot_observed:" + evidence_uuid;
+          "agent_metric_snapshot_observed:" + IdentityBytes(evidence_uuid);
       snapshot.attestation_key_id =
           "agent_metric_snapshot_attestation:" + snapshot.source_id;
       snapshot.attestation_digest =
@@ -460,9 +474,9 @@ DurableAgentResourceReservationRequest DurableResourceReservationForManagement(
       DeterministicAgentRuntimeObjectUuidFromKey(
           "agent_management_resource_reservation|" +
           reservation.reservation_key);
-  reservation.owner_scope = context.principal_uuid.empty()
+  reservation.owner_scope = IdentityBytes(context.principal_uuid.is_nil()
                                 ? request.context.principal_uuid
-                                : context.principal_uuid;
+                                : context.principal_uuid);
   reservation.agent_type_id = descriptor.type_id;
   reservation.operation_id = std::string(operation_id);
   reservation.now_microseconds = context.wall_now_microseconds == 0
@@ -1103,23 +1117,23 @@ SysInformationAgentSource AgentProjectionSource(const AgentTypeDescriptor& descr
                                                 const AgentRuntimeContext& context,
                                                 const EngineAgentCatalogIdentitySource* identity) {
   SysInformationAgentSource source;
-  source.agent_uuid = identity == nullptr ? std::string{} : identity->agent_uuid;
-  source.agent_ref = source.agent_uuid;
+  source.agent_uuid = identity == nullptr ? EngineUuid{} : BinaryIdentity(identity->agent_uuid);
+  source.agent_ref = IdentityBytes(source.agent_uuid);
   source.agent_name = descriptor.type_id;
   source.agent_type_id = descriptor.type_id;
   source.scope_kind = identity != nullptr && !identity->scope_kind.empty()
                           ? identity->scope_kind
                           : AgentScopeKind(descriptor);
-  source.scope_uuid = identity == nullptr ? std::string{} : identity->scope_uuid;
-  source.scope_ref = source.scope_uuid;
+  source.scope_uuid = identity == nullptr ? EngineUuid{} : BinaryIdentity(identity->scope_uuid);
+  source.scope_ref = IdentityBytes(source.scope_uuid);
   source.component = identity != nullptr && !identity->component.empty()
                          ? identity->component
                          : AgentComponent(descriptor);
   source.state = CanonicalAgentState(descriptor, context);
   source.health_state = source.state == "unavailable" ? "unavailable" : "healthy";
   source.enabled = source.state == "disabled" ? "NO" : "YES";
-  source.policy_uuid = identity == nullptr ? std::string{} : identity->policy_uuid;
-  source.policy_ref = source.policy_uuid;
+  source.policy_uuid = identity == nullptr ? EngineUuid{} : BinaryIdentity(identity->policy_uuid);
+  source.policy_ref = IdentityBytes(source.policy_uuid);
   source.policy_name = identity != nullptr && !identity->policy_name.empty()
                            ? identity->policy_name
                            : BaselinePolicyForAgent(descriptor).policy_family;
@@ -1278,12 +1292,12 @@ SysInformationAgentSource DurableAgentProjectionSource(
     const DurableAgentCatalogImage& image,
     const AgentInstanceRecord& instance) {
   auto source = AgentProjectionSource(descriptor, context, identity);
-  source.agent_uuid = instance.instance_uuid;
+  source.agent_uuid = BinaryIdentity(instance.instance_uuid);
   source.agent_ref = instance.instance_uuid;
-  source.policy_uuid = instance.policy_uuid;
+  source.policy_uuid = BinaryIdentity(instance.policy_uuid);
   source.policy_ref = instance.policy_uuid;
-  source.scope_uuid = !instance.scope.empty() ? instance.scope : source.scope_uuid;
-  source.scope_ref = source.scope_uuid;
+  source.scope_uuid = !instance.scope.empty() ? BinaryIdentity(instance.scope) : source.scope_uuid;
+  source.scope_ref = IdentityBytes(source.scope_uuid);
   source.state = AgentLifecycleStateName(instance.state);
   source.enabled = (instance.state == AgentLifecycleState::disabled ||
                     instance.state == AgentLifecycleState::retired)
@@ -1298,7 +1312,7 @@ SysInformationAgentSource DurableAgentProjectionSource(
       instance.crash_loop_count + instance.supervision_failure_count;
   source.quarantine_count = DurableQuarantineCount(image, instance);
   source.retry_not_before = RetryNotBefore(instance);
-  source.last_evidence_uuid = DurableLastEvidenceUuid(image, instance);
+  source.last_evidence_uuid = BinaryIdentity(DurableLastEvidenceUuid(image, instance));
   source.last_decision = DurableLastDecision(image, instance);
   source.overhead_budget_units = source.queue_depth + source.failure_count +
                                  source.quarantine_count;
@@ -1388,7 +1402,7 @@ std::vector<std::pair<std::string, std::string>> LegacyAgentDescriptorFields(
           {"metric_dependencies", metrics}};
 }
 
-void AddAgentDescriptorRow(std::vector<std::pair<std::string, std::string>>* fields,
+void AddAgentDescriptorRow(ApiBehaviorFields* fields,
                            const AgentTypeDescriptor& descriptor,
                            const AgentRuntimeContext& context) {
   if (fields == nullptr) { return; }
@@ -1403,6 +1417,17 @@ void AddAgentProjectionRows(EngineApiResult* result,
                             bool include_legacy_fields,
                             const std::vector<EngineAgentCatalogIdentitySource>& identity_sources,
                             const DurableAgentCatalogImage* durable_image = nullptr) {
+  const auto valid_identity = [](std::string_view bytes) {
+    return bytes.empty() || !BinaryIdentity(bytes).is_nil();
+  };
+  for (const auto& identity : identity_sources) {
+    if (!valid_identity(identity.agent_uuid) || !valid_identity(identity.scope_uuid) ||
+        !valid_identity(identity.policy_uuid)) {
+      AddApiBehaviorRow(result, {{"result_state", "refused"},
+          {"diagnostic_code", "AGENT.CATALOG.BINARY_IDENTITY_INVALID"}});
+      return;
+    }
+  }
   const auto agent_context = AgentContextFromRequest(request);
   const bool durable_source = durable_image != nullptr;
   const auto sources = durable_source
@@ -1436,12 +1461,14 @@ void AddAgentProjectionRows(EngineApiResult* result,
   }
 
   for (const auto& row : projection.rows) {
-    std::vector<std::pair<std::string, std::string>> fields = row.fields;
+    ApiBehaviorFields fields;
+    for (const auto& [key, value] : row.fields)
+      fields.emplace_back(key, SysInformationTypedValue(value));
     if (include_legacy_fields) {
       std::string type_id;
       for (const auto& field : row.fields) {
         if (field.first == "agent_type_id") {
-          type_id = field.second;
+          if (const auto* text = std::get_if<std::string>(&field.second)) type_id = *text;
           break;
         }
       }
@@ -2355,7 +2382,7 @@ EngineThirdPartyAgentManagementResult EngineSubmitThirdPartyAgentManagementReque
     AddThirdPartyRequestEvidenceIfTyped(&result, record);
     return result;
   }
-  if (effective_request.context.principal_uuid != record.requester_principal_uuid) {
+  if (effective_request.context.principal_uuid != BinaryIdentity(record.requester_principal_uuid)) {
     auto result = ThirdPartyFailure(effective_request,
                                     "AGENT.THIRD_PARTY.REQUESTER_PRINCIPAL_MISMATCH",
                                     "requester_principal_uuid_mismatch");

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "dispatch/function_dispatch.hpp"
 #include "registry/function_seed_registry.hpp"
 #include "security/policy_api.hpp"
@@ -17,8 +18,8 @@ namespace api = scratchbird::engine::internal_api;
 namespace functions = scratchbird::engine::functions;
 namespace sblr = scratchbird::engine::sblr;
 
-constexpr std::string_view kPolicyBlockedDiagnosticUuid =
-    "cd16f861-90a2-520e-97a7-79d2f28cc355";
+constexpr api::EngineUuid kPolicyBlockedDiagnosticUuid =
+    scratchbird::tests::FixtureUuidLiteral("cd16f861-90a2-520e-97a7-79d2f28cc355");
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -30,29 +31,22 @@ void Require(bool condition, std::string_view message) {
 api::EngineRequestContext PolicyContext(bool blocked = false) {
   api::EngineRequestContext context;
   context.request_id = "ia09.security_policy_evaluation_parent";
-  context.database_uuid.canonical =
-      "019d0000-0000-7000-8000-000000005827";
-  context.principal_uuid.canonical =
-      "019d0000-0000-7000-8000-000000005828";
-  context.session_uuid.canonical =
-      "019d0000-0000-7000-8000-000000005829";
-  context.transaction_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000582a";
-  context.statement_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000582b";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005827");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005828");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005829");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000582a");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000582b");
   context.local_transaction_id = 5827;
   context.security_context_present = true;
   context.catalog_generation_id = 11;
   context.security_epoch = 7;
   context.resource_epoch = 13;
-  context.transaction_policy_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000582c";
+  context.transaction_policy_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000582c");
   context.transaction_policy_snapshot_generation = 3;
 
   auto& authorization = context.authorization_context;
   authorization.present = true;
-  authorization.authority_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000582d";
+  authorization.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000582d");
   authorization.security_context_generation = 2;
   authorization.principal_uuid = context.principal_uuid;
   authorization.security_epoch = context.security_epoch;
@@ -110,17 +104,17 @@ sblr::SblrResult RunFunction(const api::EngineRequestContext& context,
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
   request.context.engine_request_context = &context;
-  request.context.sblr_context.session_uuid = context.session_uuid.canonical;
+  request.context.sblr_context.session_uuid = context.session_uuid;
   request.context.sblr_context.transaction_uuid =
-      context.transaction_uuid.canonical;
-  request.context.sblr_context.statement_uuid = context.statement_uuid.canonical;
-  request.context.sblr_context.user_uuid = context.principal_uuid.canonical;
+      context.transaction_uuid;
+  request.context.sblr_context.statement_uuid = context.statement_uuid;
+  request.context.sblr_context.user_uuid = context.principal_uuid;
   request.context.sblr_context.local_transaction_id =
       context.local_transaction_id;
   request.context.sblr_context.security_context_present = true;
   request.context.sblr_context.transaction_context_present = true;
   request.context.sblr_context.current_diagnostic_uuid =
-      context.current_diagnostic_uuid.canonical;
+      context.current_diagnostic_uuid;
   return functions::DispatchFunctionCall(package.registry, std::move(request))
       .result;
 }
@@ -162,15 +156,14 @@ int main() {
           "005828 engine-owned blocked observation was not preserved");
 
   auto diagnostic_context = admitted_context;
-  diagnostic_context.current_diagnostic_uuid.canonical =
-      std::string(kPolicyBlockedDiagnosticUuid);
+  diagnostic_context.current_diagnostic_uuid =
+      kPolicyBlockedDiagnosticUuid;
   const auto diagnostic = api::EngineEvaluatePolicy(PolicyRequest(
       diagnostic_context,
       api::EnginePolicyObservationKind::current_diagnostic_policy_refusal));
   Require(diagnostic.ok && diagnostic.policy_blocked,
           "005828 exact policy diagnostic UUID was not observed");
-  diagnostic_context.current_diagnostic_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000582e";
+  diagnostic_context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000582e");
   const auto other_diagnostic = api::EngineEvaluatePolicy(PolicyRequest(
       diagnostic_context,
       api::EnginePolicyObservationKind::current_diagnostic_policy_refusal));
@@ -178,15 +171,14 @@ int main() {
           "005828 unrelated diagnostic was classified as policy blocked");
 
   auto malformed = PolicyRequest(admitted_context);
-  malformed.target_object.uuid.canonical =
-      "019d0000-0000-7000-8000-00000000582f";
+  malformed.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000582f");
   malformed.policy_profile.encoded_profiles.push_back("caller-policy");
   RequireDiagnostic(api::EngineEvaluatePolicy(malformed),
                     "SBLR.OPERAND_INVALID",
                     "005828 caller policy/target input was accepted");
 
   auto no_statement_context = admitted_context;
-  no_statement_context.statement_uuid.canonical.clear();
+  no_statement_context.statement_uuid = {};
   RequireDiagnostic(api::EngineEvaluatePolicy(
                         PolicyRequest(no_statement_context)),
                     "SBSQL.NO_STATEMENT",
@@ -233,8 +225,8 @@ int main() {
   RequireBoolean(RunFunction(blocked_context, "sb.scalar.policy_blocked"),
                  true,
                  "005828 policy_blocked did not preserve boolean true");
-  diagnostic_context.current_diagnostic_uuid.canonical =
-      std::string(kPolicyBlockedDiagnosticUuid);
+  diagnostic_context.current_diagnostic_uuid =
+      kPolicyBlockedDiagnosticUuid;
   RequireBoolean(
       RunFunction(diagnostic_context, "sb.scalar.policy_blocked_diagnostic"),
       true,

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "security/protected_material_api.hpp"
 
 #include <cstdlib>
@@ -19,16 +20,16 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 
-constexpr std::string_view kDatabaseUuid = "019e18d0-1100-7000-8000-000000000010";
-constexpr std::string_view kMaterialUuid = "019e18d0-1101-7000-8000-000000000010";
-constexpr std::string_view kVersionOneUuid = "019e18d0-1102-7000-8000-000000000010";
-constexpr std::string_view kVersionTwoUuid = "019e18d0-1103-7000-8000-000000000010";
-constexpr std::string_view kVersionThreeUuid = "019e18d0-1104-7000-8000-000000000010";
-constexpr std::string_view kRetentionPolicyUuid = "019e18d0-1110-7000-8000-000000000010";
-constexpr std::string_view kAccessPolicyUuid = "019e18d0-1111-7000-8000-000000000010";
-constexpr std::string_view kReleasePolicyUuid = "019e18d0-1112-7000-8000-000000000010";
-constexpr std::string_view kPurgePolicyUuid = "019e18d0-1113-7000-8000-000000000010";
-constexpr std::string_view kAuditPolicyUuid = "019e18d0-1114-7000-8000-000000000010";
+constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1100-7000-8000-000000000010");
+constexpr auto kMaterialUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1101-7000-8000-000000000010");
+constexpr auto kVersionOneUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1102-7000-8000-000000000010");
+constexpr auto kVersionTwoUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1103-7000-8000-000000000010");
+constexpr auto kVersionThreeUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1104-7000-8000-000000000010");
+constexpr auto kRetentionPolicyUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1110-7000-8000-000000000010");
+constexpr auto kAccessPolicyUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1111-7000-8000-000000000010");
+constexpr auto kReleasePolicyUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1112-7000-8000-000000000010");
+constexpr auto kPurgePolicyUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1113-7000-8000-000000000010");
+constexpr auto kAuditPolicyUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1114-7000-8000-000000000010");
 constexpr std::string_view kPlaintext = "CorrectHorseBatteryStaple-PCF011";
 
 void Require(bool condition, std::string_view message) {
@@ -52,8 +53,8 @@ api::EngineRequestContext Context(std::uint64_t tx,
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.database_path = DatabasePath().string();
-  context.database_uuid.canonical = std::string(kDatabaseUuid);
-  context.principal_uuid.canonical = "019e18d0-1120-7000-8000-000000000010";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1100-7000-8000-000000000010");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1120-7000-8000-000000000010");
   context.security_context_present = true;
   context.trace_tags.push_back("security.bootstrap");
   context.trace_tags.push_back("security.fixture_trace_authority");
@@ -68,11 +69,11 @@ api::EngineRequestContext Context(std::uint64_t tx,
 
 api::EngineProtectedMaterialPolicySet Policy(std::uint64_t retention_until = 0) {
   api::EngineProtectedMaterialPolicySet policy;
-  policy.retention_policy_uuid = std::string(kRetentionPolicyUuid);
-  policy.access_policy_uuid = std::string(kAccessPolicyUuid);
-  policy.release_policy_uuid = std::string(kReleasePolicyUuid);
-  policy.purge_policy_uuid = std::string(kPurgePolicyUuid);
-  policy.audit_policy_uuid = std::string(kAuditPolicyUuid);
+  policy.retention_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1110-7000-8000-000000000010");
+  policy.access_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1111-7000-8000-000000000010");
+  policy.release_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1112-7000-8000-000000000010");
+  policy.purge_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1113-7000-8000-000000000010");
+  policy.audit_policy_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1114-7000-8000-000000000010");
   policy.retention_until_epoch_millis = retention_until;
   policy.release_purposes.push_back("cloud_ops_use");
   return policy;
@@ -92,7 +93,13 @@ std::string Flatten(const api::EngineApiResult& result) {
     out << diagnostic.code << '\n' << diagnostic.detail << '\n';
   }
   for (const auto& evidence : result.evidence) {
-    out << evidence.evidence_kind << '\n' << evidence.evidence_id << '\n';
+    out << evidence.evidence_kind << '\n';
+    if (const auto* text = std::get_if<std::string>(&evidence.evidence_id)) out << *text;
+    else {
+      const auto& id = std::get<api::EngineUuid>(evidence.evidence_id);
+      out.write(reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size());
+    }
+    out << '\n';
   }
   for (const auto& row : result.result_shape.rows) {
     for (const auto& field : row.fields) {
@@ -110,12 +117,12 @@ void RequireNoPlaintextLeak(const api::EngineApiResult& result) {
 api::EngineCreateProtectedMaterialResult CreateMaterial() {
   api::EngineCreateProtectedMaterialRequest request;
   request.context = Context(1, 1);
-  request.protected_material_uuid = std::string(kMaterialUuid);
-  request.owner_scope_uuid = "019e18d0-1121-7000-8000-000000000010";
+  request.protected_material_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1101-7000-8000-000000000010");
+  request.owner_scope_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1121-7000-8000-000000000010");
   request.purpose_class = "cloud_ops_use";
   request.storage_class = "wrapped";
   request.policy = Policy();
-  request.initial_version_uuid = std::string(kVersionOneUuid);
+  request.initial_version_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1102-7000-8000-000000000010");
   request.protected_reference = "kms-ref:v1:tenant-a/material-one";
   request.envelope_reference = "envelope:v1:wrapped-material-one";
   request.payload_hash = "sha256:version-one";
@@ -129,14 +136,14 @@ api::EngineCreateProtectedMaterialResult CreateMaterial() {
 }
 
 api::EngineAddProtectedMaterialVersionResult AddVersion(std::uint64_t tx,
-                                                        std::string_view version_uuid,
+                                                        const api::EngineUuid& version_uuid,
                                                         std::string_view hash,
                                                         std::uint64_t retention_until) {
   api::EngineAddProtectedMaterialVersionRequest request;
   request.context = Context(tx, tx);
-  request.protected_material_uuid = std::string(kMaterialUuid);
-  request.protected_material_version_uuid = std::string(version_uuid);
-  request.protected_reference = "kms-ref:v1:tenant-a/" + std::string(version_uuid);
+  request.protected_material_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1101-7000-8000-000000000010");
+  request.protected_material_version_uuid = version_uuid;
+  request.protected_reference = "kms-ref:v1:tenant-a/version-" + std::to_string(tx);
   request.envelope_reference = "envelope:v1:" + std::string(hash);
   request.payload_hash = std::string(hash);
   request.storage_class = "wrapped";
@@ -157,7 +164,7 @@ void TestResolveReleaseAndPurgePolicy() {
 
   api::EngineResolveProtectedMaterialRequest old_snapshot;
   old_snapshot.context = Context(0, 1);
-  old_snapshot.protected_material_uuid = std::string(kMaterialUuid);
+  old_snapshot.protected_material_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1101-7000-8000-000000000010");
   old_snapshot.purpose = "cloud_ops_use";
   old_snapshot.option_envelopes.push_back("protected_material_authority:engine");
   const auto old_resolved = api::EngineResolveProtectedMaterial(old_snapshot);
@@ -167,7 +174,7 @@ void TestResolveReleaseAndPurgePolicy() {
 
   api::EngineResolveProtectedMaterialRequest current;
   current.context = Context(0, 2);
-  current.protected_material_uuid = std::string(kMaterialUuid);
+  current.protected_material_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1101-7000-8000-000000000010");
   current.purpose = "cloud_ops_use";
   current.option_envelopes.push_back("protected_material_authority:engine");
   const auto resolved = api::EngineResolveProtectedMaterial(current);
@@ -177,7 +184,7 @@ void TestResolveReleaseAndPurgePolicy() {
 
   api::EngineReleaseProtectedMaterialRequest denied;
   denied.context = Context(0, 2);
-  denied.protected_material_uuid = std::string(kMaterialUuid);
+  denied.protected_material_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1101-7000-8000-000000000010");
   denied.purpose = "wrong_purpose";
   denied.option_envelopes.push_back("protected_material_authority:engine");
   const auto denied_release = api::EngineReleaseProtectedMaterial(denied);
@@ -187,7 +194,7 @@ void TestResolveReleaseAndPurgePolicy() {
 
   api::EngineReleaseProtectedMaterialRequest allowed;
   allowed.context = Context(0, 2);
-  allowed.protected_material_uuid = std::string(kMaterialUuid);
+  allowed.protected_material_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1101-7000-8000-000000000010");
   allowed.purpose = "cloud_ops_use";
   allowed.option_envelopes.push_back("protected_material_authority:engine");
   const auto released = api::EngineReleaseProtectedMaterial(allowed);
@@ -197,8 +204,8 @@ void TestResolveReleaseAndPurgePolicy() {
 
   api::EnginePurgeProtectedMaterialVersionRequest retained;
   retained.context = Context(3, 3, 2000);
-  retained.protected_material_uuid = std::string(kMaterialUuid);
-  retained.protected_material_version_uuid = std::string(kVersionTwoUuid);
+  retained.protected_material_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1101-7000-8000-000000000010");
+  retained.protected_material_version_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1103-7000-8000-000000000010");
   retained.purge_reason = "retention_policy_test";
   retained.option_envelopes.push_back("protected_material_authority:engine");
   const auto retained_purge = api::EnginePurgeProtectedMaterialVersion(retained);
@@ -209,8 +216,8 @@ void TestResolveReleaseAndPurgePolicy() {
   AddVersion(4, kVersionThreeUuid, "sha256:version-three", 0);
   api::EnginePurgeProtectedMaterialVersionRequest purge;
   purge.context = Context(5, 5, 20000);
-  purge.protected_material_uuid = std::string(kMaterialUuid);
-  purge.protected_material_version_uuid = std::string(kVersionThreeUuid);
+  purge.protected_material_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1101-7000-8000-000000000010");
+  purge.protected_material_version_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1104-7000-8000-000000000010");
   purge.purge_reason = "policy_admitted_cleanup";
   purge.option_envelopes.push_back("protected_material_authority:engine");
   const auto purged = api::EnginePurgeProtectedMaterialVersion(purge);
@@ -222,12 +229,12 @@ void TestResolveReleaseAndPurgePolicy() {
 void TestPlaintextRefusalAndInspectRedaction() {
   api::EngineCreateProtectedMaterialRequest plaintext;
   plaintext.context = Context(6, 6);
-  plaintext.protected_material_uuid = "019e18d0-1130-7000-8000-000000000010";
-  plaintext.owner_scope_uuid = "019e18d0-1131-7000-8000-000000000010";
+  plaintext.protected_material_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1130-7000-8000-000000000010");
+  plaintext.owner_scope_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1131-7000-8000-000000000010");
   plaintext.purpose_class = "cloud_ops_use";
   plaintext.storage_class = "wrapped";
   plaintext.policy = Policy();
-  plaintext.initial_version_uuid = "019e18d0-1132-7000-8000-000000000010";
+  plaintext.initial_version_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1132-7000-8000-000000000010");
   plaintext.protected_reference = std::string("password=") + std::string(kPlaintext);
   plaintext.payload_hash = "sha256:plaintext-refusal";
   plaintext.option_envelopes.push_back("protected_material_authority:engine");
@@ -239,7 +246,7 @@ void TestPlaintextRefusalAndInspectRedaction() {
 
   api::EngineInspectProtectedMaterialCatalogRequest inspect;
   inspect.context = Context(0, 6);
-  inspect.protected_material_uuid = std::string(kMaterialUuid);
+  inspect.protected_material_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1101-7000-8000-000000000010");
   inspect.option_envelopes.push_back("protected_material_authority:engine");
   const auto inspected = api::EngineInspectProtectedMaterialCatalog(inspect);
   Require(inspected.ok && inspected.protected_material_redacted &&

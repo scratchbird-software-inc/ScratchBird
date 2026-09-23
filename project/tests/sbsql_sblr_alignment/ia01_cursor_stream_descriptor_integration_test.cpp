@@ -67,7 +67,7 @@ struct Fixture {
     record.row_descriptor_uuid = sbps::MakeUuidV7Bytes();
     record.snapshot_uuid = sbps::MakeUuidV7Bytes();
     record.statement_context_statement_uuid =
-        server::UuidBytesToText(sbps::MakeUuidV7Bytes());
+        scratchbird::core::platform::Uuid{sbps::MakeUuidV7Bytes()};
     server::ServerStatementContextRecord statement_context;
     statement_context.session_uuid = session;
     statement_context.statement_uuid = record.statement_context_statement_uuid;

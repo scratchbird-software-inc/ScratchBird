@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "hash_digest.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
@@ -99,7 +100,7 @@ ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = "/tmp/sb_server_cursor_protocol_conformance.sbdb";
-  session.database_uuid = "019e05df-f010-7000-8000-0000000000b2";
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e05df-f010-7000-8000-0000000000b2");
   *session_uuid = session.session_uuid;
   registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return registry;
@@ -124,7 +125,7 @@ std::array<std::uint8_t, 16> OpenCursor(ServerSessionRegistry* registry,
   cursor.row_descriptor_uuid = sbps::MakeUuidV7Bytes();
   cursor.snapshot_uuid = sbps::MakeUuidV7Bytes();
   cursor.statement_context_statement_uuid =
-      scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
+      scratchbird::core::platform::Uuid{sbps::MakeUuidV7Bytes()};
 
   scratchbird::server::ServerStatementContextRecord statement_context;
   statement_context.session_uuid = session_uuid;

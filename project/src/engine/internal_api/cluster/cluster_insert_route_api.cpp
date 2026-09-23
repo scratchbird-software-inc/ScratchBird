@@ -29,9 +29,6 @@ bool Empty(const EngineObjectReference& object) {
   return object.uuid.is_nil();
 }
 
-std::string MetricLabel(const std::string& value) {
-  return value.empty() ? "unknown" : value;
-}
 
 void RecordRouteFenceMetrics(const EngineClusterInsertRouteFenceRequest& request,
                              const std::string& result,
@@ -39,8 +36,8 @@ void RecordRouteFenceMetrics(const EngineClusterInsertRouteFenceRequest& request
   if (!request.context.cluster_authority_available) {
     return;
   }
-  const std::string database_uuid = MetricLabel(request.context.database_uuid);
-  const std::string table_uuid = MetricLabel(request.target_table.uuid);
+  const EngineUuid database_uuid = request.context.database_uuid;
+  const EngineUuid table_uuid = request.target_table.uuid;
   const std::string route_epoch = request.route_epoch == 0 ? "unknown" : std::to_string(request.route_epoch);
   (void)scratchbird::core::metrics::RecordClusterInsertRouteCheck(database_uuid,
                                                                   table_uuid,
@@ -56,7 +53,7 @@ void RecordRouteFenceMetrics(const EngineClusterInsertRouteFenceRequest& request
         database_uuid,
         table_uuid,
         route_epoch,
-        MetricLabel(request.owner_node_uuid));
+        request.owner_node_uuid);
   }
 }
 

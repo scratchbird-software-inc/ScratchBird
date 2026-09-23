@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -45,7 +46,7 @@ bool HasEvidence(const agents::AgentClusterBoundaryResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) {
       return true;
     }
   }
@@ -57,9 +58,9 @@ agents::AgentRuntimeContext ClusterContext() {
   context.security_context_present = true;
   context.cluster_authority_available = true;
   context.standalone_edition = false;
-  context.principal_uuid = "principal:agent-cluster-leadership";
-  context.database_uuid = "database:agent-cluster-leadership";
-  context.cluster_uuid = "cluster:agent-cluster-leadership";
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 201);
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 202);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(1354, 3);
   context.trace_tags.push_back("agent_cluster_leadership_boundary_gate");
   return context;
 }
@@ -68,7 +69,7 @@ agents::AgentClusterLeaseRequest Request(agents::AgentClusterLeaseSurface surfac
   agents::AgentClusterLeaseRequest request;
   request.surface = surface;
   request.agent_type_id = "cluster_scheduler_manager";
-  request.instance_uuid = "agent-instance:leader-a";
+  request.instance_uuid = scratchbird::tests::FixtureUuid(1354, 4);
   request.now_microseconds = 1000;
   request.lease_duration_microseconds = 5000;
   return request;

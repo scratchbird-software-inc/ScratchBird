@@ -122,7 +122,7 @@ int main() {
     db::DatabaseCreateConfig cfg;cfg.path=(root/"primary.sdb").string();cfg.database_uuid=dbid.value;cfg.filespace_uuid=fsid.value;
     cfg.page_size=16384;cfg.creation_unix_epoch_millis=now;cfg.allow_minimal_resource_bootstrap=true;cfg.require_resource_seed_pack=false;
     Setup(db::CreateDatabaseFile(cfg).ok(),"real database create");
-    api::EngineRequestContext context;context.database_path=cfg.path;context.database_uuid.canonical=uuid::UuidToString(dbid.value.value);
+    api::EngineRequestContext context;context.database_path=cfg.path;context.database_uuid = dbid.value.value;
     const auto original=Read(cfg.path);std::vector<Row> rows;std::vector<c::CatalogTypedRecord> records;
     for(p::u64 n=2,guard=0;n!=0;) {
       Setup(++guard<1024,"healthy traversal bound");

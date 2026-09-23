@@ -11,6 +11,7 @@
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/schema_tree_api.hpp"
+#include "catalog/schema_tree_codec.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -40,16 +41,51 @@ std::string FieldValue(const EngineRowValue& row, const std::string& field) {
   return {};
 }
 
+EngineUuid FieldUuid(const EngineRowValue& row, const std::string& field) {
+  for (const auto& [name,value] : row.fields) {
+    if (name != field) continue;
+    if (value.is_null || value.state != EngineValueState::value ||
+        !value.encoded_value.empty() || value.binary_value.size() != 16) return {};
+    EngineUuid id;
+    std::copy_n(value.binary_value.begin(),16,id.bytes.begin());
+    return core::uuid::IsEngineIdentityUuid(id) ? id : EngineUuid{};
+  }
+  return {};
+}
+
+bool ArtifactIdentityFieldsValid(const EngineRowValue& row) {
+  std::set<std::string> seen;
+  for (const auto& [name,value] : row.fields) {
+    if (name != "object_uuid" && name != "remap_uuid" &&
+        name != "target_database_uuid" && name != "target_schema_uuid" &&
+        name != "target_object_uuid") continue;
+    if (!seen.insert(name).second || !value.encoded_value.empty() ||
+        value.binary_value.size()!=16 || value.is_null ||
+        value.state!=EngineValueState::value) return false;
+    EngineUuid id;
+    std::copy_n(value.binary_value.begin(),16,id.bytes.begin());
+    if (!id.is_nil() && !core::uuid::IsEngineIdentityUuid(id)) return false;
+    if (name=="object_uuid" && id.is_nil()) return false;
+  }
+  return seen.contains("object_uuid");
+}
+
 void AddArtifactRow(EngineApiResult* result,
                     const std::string& artifact_kind,
-                    const std::string& object_uuid,
+                    const EngineUuid& object_uuid,
                     const std::string& object_kind,
                     const std::string& default_name,
-                    const std::string& payload) {
+                    const std::string& payload,
+                    const EngineUuid& database_uuid,
+                    const EngineUuid& schema_uuid,
+                    const EngineUuid& target_object_uuid) {
   AddApiBehaviorRow(result,
-                    {{"artifact_format", "sb.catalog.artifact.v1"},
+                    {{"artifact_format", "sb.catalog.artifact.v2"},
                      {"artifact_kind", artifact_kind},
                      {"object_uuid", object_uuid},
+                     {"target_database_uuid", database_uuid},
+                     {"target_schema_uuid", schema_uuid},
+                     {"target_object_uuid", target_object_uuid},
                      {"object_kind", object_kind},
                      {"default_name", default_name},
                      {"payload", payload},
@@ -80,16 +116,11 @@ std::uint64_t Fnv1a64(const std::string& value) {
   return hash;
 }
 
-std::string StableArtifactHash(const std::string& object_uuid,
-                               const std::string& object_kind,
-                               const std::string& default_name,
-                               const std::string& payload) {
-  return std::to_string(Fnv1a64(object_uuid + "\n" + object_kind + "\n" +
-                                default_name + "\n" + payload));
-}
-
 struct ArtifactSnapshotEntry {
-  std::string object_uuid;
+  EngineUuid object_uuid;
+  EngineUuid target_database_uuid;
+  EngineUuid target_schema_uuid;
+  EngineUuid target_object_uuid;
   std::string object_kind;
   std::string default_name;
   std::string payload;
@@ -97,7 +128,19 @@ struct ArtifactSnapshotEntry {
 };
 
 std::string SnapshotSignature(const ArtifactSnapshotEntry& entry) {
-  return entry.object_kind + "\n" + entry.default_name + "\n" + entry.payload;
+  std::string bytes;
+  for (const auto* field : {&entry.object_kind,&entry.default_name,&entry.payload}) {
+    if (!catalog_record_codec::Put(bytes,*field)) return {};
+  }
+  for (const auto* id : {&entry.target_database_uuid,&entry.target_schema_uuid,&entry.target_object_uuid})
+    bytes.append(reinterpret_cast<const char*>(id->bytes.data()),16);
+  return bytes;
+}
+
+std::string StableArtifactHash(const ArtifactSnapshotEntry& entry) {
+  std::string bytes(reinterpret_cast<const char*>(entry.object_uuid.bytes.data()),16);
+  bytes += SnapshotSignature(entry);
+  return std::to_string(Fnv1a64(bytes));
 }
 
 void AddExternalGitAuthorityEvidence(EngineApiResult* result) {
@@ -130,18 +173,20 @@ EngineApiDiagnostic ValidateExternalGitRequest(const EngineApiRequest& request,
 
 std::vector<ArtifactSnapshotEntry> CurrentArtifactSnapshot(const EngineRequestContext& context, EngineApiDiagnostic& diagnostic) {
   std::vector<ArtifactSnapshotEntry> rows;
-  std::set<std::string> schema_tree_uuids;
+  std::set<EngineUuid> schema_tree_uuids;
   const auto schemas = VisibleSchemaTreeRecords(context, context.local_transaction_id, diagnostic);
   if (diagnostic.error) return {};
   for (const auto& schema : schemas) {
     schema_tree_uuids.insert(schema.schema_uuid);
     ArtifactSnapshotEntry entry;
     entry.object_uuid = schema.schema_uuid;
+    entry.target_database_uuid = context.database_uuid;
+    entry.target_schema_uuid = schema.parent_schema_uuid;
     entry.object_kind = "schema";
     entry.default_name = schema.default_name;
     entry.payload = schema.payload;
     entry.content_hash =
-        StableArtifactHash(entry.object_uuid, entry.object_kind, entry.default_name, entry.payload);
+        StableArtifactHash(entry);
     rows.push_back(std::move(entry));
   }
   const auto behavior_records = VisibleApiBehaviorRecords(context, {}, context.local_transaction_id, diagnostic);
@@ -152,11 +197,14 @@ std::vector<ArtifactSnapshotEntry> CurrentArtifactSnapshot(const EngineRequestCo
     }
     ArtifactSnapshotEntry entry;
     entry.object_uuid = record.object_uuid;
+    entry.target_database_uuid = record.target_database_uuid;
+    entry.target_schema_uuid = record.target_schema_uuid;
+    entry.target_object_uuid = record.target_object_uuid;
     entry.object_kind = record.object_kind;
     entry.default_name = record.default_name;
     entry.payload = record.payload;
     entry.content_hash =
-        StableArtifactHash(entry.object_uuid, entry.object_kind, entry.default_name, entry.payload);
+        StableArtifactHash(entry);
     rows.push_back(std::move(entry));
   }
   std::sort(rows.begin(), rows.end(), [](const auto& lhs, const auto& rhs) {
@@ -168,35 +216,38 @@ std::vector<ArtifactSnapshotEntry> CurrentArtifactSnapshot(const EngineRequestCo
 EngineApiDiagnostic SnapshotRowsFromRequest(const EngineApiRequest& request,
                                             const std::string& operation_id,
                                             std::vector<ArtifactSnapshotEntry>* rows) {
-  std::set<std::string> seen;
+  std::set<EngineUuid> seen;
   for (const auto& row : request.rows) {
     const std::string entry_kind = FieldValue(row, "snapshot_entry_kind");
     if (entry_kind == "manifest") { continue; }
     const std::string format = FieldValue(row, "artifact_format");
-    if (!format.empty() && format != "sb.catalog.artifact.v1" &&
-        format != "sb.external_git.catalog_snapshot.v1") {
+    if (!format.empty() && format != "sb.catalog.artifact.v2" &&
+        format != "sb.external_git.catalog_snapshot.v2") {
       return MakeInvalidRequestDiagnostic(operation_id, "external_git_snapshot_format_invalid");
     }
+    if (!ArtifactIdentityFieldsValid(row))
+      return MakeInvalidRequestDiagnostic(operation_id,"binary_artifact_identities_required");
     ArtifactSnapshotEntry entry;
-    entry.object_uuid = FieldValue(row, "object_uuid");
+    entry.object_uuid = FieldUuid(row, "object_uuid");
+    entry.target_database_uuid = FieldUuid(row,"target_database_uuid");
+    entry.target_schema_uuid = FieldUuid(row,"target_schema_uuid");
+    entry.target_object_uuid = FieldUuid(row,"target_object_uuid");
     entry.object_kind = FieldValue(row, "object_kind");
     entry.default_name = FieldValue(row, "default_name");
     entry.payload = FieldValue(row, "payload");
-    if (entry.object_uuid.empty() || entry.object_kind.empty()) {
+    if (entry.object_uuid.is_nil() || entry.object_kind.empty()) {
       return MakeInvalidRequestDiagnostic(operation_id, "external_git_snapshot_object_required");
     }
     if (seen.contains(entry.object_uuid)) {
       return MakeInvalidRequestDiagnostic(operation_id,
-                                          "external_git_snapshot_duplicate_uuid:" +
-                                              entry.object_uuid);
+                                          "external_git_snapshot_duplicate_uuid");
     }
     entry.content_hash =
-        StableArtifactHash(entry.object_uuid, entry.object_kind, entry.default_name, entry.payload);
+        StableArtifactHash(entry);
     const std::string supplied_hash = FieldValue(row, "content_hash");
     if (!supplied_hash.empty() && supplied_hash != entry.content_hash) {
       return MakeInvalidRequestDiagnostic(operation_id,
-                                          "external_git_snapshot_hash_mismatch:" +
-                                              entry.object_uuid);
+                                          "external_git_snapshot_hash_mismatch");
     }
     rows->push_back(std::move(entry));
     seen.insert(rows->back().object_uuid);
@@ -207,9 +258,9 @@ EngineApiDiagnostic SnapshotRowsFromRequest(const EngineApiRequest& request,
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-std::map<std::string, ArtifactSnapshotEntry> SnapshotMap(
+std::map<EngineUuid, ArtifactSnapshotEntry> SnapshotMap(
     const std::vector<ArtifactSnapshotEntry>& rows) {
-  std::map<std::string, ArtifactSnapshotEntry> out;
+  std::map<EngineUuid, ArtifactSnapshotEntry> out;
   for (const auto& row : rows) { out[row.object_uuid] = row; }
   return out;
 }
@@ -219,12 +270,12 @@ void AddExternalGitManifestRow(EngineApiResult* result,
                                const std::string& entry_count,
                                const std::string& mode) {
   AddApiBehaviorRow(result,
-                    {{"artifact_format", "sb.external_git.catalog_snapshot.v1"},
+                    {{"artifact_format", "sb.external_git.catalog_snapshot.v2"},
                      {"snapshot_entry_kind", "manifest"},
                      {"snapshot_mode", mode},
                      {"database_uuid", context.database_uuid},
                      {"local_transaction_id", std::to_string(context.local_transaction_id)},
-                     {"catalog_artifact_format", "sb.catalog.artifact.v1"},
+                     {"catalog_artifact_format", "sb.catalog.artifact.v2"},
                      {"entry_count", entry_count},
                      {"identity_authority", "uuid"},
                      {"catalog_runtime_authority", "ScratchBird_catalog_api"},
@@ -237,11 +288,14 @@ void AddExternalGitObjectRow(EngineApiResult* result,
                              const ArtifactSnapshotEntry& entry,
                              const std::string& snapshot_mode) {
   AddApiBehaviorRow(result,
-                    {{"artifact_format", "sb.external_git.catalog_snapshot.v1"},
-                     {"catalog_artifact_format", "sb.catalog.artifact.v1"},
+                    {{"artifact_format", "sb.external_git.catalog_snapshot.v2"},
+                     {"catalog_artifact_format", "sb.catalog.artifact.v2"},
                      {"snapshot_entry_kind", "object"},
                      {"snapshot_mode", snapshot_mode},
                      {"object_uuid", entry.object_uuid},
+                     {"target_database_uuid", entry.target_database_uuid},
+                     {"target_schema_uuid", entry.target_schema_uuid},
+                     {"target_object_uuid", entry.target_object_uuid},
                      {"object_kind", entry.object_kind},
                      {"default_name", entry.default_name},
                      {"payload", entry.payload},
@@ -258,7 +312,7 @@ void AddExternalGitDiffRow(EngineApiResult* result,
   AddApiBehaviorRow(result,
                     {{"artifact_format", "sb.external_git.catalog_diff.v1"},
                      {"diff_kind", diff_kind},
-                     {"object_uuid", effective == nullptr ? "" : effective->object_uuid},
+                     {"object_uuid", effective == nullptr ? EngineUuid{} : effective->object_uuid},
                      {"object_kind", effective == nullptr ? "" : effective->object_kind},
                      {"current_hash", current == nullptr ? "" : current->content_hash},
                      {"candidate_hash", candidate == nullptr ? "" : candidate->content_hash},
@@ -275,6 +329,9 @@ void AddExternalGitRollbackRow(EngineApiResult* result,
                     {{"artifact_format", "sb.external_git.rollback_plan.v1"},
                      {"rollback_action", action},
                      {"object_uuid", entry.object_uuid},
+                     {"target_database_uuid", entry.target_database_uuid},
+                     {"target_schema_uuid", entry.target_schema_uuid},
+                     {"target_object_uuid", entry.target_object_uuid},
                      {"object_kind", entry.object_kind},
                      {"default_name", entry.default_name},
                      {"payload", entry.payload},
@@ -286,26 +343,11 @@ void AddExternalGitRollbackRow(EngineApiResult* result,
 }
 
 std::vector<EngineLocalizedName> LocalizedNamesFromPayload(const std::string& payload,
-                                                           const std::string& default_name) {
+                                                           const std::string&) {
   std::vector<EngineLocalizedName> names;
-  for (const auto& part : SplitArtifactPayload(payload, ';')) {
-    if (!StartsWith(part, "localized_name=")) { continue; }
-    const auto fields = SplitArtifactPayload(part.substr(15), ',');
-    if (fields.size() < 5) { continue; }
-    names.push_back({fields[0], fields[1], fields[2], fields[3], fields[4] == "default" || fields[4] == "1"});
-  }
-  if (names.empty() && !default_name.empty()) {
-    names.push_back({"en", "default", default_name, default_name, true});
-  }
+  std::vector<std::pair<std::string,std::string>> comments;
+  if (!DecodeSchemaTreeMetadata(payload,&names,&comments)) return {};
   return names;
-}
-
-std::string ParentSchemaFromPayload(const std::string& payload) {
-  for (const auto& part : SplitArtifactPayload(payload, ';')) {
-    if (StartsWith(part, "schema=")) { return part.substr(7); }
-    if (StartsWith(part, "parent_schema_uuid=")) { return part.substr(19); }
-  }
-  return {};
 }
 
 bool PayloadFailsPolicyValidation(const std::string& payload) {
@@ -314,7 +356,7 @@ bool PayloadFailsPolicyValidation(const std::string& payload) {
 }
 
 bool ExistingArtifactObjectVisible(const EngineRequestContext& context,
-                                   const std::string& object_uuid,
+                                   const EngineUuid& object_uuid,
                                    std::uint64_t observer_tx, EngineApiDiagnostic& diagnostic) {
   const auto schema = FindVisibleSchemaTreeRecord(context, object_uuid, observer_tx, diagnostic);
   if (diagnostic.error) return false;
@@ -325,24 +367,24 @@ bool ExistingArtifactObjectVisible(const EngineRequestContext& context,
 
 EngineApiDiagnostic ValidateArtifactImportRow(const EngineImportCatalogArtifactsRequest& request,
                                               const EngineRowValue& row,
-                                              const std::string& target_uuid,
+                                              const EngineUuid& target_uuid,
                                               const std::string& object_kind,
                                               const std::string& payload,
-                                              const std::set<std::string>& staged_uuids) {
-  if (FieldValue(row, "artifact_format") != "sb.catalog.artifact.v1") {
+                                              const std::set<EngineUuid>& staged_uuids) {
+  if (FieldValue(row, "artifact_format") != "sb.catalog.artifact.v2") {
     return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_format_invalid");
   }
-  if (FieldValue(row, "object_uuid").empty()) {
+  if (!ArtifactIdentityFieldsValid(row) || FieldUuid(row, "object_uuid").is_nil()) {
     return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_object_uuid_required");
   }
   if (object_kind.empty()) {
     return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_object_kind_required");
   }
-  if (target_uuid.empty()) {
+  if (target_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_target_uuid_required");
   }
   if (staged_uuids.contains(target_uuid)) {
-    return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_duplicate_uuid_in_batch:" + target_uuid);
+    return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_duplicate_uuid_in_batch");
   }
   const std::string conflict_policy = OptionValue(request, "conflict_policy:", "reject");
   if (conflict_policy != "reject" && conflict_policy != "replace") {
@@ -353,17 +395,21 @@ EngineApiDiagnostic ValidateArtifactImportRow(const EngineImportCatalogArtifacts
       request.context.local_transaction_id, schema_diagnostic);
   if (schema_diagnostic.error) return schema_diagnostic;
   if (conflict_policy == "reject" && exists) {
-    return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_uuid_conflict:" + target_uuid);
+    return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_uuid_conflict");
   }
   if (PayloadFailsPolicyValidation(payload)) {
     return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_policy_validation_failed");
   }
   if (object_kind == "schema") {
-    const std::string parent_schema_uuid = ParentSchemaFromPayload(payload);
+    const EngineUuid parent_schema_uuid = FieldUuid(row,"target_schema_uuid");
+    std::vector<EngineLocalizedName> checked_names;
+    std::vector<std::pair<std::string,std::string>> checked_comments;
+    if (!DecodeSchemaTreeMetadata(payload,&checked_names,&checked_comments))
+      return MakeInvalidRequestDiagnostic("artifact.import_catalog","binary_schema_payload_required");
     const auto parent = FindVisibleSchemaTreeRecord(request.context, parent_schema_uuid,
         request.context.local_transaction_id, schema_diagnostic);
     if (schema_diagnostic.error) return schema_diagnostic;
-    if (!parent_schema_uuid.empty() && !parent && !staged_uuids.contains(parent_schema_uuid)) {
+    if (!parent_schema_uuid.is_nil() && !parent && !staged_uuids.contains(parent_schema_uuid)) {
       return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_parent_schema_not_visible");
     }
     if (!HasOption(request, "allow_name_conflict:true")) {
@@ -381,11 +427,14 @@ EngineApiDiagnostic ValidateArtifactImportRow(const EngineImportCatalogArtifacts
 
 ApiBehaviorRecord ArtifactRecordFromRow(const EngineImportCatalogArtifactsRequest& request,
                                         const EngineRowValue& row,
-                                        const std::string& target_uuid) {
+                                        const EngineUuid& target_uuid) {
   ApiBehaviorRecord record;
   record.creator_tx = request.context.local_transaction_id;
   record.operation_id = "artifact.import_catalog";
   record.object_uuid = target_uuid;
+  record.target_database_uuid = FieldUuid(row,"target_database_uuid");
+  record.target_schema_uuid = FieldUuid(row,"target_schema_uuid");
+  record.target_object_uuid = FieldUuid(row,"target_object_uuid");
   record.object_kind = FieldValue(row, "object_kind");
   record.default_name = FieldValue(row, "default_name");
   record.payload = FieldValue(row, "payload");
@@ -411,14 +460,14 @@ EngineExportCatalogArtifactsResult EngineExportCatalogArtifacts(const EngineExpo
   }
   auto result = MakeApiBehaviorSuccess<EngineExportCatalogArtifactsResult>(request.context, "artifact.export_catalog");
   std::size_t count = 0;
-  std::set<std::string> schema_tree_uuids;
+  std::set<EngineUuid> schema_tree_uuids;
   EngineApiDiagnostic schema_diagnostic;
   const auto schemas = VisibleSchemaTreeRecords(request.context, request.context.local_transaction_id, schema_diagnostic);
   if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineExportCatalogArtifactsResult>(
       request.context, "artifact.export_catalog", schema_diagnostic);
   for (const auto& schema : schemas) {
     schema_tree_uuids.insert(schema.schema_uuid);
-    AddArtifactRow(&result, "catalog_object", schema.schema_uuid, "schema", schema.default_name, schema.payload);
+    AddArtifactRow(&result, "catalog_object", schema.schema_uuid, "schema", schema.default_name, schema.payload, request.context.database_uuid, schema.parent_schema_uuid, {});
     ++count;
   }
   const auto behavior_records = VisibleApiBehaviorRecords(request.context, {}, request.context.local_transaction_id, schema_diagnostic);
@@ -433,10 +482,11 @@ EngineExportCatalogArtifactsResult EngineExportCatalogArtifacts(const EngineExpo
                    record.object_uuid,
                    record.object_kind,
                    record.default_name,
-                   record.payload);
+                   record.payload, record.target_database_uuid,
+                   record.target_schema_uuid, record.target_object_uuid);
     ++count;
   }
-  AddApiBehaviorEvidence(&result, "catalog_artifact_format", "sb.catalog.artifact.v1");
+  AddApiBehaviorEvidence(&result, "catalog_artifact_format", "sb.catalog.artifact.v2");
   AddApiBehaviorEvidence(&result, "catalog_artifact_export_count", std::to_string(count));
   AddApiBehaviorEvidence(&result, "git_runtime_authority", "false");
   return result;
@@ -472,11 +522,11 @@ EngineImportCatalogArtifactsResult EngineImportCatalogArtifacts(const EngineImpo
         MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_uuid_mode_invalid"));
   }
   std::vector<ApiBehaviorRecord> staged;
-  std::set<std::string> staged_uuids;
+  std::set<EngineUuid> staged_uuids;
   for (const auto& row : request.rows) {
-    const std::string source_uuid = FieldValue(row, "object_uuid");
-    const std::string remap_uuid = FieldValue(row, "remap_uuid");
-    const std::string target_uuid = uuid_mode == "remap" ? remap_uuid : source_uuid;
+    const EngineUuid source_uuid = FieldUuid(row, "object_uuid");
+    const EngineUuid remap_uuid = FieldUuid(row, "remap_uuid");
+    const EngineUuid target_uuid = uuid_mode == "remap" ? remap_uuid : source_uuid;
     const std::string object_kind = FieldValue(row, "object_kind");
     const std::string payload = FieldValue(row, "payload");
     const auto row_status = ValidateArtifactImportRow(request, row, target_uuid, object_kind, payload, staged_uuids);

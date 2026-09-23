@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -118,7 +119,7 @@ bool ApiResultHasEvidence(const api::EngineApiResult& result,
                           std::string_view kind,
                           std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) return true;
   }
   return false;
 }
@@ -222,9 +223,9 @@ std::string_view CanonicalOperationId(const B002Row& row) {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-00000000d701";
-  session.connection_uuid = "019f0000-0000-7000-8000-00000000d702";
-  session.database_uuid = "019f0000-0000-7000-8000-00000000d703";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d701");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d702");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d703");
   session.catalog_epoch = 71;
   session.security_policy_epoch = 73;
   session.descriptor_epoch = 79;
@@ -234,7 +235,7 @@ SessionContext ParserSession() {
 ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "019f0000-0000-7000-8000-00000000d704";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d704");
   config.bundle_contract_id = "sbp_sbsql@sbsql-sblr-final-cleanup-b002";
   config.build_id = "sbsql-sblr-final-cleanup-b002";
   return config;
@@ -268,13 +269,13 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   context.request_id = "sbsql-sblr-final-cleanup-b002";
   context.security_context_present = security_context_present;
   context.database_path = "/tmp/sbsql_sblr_final_cleanup_b002.sbdb";
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-00000000d801";
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-00000000d802";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-00000000d807";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-00000000d803";
-  context.node_uuid.canonical = "019f0000-0000-7000-8000-00000000d804";
-  context.statement_uuid.canonical = "019f0000-0000-7000-8000-00000000d805";
-  context.current_diagnostic_uuid.canonical = "019f0000-0000-7000-8000-00000000d806";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d801");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d802");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d807");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d803");
+  context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d804");
+  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d805");
+  context.current_diagnostic_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000d806");
   context.catalog_generation_id = 71;
   context.security_epoch = 73;
   context.resource_epoch = 79;

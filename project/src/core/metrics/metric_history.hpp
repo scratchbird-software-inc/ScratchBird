@@ -97,6 +97,8 @@ struct MetricRetentionEvidenceRecord {
 };
 
 struct MetricHistoryStore {
+  // Missing files are empty stores; malformed or unreadable stores are errors.
+  MetricValidationResult load_status{true, {}, {}};
   std::vector<MetricRetentionPolicy> policies;
   std::vector<MetricSeriesIdentity> series;
   std::vector<MetricRawSampleRecord> raw_samples;
@@ -138,15 +140,18 @@ MetricValidationResult AppendMetricRawSample(const std::string& path,
                                              u64 observation_time_microseconds = 0);
 MetricHistoryStore LoadMetricHistoryStore(const std::string& path);
 MetricValidationResult WriteMetricHistoryStore(const std::string& path, const MetricHistoryStore& store);
-MetricValidationResult GenerateMetricRollups(const std::string& path, MetricRollupGrain grain);
+MetricValidationResult RegisterMetricHistorySeries(const std::string& path,
+    const MetricDescriptor&, const MetricSeriesIdentity&, const MetricRetentionPolicy&);
+MetricValidationResult GenerateMetricRollups(const std::string& path, MetricRollupGrain grain,
+    const MetricUuid& actor_uuid, const MetricUuid& transaction_uuid);
 MetricValidationResult ApplyMetricRetentionCleanup(const std::string& path,
                                                    u64 now_microseconds,
-                                                   std::string actor_uuid,
-                                                   std::string transaction_uuid);
+                                                   MetricUuid actor_uuid,
+                                                   MetricUuid transaction_uuid);
 MetricValidationResult UpsertMetricRetentionPolicy(const std::string& path,
                                                    MetricRetentionPolicy policy,
-                                                   std::string actor_uuid,
-                                                   std::string transaction_uuid);
+                                                   MetricUuid actor_uuid,
+                                                   MetricUuid transaction_uuid);
 
 u64 MetricHistoryNowMicroseconds();
 

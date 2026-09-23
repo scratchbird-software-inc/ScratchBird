@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -88,10 +89,10 @@ opt::BoundOptimizerRequest SafeRequest() {
 opt::OptimizerPlanCacheKeyInput BaseInput() {
   auto input = opt::BuildOptimizerPlanCacheKeyInput(SafeRequest(),
                                                    "cost:commercial:v031",
-                                                   {"rel.customer"},
-                                                   {"fn.mask_email"},
-                                                   {"idx.customer_pk"},
-                                                   {"filespace.hot"});
+                                                   {scratchbird::tests::FixtureUuid(1235, 2)},
+                                                   {scratchbird::tests::FixtureUuid(1235, 3)},
+                                                   {scratchbird::tests::FixtureUuid(1235, 4)},
+                                                   {scratchbird::tests::FixtureUuid(1235, 5)});
   input.catalog_stats_digest = "catalog_stats:customer:v031";
   input.route_capability_digest = "route:local:index:v031";
   input.security_policy_digest = "security:tenant_reader:v031";
@@ -247,7 +248,7 @@ bool InvalidationEventsCarryDeterministicEvidence() {
   cache.Put(CachedPlan(input));
 
   const auto control_event = opt::OptimizerInvalidationEventForMutation(
-      "optimizer_control_policy_mutation", std::string{}, 800);
+      "optimizer_control_policy_mutation", scratchbird::core::platform::Uuid{}, 800);
   const auto invalidation = cache.InvalidateWithEvidence(control_event);
   if (!Require(invalidation.invalidated_count == 1,
                "optimizer control policy invalidation did not invalidate plan")) {

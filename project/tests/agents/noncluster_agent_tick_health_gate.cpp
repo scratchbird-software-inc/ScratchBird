@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -42,8 +43,8 @@ agents::AgentRuntimeContext ValidContext() {
   context.private_features_available = true;
   context.standalone_edition = true;
   context.cluster_authority_available = false;
-  context.principal_uuid = "agent-runtime-tick-health-gate";
-  context.database_uuid = "019e0f2a-006a-7000-8000-000000000001";
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 701);
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e0f2a-006a-7000-8000-000000000001");
   context.wall_now_microseconds = 6001000;
   context.monotonic_now_microseconds = 6001000;
   context.rights.push_back("OBS_AGENT_STATE_READ");

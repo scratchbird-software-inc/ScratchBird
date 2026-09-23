@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_tenant_coordination.hpp"
+#include "hash_digest.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <map>
@@ -115,7 +117,6 @@ std::vector<std::string> BaseEvidence(
       "policy_uuid=" + request.policy.policy_uuid,
       "policy_generation=" + std::to_string(request.policy.policy_generation),
       "action_id=" + request.action_id,
-      "tenant_uuid=" + request.tenant_budget.tenant_uuid,
       "coordination_group_id=" + request.coordination_group.group_id,
       "requester_instance_id=" + request.requester_instance_id,
       "transaction_finality_authority=false",
@@ -196,11 +197,11 @@ u64 HealthyLeaderCount(const AgentTenantCoordinationGroup& group) {
 }
 
 bool SameTenantAndScope(const AgentTenantCoordinationRequest& request) {
-  return !request.tenant_budget.tenant_uuid.empty() &&
+  return uuid::IsEngineIdentityUuid(request.tenant_budget.tenant_uuid) &&
          request.tenant_budget.tenant_uuid ==
              request.coordination_group.tenant_uuid &&
-         !request.coordination_group.database_uuid.empty() &&
-         (request.runtime_context.database_uuid.empty() ||
+         uuid::IsEngineIdentityUuid(request.coordination_group.database_uuid) &&
+         (request.runtime_context.database_uuid.is_nil() ||
           request.runtime_context.database_uuid ==
               request.coordination_group.database_uuid);
 }
@@ -220,31 +221,54 @@ bool ActiveLockApplies(const AgentTenantCoordinationLock& lock,
          lock.mode != AgentTenantLockMode::none &&
          lock.expires_at_microseconds > now_microseconds &&
          lock.durable_lock_evidence_present &&
-         !lock.lock_evidence_uuid.empty();
+         !lock.lock_evidence_uuid.is_nil();
 }
 
+struct TenantDigestInput {
+  std::vector<platform::byte> bytes;
+  void Field(std::string_view value) {
+    const auto size = static_cast<std::uint64_t>(value.size());
+    for (unsigned shift = 0; shift != 64; shift += 8)
+      bytes.push_back(static_cast<platform::byte>(size >> shift));
+    bytes.insert(bytes.end(), value.begin(), value.end());
+  }
+  void Identity(const platform::Uuid& value) {
+    Field(std::string_view(reinterpret_cast<const char*>(value.bytes.data()), 16));
+  }
+  std::string Digest() const {
+    const auto digest = hash::ComputeSha256Digest(bytes);
+    return digest.ok() ? hash::HexLower(digest.digest) : std::string{};
+  }
+};
+
 std::string CoordinationToken(const AgentTenantCoordinationRequest& request) {
-  return DeterministicAgentRuntimeObjectUuidFromKey(
-      "agent_tenant_coordination|" + request.coordination_group.group_id +
-      "|" + request.tenant_budget.tenant_uuid + "|" +
-      request.lock_request.resource_key + "|" + request.requester_instance_id +
-      "|" + request.action_id);
+  TenantDigestInput input;
+  input.Field("agent_tenant_coordination.v2");
+  input.Field(request.coordination_group.group_id);
+  input.Identity(request.coordination_group.database_uuid);
+  input.Identity(request.tenant_budget.tenant_uuid);
+  input.Field(request.lock_request.resource_key);
+  input.Field(request.requester_instance_id);
+  input.Field(request.action_id);
+  return input.Digest();
 }
 
 std::string MetricsInputDigest(
     const std::vector<AgentTenantSharedMetricSnapshot>& snapshots) {
-  std::string input = "tenant_coordination_metrics";
+  TenantDigestInput input;
+  input.Field("tenant_coordination_metrics.v2");
+  input.Field(std::to_string(snapshots.size()));
   for (const auto& snapshot : snapshots) {
-    input.append("|")
-        .append(snapshot.metric_family)
-        .append("|")
-        .append(snapshot.source_id)
-        .append("|")
-        .append(snapshot.digest)
-        .append("|")
-        .append(std::to_string(snapshot.generation));
+    input.Field(snapshot.metric_family);
+    input.Identity(snapshot.tenant_uuid);
+    input.Identity(snapshot.scope_uuid);
+    input.Identity(snapshot.evidence_uuid);
+    input.Field(snapshot.source_id);
+    input.Field(snapshot.digest);
+    input.Field(snapshot.schema_digest);
+    input.Field(std::to_string(snapshot.generation));
   }
-  return DeterministicAgentRuntimeObjectUuidFromKey(input);
+  return input.Digest();
 }
 
 }  // namespace
@@ -294,6 +318,11 @@ AgentTenantCoordinationDecision EvaluateAgentTenantWorkloadCoordination(
     const AgentTenantCoordinationRequest& request) {
   AgentTenantCoordinationDecision result;
   result.evidence_fields = BaseEvidence(request);
+  result.identity_evidence = {
+      {"tenant_uuid", request.tenant_budget.tenant_uuid},
+      {"database_uuid", request.coordination_group.database_uuid},
+      {"live_action_evidence_uuid", request.live_action_evidence_uuid},
+      {"tenant_live_action_evidence_uuid", request.tenant_live_action_evidence_uuid}};
   result.evidence_fields.push_back(
       "conflict_policy=" +
       std::string(AgentTenantConflictPolicyName(
@@ -325,7 +354,7 @@ AgentTenantCoordinationDecision EvaluateAgentTenantWorkloadCoordination(
       !request.coordination_group.local_noncluster_group) {
     if (!request.coordination_group.external_cluster_provider_proof_present ||
         request.coordination_group.external_cluster_provider_id.empty() ||
-        request.coordination_group.external_cluster_provider_evidence_uuid.empty()) {
+        request.coordination_group.external_cluster_provider_evidence_uuid.is_nil()) {
       return Refuse(
           std::move(result),
           "SB_AGENT_TENANT_COORDINATION.EXTERNAL_CLUSTER_PROVIDER_REQUIRED",
@@ -343,7 +372,7 @@ AgentTenantCoordinationDecision EvaluateAgentTenantWorkloadCoordination(
   }
   if (request.coordination_group.group_id.empty() ||
       request.coordination_group.group_generation == 0 ||
-      request.coordination_group.group_evidence_uuid.empty()) {
+      request.coordination_group.group_evidence_uuid.is_nil()) {
     return Refuse(std::move(result),
                   "SB_AGENT_TENANT_COORDINATION.GROUP_EVIDENCE_REQUIRED",
                   request.coordination_group.group_id);
@@ -355,10 +384,10 @@ AgentTenantCoordinationDecision EvaluateAgentTenantWorkloadCoordination(
   }
 
   if (request.tenant_budget.budget_generation == 0 ||
-      request.tenant_budget.budget_evidence_uuid.empty()) {
+      request.tenant_budget.budget_evidence_uuid.is_nil()) {
     return Refuse(std::move(result),
                   "SB_AGENT_TENANT_COORDINATION.BUDGET_EVIDENCE_REQUIRED",
-                  request.tenant_budget.tenant_uuid);
+                  "tenant workload budget");
   }
   if (OverLimit(request.tenant_budget.max_tenant_live_actions,
                 request.tenant_budget.active_tenant_live_actions,
@@ -370,11 +399,11 @@ AgentTenantCoordinationDecision EvaluateAgentTenantWorkloadCoordination(
       result.tenant_budget_valid = true;
       return Queue(std::move(result),
                    "SB_AGENT_TENANT_COORDINATION.QUEUED_TENANT_BUDGET",
-                   request.tenant_budget.tenant_uuid);
+                   "tenant workload budget");
     }
     return Refuse(std::move(result),
                   "SB_AGENT_TENANT_COORDINATION.TENANT_LIVE_QUOTA_EXCEEDED",
-                  request.tenant_budget.tenant_uuid);
+                  "tenant workload budget");
   }
   if (OverLimit(request.tenant_budget.max_agent_live_actions,
                 request.tenant_budget.active_agent_live_actions,
@@ -387,41 +416,41 @@ AgentTenantCoordinationDecision EvaluateAgentTenantWorkloadCoordination(
                 request.tenant_budget.current_queue_depth)) {
     return Refuse(std::move(result),
                   "SB_AGENT_TENANT_COORDINATION.QUEUE_DEPTH_EXCEEDED",
-                  request.tenant_budget.tenant_uuid);
+                  "tenant workload budget");
   }
   if (OverLimit(request.tenant_budget.max_memory_bytes,
                 request.tenant_budget.used_memory_bytes,
                 request.tenant_budget.requested_memory_bytes)) {
     return Refuse(std::move(result),
                   "SB_AGENT_TENANT_COORDINATION.MEMORY_QUOTA_EXCEEDED",
-                  request.tenant_budget.tenant_uuid);
+                  "tenant workload budget");
   }
   if (OverLimit(request.tenant_budget.max_worker_slots,
                 request.tenant_budget.used_worker_slots,
                 request.tenant_budget.requested_worker_slots)) {
     return Refuse(std::move(result),
                   "SB_AGENT_TENANT_COORDINATION.WORKER_QUOTA_EXCEEDED",
-                  request.tenant_budget.tenant_uuid);
+                  "tenant workload budget");
   }
   if (OverLimit(request.tenant_budget.max_io_bytes,
                 request.tenant_budget.used_io_bytes,
                 request.tenant_budget.requested_io_bytes)) {
     return Refuse(std::move(result),
                   "SB_AGENT_TENANT_COORDINATION.IO_QUOTA_EXCEEDED",
-                  request.tenant_budget.tenant_uuid);
+                  "tenant workload budget");
   }
   if (request.tenant_budget.protect_foreground_work &&
       request.tenant_budget.foreground_database_work_active &&
       IsMutableAction(request)) {
     return Refuse(std::move(result),
                   "SB_AGENT_TENANT_COORDINATION.FOREGROUND_PROTECTION",
-                  request.tenant_budget.tenant_uuid);
+                  "tenant workload budget");
   }
   result.tenant_budget_valid = true;
 
   if (request.production_environment && IsLiveAction(request.policy, request) &&
-      (request.live_action_evidence_uuid.empty() ||
-       request.tenant_live_action_evidence_uuid.empty())) {
+      (request.live_action_evidence_uuid.is_nil() ||
+       request.tenant_live_action_evidence_uuid.is_nil())) {
     return Refuse(std::move(result),
                   "SB_AGENT_TENANT_COORDINATION.LIVE_EVIDENCE_REQUIRED",
                   request.action_id);
@@ -442,21 +471,21 @@ AgentTenantCoordinationDecision EvaluateAgentTenantWorkloadCoordination(
           snapshot.source_id.empty() ||
           snapshot.digest.empty() ||
           snapshot.schema_digest.empty() ||
-          snapshot.evidence_uuid.empty() ||
+          snapshot.evidence_uuid.is_nil() ||
           snapshot.generation == 0) {
         return Refuse(
             std::move(result),
             "SB_AGENT_TENANT_COORDINATION.METRIC_TRUST_REQUIRED",
             family);
       }
-      if (!snapshot.tenant_uuid.empty() &&
+      if (!snapshot.tenant_uuid.is_nil() &&
           snapshot.tenant_uuid != request.tenant_budget.tenant_uuid) {
         return Refuse(
             std::move(result),
             "SB_AGENT_TENANT_COORDINATION.METRIC_SCOPE_MISMATCH",
             family);
       }
-      if (!snapshot.scope_uuid.empty() &&
+      if (!snapshot.scope_uuid.is_nil() &&
           snapshot.scope_uuid != request.coordination_group.database_uuid &&
           snapshot.scope_uuid != request.tenant_budget.tenant_uuid) {
         return Refuse(
@@ -584,8 +613,12 @@ AgentTenantCoordinationDecision EvaluateAgentTenantWorkloadCoordination(
                     "SB_AGENT_TENANT_COORDINATION.LOCK_CONFLICT",
                     active.lock_id);
     }
-    result.lock_acquired = true;
     result.lock_token_id = CoordinationToken(request);
+    if (result.lock_token_id.empty()) {
+      return Refuse(std::move(result), "SB_AGENT_TENANT_COORDINATION.DIGEST_UNAVAILABLE",
+                    "coordination token digest unavailable");
+    }
+    result.lock_acquired = true;
   }
 
   result.evidence_fields.push_back("tenant_budget_valid=true");
@@ -606,19 +639,20 @@ AgentTenantCoordinationDecision EvaluateAgentTenantWorkloadCoordination(
                                                    : "false"));
   result.evidence_fields.push_back(
       "selected_leader_instance_id=" + result.selected_leader_instance_id);
-  result.evidence_fields.push_back(
-      "metrics_input_digest=" + MetricsInputDigest(request.shared_metrics));
+  const auto metrics_digest = MetricsInputDigest(request.shared_metrics);
+  if (metrics_digest.empty()) {
+    result.lock_acquired = false;
+    result.lock_token_id.clear();
+    return Refuse(std::move(result), "SB_AGENT_TENANT_COORDINATION.DIGEST_UNAVAILABLE",
+                  "metric input digest unavailable");
+  }
+  result.evidence_fields.push_back("metrics_input_digest=" + metrics_digest);
   result.evidence_fields.push_back(
       "budget_generation=" +
       std::to_string(request.tenant_budget.budget_generation));
   result.evidence_fields.push_back(
       "group_generation=" +
       std::to_string(request.coordination_group.group_generation));
-  result.evidence_fields.push_back(
-      "live_action_evidence_uuid=" + request.live_action_evidence_uuid);
-  result.evidence_fields.push_back(
-      "tenant_live_action_evidence_uuid=" +
-      request.tenant_live_action_evidence_uuid);
   result.evidence_fields.push_back("authority_clean=true");
 
   result.status = AgentRuntimeStatus{

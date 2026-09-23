@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_sec_alter_policy_coordinator.hpp"
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 
@@ -67,8 +68,7 @@ bool RequireSecurityPolicyShowAvailability() {
       (std::filesystem::temp_directory_path() /
        ("sb_security_policy_show_availability_" + std::to_string(nonce)))
           .string();
-  context.database_uuid.canonical =
-      "019d0000-0000-7000-8000-000000005823";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005823");
   context.security_context_present = true;
   context.trace_tags = {"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};
 
@@ -95,7 +95,7 @@ bool RequireSecurityPolicyShowAvailability() {
   }
 
   api::SblrExecutorAvailabilitySetRequest revoke;
-  revoke.database_uuid = context.database_uuid.canonical;
+  revoke.database_uuid = context.database_uuid;
   revoke.expected_snapshot_uuid = admitted.snapshot.snapshot_uuid;
   revoke.expected_generation = admitted.snapshot.generation;
   revoke.exact_row_identity = identity;

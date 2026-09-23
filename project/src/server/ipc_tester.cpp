@@ -1,3 +1,4 @@
+#include "../../drivers/tool/cli/binary_status_display.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -1066,7 +1067,8 @@ int main(int argc, char** argv) {
        !error && !response->payload.empty());
   const auto codes = scratchbird::server::sbps::DecodeMessageVectorDiagnosticCodes(
       response->payload);
-  const std::string payload_text(response->payload.begin(), response->payload.end());
+  const std::string payload_bytes(response->payload.begin(), response->payload.end());
+  const std::string payload_text = scratchbird::cli::RenderBinaryStatus(payload_bytes).value_or(payload_bytes);
   bool code_match = options.expected_code.empty();
   for (const auto& code : codes) {
     if (code == options.expected_code) code_match = true;

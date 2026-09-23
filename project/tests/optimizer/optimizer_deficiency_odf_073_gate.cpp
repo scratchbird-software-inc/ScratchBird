@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "nosql/search_api.hpp"
 
 #include <cstdlib>
@@ -30,8 +32,8 @@ void Require(bool condition, std::string_view message) {
 api::EngineRequestContext Context(api::EngineApiU64 tx = 73) {
   api::EngineRequestContext context;
   context.database_path = "/tmp/sb_odf_073_gate_api.sbdb";
-  context.database_uuid.canonical = "019df073-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical = "019df073-0000-7000-8000-000000000073";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019df073-0000-7000-8000-000000000001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019df073-0000-7000-8000-000000000073");
   context.local_transaction_id = tx;
   context.security_context_present = true;
   return context;
@@ -62,7 +64,7 @@ api::EngineSearchPhysicalProof SearchProof() {
   proof.provider_contract.index_generation.covers_predicate = true;
   proof.provider_contract.index_generation.required_generation = 73;
   proof.provider_contract.index_generation.available_generation = 73;
-  proof.provider_contract.index_generation.index_uuid = "odf073-search-index";
+  proof.provider_contract.index_generation.index_uuid = scratchbird::tests::FixtureUuid(1274, 501);
   proof.provider_contract.policy.proof_present = true;
   proof.provider_contract.policy.allowed = true;
   proof.provider_contract.mga_recheck.proof_present = true;
@@ -75,10 +77,10 @@ api::EngineSearchPhysicalProof SearchProof() {
 
 std::vector<api::EngineSearchDocumentInput> Corpus() {
   return {
-      {"doc-alpha-strong", "alpha alpha alpha beta search search", true},
-      {"doc-alpha-mutable", "alpha mutable buffer entry", false},
-      {"doc-beta-sealed", "beta sealed segment entry", true},
-      {"doc-gamma", "gamma delta epsilon", true},
+      {scratchbird::tests::FixtureUuid(1309, 1), "alpha alpha alpha beta search search", true},
+      {scratchbird::tests::FixtureUuid(1309, 2), "alpha mutable buffer entry", false},
+      {scratchbird::tests::FixtureUuid(1309, 3), "beta sealed segment entry", true},
+      {scratchbird::tests::FixtureUuid(1309, 4), "gamma delta epsilon", true},
   };
 }
 
@@ -87,7 +89,7 @@ bool EvidenceContains(const api::EngineApiResult& result,
                       std::string_view id) {
   for (const auto& item : result.evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -115,6 +117,18 @@ std::string RowField(const api::EngineApiResult& result,
   return {};
 }
 
+api::EngineUuid RowUuid(const api::EngineApiResult& result, std::size_t index, std::string_view field) {
+  Require(index < result.result_shape.rows.size(), "UUID result row missing");
+  for (const auto& [name, value] : result.result_shape.rows[index].fields) {
+    if (name != field) continue;
+    Require(value.binary_value.size() == 16 && value.encoded_value.empty(), "UUID result must be binary16");
+    api::EngineUuid uuid;
+    std::copy(value.binary_value.begin(), value.binary_value.end(), uuid.bytes.begin());
+    return uuid;
+  }
+  Fail("UUID result field missing");
+}
+
 void RequireEvidenceHygiene(const api::EngineApiResult& result) {
   for (const auto& item : result.evidence) {
     for (const auto forbidden :
@@ -126,7 +140,7 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
           "parser_transaction_finality_authority=true",
           "client_autocommit_authority=true"}) {
       Require(item.evidence_kind.find(forbidden) == std::string::npos &&
-                  item.evidence_id.find(forbidden) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFind(item.evidence_id, forbidden) == std::string::npos,
               "ODF-073 evidence leaked forbidden authority or fallback token");
     }
   }
@@ -143,7 +157,7 @@ void RankedBm25MutableSealedAndBloomEvidence() {
   Require(result.ok, "ODF-073 physical search query failed");
   Require(result.result_shape.rows.size() == 3,
           "ODF-073 BM25 search returned the wrong row count");
-  Require(RowField(result, 0, "document_uuid") == "doc-alpha-strong",
+  Require(RowUuid(result, 0, "document_uuid") == scratchbird::tests::FixtureUuid(1309, 1),
           "ODF-073 BM25 ranking did not put the best document first");
   Require(std::stod(RowField(result, 0, "score")) >
               std::stod(RowField(result, 1, "score")),
@@ -191,7 +205,7 @@ void TopKWandPrunesCandidates() {
   Require(result.ok, "ODF-073 top-K physical search failed");
   Require(result.result_shape.rows.size() == 1,
           "ODF-073 top-K search returned more than K rows");
-  Require(RowField(result, 0, "document_uuid") == "doc-alpha-strong",
+  Require(RowUuid(result, 0, "document_uuid") == scratchbird::tests::FixtureUuid(1309, 1),
           "ODF-073 top-K search returned the wrong winner");
   Require(EvidenceContains(result, "search_wand_topk_pruning",
                            "candidates_pruned="),
@@ -320,7 +334,7 @@ void ProviderContractRefusalsFailClosed() {
 void LegacyFallbackStillWorksForOldBasicRequest() {
   api::EngineSearchQueryRequest request;
   request.context = Context();
-  request.target_object.uuid.canonical = "legacy-search-collection";
+  request.target_object.uuid = scratchbird::tests::FixtureUuid(1309, 5);
   request.target_object.object_kind = "search_collection";
   const auto result = api::EngineSearchQuery(request);
   Require(result.ok, "ODF-073 legacy search fallback failed");

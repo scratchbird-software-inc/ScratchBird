@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -52,10 +53,10 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind,
   return typed.value;
 }
 
-std::string UuidText(platform::UuidKind kind,
+api::EngineUuid NativeIdentity(platform::UuidKind kind,
                      platform::u64 millis,
                      platform::byte suffix) {
-  return uuid::UuidToString(GeneratedUuid(kind, millis, suffix).value);
+  return GeneratedUuid(kind, millis, suffix).value;
 }
 
 bool AcceptedRuntimeFamily(const idx::IndexFamilyDescriptor& descriptor) {
@@ -80,18 +81,18 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                      evidence.end(),
                      [&](const auto& item) {
                        return item.evidence_kind == kind &&
-                              item.evidence_id.find(value) != std::string::npos;
+                              scratchbird::tests::EvidenceTextFind(item.evidence_id, value) != std::string::npos;
                      });
 }
 
-const std::string& TableUuid() {
-  static const std::string uuid =
-      UuidText(platform::UuidKind::object, 1771300005000ull, 0x3f);
+const api::EngineUuid& TableUuid() {
+  static const api::EngineUuid uuid =
+      NativeIdentity(platform::UuidKind::object, 1771300005000ull, 0x3f);
   return uuid;
 }
 
 api::CrudIndexRecord IndexFor(const idx::IndexFamilyDescriptor& descriptor,
-                              const std::string& index_uuid) {
+                              const api::EngineUuid& index_uuid) {
   api::CrudIndexRecord index;
   index.creator_tx = 700;
   index.index_uuid = index_uuid;
@@ -114,8 +115,8 @@ api::CrudIndexRecord IndexFor(const idx::IndexFamilyDescriptor& descriptor,
   return index;
 }
 
-api::DmlIndexWriteRowImage Row(std::string row_uuid,
-                               std::string version_uuid,
+api::DmlIndexWriteRowImage Row(api::EngineUuid row_uuid,
+                               api::EngineUuid version_uuid,
                                std::string name,
                                std::string payload = "visible") {
   api::DmlIndexWriteRowImage row;
@@ -134,7 +135,7 @@ api::DmlIndexWriteEvent BaseEvent(api::DmlIndexWriteOperation operation,
   event.operation = operation;
   event.index = index;
   event.table_uuid = TableUuid();
-  event.transaction_uuid = UuidText(platform::UuidKind::transaction,
+  event.transaction_uuid = NativeIdentity(platform::UuidKind::transaction,
                                     1771300000000ull + salt,
                                     0x31);
   event.local_transaction_id = 700 + salt;
@@ -150,12 +151,10 @@ api::DmlIndexWriteEvent BaseEvent(api::DmlIndexWriteOperation operation,
   return event;
 }
 
-page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
-  const auto parsed =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           index_uuid);
-  Require(parsed.ok(), "index uuid parse failed");
-  auto initialized = page::InitializeIndexBtreePhysicalTree(parsed.value, 4096);
+page::IndexBtreePhysicalTree MakeTree(const api::EngineUuid& index_uuid) {
+  Require(uuid::IsEngineIdentityUuid(index_uuid), "invalid index identity");
+  auto initialized = page::InitializeIndexBtreePhysicalTree(
+      {platform::UuidKind::object, index_uuid}, 4096);
   Require(initialized.ok(), "physical btree init failed");
   return std::move(initialized.tree);
 }
@@ -210,10 +209,10 @@ void RequireMaintenanceProof(const idx::IndexFamilyDescriptor& descriptor,
 }
 
 void ProveOrderedFamily(const idx::IndexFamilyDescriptor& descriptor,
-                        const std::string& index_uuid,
-                        const std::string& row_uuid,
-                        const std::string& v1,
-                        const std::string& v2) {
+                        const api::EngineUuid& index_uuid,
+                        const api::EngineUuid& row_uuid,
+                        const api::EngineUuid& v1,
+                        const api::EngineUuid& v2) {
   auto tree = MakeTree(index_uuid);
   const auto index = IndexFor(descriptor, index_uuid);
 
@@ -249,10 +248,10 @@ void ProveOrderedFamily(const idx::IndexFamilyDescriptor& descriptor,
 }
 
 void ProveLedgerFamily(const idx::IndexFamilyDescriptor& descriptor,
-                       const std::string& index_uuid,
-                       const std::string& row_uuid,
-                       const std::string& v1,
-                       const std::string& v2) {
+                       const api::EngineUuid& index_uuid,
+                       const api::EngineUuid& row_uuid,
+                       const api::EngineUuid& v1,
+                       const api::EngineUuid& v2) {
   idx::PersistentSecondaryIndexDeltaLedger ledger;
   const auto index = IndexFor(descriptor, index_uuid);
 
@@ -365,23 +364,21 @@ int main(int argc, char** argv) {
       }
     }
 
-    const std::string index_uuid =
-        UuidText(platform::UuidKind::object, 1771300010000ull + suffix, suffix);
-    const auto typed_index =
-        uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                             index_uuid);
-    Require(typed_index.ok(), "typed index uuid parse failed");
-    const std::string row_uuid =
-        UuidText(platform::UuidKind::row, 1771300020000ull + suffix, suffix);
-    const std::string v1 =
-        UuidText(platform::UuidKind::row, 1771300030000ull + suffix, suffix);
-    const std::string v2 =
-        UuidText(platform::UuidKind::row, 1771300040000ull + suffix, suffix);
+    const api::EngineUuid index_uuid =
+        NativeIdentity(platform::UuidKind::object, 1771300010000ull + suffix, suffix);
+    const platform::TypedUuid typed_index{platform::UuidKind::object, index_uuid};
+    Require(uuid::IsEngineIdentityUuid(index_uuid), "invalid typed index identity");
+    const api::EngineUuid row_uuid =
+        NativeIdentity(platform::UuidKind::row, 1771300020000ull + suffix, suffix);
+    const api::EngineUuid v1 =
+        NativeIdentity(platform::UuidKind::row, 1771300030000ull + suffix, suffix);
+    const api::EngineUuid v2 =
+        NativeIdentity(platform::UuidKind::row, 1771300040000ull + suffix, suffix);
 
     std::string path = "refused";
     if (runtime) {
       ++accepted;
-      RequireMaintenanceProof(descriptor, typed_index.value);
+      RequireMaintenanceProof(descriptor, typed_index);
       if (OrderedTreeFamily(descriptor.family)) {
         ++ordered;
         path = "physical_btree_tree";

@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "metric_registry.hpp"
+#include "metric_support_projection.hpp"
 
 #include <string>
 #include <vector>
@@ -24,18 +24,27 @@ struct StorageMetricsManagementRequest {
   bool allow_sensitive_labels = false;
   u64 observed_metric_generation = 0;
   u64 current_metric_generation = 0;
-  std::string database_uuid;
-  std::string filespace_uuid;
-  std::string node_uuid;
+  MetricUuid database_uuid;
+  MetricUuid filespace_uuid;
+  MetricUuid node_uuid;
   std::string local_path_sample;
   std::string protected_payload_sample;
+};
+
+struct StorageMetricSupportRecord {
+  MetricSupportProjection metric;
+  MetricUuid database_uuid;
+  MetricUuid filespace_uuid;
+  bool identities_redacted = false;
+  bool local_path_redacted = false;
+  bool protected_payload_redacted = false;
 };
 
 struct StorageMetricsManagementResult {
   bool ok = false;
   std::vector<std::string> diagnostics;
   std::vector<MetricValue> visible_metrics;
-  std::vector<std::string> support_bundle_lines;
+  std::vector<StorageMetricSupportRecord> support_bundle_records;
   bool stale_invalidated = false;
   bool redaction_applied = false;
 };

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #ifndef SCRATCHBIRD_PLAN_IMPORT_ROWS_CODEC_ONLY
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #endif
 #include "engine/sblr/sblr_plan_import_rows_codec.hpp"
@@ -846,8 +847,8 @@ void RequireEnvelopeWhitelist(
   envelope.opcode_code = 793;
   envelope.result_shape = "import_plan_result";
   envelope.diagnostic_shape = "engine.diagnostic.v1";
-  envelope.parser_package_uuid = "019d0000-0000-7000-8000-000000000101";
-  envelope.registry_snapshot_uuid = "019d0000-0000-7000-8000-000000000102";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000000101");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000000102");
   envelope.requires_transaction_context = true;
   envelope.requires_security_context = true;
   envelope.operands.push_back({"import_rows_plan_descriptor", "request", "",

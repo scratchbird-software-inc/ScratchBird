@@ -1,3 +1,4 @@
+#include "uuid.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -276,6 +277,18 @@ std::unordered_map<std::string, const CsvRow*> IndexUnique(const CsvTable& table
   return index;
 }
 
+// Human-authored CSV is fixture input. Decode once at this input boundary;
+// comparisons and engine lookup keys below retain the native identity.
+scratchbird::core::platform::Uuid FixtureInputUuid(std::string_view text) {
+  const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
+      scratchbird::core::platform::UuidKind::object, std::string(text));
+  if (!parsed.ok()) throw std::runtime_error("invalid UUID in CSV fixture input");
+  return parsed.value.value;
+}
+bool LooksLikeUuidV7(const scratchbird::core::platform::Uuid& uuid) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(uuid);
+}
+
 bool LooksLikeUuidV7(std::string_view uuid) {
   if (uuid.size() != 36) return false;
   for (const auto index : {8u, 13u, 18u, 23u}) {
@@ -396,20 +409,20 @@ void ValidateEngineSeedPackage(
   harness->Check(catalog_entries.size() == fixed.rows.size(),
                  "engine catalog seed registry row count does not match fixed registry");
 
-  std::map<std::string, std::string> catalog_uuid_by_id;
-  std::set<std::string> catalog_uuids;
+  std::map<std::string, scratchbird::core::platform::Uuid> catalog_uuid_by_id;
+  std::set<scratchbird::core::platform::Uuid> catalog_uuids;
   for (const auto& entry : catalog_entries) {
     harness->Check(!entry.function_id.empty(), "engine catalog seed entry has empty function_id");
-    harness->Check(!entry.function_uuid.empty(), entry.function_id + " has empty function_uuid");
+    harness->Check(!entry.function_uuid.is_nil(), entry.function_id + " has empty function_uuid");
     harness->Check(catalog_uuid_by_id.emplace(entry.function_id, entry.function_uuid).second,
                    "engine catalog seed duplicate function_id " + entry.function_id);
     harness->Check(catalog_uuids.insert(entry.function_uuid).second,
-                   "engine catalog seed duplicate function_uuid " + entry.function_uuid);
+                   "engine catalog seed duplicate function_uuid " + entry.function_id);
     const auto fixed_row = fixed_by_id.find(entry.function_id);
     harness->Check(fixed_row != fixed_by_id.end(),
                    "engine catalog seed contains non-canonical function_id " + entry.function_id);
     if (fixed_row != fixed_by_id.end()) {
-      harness->Check(entry.function_uuid == Field(*fixed_row->second, "function_uuid"),
+      harness->Check(entry.function_uuid == FixtureInputUuid(Field(*fixed_row->second, "function_uuid")),
                      entry.function_id + " catalog UUID does not match canonical fixed registry");
     }
     harness->Check(!entry.generated_row, entry.function_id + " incorrectly marks catalog seed as parser generated row");
@@ -421,25 +434,25 @@ void ValidateEngineSeedPackage(
     harness->Check(catalog_uuid_by_id.count(id) == 1, "engine catalog seed missing " + id);
   }
 
-  std::map<std::string, std::string> runtime_uuid_by_id;
-  std::set<std::string> runtime_uuids;
+  std::map<std::string, scratchbird::core::platform::Uuid> runtime_uuid_by_id;
+  std::set<scratchbird::core::platform::Uuid> runtime_uuids;
   std::size_t fixed_runtime_rows = 0;
   std::size_t builtin_runtime_rows = 0;
   for (const auto& entry : runtime_entries) {
     harness->Check(!entry.function_id.empty(), "engine runtime seed entry has empty function_id");
-    harness->Check(!entry.function_uuid.empty(), entry.function_id + " has empty runtime function_uuid");
+    harness->Check(!entry.function_uuid.is_nil(), entry.function_id + " has empty runtime function_uuid");
     harness->Check(LooksLikeUuidV7(entry.function_uuid),
                    entry.function_id + " runtime function_uuid is not UUIDv7-compatible");
     harness->Check(runtime_uuid_by_id.emplace(entry.function_id, entry.function_uuid).second,
                    "engine runtime seed duplicate function_id " + entry.function_id);
     harness->Check(runtime_uuids.insert(entry.function_uuid).second,
-                   "engine runtime seed duplicate function_uuid " + entry.function_uuid);
+                   "engine runtime seed duplicate function_uuid " + entry.function_id);
     harness->Check(!entry.generated_row, entry.function_id + " incorrectly marks runtime seed as parser generated row");
 
     const auto fixed_row = fixed_by_id.find(entry.function_id);
     if (fixed_row != fixed_by_id.end()) {
       ++fixed_runtime_rows;
-      harness->Check(entry.function_uuid == Field(*fixed_row->second, "function_uuid"),
+      harness->Check(entry.function_uuid == FixtureInputUuid(Field(*fixed_row->second, "function_uuid")),
                      entry.function_id + " runtime UUID does not match canonical fixed registry");
       continue;
     }
@@ -449,7 +462,7 @@ void ValidateEngineSeedPackage(
                    "engine runtime seed contains untracked builtin function_id " + entry.function_id);
     if (builtin == builtin_by_id.end()) continue;
     ++builtin_runtime_rows;
-    harness->Check(entry.function_uuid == builtin->second.builtin_uuid,
+    harness->Check(entry.function_uuid == FixtureInputUuid(builtin->second.builtin_uuid),
                    entry.function_id + " runtime UUID does not match builtin-expression-registry.yaml");
     harness->Check(LooksLikeUuidV7(builtin->second.builtin_uuid),
                    entry.function_id + " builtin UUID is not UUIDv7-compatible");
@@ -486,7 +499,7 @@ void ValidateEngineSeedPackage(
                    "engine name seed missing " + seed_id);
     if (found == engine_name_by_seed_id.end()) continue;
     const auto& engine = *found->second;
-    harness->Check(engine.function_uuid == Field(row, "function_uuid"), seed_id + " UUID mismatch");
+    harness->Check(engine.function_uuid == FixtureInputUuid(Field(row, "function_uuid")), seed_id + " UUID mismatch");
     harness->Check(engine.canonical_function_id == Field(row, "canonical_function_id"),
                    seed_id + " canonical_function_id mismatch");
     harness->Check(engine.name_namespace == Field(row, "namespace"), seed_id + " namespace mismatch");
@@ -639,7 +652,7 @@ void ValidateLiveEngineSeedPackage(Harness* harness,
                  "engine function name seed registry is empty");
 
   std::set<std::string> runtime_ids;
-  std::set<std::string> runtime_uuids;
+  std::set<scratchbird::core::platform::Uuid> runtime_uuids;
   for (const auto& entry : runtime_entries) {
     harness->Check(!entry.function_id.empty(),
                    "engine runtime function seed has an empty id");
@@ -649,7 +662,7 @@ void ValidateLiveEngineSeedPackage(Harness* harness,
                    "engine runtime function seed repeats id " + entry.function_id);
     harness->Check(runtime_uuids.insert(entry.function_uuid).second,
                    "engine runtime function seed repeats UUID " +
-                       entry.function_uuid);
+                       entry.function_id);
     const auto* by_id = package.registry.Lookup(entry.function_id);
     const auto* by_uuid = package.registry.LookupByUuid(entry.function_uuid);
     harness->Check(by_id != nullptr && by_uuid != nullptr &&
@@ -663,13 +676,13 @@ void ValidateLiveEngineSeedPackage(Harness* harness,
   }
 
   std::set<std::string> catalog_ids;
-  std::set<std::string> catalog_uuids;
+  std::set<scratchbird::core::platform::Uuid> catalog_uuids;
   for (const auto& entry : catalog_entries) {
     harness->Check(catalog_ids.insert(entry.function_id).second,
                    "engine catalog function seed repeats id " + entry.function_id);
     harness->Check(catalog_uuids.insert(entry.function_uuid).second,
                    "engine catalog function seed repeats UUID " +
-                       entry.function_uuid);
+                       entry.function_id);
     const auto* runtime = package.registry.Lookup(entry.function_id);
     harness->Check(runtime != nullptr &&
                        runtime->function_uuid == entry.function_uuid,
@@ -687,7 +700,7 @@ void ValidateLiveEngineSeedPackage(Harness* harness,
                        seed_ids.insert(row.name_lookup_seed_id).second,
                    "engine function name seed identity is empty or duplicated");
     harness->Check(!row.canonical_function_id.empty() &&
-                       !row.function_uuid.empty() &&
+                       !row.function_uuid.is_nil() &&
                        !row.localized_name.empty() &&
                        !row.name_class.empty(),
                    row.name_lookup_seed_id +

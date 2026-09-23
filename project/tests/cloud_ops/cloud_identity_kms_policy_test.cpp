@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -20,8 +22,8 @@ api::EngineApiRequest BaseRequest() {
   api::EngineApiRequest request;
   request.operation_id = "cloud.identity_kms.test";
   request.context.security_context_present = true;
-  request.context.database_uuid.canonical = "db-test";
-  request.context.principal_uuid.canonical = "principal-test";
+  request.context.database_uuid = scratchbird::tests::FixtureUuid(1208, 801);
+  request.context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 802);
   request.option_envelopes = {
       "provider_profile_uuid:provider-1",
       "external_subject_ref:spiffe://tenant/ns/default/sa/scratchbird",
@@ -65,7 +67,7 @@ bool AnyReturnedValueContains(const api::EngineApiResult& result, const std::str
     }
   }
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_id.find(needle) != std::string::npos) { return true; }
+    if (scratchbird::tests::EvidenceTextFind(evidence.evidence_id, needle) != std::string::npos) { return true; }
   }
   for (const auto& diagnostic : result.diagnostics) {
     if (diagnostic.detail.find(needle) != std::string::npos) { return true; }

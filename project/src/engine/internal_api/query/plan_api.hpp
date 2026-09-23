@@ -288,10 +288,12 @@ struct CanonicalSeededSampleResult {
   std::string method_id;
 };
 
+// A live engine registry issues and retains a native runtime descriptor identity.
+// This identity is process-local; persisted plans must rebind after restart.
 // The descriptor identity excludes the visible input cardinality and resource
 // ceiling.  It binds exactly the method, percentage, repeatable seed, and
 // SYSTEM block size that must participate in optimizer plan identity.
-std::string CanonicalSeededSampleDescriptorUuid(
+EngineUuid CanonicalSeededSampleDescriptorUuid(
     const CanonicalSeededSampleRequest& request);
 
 // QOW-SOURCE-QRY-015-V1

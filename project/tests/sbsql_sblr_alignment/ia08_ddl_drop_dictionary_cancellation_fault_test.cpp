@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_ddl_drop_dictionary_coordinator.hpp"
 #include <cassert>
 
@@ -7,9 +8,9 @@ int main() {
   EngineRequestContext compiler;
   compiler.security_context_present = true;
   compiler.statement_metadata_snapshot_engine_owned = true;
-  compiler.statement_uuid.canonical = "dictionary-cancel";
+  compiler.statement_uuid = scratchbird::tests::FixtureUuid(1154, 3);
   compiler.trace_tags = {"private_ddl_drop_dictionary_binder"};
-  auto compiled = CompileSblrDdlDropDictionaryDescriptor(compiler, "dictionary-cancel", 1, 1, 1);
+  auto compiled = CompileSblrDdlDropDictionaryDescriptor(compiler, scratchbird::tests::FixtureUuid(1154, 3), 1, 1, 1);
   assert(compiled.ok);
 
   EngineRequestContext cancelled = compiler;

@@ -16,8 +16,7 @@ int main() {
   assert(database.ok());
 
   a::EngineRequestContext context;
-  context.database_uuid.canonical =
-      scratchbird::core::uuid::UuidToString(database.value.value);
+  context.database_uuid = database.value.value;
   context.database_path =
       (std::filesystem::temp_directory_path() /
        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))
@@ -39,7 +38,7 @@ int main() {
   assert(installed.ok && installed.snapshot.installed);
 
   a::SblrExecutorAvailabilitySetRequest request;
-  request.database_uuid = context.database_uuid.canonical;
+  request.database_uuid = context.database_uuid;
   request.exact_row_identity = identity;
   request.expected_snapshot_uuid = installed.snapshot.snapshot_uuid;
   request.expected_generation = installed.snapshot.generation;

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "parser_client_types.hpp"
+#include "public_relation_type_shape_codec.hpp"
 #include "parser_ipc_common.hpp"
 #include "sbps_bulk_import_stream_codec.hpp"
 
@@ -386,7 +387,9 @@ struct PublicRelationColumnDescriptor {
   scratchbird::core::platform::Uuid type_descriptor_uuid;
   std::string type_descriptor_kind;
   std::string canonical_type_name;
-  std::string encoded_type_descriptor;
+  std::string encoded_type_descriptor; // Non-identity scalar attributes only.
+  PublicRelationTypeShapeV1 type_shape;
+  scratchbird::core::platform::Uuid datatype_descriptor_uuid;
   bool nullable{true};
   bool generated{false};
   bool identity_column{false};

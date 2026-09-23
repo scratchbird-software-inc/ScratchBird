@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_source_artifact_runtime.hpp"
 #include "sblr_opcode_stream.hpp"
 #include "sblr_to_sbsql.hpp"
@@ -166,8 +167,8 @@ sblr::SblrOperationEnvelope PackageFrame(bool begin) {
   frame.opcode_code = begin ? 1 : 2;
   frame.result_shape = "void";
   frame.diagnostic_shape = "diagnostic_vector";
-  frame.parser_package_uuid = "01000000-0000-7000-8000-000000000004";
-  frame.registry_snapshot_uuid = "01000000-0000-7000-8000-000000000008";
+  frame.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("01000000-0000-7000-8000-000000000004");
+  frame.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("01000000-0000-7000-8000-000000000008");
   frame.parser_resolved_names_to_uuids = true;
   sblr::SblrOperand operand;
   operand.ordinal = 1;
@@ -187,8 +188,8 @@ sblr::SblrOperationEnvelope TransactionBeginMember() {
   member.opcode_code = 256;
   member.result_shape = "transaction_handle";
   member.diagnostic_shape = "diagnostic_vector";
-  member.parser_package_uuid = "01000000-0000-7000-8000-000000000004";
-  member.registry_snapshot_uuid = "01000000-0000-7000-8000-000000000008";
+  member.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("01000000-0000-7000-8000-000000000004");
+  member.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("01000000-0000-7000-8000-000000000008");
   member.parser_resolved_names_to_uuids = true;
   sblr::SblrTransactionBeginOptionsV1 options;
   options.isolation_profile_uuid = Uuid(9);
@@ -248,9 +249,9 @@ std::vector<std::uint8_t> MakeTransactionOpcodeStream(
     bool include_second_executable_member) {
   sblr::SblrOpcodeStream stream;
   stream.package_descriptor_uuid =
-      "01000000-0000-7000-8000-000000000007";
+      scratchbird::tests::FixtureUuidLiteral("01000000-0000-7000-8000-000000000007");
   stream.registry_snapshot_uuid =
-      "01000000-0000-7000-8000-000000000008";
+      scratchbird::tests::FixtureUuidLiteral("01000000-0000-7000-8000-000000000008");
   stream.operations.push_back(PackageFrame(true));
   stream.operations.push_back(TransactionBeginMember());
   if (include_second_executable_member) {

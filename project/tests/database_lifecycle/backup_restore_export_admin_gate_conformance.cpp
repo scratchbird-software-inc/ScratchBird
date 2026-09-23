@@ -1,3 +1,6 @@
+#include "wire/public_result_packet.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -43,8 +46,14 @@ namespace sbps = scratchbird::server::sbps;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr std::string_view kDatabaseUuid = "019e3900-0000-7000-8000-000000000057";
-constexpr std::string_view kFilespaceUuid = "019e3900-0000-7000-8000-000000000058";
+std::string IdentityBytes(const scratchbird::core::platform::Uuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+const auto kDatabaseId = scratchbird::tests::FixtureUuidLiteral("019e3900-0000-7000-8000-000000000057");
+const auto kFilespaceId = scratchbird::tests::FixtureUuidLiteral("019e3900-0000-7000-8000-000000000058");
+const std::string kDatabaseUuid = IdentityBytes(kDatabaseId);
+const std::string kFilespaceUuid = IdentityBytes(kFilespaceId);
+namespace packet = scratchbird::wire::public_result;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -90,31 +99,13 @@ std::uint64_t Fnv1a64(std::string_view value) {
   return hash;
 }
 
-std::string HexEncode(std::string_view text) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(text.size() * 2);
-  for (unsigned char c : text) {
-    out.push_back(kHex[(c >> 4) & 0x0f]);
-    out.push_back(kHex[c & 0x0f]);
-  }
-  return out;
-}
-
-std::string EncodePairs(const std::vector<std::pair<std::string, std::string>>& fields) {
-  std::string encoded;
-  for (const auto& [key, value] : fields) {
-    if (!encoded.empty()) { encoded.push_back('|'); }
-    encoded += HexEncode(key);
-    encoded.push_back('=');
-    encoded += HexEncode(value);
-  }
-  return encoded;
-}
-
 std::string RecordLine(const std::string& kind,
                        const std::vector<std::pair<std::string, std::string>>& fields) {
-  return kind + "\t" + EncodePairs(fields) + "\n";
+  std::vector<packet::Field> record{{"record_kind", packet::Kind::bytes, kind}};
+  for (const auto& [name,value] : fields) record.push_back({name,packet::Kind::bytes,value});
+  std::string bytes;
+  Require(packet::Encode(record,&bytes), "binary fixture record encoding failed");
+  return packet::Unsigned(bytes.size()) + bytes;
 }
 
 void WriteManifestWithChecksum(const std::filesystem::path& path, const std::string& body) {
@@ -156,7 +147,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view evidence_id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == evidence_id) return true;
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, evidence_id)) return true;
   }
   return false;
 }
@@ -169,14 +160,16 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineRowValue ArtifactRow(std::string uuid,
+api::EngineRowValue ArtifactRow(scratchbird::core::platform::Uuid uuid,
                                 std::string kind,
                                 std::string name,
                                 std::string payload) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = uuid + "-row";
+  row.requested_row_uuid = scratchbird::tests::FixtureUuid(0xcb57, 1);
   row.fields.push_back({"artifact_format", TextValue("sb.catalog.artifact.v1")});
-  row.fields.push_back({"object_uuid", TextValue(std::move(uuid))});
+  auto identity = TextValue(IdentityBytes(uuid));
+  identity.descriptor.canonical_type_name = "uuid";
+  row.fields.push_back({"object_uuid", std::move(identity)});
   row.fields.push_back({"object_kind", TextValue(std::move(kind))});
   row.fields.push_back({"default_name", TextValue(std::move(name))});
   row.fields.push_back({"payload", TextValue(std::move(payload))});
@@ -199,8 +192,20 @@ bool RowHasField(const api::EngineRowValue& row,
 bool HasEncodedManifestField(std::string_view manifest,
                              std::string_view key,
                              std::string_view value) {
-  const std::string encoded = HexEncode(key) + "=" + HexEncode(value);
-  return manifest.find(encoded) != std::string_view::npos;
+  auto offset = manifest.find('\n');
+  if (offset == std::string_view::npos) return false;
+  ++offset;
+  while (offset < manifest.size() && !manifest.substr(offset).starts_with("CHECKSUM\t")) {
+    if (manifest.size()-offset<8) return false;
+    std::uint64_t size=0;
+    for (unsigned i=0;i<8;++i) size |= std::uint64_t(static_cast<unsigned char>(manifest[offset+i])) << (8*i);
+    offset+=8;
+    if (size>manifest.size()-offset) return false;
+    const auto field=packet::Find(manifest.substr(offset,size),key);
+    if (field && field->value==value) return true;
+    offset+=size;
+  }
+  return false;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& database_path,
@@ -208,7 +213,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& database_pa
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.database_path = database_path.string();
-  context.database_uuid.canonical = std::string(kDatabaseUuid);
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e3900-0000-7000-8000-000000000057");
   context.security_context_present = true;
   context.local_transaction_id = local_transaction_id;
   context.trace_tags.push_back("security.bootstrap");
@@ -220,7 +225,10 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& database_pa
 }
 
 std::vector<std::string> BackupOptions() {
-  return {std::string("filespace_uuid:") + std::string(kFilespaceUuid)};
+  return {"filespace_uuid:" + kFilespaceUuid,
+          "timeline_uuid:" + IdentityBytes(scratchbird::tests::FixtureUuid(0xcb57, 2)),
+          "fork_uuid:" + IdentityBytes(scratchbird::tests::FixtureUuid(0xcb57, 3)),
+          "key_lineage_id:" + IdentityBytes(scratchbird::tests::FixtureUuid(0xcb57, 4))};
 }
 
 std::vector<std::string> RestoreOptions() {
@@ -312,13 +320,13 @@ void TestRestoreCoverageRefusal(const std::filesystem::path& temp_dir) {
   const auto manifest = temp_dir / "missing_filespace.sbpb";
   WriteFile(image, "IMAGE");
   const std::string body =
-      "SBPHYSICALBACKUP1\n" +
-      RecordLine("META", {{"backup_uuid", "physical-backup-missing-filespace"},
+      "SBPHYSICALBACKUP2\n" +
+      RecordLine("META", {{"backup_uuid", IdentityBytes(scratchbird::tests::FixtureUuid(0xcb57, 5))},
                             {"manifest_version", "1"},
                             {"database_uuid", std::string(kDatabaseUuid)},
-                            {"timeline_uuid", "timeline-local"},
-                            {"fork_uuid", "fork-primary"},
-                            {"key_lineage_id", "key-lineage-local"},
+                            {"timeline_uuid", IdentityBytes(scratchbird::tests::FixtureUuid(0xcb57, 2))},
+                            {"fork_uuid", IdentityBytes(scratchbird::tests::FixtureUuid(0xcb57, 3))},
+                            {"key_lineage_id", IdentityBytes(scratchbird::tests::FixtureUuid(0xcb57, 4))},
                             {"coverage_start_transaction_id", "0"},
                             {"coverage_end_transaction_id", "0"},
                             {"coverage_contiguous", "true"},
@@ -429,9 +437,9 @@ void TestSblrExportAndSupportBundleRoutes(const std::filesystem::path& temp_dir)
 void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_dir) {
   const auto database_path = temp_dir / "external_git_versioning.sbdb";
   const auto database_uuid =
-      uuid::ParseTypedUuid(UuidKind::database, std::string(kDatabaseUuid));
+      uuid::MakeTypedUuid(UuidKind::database, kDatabaseId);
   const auto filespace_uuid =
-      uuid::ParseTypedUuid(UuidKind::filespace, std::string(kFilespaceUuid));
+      uuid::MakeTypedUuid(UuidKind::filespace, kFilespaceId);
   Require(database_uuid.ok() && filespace_uuid.ok(),
           "external Git fixture UUID parsing failed");
   db::DatabaseCreateConfig create;
@@ -463,7 +471,7 @@ void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_di
   api::EngineImportCatalogArtifactsRequest import;
   import.context = transaction_context();
   import.option_envelopes.push_back("external_git_policy:enabled");
-  import.rows.push_back(ArtifactRow("019e3900-0000-7000-8000-00000000cb57",
+  import.rows.push_back(ArtifactRow(scratchbird::tests::FixtureUuidLiteral("019e3900-0000-7000-8000-00000000cb57"),
                                     "schema",
                                     "git_review_schema",
                                     "localized_name=en,default,git_review_schema,git_review_schema,default"));
@@ -588,8 +596,8 @@ void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_di
 
 struct DatabaseFixture {
   std::filesystem::path path;
-  std::string database_uuid;
-  std::string filespace_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid filespace_uuid;
 };
 
 DatabaseFixture CreateCleanDatabase(const std::filesystem::path& path, std::uint64_t now_millis) {
@@ -609,8 +617,8 @@ DatabaseFixture CreateCleanDatabase(const std::filesystem::path& path, std::uint
   const auto clean = db::MarkDatabaseCleanShutdown(path.string());
   Require(clean.ok(), "clean shutdown mark failed for CBQ-057 gate");
   return {path,
-          uuid::UuidToString(create.database_uuid.value),
-          uuid::UuidToString(create.filespace_uuid.value)};
+          create.database_uuid.value,
+          create.filespace_uuid.value};
 }
 
 server::HostedEngineState EngineState(const DatabaseFixture& fixture) {
@@ -628,7 +636,7 @@ server::HostedEngineState EngineState(const DatabaseFixture& fixture) {
 
 std::array<std::uint8_t, 16> AddSession(server::ServerSessionRegistry* registry,
                                         const std::filesystem::path& path,
-                                        std::string database_uuid,
+                                        scratchbird::core::platform::Uuid database_uuid,
                                         std::string_view principal,
                                         std::uint64_t local_transaction_id = 0) {
   server::ServerSessionRecord session;

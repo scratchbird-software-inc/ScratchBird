@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_evidence_fixture.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "dml/update_api.hpp"
@@ -75,8 +76,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -99,10 +100,10 @@ api::EngineRowValue Row(std::string id, std::string name, std::string note) {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
-  std::string name_index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid id_index_uuid;
+  platform::Uuid name_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -117,11 +118,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -169,7 +170,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
 
 api::CrudIndexRecord Index(const Fixture& fixture,
                            const api::EngineRequestContext& context,
-                           std::string index_uuid,
+                           platform::Uuid index_uuid,
                            std::string column,
                            bool unique) {
   api::CrudIndexRecord index;
@@ -205,10 +206,10 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-050 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
-  fixture.name_index_uuid = NewUuidText(platform::UuidKind::object, salt + 12);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
+  fixture.id_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
+  fixture.name_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 12);
 
   auto context = Begin(fixture, "odf050-metadata");
   RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
@@ -241,7 +242,7 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
                                       std::string note) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(
       Row(std::move(id), std::move(name), std::move(note)));
@@ -249,7 +250,7 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
   return api::EngineInsertRows(request);
 }
 
-std::string SeedRow(Fixture& fixture,
+platform::Uuid SeedRow(Fixture& fixture,
                     std::string id,
                     std::string name,
                     std::string note) {
@@ -259,7 +260,7 @@ std::string SeedRow(Fixture& fixture,
   RequireOk(inserted, "ODF-050 seed insert failed");
   Require(inserted.row_uuids.size() == 1, "ODF-050 seed row UUID missing");
   Commit(context);
-  return inserted.row_uuids.front().canonical;
+  return inserted.row_uuids.front();
 }
 
 api::EngineUpdateRowsResult UpdateOne(
@@ -269,7 +270,7 @@ api::EngineUpdateRowsResult UpdateOne(
     std::vector<std::pair<std::string, api::EngineTypedValue>> assignments) {
   api::EngineUpdateRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = std::move(predicate);
   request.assignments = std::move(assignments);
@@ -281,7 +282,7 @@ api::EngineSelectRowsResult SelectWhere(const Fixture& fixture,
                                         api::EnginePredicateEnvelope predicate) {
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate = std::move(predicate);
   return api::EngineSelectRows(request);
@@ -291,7 +292,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view value) {
   for (const auto& entry : evidence) {
-    if (entry.evidence_kind == kind && entry.evidence_id == value) {
+    if (entry.evidence_kind == kind && scratchbird::tests::EvidenceTextFields(entry.evidence_id) == value) {
       return true;
     }
   }
@@ -301,7 +302,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
 std::string EvidenceValue(const std::vector<api::EngineEvidenceReference>& evidence,
                           std::string_view kind) {
   for (const auto& entry : evidence) {
-    if (entry.evidence_kind == kind) { return entry.evidence_id; }
+    if (entry.evidence_kind == kind) { return scratchbird::tests::EvidenceTextFields(entry.evidence_id); }
   }
   return {};
 }
@@ -324,7 +325,7 @@ api::MgaRelationReadView LoadState(const Fixture& fixture,
 
 std::vector<api::CrudRowVersionRecord> VersionsForRow(
     const api::MgaRelationReadView& state,
-    const std::string& row_uuid) {
+    const platform::Uuid&row_uuid) {
   std::vector<api::CrudRowVersionRecord> versions;
   for (const auto& row : state.row_versions) {
     if (row.row_uuid == row_uuid) { versions.push_back(row); }
@@ -333,7 +334,7 @@ std::vector<api::CrudRowVersionRecord> VersionsForRow(
 }
 
 std::size_t IndexEntryCount(const api::MgaRelationReadView& state,
-                            const std::string& table_uuid) {
+                            const platform::Uuid&table_uuid) {
   std::size_t count = 0;
   for (const auto& entry : state.index_entries) {
     if (entry.table_uuid == table_uuid) { ++count; }
@@ -347,7 +348,7 @@ void RequireNoRuntimeDocTokens(
     for (const auto forbidden : {"docs/", "execution-plans", "findings",
                                  "contracts", "references"}) {
       Require(item.evidence_kind.find(forbidden) == std::string::npos &&
-                  item.evidence_id.find(forbidden) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFields(item.evidence_id).find(forbidden) == std::string::npos,
               "ODF-050 runtime evidence leaked documentation token");
     }
   }
@@ -370,7 +371,7 @@ void PageLocalHotKeepsStableRowHead() {
   if (!HasEvidence(updated.evidence, "hot_plus_decision", "page_local_hot")) {
     std::cerr << "ODF-050 page-local evidence:\n";
     for (const auto& item : updated.evidence) {
-      std::cerr << item.evidence_kind << '=' << item.evidence_id << '\n';
+      std::cerr << item.evidence_kind << '=' << scratchbird::tests::EvidenceTextFields(item.evidence_id) << '\n';
     }
     Fail("ODF-050 page-local HOT decision evidence missing");
   }

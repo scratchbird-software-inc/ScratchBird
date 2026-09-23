@@ -1,3 +1,5 @@
+#include "uuid.hpp"
+#include <algorithm>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -13,6 +15,14 @@
 
 namespace scratchbird::core::agents {
 namespace {
+
+scratchbird::core::platform::Uuid BinaryIdentity(std::string_view bytes) {
+  scratchbird::core::platform::Uuid id;
+  if (bytes.size() != id.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), id.bytes.size(), id.bytes.begin());
+  return scratchbird::core::uuid::IsEngineIdentityUuid(id) ? id : scratchbird::core::platform::Uuid{};
+}
+
 
 bool Contains(const std::vector<std::string>& values, const std::string& value) {
   return std::find(values.begin(), values.end(), value) != values.end();
@@ -236,10 +246,10 @@ AgentRuntimeContext RuntimeContextFor(const AgentRuntimeActivationEvidence& evid
                              evidence.lifecycle_mode == AgentLifecycleMode::clone;
   context.archive_hold_mode = config.archive_hold_mode ||
                               evidence.lifecycle_mode == AgentLifecycleMode::archive_hold;
-  context.principal_uuid = DeterministicAgentRuntimePrincipalUuidFromKey(
+  context.principal_uuid = BinaryIdentity(DeterministicAgentRuntimePrincipalUuidFromKey(
       evidence.database_uuid + "|database_local_agent_runtime_manager|principal|" +
-      std::to_string(evidence.policy_generation));
-  context.database_uuid = evidence.database_uuid;
+      std::to_string(evidence.policy_generation)));
+  context.database_uuid = BinaryIdentity(evidence.database_uuid);
   context.trace_tags.push_back("database_local_agent_runtime_manager");
   context.groups.push_back("OPS");
   context.rights.push_back("OBS_AGENT_STATE_READ");

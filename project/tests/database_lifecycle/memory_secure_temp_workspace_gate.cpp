@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -60,6 +61,8 @@ std::filesystem::path MakeTempDir(std::string_view prefix) {
 memory::TempWorkspacePolicy Policy(const std::filesystem::path& root) {
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "MMCH_SECURE_TEMP_WORKSPACE";
+  policy.database_uuid = scratchbird::tests::FixtureUuid(1439, 1);
+  policy.engine_uuid = scratchbird::tests::FixtureUuid(1439, 2);
   policy.root_path = root;
   policy.filespace_quota_bytes = 1024 * 1024;
   policy.session_quota_bytes = 1024 * 1024;
@@ -71,26 +74,26 @@ memory::TempWorkspacePolicy Policy(const std::filesystem::path& root) {
   return policy;
 }
 
-memory::TempWorkspaceOwner Owner(std::string suffix) {
+memory::TempWorkspaceOwner Owner(std::uint32_t ordinal) {
   memory::TempWorkspaceOwner owner;
-  owner.temp_object_uuid = "temp-" + std::move(suffix);
-  owner.database_id = "database-mmch040";
-  owner.engine_id = "engine-mmch040";
-  owner.session_id = "session-mmch040";
-  owner.transaction_id = "txn-mmch040";
-  owner.statement_id = "stmt-mmch040";
-  owner.operation_id = "op-mmch040";
+  owner.temp_object_uuid = scratchbird::tests::FixtureUuid(1439, 1000 + ordinal);
+  owner.database_id = scratchbird::tests::FixtureUuid(1439, 1);
+  owner.engine_id = scratchbird::tests::FixtureUuid(1439, 2);
+  owner.session_id = scratchbird::tests::FixtureUuid(1439, 3);
+  owner.transaction_id = scratchbird::tests::FixtureUuid(1439, 4);
+  owner.statement_id = scratchbird::tests::FixtureUuid(1439, 5);
+  owner.operation_id = scratchbird::tests::FixtureUuid(1439, 6);
   owner.policy_generation = 40;
   owner.security_generation = 400;
-  owner.snapshot_boundary = "snapshot-boundary-not-authority";
-  owner.metadata_boundary = "metadata-boundary-not-authority";
-  owner.resource_budget_reference = "memory-security-gate";
+  owner.snapshot_boundary = scratchbird::tests::FixtureUuid(1439, 7);
+  owner.metadata_boundary = scratchbird::tests::FixtureUuid(1439, 8);
+  owner.resource_budget_reference = scratchbird::tests::FixtureUuid(1439, 9);
   return owner;
 }
 
-memory::TempWorkspaceAllocationRequest Request(std::string suffix, std::uint64_t bytes = 4096) {
+memory::TempWorkspaceAllocationRequest Request(std::uint32_t ordinal, std::uint64_t bytes = 4096) {
   memory::TempWorkspaceAllocationRequest request;
-  request.owner = Owner(std::move(suffix));
+  request.owner = Owner(ordinal);
   request.lifetime = memory::TempWorkspaceLifetime::statement_lifetime;
   request.bytes = bytes;
   request.purpose = "MMCH_SECURE_TEMP_WORKSPACE focused gate";
@@ -165,7 +168,7 @@ void TestRandomExclusiveOwnerOnlyEvidence() {
   std::vector<std::filesystem::path> paths;
 
   for (int i = 0; i < 24; ++i) {
-    auto allocation = manager.AllocateSpillFile(Request("random-" + std::to_string(i), 2048));
+    auto allocation = manager.AllocateSpillFile(Request(static_cast<std::uint32_t>(i), 2048));
     Require(allocation.ok() && allocation.record.has_value(), "secure temp workspace allocation failed");
     const auto& record = *allocation.record;
     Require(record.path.parent_path() == root, "secure temp workspace escaped policy root");
@@ -220,7 +223,7 @@ void TestPrecreatedPredictableTargetsAreNotOverwritten() {
 #endif
 
   memory::TempWorkspaceLifecycleManager manager(Policy(root));
-  auto allocation = manager.AllocateSpillFile(Request("precreated", 1024));
+  auto allocation = manager.AllocateSpillFile(Request(2001, 1024));
   Require(allocation.ok() && allocation.record.has_value(),
           "random secure temp workspace allocation unexpectedly failed near precreated target");
   Require(allocation.record->path != old_predictable,
@@ -255,7 +258,7 @@ void TestSymlinkedWorkspaceRootFailsClosed() {
           "failed to create symlinked workspace root");
 
   memory::TempWorkspaceLifecycleManager manager(Policy(symlink_root));
-  auto refused = manager.AllocateSpillFile(Request("symlink-root", 1024));
+  auto refused = manager.AllocateSpillFile(Request(2002, 1024));
   Require(!refused.ok(), "symlinked secure temp workspace root was accepted");
   Require(!refused.record.has_value(), "symlinked secure temp workspace root returned a record");
   RequireValidDiagnostic(refused.diagnostic, "TEMP_WORKSPACE.ROOT_UNSAFE", "symlink root refusal");

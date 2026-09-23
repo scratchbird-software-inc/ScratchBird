@@ -23,6 +23,16 @@
 
 namespace scratchbird::core::agents {
 namespace {
+std::string IdentityBytes(const platform::Uuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+platform::Uuid BinaryIdentity(std::string_view bytes) {
+  platform::Uuid id;
+  if (bytes.size() != id.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), id.bytes.size(), id.bytes.begin());
+  return uuid::IsEngineIdentityUuid(id) ? id : platform::Uuid{};
+}
+
 
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
@@ -376,20 +386,20 @@ u64 Fnv1a64(const std::string& input, u64 seed) {
 std::string StableUuidFromKey(const std::string& key) {
   const u64 a = Fnv1a64(key, 14695981039346656037ull);
   const u64 b = Fnv1a64(key, 1099511628211ull);
-  std::ostringstream out;
-  out << std::hex << std::setfill('0')
-      << std::setw(8) << static_cast<unsigned>((a >> 32) & 0xffffffffull) << '-'
-      << std::setw(4) << static_cast<unsigned>((a >> 16) & 0xffffull) << '-'
-      << std::setw(4) << static_cast<unsigned>(0x7000u | (a & 0x0fffull)) << '-'
-      << std::setw(4) << static_cast<unsigned>(0x8000u | ((b >> 48) & 0x3fffull)) << '-'
-      << std::setw(12) << (b & 0xffffffffffffull);
-  return out.str();
+  platform::Uuid id;
+  for (unsigned i = 0; i < 8; ++i) {
+    id.bytes[i] = static_cast<std::uint8_t>(a >> (56 - 8 * i));
+    id.bytes[8 + i] = static_cast<std::uint8_t>(b >> (56 - 8 * i));
+  }
+  id.bytes[6] = (id.bytes[6] & 0x0f) | 0x70;
+  id.bytes[8] = (id.bytes[8] & 0x3f) | 0x80;
+  return IdentityBytes(id);
 }
 
 std::string DurableUuidFromKey(platform::UuidKind kind, const std::string& key) {
   const auto candidate = StableUuidFromKey(key);
-  const auto parsed = uuid::ParseDurableEngineIdentityUuid(kind, candidate);
-  return parsed.ok() ? candidate : std::string{};
+  const auto typed = uuid::MakeTypedUuid(kind, BinaryIdentity(candidate));
+  return typed.ok() ? candidate : std::string{};
 }
 
 std::string DurableObjectUuidFromKey(const std::string& key) {
@@ -521,8 +531,7 @@ bool OverrideIsActiveAt(const AgentArbitrationOverride& override_record, u64 now
 std::string ArbitrationEvidenceUuid(const AgentRuntimeContext& context,
                                     const std::string& reason,
                                     const std::vector<std::string>& action_uuids) {
-  return "agent-arbitration-evidence:" +
-         StableUuidFromKey(context.database_uuid + "|" + reason + "|" +
+  return StableUuidFromKey(IdentityBytes(context.database_uuid) + "|" + reason + "|" +
                            Join(action_uuids, ",") + "|" +
                            std::to_string(context.wall_now_microseconds));
 }
@@ -581,7 +590,7 @@ AgentTickHealthRecord BaseTickHealthRecord(const AgentTypeDescriptor& descriptor
   record.diagnostic_code = std::move(diagnostic_code);
   record.detail = std::move(detail);
   const std::string evidence_key =
-      context.database_uuid + "|" + descriptor.type_id + "|" +
+      IdentityBytes(context.database_uuid) + "|" + descriptor.type_id + "|" +
       AgentTickHealthClassName(record.tick_class) + "|" +
       std::to_string(context.wall_now_microseconds) + "|" +
       std::to_string(policy.policy_generation);
@@ -4474,7 +4483,7 @@ AgentArbitrationCandidate NormalizeAgentActionForArbitration(
   candidate.agent_type_id = action.agent_type_id;
   candidate.instance_uuid = action.instance_uuid;
   candidate.policy_uuid = InputOr(action, "policy_uuid", InputOr(action, "policy"));
-  candidate.scope_uuid = InputOr(action, "scope_uuid", InputOr(action, "scope", context.database_uuid));
+  candidate.scope_uuid = InputOr(action, "scope_uuid", InputOr(action, "scope", IdentityBytes(context.database_uuid)));
   candidate.actuator_id = action.actuator_id;
   candidate.operation_id = action.operation_id;
   candidate.action_class = ParseArbitrationActionClass(
@@ -5358,7 +5367,7 @@ std::string FaultEvidenceDetail(
 AgentRuntimeContext FaultArbitrationContext() {
   AgentRuntimeContext context;
   context.security_context_present = true;
-  context.database_uuid = DurableDatabaseUuidFromKey("agent_fault_injection_database");
+  context.database_uuid = BinaryIdentity(DurableDatabaseUuidFromKey("agent_fault_injection_database"));
   context.wall_now_microseconds = 1000;
   context.rights.push_back("OBS_AGENT_STATE_READ");
   context.rights.push_back("OBS_AGENT_CONTROL");

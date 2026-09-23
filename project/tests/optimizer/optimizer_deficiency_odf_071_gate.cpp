@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "nosql/key_value_api.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_opcode_registry.hpp"
@@ -37,7 +39,7 @@ bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
                       std::string_view id) {
   for (const auto& item : evidence) {
     if (item.evidence_kind.find(kind) != std::string::npos &&
-        item.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, id) != std::string::npos) {
       return true;
     }
   }
@@ -70,8 +72,8 @@ api::EngineRequestContext Context(const std::string& database_path,
   api::EngineRequestContext context;
   context.database_path = database_path;
   context.local_transaction_id = tx;
-  context.database_uuid.canonical = "019df071-0000-7000-8000-000000000001";
-  context.transaction_uuid.canonical = "019df071-0000-7000-8000-000000000077";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019df071-0000-7000-8000-000000000001");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019df071-0000-7000-8000-000000000077");
   return context;
 }
 
@@ -120,6 +122,7 @@ api::EngineKeyValuePhysicalProof PrefixProof() {
 }
 
 api::EngineKeyValuePutResult Put(const std::string& database_path,
+                                 api::EngineUuid object_uuid,
                                  const std::string& key,
                                  const std::string& value,
                                  api::EngineApiU64 expires_after_tx = 0) {
@@ -127,7 +130,7 @@ api::EngineKeyValuePutResult Put(const std::string& database_path,
   request.context = Context(database_path, 77);
   request.key = key;
   request.value = value;
-  request.target_object.uuid.canonical = "object-" + key;
+  request.target_object.uuid = object_uuid;
   request.localized_names.push_back({"en", "primary", "", key, true});
   request.expires_after_local_transaction_id = expires_after_tx;
   const auto result = api::EngineKeyValuePut(request);
@@ -150,7 +153,7 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
           "parser_transaction_finality_authority=true",
           "client_autocommit_authority=true"}) {
       Require(item.evidence_kind.find(forbidden) == std::string::npos &&
-                  item.evidence_id.find(forbidden) == std::string::npos,
+                  scratchbird::tests::EvidenceTextFind(item.evidence_id, forbidden) == std::string::npos,
               "ODF-071 evidence leaked forbidden authority or document token");
     }
   }
@@ -159,9 +162,9 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
 void ExactPrefixTtlAndMultiGetUsePhysicalProofs() {
   const std::string database_path = "/tmp/sb_odf_071_gate_api.sbdb";
   SeedCrudTransaction(database_path);
-  Put(database_path, "acct:1", "alpha");
-  Put(database_path, "acct:2", "beta");
-  Put(database_path, "acct:expired", "gone", 80);
+  Put(database_path, scratchbird::tests::FixtureUuid(1286, 1), "acct:1", "alpha");
+  Put(database_path, scratchbird::tests::FixtureUuid(1286, 2), "acct:2", "beta");
+  Put(database_path, scratchbird::tests::FixtureUuid(1286, 3), "acct:expired", "gone", 80);
 
   api::EngineKeyValueGetRequest exact;
   exact.context = Context(database_path, 77);
@@ -275,7 +278,7 @@ void PipelineAdmissionAndAtomicProgramsAreDeterministic() {
 void MissingProofsBehaviorScansAndClusterOptionsFailClosed() {
   const std::string database_path = "/tmp/sb_odf_071_fail_closed.sbdb";
   SeedCrudTransaction(database_path);
-  Put(database_path, "closed:1", "value");
+  Put(database_path, scratchbird::tests::FixtureUuid(1286, 4), "closed:1", "value");
 
   api::EngineKeyValueGetRequest missing_exact;
   missing_exact.context = Context(database_path, 77);
@@ -352,9 +355,9 @@ void SblrSurfaceRegistersAndDispatchesKvBatchOperations() {
         route.operation_id, route.opcode, "trace.odf071.kv_batch");
     request.envelope.opcode_code = by_operation->code;
     request.envelope.parser_package_uuid =
-        "019df071-0000-7000-8000-000000000101";
+        scratchbird::tests::FixtureUuidLiteral("019df071-0000-7000-8000-000000000101");
     request.envelope.registry_snapshot_uuid =
-        "019df071-0000-7000-8000-000000000102";
+        scratchbird::tests::FixtureUuidLiteral("019df071-0000-7000-8000-000000000102");
     request.envelope.requires_transaction_context =
         by_operation->requires_transaction_context;
     request.envelope.requires_security_context =

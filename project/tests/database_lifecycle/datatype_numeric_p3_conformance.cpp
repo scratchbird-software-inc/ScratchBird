@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -91,7 +92,11 @@ dt::CanonicalTypeRef TypeRefFor(dt::CanonicalTypeId type_id, std::uint8_t uuid_s
 
 std::string ProjectionField(const info::SysInformationProjectionRow& row, std::string_view name) {
   for (const auto& field : row.fields) {
-    if (field.first == name) { return field.second; }
+    if (field.first == name) {
+      const auto* text = std::get_if<std::string>(&field.second);
+      Require(text != nullptr, "datatype display projection must be text");
+      return *text;
+    }
   }
   return {};
 }
@@ -420,7 +425,7 @@ void TestDsr023RowDescriptionDiscriminators() {
 
 void TestDsr023DriverAndSysInformationMetadata() {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = "descriptor-int128";
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1326, 1);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int128";
   descriptor.encoded_descriptor = "canonical=int128;precision=128;scale=0;nullable=false";
@@ -487,12 +492,12 @@ void TestDsr023DriverAndSysInformationMetadata() {
   for (const auto& field : projected.rows.front().fields) {
     Require(!info::SysInformationProjectionColumnNameExposesUuid(field.first),
             "datatype descriptor projection exposed UUID-shaped column");
-    Require(field.second.find("descriptor-int128") == std::string::npos,
+    Require(ProjectionField(projected.rows.front(), field.first).find("descriptor-int128") == std::string::npos,
             "datatype descriptor projection exposed descriptor identity");
   }
 }
 
-std::string CreateDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::database, 1779810301000).value;
@@ -507,17 +512,17 @@ std::string CreateDatabase(const std::filesystem::path& path) {
     std::cerr << created.diagnostic.diagnostic_code << ":" << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "datatype/domain database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 api::EngineRequestContext BaseDomainContext(const std::filesystem::path& path,
-                                            const std::string& database_uuid) {
+                                            const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "p3-domain-method";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = "principal-p3-domain";
-  context.session_uuid.canonical = "session-p3-domain";
+  context.database_uuid = database_uuid;
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1101);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 1102);
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -528,7 +533,7 @@ api::EngineRequestContext BaseDomainContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginDomainContext(const std::filesystem::path& path,
-                                             const std::string& database_uuid) {
+                                             const api::EngineUuid& database_uuid) {
   api::EngineBeginTransactionRequest request;
   request.context = BaseDomainContext(path, database_uuid);
   request.isolation_level = "read_committed";
@@ -548,16 +553,17 @@ api::EngineRequestContext BeginDomainContext(const std::filesystem::path& path,
 }
 
 api::DomainRecord Domain(std::uint64_t creator_tx,
-                         std::string uuid,
+                         api::EngineUuid uuid,
+                         api::EngineUuid row_uuid,
                          std::string name,
                          std::string method_binding) {
   api::DomainRecord record;
   record.creator_tx = creator_tx;
   record.domain_uuid = std::move(uuid);
-  record.catalog_row_uuid = "row-" + record.domain_uuid;
-  record.schema_uuid = "schema-p3-domain";
+  record.catalog_row_uuid = row_uuid;
+  record.schema_uuid = scratchbird::tests::FixtureUuid(1326, 2);
   record.default_name = std::move(name);
-  record.base_descriptor_uuid = "descriptor-character";
+  record.base_descriptor_uuid = scratchbird::tests::FixtureUuid(1326, 3);
   record.base_descriptor_kind = "scalar";
   record.base_canonical_type_name = "character";
   record.base_encoded_descriptor = "canonical=character";
@@ -567,10 +573,10 @@ api::DomainRecord Domain(std::uint64_t creator_tx,
   return record;
 }
 
-void TestDomainMethodBinding(const std::filesystem::path& path, const std::string& database_uuid) {
+void TestDomainMethodBinding(const std::filesystem::path& path, const api::EngineUuid& database_uuid) {
   const auto context = BeginDomainContext(path, database_uuid);
 
-  const auto no_method_domain = Domain(context.local_transaction_id, "domain-no-method", "no_method_domain", {});
+  const auto no_method_domain = Domain(context.local_transaction_id, scratchbird::tests::FixtureUuid(1326, 4), scratchbird::tests::FixtureUuid(1326, 5), "no_method_domain", {});
   auto diagnostic = api::AppendDomainEvent(context, api::MakeDomainCreateEvent(no_method_domain));
   Require(!diagnostic.error, "domain without method seed failed");
   Require(api::FindVisibleDomain(context, no_method_domain.domain_uuid, context.local_transaction_id).has_value(),
@@ -586,7 +592,7 @@ void TestDomainMethodBinding(const std::filesystem::path& path, const std::strin
   RequireDiagnosticDetail(invoked, "domain_method_not_declared",
                           "domain method call without binding did not fail closed");
 
-  const auto upper_domain = Domain(context.local_transaction_id, "domain-upper-method", "upper_domain", "builtin:upper");
+  const auto upper_domain = Domain(context.local_transaction_id, scratchbird::tests::FixtureUuid(1326, 6), scratchbird::tests::FixtureUuid(1326, 7), "upper_domain", "builtin:upper");
   diagnostic = api::AppendDomainEvent(context, api::MakeDomainCreateEvent(upper_domain));
   Require(!diagnostic.error, "domain with builtin method seed failed");
   invoke.domain_descriptor = api::DomainDescriptor(upper_domain);
@@ -594,7 +600,7 @@ void TestDomainMethodBinding(const std::filesystem::path& path, const std::strin
   Require(invoked.ok, "domain builtin method invocation failed");
   Require(invoked.value.encoded_value == "ALPHA", "domain upper method result mismatch");
 
-  RequireMetricOk(metrics::RecordDomainMethodInvocation("domain-upper-method", "upper", "ok", "none"),
+  RequireMetricOk(metrics::RecordDomainMethodInvocation(upper_domain.domain_uuid, "upper", "ok", "none"),
                   "domain method metric failed");
 }
 

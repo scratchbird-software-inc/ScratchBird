@@ -30,7 +30,7 @@ struct CstDocument;
 class EmbeddedEngineClient;
 
 struct CachedPublicNameResolution {
-  std::string object_uuid;
+  core::platform::Uuid object_uuid;
   std::string canonical_name;
   std::string object_class;
   std::uint64_t catalog_epoch{0};
@@ -42,6 +42,29 @@ struct StableCachedPublicNameResolution {
   bool quoted{false};
   std::string lookup_object_class;
   CachedPublicNameResolution resolved;
+};
+
+// Parser-local draft. Identity bytes bypass the scalar route-text grammar.
+struct WireOperationRow {
+  core::platform::Uuid row_uuid;
+  std::vector<std::pair<std::string, std::optional<std::string>>> fields;
+  // UUID cells contain exactly16 raw bytes; no SQL literal representation.
+  std::vector<std::string> canonical_types;
+};
+
+struct WireOperationDraft {
+  std::string text;
+  core::platform::Uuid target_uuid;
+  std::vector<WireOperationRow> rows;
+  [[nodiscard]] std::size_t size() const {
+    std::size_t bytes = text.size() + target_uuid.bytes.size();
+    for (const auto& row : rows) {
+      bytes += row.row_uuid.bytes.size();
+      for (const auto& [name, value] : row.fields)
+        bytes += name.size() + (value ? value->size() : 0);
+    }
+    return bytes;
+  }
 };
 
 struct WireResponse {
@@ -71,8 +94,8 @@ struct PreparedParameterCanonicalValue {
 
 PreparedParameterCanonicalValue CanonicalizePreparedParameterWireValue(
     const PreparedParameterWireValue& value,
-    std::string_view authenticated_descriptor_uuid,
-    std::string_view authenticated_type_uuid,
+    const core::platform::Uuid& authenticated_descriptor_uuid,
+    const core::platform::Uuid& authenticated_type_uuid,
     bool nullable);
 
 // Opt-in, caller-owned observation of the final parser artifacts produced by
@@ -105,7 +128,7 @@ struct SbsqlPipelineConformanceSummary {
   std::string result_shape_key;
   std::string diagnostic_shape_key;
   std::string resource_contract_key;
-  std::vector<std::string> resolved_object_uuids;
+  std::vector<core::platform::Uuid> resolved_object_uuids;
 };
 
 // Caller-owned result for an authenticated compile-only pipeline pass.  The
@@ -157,7 +180,7 @@ class SbsqlTestWireSession {
                              bool parameter_prepare_only = false,
                              ipc::PreparedParameterReference*
                                  prepared_parameter_output = nullptr,
-                             std::string_view expected_prepared_uuid = {},
+                             const core::platform::Uuid& expected_prepared_uuid = {},
                              std::uint64_t expected_prepared_generation = 0,
                              const ipc::VariableFrameCoordination*
                                  variable_coordination = nullptr,
@@ -557,7 +580,7 @@ class SbsqlTestWireSession {
       bool cursor_requested = false);
   PipelineResult RunPreparedParameterizedForWire(
       std::string_view sql,
-      std::string_view prepared_statement_uuid,
+      const core::platform::Uuid& prepared_statement_uuid,
       std::uint64_t prepared_generation,
       const std::vector<PreparedParameterWireValue>& parameter_values,
       bool cursor_requested = false);
@@ -571,17 +594,22 @@ class SbsqlTestWireSession {
       std::string_view encoded_route_envelope,
       const std::vector<std::uint8_t>& data_packet = {},
       bool cursor_requested = false);
+  PipelineResult RunCanonicalRouteTextEnvelopeForWire(
+      const WireOperationDraft& draft,
+      const std::vector<std::uint8_t>& data_packet = {},
+      bool cursor_requested = false);
+  ServerPrepareSblrResult PrepareSblrForWire(const WireOperationDraft& draft);
   ServerPrepareSblrResult PrepareSblrForWire(std::string_view encoded_sblr_envelope);
-  PipelineResult RunPreparedSblrEnvelopeForWire(std::string_view prepared_statement_uuid,
+  PipelineResult RunPreparedSblrEnvelopeForWire(const core::platform::Uuid& prepared_statement_uuid,
                                                 std::string_view encoded_sblr_envelope,
                                                 const std::vector<std::uint8_t>& data_packet = {},
                                                 bool cursor_requested = false);
-  ServerFetchResult FetchCursorOnRoute(std::string_view cursor_uuid,
+  ServerFetchResult FetchCursorOnRoute(const core::platform::Uuid& cursor_uuid,
                                        std::uint64_t max_rows = 1,
                                        std::uint64_t max_bytes = 0,
                                        std::uint32_t fetch_flags = 0);
-  ServerCloseCursorResult CloseCursorOnRoute(std::string_view cursor_uuid);
-  ServerCloseCursorResult CancelCursorOnRoute(std::string_view cursor_uuid);
+  ServerCloseCursorResult CloseCursorOnRoute(const core::platform::Uuid& cursor_uuid);
+  ServerCloseCursorResult CancelCursorOnRoute(const core::platform::Uuid& cursor_uuid);
   PublicNameResolutionResult ResolvePublicNameForWire(std::string_view presented_name,
                                                       bool quoted,
                                                       std::string_view object_class);
@@ -603,7 +631,8 @@ class SbsqlTestWireSession {
   ParserMetrics* metrics_;
   SblrTemplateCache* cache_;
   SessionContext session_;
-  std::string last_cursor_uuid_;
+  core::platform::Uuid last_cursor_uuid_;
+  std::uint64_t next_anonymous_parameter_name_{1};
   std::unique_ptr<EmbeddedEngineClient> embedded_client_;
   std::unique_ptr<SbpsClient> server_client_;
   std::unique_ptr<HeldBulkImportStream> held_bulk_import_stream_;
@@ -639,8 +668,8 @@ class SbsqlTestWireSession {
   std::deque<std::string> name_resolution_lru_;
   std::map<std::string, StableCachedPublicNameResolution>
       stable_relation_name_resolution_cache_;
-  std::map<std::string, ipc::CursorStreamDescriptorV1> cursor_stream_descriptors_;
-  std::map<std::string, ipc::ParserStatementContext>
+  std::map<core::platform::Uuid, ipc::CursorStreamDescriptorV1> cursor_stream_descriptors_;
+  std::map<core::platform::Uuid, ipc::ParserStatementContext>
       cursor_statement_contexts_;
   std::map<std::string, ipc::PreparedParameterReference>
       prepared_parameter_bindings_;
@@ -665,7 +694,7 @@ class SbsqlTestWireSession {
   void StoreNameResolutionCacheEntry(std::string_view presented_name,
                                      bool quoted,
                                      std::string_view object_class,
-                                     std::string_view object_uuid,
+                                     const core::platform::Uuid& object_uuid,
                                      std::string_view canonical_name,
                                      std::uint64_t catalog_epoch,
                                      std::uint64_t security_epoch,

@@ -3,7 +3,7 @@
 int main() {
   namespace api = scratchbird::engine::internal_api;
   scratchbird::tests::ia01::RequireMissingExecutorEvidence(
-      "aggregate", "019d0000-0000-7000-8000-000000002539", ".aggregate",
+      "aggregate", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002539"), ".aggregate",
       {api::kSblrAggregateExecutorId, api::kSblrAggregateOpcodeCode,
        api::kSblrAggregateOpcodeVersion,
        api::kSblrAggregateOperandDescriptorId,

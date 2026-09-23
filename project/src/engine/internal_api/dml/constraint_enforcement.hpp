@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "dml/mga_relation_read_view.hpp"
 
 #include <cstdint>
@@ -35,9 +36,9 @@ struct ConstraintDmlValidationResult {
 };
 
 struct ConstraintDmlProofContext {
-  std::string database_uuid;
-  std::string transaction_uuid;
-  std::string principal_uuid;
+  EngineUuid database_uuid;
+  EngineUuid transaction_uuid;
+  EngineUuid principal_uuid;
   std::string isolation_level;
   std::string trace_tag_fingerprint;
   std::uint64_t local_transaction_id = 0;
@@ -50,11 +51,11 @@ struct ConstraintDmlProofContext {
 };
 
 struct ConstraintDmlValidationCache {
-  std::map<std::string, std::vector<std::pair<std::string, std::map<std::string, std::string>>>>
+  std::map<EngineUuid, std::vector<std::pair<std::string, CatalogColumnMetadata>>>
       constraint_columns_by_table_uuid;
   std::map<std::string, std::vector<CrudRowVersionRecord>> visible_rows_by_table_uuid;
   std::set<std::string> visible_rows_built_for_table_uuid;
-  std::map<std::string, std::map<std::string, std::set<std::string>>> unique_key_rows_by_index_uuid;
+  std::map<std::string, std::map<std::string, std::set<EngineUuid>>> unique_key_rows_by_index_uuid;
   std::set<std::string> unique_key_rows_built_for_index_uuid;
   std::set<std::string> index_backed_unique_preflight_proofs;
   std::map<std::string, std::set<std::string>> column_values_by_table_column;
@@ -87,7 +88,7 @@ void RecordIndexBackedUniquePreflightProof(
     ConstraintDmlValidationCache* cache,
     const EngineRequestContext& context,
     const CrudIndexRecord& index,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     std::vector<EngineEvidenceReference>* evidence = nullptr);
 
@@ -101,7 +102,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraints(
     const EngineRequestContext& context,
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     const std::string& mutation_kind,
     ConstraintDmlValidationCache* cache = nullptr);
@@ -110,7 +111,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
     const EngineRequestContext& context,
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
-    const std::string& row_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     const std::string& mutation_kind,
     const ConstraintDmlValidationOptions& options,

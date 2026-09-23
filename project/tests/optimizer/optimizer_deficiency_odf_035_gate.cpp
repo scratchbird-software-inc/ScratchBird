@@ -74,8 +74,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 std::vector<std::string> SplitTabs(const std::string& line) {
@@ -117,10 +117,10 @@ struct AllocationRecord {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string name_index_uuid;
-  std::string city_index_uuid;
+  platform::Uuid database_uuid;
+  platform::Uuid table_uuid;
+  platform::Uuid name_index_uuid;
+  platform::Uuid city_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -193,11 +193,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -243,16 +243,16 @@ Fixture MakeFixture() {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-035 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 10);
-  fixture.name_index_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 11);
-  fixture.city_index_uuid = NewUuidText(platform::UuidKind::object, fixture.salt + 12);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 10);
+  fixture.name_index_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 11);
+  fixture.city_index_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 12);
   return fixture;
 }
 
 api::CrudIndexRecord NonUniqueIndex(const Fixture& fixture,
                                     const api::EngineRequestContext& context,
-                                    const std::string& index_uuid,
+                                    const platform::Uuid&index_uuid,
                                     std::string column_name) {
   api::CrudIndexRecord index;
   index.creator_tx = context.local_transaction_id;
@@ -275,8 +275,8 @@ api::CrudRowVersionRecord RowRecord(const Fixture& fixture,
   api::CrudRowVersionRecord row;
   row.creator_tx = context.local_transaction_id;
   row.table_uuid = fixture.table_uuid;
-  row.row_uuid = NewUuidText(platform::UuidKind::row, fixture.salt + 200 + salt);
-  row.version_uuid = NewUuidText(platform::UuidKind::row, fixture.salt + 300 + salt);
+  row.row_uuid = NewNativeUuid(platform::UuidKind::row, fixture.salt + 200 + salt);
+  row.version_uuid = NewNativeUuid(platform::UuidKind::row, fixture.salt + 300 + salt);
   row.values.push_back({"id", std::move(id)});
   row.values.push_back({"name", std::move(name)});
   row.values.push_back({"city", std::move(city)});

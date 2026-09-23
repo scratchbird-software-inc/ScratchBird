@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -43,8 +44,8 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string UuidText(UuidKind kind, u64 offset) {
-  return uuid::UuidToString(MakeUuid(kind, offset).value);
+api::EngineUuid NativeUuid(UuidKind kind, u64 offset) {
+  return MakeUuid(kind, offset).value;
 }
 
 api::EngineRequestContext Context(const std::filesystem::path& work_dir) {
@@ -52,10 +53,10 @@ api::EngineRequestContext Context(const std::filesystem::path& work_dir) {
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "pcr086-multi-horizon-disposal";
   context.database_path = (work_dir / "pcr086.sbdb").string();
-  context.database_uuid.canonical = UuidText(UuidKind::database, 1);
-  context.principal_uuid.canonical = UuidText(UuidKind::principal, 2);
-  context.session_uuid.canonical = UuidText(UuidKind::object, 3);
-  context.transaction_uuid.canonical = UuidText(UuidKind::transaction, 4);
+  context.database_uuid = NativeUuid(UuidKind::database, 1);
+  context.principal_uuid = NativeUuid(UuidKind::principal, 2);
+  context.session_uuid = NativeUuid(UuidKind::object, 3);
+  context.transaction_uuid = NativeUuid(UuidKind::transaction, 4);
   context.local_transaction_id = 30;
   context.snapshot_visible_through_local_transaction_id = 30;
   context.security_context_present = true;
@@ -74,7 +75,7 @@ api::EngineEvaluateHistoryDisposalMultiHorizonRequest BaseRequest(
   request.context = Context(work_dir);
   request.disposable_start_transaction_id = 10;
   request.disposable_end_transaction_id = 20;
-  request.filespace_uuid = UuidText(UuidKind::filespace, 5);
+  request.filespace_uuid = NativeUuid(UuidKind::filespace, 5);
   request.archive_manifest_uri =
       (work_dir / "archive-before-delete.manifest").string();
   request.write_after_segment_uri =
@@ -120,7 +121,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind &&
-        evidence.evidence_id.find(id) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(evidence.evidence_id, id) != std::string::npos) {
       return true;
     }
   }

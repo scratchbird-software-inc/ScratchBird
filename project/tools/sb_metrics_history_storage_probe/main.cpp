@@ -30,7 +30,8 @@ int main() {
   auto store = LoadMetricHistoryStore(path);
   ok &= Require(!store.raw_samples.empty(), "raw samples persisted across disable/reload");
   ok &= Require(!store.series.empty(), "series rows persisted across disable/reload");
-  ok &= Require(GenerateMetricRollups(path, MetricRollupGrain::one_minute).ok, "rollups generated");
+  ok &= Require(GenerateMetricRollups(path, MetricRollupGrain::one_minute,
+      MetricsContext().principal_uuid, MetricsContext().transaction_uuid).ok, "rollups generated");
   store = LoadMetricHistoryStore(path);
   ok &= Require(!store.rollups.empty(), "rollups persisted across reload");
   RemoveTempHistory(path);

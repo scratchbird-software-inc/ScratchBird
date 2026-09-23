@@ -6,7 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../tests/support/binary_uuid_fixture.hpp"
 #include "catalog/descriptor_api.hpp"
+#include "domain_support/domain_store.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
@@ -46,9 +48,8 @@ EngineRequestContext BaseContext(const Args& args, bool security_context_present
   context.security_context_present = security_context_present;
   context.request_id = security_context_present ? "domain-read-policy-secure" : "domain-read-policy-untrusted";
   context.database_path = args.path;
-  context.principal_uuid.canonical = "00000000-0000-7000-8000-00000000abcd";
-  context.datatype_catalog_snapshot_uuid.canonical =
-      "019d0000-0000-7000-8000-00000000d701";
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000abcd");
+  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   return context;
@@ -75,7 +76,7 @@ bool Commit(const EngineRequestContext& tx_context) {
 
 EngineDescriptor CharacterDescriptor() {
   EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = "00000000-0000-7000-8000-000000000301";
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000301");
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "character";
   descriptor.encoded_descriptor = "canonical=character;nullable=true";
@@ -93,10 +94,10 @@ EngineCreateDomainResult CreateSecretDomain(const EngineRequestContext& tx_conte
   return EngineCreateDomain(request);
 }
 
-EngineGetDescriptorResult LookupDescriptor(const EngineRequestContext& tx_context, const std::string& uuid) {
+EngineGetDescriptorResult LookupDescriptor(const EngineRequestContext& tx_context, const EngineUuid& uuid) {
   EngineGetDescriptorRequest request;
   request.context = tx_context;
-  request.target_object.uuid.canonical = uuid;
+  request.target_object.uuid = uuid;
   request.target_object.object_kind = "domain";
   return EngineGetDescriptor(request);
 }
@@ -149,12 +150,11 @@ int main(int argc, char** argv) {
   const auto setup_tx = Begin(secure_base);
   const auto setup_context = TxContext(secure_base, setup_tx);
   const auto domain = CreateSecretDomain(setup_context);
-  const auto descriptor = LookupDescriptor(setup_context, domain.primary_object.uuid.canonical);
+  const auto descriptor = LookupDescriptor(setup_context, domain.primary_object.uuid);
   auto column_descriptor = descriptor.descriptor;
   column_descriptor.canonical_type_name = "text";
   column_descriptor.encoded_descriptor =
-      "type=text;nullable=true;domain_uuid=" +
-      domain.primary_object.uuid.canonical;
+      DomainColumnDescriptor(domain.primary_object.uuid);
 
   EngineCreateTableRequest create_table;
   create_table.context = setup_context;

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_delete_optimized.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "dml/test_optimization_profile.hpp"
 #include "core/platform/savepoint_crash_injection.hpp"
 
@@ -62,6 +63,7 @@
 #include <iterator>
 #include <limits>
 #include <mutex>
+#include <map>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -259,6 +261,30 @@ std::string UpdateOptionText(const EngineUpdateRowsRequest& request,
   return {};
 }
 
+// The legacy option envelope is a text input boundary. Resolve its UUID once;
+// catalog lookup and all subsequent identity comparisons use the binary value.
+EngineUuid UpdateSourceUuid(const EngineUpdateRowsRequest& request) {
+  const auto parsed = uuid::ParseDurableEngineIdentityUuid(
+      scratchbird::core::platform::UuidKind::object,
+      UpdateOptionText(request, "source_uuid:"));
+  return parsed.ok() ? parsed.value.value : EngineUuid{};
+}
+
+// Fixed-width UUID/epoch key material. Embedded zero bytes are significant;
+// no UUID spelling or delimiter can alias another policy cache identity.
+std::string DmlIdentityPolicyKey(std::string_view domain,
+                                 const EngineUuid& first,
+                                 const EngineUuid& second,
+                                 std::uint64_t epoch) {
+  std::string key(domain);
+  key.push_back('\0');
+  key.append(reinterpret_cast<const char*>(first.bytes.data()), first.bytes.size());
+  key.append(reinterpret_cast<const char*>(second.bytes.data()), second.bytes.size());
+  for (unsigned shift = 0; shift < 64; shift += 8)
+    key.push_back(static_cast<char>((epoch >> shift) & 0xffu));
+  return key;
+}
+
 bool UpdateMutationWindowActive(const EngineUpdateRowsRequest& request) {
   return request.limit != 0 || request.offset != 0;
 }
@@ -446,7 +472,7 @@ bool UpdateTouchesDomainColumns(const CrudTableRecord& table,
   const std::set<std::string> assigned(assigned_columns.begin(), assigned_columns.end());
   for (const auto& [column_name, descriptor] : table.columns) {
     if (assigned.find(column_name) == assigned.end()) { continue; }
-    if (!DomainUuidFromColumnDescriptor(descriptor).empty()) { return true; }
+    if (!DomainUuidFromColumnDescriptor(descriptor).is_nil()) { return true; }
   }
   return false;
 }
@@ -746,7 +772,7 @@ bool UpdateRowVersionVisibleWithHighWater(
     const CrudRowVersionRecord& row,
     const EngineRequestContext& context,
     std::uint64_t visible_through) {
-  if (!row.temporary_session_uuid.empty() &&
+  if (!row.temporary_session_uuid.is_nil() &&
       row.temporary_session_uuid != context.session_uuid) {
     return false;
   }
@@ -767,7 +793,7 @@ bool UpdateRowVersionVisibleWithHighWater(
 
 bool AppendOnlyUpdateCandidateRefs(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EngineRequestContext& context,
     std::vector<const CrudRowVersionRecord*>* rows) {
   if (rows == nullptr) { return false; }
@@ -777,7 +803,7 @@ bool AppendOnlyUpdateCandidateRefs(
   for (const auto& row : state.row_versions) {
     if (row.table_uuid != table_uuid) { continue; }
     ++target_row_count;
-    if (row.deleted || !row.previous_version_uuid.empty() ||
+    if (row.deleted || !row.previous_version_uuid.is_nil() ||
         row.previous_sequence != 0) {
       rows->clear();
       return false;
@@ -988,13 +1014,13 @@ bool CrudRowMatchesPreparedUpdatePredicate(
 
 bool VisibleCrudRowRefsForContext(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EngineRequestContext& context,
     std::vector<const CrudRowVersionRecord*>* rows) {
   if (rows == nullptr) { return false; }
   rows->clear();
-  if (table_uuid.empty()) { return false; }
-  std::unordered_map<std::string, const CrudRowVersionRecord*> newest_visible_by_uuid;
+  if (table_uuid.is_nil()) { return false; }
+  std::unordered_map<EngineUuid, const CrudRowVersionRecord*, EngineUuidHash> newest_visible_by_uuid;
   newest_visible_by_uuid.reserve(state.row_versions.size());
   const std::uint64_t visible_through =
       UpdateVisibilityHighWaterForContext(state, context);
@@ -1037,7 +1063,7 @@ DmlProjectionPredicateResolution ResolveColumnInProjectionPredicate(
   }
   resolution.attempted = true;
   resolution.ok = false;
-  const std::string source_uuid = UpdateOptionText(request, "source_uuid:");
+  const EngineUuid source_uuid = UpdateSourceUuid(request);
   const std::string select_column = UpdateOptionText(request, "subquery_select_column:");
   const std::string subquery_predicate_kind =
       UpdateOptionText(request, "subquery_predicate_kind:");
@@ -1047,7 +1073,7 @@ DmlProjectionPredicateResolution ResolveColumnInProjectionPredicate(
       UpdateOptionText(request, "subquery_predicate_value:");
   const std::string subquery_predicate_value_type =
       UpdateOptionText(request, "subquery_predicate_value_type:");
-  if (source_uuid.empty() || select_column.empty() ||
+  if (source_uuid.is_nil() || select_column.empty() ||
       subquery_predicate_kind.empty() || subquery_predicate_column.empty()) {
     resolution.diagnostic =
         MakeInvalidRequestDiagnostic("dml.update_rows",
@@ -1191,8 +1217,8 @@ bool UpdateCandidateStreamNeedsIndexEntries(
 
 std::optional<CrudRowVersionRecord> FindVisibleRowUuidCandidate(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
-    const std::string& row_uuid,
+    const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid,
     const EngineRequestContext& context) {
   std::vector<CrudRowVersionRecord> versions;
   for (const auto& row : state.row_versions) {
@@ -1285,14 +1311,14 @@ DmlTargetAccessPlanRequest BuildUpdateTargetAccessPlanRequest(
   plan_request.predicate_descriptor_digest = PredicateDigest(request.update_predicate);
   plan_request.access_descriptor_present = true;
   plan_request.security_policy_digest =
-      request.context.principal_uuid + ":" +
-      request.context.current_role_uuid + ":" +
-      std::to_string(request.context.security_epoch);
+      DmlIdentityPolicyKey("dml.security.v1", request.context.principal_uuid,
+                           request.context.current_role_uuid,
+                           request.context.security_epoch);
   plan_request.redaction_policy_digest =
       "resource_epoch:" + std::to_string(request.context.resource_epoch);
   plan_request.access_policy_digest =
-      request.context.session_uuid + ":" +
-      std::to_string(request.context.resource_epoch);
+      DmlIdentityPolicyKey("dml.access.v1", request.context.session_uuid,
+                           EngineUuid{}, request.context.resource_epoch);
   plan_request.collation_profile_digest =
       request.context.identifier_profile_uuid + ":" +
       request.context.language_context.language_tag;
@@ -1519,7 +1545,7 @@ bool IsIndexTargetAccess(DmlTargetAccessKind access_kind) {
 
 std::vector<CrudRowVersionRecord> ScanVisibleRowsMatchingPredicate(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EngineRequestContext& context,
     const EnginePredicateEnvelope& predicate,
     std::uint64_t limit) {
@@ -1542,7 +1568,8 @@ void AddDmlSummaryFallbacksFromEvidence(
     EngineDmlSummaryCounters* counters) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == evidence_kind) {
-      AddDmlSummaryFallbackReason(counters, item.evidence_id);
+      if (const auto* reason = std::get_if<std::string>(&item.evidence_id))
+        AddDmlSummaryFallbackReason(counters, *reason);
     }
   }
 }
@@ -1782,14 +1809,14 @@ DmlTargetAccessPlanRequest BuildDeleteTargetAccessPlanRequest(
   plan_request.predicate_descriptor_digest = PredicateDigest(request.delete_predicate);
   plan_request.access_descriptor_present = true;
   plan_request.security_policy_digest =
-      request.context.principal_uuid + ":" +
-      request.context.current_role_uuid + ":" +
-      std::to_string(request.context.security_epoch);
+      DmlIdentityPolicyKey("dml.security.v1", request.context.principal_uuid,
+                           request.context.current_role_uuid,
+                           request.context.security_epoch);
   plan_request.redaction_policy_digest =
       "resource_epoch:" + std::to_string(request.context.resource_epoch);
   plan_request.access_policy_digest =
-      request.context.session_uuid + ":" +
-      std::to_string(request.context.resource_epoch);
+      DmlIdentityPolicyKey("dml.access.v1", request.context.session_uuid,
+                           EngineUuid{}, request.context.resource_epoch);
   plan_request.collation_profile_digest =
       request.context.identifier_profile_uuid + ":" +
       request.context.language_context.language_tag;
@@ -2607,7 +2634,7 @@ std::uint64_t PlannedUpdateIndexMaintenanceWrites(
     const UpdateBatchContext& batch_context,
     const std::vector<StagedUpdateRow>& staged_update_rows,
     bool hot_update_shape_enabled,
-    std::string* first_index_uuid) {
+    EngineUuid* first_index_uuid) {
   if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
     return 0;
   }
@@ -2624,7 +2651,7 @@ std::uint64_t PlannedUpdateIndexMaintenanceWrites(
                                      &staged.index_key_states)) {
         continue;
       }
-      if (first_index_uuid != nullptr && first_index_uuid->empty()) {
+      if (first_index_uuid != nullptr && first_index_uuid->is_nil()) {
         *first_index_uuid = entry.index.index_uuid;
       }
       const auto* key_state =
@@ -2695,7 +2722,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> UpdateDeltaEntries(
     before.values = old_row.values;
     before.delta_kind = scratchbird::core::index::SecondaryIndexDeltaKind::update_before;
     before.source_evidence_reference =
-        "engine.dml.update.secondary_index_delta_before:" + batch_context.statement_uuid;
+        EncodeMgaMetadataFields({"engine.dml.update.secondary_index_delta_before", MetadataUuidBytes(batch_context.statement_uuid)});
     entries.push_back(std::move(before));
 
     MgaSecondaryIndexDeltaLedgerEntryInput after;
@@ -2706,7 +2733,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> UpdateDeltaEntries(
     after.values = new_values;
     after.delta_kind = scratchbird::core::index::SecondaryIndexDeltaKind::update_after;
     after.source_evidence_reference =
-        "engine.dml.update.secondary_index_delta_after:" + batch_context.statement_uuid;
+        EncodeMgaMetadataFields({"engine.dml.update.secondary_index_delta_after", MetadataUuidBytes(batch_context.statement_uuid)});
     entries.push_back(std::move(after));
   }
   return entries;
@@ -2715,7 +2742,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> UpdateDeltaEntries(
 EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
     const EngineRequestContext& context,
     const UpdateBatchContext& batch_context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<StagedUpdateRow>& staged_update_rows,
     const std::vector<CrudRowVersionRecord>& row_records,
     bool hot_update_shape_enabled,
@@ -2898,7 +2925,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> DeleteDeltaEntries(
     input.values = original_row.values;
     input.delta_kind = scratchbird::core::index::SecondaryIndexDeltaKind::delete_row;
     input.source_evidence_reference =
-        "engine.dml.delete.secondary_index_delta:" + batch_context.statement_uuid;
+        EncodeMgaMetadataFields({"engine.dml.delete.secondary_index_delta", MetadataUuidBytes(batch_context.statement_uuid)});
     entries.push_back(std::move(input));
   }
   return entries;
@@ -2962,13 +2989,13 @@ enum class DmlUpdateDescriptorLifecycleV1 : std::uint8_t {
 };
 
 struct DmlUpdateBoundColumnV1 {
-  std::string column_uuid;
+  EngineUuid column_uuid;
   std::uint64_t column_generation = 0;
   std::uint32_t ordinal = 0;
   std::string canonical_name_key;
-  std::string datatype_descriptor_uuid;
+  EngineUuid datatype_descriptor_uuid;
   std::uint64_t datatype_descriptor_generation = 0;
-  std::string type_uuid;
+  EngineUuid type_uuid;
   std::uint64_t type_generation = 0;
   std::string codec_id;
   std::uint16_t codec_version = 0;
@@ -2992,7 +3019,7 @@ struct DmlUpdateResourceOwnerV1 {
 };
 
 std::mutex g_dml_update_resource_owner_mutex;
-std::unordered_map<std::string, std::shared_ptr<DmlUpdateResourceOwnerV1>>
+std::unordered_map<EngineUuid, std::shared_ptr<DmlUpdateResourceOwnerV1>, EngineUuidHash>
     g_dml_update_resource_owners;
 
 bool DmlUpdateReleaseResourceOwnerV1(
@@ -3015,36 +3042,36 @@ bool DmlUpdateReleaseResourceOwnerV1(
 
 struct DmlUpdateRowsDescriptorRecordV1 {
   EngineDmlUpdateRowsDescriptorRefV1 descriptor_ref;
-  std::string operation_uuid;
+  EngineUuid operation_uuid;
   std::uint64_t operation_generation = 1;
-  std::string statement_receipt_uuid;
+  EngineUuid statement_receipt_uuid;
   std::uint64_t structural_occurrence_id = 0;
-  std::string database_uuid;
-  std::string session_uuid;
-  std::string transaction_uuid;
+  EngineUuid database_uuid;
+  EngineUuid session_uuid;
+  EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
-  std::string statement_snapshot_uuid;
-  std::string metadata_snapshot_uuid;
-  std::string datatype_catalog_snapshot_uuid;
+  EngineUuid statement_snapshot_uuid;
+  EngineUuid metadata_snapshot_uuid;
+  EngineUuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation = 0;
   std::uint64_t datatype_registry_generation = 0;
   std::uint64_t security_epoch = 0;
-  std::string security_context_uuid;
+  EngineUuid security_context_uuid;
   std::uint64_t security_context_generation = 0;
-  std::string security_snapshot_uuid;
+  EngineUuid security_snapshot_uuid;
   std::uint64_t security_generation = 0;
   std::uint64_t catalog_generation_id = 0;
   SblrExecutorAvailabilitySnapshot executor_availability_snapshot;
-  std::string relation_uuid;
+  EngineUuid relation_uuid;
   std::uint64_t relation_generation = 0;
-  std::string relation_occurrence_uuid;
+  EngineUuid relation_occurrence_uuid;
   std::uint64_t relation_occurrence_generation = 0;
-  std::string relation_descriptor_uuid;
+  EngineUuid relation_descriptor_uuid;
   std::uint64_t relation_descriptor_generation = 0;
-  std::string publication_barrier_uuid;
+  EngineUuid publication_barrier_uuid;
   std::uint64_t publication_barrier_generation = 1;
   std::string statement_savepoint_name;
-  std::string statement_savepoint_uuid;
+  EngineUuid statement_savepoint_uuid;
   std::uint64_t statement_savepoint_generation = 0;
   std::vector<DmlUpdateBoundColumnV1> assignment_columns;
   // DUAV/prepared_request own the canonical bytes under the receipt's grant.
@@ -3090,29 +3117,25 @@ struct DmlUpdateRowsDescriptorRecordV1 {
 };
 
 std::mutex g_dml_update_descriptor_mutex;
-std::unordered_map<std::string, DmlUpdateRowsDescriptorRecordV1>
+std::unordered_map<EngineUuid, DmlUpdateRowsDescriptorRecordV1, EngineUuidHash>
     g_dml_update_descriptors;
 std::atomic<std::uint64_t> g_dml_update_descriptor_ordinal{1};
 std::atomic<EngineDmlUpdateRowsTestFaultPointV1>
     g_dml_update_test_fault_point{EngineDmlUpdateRowsTestFaultPointV1::none};
 
-bool DmlUpdateTypedUuid(std::string_view text,
+bool DmlUpdateTypedUuid(const EngineUuid& identity,
                         update_wire::TypedUpdateUuid* value) {
-  if (value == nullptr) return false;
-  const auto parsed = uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() || parsed.value.is_nil()) return false;
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            value->begin());
+  if (value == nullptr || identity.is_nil() || !uuid::IsValidUuidVariant(identity))
+    return false;
+  *value = identity.bytes;
   return true;
 }
 
-std::string DmlUpdateUuidText(const update_wire::TypedUpdateUuid& value) {
-  scratchbird::core::platform::Uuid parsed;
-  std::copy(value.begin(), value.end(), parsed.bytes.begin());
-  return parsed.is_nil() ? std::string{} : uuid::UuidToString(parsed);
+EngineUuid DmlUpdateUuidValue(const update_wire::TypedUpdateUuid& value) {
+  return EngineUuid{value};
 }
 
-bool DmlUpdateIssueIdentity(std::string* value) {
+bool DmlUpdateIssueIdentity(EngineUuid* value) {
   if (value == nullptr) return false;
   const auto now = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -3123,13 +3146,13 @@ bool DmlUpdateIssueIdentity(std::string* value) {
   const auto identity = uuid::GenerateEngineIdentityV7(
       scratchbird::core::platform::UuidKind::object, now + ordinal);
   if (!identity.ok()) return false;
-  *value = uuid::UuidToString(identity.value.value);
-  return !value->empty();
+  *value = identity.value.value;
+  return !value->is_nil();
 }
 
 bool DmlUpdateIssueTypedIdentity(update_wire::TypedUpdateUuid* value) {
-  std::string text;
-  return DmlUpdateIssueIdentity(&text) && DmlUpdateTypedUuid(text, value);
+  EngineUuid identity;
+  return DmlUpdateIssueIdentity(&identity) && DmlUpdateTypedUuid(identity, value);
 }
 
 EngineApiDiagnostic DmlUpdateDescriptorDiagnostic(std::string code,
@@ -3165,26 +3188,6 @@ std::string DmlUpdateLowerAscii(std::string_view value) {
         std::tolower(static_cast<unsigned char>(ch)));
   });
   return lowered;
-}
-
-std::optional<std::string> DmlUpdateDescriptorField(
-    std::string_view descriptor, std::string_view key) {
-  std::optional<std::string> value;
-  std::size_t begin = 0;
-  while (begin <= descriptor.size()) {
-    const auto end = descriptor.find(';', begin);
-    const auto field = descriptor.substr(
-        begin, end == std::string_view::npos ? descriptor.size() - begin
-                                             : end - begin);
-    if (field.size() > key.size() && field[key.size()] == '=' &&
-        field.substr(0, key.size()) == key) {
-      if (value.has_value()) return std::nullopt;
-      value = std::string(field.substr(key.size() + 1));
-    }
-    if (end == std::string_view::npos) break;
-    begin = end + 1;
-  }
-  return value;
 }
 
 bool DmlUpdateContextMatches(const EngineRequestContext& context,
@@ -3233,7 +3236,7 @@ bool DmlUpdateRevalidateExecutorAvailability(
     EngineApiDiagnostic* diagnostic) {
   if (diagnostic == nullptr ||
       record.executor_availability_snapshot.generation == 0 ||
-      record.executor_availability_snapshot.snapshot_uuid.empty()) {
+      record.executor_availability_snapshot.snapshot_uuid.is_nil()) {
     return false;
   }
   SblrExecutorAvailabilitySnapshot current;
@@ -3276,53 +3279,60 @@ bool DmlUpdateResolveColumnIdentity(
     }
     return false;
   }
-  const auto encoded_type_uuid = DmlUpdateDescriptorField(
-      column.value_descriptor.encoded_descriptor, "type_uuid");
-  const auto encoded_descriptor_uuid = DmlUpdateDescriptorField(
-      column.value_descriptor.encoded_descriptor,
-      "datatype_descriptor_uuid");
-  const auto encoded_descriptor_generation = DmlUpdateDescriptorField(
-      column.value_descriptor.encoded_descriptor,
-      "datatype_descriptor_generation");
-  std::uint64_t descriptor_generation = 0;
-  const auto parsed_generation =
-      encoded_descriptor_generation.has_value()
-          ? std::from_chars(encoded_descriptor_generation->data(),
-                            encoded_descriptor_generation->data() +
-                                encoded_descriptor_generation->size(),
-                            descriptor_generation)
-          : std::from_chars_result{};
-  if (!encoded_descriptor_uuid.has_value() ||
-      !encoded_descriptor_generation.has_value() ||
-      parsed_generation.ec != std::errc{} ||
-      parsed_generation.ptr != encoded_descriptor_generation->data() +
-                                   encoded_descriptor_generation->size() ||
-      descriptor_generation == 0) {
+  const auto& binding = column.value_descriptor;
+  std::map<std::string, std::string> fields;
+  std::string_view remaining(binding.encoded_descriptor);
+  bool valid_fields = true;
+  while (!remaining.empty()) {
+    const auto end = remaining.find(';');
+    const auto token = remaining.substr(0, end);
+    const auto equal = token.find('=');
+    if (equal == std::string_view::npos || equal == 0 ||
+        !fields.emplace(std::string(token.substr(0, equal)),
+                        std::string(token.substr(equal + 1))).second) {
+      valid_fields = false;
+      break;
+    }
+    if (end == std::string_view::npos) break;
+    remaining.remove_prefix(end + 1);
+  }
+  const auto number = [&](const char* key, std::uint64_t expected) {
+    const auto found = fields.find(key);
+    if (found == fields.end()) return false;
+    std::uint64_t value = 0;
+    const auto& text = found->second;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() &&
+           value == expected;
+  };
+  const auto refuse_stale = [&] {
     *diagnostic = DmlUpdateDescriptorDiagnostic(
         "DATATYPE.DESCRIPTOR.INVALID",
-        "sblr.dml_update_rows.column_identity_stale",
-        column.canonical_name_key);
+        "sblr.dml_update_rows.column_identity_stale", column.canonical_name_key);
     return false;
-  }
-  // The relation column retains its persisted outer descriptor UUID.  The
-  // embedded datatype_descriptor_uuid is the canonical datatype-registry
-  // identity and is the only valid key for a type/codec lookup.  Conflating
-  // these two authorities makes every persisted column look stale.
-  const auto lookup = scratchbird::core::datatypes::
-      LookupDatatypeTypeCodecIdentityV1(
-          context.datatype_catalog_snapshot_uuid,
-          context.datatype_catalog_generation,
-          context.datatype_registry_generation,
-          *encoded_descriptor_uuid, descriptor_generation);
-  if (!lookup.ok || !encoded_type_uuid.has_value() ||
-      *encoded_type_uuid != lookup.row.type_uuid ||
-      *encoded_descriptor_uuid != lookup.row.descriptor_uuid) {
-    *diagnostic = DmlUpdateDescriptorDiagnostic(
-        "DATATYPE.DESCRIPTOR.INVALID",
-        "sblr.dml_update_rows.column_identity_stale",
-        column.canonical_name_key);
-    return false;
-  }
+  };
+  if (!valid_fields || fields.contains("datatype_descriptor_uuid") ||
+      fields.contains("type_uuid") ||
+      !uuid::IsEngineIdentityUuid(binding.datatype_descriptor_uuid) ||
+      !uuid::IsEngineIdentityUuid(binding.type_uuid) ||
+      binding.datatype_descriptor_generation == 0 ||
+      !number("datatype_descriptor_generation", binding.datatype_descriptor_generation))
+    return refuse_stale();
+  // The outer descriptor identifies the relation column. The separate binary
+  // datatype binding is the registry key; encoded descriptor text cannot
+  // substitute identity authority for either UUID.
+  const auto lookup = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, binding.datatype_descriptor_uuid,
+      binding.datatype_descriptor_generation);
+  const auto codec = fields.find("codec_id");
+  if (!lookup.ok || binding.type_uuid != lookup.row.type_uuid ||
+      codec == fields.end() || codec->second != lookup.row.codec_id ||
+      !number("type_generation", lookup.row.type_generation) ||
+      !number("codec_version", lookup.row.codec_version) ||
+      !number("codec_generation", lookup.row.codec_generation) ||
+      !number("null_encoding", lookup.row.null_encoding_code))
+    return refuse_stale();
   identity->column_uuid = column.column_uuid;
   identity->column_generation = column.column_generation;
   identity->ordinal = column.ordinal;
@@ -3521,7 +3531,7 @@ bool DmlUpdateBuildPredicateCarrier(
       record->datatype_operator_binding.boolean_codec_id.empty() ||
       record->datatype_operator_binding.boolean_codec_version == 0 ||
       record->datatype_operator_binding.boolean_codec_generation == 0 ||
-      record->datatype_operator_binding.builtin_operator_snapshot_uuid.empty() ||
+      record->datatype_operator_binding.builtin_operator_snapshot_uuid.is_nil() ||
       record->datatype_operator_binding.builtin_operator_registry_generation ==
           0) {
     return false;
@@ -3670,7 +3680,7 @@ bool DmlUpdateBuildPredicateCarrier(
 bool DmlUpdateAbandonDurableReservationV1(
     const EngineRequestContext& context,
     const DmlUpdateRowsDescriptorRecordV1& record) {
-  if (record.durable_operation_identity.validated_durable_handle_uuid.empty()) {
+  if (record.durable_operation_identity.validated_durable_handle_uuid.is_nil()) {
     return !record.resource_owner || DmlUpdateReleaseResourceOwnerV1(
         record.resource_owner, EngineDmlUpdateResourceReleaseV1::abandoned_before_publication);
   }
@@ -3799,7 +3809,7 @@ bool DmlUpdateBuildExecutionAuthorityCarriers(
   reserve_request.reservation.descriptor_generation =
       record->descriptor_ref.descriptor_generation;
   reserve_request.reservation.recovery_token_uuid =
-      DmlUpdateUuidText(recovery.recovery_token_uuid);
+      DmlUpdateUuidValue(recovery.recovery_token_uuid);
   reserve_request.reservation.recovery_generation =
       recovery.recovery_generation;
   auto reserved =
@@ -3845,7 +3855,7 @@ bool DmlUpdateBuildExecutionAuthorityCarriers(
       record->durable_operation_identity.reserved_statement_barrier_uuid;
   record->publication_barrier_generation =
       record->durable_operation_identity.reserved_statement_barrier_generation;
-  if (record->publication_barrier_uuid.empty() ||
+  if (record->publication_barrier_uuid.is_nil() ||
       record->publication_barrier_generation == 0) {
     *diagnostic = DmlUpdateDescriptorDiagnostic(
         "DML.UPDATE_FAILED",
@@ -3878,7 +3888,7 @@ bool DmlUpdateBuildFrozenAuthorityCarriers(
         "sblr.dml_update_rows.frozen_owner_invalid");
     return false;
   }
-  auto initialize_identity = [&](std::string_view set_uuid,
+  auto initialize_identity = [&](const EngineUuid& set_uuid,
                                  std::uint64_t set_generation,
                                  update_wire::TypedUpdateVectorIdentity* out) {
     return out != nullptr && set_generation != 0 &&
@@ -4281,7 +4291,7 @@ DmlUpdateCurrentStatementMgaAuthorityRequest(
   request.descriptor_uuid = record.descriptor_ref.descriptor_uuid;
   request.descriptor_generation =
       record.descriptor_ref.descriptor_generation;
-  request.recovery_token_uuid = DmlUpdateUuidText(
+  request.recovery_token_uuid = DmlUpdateUuidValue(
       record.canonical_carriers.recovery_token.recovery_token_uuid);
   request.recovery_generation =
       record.canonical_carriers.recovery_token.recovery_generation;
@@ -4295,9 +4305,9 @@ DmlUpdateCurrentStatementMgaAuthorityRequest(
 bool DmlUpdateApplyStatementMgaAuthority(
     const MgaDmlUpdateStatementSavepointAuthorityV1& authority,
     DmlUpdateRowsDescriptorRecordV1* record) {
-  if (record == nullptr || authority.savepoint_uuid.empty() ||
+  if (record == nullptr || authority.savepoint_uuid.is_nil() ||
       authority.savepoint_generation != 1 ||
-      authority.publication_barrier_uuid.empty() ||
+      authority.publication_barrier_uuid.is_nil() ||
       authority.publication_barrier_generation != 1 ||
       authority.publication_barrier_uuid !=
           record->durable_operation_identity.reserved_statement_barrier_uuid ||
@@ -4390,7 +4400,8 @@ bool DmlUpdateValidateTextEffects(
     if (object.object_kind != "trigger" || object.lifecycle_state != "active" || object.deleted || object.invalidated) continue;
     const auto target = dml_trigger_runtime::PayloadFieldValue(object.payload, "trigger_target_table_uuid:");
     // An unresolved target is not evidence of an empty trigger effect set.
-    if (target.empty() || target == record.relation_uuid)
+    const auto target_identity = BinaryViewUuid(target);
+    if (target_identity.is_nil() || target_identity == record.relation_uuid)
       return refuse("TEXT_trigger_effect_requires_provider");
   }
   return true;
@@ -4471,7 +4482,7 @@ bool DmlUpdateRevalidateCanonicalAuthority(
       descriptor.target_relation_uuid != relation_uuid ||
       descriptor.target_relation_generation != record.relation_generation ||
       !record.datatype_operator_binding.ok ||
-      DmlUpdateUuidText(descriptor.builtin_operator_snapshot_uuid) !=
+      DmlUpdateUuidValue(descriptor.builtin_operator_snapshot_uuid) !=
           record.datatype_operator_binding.builtin_operator_snapshot_uuid ||
       descriptor.builtin_operator_registry_generation !=
           record.datatype_operator_binding
@@ -4554,7 +4565,7 @@ bool DmlUpdateBuildJournalRecordV1(
                           &journal.database_uuid)) {
     return false;
   }
-  if (!record.statement_savepoint_uuid.empty() &&
+  if (!record.statement_savepoint_uuid.is_nil() &&
       (!DmlUpdateTypedUuid(record.statement_savepoint_uuid,
                            &journal.statement_savepoint_uuid) ||
        record.statement_savepoint_generation == 0)) {
@@ -4580,7 +4591,7 @@ bool DmlUpdateBuildJournalRecordV1(
   chain.prior_state = record.latest_journal_state;
   chain.prior_record_evidence_sha256 =
       record.latest_journal_evidence_sha256;
-  if (!record.statement_savepoint_uuid.empty() &&
+  if (!record.statement_savepoint_uuid.is_nil() &&
       !DmlUpdateTypedUuid(record.statement_savepoint_uuid,
                           &chain.prior_savepoint_uuid)) {
     return false;
@@ -5380,7 +5391,14 @@ std::vector<std::uint8_t> EncodeDmlUpdateRowsResultV1(
   std::vector<update_wire::TypedUpdateResultEvidenceReference> evidence;
   evidence.reserve(result.evidence.size());
   for (const auto& source : result.evidence) {
-    evidence.push_back({source.evidence_kind, source.evidence_id});
+    update_wire::TypedUpdateResultEvidenceReference item;
+    item.evidence_kind = source.evidence_kind;
+    if (const auto* label = std::get_if<std::string>(&source.evidence_id)) {
+      item.evidence_id = *label;
+    } else if (const auto* identity = std::get_if<EngineUuid>(&source.evidence_id)) {
+      item.identity = identity->bytes;
+    }
+    evidence.push_back(std::move(item));
   }
   update_wire::TypedUpdateCarrierError error;
   if (!update_wire::ComputeTypedUpdateResultInnerEvidence(
@@ -5588,7 +5606,7 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
       context.datatype_catalog_generation == 0 ||
       context.datatype_registry_generation == 0 ||
       demand.structural_occurrence_id == 0 ||
-      demand.target_relation_uuid_hint.empty() || demand.assignments.empty() ||
+      demand.target_relation_uuid_hint.is_nil() || demand.assignments.empty() ||
       demand.assignments.size() > 1024) {
     return refuse("MGA.TRANSACTION.STALE",
                   "sblr.dml_update_rows.binding_context_stale");
@@ -5662,7 +5680,7 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
   if (!DmlUpdateCaptureResourceOwner(context, &record, &result.diagnostic)) return result;
   std::uint64_t canonical_value_bytes = 0;
 
-  std::unordered_set<std::string> assigned_column_uuids;
+  std::unordered_set<EngineUuid, EngineUuidHash> assigned_column_uuids;
   std::uint32_t expected_ordinal = 1;
   for (const auto& assignment : demand.assignments) {
     if (assignment.ordinal != expected_ordinal++ ||
@@ -5999,11 +6017,11 @@ bool DmlUpdateRevalidateRecoveredSecurityV1(
     return false;
   }
   if (security.snapshot.snapshot_uuid !=
-          DmlUpdateUuidText(decoded.security_snapshot.security_snapshot_uuid) ||
+          DmlUpdateUuidValue(decoded.security_snapshot.security_snapshot_uuid) ||
       security.snapshot.snapshot_generation !=
           decoded.security_snapshot.security_snapshot_generation ||
       security.snapshot.security_context_uuid !=
-          DmlUpdateUuidText(decoded.security_snapshot.security_context_uuid) ||
+          DmlUpdateUuidValue(decoded.security_snapshot.security_context_uuid) ||
       security.snapshot.security_context_generation !=
           decoded.security_snapshot.security_context_generation ||
       security.snapshot.security_generation !=
@@ -6013,7 +6031,7 @@ bool DmlUpdateRevalidateRecoveredSecurityV1(
       security.snapshot.authenticated_statement_receipt_uuid !=
           context.statement_receipt_uuid ||
       security.snapshot.target_relation_uuid !=
-          DmlUpdateUuidText(decoded.security_snapshot.target_relation_uuid)) {
+          DmlUpdateUuidValue(decoded.security_snapshot.target_relation_uuid)) {
     *diagnostic = DmlUpdateDescriptorDiagnostic(
         "DML.UPDATE_FAILED",
         "sblr.dml_update_rows.recovery_security_binding_mismatch");
@@ -6040,7 +6058,7 @@ EngineDmlUpdateRowsConsumeResultV1 DmlUpdateConsumeRecoveredDurableV1(
     context.trace_tags.push_back("private_dml_update_rows_recovery");
   }
   EngineDmlUpdateRowsConsumeResultV1 result;
-  if (descriptor_ref.descriptor_uuid.empty() ||
+  if (descriptor_ref.descriptor_uuid.is_nil() ||
       descriptor_ref.descriptor_generation == 0 ||
       structural_occurrence_id == 0) {
     result.diagnostic = DmlUpdateDescriptorDiagnostic(
@@ -6780,7 +6798,7 @@ EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
   // result or journal record.
   DmlUpdatePreparedJournalAppendV1 prepared_published_append;
   bool published_append_prepared = false;
-  std::string recovery_token_uuid;
+  EngineUuid recovery_token_uuid;
   std::uint64_t recovery_generation = 0;
   try {
     std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
@@ -6799,7 +6817,7 @@ EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
           DmlUpdatePrepareDurableSuccessorV1(
               context, found->second, prepared_published_append,
               &durable_published_append);
-      recovery_token_uuid = DmlUpdateUuidText(
+      recovery_token_uuid = DmlUpdateUuidValue(
           found->second.canonical_carriers.recovery_token.recovery_token_uuid);
       recovery_generation = found->second.canonical_carriers.recovery_token
                                 .recovery_generation;
@@ -6807,7 +6825,7 @@ EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
   } catch (const std::bad_alloc&) {
     published_append_prepared = false;
   }
-  if (!published_append_prepared || recovery_token_uuid.empty() ||
+  if (!published_append_prepared || recovery_token_uuid.is_nil() ||
       recovery_generation == 0) {
     return rollback_failure(
         std::move(update_result),
@@ -6846,7 +6864,7 @@ EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
         "sblr.dml_update_rows.known_applied_terminal_append_required",
         "known_applied_recovery_required");
     known_applied_diagnostic.fields.push_back(
-        {"recovery_token_uuid", recovery_token_uuid});
+        {"recovery_token_uuid", uuid::UuidToString(recovery_token_uuid)});
     known_applied_diagnostic.fields.push_back(
         {"recovery_generation", std::to_string(recovery_generation)});
     known_applied_failure = failure_result(std::move(known_applied_diagnostic));
@@ -7047,14 +7065,19 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       WriteResultPolicySuppressesPayloadRows(write_result_policy);
   EngineUpdateRowsRequest effective_request = request;
   NormalizeUpdatePredicateFromLoweredOptions(&effective_request);
-  const std::string source_uuid = UpdateOptionText(effective_request, "source_uuid:");
+  const EngineUuid source_uuid = UpdateSourceUuid(effective_request);
   const bool needs_source_scope =
-      effective_request.update_predicate.predicate_kind == "column_in_projection" &&
-      !source_uuid.empty();
+      effective_request.update_predicate.predicate_kind == "column_in_projection";
+  if (needs_source_scope && source_uuid.is_nil()) {
+    return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+        request.context, "dml.update_rows",
+        MakeInvalidRequestDiagnostic("dml.update_rows",
+                                     "subquery_predicate_descriptor_incomplete"));
+  }
   TransactionalRelationStore relation_store(effective_request.context);
   auto loaded = needs_source_scope
       ? relation_store.LoadMutationTargetRows(
-            std::vector<std::string>{effective_request.target_table.uuid,
+            std::vector<EngineUuid>{effective_request.target_table.uuid,
                                      source_uuid})
       : relation_store.LoadMutationTargetRows(
             effective_request.target_table.uuid);
@@ -7156,7 +7179,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   if (update_needs_index_entries && state.index_entries.empty()) {
     auto reloaded = needs_source_scope
         ? relation_store.LoadMutationTargets(
-              std::vector<std::string>{request.target_table.uuid,
+              std::vector<EngineUuid>{request.target_table.uuid,
                                        source_uuid})
         : relation_store.LoadMutationTarget(
               request.target_table.uuid);
@@ -7472,14 +7495,14 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       }
     }
 
-    const std::string version_uuid = GenerateCrudEngineUuid("row");
+    const EngineUuid version_uuid = GenerateCrudEngineUuid("row");
     CrudRowVersionRecord row_record;
     row_record.creator_tx = request.context.local_transaction_id;
     row_record.table_uuid = request.target_table.uuid;
     row_record.row_uuid = row.row_uuid;
     row_record.version_uuid = version_uuid;
     row_record.temporary_session_uuid =
-        table->temporary ? request.context.session_uuid : "";
+        table->temporary ? request.context.session_uuid : EngineUuid{};
     row_record.previous_version_uuid = row.version_uuid;
     row_record.previous_sequence = row.sequence;
     row_record.deleted = false;
@@ -7605,14 +7628,14 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       ++result.dml_summary.page_reservations;
     }
 
-    std::string index_allocation_owner_uuid;
+    EngineUuid index_allocation_owner_uuid;
     const auto planned_index_writes = PlannedUpdateIndexMaintenanceWrites(
         batch_context,
         staged_update_rows,
         hot_update_shape_enabled,
         &index_allocation_owner_uuid);
     const auto index_allocation =
-        planned_index_writes == 0 || index_allocation_owner_uuid.empty()
+        planned_index_writes == 0 || index_allocation_owner_uuid.is_nil()
             ? DmlPageAllocationRuntimeResult{}
             : ReserveDmlPageAllocationRuntime(request.context,
                                               request.option_envelopes,
@@ -8130,7 +8153,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     row_record.row_uuid = row.row_uuid;
     row_record.version_uuid = GenerateCrudEngineUuid("row");
     row_record.temporary_session_uuid =
-        table->temporary ? effective_request.context.session_uuid : "";
+        table->temporary ? effective_request.context.session_uuid : EngineUuid{};
     row_record.previous_version_uuid = row.version_uuid;
     row_record.previous_sequence = row.sequence;
     row_record.deleted = true;

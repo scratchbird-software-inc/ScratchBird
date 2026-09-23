@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <iostream>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -18,11 +19,11 @@ namespace memory = scratchbird::core::memory;
 
 namespace {
 
-std::string Uuid(const std::uint64_t value) {
-  char buffer[37];
-  std::snprintf(buffer, sizeof(buffer), "019f0000-0000-7000-8000-%012llx",
-                static_cast<unsigned long long>(value));
-  return buffer;
+executor::PhysicalUuid Uuid(const std::uint64_t value) {
+  executor::PhysicalUuid id{{0x01,0x9f,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0,0}};
+  for (unsigned n=0;n<6;++n)
+    id.bytes[15-n]=static_cast<std::uint8_t>(value >> (8*n));
+  return id;
 }
 
 executor::PhysicalMgaStatementContext Mga() {
@@ -125,12 +126,12 @@ optimizer::ModelFamilyDependencyCoordinatorRequestV1 Admission(
     leg.parallel_eligible = leg.spill_eligible = true;
     request.legs.push_back(std::move(leg));
   }
-  const auto consumer = [&](const std::string& uuid,
+  const auto consumer = [&](const executor::PhysicalUuid& uuid,
                             const std::uint64_t id,
                             const std::uint64_t causal,
-                            std::vector<std::string> inputs,
+                            std::vector<executor::PhysicalUuid> inputs,
                             std::vector<std::uint32_t> ids,
-                            std::vector<std::string> uuids,
+                            std::vector<executor::PhysicalUuid> uuids,
                             const std::uint64_t rows,
                             const bool root) {
     optimizer::ModelFamilyRelationalConsumerV1 value;
@@ -375,19 +376,19 @@ executor::DescriptorBatch Batch(
   for (std::size_t column = 0; column < schema.size(); ++column) {
     auto descriptor = executor::MakeExecutorDescriptor(
         schema[column].second,
-        "canonical=" + schema[column].second + ";type_uuid=" +
-            Uuid(1800 + leg.lexical_source_ordinal * 10 + column) +
-            ";nullable=false");
-    descriptor.descriptor_uuid.canonical = leg.output_descriptor_uuids[column];
+        "canonical=" + schema[column].second + ";nullable=false");
+    descriptor.type_uuid = Uuid(1800 + leg.lexical_source_ordinal * 10 + column);
+    descriptor.descriptor_uuid = leg.output_descriptor_uuids[column];
     descriptor.descriptor_kind = "scalar";
     batch.columns.push_back({schema[column].first, descriptor, false,
                              leg.output_descriptor_ids[column]});
   }
   for (std::uint64_t row = 0; row < 3; ++row) {
     executor::DescriptorTuple tuple;
-    tuple.values.push_back(executor::MakeExecutorValue(
-        batch.columns[0].descriptor,
-        Uuid(2000 + leg.lexical_source_ordinal * 10 + row)));
+    auto identity_value = executor::MakeExecutorValue(batch.columns[0].descriptor, {});
+    const auto identity = Uuid(2000 + leg.lexical_source_ordinal * 10 + row);
+    identity_value.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
+    tuple.values.push_back(std::move(identity_value));
     if (vector) {
       tuple.values.push_back(executor::MakeExecutorValue(
           batch.columns[1].descriptor, std::to_string(row + 1)));
@@ -489,7 +490,10 @@ executor::ModelFamilyExecutionRequestV1 LegExecution(
         identity.vertex_uuid = Uuid(2700 + row);
         identity.path_uuid = Uuid(2800 + row);
       } else if (input.family_id == "vector") {
-        identity.row_uuid = batch.rows[row].values[0].encoded_value;
+        const auto& bytes = batch.rows[row].values[0].binary_value;
+        if (bytes.size() != identity.row_uuid.bytes.size())
+          throw std::runtime_error("vector fixture row identity must be binary16");
+        std::copy(bytes.begin(), bytes.end(), identity.row_uuid.bytes.begin());
         identity.vector_distance = batch.rows[row].values[1].encoded_value;
         identity.vector_score = batch.rows[row].values[2].encoded_value;
       }
@@ -939,9 +943,9 @@ int main() {
       [original_document_provider](const auto& input) {
         auto output = original_document_provider(input);
         output.provider_batch.batch.columns[0]
-            .descriptor.descriptor_uuid.canonical = Uuid(9990);
+            .descriptor.descriptor_uuid = Uuid(9990);
         for (auto& row : output.provider_batch.batch.rows) {
-          row.values[0].descriptor.descriptor_uuid.canonical = Uuid(9990);
+          row.values[0].descriptor.descriptor_uuid = Uuid(9990);
         }
         return output;
       };

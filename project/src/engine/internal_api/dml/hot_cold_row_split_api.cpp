@@ -12,6 +12,7 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -19,11 +20,11 @@ namespace {
 namespace page = scratchbird::storage::page;
 namespace platform = scratchbird::core::platform;
 
-platform::TypedUuid ParseUuid(platform::UuidKind kind, const std::string& text) {
-  if (text.empty()) {
+platform::TypedUuid ParseUuid(platform::UuidKind kind, const EngineUuid& identity) {
+  if (identity.is_nil()) {
     return {};
   }
-  const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(kind, text);
+  const auto parsed = scratchbird::core::uuid::MakeTypedUuid(kind, identity);
   return parsed.ok() ? parsed.value : platform::TypedUuid{};
 }
 
@@ -48,7 +49,13 @@ std::vector<page::HotColdFieldInput> BuildFieldInputs(
   for (const auto& [name, value] : request.row.fields) {
     page::HotColdFieldInput field;
     field.field_name = name;
-    field.encoded_value = value.encoded_value;
+    if (value.descriptor.canonical_type_name == "uuid" && !value.isSqlNull()) {
+      if (!value.encoded_value.empty() || value.binary_value.size() != 16)
+        throw std::invalid_argument("hot_cold_uuid_binary16_required");
+      field.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
+    } else {
+      field.encoded_value = value.encoded_value;
+    }
     if (const auto* policy = PolicyForField(request.field_policy, name)) {
       field.metadata = policy->metadata;
       field.indexed = policy->indexed;

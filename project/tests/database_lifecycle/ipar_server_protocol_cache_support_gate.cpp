@@ -80,11 +80,15 @@ std::array<std::uint8_t, 16> UuidBytes(std::uint8_t seed) {
           0x80, 0x00, 0x00, 0x00, 0x00, seed, seed, seed};
 }
 
-std::string UuidText(unsigned int suffix) {
-  std::ostringstream out;
-  out << "019f4000-0000-7000-8000-" << std::setw(12)
-      << std::setfill('0') << suffix;
-  return out.str();
+scratchbird::core::platform::Uuid FixtureIdentity(unsigned int suffix) {
+  scratchbird::core::platform::Uuid value{};
+  value.bytes = {0x01, 0x9f, 0x40, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 0};
+  for (std::size_t i = 16; i-- > 10;) {
+    const auto low = suffix % 10; suffix /= 10;
+    const auto high = suffix % 10; suffix /= 10;
+    value.bytes[i] = static_cast<std::uint8_t>((high << 4) | low);
+  }
+  return value;
 }
 
 ServerSessionRecord MakeSession(std::uint8_t seed) {
@@ -93,7 +97,7 @@ ServerSessionRecord MakeSession(std::uint8_t seed) {
   session.auth_context_uuid = UuidBytes(static_cast<std::uint8_t>(seed + 10));
   session.principal_uuid = UuidBytes(static_cast<std::uint8_t>(seed + 20));
   session.effective_user_uuid = UuidBytes(static_cast<std::uint8_t>(seed + 30));
-  session.database_uuid = UuidText(900 + seed);
+  session.database_uuid = FixtureIdentity(900 + seed);
   session.catalog_generation = 101;
   session.security_epoch = 201;
   session.descriptor_epoch = 301;
@@ -114,8 +118,8 @@ IparUuidDependency DependencyFor(const IparSupportSessionScope& scope,
   IparUuidDependency dependency;
   dependency.dependency_kind = "table";
   dependency.logical_name = "R" + std::to_string(suffix);
-  dependency.object_uuid = UuidText(100 + suffix);
-  dependency.descriptor_uuid = UuidText(200 + suffix);
+  dependency.object_uuid = FixtureIdentity(100 + suffix);
+  dependency.descriptor_uuid = FixtureIdentity(200 + suffix);
   dependency.descriptor_hash = "sha256:descriptor-" + std::to_string(suffix);
   dependency.catalog_generation = scope.epoch.catalog_generation;
   dependency.descriptor_epoch = scope.epoch.descriptor_epoch;
@@ -136,7 +140,7 @@ scratchbird::server::IparPreparedTemplatePut MakePreparedPut(
       "operation_id=dml.insert_rows\n"
       "operation_family=sblr.dml.insert.v3\n"
       "target_object_uuid=" +
-      request.dependencies.front().object_uuid +
+      std::string(reinterpret_cast<const char*>(request.dependencies.front().object_uuid.bytes.data()), 16) +
       "\nparser_resolved_names_to_uuids=true\n";
   return request;
 }
@@ -161,9 +165,9 @@ scratchbird::server::IparResolvedDescriptorPut MakeDescriptorPut(
   scratchbird::server::IparResolvedDescriptorPut request;
   request.scope = scope;
   request.resolved_name = "R1";
-  request.object_uuid = UuidText(101);
+  request.object_uuid = FixtureIdentity(101);
   request.object_kind = "relation";
-  request.descriptor_uuid = UuidText(201);
+  request.descriptor_uuid = FixtureIdentity(201);
   request.descriptor_hash = "sha256:descriptor-1";
   request.operation_id = "dml.insert_rows";
   return request;
@@ -283,7 +287,7 @@ void ProveResolvedDescriptorCache() {
                         "descriptor capability invalidation");
 
   auto invalid_uuid = MakeDescriptorPut(scope);
-  invalid_uuid.object_uuid = "not-a-uuid";
+  invalid_uuid.object_uuid = {};
   RequireRejectedDetail(support.StoreResolvedDescriptor(invalid_uuid),
                         "ipar_descriptor_uuid_shape_required",
                         "descriptor UUID shape gate");
@@ -441,7 +445,7 @@ void ProveResultBufferReuse() {
   request.scope = scope;
   request.operation_id = "dml.update_rows";
   request.result_shape_hash = "sha256:returning-shape";
-  request.target_object_uuid = UuidText(101);
+  request.target_object_uuid = FixtureIdentity(101);
   request.minimum_capacity = 8192;
   request.returning_path = true;
 
@@ -556,9 +560,43 @@ void ProveHotFailureClassification() {
           "failure classification hit metric");
 }
 
+void ProveBinaryCacheIdentityBoundaries() {
+  scratchbird::server::IparServerProtocolSupport support;
+  auto scope = IparSupportScopeForSession(MakeSession(1));
+  auto first = MakeDescriptorPut(scope);
+  first.object_uuid.bytes[14] = 0;
+  first.object_uuid.bytes[15] = 0xff;
+  const auto stored = support.StoreResolvedDescriptor(first);
+  Require(stored.accepted, "binary UUID containing NUL and ff accepted");
+  auto changed = first;
+  changed.object_uuid.bytes[15] = 0xfe;
+  const auto second = support.StoreResolvedDescriptor(changed);
+  Require(second.accepted && second.cache_key != stored.cache_key,
+          "all 128 identity bits distinguish descriptor cache keys");
+
+  // These values produced identical delimiter-only preimages.
+  auto injected = first;
+  injected.scope.epoch.role_set_hash = "a\ngroup_set_hash=b";
+  injected.scope.epoch.group_set_hash = "c";
+  auto separated = first;
+  separated.scope.epoch.role_set_hash = "a";
+  separated.scope.epoch.group_set_hash = "b\ngroup_set_hash=c";
+  const auto injected_result = support.StoreResolvedDescriptor(injected);
+  const auto separated_result = support.StoreResolvedDescriptor(separated);
+  Require(injected_result.accepted && separated_result.accepted &&
+              injected_result.cache_key != separated_result.cache_key,
+          "cache field boundaries cannot be injected by text content");
+  auto invalid = first;
+  invalid.descriptor_uuid.bytes[8] = 0;
+  RequireRejectedDetail(support.StoreResolvedDescriptor(invalid),
+                        "ipar_descriptor_uuid_shape_required",
+                        "invalid native UUID variant rejected");
+}
+
 }  // namespace
 
 int main() {
+  ProveBinaryCacheIdentityBoundaries();
   ProvePreparedTemplateCache();
   ProveResolvedDescriptorCache();
   ProveBatchingAndDmlDdl();

@@ -1,3 +1,4 @@
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -58,14 +59,14 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+platform::Uuid NewUuidValue(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
+  platform::Uuid database_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -95,7 +96,7 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   Require(db::CreateDatabaseFile(create).ok(),
           "IPAR-P3-05 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   return fixture;
 }
 
@@ -105,11 +106,11 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 101);
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewUuidValue(platform::UuidKind::principal, fixture.salt + 100);
+  context.session_uuid =
+      NewUuidValue(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -157,7 +158,7 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& item : evidence) {
-    if (item.evidence_kind == kind && item.evidence_id == id) {
+    if (item.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(item.evidence_id, id)) {
       return true;
     }
   }
@@ -169,7 +170,7 @@ bool HasEvidenceContaining(const std::vector<api::EngineEvidenceReference>& evid
                            std::string_view needle) {
   for (const auto& item : evidence) {
     if (item.evidence_kind == kind &&
-        item.evidence_id.find(std::string(needle)) != std::string::npos) {
+        scratchbird::tests::EvidenceTextFind(item.evidence_id, std::string(needle)) != std::string::npos) {
       return true;
     }
   }

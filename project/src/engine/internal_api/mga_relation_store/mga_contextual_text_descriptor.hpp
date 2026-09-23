@@ -48,23 +48,26 @@ StrictRelationDescriptorFields(
 bool ReplaceExactRelationDescriptorIdentities(
     std::string* descriptor,
     const std::map<std::string,
-                   std::pair<std::string_view, std::string_view>>& replacements);
+                   std::pair<EngineUuid, EngineUuid>>& replacements);
 bool CanonicalNonNilMigrationUuid(std::string_view value);
+bool CanonicalNonNilMigrationUuid(const EngineUuid& value);
 bool ExactCanonicalTextIdentityAuthorityAvailable(
     const EngineRequestContext& context);
 bool ExactCanonicalMigratedTextDescriptor(
-    const EngineRequestContext& context,
-    std::string_view descriptor,
-    std::string_view column_uuid);
+    const EngineRequestContext& context, std::string_view descriptor,
+    const EngineUuid& column_uuid);
 bool RewriteLegacyTextDescriptor(
     const EngineRequestContext& context,
     std::string* descriptor,
-    std::string_view column_uuid);
+    const EngineUuid& column_uuid);
 EngineApiDiagnostic ContextualTextMgaDiagnostic(std::string detail);
+bool CopyContextualUuidV2(const EngineUuid& value,
+                          MgaContextualTextUuidV2* output,
+                          bool allow_nil = false);
 bool CopyContextualUuidV2(std::string_view text,
                           MgaContextualTextUuidV2* output,
                           bool allow_nil = false);
-std::string ContextualUuidTextV2(const MgaContextualTextUuidV2& value);
+EngineUuid ContextualUuidNativeV2(const MgaContextualTextUuidV2& value);
 std::vector<MgaContextualTextDescriptorFieldPairV2>
 RawContextualDescriptorFieldsV2(
     const std::vector<std::pair<std::string, std::string>>& fields);
@@ -93,11 +96,11 @@ bool RelationDescriptorBoolField(
     std::initializer_list<const char*> keys);
 bool RelationDescriptorRequiresDeferredStore(
     const std::map<std::string, std::string>& fields);
-std::optional<std::string> ParentTableUuidFromRelationDescriptor(
+std::optional<EngineUuid> ParentTableUuidFromRelationDescriptor(
     const std::string& descriptor);
-std::set<std::string> InsertTargetRelationScope(
+std::optional<std::set<EngineUuid>> InsertTargetRelationScope(
     const EngineRequestContext& context,
     const RelationReadSnapshot& metadata,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 
 }  // namespace scratchbird::engine::internal_api

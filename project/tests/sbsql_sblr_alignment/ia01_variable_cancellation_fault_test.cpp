@@ -108,7 +108,7 @@ bridge::StatementContextDispatchRequest PrepareDispatch(
   admission.admitted_parser_package_uuid = live.parser_uuid;
   admission.admitted_parser_package_version_major = 1;
   admission.admitted_registry_snapshot_uuid = live.view.catalog_epoch_uuid;
-  admission.authenticated_principal_uuid = Text(fixture.principal_uuid);
+  admission.authenticated_principal_uuid = Identity(fixture.principal_uuid);
   admission.catalog_snapshot_uuid = live.view.statement_metadata_snapshot_uuid;
   admission.engine_mga_statement_uuid = live.view.statement_uuid;
   admission.engine_mga_snapshot_uuid = live.view.statement_snapshot_uuid;
@@ -167,10 +167,10 @@ void RequireNoVariablePublication(sb_engine_result_t result,
   bridge::StatementQueryExecuteResultHandleView query_handle;
   Require(bridge::ReadStatementQueryExecuteResultHandle(result, &query_handle) ==
               SB_ENGINE_STATUS_CONFLICT &&
-              query_handle.execution_uuid.empty() &&
-              query_handle.result_set_uuid.empty() &&
-              query_handle.row_descriptor_uuid.empty() &&
-              query_handle.snapshot_uuid.empty(),
+              query_handle.execution_uuid.is_nil() &&
+              query_handle.result_set_uuid.is_nil() &&
+              query_handle.row_descriptor_uuid.is_nil() &&
+              query_handle.snapshot_uuid.is_nil(),
           "002336 cancellation published a query result handle");
 
   const auto trace = ReadOptionalFile(trace_path);

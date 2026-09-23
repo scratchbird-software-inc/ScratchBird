@@ -137,6 +137,18 @@ struct PageCacheFrameShardSnapshot {
   u64 allocation_failure_count = 0;
 };
 
+// A metric publication retains the actual database/filespace pair. Global
+// residency remains available above these per-scope gauges in PageCacheSnapshot.
+struct PageCacheMetricScopeSnapshot {
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid filespace_uuid;
+  u64 resident_pages = 0;
+  u64 resident_bytes = 0;
+  u64 pinned_pages = 0;
+  u64 dirty_pages = 0;
+  std::array<PageCacheContextSnapshot, kPageCacheIoContextCount> contexts{};
+};
+
 struct PageCacheSnapshot {
   u64 resident_pages = 0;
   u64 resident_bytes = 0;
@@ -154,6 +166,7 @@ struct PageCacheSnapshot {
   bool sharded_frame_table_bound = false;
   std::vector<PageCacheContextSnapshot> contexts;
   std::vector<PageCacheFrameShardSnapshot> frame_shards;
+  std::vector<PageCacheMetricScopeSnapshot> metric_scopes;
 };
 
 struct PageCacheResidentFrame {
@@ -170,7 +183,7 @@ struct PageCacheResidentFrame {
 
 struct PageCacheFrameShard {
   mutable std::mutex mutex;
-  std::map<std::string, PageCacheResidentFrame> frames;
+  std::map<scratchbird::core::platform::Uuid, PageCacheResidentFrame> frames;
   u64 allocation_count = 0;
   u64 release_count = 0;
   u64 allocation_failure_count = 0;
@@ -183,7 +196,7 @@ struct PageCacheLedger {
   std::array<PageCacheFrameShard, kPageCacheFrameShardCount> frame_shards;
   // Legacy mirror retained for ABI/source compatibility. Resident frame
   // authority lives in frame_shards.
-  std::map<std::string, scratchbird::core::memory::ScopedPageBuffer> resident_frames;
+  std::map<scratchbird::core::platform::Uuid, scratchbird::core::memory::ScopedPageBuffer> resident_frames;
   std::array<PageCacheContextCounters, kPageCacheIoContextCount> context_counters{};
   std::array<u64, kPageCacheIoContextCount> ring_reuse_cursors{};
   u64 frame_allocation_count = 0;
@@ -230,8 +243,8 @@ struct PageCacheLifecycleInput {
 };
 
 struct PageCacheCheckpointPublication {
-  std::string database_uuid;
-  std::string filespace_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid filespace_uuid;
   std::string database_lifecycle_state;
   PageCacheLifecycleState lifecycle_state = PageCacheLifecycleState::not_started;
   PageCacheCheckpointMode checkpoint_mode = PageCacheCheckpointMode::try_checkpoint;
@@ -325,7 +338,16 @@ PageCacheLifecycleResult ApplyPageCacheMemoryPressure(PageCacheLedger* ledger,
                                                       const PageCacheLifecycleInput& input);
 PageCacheLifecycleResult ShutdownFlushPageCacheLifecycle(PageCacheLedger* ledger,
                                                          const PageCacheLifecycleInput& input);
-std::string SerializePageCacheCheckpointJson(const PageCacheCheckpointPublication& publication,
+// SBPCCP02: magic[8], database UUID[16], filespace UUID[16],
+// little-endian detail byte count[8], JSON details (no UUID text).
+// Informational publication only; MGA inventory owns transaction finality.
+struct PageCacheCheckpointEnvelope {
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid filespace_uuid;
+  std::string details_json;
+};
+bool DecodePageCacheCheckpoint(std::string_view bytes, PageCacheCheckpointEnvelope* output);
+std::string SerializePageCacheCheckpoint(const PageCacheCheckpointPublication& publication,
                                              bool diagnostic_role);
 std::vector<std::string> PageCacheDiagnosticCodes();
 DiagnosticRecord MakePageCacheDiagnostic(Status status,

@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -223,8 +224,8 @@ void ValidateEngineNameProfiles(Harness* harness) {
   localized.default_name = true;
   localized.name_class = "primary";
   const auto entry = engine::MakeNameRegistryEntry(
-      context, "019e07f3-012e-7000-8000-000000000001", "table",
-      "019e07f3-012e-7000-8000-000000000002", localized, "fallback");
+      context, scratchbird::tests::FixtureUuidLiteral("019e07f3-012e-7000-8000-000000000001"), "table",
+      scratchbird::tests::FixtureUuidLiteral("019e07f3-012e-7000-8000-000000000002"), localized, "fallback");
   harness->Check(entry.language_tag == "fr-CA",
                  "localized name entry did not inherit default language");
   harness->Check(entry.requires_exact_match && entry.exact_lookup_key == "École",

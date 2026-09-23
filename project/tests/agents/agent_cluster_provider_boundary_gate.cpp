@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -45,7 +46,7 @@ bool HasEvidence(const agents::AgentClusterBoundaryResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) {
       return true;
     }
   }
@@ -68,9 +69,9 @@ agents::AgentRuntimeContext ClusterContext() {
   context.security_context_present = true;
   context.cluster_authority_available = true;
   context.standalone_edition = false;
-  context.principal_uuid = "principal:agent-cluster-boundary";
-  context.database_uuid = "database:agent-cluster-boundary";
-  context.cluster_uuid = "cluster:agent-cluster-boundary";
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 301);
+  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 302);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(1354, 1);
   context.trace_tags.push_back("agent_cluster_provider_boundary_gate");
   return context;
 }
@@ -208,7 +209,7 @@ void TestStandaloneSelectionHasExplicitClusterPathBoundary() {
   agents::AgentClusterLeaseRequest lease_request;
   lease_request.surface = agents::AgentClusterLeaseSurface::acquire_lease;
   lease_request.agent_type_id = "cluster_scheduler_manager";
-  lease_request.instance_uuid = "cluster-agent-instance";
+  lease_request.instance_uuid = scratchbird::tests::FixtureUuid(1354, 2);
   lease_request.now_microseconds = 1000;
   lease_request.lease_duration_microseconds = 1000;
   lease_request.production_live_path = true;

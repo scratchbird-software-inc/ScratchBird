@@ -10,6 +10,8 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "catalog/binary_catalog_metadata.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <map>
@@ -63,37 +65,22 @@ bool OptionBool(const EngineApiRequest& request, std::string_view key) {
   return value == "true" || value == "1" || value == "yes";
 }
 
-std::map<std::string, std::string> PayloadFields(std::string_view payload) {
-  std::map<std::string, std::string> fields;
-  std::string key;
-  std::string value;
-  bool in_key = true;
-  for (char ch : payload) {
-    if (in_key && ch == '=') {
-      in_key = false;
-      continue;
-    }
-    if (ch == ';') {
-      if (!key.empty()) {
-        fields[key] = value;
-      }
-      key.clear();
-      value.clear();
-      in_key = true;
-      continue;
-    }
-    (in_key ? key : value).push_back(ch);
+bool DecodeTemporalPayload(std::string_view payload, BinaryCatalogMetadata* fields) {
+  BinaryCatalogMetadata decoded;
+  if (!DecodeBinaryCatalogMetadata(payload, "temporal.v2", &decoded)) return false;
+  for (const auto& [key, identity] : decoded.identities) {
+    if ((key != "table_uuid" && key != "period_uuid") ||
+        !core::uuid::IsEngineIdentityUuid(identity)) return false;
   }
-  if (!key.empty()) {
-    fields[key] = value;
-  }
-  return fields;
+  *fields = std::move(decoded);
+  return true;
 }
-
-std::string PayloadField(std::string_view payload, std::string_view key) {
-  const auto fields = PayloadFields(payload);
-  const auto it = fields.find(std::string(key));
-  return it == fields.end() ? std::string() : it->second;
+std::string PayloadField(const BinaryCatalogMetadata& fields, std::string_view key) {
+  const auto found = fields.text.find(std::string(key));
+  return found == fields.text.end() ? std::string{} : found->second;
+}
+EngineUuid PayloadUuid(const BinaryCatalogMetadata& fields, const std::string& key) {
+  return BinaryCatalogUuid(fields, key);
 }
 
 std::optional<std::string> CanonicalAxis(std::string axis) {
@@ -109,37 +96,23 @@ std::optional<std::string> CanonicalAxis(std::string axis) {
   return std::nullopt;
 }
 
-std::string TableUuid(const EngineApiRequest& request) {
-  const std::string explicit_table = OptionValue(request, "table_uuid:");
-  if (!explicit_table.empty()) {
-    return explicit_table;
-  }
+EngineUuid TableUuid(const EngineApiRequest& request) {
   for (const auto& object : request.related_objects) {
-    if (object.object_kind == "table" && !object.uuid.is_nil()) {
-      return object.uuid;
-    }
+    if (object.object_kind == "table" && !object.uuid.is_nil()) return object.uuid;
   }
-  if (request.target_object.object_kind == "table") {
-    return request.target_object.uuid;
+  return request.target_object.object_kind == "table" ? request.target_object.uuid : EngineUuid{};
+}
+EngineUuid PeriodUuid(const EngineApiRequest& request) {
+  for (const auto& object : request.related_objects) {
+    if (object.object_kind == kTemporalPeriodKind && !object.uuid.is_nil()) return object.uuid;
   }
-  return {};
+  return request.target_object.object_kind == kTemporalPeriodKind ? request.target_object.uuid : EngineUuid{};
 }
 
-std::string PeriodUuid(const EngineApiRequest& request) {
-  const std::string explicit_period = OptionValue(request, "period_uuid:");
-  if (!explicit_period.empty()) {
-    return explicit_period;
-  }
-  if (request.target_object.object_kind == std::string(kTemporalPeriodKind)) {
-    return request.target_object.uuid;
-  }
-  return request.target_object.uuid;
-}
-
-bool MatchesTarget(const std::string& grant_target,
-                   const std::string& target_uuid,
+bool MatchesTarget(const EngineUuid& grant_target,
+                   const EngineUuid& target_uuid,
                    const EngineApiRequest& request) {
-  return grant_target.empty() || grant_target == "*" ||
+  return grant_target.is_nil() ||
          grant_target == target_uuid ||
          grant_target == request.target_database.uuid ||
          grant_target == request.target_schema.uuid ||
@@ -177,7 +150,7 @@ bool EvidenceTagGrants(const EngineRequestContext& context,
 
 bool HasRight(const EngineApiRequest& request,
               std::string_view right,
-              std::string_view target_uuid) {
+              const EngineUuid& target_uuid) {
   const auto& context = request.context;
   const auto& auth = context.authorization_context;
   if (!context.security_context_present || !auth.present) {
@@ -195,7 +168,7 @@ bool HasRight(const EngineApiRequest& request,
                                grant.right == "ALL" ||
                                grant.right == "SYSARCH";
     if (!right_matches ||
-        !MatchesTarget(grant.target_uuid, std::string(target_uuid), request)) {
+        !MatchesTarget(grant.target_uuid, target_uuid, request)) {
       continue;
     }
     if (grant.deny) {
@@ -227,7 +200,19 @@ EngineApiDiagnostic ValidateBase(const EngineApiRequest& request,
                                  std::string_view operation_id,
                                  bool require_transaction,
                                  std::string_view right,
-                                 std::string_view target_uuid) {
+                                 const EngineUuid& target_uuid) {
+  for (const auto& option : request.option_envelopes) {
+    if (StartsWith(option, "table_uuid:") || StartsWith(option, "period_uuid:")) {
+      return MakeInvalidRequestDiagnostic(std::string(operation_id),
+                                           "temporal_UUID_requires_binary_object_binding");
+    }
+  }
+  for (const auto identity : {TableUuid(request), PeriodUuid(request)}) {
+    if (!identity.is_nil() && !core::uuid::IsEngineIdentityUuid(identity)) {
+      return MakeInvalidRequestDiagnostic(std::string(operation_id),
+                                           "temporal_bound_identity_invalid");
+    }
+  }
   if (ContainsRawSqlText(request)) {
     return MakeInvalidRequestDiagnostic(std::string(operation_id),
                                         "temporal_engine_request_must_not_contain_sql_text");
@@ -288,26 +273,21 @@ EngineApiDiagnostic ValidateRepeatedAxes(const EngineApiRequest& request,
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-std::string TemporalPayload(const EngineApiRequest& request,
+std::optional<std::string> TemporalPayload(const EngineApiRequest& request,
                             std::string_view action,
                             std::string_view axis) {
-  std::string payload;
-  auto append = [&payload](std::string key, std::string value) {
-    if (value.empty()) {
-      return;
-    }
-    if (!payload.empty()) {
-      payload.push_back(';');
-    }
-    payload += std::move(key);
-    payload.push_back('=');
-    payload += std::move(value);
+  BinaryCatalogMetadata fields;
+  const auto append = [&](std::string key, std::string value) {
+    if (!value.empty()) fields.text.emplace(std::move(key), std::move(value));
+  };
+  const auto append_identity = [&](std::string key, const EngineUuid& identity) {
+    if (!identity.is_nil()) fields.identities.emplace(std::move(key), identity);
   };
   append("temporal_action", std::string(action));
   append("axis", std::string(axis));
-  append("period_uuid", PeriodUuid(request));
+  append_identity("period_uuid", PeriodUuid(request));
   append("period_name", ApiBehaviorPrimaryName(request, "unnamed_temporal_period"));
-  append("table_uuid", TableUuid(request));
+  append_identity("table_uuid", TableUuid(request));
   append("system_versioning", OptionValue(request, "system_versioning:"));
   append("history_table", OptionValue(request, "history_table:"));
   append("history_retention", OptionValue(request, "history_retention:"));
@@ -332,6 +312,8 @@ std::string TemporalPayload(const EngineApiRequest& request,
   append("cluster_scope_preserved", "true");
   append("parser_sql_authority", "false");
   append("mga_finality_authority", "engine");
+  std::string payload;
+  if (!EncodeBinaryCatalogMetadata(fields, "temporal.v2", &payload)) return std::nullopt;
   return payload;
 }
 
@@ -360,29 +342,34 @@ TResult DiagnosticResult(const EngineApiRequest& request,
 
 EngineApiDiagnostic AddTemporalPeriodRows(EngineApiResult* result,
                            const EngineApiRequest& request,
-                           std::string_view table_filter,
-                           std::string_view period_filter) {
+                           const EngineUuid& table_filter,
+                           const EngineUuid& period_filter) {
   EngineApiDiagnostic diagnostic;
   const auto records = VisibleApiBehaviorRecords(request.context,
                                                 std::string(kTemporalPeriodKind),
                                                 request.context.local_transaction_id, diagnostic);
   if (diagnostic.error) return diagnostic;
   for (const auto& record : records) {
-    const std::string table_uuid = PayloadField(record.payload, "table_uuid");
-    if (!table_filter.empty() && table_uuid != table_filter) {
+    BinaryCatalogMetadata fields;
+    if (!DecodeTemporalPayload(record.payload, &fields)) {
+      return MakeInvalidRequestDiagnostic(request.operation_id,
+                                           "temporal_catalog_payload_invalid");
+    }
+    const auto table_uuid = PayloadUuid(fields, "table_uuid");
+    if (!table_filter.is_nil() && table_uuid != table_filter) {
       continue;
     }
-    if (!period_filter.empty() && record.object_uuid != period_filter &&
-        PayloadField(record.payload, "period_uuid") != period_filter) {
+    if (!period_filter.is_nil() && record.object_uuid != period_filter &&
+        PayloadUuid(fields, "period_uuid") != period_filter) {
       continue;
     }
     AddApiBehaviorRow(result,
                       {{"period_uuid", record.object_uuid},
                        {"period_name", record.default_name},
                        {"table_uuid", table_uuid},
-                       {"axis", PayloadField(record.payload, "axis")},
-                       {"system_versioning", PayloadField(record.payload, "system_versioning")},
-                       {"history_table_visible", PayloadField(record.payload, "history_table_visible")},
+                       {"axis", PayloadField(fields, "axis")},
+                       {"system_versioning", PayloadField(fields, "system_versioning")},
+                       {"history_table_visible", PayloadField(fields, "history_table_visible")},
                        {"period_descriptor_storage", "table_descriptor_field"},
                        {"period_uuid_kind", "uuidv7"},
                        {"mga_snapshot_visible_through",
@@ -396,7 +383,7 @@ EngineApiDiagnostic AddTemporalPeriodRows(EngineApiResult* result,
 EngineCreateTemporalPeriodResult EngineCreateTemporalPeriod(
     const EngineCreateTemporalPeriodRequest& request) {
   constexpr std::string_view kOperation = "versioned.bitemporal.create_period";
-  const std::string table_uuid = TableUuid(request);
+  const auto table_uuid = TableUuid(request);
   const auto base = ValidateBase(request,
                                  kOperation,
                                  true,
@@ -441,6 +428,11 @@ EngineCreateTemporalPeriodResult EngineCreateTemporalPeriod(
     }
   }
 
+  const auto payload = TemporalPayload(request, "create_period", *axis);
+  if (!payload) {
+    return DiagnosticResult<EngineCreateTemporalPeriodResult>(request, std::string(kOperation),
+        MakeInvalidRequestDiagnostic(std::string(kOperation), "temporal_payload_encoding_failed"));
+  }
   EngineCreateTemporalPeriodRequest normalized = request;
   normalized.target_object.object_kind = std::string(kTemporalPeriodKind);
   auto result = PersistedRecordResultWithPayload<EngineCreateTemporalPeriodResult>(
@@ -450,7 +442,7 @@ EngineCreateTemporalPeriodResult EngineCreateTemporalPeriod(
       true,
       "active",
       false,
-      TemporalPayload(request, "create_period", *axis));
+      *payload);
   if (result.ok) {
     result.result_shape.result_kind = "rs.bitemporal.periods.v1";
     AddTemporalEvidence(&result, "create_period", "EngineCreateTemporalPeriod");
@@ -481,6 +473,11 @@ EngineDropTemporalPeriodResult EngineDropTemporalPeriod(
                                 "sbsql.temporal.history_disposition_required",
                                 "drop_period_requires_explicit_history_disposition"));
   }
+  const auto payload = TemporalPayload(request, "drop_period", "period_drop");
+  if (!payload) {
+    return DiagnosticResult<EngineDropTemporalPeriodResult>(request, std::string(kOperation),
+        MakeInvalidRequestDiagnostic(std::string(kOperation), "temporal_payload_encoding_failed"));
+  }
   EngineDropTemporalPeriodRequest normalized = request;
   normalized.target_object.object_kind = std::string(kTemporalPeriodKind);
   auto result = PersistedRecordResultWithPayload<EngineDropTemporalPeriodResult>(
@@ -490,7 +487,7 @@ EngineDropTemporalPeriodResult EngineDropTemporalPeriod(
       true,
       "dropped",
       true,
-      TemporalPayload(request, "drop_period", "period_drop"));
+      *payload);
   if (result.ok) {
     result.result_shape.result_kind = "rs.ddl.commit.v1";
     AddTemporalEvidence(&result, "drop_period", "EngineDropTemporalPeriod");
@@ -555,19 +552,25 @@ EngineShowBitemporalHistoryResult EngineShowBitemporalHistory(
   if (behavior_diagnostic.error) return DiagnosticResult<EngineShowBitemporalHistoryResult>(
       request, std::string(kOperation), behavior_diagnostic);
   for (const auto& record : dml_records) {
-    if (!TableUuid(request).empty() &&
-        PayloadField(record.payload, "table_uuid") != TableUuid(request)) {
+    BinaryCatalogMetadata fields;
+    if (!DecodeTemporalPayload(record.payload, &fields)) {
+      return DiagnosticResult<EngineShowBitemporalHistoryResult>(request,
+          std::string(kOperation), MakeInvalidRequestDiagnostic(std::string(kOperation),
+              "temporal_catalog_payload_invalid"));
+    }
+    if (!TableUuid(request).is_nil() &&
+        PayloadUuid(fields, "table_uuid") != TableUuid(request)) {
       continue;
     }
     AddApiBehaviorRow(&result,
                       {{"temporal_dml_event_uuid", record.object_uuid},
-                       {"table_uuid", PayloadField(record.payload, "table_uuid")},
-                       {"period_uuid", PayloadField(record.payload, "period_uuid")},
-                       {"axis", PayloadField(record.payload, "axis")},
-                       {"system_time_from", PayloadField(record.payload, "system_time_from")},
-                       {"system_time_to", PayloadField(record.payload, "system_time_to")},
-                       {"application_time_from", PayloadField(record.payload, "application_time_from")},
-                       {"application_time_to", PayloadField(record.payload, "application_time_to")}});
+                       {"table_uuid", PayloadUuid(fields, "table_uuid")},
+                       {"period_uuid", PayloadUuid(fields, "period_uuid")},
+                       {"axis", PayloadField(fields, "axis")},
+                       {"system_time_from", PayloadField(fields, "system_time_from")},
+                       {"system_time_to", PayloadField(fields, "system_time_to")},
+                       {"application_time_from", PayloadField(fields, "application_time_from")},
+                       {"application_time_to", PayloadField(fields, "application_time_to")}});
   }
   result.result_shape.result_kind = "rs.bitemporal.history.v1";
   return result;
@@ -666,6 +669,11 @@ EngineApplyForPortionOfPeriodResult EngineApplyForPortionOfPeriod(
                                                                  std::string(kOperation),
                                                                  bounds);
   }
+  const auto payload = TemporalPayload(request, "for_portion_of_period", "application_time");
+  if (!payload) {
+    return DiagnosticResult<EngineApplyForPortionOfPeriodResult>(request, std::string(kOperation),
+        MakeInvalidRequestDiagnostic(std::string(kOperation), "temporal_payload_encoding_failed"));
+  }
   EngineApplyForPortionOfPeriodRequest normalized = request;
   normalized.target_object.object_kind = std::string(kTemporalDmlEventKind);
   auto result = PersistedRecordResultWithPayload<EngineApplyForPortionOfPeriodResult>(
@@ -675,7 +683,7 @@ EngineApplyForPortionOfPeriodResult EngineApplyForPortionOfPeriod(
       true,
       "applied",
       false,
-      TemporalPayload(request, "for_portion_of_period", "application_time"));
+      *payload);
   if (result.ok) {
     result.result_shape.result_kind = "rs.dml.change.v1";
     result.dml_summary.rows_changed = request.rows.empty() ? 1 : request.rows.size();

@@ -194,14 +194,21 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
       static_cast<std::size_t>(output_row_bound);
   const auto filter_memory = total_memory;
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
+  std::array<api::EngineUuid, 5> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live aggregate identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto aggregate_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "grouped-aggregate.capability");
+      owned_identities[1];
   const auto filter_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "grouped-having.capability");
+      owned_identities[2];
   std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id, std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -752,18 +759,9 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          has_having ? "grouped-having.execution-attempt"
-                     : "grouped-aggregate.execution-attempt");
+      owned_identities[3];
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(request.context.local_transaction_id) + ":" +
-              std::to_string(
-                  request.context.snapshot_visible_through_local_transaction_id),
-          has_having ? "grouped-having.transaction-effect-unchanged"
-                     : "grouped-aggregate.transaction-effect-unchanged");
+      owned_identities[4];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -1300,12 +1298,19 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
                   "live global aggregate transformation is unresolved");
   }
 
-  const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
+  std::array<api::EngineUuid, 4> owned_identities{};
+  for (auto& identity : owned_identities) {
+    const auto issued = core::uuid::IssueRuntimeIdentityV7();
+    if (!issued) {
+      return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
+                    "live aggregate identity allocation failed");
+    }
+    identity = *issued;
+  }
   const auto values_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "values.capability");
+      owned_identities[0];
   const auto aggregate_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "aggregate.capability");
+      owned_identities[1];
   std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
@@ -1644,16 +1649,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" + request.context.current_monotonic_ns,
-          "aggregate.execution-attempt");
+      owned_identities[2];
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
-      DerivedCanonicalUuid(
-          identity_scope + ":" +
-              std::to_string(request.context.local_transaction_id) + ":" +
-              std::to_string(
-                  request.context.snapshot_visible_through_local_transaction_id),
-          "aggregate.transaction-effect-unchanged");
+      owned_identities[3];
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =

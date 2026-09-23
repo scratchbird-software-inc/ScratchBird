@@ -22,7 +22,9 @@ namespace scratchbird::engine::internal_api {
 // allocation evidence only; MGA transaction inventory remains commit/rollback
 // and visibility authority.
 
-inline constexpr const char* kSequenceGeneratorLifecycleEventMagic = "SBSEQGEN1";
+inline constexpr const char* kSequenceGeneratorLifecycleEventMagic = "sequence.event.v2";
+
+inline constexpr EngineUuid kSequenceInt64TypeUuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x12}};
 
 inline constexpr const char* kSequenceDiagnosticOk = "SB_ENGINE_API_OK";
 inline constexpr const char* kSequenceDiagnosticDatabasePathRequired = "GENERATOR.DATABASE_PATH_REQUIRED";
@@ -47,14 +49,14 @@ inline constexpr const char* kSequenceDiagnosticPolicyResolutionFailed =
 inline constexpr const char* kSequenceDiagnosticDatabaseWriteFailed = "GENERATOR.DATABASE_WRITE_FAILED";
 
 struct EngineSequenceGeneratorDefinition {
-  std::string generator_uuid;
-  std::string database_uuid;
-  std::string schema_uuid;
-  std::string table_uuid;
-  std::string column_uuid;
-  std::string constraint_uuid;
-  std::string domain_uuid;
-  std::string value_type_uuid = "int64";
+  EngineUuid generator_uuid{};
+  EngineUuid database_uuid{};
+  EngineUuid schema_uuid{};
+  EngineUuid table_uuid{};
+  EngineUuid column_uuid{};
+  EngineUuid constraint_uuid{};
+  EngineUuid domain_uuid{};
+  EngineUuid value_type_uuid = kSequenceInt64TypeUuid;
   std::string allocation_mode = "local_node_generator";
   std::int64_t start_value = 1;
   std::int64_t increment_by = 1;
@@ -66,10 +68,10 @@ struct EngineSequenceGeneratorDefinition {
   bool transactional_allocation = false;
   bool reusable_if_no_effect = false;
   bool consumed_on_rollback = true;
-  std::string policy_uuid;
-  std::string policy_version_uuid;
+  EngineUuid policy_uuid{};
+  EngineUuid policy_version_uuid{};
   std::uint64_t policy_generation = 1;
-  std::string reference_profile_uuid;
+  EngineUuid reference_profile_uuid{};
   std::string reference_family;
   std::string reference_mapping_label;
   std::string reference_allocation_timing;
@@ -100,7 +102,7 @@ struct EngineSequenceGeneratorRecord {
   std::int64_t cache_next_value = 0;
   std::uint64_t cache_unused_on_recovery = 0;
   bool recovered_from_persisted_state = false;
-  std::string recovery_snapshot_uuid;
+  EngineUuid recovery_snapshot_uuid{};
   bool retained_by_mga_horizon = false;
   std::vector<std::int64_t> reusable_released_values;
 };
@@ -111,14 +113,14 @@ struct EngineSequenceAllocationRecord {
   std::uint64_t local_transaction_id = 0;
   std::uint64_t sequence_epoch = 0;
   std::uint64_t cache_window_generation = 0;
-  std::string allocation_uuid;
-  std::string reservation_uuid;
-  std::string generator_uuid;
-  std::string table_uuid;
-  std::string column_uuid;
-  std::string statement_uuid;
-  std::string record_uuid;
-  std::string transaction_uuid;
+  EngineUuid allocation_uuid{};
+  EngineUuid reservation_uuid{};
+  EngineUuid generator_uuid{};
+  EngineUuid table_uuid{};
+  EngineUuid column_uuid{};
+  EngineUuid statement_uuid{};
+  EngineUuid record_uuid{};
+  EngineUuid transaction_uuid{};
   std::int64_t allocated_value = 0;
   std::string allocation_mode = "local_node_generator";
   std::string allocation_finality = "allocated_uncommitted";
@@ -140,16 +142,16 @@ struct EngineSequenceAllocationRecord {
 struct EngineIdentityValueBindingRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string identity_binding_uuid;
-  std::string generator_uuid;
-  std::string allocation_uuid;
-  std::string table_uuid;
-  std::string record_uuid;
-  std::string identity_column_uuid;
+  EngineUuid identity_binding_uuid{};
+  EngineUuid generator_uuid{};
+  EngineUuid allocation_uuid{};
+  EngineUuid table_uuid{};
+  EngineUuid record_uuid{};
+  EngineUuid identity_column_uuid{};
   std::string identity_value_kind;
-  std::string identity_value;
+  EngineEvidenceValue identity_value;
   std::string binding_finality = "allocated_uncommitted";
-  std::string transaction_uuid;
+  EngineUuid transaction_uuid{};
   std::uint64_t local_transaction_id = 0;
 };
 
@@ -180,7 +182,7 @@ struct EngineSequenceGeneratorLifecycleState {
   std::uint64_t metadata_epoch = 0;
   std::uint64_t max_event_sequence = 0;
   bool recovered_from_persisted_state = false;
-  std::string recovery_snapshot_uuid;
+  EngineUuid recovery_snapshot_uuid{};
 };
 
 struct EngineLoadSequenceGeneratorLifecycleStateResult {
@@ -212,7 +214,7 @@ EngineSequenceAlterGeneratorResult EngineSequenceAlterGenerator(
     const EngineSequenceAlterGeneratorRequest& request);
 
 struct EngineSequenceRestartGeneratorRequest : EngineApiRequest {
-  std::string generator_uuid;
+  EngineUuid generator_uuid{};
   std::int64_t restart_value = 1;
 };
 struct EngineSequenceRestartGeneratorResult : EngineApiResult {
@@ -223,7 +225,7 @@ EngineSequenceRestartGeneratorResult EngineSequenceRestartGenerator(
     const EngineSequenceRestartGeneratorRequest& request);
 
 struct EngineSequenceDropGeneratorRequest : EngineApiRequest {
-  std::string generator_uuid;
+  EngineUuid generator_uuid{};
 };
 struct EngineSequenceDropGeneratorResult : EngineApiResult {
   EngineSequenceGeneratorRecord generator;
@@ -233,9 +235,9 @@ EngineSequenceDropGeneratorResult EngineSequenceDropGenerator(
     const EngineSequenceDropGeneratorRequest& request);
 
 struct EngineSequenceAllocateValueRequest : EngineApiRequest {
-  std::string generator_uuid;
-  std::string statement_uuid;
-  std::string record_uuid;
+  EngineUuid generator_uuid{};
+  EngineUuid statement_uuid{};
+  EngineUuid record_uuid{};
   bool row_effect_expected = true;
   bool external_exposure_allowed = true;
 };
@@ -249,7 +251,7 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
 
 struct EngineSequenceApplyMgaTransactionOutcomeRequest : EngineApiRequest {
   std::uint64_t outcome_local_transaction_id = 0;
-  std::string outcome_transaction_uuid;
+  EngineUuid outcome_transaction_uuid{};
   std::string mga_outcome;
   bool committed_row_effects = true;
   bool folded_to_no_effect = false;
@@ -262,13 +264,13 @@ EngineSequenceApplyMgaTransactionOutcomeResult EngineSequenceApplyMgaTransaction
     const EngineSequenceApplyMgaTransactionOutcomeRequest& request);
 
 struct EngineSequenceBindIdentityValueRequest : EngineApiRequest {
-  std::string generator_uuid;
-  std::string allocation_uuid;
-  std::string table_uuid;
-  std::string record_uuid;
-  std::string identity_column_uuid;
+  EngineUuid generator_uuid{};
+  EngineUuid allocation_uuid{};
+  EngineUuid table_uuid{};
+  EngineUuid record_uuid{};
+  EngineUuid identity_column_uuid{};
   std::string identity_value_kind = "generator_allocated";
-  std::string identity_value;
+  EngineEvidenceValue identity_value;
   bool attempted_second_uuid_for_row_identity = false;
 };
 struct EngineSequenceBindIdentityValueResult : EngineApiResult {
@@ -280,7 +282,7 @@ EngineSequenceBindIdentityValueResult EngineSequenceBindIdentityValue(
 struct EngineSequenceRecoverGeneratorStateRequest : EngineApiRequest {};
 struct EngineSequenceRecoverGeneratorStateResult : EngineApiResult {
   EngineSequenceGeneratorLifecycleState state;
-  std::string recovery_snapshot_uuid;
+  EngineUuid recovery_snapshot_uuid{};
 };
 EngineSequenceRecoverGeneratorStateResult EngineSequenceRecoverGeneratorState(
     const EngineSequenceRecoverGeneratorStateRequest& request);

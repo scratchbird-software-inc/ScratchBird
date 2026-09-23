@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -162,12 +163,12 @@ void ValidateParserResourceDefaults(Harness* harness) {
                  "max_parser_cache_entries default mismatch");
 
   sbsql::ParserConfig config;
-  config.parser_uuid = "00000000-0000-7000-8000-hardening001";
+  config.parser_uuid = scratchbird::tests::FixtureUuid(1365, 1);
   config.resource_budget = budget;
   sbsql::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "00000000-0000-7000-8000-hardening002";
-  session.connection_uuid = "00000000-0000-7000-8000-hardening003";
+  session.session_uuid = scratchbird::tests::FixtureUuid(1208, 3901);
+  session.connection_uuid = scratchbird::tests::FixtureUuid(1232, 4);
   session.metric_redaction_policy = "redact-sensitive";
   sbsql::SblrTemplateCache cache(static_cast<std::size_t>(budget.max_parser_cache_entries));
   sbsql::ParserMetrics metrics;

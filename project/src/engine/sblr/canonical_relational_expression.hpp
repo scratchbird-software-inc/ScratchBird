@@ -138,7 +138,7 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
 // callbacks provide only engine-owned identities or calculated scalar values
 // that cannot be derived from the object-free relational graph.
 struct CanonicalRelationalExpressionRuntimeServices {
-  std::function<bool(std::string_view type_uuid,
+  std::function<bool(const internal_api::EngineUuid& type_uuid,
                      std::string* canonical_type_name,
                      std::string* diagnostic_id,
                      std::string* refusal_detail)>

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -54,7 +55,8 @@ bool HasDiagnostic(const BoundStatement& bound, std::string_view code) {
 SessionContext AuthenticatedSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "00000000-0000-7000-8000-000000000001";
+  session.admitted_parser_package_uuid = scratchbird::tests::FixtureUuid(1282, 1);
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000000001");
   session.catalog_epoch = 7;
   session.security_policy_epoch = 11;
   session.descriptor_epoch = 13;
@@ -102,7 +104,7 @@ std::filesystem::path MakeFixtureDatabase() {
 BoundStatement BindSql(std::string_view sql,
                        const ParserConfig& config,
                        const SessionContext& session,
-                       const std::vector<std::string>& resolved_object_uuids = {}) {
+                       const std::vector<scratchbird::core::platform::Uuid>& resolved_object_uuids = {}) {
   const auto cst = BuildCst(sql);
   const auto ast = BuildAst(cst);
   return BindAst(ast, cst, config, session, resolved_object_uuids);
@@ -111,10 +113,11 @@ BoundStatement BindSql(std::string_view sql,
 bool ValidateMetadataPreservation() {
   ParserConfig config;
   config.probe_mode = true;
-  config.parser_uuid = "00000000-0000-7000-8000-00000000b006";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000b006");
   config.bundle_contract_id = "sbp_sbsql@binder-test";
   config.build_id = "binder-authority-test";
-  const auto bound = BindSql("SELECT 1", config, AuthenticatedSession());
+  const auto session = AuthenticatedSession();
+  const auto bound = BindSql("SELECT 1", config, session);
   bool ok = true;
   const auto* select = FindStatementSurfaceByName("select");
   ok &= Require(select != nullptr, "missing select descriptor");
@@ -129,12 +132,12 @@ bool ValidateMetadataPreservation() {
   ok &= Require(bound.bound_ast_format_version == 1, "BoundAST format version mismatch");
   ok &= Require(bound.parser_api_major == config.parser_api_major, "parser API major not preserved");
   ok &= Require(bound.protocol_version == config.protocol_version, "protocol version not preserved");
-  ok &= Require(bound.parser_package_uuid == config.parser_uuid, "parser package UUID not preserved");
+  ok &= Require(bound.parser_package_uuid == session.admitted_parser_package_uuid, "parser package UUID not preserved");
   ok &= Require(bound.parser_package_version == config.bundle_contract_id,
                 "parser package version not preserved");
   ok &= Require(bound.parser_build_id == config.build_id, "parser build ID not preserved");
-  ok &= Require(bound.command_registry_snapshot_uuid == "sbsql-generated-registry.v1",
-                "command registry snapshot UUID mismatch");
+  ok &= Require(bound.command_registry_snapshot_uuid.is_nil(),
+                "parser-only binding fabricated a command registry snapshot UUID");
   ok &= Require(bound.catalog_epoch == 7, "catalog epoch not preserved");
   ok &= Require(bound.security_policy_epoch == 11, "security policy epoch not preserved");
   ok &= Require(bound.descriptor_epoch == 13, "descriptor epoch not preserved");
@@ -177,10 +180,8 @@ bool ValidateMetadataPreservation() {
                 "granted scope mismatch");
   ok &= Require(!bound.required_rights.empty() && bound.required_rights[0] == "right.read",
                 "required rights mismatch");
-  ok &= Require(bound.descriptor_refs.size() == 1 &&
-                    bound.descriptor_refs[0] ==
-                        "descriptor.pending_server_or_engine_authority",
-                "parser-only SELECT lost the pending engine descriptor marker");
+  ok &= Require(bound.descriptor_refs.empty(),
+                "parser-only SELECT fabricated an engine descriptor identity");
   ok &= Require(HasStep(bound, "authority.parser.syntax_evidence_only"),
                 "syntax evidence authority step missing");
   ok &= Require(HasStep(bound, "authority.parser.surface_descriptor_candidate"),
@@ -232,7 +233,7 @@ bool ValidatePublicResolverGate() {
       "SELECT * FROM customer",
       endpoint_config,
       session,
-      {"00000000-0000-7000-8000-00000000c001"});
+      {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000c001")});
   ok &= Require(!parser_resolved_only.bound,
                 "parser-resolved UUID bypassed native descriptor authority");
   ok &= Require(parser_resolved_only.messages.has_errors(),
@@ -254,7 +255,7 @@ bool ValidateSecurityAndTransactionAuthorityMetadata() {
   const auto grant = BindSql("GRANT SELECT ON customer TO app_role",
                              config,
                              session,
-                             {"00000000-0000-7000-8000-00000000c002"});
+                             {scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-00000000c002")});
   ok &= Require(grant.bound, "GRANT did not bind with server-resolved UUID evidence");
   ok &= Require(grant.requires_security_authority, "GRANT lacked security authority flag");
   ok &= Require(grant.security_authority_key ==

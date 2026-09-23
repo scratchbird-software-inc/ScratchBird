@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -66,8 +67,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
+api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
+  return NewUuid(kind, salt).value;
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -83,11 +84,11 @@ api::EngineTypedValue TextValue(std::string value) {
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
-  std::string database_uuid;
-  std::string schema_uuid;
-  std::string table_uuid;
-  std::string id_index_uuid;
-  std::string tag_index_uuid;
+  api::EngineUuid database_uuid;
+  api::EngineUuid schema_uuid;
+  api::EngineUuid table_uuid;
+  api::EngineUuid id_index_uuid;
+  api::EngineUuid tag_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -105,12 +106,12 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
-  context.database_uuid.canonical = fixture.database_uuid;
-  context.principal_uuid.canonical =
-      NewUuidText(platform::UuidKind::principal, fixture.salt + 100 + salt);
-  context.session_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, fixture.salt + 200 + salt);
-  context.current_schema_uuid.canonical = fixture.schema_uuid;
+  context.database_uuid = fixture.database_uuid;
+  context.principal_uuid =
+      NewIdentity(platform::UuidKind::principal, fixture.salt + 100 + salt);
+  context.session_uuid =
+      NewIdentity(platform::UuidKind::object, fixture.salt + 200 + salt);
+  context.current_schema_uuid = fixture.schema_uuid;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -186,7 +187,7 @@ api::CrudTableRecord Table(const Fixture& fixture,
 
 api::CrudIndexRecord Index(const Fixture& fixture,
                            const api::EngineRequestContext& context,
-                           std::string index_uuid,
+                           api::EngineUuid index_uuid,
                            std::string column,
                            bool unique) {
   api::CrudIndexRecord index;
@@ -228,11 +229,11 @@ Fixture MakeFixture(platform::u64 salt) {
   }
   Require(created.ok(), "IPAR-P7-10 database create failed");
 
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
-  fixture.schema_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
-  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
-  fixture.id_index_uuid = NewUuidText(platform::UuidKind::object, salt + 12);
-  fixture.tag_index_uuid = NewUuidText(platform::UuidKind::object, salt + 13);
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.schema_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
+  fixture.id_index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
+  fixture.tag_index_uuid = NewIdentity(platform::UuidKind::object, salt + 13);
 
   auto metadata = Begin(fixture, "ipar-p7-10-metadata", 1);
   Require(!api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)).error,
@@ -267,9 +268,9 @@ api::EngineInsertRowsRequest InsertRequest(
     std::vector<api::EngineRowValue> rows) {
   api::EngineInsertRowsRequest request;
   request.context = context;
-  request.target_table.uuid.canonical = fixture.table_uuid;
+  request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
-  request.target_object.uuid.canonical = fixture.table_uuid;
+  request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   request.estimated_row_count = static_cast<api::EngineApiU64>(rows.size());
   request.input_rows = std::move(rows);
@@ -291,7 +292,7 @@ void RequireSelectAndIndexLookups(const Fixture& fixture,
 
   api::EngineSelectRowsRequest select;
   select.context = context;
-  select.source_object.uuid.canonical = fixture.table_uuid;
+  select.source_object.uuid = fixture.table_uuid;
   select.source_object.object_kind = "table";
   select.select_projection.canonical_projection_envelopes.push_back("id");
   select.select_predicate = TagPredicate("hot-tag-1");
@@ -344,49 +345,49 @@ info::SysInformationProjectionContext NavigatorContext() {
 
 void RequireNavigatorTreeProjection() {
   const std::vector<info::SysInformationCatalogObjectSource> objects = {
-      {.object_uuid = "schema-users",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1323, 1),
        .object_class = "schema",
        .catalog_generation_id = 1,
        .created_local_transaction_id = 1},
-      {.object_uuid = "schema-public",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1323, 2),
        .object_class = "schema",
-       .parent_object_uuid = "schema-users",
+       .parent_object_uuid = scratchbird::tests::FixtureUuid(1323, 1),
        .catalog_generation_id = 1,
        .created_local_transaction_id = 1},
-      {.object_uuid = "table-ipar-mixed",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1323, 3),
        .object_class = "table",
-       .schema_uuid = "schema-public",
-       .parent_object_uuid = "schema-public",
+       .schema_uuid = scratchbird::tests::FixtureUuid(1323, 2),
+       .parent_object_uuid = scratchbird::tests::FixtureUuid(1323, 2),
        .table_type = "BASE TABLE",
        .catalog_generation_id = 2,
        .created_local_transaction_id = 2}};
   const std::vector<info::SysInformationResolverNameSource> names = {
-      {.object_uuid = "schema-users",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1323, 1),
        .object_class = "schema",
        .language_tag = "en",
        .name_class = "primary",
        .display_name = "users",
        .normalized_lookup_key = "USERS",
        .catalog_generation_id = 1},
-      {.object_uuid = "schema-public",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1323, 2),
        .object_class = "schema",
-       .scope_uuid = "schema-users",
+       .scope_uuid = scratchbird::tests::FixtureUuid(1323, 1),
        .language_tag = "en",
        .name_class = "primary",
        .display_name = "public",
        .normalized_lookup_key = "PUBLIC",
        .catalog_generation_id = 1},
-      {.object_uuid = "table-ipar-mixed",
+      {.object_uuid = scratchbird::tests::FixtureUuid(1323, 3),
        .object_class = "table",
-       .scope_uuid = "schema-public",
+       .scope_uuid = scratchbird::tests::FixtureUuid(1323, 2),
        .language_tag = "en",
        .name_class = "primary",
        .display_name = "ipar_mixed_reader_writer",
        .normalized_lookup_key = "IPAR_MIXED_READER_WRITER",
        .catalog_generation_id = 2}};
   const std::vector<info::SysInformationColumnSource> columns = {
-      {.relation_object_uuid = "table-ipar-mixed",
-       .schema_uuid = "schema-public",
+      {.relation_object_uuid = scratchbird::tests::FixtureUuid(1323, 3),
+       .schema_uuid = scratchbird::tests::FixtureUuid(1323, 2),
        .column_name = "id",
        .ordinal_position = 1,
        .datatype_name = "character",
@@ -406,9 +407,9 @@ void RequireNavigatorTreeProjection() {
   bool saw_table = false;
   for (const auto& row : tree.rows) {
     for (const auto& field : row.fields) {
-      saw_database = saw_database || field.second == "MixedWorkloadDB";
-      saw_schema = saw_schema || field.second == "public";
-      saw_table = saw_table || field.second == "ipar_mixed_reader_writer";
+      saw_database = saw_database || field.second == info::SysInformationProjectionValue{std::string("MixedWorkloadDB")};
+      saw_schema = saw_schema || field.second == info::SysInformationProjectionValue{std::string("public")};
+      saw_table = saw_table || field.second == info::SysInformationProjectionValue{std::string("ipar_mixed_reader_writer")};
     }
   }
   Require(saw_database && saw_schema && saw_table,
@@ -419,7 +420,7 @@ api::EngineApiU64 SelectCount(const Fixture& fixture) {
   auto context = Begin(fixture, "ipar-p7-10-final-select", 9000);
   api::EngineSelectRowsRequest request;
   request.context = context;
-  request.source_object.uuid.canonical = fixture.table_uuid;
+  request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
   const auto selected = api::EngineSelectRows(request);

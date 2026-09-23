@@ -26,19 +26,22 @@ namespace scratchbird::engine::internal_api {
 // SEARCH_KEY: SB_ENGINE_API_BEHAVIOR_STORE
 // Shared local-node behavior/event store for non-cluster engine internal APIs.
 
-inline constexpr const char* kApiBehaviorEventMagic = "SBAPI1";
+inline constexpr const char* kApiBehaviorEventMagic = "SBAPI002";
 
 struct ApiBehaviorRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
   std::string operation_id;
-  std::string object_uuid;
+  EngineUuid object_uuid;
   std::string object_kind;
   // Migration/display cache only. SQL object name authority is SBNAME1 name registry.
   std::string default_name;
   std::string payload;
   std::string state;
   bool deleted = false;
+  EngineUuid target_database_uuid;
+  EngineUuid target_schema_uuid;
+  EngineUuid target_object_uuid;
 };
 
 struct ApiBehaviorState {
@@ -113,7 +116,7 @@ std::vector<ApiBehaviorRecord> VisibleApiBehaviorRecords(const EngineRequestCont
                                                          std::uint64_t observer_tx,
                                                          EngineApiDiagnostic& diagnostic);
 std::optional<ApiBehaviorRecord> FindVisibleApiBehaviorRecord(const EngineRequestContext& context,
-                                                              const std::string& object_uuid,
+                                                              const EngineUuid& object_uuid,
                                                               std::uint64_t observer_tx,
                                                               EngineApiDiagnostic& diagnostic);
 EngineDescriptor ApiBehaviorDescriptor(const ApiBehaviorRecord& record);

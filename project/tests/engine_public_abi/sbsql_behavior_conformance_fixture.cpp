@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "api_types.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -105,10 +106,10 @@ scratchbird::engine::internal_api::EngineRequestContext ContextFor(const MatrixR
   context.trust_mode = scratchbird::engine::internal_api::EngineTrustMode::embedded_in_process;
   context.request_id = "fspe009-sbsql-behavior";
   context.database_path = database_path;
-  context.database_uuid.canonical = "019e05b1-f009-7000-8000-000000000001";
-  context.principal_uuid.canonical = "019e05b1-f009-7000-8000-000000000002";
-  context.session_uuid.canonical = "019e05b1-f009-7000-8000-000000000003";
-  context.transaction_uuid.canonical = "019e05b1-f009-7000-8000-000000000004";
+  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000001");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000002");
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000003");
+  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000004");
   context.local_transaction_id = row.required_transaction_context ? 7009 : 7009;
   context.snapshot_visible_through_local_transaction_id = context.local_transaction_id;
   context.security_context_present = row.required_security_context;
@@ -131,11 +132,11 @@ scratchbird::engine::internal_api::EngineApiRequest ApiRequestFor(
   scratchbird::engine::internal_api::EngineApiRequest request;
   request.context = context;
   request.operation_id = row.api_operation_id;
-  request.target_database.uuid.canonical = context.database_uuid.canonical;
+  request.target_database.uuid = context.database_uuid;
   request.target_database.object_kind = "database";
-  request.target_schema.uuid.canonical = "019e05b1-f009-7000-8000-000000000010";
+  request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000010");
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = "019e05b1-f009-7000-8000-000000000011";
+  request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000011");
   request.target_object.object_kind = "object";
   request.localized_names.push_back({"en", "default", "schema", "fspe009_object", true});
   request.option_envelopes.push_back("name:fspe009_object");
@@ -150,7 +151,7 @@ scratchbird::engine::internal_api::EngineApiRequest ApiRequestFor(
   request.predicate.canonical_predicate_envelope = "sblr.predicate.true";
   request.projection.canonical_projection_envelopes.push_back("sblr.projection.identity");
   scratchbird::engine::internal_api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = "019e05b1-f009-7000-8000-000000000012";
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000012");
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "text";
   descriptor.encoded_descriptor = "type=text";
@@ -165,8 +166,8 @@ scratchbird::engine::sblr::SblrOperationEnvelope EnvelopeFor(const MatrixRow& ro
   if (registry != nullptr && registry->opcode == row.sblr_operation) {
     envelope.opcode_code = registry->code;
   }
-  envelope.parser_package_uuid = "019e05b1-f009-7000-8000-000000000020";
-  envelope.registry_snapshot_uuid = "019e05b1-f009-7000-8000-000000000021";
+  envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000020");
+  envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019e05b1-f009-7000-8000-000000000021");
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
   envelope.requires_security_context = row.required_security_context;

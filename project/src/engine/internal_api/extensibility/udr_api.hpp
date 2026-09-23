@@ -37,7 +37,11 @@ struct EngineInspectUdrPackageRequest : EngineApiRequest {};
 struct EngineInspectUdrPackageResult : EngineApiResult {};
 EngineInspectUdrPackageResult EngineInspectUdrPackages(const EngineInspectUdrPackageRequest& request);
 
-struct EngineInvokeUdrPackageRequest : EngineApiRequest {};
+struct EngineInvokeUdrPackageRequest : EngineApiRequest {
+  // Session owner binding; never reconstructed from context_packet text.
+  EngineUuid connection_uuid;
+  EngineUuid parser_uuid;
+};
 struct EngineInvokeUdrPackageResult : EngineApiResult {};
 EngineInvokeUdrPackageResult EngineInvokeUdrPackage(const EngineInvokeUdrPackageRequest& request);
 

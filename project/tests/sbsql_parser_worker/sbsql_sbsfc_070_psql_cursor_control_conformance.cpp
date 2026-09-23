@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -136,10 +137,10 @@ ExecuteResultForTest DecodeExecuteResult(const std::vector<std::uint8_t>& payloa
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f7000-0000-7000-8000-000000000301";
-  session.connection_uuid = "019f7000-0000-7000-8000-000000000302";
-  session.database_uuid = "019f7000-0000-7000-8000-000000000303";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f7000-0000-7000-8000-000000000301");
+  session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f7000-0000-7000-8000-000000000302");
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f7000-0000-7000-8000-000000000303");
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
   session.catalog_epoch = 70;
   session.security_policy_epoch = 71;
   session.descriptor_epoch = 72;
@@ -150,7 +151,7 @@ ParserConfig ParserConfigForTest() {
   ParserConfig config;
   config.probe_mode = true;
   config.server_endpoint = "sb_server_sbsfc_070_psql_cursor_control";
-  config.parser_uuid = "019f7000-0000-7000-8000-000000000304";
+  config.parser_uuid = scratchbird::tests::FixtureUuidLiteral("019f7000-0000-7000-8000-000000000304");
   config.bundle_contract_id = "sbp_sbsql@sbsfc-070-psql-cursor-control";
   config.build_id = "sbsql-sbsfc-070-psql-cursor-control";
   return config;
@@ -278,7 +279,7 @@ ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = "/tmp/sb_sbsfc_070_psql_cursor_control.sbdb";
-  session.database_uuid = "019f7000-0000-7000-8000-000000000401";
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f7000-0000-7000-8000-000000000401");
   session.catalog_generation = 70;
   session.security_epoch = 71;
   session.descriptor_epoch = 72;
@@ -287,7 +288,7 @@ ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
   session.local_transaction_id = 1;
   session.snapshot_visible_through_local_transaction_id = 1;
   session.transaction_uuid =
-      scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
+      scratchbird::core::platform::Uuid{sbps::MakeUuidV7Bytes()};
   *session_uuid = session.session_uuid;
   registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return registry;
@@ -300,7 +301,7 @@ HostedEngineState MakeEngineState() {
   database.state = HostedDatabaseState::kOpen;
   database.database_open = true;
   database.database_path = "/tmp/sb_sbsfc_070_psql_cursor_control.sbdb";
-  database.database_uuid = "019f7000-0000-7000-8000-000000000401";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f7000-0000-7000-8000-000000000401");
   state.databases.push_back(database);
   return state;
 }

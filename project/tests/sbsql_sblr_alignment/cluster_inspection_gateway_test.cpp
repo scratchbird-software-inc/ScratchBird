@@ -23,19 +23,18 @@ void Check(bool condition, const char* message) {
   if (!condition && ++failures <= 16) std::cerr << message << '\n';
 }
 
-sblr::SblrOperationEnvelope Frame(bool begin, const std::string& descriptor) {
+sblr::SblrOperationEnvelope Frame(bool begin, const scratchbird::core::platform::Uuid& descriptor) {
   auto frame = scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
       begin ? "engine.op.package_begin" : "engine.op.package_end",
       begin ? "SBLR_PACKAGE_BEGIN" : "SBLR_PACKAGE_END", "inspection.gateway");
   frame.result_shape = "void";
-  const auto parsed = scratchbird::core::uuid::ParseUuid(descriptor);
-  Check(parsed.ok(), "fixture package identity was not a UUID");
+  Check(scratchbird::core::uuid::IsEngineIdentityUuid(descriptor), "fixture package identity was not an engine UUID");
   sblr::SblrOperand operand;
   operand.ordinal = 1;
   operand.type = begin ? "package.header" : "package.footer";
   operand.name = "package_descriptor";
   operand.value_kind = sblr::SblrValueKind::descriptor_ref;
-  operand.value_body.assign(parsed.value.bytes.begin(), parsed.value.bytes.end());
+  operand.value_body.assign(descriptor.bytes.begin(), descriptor.bytes.end());
   frame.operands.push_back(std::move(operand));
   return frame;
 }

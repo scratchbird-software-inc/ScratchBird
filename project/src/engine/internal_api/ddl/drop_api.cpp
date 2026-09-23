@@ -17,6 +17,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "security/security_model.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -42,7 +43,7 @@ bool DropApiConstraintNameMatches(const EngineCatalogNameRecord& name,
 }
 
 bool DropApiObjectIsActiveConstraint(const EngineCatalogObjectLifecycleState& state,
-                                     const std::string& object_uuid) {
+                                     const EngineUuid& object_uuid) {
   return std::find_if(state.objects.begin(),
                       state.objects.end(),
                       [&](const auto& object) {
@@ -183,7 +184,7 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
     return result;
   }
   if (kind == "table" || kind == "relation") {
-    const std::string object_uuid = request.target_object.uuid;
+    const EngineUuid object_uuid = request.target_object.uuid;
     auto temporary_drop = DropMgaTemporaryTable(request.context, object_uuid);
     if (!temporary_drop.ok) {
       if (temporary_drop.target_was_temporary) {
@@ -242,7 +243,7 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
   }
   auto result = PersistedRecordResult<EngineDropObjectResult>(request, "ddl.drop_object", kind, true, "dropped", true);
   if (!result.ok) { return result; }
-  const std::string object_uuid = request.target_object.uuid.is_nil()
+  const EngineUuid object_uuid = request.target_object.uuid.is_nil()
                                       ? result.primary_object.uuid
                                       : request.target_object.uuid;
   const auto retired = RetireNameRegistryEntriesForObject(request.context, "ddl.drop_object", object_uuid);
@@ -267,13 +268,20 @@ EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintReques
   EngineCatalogDropObjectRequest catalog_request;
   static_cast<EngineApiRequest&>(catalog_request) = request;
   catalog_request.operation_id = kOperation;
-  std::string constraint_uuid = request.target_object.uuid;
+  EngineUuid constraint_uuid = request.target_object.uuid;
   const std::string constraint_name = SecurityOptionValue(request, "constraint_name:");
   const std::string target_kind = request.target_object.object_kind;
   if (!constraint_name.empty() && target_kind != "constraint") {
-    std::string owner_uuid = SecurityOptionValue(request, "owner_object_uuid:");
-    if (owner_uuid.empty()) owner_uuid = request.target_object.uuid;
-    if (owner_uuid.empty()) {
+    EngineUuid owner_uuid = request.target_object.uuid;
+    const auto owner_bytes = SecurityOptionValue(request, "owner_object_uuid:");
+    if (!owner_bytes.empty()) {
+      if (owner_bytes.size() != 16) return MakeCrudDiagnosticResult<EngineDropConstraintResult>(
+          request.context,kOperation,MakeInvalidRequestDiagnostic(kOperation,"binary_owner_uuid_required"));
+      std::copy_n(reinterpret_cast<const std::uint8_t*>(owner_bytes.data()),16,owner_uuid.bytes.begin());
+      if (!core::uuid::IsEngineIdentityUuid(owner_uuid)) return MakeCrudDiagnosticResult<EngineDropConstraintResult>(
+          request.context,kOperation,MakeInvalidRequestDiagnostic(kOperation,"binary_owner_uuid_required"));
+    }
+    if (owner_uuid.is_nil()) {
       return MakeCrudDiagnosticResult<EngineDropConstraintResult>(
           request.context,
           kOperation,
@@ -287,7 +295,7 @@ EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintReques
           loaded.diagnostic);
     }
     const std::string requested_key = DropApiLower(constraint_name);
-    constraint_uuid.clear();
+    constraint_uuid = {};
     for (const auto& name : loaded.state.names) {
       if (name.deleted || name.object_kind != "constraint" ||
           name.schema_uuid != owner_uuid) {
@@ -302,7 +310,7 @@ EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintReques
       constraint_uuid = name.object_uuid;
       break;
     }
-    if (constraint_uuid.empty()) {
+    if (constraint_uuid.is_nil()) {
       return MakeCrudDiagnosticResult<EngineDropConstraintResult>(
           request.context,
           kOperation,
@@ -312,7 +320,7 @@ EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintReques
                                   true));
     }
   }
-  if (!constraint_uuid.empty()) {
+  if (!constraint_uuid.is_nil()) {
     catalog_request.target_object.uuid = constraint_uuid;
   }
   catalog_request.target_object.object_kind = "constraint";
@@ -376,7 +384,7 @@ EngineDropTriggerResult EngineDropTrigger(
         MakeEngineApiDiagnostic(
             "MGA.AUTHORITY_MISMATCH",
             "ddl.drop_trigger.executable_generation_mismatch",
-            request.target_object.uuid, true));
+            "target_object_uuid", true));
   }
   const auto active_invocation = std::find_if(
       executable_state.state.active_invocations.begin(),
@@ -390,7 +398,7 @@ EngineDropTriggerResult EngineDropTrigger(
         MakeEngineApiDiagnostic(
             "DDL.DEPENDENCY_CONFLICT",
             "ddl.drop_trigger.active_invocation_conflict",
-            request.target_object.uuid, true));
+            "target_object_uuid", true));
   }
 
   EngineCatalogDropObjectRequest catalog_request;

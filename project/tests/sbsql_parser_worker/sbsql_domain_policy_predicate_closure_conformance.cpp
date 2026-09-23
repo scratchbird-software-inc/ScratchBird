@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/alter_api.hpp"
 #include "ddl/create_api.hpp"
@@ -69,7 +70,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-std::string CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -87,26 +88,27 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "domain policy predicate test database create failed");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
-std::string DomainUuid(unsigned ordinal) {
-  std::ostringstream out;
-  out << "019f0000-0000-7000-8000-" << std::hex << std::setw(12)
-      << std::setfill('0') << (0x420000u + ordinal);
-  return out.str();
+api::EngineUuid DomainUuid(unsigned ordinal) {
+  auto identity = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000000");
+  const std::uint64_t value = 0x420000ull + ordinal;
+  for (unsigned byte = 0; byte < 6; ++byte)
+    identity.bytes[15 - byte] = static_cast<std::uint8_t>(value >> (8 * byte));
+  return identity;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const std::string& database_uuid) {
+                                        const api::EngineUuid& database_uuid) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "sbsql-domain-policy-predicate-closure";
   context.database_path = path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000420101";
-  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000420102";
-  context.current_schema_uuid.canonical = std::string(kSchemaUuid);
+  context.database_uuid = database_uuid;
+  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000420101");
+  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000420102");
+  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000420001");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -119,7 +121,7 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
-                                                 const std::string& database_uuid) {
+                                                 const api::EngineUuid& database_uuid) {
   api::EngineBeginTransactionRequest begin;
   begin.context = EngineContext(path, database_uuid);
   begin.isolation_level = "read_committed";
@@ -145,14 +147,14 @@ api::EngineDescriptor ScalarDescriptor(std::string canonical_type_name) {
 }
 
 api::EngineCreateDomainRequest DomainCreateRequest(const api::EngineRequestContext& context,
-                                                   const std::string& domain_uuid,
+                                                   const api::EngineUuid& domain_uuid,
                                                    const std::string& name,
                                                    const std::string& base_type) {
   api::EngineCreateDomainRequest request;
   request.context = context;
-  request.target_schema.uuid.canonical = std::string(kSchemaUuid);
+  request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000420001");
   request.target_schema.object_kind = "schema";
-  request.target_object.uuid.canonical = domain_uuid;
+  request.target_object.uuid = domain_uuid;
   request.target_object.object_kind = "domain";
   request.localized_names.push_back({"en", "primary", "", name, true});
   request.descriptors.push_back(ScalarDescriptor(base_type));
@@ -167,7 +169,16 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence_refs,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : evidence_refs) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) { return true; }
+    if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) { return true; }
+  }
+  return false;
+}
+
+bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence_refs,
+                 std::string_view kind, const api::EngineUuid& identity) {
+  for (const auto& evidence : evidence_refs) {
+    const auto* value = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && value && *value == identity) return true;
   }
   return false;
 }
@@ -179,7 +190,7 @@ bool HasEvidence(const api::EngineApiResult& result,
 }
 
 api::EngineCreateDomainResult CreateDomainResult(const api::EngineRequestContext& context,
-                                                 const std::string& domain_uuid,
+                                                 const api::EngineUuid& domain_uuid,
                                                  const std::string& name,
                                                  const std::string& base_type,
                                                  const std::string& check_envelope = {},
@@ -195,7 +206,7 @@ api::EngineCreateDomainResult CreateDomainResult(const api::EngineRequestContext
 }
 
 api::EngineDescriptor CreateDomain(const api::EngineRequestContext& context,
-                                   const std::string& domain_uuid,
+                                   const api::EngineUuid& domain_uuid,
                                    const std::string& name,
                                    const std::string& base_type,
                                    const std::string& check_envelope = {},
@@ -235,7 +246,7 @@ void ExpectDomainValidation(const api::EngineRequestContext& context,
   }
   Require(result.ok == expected_ok, "domain validation returned unexpected status");
   if (expected_ok) {
-    Require(HasEvidence(result.evidence, "domain_validation", descriptor.descriptor_uuid.canonical),
+    Require(HasEvidence(result.evidence, "domain_validation", descriptor.descriptor_uuid),
             "domain validation evidence missing");
   } else {
     Require(result.diagnostic.detail == expected_detail, "domain validation diagnostic drifted");
@@ -367,7 +378,7 @@ void RequireCreateAndAlterRefusals(const api::EngineRequestContext& context) {
       CreateDomain(context, DomainUuid(105), "alter_check_refusal_anchor", "text", "not_empty");
   api::EngineAlterObjectRequest alter;
   alter.context = context;
-  alter.target_object.uuid.canonical = descriptor.descriptor_uuid.canonical;
+  alter.target_object.uuid = descriptor.descriptor_uuid;
   alter.target_object.object_kind = "domain";
   alter.option_envelopes.push_back("check_constraint:sblr_predicate:matches_regex:x");
   const auto alter_result = api::EngineAlterObject(alter);
@@ -378,17 +389,17 @@ void RequireCreateAndAlterRefusals(const api::EngineRequestContext& context) {
 }
 
 api::DomainReadPolicyResult ReadDomainColumn(const api::EngineRequestContext& context,
-                                             const std::string& domain_uuid,
+                                             const api::EngineUuid& domain_uuid,
                                              std::string column_name = "domain_col") {
   return api::ApplyDomainReadPoliciesToCrudValues(
       context,
-      {{column_name, "domain:" + domain_uuid}},
+      {{column_name, api::DomainColumnDescriptor(domain_uuid)}},
       {{column_name, "visible"}},
       context.local_transaction_id);
 }
 
 void ExpectReadPolicy(const api::EngineRequestContext& context,
-                      const std::string& domain_uuid,
+                      const api::EngineUuid& domain_uuid,
                       bool expected_ok,
                       std::string_view expected_detail) {
   const auto result = ReadDomainColumn(context, domain_uuid);
@@ -428,7 +439,8 @@ void RequireVisibilityPolicies(const api::EngineRequestContext& context) {
                    false,
                    "domain.validate_value:domain_visibility_requires_security_context:domain_col");
 
-  const std::string required_principal = context.principal_uuid.canonical;
+  const std::string required_principal(
+      reinterpret_cast<const char*>(context.principal_uuid.bytes.data()), 16);
   CreateDomain(context,
                DomainUuid(203),
                "visibility_require_principal",
@@ -437,7 +449,7 @@ void RequireVisibilityPolicies(const api::EngineRequestContext& context) {
                "require_principal:" + required_principal);
   ExpectReadPolicy(context, DomainUuid(203), true, {});
   auto wrong_principal = context;
-  wrong_principal.principal_uuid.canonical = "019f0000-0000-7000-8000-00000042ffff";
+  wrong_principal.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000042ffff");
   ExpectReadPolicy(wrong_principal,
                    DomainUuid(203),
                    false,

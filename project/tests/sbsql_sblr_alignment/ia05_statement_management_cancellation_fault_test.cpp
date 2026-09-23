@@ -79,7 +79,7 @@ LiveReceipt AcquireReceipt(
     const api::EngineRequestContext& context) {
   bridge::StatementContextAcquireRequest request;
   request.engine_context = &context;
-  request.exact_transaction_uuid = context.transaction_uuid.canonical;
+  request.exact_transaction_uuid = context.transaction_uuid;
   LiveReceipt receipt;
   sb_engine_result_t result = nullptr;
   const auto status = bridge::AcquireStatementContextReceipt(
@@ -91,7 +91,7 @@ LiveReceipt AcquireReceipt(
 }
 
 sblr::SblrOperationEnvelope StatementMember(
-    const LiveReceipt& receipt, std::string_view parser_uuid,
+    const LiveReceipt& receipt, const platform::Uuid& parser_uuid,
     const FaultProfile& profile,
     const std::vector<std::uint8_t>& descriptor_bytes) {
   auto member = sblr::MakeSblrEnvelope(
@@ -100,7 +100,7 @@ sblr::SblrOperationEnvelope StatementMember(
   member.opcode_code = profile.opcode_code;
   member.result_shape = std::string(profile.result_shape);
   member.diagnostic_shape = "diagnostic_vector";
-  member.parser_package_uuid = std::string(parser_uuid);
+  member.parser_package_uuid = parser_uuid;
   member.registry_snapshot_uuid = receipt.view.catalog_epoch_uuid;
   member.requires_security_context = true;
   member.requires_transaction_context = true;
@@ -117,7 +117,7 @@ sblr::SblrOperationEnvelope StatementMember(
 
 Submission StatementSubmission(
     const Fixture& fixture, const LiveReceipt& receipt,
-    std::string_view parser_uuid, const FaultProfile& profile,
+    const platform::Uuid& parser_uuid, const FaultProfile& profile,
     const std::vector<std::uint8_t>& descriptor_bytes) {
   return PackageWithMember(
       fixture, receipt.view, parser_uuid,
@@ -127,7 +127,7 @@ Submission StatementSubmission(
 std::vector<std::uint8_t> DispatchSuccess(
     const FaultProfile& profile, const Fixture& fixture,
     PublicSession& session, const LiveReceipt& receipt,
-    std::string_view parser_uuid, const Submission& submission) {
+    const platform::Uuid& parser_uuid, const Submission& submission) {
   bridge::StatementPackageAdmissionReservationHandle reservation;
   auto dispatch = Admit(fixture, session, receipt.view, receipt.handle,
                         parser_uuid, submission, &reservation);
@@ -151,7 +151,7 @@ std::vector<std::uint8_t> DispatchSuccess(
 void DispatchCancelled(
     const FaultProfile& profile, const Fixture& fixture,
     PublicSession& session, const LiveReceipt& receipt,
-    std::string_view parser_uuid, const Submission& submission,
+    const platform::Uuid& parser_uuid, const Submission& submission,
     std::atomic<unsigned>* probes, std::atomic<unsigned>* cancel_on_probe) {
   probes->store(0, std::memory_order_relaxed);
   cancel_on_probe->store(1, std::memory_order_relaxed);
@@ -180,7 +180,7 @@ void DispatchCancelled(
 void ProveCancellationAndReplay(
     const FaultProfile& profile, const Fixture& fixture,
     PublicSession& session, const LiveReceipt& receipt,
-    std::string_view parser_uuid, const Submission& submission,
+    const platform::Uuid& parser_uuid, const Submission& submission,
     std::atomic<unsigned>* probes, std::atomic<unsigned>* cancel_on_probe) {
   DispatchCancelled(profile, fixture, session, receipt, parser_uuid,
                     submission, probes, cancel_on_probe);
@@ -203,7 +203,7 @@ void ProveCancellationAndReplay(
 
 Submission SourceQuerySubmission(
     const FaultProfile& profile, const Fixture& fixture,
-    const LiveReceipt& receipt, std::string_view parser_uuid) {
+    const LiveReceipt& receipt, const platform::Uuid& parser_uuid) {
   auto literal_binding =
       literal_fixture::FinalizeLiteral(receipt.handle, receipt.view);
   auto submission = PackageWithMember(
@@ -274,7 +274,7 @@ std::vector<std::uint8_t> BindPrepare(
 void PublishPreparedStatement(
     const FaultProfile& profile, const Fixture& fixture,
     PublicSession& session, const LiveReceipt& receipt,
-    std::string_view parser_uuid, std::string_view statement_name) {
+    const platform::Uuid& parser_uuid, std::string_view statement_name) {
   const auto query =
       SourceQuerySubmission(profile, fixture, receipt, parser_uuid);
   const auto descriptor =
@@ -509,8 +509,8 @@ int main(int argc, char** argv) {
   std::atomic<unsigned> probes{0};
   std::atomic<unsigned> cancel_on_probe{0};
   auto context = BeginTransaction(fixture, &probes);
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 35920));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 35920));
+  context.current_package_uuid = parser_uuid;
   context.query_cancellation_requested = [&] {
     const auto ordinal = probes.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto target = cancel_on_probe.load(std::memory_order_relaxed);

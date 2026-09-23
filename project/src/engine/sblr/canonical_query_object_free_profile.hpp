@@ -31,7 +31,7 @@ namespace plan = scratchbird::engine::planner;
 struct LivePhysicalNodeProfile {
   std::uint32_t logical_node_id{0};
   std::string implementation_id;
-  std::string capability_uuid;
+  core::platform::Uuid capability_uuid;
   plan::CanonicalLogicalRelationalNodeKind logical_node_kind{
       plan::CanonicalLogicalRelationalNodeKind::kValues};
   exec::PhysicalNodeKind physical_node_kind{exec::PhysicalNodeKind::kValues};
@@ -40,8 +40,8 @@ struct LivePhysicalNodeProfile {
   std::uint64_t memory_bytes_required{0};
   std::size_t minimum_input_count{0};
   std::size_t maximum_input_count{0};
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
+  std::vector<core::platform::Uuid> required_property_uuids;
+  std::vector<core::platform::Uuid> delivered_property_uuids;
   std::vector<plan::CanonicalLogicalPropertyKind> supported_property_kinds;
   std::uint64_t page_read_sequential_units{0};
   std::uint64_t page_read_random_units{0};

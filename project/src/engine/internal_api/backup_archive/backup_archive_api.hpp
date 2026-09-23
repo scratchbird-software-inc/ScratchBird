@@ -179,7 +179,7 @@ EngineFinishBackupForwardSessionResult EngineFinishBackupForwardSession(
 struct EngineEvaluateHistoryDisposalMultiHorizonRequest : EngineApiRequest {
   EngineApiU64 disposable_start_transaction_id = 0;
   EngineApiU64 disposable_end_transaction_id = 0;
-  std::string filespace_uuid;
+  EngineUuid filespace_uuid;
   std::string archive_manifest_uri;
   std::string write_after_segment_uri;
   bool physical_reclaim_requested = true;
@@ -214,7 +214,7 @@ struct EngineEvaluateHistoryDisposalMultiHorizonResult : EngineApiResult {
   EngineUuid decision_uuid;
   EngineApiU64 disposable_start_transaction_id = 0;
   EngineApiU64 disposable_end_transaction_id = 0;
-  std::string filespace_uuid;
+  EngineUuid filespace_uuid;
   std::string archive_manifest_uri;
   std::string write_after_segment_uri;
   std::string blocking_horizon_kind;

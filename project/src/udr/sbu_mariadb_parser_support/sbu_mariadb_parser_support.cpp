@@ -326,8 +326,8 @@ scratchbird::udr::runtime::UdrCallResult ToRuntimeResult(UdrResult result) {
   return {result.ok, std::move(result.payload), std::move(result.message_vector_json)};
 }
 
-scratchbird::udr::runtime::UdrStatus MariadbLifecycle(std::string_view package_uuid) {
-  if (package_uuid != kSbuMariadbPackageUuid) {
+scratchbird::udr::runtime::UdrStatus MariadbLifecycle(const scratchbird::udr::runtime::UdrUuid& package_uuid) {
+  if (package_uuid != kSbuMariadbPackageIdentity) {
     return {false, "UDR.MARIADB.PACKAGE_UUID_MISMATCH", "unexpected_package_uuid"};
   }
   return {true, "UDR.OK", {}};
@@ -615,7 +615,7 @@ UdrResult sbu_mariadb_debug_capabilities(std::string_view render_policy) {
 
 scratchbird::udr::runtime::UdrPackageDescriptor sbu_mariadb_package_descriptor() {
   scratchbird::udr::runtime::UdrPackageDescriptor descriptor;
-  descriptor.package_uuid = std::string(kSbuMariadbPackageUuid);
+  descriptor.package_uuid = kSbuMariadbPackageIdentity;
   descriptor.package_name = std::string(kSbuMariadbPackageName);
   descriptor.abi_version = "sb_udr_v1";
   descriptor.source_revision = "mariadb-parser-support-enterprise-closure";

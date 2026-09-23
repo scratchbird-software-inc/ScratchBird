@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "memory.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "query_memory_arena.hpp"
 #include "query_memory_arena_executor.hpp"
 #include "temp_workspace_lifecycle.hpp"
@@ -74,13 +75,16 @@ mem::AllocationPolicy AllocationPolicy() {
 
 mem::QueryMemoryContext Context() {
   mem::QueryMemoryContext context;
-  context.query_id = "q-094";
-  context.statement_id = "stmt-094";
-  context.session_id = "session-094";
-  context.transaction_id = "txn-094";
-  context.database_id = "db-094";
-  context.engine_id = "engine-094";
-  context.operation_id = "op-094";
+  context.query_id = scratchbird::tests::FixtureUuid(1434, 1);
+  context.statement_id = scratchbird::tests::FixtureUuid(1434, 2);
+  context.session_id = scratchbird::tests::FixtureUuid(1434, 3);
+  context.transaction_id = scratchbird::tests::FixtureUuid(1434, 4);
+  context.database_id = scratchbird::tests::FixtureUuid(1434, 5);
+  context.engine_id = scratchbird::tests::FixtureUuid(1434, 6);
+  context.operation_id = scratchbird::tests::FixtureUuid(1434, 7);
+  context.snapshot_boundary = scratchbird::tests::FixtureUuid(1434, 101);
+  context.metadata_boundary = scratchbird::tests::FixtureUuid(1434, 102);
+  context.resource_budget_reference = scratchbird::tests::FixtureUuid(1434, 103);
   context.engine_mga_authoritative = true;
   return context;
 }
@@ -100,6 +104,8 @@ mem::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
   mem::TempWorkspacePolicy policy;
   policy.policy_name = "odf_094_temp_workspace";
   policy.root_path = root;
+  policy.database_uuid = Context().database_id;
+  policy.engine_uuid = Context().engine_id;
   policy.filespace_quota_bytes = 128 * 1024;
   policy.session_quota_bytes = 128 * 1024;
   policy.transaction_quota_bytes = 128 * 1024;
@@ -164,7 +170,7 @@ void SupportedFamiliesAndRelease() {
       exec::ExecutorQueryShape::dml,
       exec::ExecutorQueryShape::candidate_set};
 
-  std::vector<std::string> grant_ids;
+  std::vector<mem::QueryMemoryUuid> grant_ids;
   for (const auto shape : shapes) {
     auto request = ExecutorRequest(
         shape, 1024, false,
@@ -301,7 +307,7 @@ void FailClosedDiagnostics() {
 
   {
     auto missing = Context();
-    missing.statement_id.clear();
+    missing.statement_id = {};
     mem::QueryMemoryArena arena(missing, Limits(), &allocator, &temp);
     mem::QueryMemoryGrantRequest request;
     request.family = mem::QueryMemoryFamily::search;
@@ -447,7 +453,7 @@ void FailClosedDiagnostics() {
 
   {
     mem::QueryMemoryArena arena(Context(), Limits(), &allocator, &temp);
-    auto refused = arena.Release("missing-grant");
+    auto refused = arena.Release(scratchbird::tests::FixtureUuid(1434, 8));
     Require(!refused.ok(), "ODF-094 unknown grant release was accepted");
     Require(refused.diagnostic.diagnostic_code ==
                 "SB_QUERY_MEMORY_ARENA.UNKNOWN_GRANT",

@@ -129,7 +129,8 @@ bool MetricHasLabel(const metrics::MetricValue& value,
                     std::string_view key,
                     std::string_view expected) {
   for (const auto& label : value.labels) {
-    if (label.key == key && label.value == expected) {
+    const auto* text = std::get_if<std::string>(&label.value);
+    if (label.key == key && text != nullptr && *text == expected) {
       return true;
     }
   }
@@ -145,7 +146,10 @@ double MetricValueFor(std::string_view family,
         MetricHasLabel(value, "context", context) &&
         MetricHasLabel(value, "result", result) &&
         MetricHasLabel(value, "reason", reason)) {
-      return value.value;
+      const auto* counter = std::get_if<std::uint64_t>(&value.value);
+      Require(counter != nullptr && *counter <= (std::uint64_t{1} << 53),
+              "metric counter must retain exact uint64 representation");
+      return static_cast<double>(*counter);
     }
   }
   return -1.0;

@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 #include "engine/internal_api/sblr_cursor_open_coordinator.hpp"
 #include "hash_digest.hpp"
 
@@ -52,7 +53,7 @@ api::SblrCursorOpenSnapshot PublishDescriptor(api::EngineRequestContext& context
   // Legacy coordinator setup only. This constructor currently synthesizes plan
   // receipts; this test does NOT establish executable-plan or public E2E proof.
   const auto result = api::CompileAndPublishSblrExecutablePlanReceipt(
-      context, context.statement_uuid.canonical, occurrence, 1, 1, 64, 1);
+      context, context.statement_uuid, occurrence, 1, 1, 64, 1);
   Require(result.ok, "fixture descriptor publication failed");
   return result.snapshot;
 }
@@ -83,13 +84,13 @@ int main(int argc, char** argv) {
     FixtureDirectory fixture;
     api::EngineRequestContext context;
     context.database_path = (fixture.path / "database").string();
-    context.database_uuid.canonical = "019d0000-0000-7000-8000-000000006387";
+    context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000006387");
     context.security_context_present = true;
     context.statement_metadata_snapshot_engine_owned = true;
-    context.statement_uuid.canonical = "019d0000-0000-7000-8000-000000005849";
-    context.session_uuid.canonical = "019d0000-0000-7000-8000-000000005850";
-    context.principal_uuid.canonical = "019d0000-0000-7000-8000-000000005851";
-    context.transaction_uuid.canonical = "019d0000-0000-7000-8000-000000005852";
+    context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005849");
+    context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005850");
+    context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005851");
+    context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000005852");
     context.trace_tags = {"private_executable_plan_receipt_compiler",
                           "private_cursor_open", "private_cursor_close",
                           "right:SBLR_CURSOR_ADMIN"};
@@ -103,7 +104,7 @@ int main(int argc, char** argv) {
                 "SECURITY.ACCESS_DENIED",
             "recovery must require administrative authority");
 
-    const fs::path journal = context.database_path + ".sb.sblr_cursor_open.v1";
+    const fs::path journal = context.database_path + ".sb.sblr_cursor_open.v2";
     const fs::path saved = fixture.path / "saved-journal";
     fs::rename(journal, saved);
     if (mode == "open_failure") {

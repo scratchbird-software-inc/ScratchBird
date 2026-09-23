@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "mga_relation_store/mga_relation_locator.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
@@ -56,47 +57,29 @@ std::string ScopedRelationStoreRoot(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_relation_scope";
 }
 
-std::string ScopedRelationSegmentName(const std::string& table_uuid) {
-  std::string name;
-  name.reserve(table_uuid.size());
-  for (const char ch : table_uuid) {
-    const bool safe = (ch >= 'a' && ch <= 'z') ||
-                      (ch >= 'A' && ch <= 'Z') ||
-                      (ch >= '0' && ch <= '9') ||
-                      ch == '-' || ch == '_';
-    name.push_back(safe ? ch : '_');
-  }
-  return name.empty() ? std::string("unknown") : name;
-}
-
 std::string ScopedRowStorePath(const EngineRequestContext& context,
-                               const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".rows";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".rows", true);
 }
 
 std::string ScopedRowBinaryStorePath(const EngineRequestContext& context,
-                                     const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".rows.sbnr";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".rows.sbnr", true);
 }
 
 std::string ScopedIndexStorePath(const EngineRequestContext& context,
-                                 const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".indexes";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".indexes", true);
 }
 
 std::string ScopedIndexBinaryStorePath(const EngineRequestContext& context,
-                                       const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".indexes.sbnx";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".indexes.sbnx", true);
 }
 
 std::string ScopedSummaryStorePath(const EngineRequestContext& context,
-                                   const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".summary";
+    const EngineUuid& table_uuid) {
+  return MgaScopedRelationPath(context, table_uuid, ".summary", true);
 }
 
 bool FileExistsAndNotEmpty(const std::string& path) {
@@ -106,7 +89,7 @@ bool FileExistsAndNotEmpty(const std::string& path) {
 }
 
 bool ScopedRelationAnyRowStoreExists(const EngineRequestContext& context,
-                                     const std::string& table_uuid) {
+                                     const EngineUuid& table_uuid) {
   return FileExistsAndNotEmpty(ScopedRowStorePath(context, table_uuid)) ||
          FileExistsAndNotEmpty(ScopedRowBinaryStorePath(context, table_uuid));
 }
@@ -258,107 +241,17 @@ void AddScopedRelationAppendCounters(
   }
 }
 
-bool AppendScopedExactIndexBinaryBatch(
-    std::string* out,
-    const MgaExactIndexEntryAppendBatch& batch,
-    std::uint64_t creator_tx,
-    std::uint64_t first_event_sequence) {
-  if (out == nullptr || batch.entries.empty()) {
-    return false;
-  }
-  const std::string table_uuid =
-      batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
-  if (table_uuid.empty() || batch.index.index_uuid.empty()) {
-    return false;
-  }
-  std::size_t estimate = kScopedIndexBinaryBatchMagic.size() + 2 + 2 + 8 + 8 +
-                         8 + 24 + table_uuid.size() +
-                         batch.index.index_uuid.size() +
-                         batch.index.column_name.size() +
-                         batch.index.family.size();
-  for (const auto& entry : batch.entries) {
-    estimate += 16 + entry.encoded_key.size() + entry.payload_value.size() +
-                entry.row_uuid.size() + entry.version_uuid.size();
-  }
-  ReserveAmortizedAppendCapacity(out, estimate);
-  out->append(kScopedIndexBinaryBatchMagic.data(),
-              kScopedIndexBinaryBatchMagic.size());
-  AppendBinaryU16(out, kScopedIndexBinaryVersion);
-  AppendBinaryU16(out, 0);
-  AppendBinaryU64(out, static_cast<std::uint64_t>(batch.entries.size()));
-  AppendBinaryU64(out, creator_tx);
-  AppendBinaryU64(out, first_event_sequence);
-  if (!AppendBinaryString(out, table_uuid) ||
-      !AppendBinaryString(out, batch.index.index_uuid) ||
-      !AppendBinaryString(out, batch.index.column_name) ||
-      !AppendBinaryString(out, batch.index.family) ||
-      !AppendBinaryString(out, batch.entry_kind.empty() ? "exact"
-                                                        : batch.entry_kind)) {
-    return false;
-  }
-  for (const auto& entry : batch.entries) {
-    if (entry.encoded_key.empty() || entry.row_uuid.empty() ||
-        entry.version_uuid.empty()) {
-      return false;
-    }
-    if (!AppendBinaryString(out, entry.encoded_key) ||
-        !AppendBinaryString(out, entry.payload_value) ||
-        !AppendBinaryString(out, entry.row_uuid) ||
-        !AppendBinaryString(out, entry.version_uuid)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-void AppendIndexEntryStoreLine(std::string* out,
-                               std::uint64_t creator_tx,
-                               std::uint64_t event_sequence,
-                               std::string_view index_uuid,
-                               std::string_view table_uuid,
-                               std::string_view column_name,
-                               std::string_view family,
-                               std::string_view entry_kind,
-                               std::string_view key,
-                               std::string_view payload,
-                               std::string_view row_uuid,
-                               std::string_view version_uuid) {
-  if (out == nullptr) { return; }
-  ReserveAmortizedAppendCapacity(out,
-                                 128 + index_uuid.size() + table_uuid.size() +
-                                     column_name.size() + family.size() +
-                                     entry_kind.size() +
-                                     kLineHexFieldPrefix.size() + key.size() * 2 +
-                                     kLineHexFieldPrefix.size() + payload.size() * 2 +
-                                     row_uuid.size() +
-                                     version_uuid.size());
-  bool first = true;
-  AppendLineField(out, &first, kRowStoreMagic);
-  AppendLineField(out, &first, "INDEX_ENTRY");
-  AppendLineU64Field(out, &first, creator_tx);
-  AppendLineU64Field(out, &first, event_sequence);
-  AppendLineField(out, &first, index_uuid);
-  AppendLineField(out, &first, table_uuid);
-  AppendLineField(out, &first, column_name);
-  AppendLineField(out, &first, family);
-  AppendLineField(out, &first, entry_kind);
-  AppendLineSafeOrHexField(out, &first, key);
-  AppendLineSafeOrHexField(out, &first, payload);
-  AppendLineField(out, &first, row_uuid);
-  AppendLineField(out, &first, version_uuid);
-  out->push_back('\n');
-}
 
 struct PreparedIndexEntryLine {
-  std::string table_uuid;
-  std::string index_uuid;
+  EngineUuid table_uuid;
+  EngineUuid index_uuid;
   std::string column_name;
   std::string family;
   std::string entry_kind;
   std::string key;
   std::string payload;
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
 };
 
 struct PreparedIndexAppendJob {
@@ -421,8 +314,8 @@ bool BulkSortIndexMaterialAllowed(const CrudIndexRecord& index) {
 bool ExactIndexEntryInputLess(const MgaExactIndexEntryAppendBatch& batch,
                               const MgaExactIndexEntryInput& left,
                               const MgaExactIndexEntryInput& right) {
-  const std::string table_uuid =
-      batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
+  const EngineUuid table_uuid =
+      batch.index.table_uuid.is_nil() ? batch.table_uuid : batch.index.table_uuid;
   return std::tie(table_uuid,
                   batch.index.index_uuid,
                   left.encoded_key,
@@ -450,8 +343,8 @@ bool ExactIndexBatchAlreadyInAppendOrder(
 void AddPreparedIndexAppendBatch(const MgaIndexEntryAppendBatch& batch,
                                  PreparedIndexAppendJob* job) {
   if (job == nullptr || batch.rows.empty()) { return; }
-  const std::string table_uuid =
-      batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
+  const EngineUuid table_uuid =
+      batch.index.table_uuid.is_nil() ? batch.table_uuid : batch.index.table_uuid;
   const bool sort_allowed = BulkSortIndexMaterialAllowed(batch.index);
   const std::size_t before_batch = job->entries.size();
   job->entries.reserve(before_batch + batch.rows.size());
@@ -525,14 +418,14 @@ PreparedIndexAppendJob BuildPreparedIndexAppendJob(
 void AddPreparedExactIndexAppendBatch(const MgaExactIndexEntryAppendBatch& batch,
                                       PreparedIndexAppendJob* job) {
   if (job == nullptr || batch.entries.empty()) { return; }
-  const std::string table_uuid =
-      batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
+  const EngineUuid table_uuid =
+      batch.index.table_uuid.is_nil() ? batch.table_uuid : batch.index.table_uuid;
   const bool sort_allowed = BulkSortIndexMaterialAllowed(batch.index);
   const std::size_t before_batch = job->entries.size();
   job->entries.reserve(before_batch + batch.entries.size());
   for (const auto& entry : batch.entries) {
-    if (entry.encoded_key.empty() || entry.row_uuid.empty() ||
-        entry.version_uuid.empty()) {
+    if (entry.encoded_key.empty() || entry.row_uuid.is_nil() ||
+        entry.version_uuid.is_nil()) {
       job->ok = false;
       job->diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
                                                      "exact_index_entry_invalid");
@@ -603,18 +496,22 @@ PreparedIndexLineBufferJob BuildPreparedIndexLineBuffers(
   if (entries.empty()) {
     return job;
   }
-  const std::string single_table_uuid = entries.front().table_uuid;
+  if (entries.size() - 1 > UINT64_MAX - first_event_sequence) {
+    job.ok = false;
+    return job;
+  }
+  const EngineUuid single_table_uuid = entries.front().table_uuid;
   const bool single_table_batch =
       std::all_of(std::next(entries.begin()), entries.end(), [&](const auto& entry) {
         return entry.table_uuid == single_table_uuid;
       });
   if (single_table_batch) {
-    const std::string scoped_path = ScopedIndexStorePath(context, single_table_uuid);
+    const std::string scoped_path = ScopedIndexBinaryStorePath(context, single_table_uuid);
     std::string& scoped_buffer = job.scoped_lines[scoped_path];
     scoped_buffer.reserve(entries.size() * kHotAppendIndexLineReserveBytes);
     std::uint64_t event_sequence = first_event_sequence;
     for (const auto& entry : entries) {
-      AppendIndexEntryStoreLine(&scoped_buffer,
+      if (!AppendScopedIndexEntryBinaryRecord(&scoped_buffer,
                                 context.local_transaction_id,
                                 event_sequence++,
                                 entry.index_uuid,
@@ -625,13 +522,16 @@ PreparedIndexLineBufferJob BuildPreparedIndexLineBuffers(
                                 entry.key,
                                 entry.payload,
                                 entry.row_uuid,
-                                entry.version_uuid);
+                                entry.version_uuid)) {
+        job.ok = false;
+        return job;
+      }
     }
     return job;
   }
   std::map<std::string, std::size_t> entries_per_path;
   for (const auto& entry : entries) {
-    entries_per_path[ScopedIndexStorePath(context, entry.table_uuid)] += 1;
+    entries_per_path[ScopedIndexBinaryStorePath(context, entry.table_uuid)] += 1;
   }
   for (const auto& [path, count] : entries_per_path) {
     job.scoped_lines[path].reserve(count * kHotAppendIndexLineReserveBytes);
@@ -639,8 +539,8 @@ PreparedIndexLineBufferJob BuildPreparedIndexLineBuffers(
   std::uint64_t event_sequence = first_event_sequence;
   for (const auto& entry : entries) {
     std::string& scoped_buffer =
-        job.scoped_lines[ScopedIndexStorePath(context, entry.table_uuid)];
-    AppendIndexEntryStoreLine(&scoped_buffer,
+        job.scoped_lines[ScopedIndexBinaryStorePath(context, entry.table_uuid)];
+    if (!AppendScopedIndexEntryBinaryRecord(&scoped_buffer,
                               context.local_transaction_id,
                               event_sequence++,
                               entry.index_uuid,
@@ -651,7 +551,10 @@ PreparedIndexLineBufferJob BuildPreparedIndexLineBuffers(
                               entry.key,
                               entry.payload,
                               entry.row_uuid,
-                              entry.version_uuid);
+                              entry.version_uuid)) {
+        job.ok = false;
+        return job;
+      }
   }
   return job;
 }
@@ -686,7 +589,7 @@ struct MgaRelationHotAppendContext::Impl {
       scoped_decoded_row_appends;
   std::vector<PreparedIndexAppendJob> pending_prepared_index_jobs;
   std::vector<std::future<PreparedIndexAppendJob>> pending_index_materialization_jobs;
-  std::map<std::string, ScopedRelationSummaryDelta> scoped_row_summary_deltas;
+  std::map<EngineUuid, ScopedRelationSummaryDelta> scoped_row_summary_deltas;
   bool decoded_row_cache_auto_warm = true;
   bool row_dirty = false;
   bool index_dirty = false;
@@ -745,7 +648,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   std::uint64_t event_sequence = reservation.first;
   std::string row_buffer;
   row_buffer.reserve(rows->size() * kHotAppendRowLineReserveBytes);
-  const std::string single_table_uuid = rows->front().table_uuid;
+  const EngineUuid single_table_uuid = rows->front().table_uuid;
   const bool single_table_batch =
       std::all_of(std::next(rows->begin()), rows->end(), [&](const auto& row) {
         return row.table_uuid == single_table_uuid;
@@ -754,8 +657,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   std::string* single_scoped_buffer = nullptr;
   std::vector<CrudRowVersionRecord>* single_decoded_appends = nullptr;
   ScopedRelationSummaryDelta* single_summary_delta = nullptr;
-  std::map<std::string, std::size_t> rows_per_table;
-  std::map<std::string, std::string> scoped_row_path_by_table;
+  std::map<EngineUuid, std::size_t> rows_per_table;
+  std::map<EngineUuid, std::string> scoped_row_path_by_table;
   if (single_table_batch) {
     single_scoped_path = ScopedRowStorePath(impl_->context, single_table_uuid);
     single_scoped_buffer = &impl_->scoped_row_lines[single_scoped_path];
@@ -811,7 +714,6 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     writable.sequence = writable.event_sequence;
     const std::size_t line_start = row_buffer.size();
     AppendRowVersionStoreLine(&row_buffer, writable);
-    row_buffer.push_back('\n');
     const std::string& scoped_path =
         single_table_batch
             ? single_scoped_path
@@ -838,7 +740,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     if (writable.deleted) {
       ++summary_delta.tombstone_count;
     }
-    if (!writable.previous_version_uuid.empty()) {
+    if (!writable.previous_version_uuid.is_nil()) {
       ++summary_delta.update_count;
     }
     impl_->row_dirty = true;
@@ -896,7 +798,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   std::uint64_t event_sequence = reservation.first;
   std::string row_buffer;
   row_buffer.reserve(rows->size() * kHotAppendRowLineReserveBytes);
-  const std::string single_table_uuid = rows->front().table_uuid;
+  const EngineUuid single_table_uuid = rows->front().table_uuid;
   const bool single_table_batch =
       std::all_of(std::next(rows->begin()), rows->end(), [&](const auto& row) {
         return row.table_uuid == single_table_uuid;
@@ -905,8 +807,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   std::string* single_scoped_buffer = nullptr;
   std::vector<CrudRowVersionRecord>* single_decoded_appends = nullptr;
   ScopedRelationSummaryDelta* single_summary_delta = nullptr;
-  std::map<std::string, std::size_t> rows_per_table;
-  std::map<std::string, std::string> scoped_row_path_by_table;
+  std::map<EngineUuid, std::size_t> rows_per_table;
+  std::map<EngineUuid, std::string> scoped_row_path_by_table;
   if (single_table_batch) {
     single_scoped_path = ScopedRowStorePath(impl_->context, single_table_uuid);
     single_scoped_buffer = &impl_->scoped_row_lines[single_scoped_path];
@@ -967,7 +869,6 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
                               writable,
                               writable.event_sequence,
                               values);
-    row_buffer.push_back('\n');
     const std::string& scoped_path =
         single_table_batch
             ? single_scoped_path
@@ -998,7 +899,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     if (writable.deleted) {
       ++summary_delta.tombstone_count;
     }
-    if (!writable.previous_version_uuid.empty()) {
+    if (!writable.previous_version_uuid.is_nil()) {
       ++summary_delta.update_count;
     }
     impl_->row_dirty = true;
@@ -1059,7 +960,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
   std::uint64_t event_sequence = reservation.first;
   std::string row_buffer;
   row_buffer.reserve(rows.size() * kHotAppendRowLineReserveBytes);
-  const std::string single_table_uuid = rows.front().table_uuid;
+  const EngineUuid single_table_uuid = rows.front().table_uuid;
   const bool single_table_batch =
       std::all_of(std::next(rows.begin()), rows.end(), [&](const auto& row) {
         return row.table_uuid == single_table_uuid;
@@ -1068,8 +969,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
   std::string* single_scoped_buffer = nullptr;
   std::vector<CrudRowVersionRecord>* single_decoded_appends = nullptr;
   ScopedRelationSummaryDelta* single_summary_delta = nullptr;
-  std::map<std::string, std::size_t> rows_per_table;
-  std::map<std::string, std::string> scoped_row_path_by_table;
+  std::map<EngineUuid, std::size_t> rows_per_table;
+  std::map<EngineUuid, std::string> scoped_row_path_by_table;
   if (single_table_batch) {
     single_scoped_path = ScopedRowStorePath(impl_->context, single_table_uuid);
     single_scoped_buffer = &impl_->scoped_row_lines[single_scoped_path];
@@ -1127,7 +1028,6 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
     const std::uint64_t row_event_sequence = event_sequence++;
     const std::size_t line_start = row_buffer.size();
     AppendRowVersionStoreLine(&row_buffer, row, row_event_sequence, values);
-    row_buffer.push_back('\n');
     const std::string& scoped_path =
         single_table_batch
             ? single_scoped_path
@@ -1160,7 +1060,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
     if (row.deleted) {
       ++summary_delta.tombstone_count;
     }
-    if (!row.previous_version_uuid.empty()) {
+    if (!row.previous_version_uuid.is_nil()) {
       ++summary_delta.update_count;
     }
     impl_->row_dirty = true;
@@ -1242,7 +1142,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
   const auto* encoded_key_cache_ptr =
       encoded_key_cache.empty() ? nullptr : &encoded_key_cache;
 
-  const std::string single_table_uuid = rows.front().table_uuid;
+  const EngineUuid single_table_uuid = rows.front().table_uuid;
   const bool single_table_batch =
       std::all_of(std::next(rows.begin()), rows.end(), [&](const auto& row) {
         return row.table_uuid == single_table_uuid;
@@ -1251,8 +1151,8 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
   std::string* single_scoped_buffer = nullptr;
   std::vector<CrudRowVersionRecord>* single_decoded_appends = nullptr;
   ScopedRelationSummaryDelta* single_summary_delta = nullptr;
-  std::map<std::string, std::size_t> rows_per_table;
-  std::map<std::string, std::string> scoped_row_path_by_table;
+  std::map<EngineUuid, std::size_t> rows_per_table;
+  std::map<EngineUuid, std::string> scoped_row_path_by_table;
   if (single_table_batch) {
     single_scoped_path = ScopedRowStorePath(impl_->context, single_table_uuid);
     single_scoped_buffer = &impl_->scoped_row_lines[single_scoped_path];
@@ -1320,7 +1220,6 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
                               row_event_sequence,
                               values,
                               encoded_key_cache_ptr);
-    scoped_buffer.push_back('\n');
     std::vector<CrudRowVersionRecord>* decoded_appends = nullptr;
     if (single_table_batch) {
       decoded_appends = single_decoded_appends;
@@ -1344,7 +1243,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
     if (row.deleted) {
       ++summary_delta.tombstone_count;
     }
-    if (!row.previous_version_uuid.empty()) {
+    if (!row.previous_version_uuid.is_nil()) {
       ++summary_delta.update_count;
     }
     ++impl_->counters.row_versions_appended;
@@ -1382,7 +1281,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyTyped(
   if (!reservation.ok) { return reservation.diagnostic; }
   ++impl_->counters.row_range_reservations;
 
-  const std::string single_table_uuid = rows.front().table_uuid;
+  const EngineUuid single_table_uuid = rows.front().table_uuid;
   const bool single_table_batch =
       std::all_of(std::next(rows.begin()), rows.end(), [&](const auto& row) {
         return row.table_uuid == single_table_uuid;
@@ -1437,7 +1336,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyTyped(
     if (row.deleted) {
       ++summary_delta.tombstone_count;
     }
-    if (!row.previous_version_uuid.empty()) {
+    if (!row.previous_version_uuid.is_nil()) {
       ++summary_delta.update_count;
     }
     ++impl_->counters.row_versions_appended;
@@ -1448,8 +1347,8 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyTyped(
 EngineApiDiagnostic
 MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyTyped(
     const std::vector<CrudRowVersionRecord>& row_identities,
-    const std::string& table_uuid,
-    const std::string& temporary_session_uuid,
+    const EngineUuid& table_uuid,
+    const EngineUuid& temporary_session_uuid,
     std::span<const EngineRowValue> typed_rows,
     std::span<const std::string> shared_field_order) {
   if (impl_->context.database_path.empty()) {
@@ -1458,10 +1357,10 @@ MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyTyped(
   if (row_identities.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "row_versions_required");
   }
-  if (table_uuid.empty()) {
+  if (table_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "target_table_uuid_required");
   }
-  if (table_uuid == "unknown") {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(table_uuid)) {
     return MakeInvalidRequestDiagnostic("mga.row_store",
                                         "target_table_uuid_unresolved");
   }
@@ -1480,7 +1379,7 @@ MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyTyped(
     }
   }
   for (const auto& row : row_identities) {
-    if (!row.table_uuid.empty() && row.table_uuid != table_uuid) {
+    if (!row.table_uuid.is_nil() && row.table_uuid != table_uuid) {
       return MakeInvalidRequestDiagnostic("mga.row_store",
                                           "typed_row_table_uuid_mismatch");
     }
@@ -1540,8 +1439,8 @@ MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyTyped(
 EngineApiDiagnostic
 MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyNativePacket(
     const std::vector<CrudRowVersionRecord>& row_identities,
-    const std::string& table_uuid,
-    const std::string& temporary_session_uuid,
+    const EngineUuid& table_uuid,
+    const EngineUuid& temporary_session_uuid,
     const EngineNativeRowPacketFrame& frame) {
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
@@ -1549,7 +1448,7 @@ MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyNativeP
   if (row_identities.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "row_versions_required");
   }
-  if (table_uuid.empty() || table_uuid == "unknown") {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(table_uuid)) {
     return MakeInvalidRequestDiagnostic("mga.row_store",
                                         "target_table_uuid_unresolved");
   }
@@ -1559,7 +1458,7 @@ MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyNativeP
                                         "native_row_packet_shape_invalid");
   }
   for (const auto& row : row_identities) {
-    if (!row.table_uuid.empty() && row.table_uuid != table_uuid) {
+    if (!row.table_uuid.is_nil() && row.table_uuid != table_uuid) {
       return MakeInvalidRequestDiagnostic("mga.row_store",
                                           "native_row_packet_table_uuid_mismatch");
     }
@@ -1778,15 +1677,15 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
     if (batch.entries.empty()) {
       return OkDiagnostic();
     }
-    const std::string table_uuid =
-        batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
-    if (table_uuid.empty() || batch.index.index_uuid.empty()) {
+    const EngineUuid table_uuid =
+        batch.index.table_uuid.is_nil() ? batch.table_uuid : batch.index.table_uuid;
+    if (table_uuid.is_nil() || batch.index.index_uuid.is_nil()) {
       return MakeInvalidRequestDiagnostic("mga.index_store",
                                           "exact_index_entry_invalid");
     }
     for (const auto& entry : batch.entries) {
-      if (entry.encoded_key.empty() || entry.row_uuid.empty() ||
-          entry.version_uuid.empty()) {
+      if (entry.encoded_key.empty() || entry.row_uuid.is_nil() ||
+          entry.version_uuid.is_nil()) {
         return MakeInvalidRequestDiagnostic("mga.index_store",
                                             "exact_index_entry_invalid");
       }
@@ -1827,7 +1726,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
   for (const auto& batch : batches) {
     if (batch.entries.empty()) { continue; }
     for (const auto& entry : batch.entries) {
-      if (entry.encoded_key.empty() || entry.row_uuid.empty() || entry.version_uuid.empty()) {
+      if (entry.encoded_key.empty() || entry.row_uuid.is_nil() || entry.version_uuid.is_nil()) {
         return MakeInvalidRequestDiagnostic("mga.index_store", "exact_index_entry_invalid");
       }
     }

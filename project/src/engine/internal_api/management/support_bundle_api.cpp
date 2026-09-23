@@ -97,13 +97,13 @@ EngineApiDiagnostic InvalidCatalogUuidDiagnostic(std::string field_name) {
                                  true);
 }
 
-EngineApiDiagnostic ValidateOptionalEngineUuid(std::string_view value,
+EngineApiDiagnostic ValidateOptionalEngineUuid(const EngineUuid& value,
                                                platform::UuidKind kind,
                                                std::string field_name) {
-  if (value.empty()) {
+  if (value.is_nil()) {
     return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
-  const auto parsed = uuid::ParseDurableEngineIdentityUuid(kind, std::string(value));
+  const auto parsed = uuid::MakeDurableEngineIdentityUuid(kind, value);
   if (!parsed.ok()) {
     return InvalidCatalogUuidDiagnostic(std::move(field_name));
   }

@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -66,8 +67,8 @@ constexpr std::string_view kBenchmarkCredentialFingerprint =
     "local-password-pbkdf2-sha256:v1:iterations=600000:"
     "salt=0123456789abcdef0123456789abcdef:"
     "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
-constexpr std::string_view kDatatypeCatalogSnapshotUuid =
-    "019d0000-0000-7000-8000-00000000d701";
+constexpr auto kDatatypeCatalogSnapshotUuid =
+    scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
 
 void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -79,17 +80,17 @@ std::uint64_t CurrentUnixMillis() {
   return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
-std::string NewUuid(UuidKind kind) {
+api::EngineUuid NewUuid(UuidKind kind) {
   static std::uint64_t sequence = 0;
   const auto seed = CurrentUnixMillis() + (++sequence);
   if (kind == UuidKind::session) {
     const auto generated = uuid::GenerateCompatibilityUnixTimeV7(seed);
     if (!generated.ok()) Fail("UUID generation failed");
-    return uuid::UuidToString(generated.value);
+    return generated.value;
   }
   const auto generated = uuid::GenerateEngineIdentityV7(kind, seed);
   if (!generated.ok()) Fail("UUID generation failed");
-  return uuid::UuidToString(generated.value.value);
+  return generated.value.value;
 }
 
 api::EngineLocalizedName Name(std::string name) {
@@ -99,9 +100,9 @@ api::EngineLocalizedName Name(std::string name) {
 api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name, std::string type) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
-  column.requested_column_uuid.canonical = NewUuid(UuidKind::object);
+  column.requested_column_uuid = NewUuid(UuidKind::object);
   column.names.push_back(Name(std::move(name)));
-  column.descriptor.descriptor_uuid.canonical = NewUuid(UuidKind::object);
+  column.descriptor.descriptor_uuid = NewUuid(UuidKind::object);
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
   column.descriptor.encoded_descriptor = "type=" + column.descriptor.canonical_type_name;
@@ -110,7 +111,7 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name, std:
 
 api::EngineIndexDefinition CopyStreamUniqueIdIndex() {
   api::EngineIndexDefinition index;
-  index.requested_index_uuid.canonical = NewUuid(UuidKind::object);
+  index.requested_index_uuid = NewUuid(UuidKind::object);
   index.names.push_back(Name("sbsfc021_stream_table_id_unique"));
   index.index_kind = "btree";
   index.key_envelopes.push_back("unique");
@@ -136,34 +137,34 @@ api::EngineTypedValue BigintValue(std::string value) {
   return typed;
 }
 
-api::EngineRowValue CopyStreamRow(std::string row_uuid,
+api::EngineRowValue CopyStreamRow(api::EngineUuid row_uuid,
                                   std::string id,
                                   std::string payload) {
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = std::move(row_uuid);
+  row.requested_row_uuid = std::move(row_uuid);
   row.fields.push_back({"id", BigintValue(std::move(id))});
   row.fields.push_back({"payload", TextValue(std::move(payload))});
   return row;
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
-                                      const std::string& database_uuid) {
-  static const std::string seeder_principal_uuid = NewUuid(UuidKind::principal);
-  static const std::string seeder_session_uuid = NewUuid(UuidKind::session);
+                                      const api::EngineUuid& database_uuid) {
+  static const api::EngineUuid seeder_principal_uuid = NewUuid(UuidKind::principal);
+  static const api::EngineUuid seeder_session_uuid = NewUuid(UuidKind::session);
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.request_id = "sbsql-example-database-seed";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical = seeder_principal_uuid;
-  context.session_uuid.canonical = seeder_session_uuid;
+  context.database_uuid = database_uuid;
+  context.principal_uuid = seeder_principal_uuid;
+  context.session_uuid = seeder_session_uuid;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.canonical =
-      std::string(kDatatypeCatalogSnapshotUuid);
+  context.datatype_catalog_snapshot_uuid =
+      kDatatypeCatalogSnapshotUuid;
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
   context.trace_tags.push_back("sbsql.example_database_seed");
@@ -191,8 +192,8 @@ sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcod
   envelope.opcode_code = registry_entry->code;
   envelope.result_shape = registry_entry->result_contract;
   envelope.diagnostic_shape = "diagnostic_vector";
-  static const std::string parser_package_uuid = NewUuid(UuidKind::object);
-  static const std::string registry_snapshot_uuid = NewUuid(UuidKind::object);
+  static const api::EngineUuid parser_package_uuid = NewUuid(UuidKind::object);
+  static const api::EngineUuid registry_snapshot_uuid = NewUuid(UuidKind::object);
   envelope.parser_package_uuid = parser_package_uuid;
   envelope.registry_snapshot_uuid = registry_snapshot_uuid;
   envelope.contains_sql_text = false;
@@ -207,7 +208,7 @@ struct SeedTransaction {
 };
 
 SeedTransaction BeginSeedTransaction(const std::filesystem::path& database_path,
-                                     const std::string& database_uuid) {
+                                     const api::EngineUuid& database_uuid) {
   auto context = BaseContext(database_path, database_uuid);
   auto envelope = Envelope("engine.op.txn_begin", "SBLR_TXN_BEGIN");
   envelope.requires_transaction_context = false;
@@ -246,7 +247,7 @@ SeedTransaction BeginSeedTransaction(const std::filesystem::path& database_path,
     Fail("canonical transaction-begin admission failed");
   }
   if (admitted.api_result.local_transaction_id != 0 ||
-      !admitted.api_result.transaction_uuid.canonical.empty()) {
+      !admitted.api_result.transaction_uuid.is_nil()) {
     Fail("SBLR transaction-begin admission published engine MGA state");
   }
 
@@ -256,7 +257,7 @@ SeedTransaction BeginSeedTransaction(const std::filesystem::path& database_path,
   begin.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(begin);
   if (!begun.ok || begun.local_transaction_id == 0 ||
-      begun.transaction_uuid.canonical.empty()) {
+      begun.transaction_uuid.is_nil()) {
     Fail("engine-owned transaction begin failed after canonical SBLR admission");
   }
   context.local_transaction_id = begun.local_transaction_id;
@@ -271,12 +272,11 @@ void CommitSeedTransaction(const SeedTransaction& transaction) {
   auto envelope = Envelope("engine.op.txn_commit", "SBLR_TXN_COMMIT");
   envelope.requires_transaction_context = true;
 
-  const auto parsed_transaction =
-      uuid::ParseUuid(transaction.context.transaction_uuid.canonical);
-  if (!parsed_transaction.ok()) Fail("seed transaction UUID is not canonical");
+  if (!uuid::IsEngineIdentityUuid(transaction.context.transaction_uuid))
+    Fail("seed transaction UUID is not an engine identity");
   sblr::SblrTransactionCommitOptionsV1 options;
-  std::copy(parsed_transaction.value.bytes.begin(),
-            parsed_transaction.value.bytes.end(),
+  std::copy(transaction.context.transaction_uuid.bytes.begin(),
+            transaction.context.transaction_uuid.bytes.end(),
             options.transaction_uuid.begin());
   options.local_transaction_id = transaction.context.local_transaction_id;
   options.admitted_handle_evidence_sha256 =
@@ -325,7 +325,7 @@ void CommitSeedTransaction(const SeedTransaction& transaction) {
   }
 }
 
-std::string CreateDatabase(const std::filesystem::path& database_path,
+api::EngineUuid CreateDatabase(const std::filesystem::path& database_path,
                            const std::string& bootstrap_principal) {
   if (std::filesystem::exists(database_path)) {
     Fail("example database already exists; refusing to seed without the database UUID association");
@@ -355,10 +355,10 @@ std::string CreateDatabase(const std::filesystem::path& database_path,
     std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key << '\n';
     Fail("example database creation failed");
   }
-  return uuid::UuidToString(database_uuid.value.value);
+  return database_uuid.value.value;
 }
 
-std::string SchemaUuidForPath(const api::EngineRequestContext& context, const std::string& path) {
+api::EngineUuid SchemaUuidForPath(const api::EngineRequestContext& context, const std::string& path) {
   for (const auto& schema : api::CheckedSchemaTreeRecords(context, context.local_transaction_id)) {
     for (const auto& name : schema.localized_names) {
       if (name.path == path) { return schema.schema_uuid; }
@@ -369,15 +369,15 @@ std::string SchemaUuidForPath(const api::EngineRequestContext& context, const st
 
 
 void CreateTable(const api::EngineRequestContext& context,
-                 std::string table_uuid,
-                 std::string schema_uuid,
+                 api::EngineUuid table_uuid,
+                 api::EngineUuid schema_uuid,
                  std::string name) {
   api::EngineCreateTableRequest request;
   request.context = context;
   request.operation_id = "ddl.create_table";
-  request.target_schema.uuid.canonical = std::move(schema_uuid);
+  request.target_schema.uuid = std::move(schema_uuid);
   request.target_schema.object_kind = "schema";
-  request.requested_table_uuid.canonical = std::move(table_uuid);
+  request.requested_table_uuid = std::move(table_uuid);
   request.table_names.push_back(Name(std::move(name)));
   request.table_columns.push_back(Column(0, "id", "text"));
   request.table_columns.push_back(Column(1, "payload", "text"));
@@ -387,16 +387,16 @@ void CreateTable(const api::EngineRequestContext& context,
 }
 
 void CreateTableWithColumns(const api::EngineRequestContext& context,
-                            std::string table_uuid,
-                            std::string schema_uuid,
+                            api::EngineUuid table_uuid,
+                            api::EngineUuid schema_uuid,
                             std::string name,
                             const std::vector<std::pair<std::string, std::string>>& columns) {
   api::EngineCreateTableRequest request;
   request.context = context;
   request.operation_id = "ddl.create_table";
-  request.target_schema.uuid.canonical = std::move(schema_uuid);
+  request.target_schema.uuid = std::move(schema_uuid);
   request.target_schema.object_kind = "schema";
-  request.requested_table_uuid.canonical = std::move(table_uuid);
+  request.requested_table_uuid = std::move(table_uuid);
   request.table_names.push_back(Name(std::move(name)));
   for (std::uint32_t ordinal = 0; ordinal < columns.size(); ++ordinal) {
     request.table_columns.push_back(
@@ -407,15 +407,15 @@ void CreateTableWithColumns(const api::EngineRequestContext& context,
   }
 }
 
-std::string CreateCopyStreamFixtureTable(const api::EngineRequestContext& context,
-                                         const std::string& public_schema_uuid) {
-  std::string table_uuid = NewUuid(UuidKind::object);
+api::EngineUuid CreateCopyStreamFixtureTable(const api::EngineRequestContext& context,
+                                         const api::EngineUuid& public_schema_uuid) {
+  api::EngineUuid table_uuid = NewUuid(UuidKind::object);
   api::EngineCreateTableRequest request;
   request.context = context;
   request.operation_id = "ddl.create_table";
-  request.target_schema.uuid.canonical = public_schema_uuid;
+  request.target_schema.uuid = public_schema_uuid;
   request.target_schema.object_kind = "schema";
-  request.requested_table_uuid.canonical = table_uuid;
+  request.requested_table_uuid = table_uuid;
   request.table_names.push_back(Name("sbsfc021_stream_table"));
   request.table_columns.push_back(Column(0, "id", "int64"));
   request.table_columns.push_back(Column(1, "payload", "text"));
@@ -427,7 +427,7 @@ std::string CreateCopyStreamFixtureTable(const api::EngineRequestContext& contex
 }
 
 void CreateCurrentBenchmarkTables(const api::EngineRequestContext& context,
-                                  const std::string& public_schema_uuid) {
+                                  const api::EngineUuid& public_schema_uuid) {
   CreateTableWithColumns(context,
                          NewUuid(UuidKind::object),
                          public_schema_uuid,
@@ -489,7 +489,7 @@ void CreateCurrentBenchmarkTables(const api::EngineRequestContext& context,
 
 void CreateTriggerDefinitionFixtures(
     const api::EngineRequestContext& context,
-    const std::string& public_schema_uuid) {
+    const api::EngineUuid& public_schema_uuid) {
   CreateTableWithColumns(context,
                          NewUuid(UuidKind::object),
                          public_schema_uuid,
@@ -515,9 +515,9 @@ void CreateTriggerDefinitionFixtures(
   api::EngineCreateSequenceRequest sequence;
   sequence.context = context;
   sequence.operation_id = "ddl.create_sequence";
-  sequence.target_schema.uuid.canonical = public_schema_uuid;
+  sequence.target_schema.uuid = public_schema_uuid;
   sequence.target_schema.object_kind = "schema";
-  sequence.target_object.uuid.canonical = NewUuid(UuidKind::object);
+  sequence.target_object.uuid = NewUuid(UuidKind::object);
   sequence.target_object.object_kind = "sequence";
   sequence.localized_names.push_back(Name("trig_audit_seq"));
   sequence.option_envelopes.push_back(
@@ -534,11 +534,11 @@ void CreateTriggerDefinitionFixtures(
 }
 
 void SeedCopyStreamFixtureRow(const api::EngineRequestContext& context,
-                              const std::string& table_uuid) {
+                              const api::EngineUuid& table_uuid) {
   api::EngineInsertRowsRequest request;
   request.context = context;
   request.operation_id = "dml.insert_rows";
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(CopyStreamRow(NewUuid(UuidKind::row),
                                              "6",
@@ -549,19 +549,19 @@ void SeedCopyStreamFixtureRow(const api::EngineRequestContext& context,
 }
 
 void SeedChunkedResponseFixtureRows(const api::EngineRequestContext& context,
-                                    const std::string& table_uuid) {
+                                    const api::EngineUuid& table_uuid) {
   constexpr std::size_t kRowCount = 300;
   constexpr std::size_t kPayloadBytes = 3800;
   api::EngineInsertRowsRequest request;
   request.context = context;
   request.operation_id = "dml.insert_rows";
-  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.reserve(kRowCount);
   const std::string payload_prefix(kPayloadBytes - 1, 'x');
   for (std::size_t ordinal = 0; ordinal < kRowCount; ++ordinal) {
     api::EngineRowValue row;
-    row.requested_row_uuid.canonical = NewUuid(UuidKind::row);
+    row.requested_row_uuid = NewUuid(UuidKind::row);
     row.fields.push_back(
         {"id", TextValue("chunk-response-" + std::to_string(ordinal + 1))});
     row.fields.push_back(
@@ -576,18 +576,18 @@ void SeedChunkedResponseFixtureRows(const api::EngineRequestContext& context,
 }
 
 void SeedUserSchemas(const std::filesystem::path& database_path,
-                     const std::string& database_uuid) {
+                     const api::EngineUuid& database_uuid) {
   auto transaction = BeginSeedTransaction(database_path, database_uuid);
   const auto& context = transaction.context;
 
-  const std::string public_schema_uuid = SchemaUuidForPath(context, "users.public");
-  if (public_schema_uuid.empty()) Fail("users.public schema UUID was not visible after database create");
-  const std::string chunked_response_table_uuid = NewUuid(UuidKind::object);
+  const api::EngineUuid public_schema_uuid = SchemaUuidForPath(context, "users.public");
+  if (public_schema_uuid.is_nil()) Fail("users.public schema UUID was not visible after database create");
+  const api::EngineUuid chunked_response_table_uuid = NewUuid(UuidKind::object);
   CreateTable(context,
               chunked_response_table_uuid,
               public_schema_uuid,
               "benchmark_public_items");
-  const std::string copy_stream_table_uuid = CreateCopyStreamFixtureTable(context, public_schema_uuid);
+  const api::EngineUuid copy_stream_table_uuid = CreateCopyStreamFixtureTable(context, public_schema_uuid);
   CreateCurrentBenchmarkTables(context, public_schema_uuid);
   CreateTriggerDefinitionFixtures(context, public_schema_uuid);
   CommitSeedTransaction(transaction);
@@ -596,11 +596,11 @@ void SeedUserSchemas(const std::filesystem::path& database_path,
       BeginSeedTransaction(database_path, database_uuid);
   api::EngineSecurityCreatePrincipalRequest restricted_principal;
   restricted_principal.context = security_transaction.context;
-  restricted_principal.target_object.uuid.canonical =
+  restricted_principal.target_object.uuid =
       NewUuid(UuidKind::principal);
   restricted_principal.target_object.object_kind = "security_principal";
   restricted_principal.principal_uuid =
-      restricted_principal.target_object.uuid.canonical;
+      restricted_principal.target_object.uuid;
   restricted_principal.principal_name =
       std::string(kRestrictedSchemaPrincipal);
   restricted_principal.credential_fingerprint =
@@ -655,7 +655,7 @@ int main(int argc, char** argv) {
   }
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
       "sbsql_example_database_seed");
-  const std::string database_uuid = CreateDatabase(database_path, user);
+  const api::EngineUuid database_uuid = CreateDatabase(database_path, user);
   SeedUserSchemas(database_path, database_uuid);
   std::cout << "sbsql_example_database_seed=passed database=" << database_path
             << " schemas=users,users.public principal=" << user << '\n';

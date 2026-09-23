@@ -1,3 +1,5 @@
+#include "wire/public_result_packet.hpp"
+#include "internal_api/catalog/binary_view_options.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -14,6 +16,7 @@
 #include "engine/statement_management_ack_codec.hpp"
 #include "engine/statement_context_receipt_retention.hpp"
 #include "engine/statement_identity_binding.hpp"
+#include "engine/authority_hash_material.hpp"
 #include "dml/bulk_import_column_digest.hpp"
 #include "engine/statement_snapshot_acquisition_guard.hpp"
 #include "engine/statement_relation_occurrence_mapping.hpp"
@@ -889,6 +892,13 @@ constexpr scratchbird::engine::internal_api::EngineUuid
     kCanonicalTextDescriptorUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
                                  0x80, 0, 0, 0, 0, 0, 0xd7, 0x18}};
 
+constexpr scratchbird::engine::internal_api::EngineUuid
+    kCanonicalInt128DescriptorUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
+                                   0x80, 0, 0, 0, 0, 0, 0xd7, 0x14}};
+constexpr scratchbird::engine::internal_api::EngineUuid
+    kCanonicalInt128TypeUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
+                             0x80, 0, 0, 0, 0, 0, 0xd7, 0x15}};
+
 std::array<std::uint8_t, 16> TextToUuid(const std::string& text) {
   std::array<std::uint8_t, 16> bytes{};
   const auto parsed = scratchbird::core::uuid::ParseUuid(text);
@@ -898,19 +908,9 @@ std::array<std::uint8_t, 16> TextToUuid(const std::string& text) {
   return bytes;
 }
 
-std::string CanonicalUuidText(const std::array<std::uint8_t, 16>& bytes) {
-  scratchbird::core::platform::Uuid value{};
-  std::copy(bytes.begin(), bytes.end(), value.bytes.begin());
-  return scratchbird::core::uuid::UuidToString(value);
-}
-
-std::string OptionalCanonicalUuidText(
+scratchbird::core::platform::Uuid NativeUuid(
     const std::array<std::uint8_t, 16>& bytes) {
-  if (std::all_of(bytes.begin(), bytes.end(),
-                  [](std::uint8_t value) { return value == 0; })) {
-    return {};
-  }
-  return CanonicalUuidText(bytes);
+  return scratchbird::core::platform::Uuid{bytes};
 }
 
 std::string HexBytes(const std::vector<std::uint8_t>& bytes) {
@@ -3590,7 +3590,7 @@ DatabaseHeaderSnapshot database_header_snapshot(std::string_view database_path) 
   return snapshot;
 }
 
-scratchbird::engine::internal_api::EngineRequestContext make_internal_context(
+scratchbird::engine::internal_api::EngineRequestContext make_metadata_inventory_read_context(
     sb_engine_handle_t engine,
     const sb_engine_request_context_v1_t& context) {
   scratchbird::engine::internal_api::EngineRequestContext internal;
@@ -3630,38 +3630,16 @@ scratchbird::engine::internal_api::EngineRequestContext make_internal_context(
       }
     }
   }
-  internal.security_context_present = context.rights_set_ref != 0;
   internal.cluster_authority_available = false;
   internal.catalog_generation_id = 1;
   internal.security_epoch = 1;
   internal.resource_epoch = 1;
   internal.name_resolution_epoch = 1;
   internal.trace_tags.push_back("public_abi");
-  if (context.rights_set_ref != 0) {
-    internal.trace_tags.push_back("group:OPS");
-    auto& authorization = internal.authorization_context;
-    authorization.present = true;
-    authorization.authority_uuid =
-        "public-abi-rights-set:" + std::to_string(context.rights_set_ref);
-    authorization.principal_uuid = internal.principal_uuid;
-    authorization.security_epoch = internal.security_epoch;
-    authorization.policy_epoch = 1;
-    authorization.catalog_generation_id = internal.catalog_generation_id;
-    authorization.effective_subjects.push_back(
-        {internal.principal_uuid, "principal"});
-    for (const char* right : {"OBS_MANAGEMENT_INSPECT",
-                              "OBS_MANAGEMENT_CONTROL"}) {
-      scratchbird::engine::internal_api::EngineMaterializedAuthorizationGrant grant;
-      grant.grant_uuid = authorization.authority_uuid +
-                                   ":" + right;
-      grant.subject_uuid = internal.principal_uuid;
-      grant.subject_kind = "principal";
-      grant.right = right;
-      grant.security_epoch = authorization.security_epoch;
-      authorization.grants.push_back(std::move(grant));
-    }
-    authorization.evidence_tags.push_back("public_abi_rights_set_ref");
-  }
+  // This private context is used only by LoadExecutableObjectLifecycleState
+  // for prepared metadata version checks. The numeric ABI rights-set reference
+  // is a handle, not a durable authorization identity or grant. Execution uses
+  // the retained statement receipt's independently materialized authorization.
   return internal;
 }
 
@@ -3744,7 +3722,7 @@ revalidate_prepared_metadata_binding_current_version(
     *detail = "current_metadata_snapshot_uuid_unavailable";
     return PreparedMetadataCurrentVersionStatus::unavailable;
   }
-  auto current_context = make_internal_context(session->engine, context);
+  auto current_context = make_metadata_inventory_read_context(session->engine, context);
   current_context.statement_metadata_snapshot_engine_owned = true;
   current_context.statement_metadata_snapshot_uuid =
       current_snapshot_uuid;
@@ -3784,15 +3762,17 @@ revalidate_prepared_metadata_binding_current_version(
           pinned->target_executable_generation &&
       current_object->metadata_epoch == pinned->target_metadata_epoch;
   if (!exact_live_version) {
+    // Exact target identity remains in the pinned native binding. Diagnostic
+    // prose reports version state without serializing that system identity.
     *detail = current_object == nullptr
-                  ? "target_not_live:" + pinned->target_object_uuid
-                  : "pinned:" + pinned->target_object_uuid + ":" +
+                  ? "target_not_live"
+                  : "pinned_generation:" +
                         std::to_string(pinned->target_executable_generation) +
-                        ":" + std::to_string(pinned->target_metadata_epoch) +
-                        ":current:" + current_object->object_uuid + ":" +
+                        ":metadata_epoch:" + std::to_string(pinned->target_metadata_epoch) +
+                        ":current_generation:" +
                         std::to_string(current_object->executable_generation) +
-                        ":" + std::to_string(current_object->metadata_epoch) +
-                        ":" + current_object->lifecycle_state;
+                        ":metadata_epoch:" + std::to_string(current_object->metadata_epoch) +
+                        ":state:" + current_object->lifecycle_state;
     // Release may retire and delete the opaque handle while current metadata
     // is being loaded. Match the immutable snapshot UUID under the registry
     // and binding locks so a recycled address can never invalidate a newer
@@ -3804,30 +3784,11 @@ revalidate_prepared_metadata_binding_current_version(
   return PreparedMetadataCurrentVersionStatus::ok;
 }
 
-std::optional<std::string_view> api_descriptor_field(
-    const std::string_view descriptor,
-    const std::string_view key) {
-  std::optional<std::string_view> value;
-  std::size_t start = 0;
-  while (start <= descriptor.size()) {
-    const auto end = descriptor.find(';', start);
-    const auto field = descriptor.substr(start, end - start);
-    if (field.size() > key.size() && field[key.size()] == '=' &&
-        field.substr(0, key.size()) == key) {
-      if (value.has_value()) return std::nullopt;
-      value = field.substr(key.size() + 1);
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
-  return value;
-}
-
 bool api_value_declares_canonical_int128_v1(
     const scratchbird::engine::internal_api::EngineTypedValue& value) {
   return value.descriptor.canonical_type_name == "int128" ||
          value.descriptor.descriptor_uuid ==
-             "019d0000-0000-7000-8000-00000000d714";
+             kCanonicalInt128DescriptorUuid;
 }
 
 bool render_canonical_int128_v1(
@@ -3836,13 +3797,10 @@ bool render_canonical_int128_v1(
   using scratchbird::engine::internal_api::EngineValueState;
   if (rendered == nullptr) return false;
   rendered->clear();
-  const auto type_uuid =
-      api_descriptor_field(value.descriptor.encoded_descriptor, "type_uuid");
   if (value.descriptor.canonical_type_name != "int128" ||
       value.descriptor.descriptor_uuid !=
-          "019d0000-0000-7000-8000-00000000d714" ||
-      !type_uuid.has_value() ||
-      *type_uuid != "019d0000-0000-7000-8000-00000000d715") {
+          kCanonicalInt128DescriptorUuid ||
+      value.descriptor.type_uuid != kCanonicalInt128TypeUuid) {
     return false;
   }
   if (value.state == EngineValueState::sql_null) {
@@ -3870,26 +3828,35 @@ bool render_canonical_int128_v1(
   return true;
 }
 
+namespace public_result = scratchbird::wire::public_result;
+std::string public_record(std::vector<public_result::Field> fields) {
+  std::string bytes;
+  if (!public_result::Encode(fields, &bytes)) throw std::invalid_argument("public_result_record_invalid");
+  return bytes;
+}
+std::string public_uuid_bytes(const scratchbird::core::platform::Uuid& id) {
+  return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
+}
+std::string public_text_evidence(std::string kind, std::string value) {
+  return public_record({{std::move(kind), public_result::Kind::text, std::move(value)}});
+}
+
 std::string api_row_value(const scratchbird::engine::internal_api::EngineApiResult& api_result,
                           std::size_t row_index) {
-  std::ostringstream out;
-  bool first = true;
-  for (const auto& field : api_result.result_shape.rows[row_index].fields) {
-    if (!first) {
-      out << ";";
-    }
-    first = false;
-    out << field.first << "=";
-    if (api_value_declares_canonical_int128_v1(field.second)) {
+  std::vector<public_result::Field> fields;
+  for (const auto& [name, value] : api_result.result_shape.rows[row_index].fields) {
+    std::string bytes = value.encoded_value;
+    if (api_value_declares_canonical_int128_v1(value)) {
       std::string rendered;
-      if (render_canonical_int128_v1(field.second, &rendered)) {
-        out << rendered;
-      }
-    } else {
-      out << field.second.encoded_value;
+      if (render_canonical_int128_v1(value, &rendered)) bytes = std::move(rendered);
     }
+    auto kind = public_result::Kind::text;
+    const auto& type = value.descriptor.canonical_type_name;
+    if (!value.is_null && (type == "uuid" || type == "uuid16")) kind = public_result::Kind::uuid;
+    else if (type == "bytea" || type == "binary" || type == "varbinary") kind = public_result::Kind::bytes;
+    fields.push_back({name, kind, std::move(bytes)});
   }
-  return out.str();
+  return public_record(std::move(fields));
 }
 
 std::vector<std::string> api_row_values(const scratchbird::engine::internal_api::EngineApiResult& api_result) {
@@ -3937,9 +3904,11 @@ std::vector<std::string> api_evidence_values(const scratchbird::engine::internal
   std::vector<std::string> evidence_values;
   evidence_values.reserve(api_result.evidence.size());
   for (const auto& evidence : api_result.evidence) {
-    std::ostringstream out;
-    out << evidence.evidence_kind << ":" << evidence.evidence_id;
-    evidence_values.push_back(out.str());
+    if (const auto* id = std::get_if<scratchbird::core::platform::Uuid>(&evidence.evidence_id)) {
+      evidence_values.push_back(public_record({{evidence.evidence_kind, public_result::Kind::uuid, public_uuid_bytes(*id)}}));
+    } else {
+      evidence_values.push_back(public_text_evidence(evidence.evidence_kind, std::get<std::string>(evidence.evidence_id)));
+    }
   }
   return evidence_values;
 }
@@ -4369,26 +4338,25 @@ std::uint64_t api_evidence_u64(const scratchbird::engine::internal_api::EngineAp
     if (std::string_view(evidence.evidence_kind) != evidence_kind) {
       continue;
     }
-    char* end = nullptr;
-    const auto parsed = std::strtoull(evidence.evidence_id.c_str(), &end, 10);
-    if (end != evidence.evidence_id.c_str() && end != nullptr && *end == '\0') {
-      return static_cast<std::uint64_t>(parsed);
-    }
+    const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+    if (!text || text->empty()) continue;
+    std::uint64_t parsed = 0;
+    const auto [end, error] = std::from_chars(text->data(), text->data() + text->size(), parsed);
+    if (error == std::errc{} && end == text->data() + text->size()) return parsed;
   }
   return fallback;
 }
 
 void append_transaction_context(std::string* payload,
                                 const scratchbird::engine::internal_api::EngineApiResult& api_result) {
-  if (payload == nullptr) {
-    return;
-  }
-  if (api_result.local_transaction_id != 0) {
-    *payload += "local_transaction_id=" + std::to_string(api_result.local_transaction_id) + "\n";
-  }
-  if (!api_result.transaction_uuid.is_nil()) {
-    *payload += "transaction_uuid=" + api_result.transaction_uuid + "\n";
-  }
+  if (!payload) return;
+  std::vector<public_result::Field> fields;
+  if (!public_result::Decode(*payload, &fields)) throw std::invalid_argument("public_result_transaction_packet_invalid");
+  if (api_result.local_transaction_id != 0)
+    fields.push_back({"local_transaction_id", public_result::Kind::text, std::to_string(api_result.local_transaction_id)});
+  if (!api_result.transaction_uuid.is_nil())
+    fields.push_back({"transaction_uuid", public_result::Kind::uuid, public_uuid_bytes(api_result.transaction_uuid)});
+  *payload = public_record(std::move(fields));
 }
 
 template <class Emit>
@@ -4400,29 +4368,31 @@ void visit_api_result_payload(std::string_view operation_id,
                                std::uint64_t first_row,
                                std::uint64_t row_count,
                                Emit&& emit) {
-  const auto number = [&](std::uint64_t value) {
-    char digits[20];
-    const auto converted = std::to_chars(std::begin(digits), std::end(digits), value);
-    emit(std::string_view(digits, static_cast<std::size_t>(converted.ptr - digits)));
-  };
-  emit("operation_id="); emit(operation_id); emit("\n");
-  emit("result_kind="); emit(result_kind); emit("\n");
-  emit("row_count="); number(row_count); emit("\n");
-  for (std::uint64_t offset = 0; offset < row_count; ++offset) {
-    if (first_row >= rows.size() || offset >= rows.size() - first_row) {
-      break;
-    }
-    const std::uint64_t row_index = first_row + offset;
-    emit("row["); number(row_index); emit("]=");
-    emit(rows[static_cast<std::size_t>(row_index)]); emit("\n");
-    if (row_index < row_metadata.size()) {
-      emit("row_meta["); number(row_index); emit("]=");
-      emit(row_metadata[static_cast<std::size_t>(row_index)]); emit("\n");
+  const auto visible_rows = first_row < rows.size() ? std::min<std::uint64_t>(row_count, rows.size() - first_row) : 0;
+  if (visible_rows > (public_result::kMaximumFields - 3) / 2 ||
+      evidence_values.size() > public_result::kMaximumFields - 3 - visible_rows * 2)
+    throw std::length_error("public_result_field_count_exceeded");
+  const std::string count = std::to_string(row_count);
+  std::vector<std::string> names;
+  names.reserve(visible_rows * 2);
+  std::vector<public_result::FieldView> fields = {
+      {"operation_id", public_result::Kind::text, operation_id},
+      {"result_kind", public_result::Kind::text, result_kind},
+      {"row_count", public_result::Kind::text, count}};
+  fields.reserve(3 + visible_rows * 2 + evidence_values.size());
+  for (std::uint64_t offset = 0; offset < visible_rows; ++offset) {
+    const auto index = first_row + offset;
+    names.push_back("row[" + std::to_string(index) + "]");
+    fields.push_back({names.back(), public_result::Kind::row, rows[index]});
+    if (index < row_metadata.size()) {
+      names.push_back("row_meta[" + std::to_string(index) + "]");
+      fields.push_back({names.back(), public_result::Kind::text, row_metadata[index]});
     }
   }
-  for (const auto& evidence : evidence_values) {
-    emit("evidence="); emit(evidence); emit("\n");
-  }
+  for (const auto& evidence : evidence_values)
+    fields.push_back({"evidence", public_result::Kind::evidence, evidence});
+  if (!public_result::Visit(fields, std::forward<Emit>(emit)))
+    throw std::invalid_argument("public_result_payload_invalid");
 }
 
 std::optional<std::string> bounded_api_result_payload(std::string_view operation_id,
@@ -5641,18 +5611,7 @@ ResolveStatementProcedureSchema(
 
 std::string TriggerLifecyclePayloadValue(const std::string& payload,
                                          std::string_view prefix) {
-  std::size_t offset = 0;
-  while (offset <= payload.size()) {
-    const auto end = payload.find(';', offset);
-    const auto extent = end == std::string::npos ? payload.size() : end;
-    const std::string_view field(payload.data() + offset, extent - offset);
-    if (field.starts_with(prefix)) {
-      return std::string(field.substr(prefix.size()));
-    }
-    if (end == std::string::npos) break;
-    offset = end + 1;
-  }
-  return {};
+  return scratchbird::engine::internal_api::BinaryViewOptionValue(payload, prefix);
 }
 
 bool ParseTriggerLifecycleU64(const std::string& text, std::uint64_t* out) {
@@ -5748,8 +5707,8 @@ bool ResolveStatementTriggerLifecycleV1(
       !valid_engine_identity(object->owner_principal_uuid)) {
     *diagnostic = scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
         "MGA.AUTHORITY_MISMATCH",
-        "sblr.ddl_trigger.executable_lifecycle_mismatch",
-        resolved.primary_object.uuid);
+        "sblr.ddl_trigger.executable_lifecycle_mismatch", {});
+    diagnostic->identity_fields.emplace_back("object_uuid", resolved.primary_object.uuid);
     return false;
   }
 
@@ -5770,12 +5729,12 @@ bool ResolveStatementTriggerLifecycleV1(
                                              "trigger_event:");
   value.scope = TriggerLifecyclePayloadValue(object->payload,
                                              "trigger_scope:");
-  value.target_relation_uuid = TriggerLifecyclePayloadValue(
-      object->payload, "trigger_target_table_uuid:");
+  value.target_relation_uuid = scratchbird::engine::internal_api::BinaryViewUuid(
+      TriggerLifecyclePayloadValue(object->payload, "trigger_target_table_uuid:"));
   value.target_relation_path = TriggerLifecyclePayloadValue(
       object->payload, "trigger_target_table_name:");
-  value.body_sblr_uuid = TriggerLifecyclePayloadValue(
-      object->payload, "trigger_body_sblr_uuid:");
+  value.body_sblr_uuid = scratchbird::engine::internal_api::BinaryViewUuid(
+      TriggerLifecyclePayloadValue(object->payload, "trigger_body_sblr_uuid:"));
   value.enabled_state = TriggerLifecyclePayloadValue(
       object->payload, "trigger_enabled_state:");
   value.security_mode = TriggerLifecyclePayloadValue(
@@ -5808,7 +5767,8 @@ bool ResolveStatementTriggerLifecycleV1(
       value.stored_sblr_hash.empty() || value.stored_sblr_provenance.empty()) {
     *diagnostic = scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
         "MGA.AUTHORITY_MISMATCH",
-        "sblr.ddl_trigger.definition_payload_incomplete", value.trigger_uuid);
+        "sblr.ddl_trigger.definition_payload_incomplete", {});
+    diagnostic->identity_fields.emplace_back("object_uuid", value.trigger_uuid);
     return false;
   }
   value.position = static_cast<std::uint16_t>(parsed_position);
@@ -5827,9 +5787,9 @@ bool ResolveStatementTriggerLifecycleV1(
     *diagnostic = target.ok
                       ? scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
                             "MGA.AUTHORITY_MISMATCH",
-                            "sblr.ddl_trigger.target_descriptor_mismatch",
-                            value.target_relation_uuid)
+                            "sblr.ddl_trigger.target_descriptor_mismatch", {})
                       : target.diagnostic;
+    diagnostic->identity_fields.emplace_back("object_uuid", value.target_relation_uuid);
     return false;
   }
   value.target_relation_generation = target.descriptor.relation_generation;
@@ -10281,25 +10241,9 @@ sb_engine_status_t BindStatementDdlCreateSchemaAuthorityV1(
                   "sblr.ddl_create_schema.name_conflict", *conflict);
   }
 
-  const auto hash_material = [](std::string_view domain,
-                                std::initializer_list<std::string_view> fields,
-                                std::initializer_list<std::uint64_t> numbers) {
-    std::vector<std::uint8_t> material(domain.begin(), domain.end());
-    for (const auto field : fields) {
-      material.insert(material.end(), field.begin(), field.end());
-      material.push_back(0);
-    }
-    for (const auto number : numbers) {
-      for (unsigned byte = 0; byte < 8; ++byte) {
-        material.push_back(
-            static_cast<std::uint8_t>(number >> (byte * 8)));
-      }
-    }
-    return scratchbird::core::hash::ComputeSha256Digest(material).digest;
-  };
-  const auto normalized_path_sha256 = hash_material(
+  const auto normalized_path_sha256 = scratchbird::engine::HashAuthorityMaterial(
       "ScratchBird.SblrDdlCreateSchemaNormalizedPath.V1", {canonical_path}, {});
-  const auto authorization_evidence_sha256 = hash_material(
+  const auto authorization_evidence_sha256 = scratchbird::engine::HashAuthorityMaterial(
       "ScratchBird.SblrDdlCreateSchemaAuthorization.V1",
       {context.principal_uuid, context.database_uuid,
        "CATALOG_MUTATE", view.security_context_uuid},
@@ -10762,36 +10706,15 @@ sb_engine_status_t BindStatementSecurityAlterPolicyAuthorityV1(
                   "sblr.sec_alter_policy.bind_identity_unavailable");
   }
 
-  const auto hash_material =
-      [](std::string_view domain,
-         std::initializer_list<std::string_view> fields,
-         std::initializer_list<std::uint64_t> numbers,
-         std::initializer_list<std::array<std::uint8_t, 32>> hashes = {}) {
-        std::vector<std::uint8_t> material(domain.begin(), domain.end());
-        for (const auto field : fields) {
-          material.insert(material.end(), field.begin(), field.end());
-          material.push_back(0);
-        }
-        for (const auto number : numbers) {
-          for (unsigned byte = 0; byte < 8; ++byte) {
-            material.push_back(
-                static_cast<std::uint8_t>(number >> (byte * 8)));
-          }
-        }
-        for (const auto& hash : hashes) {
-          material.insert(material.end(), hash.begin(), hash.end());
-        }
-        return scratchbird::core::hash::ComputeSha256Digest(material).digest;
-      };
-  const auto normalized_path_sha256 = hash_material(
+  const auto normalized_path_sha256 = scratchbird::engine::HashAuthorityMaterial(
       "ScratchBird.SblrSecAlterPolicyNormalizedPath.V1", {canonical_path}, {});
-  const auto authorization_evidence_sha256 = hash_material(
+  const auto authorization_evidence_sha256 = scratchbird::engine::HashAuthorityMaterial(
       "ScratchBird.SblrSecAlterPolicyAuthorization.V1",
       {context.principal_uuid, policy_uuid,
        context.database_uuid, "POLICY_ADMIN",
        view.security_context_uuid},
       {view.security_epoch, view.catalog_generation_id});
-  const auto frozen_policy_record_sha256 = hash_material(
+  const auto frozen_policy_record_sha256 = scratchbird::engine::HashAuthorityMaterial(
       "ScratchBird.SblrSecAlterPolicyFrozenPolicyRecord.V1",
       {policy->policy_uuid, policy->target_object_uuid,
        policy->target_object_kind, policy->policy_effect,
@@ -11203,7 +11126,7 @@ sb_engine_status_t BindStatementSecurityCreatePrivilegeTemplateAuthorityV1(
                                     : lhs) == rhs;
                       });
   };
-  std::vector<std::string> matched_grantee_uuids;
+  std::vector<scratchbird::engine::internal_api::EngineUuid> matched_grantee_uuids;
   for (const auto& principal : loaded.state.principals) {
     if (!principal.deleted && principal.lifecycle_state == "active" &&
         presented_matches(principal.principal_name, grantee_name,
@@ -11292,7 +11215,7 @@ sb_engine_status_t BindStatementSecurityCreatePrivilegeTemplateAuthorityV1(
   definition_material.push_back(request->with_grant_option ? 1 : 0);
   definition_material.push_back(request->enabled ? 1 : 0);
   if (!bulk_import_append_lp16(&definition_material, template_name) ||
-      !bulk_import_append_lp16(&definition_material,
+      !bulk_import_append_uuid(&definition_material,
                                matched_grantee_uuids.front()) ||
       !bulk_import_append_lp16(&definition_material, privilege)) {
     return refuse(
@@ -11314,8 +11237,8 @@ sb_engine_status_t BindStatementSecurityCreatePrivilegeTemplateAuthorityV1(
       't', 'e', 'P', 'r', 'i', 'v', 'i', 'l', 'e', 'g', 'e', 'T',
       'e', 'm', 'p', 'l', 'a', 't', 'e', 'I', 'd', 'e', 'm', 'p',
       'o', 't', 'e', 'n', 'c', 'y', '.', 'V', '1'};
-  if (!bulk_import_append_lp16(&idempotency_material, view.receipt_uuid) ||
-      !bulk_import_append_lp16(&idempotency_material, template_uuid)) {
+  if (!bulk_import_append_uuid(&idempotency_material, view.receipt_uuid) ||
+      !bulk_import_append_uuid(&idempotency_material, template_uuid)) {
     return refuse(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
@@ -11346,7 +11269,7 @@ sb_engine_status_t BindStatementSecurityCreatePrivilegeTemplateAuthorityV1(
   descriptor.template_generation = 1;
   descriptor.owner_principal_uuid =
       context.principal_uuid.bytes;
-  descriptor.grantee_uuid = TextToUuid(matched_grantee_uuids.front());
+  descriptor.grantee_uuid = matched_grantee_uuids.front().bytes;
   descriptor.owning_transaction_uuid =
       view.owning_transaction_uuid.bytes;
   descriptor.owning_local_transaction_id =
@@ -11950,23 +11873,7 @@ sb_engine_status_t BindStatementDdlCreateTriggerAuthorityV1(
                   "sblr.ddl_create_trigger.bind_identity_unavailable");
   }
 
-  const auto hash_material = [](std::string_view domain,
-                                std::initializer_list<std::string_view> fields,
-                                std::initializer_list<std::uint64_t> numbers) {
-    std::vector<std::uint8_t> material(domain.begin(), domain.end());
-    for (const auto field : fields) {
-      material.insert(material.end(), field.begin(), field.end());
-      material.push_back(0);
-    }
-    for (const auto number : numbers) {
-      for (unsigned byte = 0; byte < 8; ++byte) {
-        material.push_back(
-            static_cast<std::uint8_t>(number >> (byte * 8)));
-      }
-    }
-    return scratchbird::core::hash::ComputeSha256Digest(material).digest;
-  };
-  const auto authority_bundle_sha256 = hash_material(
+  const auto authority_bundle_sha256 = scratchbird::engine::HashAuthorityMaterial(
       "ScratchBird.SblrDdlCreateTriggerAuthorityBundle.V1",
       {canonical_trigger_path, canonical_target_path, trigger_uuid,
        target_descriptor.relation_uuid,
@@ -12549,13 +12456,13 @@ sb_engine_status_t BindStatementDdlCreateProcedureAuthorityV1(
       'P','r','o','c','e','d','u','r','e','S','i','g','n','a','t','u','r','e',
       '.','V','1'};
   signature_material.insert(signature_material.end(),
-                            procedure_uuid.begin(), procedure_uuid.end());
+                            procedure_uuid.bytes.begin(), procedure_uuid.bytes.end());
   signature_material.push_back(0);
   signature_material.insert(signature_material.end(), canonical_path.begin(),
                             canonical_path.end());
   signature_material.push_back(0);
-  signature_material.insert(signature_material.end(), abi_uuid.begin(),
-                            abi_uuid.end());
+  signature_material.insert(signature_material.end(), abi_uuid.bytes.begin(),
+                            abi_uuid.bytes.end());
   signature_material.insert(signature_material.end(),
                             procedure_abi_bytes.begin(),
                             procedure_abi_bytes.end());
@@ -12984,7 +12891,7 @@ sb_engine_status_t BindStatementProcedureInvokeAuthorityV1(
           "engine.bound.procedural_body.v1") {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
                   "sblr.procedure_invoke.lifecycle_mismatch",
-                  resolved.primary_object.uuid);
+                  "resolved procedure has no matching active executable version");
   }
   scratchbird::engine::internal_api::EngineAuthorizeRequest authorize;
   authorize.context = context;
@@ -13001,20 +12908,20 @@ sb_engine_status_t BindStatementProcedureInvokeAuthorityV1(
                       : authorized.diagnostics.front().detail);
   }
 
-  const auto body_uuid = TriggerLifecyclePayloadValue(
-      object->payload, "procedure_body_sblr_uuid:");
+  const auto body_uuid = scratchbird::engine::internal_api::BinaryViewUuid(
+      TriggerLifecyclePayloadValue(object->payload, "procedure_body_sblr_uuid:"));
   const auto body_generation_text = TriggerLifecyclePayloadValue(
       object->payload, "procedure_body_sblr_generation:");
-  const auto body_hex = TriggerLifecyclePayloadValue(
-      object->payload, "procedure_body_bytes_hex:");
+  const auto body_payload = TriggerLifecyclePayloadValue(
+      object->payload, "procedure_body_bytes:");
   const auto body_sha_text = TriggerLifecyclePayloadValue(
       object->payload, "procedure_body_sha256:");
-  const auto abi_uuid = TriggerLifecyclePayloadValue(
-      object->payload, "procedure_abi_uuid:");
+  const auto abi_uuid = scratchbird::engine::internal_api::BinaryViewUuid(
+      TriggerLifecyclePayloadValue(object->payload, "procedure_abi_uuid:"));
   const auto abi_generation_text = TriggerLifecyclePayloadValue(
       object->payload, "procedure_abi_generation:");
-  const auto abi_hex = TriggerLifecyclePayloadValue(
-      object->payload, "procedure_abi_bytes_hex:");
+  const auto abi_payload = TriggerLifecyclePayloadValue(
+      object->payload, "procedure_abi_bytes:");
   const auto abi_evidence_text = TriggerLifecyclePayloadValue(
       object->payload, "procedure_abi_evidence_sha256:");
   const auto parameter_count_text = TriggerLifecyclePayloadValue(
@@ -13023,8 +12930,8 @@ sb_engine_status_t BindStatementProcedureInvokeAuthorityV1(
       object->payload, "procedure_effect_set_sha256:");
   std::uint64_t body_generation = 0;
   std::uint64_t abi_generation = 0;
-  std::vector<std::uint8_t> body_bytes;
-  std::vector<std::uint8_t> abi_bytes;
+  std::vector<std::uint8_t> body_bytes(body_payload.begin(), body_payload.end());
+  std::vector<std::uint8_t> abi_bytes(abi_payload.begin(), abi_payload.end());
   scratchbird::engine::sblr::SblrProceduralBodyV1 body;
   scratchbird::engine::sblr::SblrProcedureAbiV1 procedure_abi;
   std::string body_detail;
@@ -13036,13 +12943,12 @@ sb_engine_status_t BindStatementProcedureInvokeAuthorityV1(
       !ParseTriggerLifecycleU64(abi_generation_text, &abi_generation) ||
       !ParseTriggerLifecycleU64(parameter_count_text, &parameter_count) ||
       body_generation == 0 || abi_generation == 0 ||
-      !ParseCanonicalHexBytes(body_hex, &body_bytes) ||
       body_bytes.size() != scratchbird::engine::sblr::
                                kSblrProceduralBodyV1Bytes ||
       !scratchbird::engine::sblr::DecodeSblrProceduralBodyV1(
           body_bytes.data(), body_bytes.size(), &body, &body_detail) ||
-      CanonicalUuidText(body.body_uuid) != body_uuid ||
-      CanonicalUuidText(body.procedure_uuid) != object->object_uuid ||
+      NativeUuid(body.body_uuid) != body_uuid ||
+      NativeUuid(body.procedure_uuid) != object->object_uuid ||
       body.body_generation != body_generation ||
       body.procedure_generation != object->executable_generation ||
       scratchbird::core::hash::HexLower(body.effect_set_sha256) !=
@@ -13055,14 +12961,13 @@ sb_engine_status_t BindStatementProcedureInvokeAuthorityV1(
                   "sblr.procedure_invoke.body_authority_mismatch",
                   body_detail);
   }
-  if (!ParseCanonicalHexBytes(abi_hex, &abi_bytes) ||
-      abi_bytes.size() !=
+  if (abi_bytes.size() !=
           scratchbird::engine::sblr::kSblrProcedureAbiV1Bytes ||
       !scratchbird::engine::sblr::DecodeSblrProcedureAbiV1(
           abi_bytes.data(), abi_bytes.size(), &procedure_abi, &abi_detail) ||
-      CanonicalUuidText(procedure_abi.abi_uuid) != abi_uuid ||
+      NativeUuid(procedure_abi.abi_uuid) != abi_uuid ||
       procedure_abi.abi_generation != abi_generation ||
-      CanonicalUuidText(procedure_abi.procedure_uuid) != object->object_uuid ||
+      NativeUuid(procedure_abi.procedure_uuid) != object->object_uuid ||
       procedure_abi.procedure_generation != object->executable_generation ||
       procedure_abi.parameters.size() != parameter_count ||
       scratchbird::core::hash::HexLower(procedure_abi.evidence) !=
@@ -13620,23 +13525,7 @@ sb_engine_status_t BindStatementDdlAlterTriggerAuthorityV1(
                   "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
                   "sblr.ddl_alter_trigger.bind_identity_unavailable");
   }
-  const auto hash_material = [](std::string_view domain,
-                                std::initializer_list<std::string_view> fields,
-                                std::initializer_list<std::uint64_t> numbers) {
-    std::vector<std::uint8_t> material(domain.begin(), domain.end());
-    for (const auto field : fields) {
-      material.insert(material.end(), field.begin(), field.end());
-      material.push_back(0);
-    }
-    for (const auto number : numbers) {
-      for (unsigned byte = 0; byte < 8; ++byte) {
-        material.push_back(
-            static_cast<std::uint8_t>(number >> (byte * 8)));
-      }
-    }
-    return scratchbird::core::hash::ComputeSha256Digest(material).digest;
-  };
-  const auto authority_bundle_sha256 = hash_material(
+  const auto authority_bundle_sha256 = scratchbird::engine::HashAuthorityMaterial(
       "ScratchBird.SblrDdlAlterTriggerAuthorityBundle.V1",
       {trigger.canonical_path, trigger.trigger_uuid,
        trigger.target_relation_uuid, trigger.target_relation_descriptor_uuid,
@@ -13776,9 +13665,9 @@ sb_engine_status_t BindStatementDdlAlterTriggerAuthorityV1(
       "trigger_timing:" + trigger.timing,
       "trigger_event:" + trigger.event,
       "trigger_scope:" + trigger.scope,
-      "trigger_target_table_uuid:" + trigger.target_relation_uuid,
+      scratchbird::engine::internal_api::BinaryViewUuidOption("trigger_target_table_uuid:", trigger.target_relation_uuid),
       "trigger_target_table_name:" + trigger.target_relation_path,
-      "trigger_body_sblr_uuid:" + trigger.body_sblr_uuid,
+      scratchbird::engine::internal_api::BinaryViewUuidOption("trigger_body_sblr_uuid:", trigger.body_sblr_uuid),
       "trigger_body_sblr_generation:" +
           std::to_string(trigger.body_sblr_generation),
       "trigger_enabled_state:" + successor_enabled,
@@ -13790,8 +13679,8 @@ sb_engine_status_t BindStatementDdlAlterTriggerAuthorityV1(
       "trigger_failure_policy:" + successor_failure,
       "trigger_definition_generation:" +
           std::to_string(trigger.trigger_generation + 1),
-      "trigger_recovery_uuid:" + recovery_uuid,
-      "trigger_mutation_uuid:" + mutation_uuid,
+      scratchbird::engine::internal_api::BinaryViewUuidOption("trigger_recovery_uuid:", recovery_uuid),
+      scratchbird::engine::internal_api::BinaryViewUuidOption("trigger_mutation_uuid:", mutation_uuid),
   };
 
   if (context.query_cancellation_requested &&
@@ -14082,23 +13971,7 @@ sb_engine_status_t BindStatementDdlDropTriggerAuthorityV1(
                   "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
                   "sblr.ddl_drop_trigger.bind_identity_unavailable");
   }
-  const auto hash_material = [](std::string_view domain,
-                                std::initializer_list<std::string_view> fields,
-                                std::initializer_list<std::uint64_t> numbers) {
-    std::vector<std::uint8_t> material(domain.begin(), domain.end());
-    for (const auto field : fields) {
-      material.insert(material.end(), field.begin(), field.end());
-      material.push_back(0);
-    }
-    for (const auto number : numbers) {
-      for (unsigned byte = 0; byte < 8; ++byte) {
-        material.push_back(
-            static_cast<std::uint8_t>(number >> (byte * 8)));
-      }
-    }
-    return scratchbird::core::hash::ComputeSha256Digest(material).digest;
-  };
-  const auto authority_bundle_sha256 = hash_material(
+  const auto authority_bundle_sha256 = scratchbird::engine::HashAuthorityMaterial(
       "ScratchBird.SblrDdlDropTriggerAuthorityBundle.V1",
       {trigger.canonical_path, trigger.trigger_uuid,
        trigger.target_relation_uuid, trigger.target_relation_descriptor_uuid,
@@ -16644,7 +16517,7 @@ sb_engine_status_t BindStatementExecuteAuthorityV1(
   if (!scratchbird::engine::sblr::DecodeSblrStmtExecuteRequestV1(
           request->exact_request_bytes.data(),
           request->exact_request_bytes.size(), &decoded_request, &detail) ||
-      CanonicalUuidText(decoded_request.statement_receipt_uuid) !=
+      NativeUuid(decoded_request.statement_receipt_uuid) !=
           request->authenticated_receipt_uuid ||
       decoded_request.occurrence != request->occurrence ||
       decoded_request.statement_name != request->statement_name ||
@@ -16816,8 +16689,8 @@ sb_engine_status_t BindStatementExecuteAuthorityV1(
       view.statement_uuid,
       view.statement_metadata_snapshot_uuid,
       view.statement_snapshot_uuid,
-      CanonicalUuidText(prepared.statement_uuid),
-      CanonicalUuidText(prepared.statement_name_uuid),
+      NativeUuid(prepared.statement_uuid),
+      NativeUuid(prepared.statement_name_uuid),
       context.current_package_uuid};
   scratchbird::engine::internal_api::EngineUuid execution_uuid;
   scratchbird::engine::internal_api::EngineUuid result_handle_uuid;
@@ -17141,8 +17014,8 @@ sb_engine_status_t BindStatementFreeAuthorityV1(
                   "sblr.stmt_free.bind_descriptor_invalid", detail);
   }
   std::unordered_set<scratchbird::engine::internal_api::EngineUuid, scratchbird::engine::internal_api::EngineUuidHash> identities{
-      view.receipt_uuid, CanonicalUuidText(prepared.statement_uuid),
-      CanonicalUuidText(prepared.statement_name_uuid)};
+      view.receipt_uuid, NativeUuid(prepared.statement_uuid),
+      NativeUuid(prepared.statement_name_uuid)};
   scratchbird::engine::internal_api::EngineUuid binding_uuid;
   if (!generate_distinct_statement_context_uuid(&identities, &binding_uuid)) {
     return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR, "MGA.TRANSACTION.STALE",
@@ -17157,9 +17030,9 @@ sb_engine_status_t BindStatementFreeAuthorityV1(
   authority.acknowledgement.binding_uuid = binding_uuid;
   authority.acknowledgement.binding_generation = 1;
   authority.acknowledgement.statement_uuid =
-      CanonicalUuidText(prepared.statement_uuid);
+      NativeUuid(prepared.statement_uuid);
   authority.acknowledgement.statement_name_uuid =
-      CanonicalUuidText(prepared.statement_name_uuid);
+      NativeUuid(prepared.statement_name_uuid);
   authority.acknowledgement.prepared_generation =
       prepared.prepared_generation;
   authority.acknowledgement.descriptor_sha256 =
@@ -17368,15 +17241,15 @@ sb_engine_status_t BindStatementCancelAuthorityV1(
   }
 
   std::unordered_set<scratchbird::engine::internal_api::EngineUuid, scratchbird::engine::internal_api::EngineUuidHash> identities{
-      view.receipt_uuid, CanonicalUuidText(prepared.statement_uuid),
-      CanonicalUuidText(prepared.statement_name_uuid),
-      CanonicalUuidText(prepared.last_execution_uuid),
-      CanonicalUuidText(prepared.last_execution_receipt_uuid)};
+      view.receipt_uuid, NativeUuid(prepared.statement_uuid),
+      NativeUuid(prepared.statement_name_uuid),
+      NativeUuid(prepared.last_execution_uuid),
+      NativeUuid(prepared.last_execution_receipt_uuid)};
   if (std::any_of(prepared.last_execution_transaction_uuid.begin(),
                   prepared.last_execution_transaction_uuid.end(),
                   [](std::uint8_t value) { return value != 0; })) {
     identities.insert(
-        CanonicalUuidText(prepared.last_execution_transaction_uuid));
+        NativeUuid(prepared.last_execution_transaction_uuid));
   }
   scratchbird::engine::internal_api::EngineUuid binding_uuid;
   scratchbird::engine::internal_api::EngineUuid cancel_operation_uuid;
@@ -17423,17 +17296,17 @@ sb_engine_status_t BindStatementCancelAuthorityV1(
   authority.acknowledgement.binding_uuid = binding_uuid;
   authority.acknowledgement.binding_generation = 1;
   authority.acknowledgement.target_execution_uuid =
-      CanonicalUuidText(prepared.last_execution_uuid);
+      NativeUuid(prepared.last_execution_uuid);
   authority.acknowledgement.target_statement_uuid =
-      CanonicalUuidText(prepared.statement_uuid);
+      NativeUuid(prepared.statement_uuid);
   authority.acknowledgement.target_statement_receipt_uuid =
-      CanonicalUuidText(prepared.last_execution_receipt_uuid);
+      NativeUuid(prepared.last_execution_receipt_uuid);
   authority.acknowledgement.cancel_operation_uuid = cancel_operation_uuid;
   if (std::any_of(prepared.last_execution_transaction_uuid.begin(),
                   prepared.last_execution_transaction_uuid.end(),
                   [](std::uint8_t value) { return value != 0; })) {
     authority.acknowledgement.target_transaction_uuid =
-        CanonicalUuidText(prepared.last_execution_transaction_uuid);
+        NativeUuid(prepared.last_execution_transaction_uuid);
   }
   authority.acknowledgement.target_execution_generation =
       prepared.last_execution_generation;
@@ -19131,13 +19004,7 @@ sb_engine_status_t FinalizeStatementVariableBindingV1(
                        "SBLR.VARIABLE.STALE",
                        "sblr.variable_finalize.state_stale");
   }
-  const auto uuid_bytes = [](const std::string& text) {
-    std::array<std::uint8_t, 16> bytes{};
-    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-    if (parsed.ok()) std::copy(parsed.value.bytes.begin(),
-                               parsed.value.bytes.end(), bytes.begin());
-    return bytes;
-  };
+  const auto uuid_bytes=[](const scratchbird::engine::internal_api::EngineUuid& id){return id.bytes;};
   const auto& frame = *receipt->variable_frame_snapshot;
   if (request.preliminary_receipt_uuid != uuid_bytes(receipt->view.receipt_uuid) ||
       request.scope_uuid != uuid_bytes(frame.scope_uuid) ||
@@ -19198,8 +19065,8 @@ sb_engine_status_t FinalizeStatementVariableBindingV1(
     const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(
         scratchbird::core::platform::UuidKind::object, now + salt);
     return generated.ok()
-        ? scratchbird::core::uuid::UuidToString(generated.value.value)
-        : std::string{};
+        ? generated.value.value
+        : scratchbird::engine::internal_api::EngineUuid{};
   };
   scratchbird::engine::sblr::SblrVariableAdmissionV1 admission;
   receipt->variable_final_receipt_uuid = issue_uuid(11);
@@ -19255,7 +19122,7 @@ sb_engine_status_t AssignStatementVariableValuesV1(
                        "sblr.variable_assignment.receipt_stale");
   auto* receipt = live->second.get();
   std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
-  const auto uuid_bytes=[](const std::string& text){std::array<std::uint8_t,16>b{};const auto p=scratchbird::core::uuid::ParseUuid(text);if(p.ok())std::copy(p.value.bytes.begin(),p.value.bytes.end(),b.begin());return b;};
+  const auto uuid_bytes=[](const scratchbird::engine::internal_api::EngineUuid& id){return id.bytes;};
   if (receipt->released || receipt->variable_binding_finalized ||
       receipt->variable_admission_consumed ||
       !receipt->variable_frame_snapshot.has_value())
@@ -19672,7 +19539,7 @@ sb_engine_status_t AcquireStatementPackageAdmissionReservation(
   quota.candidate_rows = quota.cache_entries = quota.batch_rows = 1;
   quota.fragments = count;
   quota.lanes = quota.time_budget_microseconds = 1;
-  acquire.owner_scope = receipt->view.receipt_uuid;
+  acquire.owner_uuid = receipt->view.receipt_uuid;
   auto reserved = session->package_resource_ledger->Acquire(std::move(acquire));
   if (!reserved.ok || !reserved.reservation_created) {
     return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 4064,
@@ -19925,9 +19792,9 @@ std::uint32_t ContextualTextPublicAbiCarrierProofMaskForTest() {
     mask |= 1U << 2;
   }
   StatementContextReceiptView view;
-  view.receipt_uuid = "019d0000-0000-7000-8000-00000000f001";
+  view.receipt_uuid = scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xf0,0x01}};
   view.literal_catalog_snapshot_uuid =
-      "019d0000-0000-7000-8000-00000000d701";
+      scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}};
   view.literal_catalog_generation = 1;
   view.literal_registry_generation = 1;
   scratchbird::engine::internal_api::EngineRequestContext context;
@@ -20576,13 +20443,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
                          "sblr.variable_execution_binding.structural_invalid",
                          variable_detail);
     }
-    const auto uuid_bytes = [](const std::string& text) {
-      std::array<std::uint8_t, 16> bytes{};
-      const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-      if (parsed.ok()) std::copy(parsed.value.bytes.begin(),
-                                 parsed.value.bytes.end(), bytes.begin());
-      return bytes;
-    };
+    const auto uuid_bytes=[](const scratchbird::engine::internal_api::EngineUuid& id){return id.bytes;};
     if (receipt->variable_admission_consumed) {
       return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4054,
                          "ENGINE.STATEMENT_CONTEXT.ADMISSION_TOKEN_STALE",
@@ -20885,18 +20746,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
             std::to_string(operation.envelope.opcode_code));
   }
 
-  const auto uuid_text = [](const std::uint8_t* bytes) {
-    constexpr char kHex[] = "0123456789abcdef";
-    std::string text;
-    text.reserve(36);
-    for (std::size_t index = 0; index < 16; ++index) {
-      if (index == 4 || index == 6 || index == 8 || index == 10) {
-        text.push_back('-');
-      }
-      text.push_back(kHex[bytes[index] >> 4]);
-      text.push_back(kHex[bytes[index] & 0x0f]);
-    }
-    return text;
+  const auto native_identity = [](const std::uint8_t* bytes) {
+    scratchbird::engine::internal_api::EngineUuid id;
+    std::copy_n(bytes, id.bytes.size(), id.bytes.begin());
+    return id;
   };
   const auto receipt_binding_matches = [&]() {
     const auto& anchor = container.container.canonical_anchor;
@@ -20912,21 +20765,21 @@ sb_engine_status_t DispatchStatementContextReceipt(
            request->resource_epoch == view.resource_epoch &&
            request->authenticated_principal_uuid ==
                context.principal_uuid &&
-           uuid_text(anchor.data()) == context.database_uuid &&
-           uuid_text(anchor.data() + 76) == view.catalog_epoch_uuid &&
-           uuid_text(anchor.data() + 116) == view.statement_uuid &&
+           native_identity(anchor.data()) == context.database_uuid &&
+           native_identity(anchor.data() + 76) == view.catalog_epoch_uuid &&
+           native_identity(anchor.data() + 116) == view.statement_uuid &&
            operation.envelope.parser_package_uuid ==
-               uuid_text(anchor.data() + 32) &&
+               native_identity(anchor.data() + 32) &&
            operation.envelope.registry_snapshot_uuid ==
                view.catalog_epoch_uuid &&
            ingress.envelope.fields[0].size() == 16 &&
-           uuid_text(ingress.envelope.fields[0].data()) ==
+           native_identity(ingress.envelope.fields[0].data()) ==
                view.statement_uuid &&
            dialect_field.size() == 17 && dialect_field[0] == 1 &&
            std::equal(dialect_field.begin() + 1, dialect_field.end(),
                       anchor.begin() + 16) &&
            user_field.size() == 17 && user_field[0] == 1 &&
-           uuid_text(user_field.data() + 1) ==
+           native_identity(user_field.data() + 1) ==
                request->authenticated_principal_uuid;
   };
   const auto gateway_evidence_matches =
@@ -21683,18 +21536,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
                          "sblr.variable_execution_binding.token_replayed");
     }
     if (decoded_variable_table.has_value()) {
-      const auto variable_uuid_text = [](const std::uint8_t* bytes) {
-        constexpr char hex[] = "0123456789abcdef";
-        std::string text;
-        text.reserve(36);
-        for (std::size_t index = 0; index < 16; ++index) {
-          if (index == 4 || index == 6 || index == 8 || index == 10) {
-            text.push_back('-');
-          }
-          text.push_back(hex[bytes[index] >> 4]);
-          text.push_back(hex[bytes[index] & 0x0f]);
-        }
-        return text;
+      const auto variable_uuid = [](const std::uint8_t* bytes) {
+        scratchbird::engine::internal_api::EngineUuid identity;
+        std::copy_n(bytes,16,identity.bytes.begin());return identity;
       };
       auto variable_context = receipt->engine_context;
       variable_context.trace_tags.push_back("private_variable_registry");
@@ -21710,7 +21554,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
                 variable_context, frame.statement_receipt_uuid,
                 frame.scope_uuid, frame.scope_generation, frame.frame_uuid,
                 frame.frame_generation,
-                variable_uuid_text(node.variable_descriptor_uuid.data()),
+                variable_uuid(node.variable_descriptor_uuid.data()),
                 node.variable_descriptor_generation, node.value_generation);
         if (!lookup.ok) {
           return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4058,
@@ -21719,7 +21563,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
                              lookup.diagnostic.detail);
         }
         if (lookup.row.datatype_descriptor_uuid !=
-                variable_uuid_text(node.datatype_descriptor_uuid.data()) ||
+                variable_uuid(node.datatype_descriptor_uuid.data()) ||
             lookup.row.datatype_descriptor_generation !=
                 node.datatype_descriptor_generation) {
           return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4058,
@@ -22514,7 +22358,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
             "receipt-bound native row packet SHA-256 could not be computed");
       }
       decoded_packet.request.option_envelopes.push_back(
-          "sblr.native_row_packet_receipt_uuid:" + view.receipt_uuid);
+          scratchbird::engine::internal_api::BinaryViewUuidOption("sblr.native_row_packet_receipt_uuid:", view.receipt_uuid));
       decoded_packet.request.option_envelopes.push_back(
           "sblr.native_row_packet_operation_sha256:sha256:" +
           scratchbird::core::hash::HexLower(request->operation_sha256));
@@ -24295,15 +24139,12 @@ sb_engine_status_t DispatchStatementContextReceipt(
               &savepoint_descriptor,&detail))
         return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4062,
                            "SBLR.OPERAND_INVALID","sblr.txn_savepoint.descriptor_invalid",detail);
-      const auto uuid_text=[](const std::array<std::uint8_t,16>&bytes){
-        scratchbird::core::platform::Uuid u{};std::copy(bytes.begin(),bytes.end(),u.bytes.begin());
-        return scratchbird::core::uuid::UuidToString(u);};
       const auto sha_text=[](const std::array<std::uint8_t,32>&bytes){return std::string("sha256:")+scratchbird::core::hash::HexLower(bytes);};
       auto savepoint_context=receipt->engine_context;
       savepoint_context.statement_metadata_snapshot_engine_owned=true;
       savepoint_context.trace_tags.push_back("private_savepoint_coordination");
       const auto found=scratchbird::engine::internal_api::LookupSblrSavepoint(
-          savepoint_context,receipt->view.receipt_uuid,uuid_text(savepoint_descriptor.descriptor_uuid),
+          savepoint_context,receipt->view.receipt_uuid,scratchbird::core::platform::Uuid{savepoint_descriptor.descriptor_uuid},
           savepoint_descriptor.descriptor_generation,sha_text(savepoint_descriptor.descriptor_evidence_sha256));
       if(!found.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4062,
           found.diagnostic.code,found.diagnostic.message_key);
@@ -26909,7 +26750,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
         inspect.path = journal_context.database_path;
         inspect.cluster_authority_available = false;
         inspect.decryption_available = false;
-        inspect.operation_uuid = CanonicalUuidText(
+        inspect.operation_uuid = NativeUuid(
             database_attach_descriptor.attach_uuid);
         inspect.actor_uuid = journal_context.principal_uuid;
         inspect.write_evidence = false;
@@ -29535,8 +29376,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
         std::copy_n(operand.value_body.begin(), 16,
                     descriptor_uuid.bytes.begin());
         EngineDmlUpdateRowsDescriptorRefV1 descriptor_ref;
-        descriptor_ref.descriptor_uuid =
-            scratchbird::core::uuid::UuidToString(descriptor_uuid);
+        descriptor_ref.descriptor_uuid = descriptor_uuid;
         std::uint64_t descriptor_generation = 0;
         for (unsigned index = 0; index != 8; ++index) {
           descriptor_generation |=
@@ -29718,13 +29558,8 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
             accepted_evidence.exact_bytes.data(),
             accepted_evidence.exact_bytes.size(), &decoded_evidence,
             &evidence_diagnostic);
-    const std::string expected_evidence_id =
-        evidence_decoded
-            ? CanonicalUuidText(decoded_evidence.evidence_uuid) + "@" +
-                  std::to_string(decoded_evidence.evidence_generation) +
-                  "#sha256:" + scratchbird::core::hash::HexLower(
-                                    decoded_evidence.evidence_sha256)
-            : std::string{};
+    const scratchbird::engine::internal_api::EngineEvidenceValue expected_evidence_id =
+        NativeUuid(decoded_evidence.evidence_uuid);
     const bool result_contract_valid =
         plan.surface_accepted && plan.planning_only &&
         plan.execution_requires_execute_import_rows &&
@@ -30155,8 +29990,6 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
               << "\toperand_descriptor_id=variable_descriptor_ref"
               << "\tresult_descriptor_id=typed_value"
               << "\tresult_descriptor_version=1"
-              << "\tregistry_snapshot_uuid="
-              << receipt->variable_frame_snapshot->registry_snapshot_uuid
               << "\tregistry_generation="
               << receipt->variable_frame_snapshot->registry_generation
               << "\tparent_success_barrier=passed\n";
@@ -30165,15 +29998,16 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
   }
   if (error_vector_root) {
     const char* trace_path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
-    if(trace_path&&*trace_path){std::ofstream trace(trace_path,std::ios::app|std::ios::binary);if(trace){const std::string evidence=dispatched.api_result.evidence.empty()?std::string{}:dispatched.api_result.evidence.front().evidence_id;trace<<"layer=error_vector_executor\texecutor_id=engine.op.error_vector\topcode=SBLR_ERROR_VECTOR\topcode_code=7\topcode_version=1.0\toperand_descriptor_id=diagnostic_vector\tresult_descriptor_id=void\tresult_descriptor_version=1\texecutor_evidence_sha256="<<evidence<<"\tparent_success_barrier=passed\n";}}
+    if(trace_path&&*trace_path){std::ofstream trace(trace_path,std::ios::app|std::ios::binary);if(trace){const auto* evidence_text=dispatched.api_result.evidence.empty()?nullptr:std::get_if<std::string>(&dispatched.api_result.evidence.front().evidence_id);const std::string_view evidence=evidence_text?std::string_view(*evidence_text):std::string_view{};trace<<"layer=error_vector_executor\texecutor_id=engine.op.error_vector\topcode=SBLR_ERROR_VECTOR\topcode_code=7\topcode_version=1.0\toperand_descriptor_id=diagnostic_vector\tresult_descriptor_id=void\tresult_descriptor_version=1\texecutor_evidence_sha256="<<evidence<<"\tparent_success_barrier=passed\n";}}
   }
   if (catalog_introspect_root) {
     const char* trace_path = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
     if (trace_path != nullptr && *trace_path != '\0') {
       std::ofstream trace(trace_path, std::ios::app | std::ios::binary);
       if (trace) {
-        const std::string evidence = dispatched.api_result.evidence.empty()
-            ? std::string{} : dispatched.api_result.evidence.front().evidence_id;
+        const auto* evidence_text = dispatched.api_result.evidence.empty()
+            ? nullptr : std::get_if<std::string>(&dispatched.api_result.evidence.front().evidence_id);
+        const std::string_view evidence = evidence_text ? std::string_view(*evidence_text) : std::string_view{};
         trace << "layer=catalog_introspect_executor"
               << "\toperation_id=engine.op.catalog_introspect"
               << "\topcode=SBLR_CATALOG_INTROSPECT"
@@ -30580,10 +30414,9 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
   }
   std::vector<std::uint8_t> savepoint_release_result_bytes;
   if(txn_release_savepoint_root){
-    const auto uuid_text=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return scratchbird::core::uuid::UuidToString(u);};
     const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};
     auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_savepoint_coordination");
-    const auto released=scratchbird::engine::internal_api::ReleaseSblrSavepoint(c,uuid_text(savepoint_release_operand.savepoint_uuid),savepoint_release_operand.savepoint_generation,savepoint_release_operand.transaction_ordinal,savepoint_release_operand.admitted_stack_generation,sha_text(savepoint_release_operand.admitted_savepoint_evidence_sha256),savepoint_release_availability_generation);
+    const auto released=scratchbird::engine::internal_api::ReleaseSblrSavepoint(c,scratchbird::core::platform::Uuid{savepoint_release_operand.savepoint_uuid},savepoint_release_operand.savepoint_generation,savepoint_release_operand.transaction_ordinal,savepoint_release_operand.admitted_stack_generation,sha_text(savepoint_release_operand.admitted_savepoint_evidence_sha256),savepoint_release_availability_generation);
     if(!released.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,released.diagnostic.code,released.diagnostic.message_key);
     scratchbird::engine::sblr::SblrSavepointReleaseResultV1 rr;rr.transaction_uuid=savepoint_release_operand.transaction_uuid;rr.local_transaction_id=savepoint_release_operand.local_transaction_id;rr.released_savepoint_uuid=savepoint_release_operand.savepoint_uuid;rr.released_savepoint_generation=savepoint_release_operand.savepoint_generation;rr.transaction_ordinal=savepoint_release_operand.transaction_ordinal;rr.resulting_stack_generation=released.snapshot.stack_generation;rr.executor_availability_generation=savepoint_release_availability_generation;
     savepoint_release_result_bytes=scratchbird::engine::sblr::EncodeSblrSavepointReleaseResultV1(rr);
@@ -30591,14 +30424,14 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     const auto digest=scratchbird::core::hash::ComputeSha256Digest(savepoint_release_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=txn_release_savepoint_executor\texecutor_id=engine.op.txn_release_savepoint\topcode=SBLR_TXN_RELEASE_SAVEPOINT\topcode_code=260\topcode_version=1.0\toperand_descriptor_id=savepoint_release_handle\tresult_descriptor_id=savepoint_release_result\tresult_descriptor_version=1\trelease_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<savepoint_release_availability_generation<<"\tparent_success_barrier=passed\n";}
   }
   std::vector<std::uint8_t> savepoint_rollback_result_bytes;
-  if(txn_rollback_to_savepoint_root){const auto uuid_text=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return scratchbird::core::uuid::UuidToString(u);};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_savepoint_coordination");const auto rolled=scratchbird::engine::internal_api::RollbackToSblrSavepoint(c,uuid_text(savepoint_rollback_operand.savepoint_uuid),savepoint_rollback_operand.savepoint_generation,savepoint_rollback_operand.transaction_ordinal,savepoint_rollback_operand.admitted_stack_generation,sha_text(savepoint_rollback_operand.admitted_savepoint_evidence_sha256),savepoint_rollback_availability_generation);if(!rolled.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,rolled.diagnostic.code,rolled.diagnostic.message_key);scratchbird::engine::sblr::SblrSavepointRollbackResultV1 rr;rr.transaction_uuid=savepoint_rollback_operand.transaction_uuid;rr.local_transaction_id=savepoint_rollback_operand.local_transaction_id;rr.target_savepoint_uuid=savepoint_rollback_operand.savepoint_uuid;rr.target_savepoint_generation=savepoint_rollback_operand.savepoint_generation;rr.transaction_ordinal=savepoint_rollback_operand.transaction_ordinal;rr.resulting_stack_generation=rolled.snapshot.stack_generation;rr.rollback_sequence=rolled.snapshot.stack_generation;rr.target_lifecycle_state=1;std::vector<std::uint8_t> material(savepoint_rollback_operand.admitted_savepoint_evidence_sha256.begin(),savepoint_rollback_operand.admitted_savepoint_evidence_sha256.end());for(unsigned i=0;i<8;++i)material.push_back(static_cast<std::uint8_t>(rr.resulting_stack_generation>>(8*i)));const auto refreshed=scratchbird::core::hash::ComputeSha256Digest(material);if(!refreshed.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"MGA.SAVEPOINT.ROLLBACK_FAILED","sblr.txn_rollback_to_savepoint.refreshed_evidence_failed");rr.refreshed_savepoint_evidence_sha256=refreshed.digest;rr.executor_availability_generation=savepoint_rollback_availability_generation;savepoint_rollback_result_bytes=scratchbird::engine::sblr::EncodeSblrSavepointRollbackResultV1(rr);if(savepoint_rollback_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"MGA.SAVEPOINT.ROLLBACK_FAILED","sblr.txn_rollback_to_savepoint.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(savepoint_rollback_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=txn_rollback_to_savepoint_executor\texecutor_id=engine.op.txn_rollback_to_savepoint\topcode=SBLR_TXN_ROLLBACK_TO_SAVEPOINT\topcode_code=261\topcode_version=1.0\toperand_descriptor_id=savepoint_rollback_handle\tresult_descriptor_id=savepoint_rollback_result\tresult_descriptor_version=1\trollback_to_savepoint_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<savepoint_rollback_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  if(txn_rollback_to_savepoint_root){const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_savepoint_coordination");const auto rolled=scratchbird::engine::internal_api::RollbackToSblrSavepoint(c,scratchbird::core::platform::Uuid{savepoint_rollback_operand.savepoint_uuid},savepoint_rollback_operand.savepoint_generation,savepoint_rollback_operand.transaction_ordinal,savepoint_rollback_operand.admitted_stack_generation,sha_text(savepoint_rollback_operand.admitted_savepoint_evidence_sha256),savepoint_rollback_availability_generation);if(!rolled.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,rolled.diagnostic.code,rolled.diagnostic.message_key);scratchbird::engine::sblr::SblrSavepointRollbackResultV1 rr;rr.transaction_uuid=savepoint_rollback_operand.transaction_uuid;rr.local_transaction_id=savepoint_rollback_operand.local_transaction_id;rr.target_savepoint_uuid=savepoint_rollback_operand.savepoint_uuid;rr.target_savepoint_generation=savepoint_rollback_operand.savepoint_generation;rr.transaction_ordinal=savepoint_rollback_operand.transaction_ordinal;rr.resulting_stack_generation=rolled.snapshot.stack_generation;rr.rollback_sequence=rolled.snapshot.stack_generation;rr.target_lifecycle_state=1;std::vector<std::uint8_t> material(savepoint_rollback_operand.admitted_savepoint_evidence_sha256.begin(),savepoint_rollback_operand.admitted_savepoint_evidence_sha256.end());for(unsigned i=0;i<8;++i)material.push_back(static_cast<std::uint8_t>(rr.resulting_stack_generation>>(8*i)));const auto refreshed=scratchbird::core::hash::ComputeSha256Digest(material);if(!refreshed.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"MGA.SAVEPOINT.ROLLBACK_FAILED","sblr.txn_rollback_to_savepoint.refreshed_evidence_failed");rr.refreshed_savepoint_evidence_sha256=refreshed.digest;rr.executor_availability_generation=savepoint_rollback_availability_generation;savepoint_rollback_result_bytes=scratchbird::engine::sblr::EncodeSblrSavepointRollbackResultV1(rr);if(savepoint_rollback_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"MGA.SAVEPOINT.ROLLBACK_FAILED","sblr.txn_rollback_to_savepoint.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(savepoint_rollback_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=txn_rollback_to_savepoint_executor\texecutor_id=engine.op.txn_rollback_to_savepoint\topcode=SBLR_TXN_ROLLBACK_TO_SAVEPOINT\topcode_code=261\topcode_version=1.0\toperand_descriptor_id=savepoint_rollback_handle\tresult_descriptor_id=savepoint_rollback_result\tresult_descriptor_version=1\trollback_to_savepoint_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<savepoint_rollback_availability_generation<<"\tparent_success_barrier=passed\n";}}
   std::vector<std::uint8_t> autonomous_frame_result_bytes;
-  if(psql_autonomous_frame_root){const auto uuid_text=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return scratchbird::core::uuid::UuidToString(u);};auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_psql_autonomous_frame_coordination");const auto finalized=scratchbird::engine::internal_api::FinalizeSblrAutonomousFrame(c,uuid_text(autonomous_frame_descriptor.frame),autonomous_frame_descriptor.frame_generation,true);if(!finalized.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,finalized.diagnostic.code,finalized.diagnostic.message_key);scratchbird::engine::sblr::SblrAutonomousFrameResultV1 rr;rr.frame=autonomous_frame_descriptor.frame;rr.frame_generation=autonomous_frame_descriptor.frame_generation;rr.child_transaction=autonomous_frame_descriptor.child_transaction;rr.child_transaction_number=autonomous_frame_descriptor.child_transaction_number;rr.parent_transaction=autonomous_frame_descriptor.parent_transaction;rr.final_state=1;rr.intent=autonomous_frame_descriptor.intent;rr.depth=autonomous_frame_descriptor.depth;rr.commit_sequence=finalized.snapshot.finality_sequence;std::vector<std::uint8_t> material(autonomous_frame_descriptor.evidence_sha.begin(),autonomous_frame_descriptor.evidence_sha.end());const auto finality=scratchbird::core::hash::ComputeSha256Digest(material);if(!finality.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"PSQL.AUTONOMOUS_TRANSACTION_REFUSED","sblr.psql_autonomous.finality_evidence_failed");rr.finality_sha=finality.digest;rr.recovery_token=finalized.snapshot.recovery_token_uuid.bytes;rr.recovery_generation=finalized.snapshot.recovery_generation;rr.availability_generation=autonomous_frame_availability_generation;autonomous_frame_result_bytes=scratchbird::engine::sblr::EncodeSblrAutonomousFrameResultV1(rr);if(autonomous_frame_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"PSQL.AUTONOMOUS_TRANSACTION_REFUSED","sblr.psql_autonomous.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(autonomous_frame_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=psql_autonomous_frame_executor\texecutor_id=engine.op.psql_autonomous_frame\topcode=SBLR_PSQL_AUTONOMOUS_FRAME\topcode_code=262\topcode_version=1.0\toperand_descriptor_id=autonomous_frame_descriptor\tresult_descriptor_id=autonomous_frame_result\tresult_descriptor_version=1\tautonomous_frame_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<autonomous_frame_availability_generation<<"\tparent_success_barrier=passed\n";}}
-  std::vector<std::uint8_t> reservation_release_result_bytes;if(reservation_release_root){const auto uuid_text=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return scratchbird::core::uuid::UuidToString(u);};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_transaction_relation_reservation");const auto released=scratchbird::engine::internal_api::ReleaseSblrRelationReservation(c,uuid_text(reservation_release_descriptor.reservation),reservation_release_descriptor.reservation_generation,uuid_text(reservation_release_descriptor.relation),sha_text(reservation_release_descriptor.reservation_evidence),reservation_release_availability_generation);if(!released.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,released.diagnostic.code,released.diagnostic.message_key);scratchbird::engine::sblr::SblrReservationReleaseResultV1 rr;rr.transaction=reservation_release_descriptor.transaction;rr.local_transaction_id=reservation_release_descriptor.local_transaction_id;rr.reservation=reservation_release_descriptor.reservation;rr.reservation_generation=reservation_release_descriptor.reservation_generation;rr.relation=reservation_release_descriptor.relation;rr.release_sequence=released.snapshot.release_sequence;rr.final_state=1;const auto parsed=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(released.snapshot.release_evidence_sha256.begin(),released.snapshot.release_evidence_sha256.end()));if(!parsed.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"TX.RESERVATION.RELEASE_FAILED","sblr.reservation_release.evidence_failed");rr.release_evidence=parsed.digest;rr.availability_generation=reservation_release_availability_generation;reservation_release_result_bytes=scratchbird::engine::sblr::EncodeSblrReservationReleaseResultV1(rr);if(reservation_release_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"TX.RESERVATION.RELEASE_FAILED","sblr.reservation_release.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(reservation_release_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=transaction_reservation_release_executor\texecutor_id=engine.op.transaction_reservation_release\topcode=SBLR_TRANSACTION_RESERVATION_RELEASE\topcode_code=263\topcode_version=1.0\toperand_descriptor_id=relation_reservation_release_descriptor\tresult_descriptor_id=transaction_reservation_result\tresult_descriptor_version=1\treservation_release_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<reservation_release_availability_generation<<"\tparent_success_barrier=passed\n";}}
-  std::vector<std::uint8_t> temporary_cleanup_result_bytes;if(temporary_cleanup_root){const auto uuid_text=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return scratchbird::core::uuid::UuidToString(u);};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_temporary_instance_cleanup");const auto cleaned=scratchbird::engine::internal_api::CleanupSblrTemporaryInstance(c,uuid_text(temporary_cleanup_descriptor.descriptor),temporary_cleanup_descriptor.descriptor_generation,sha_text(temporary_cleanup_descriptor.evidence),temporary_cleanup_availability_generation);if(!cleaned.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,cleaned.diagnostic.code,cleaned.diagnostic.message_key);scratchbird::engine::sblr::SblrTemporaryInstanceCleanupResultV1 rr;rr.definition=temporary_cleanup_descriptor.definition;rr.instance=temporary_cleanup_descriptor.instance;rr.retired_generation=temporary_cleanup_descriptor.instance_generation;rr.owner_session=temporary_cleanup_descriptor.owner_session;rr.owner_transaction=temporary_cleanup_descriptor.owner_transaction;rr.cleanup_sequence=cleaned.snapshot.cleanup_sequence;rr.trigger=temporary_cleanup_descriptor.trigger;rr.state=2;rr.reclaimed_pages=cleaned.snapshot.reclaimed_pages;const auto evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(cleaned.snapshot.cleanup_evidence_sha256.begin(),cleaned.snapshot.cleanup_evidence_sha256.end()));if(!evidence.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"TEMP.TABLE.CLEANUP_FAILED","sblr.temporary_instance_cleanup.evidence_failed");rr.cleanup_evidence=evidence.digest;rr.availability_generation=temporary_cleanup_availability_generation;temporary_cleanup_result_bytes=scratchbird::engine::sblr::EncodeSblrTemporaryInstanceCleanupResultV1(rr);if(temporary_cleanup_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"TEMP.TABLE.CLEANUP_FAILED","sblr.temporary_instance_cleanup.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(temporary_cleanup_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=temporary_instance_cleanup_executor\texecutor_id=engine.op.temporary_instance_cleanup\topcode=SBLR_TEMPORARY_INSTANCE_CLEANUP\topcode_code=264\topcode_version=1.0\toperand_descriptor_id=temporary_instance_cleanup_descriptor\tresult_descriptor_id=temporary_cleanup_result\tresult_descriptor_version=1\ttemporary_cleanup_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<temporary_cleanup_availability_generation<<"\tparent_success_barrier=passed\n";}}
-  std::vector<std::uint8_t> cursor_open_result_bytes;if(cursor_open_root){const auto uuid_text=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return scratchbird::core::uuid::UuidToString(u);};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_cursor_open");const auto opened=scratchbird::engine::internal_api::OpenSblrCursor(c,uuid_text(cursor_open_descriptor.descriptor),cursor_open_descriptor.descriptor_generation,sha_text(cursor_open_descriptor.descriptor_evidence),cursor_open_availability_generation);if(!opened.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,opened.diagnostic.code,opened.diagnostic.message_key);scratchbird::engine::sblr::SblrCursorHandleV1 handle;handle.cursor=opened.snapshot.cursor_uuid.bytes;handle.cursor_generation=opened.snapshot.cursor_generation;handle.plan=cursor_open_descriptor.plan;handle.plan_generation=cursor_open_descriptor.plan_generation;handle.row_shape=cursor_open_descriptor.row_shape;handle.row_shape_generation=cursor_open_descriptor.row_shape_generation;handle.transaction=cursor_open_descriptor.transaction;handle.session=cursor_open_descriptor.session;handle.position_generation=opened.snapshot.position_generation;handle.state=1;handle.mode=cursor_open_descriptor.mode;handle.hold=cursor_open_descriptor.hold;handle.fetch_size=cursor_open_descriptor.fetch_size;handle.availability_generation=cursor_open_availability_generation;const auto evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(opened.snapshot.cursor_evidence_sha256.begin(),opened.snapshot.cursor_evidence_sha256.end()));if(!evidence.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.OPEN_FAILED","sblr.cursor_open.evidence_failed");handle.cursor_evidence=evidence.digest;cursor_open_result_bytes=scratchbird::engine::sblr::EncodeSblrCursorHandleV1(handle);if(cursor_open_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.OPEN_FAILED","sblr.cursor_open.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(cursor_open_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=cursor_open_executor\texecutor_id=engine.op.cursor_open\topcode=SBLR_CURSOR_OPEN\topcode_code=512\topcode_version=1.0\toperand_descriptor_id=cursor_open_plan_ref\tresult_descriptor_id=cursor_handle\tresult_descriptor_version=1\tcursor_handle_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<cursor_open_availability_generation<<"\tparent_success_barrier=passed\n";}}
-  std::vector<std::uint8_t> cursor_fetch_result_bytes;if(cursor_fetch_root){const auto uuid_text=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return scratchbird::core::uuid::UuidToString(u);};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.trace_tags.push_back("private_cursor_fetch");const auto fetched=scratchbird::engine::internal_api::FetchSblrCursor(c,uuid_text(cursor_fetch_operand.cursor),cursor_fetch_operand.cursor_generation,cursor_fetch_operand.position_generation,sha_text(cursor_fetch_operand.cursor_evidence),cursor_fetch_availability_generation,cursor_fetch_operand.maximum_rows);if(!fetched.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,fetched.diagnostic.code,fetched.diagnostic.message_key);scratchbird::engine::sblr::SblrCursorFetchResultV1 rr;rr.cursor=cursor_fetch_operand.cursor;rr.cursor_generation=cursor_fetch_operand.cursor_generation;rr.prior_position_generation=cursor_fetch_operand.position_generation;rr.resulting_position_generation=fetched.snapshot.position_generation;rr.returned_rows=0;rr.eof=1;rr.row_batch_sha=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{}).digest;rr.refreshed_cursor_evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(fetched.snapshot.cursor_evidence_sha256.begin(),fetched.snapshot.cursor_evidence_sha256.end())).digest;rr.availability_generation=cursor_fetch_availability_generation;cursor_fetch_result_bytes=scratchbird::engine::sblr::EncodeSblrCursorFetchResultV1(rr);if(cursor_fetch_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.FETCH_FAILED","sblr.cursor_fetch.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(cursor_fetch_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=cursor_fetch_executor\texecutor_id=engine.op.cursor_fetch\topcode=SBLR_CURSOR_FETCH\topcode_code=513\topcode_version=1.0\toperand_descriptor_id=cursor_fetch_handle\tresult_descriptor_id=cursor_fetch_result\tresult_descriptor_version=1\tcursor_fetch_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<cursor_fetch_availability_generation<<"\tparent_success_barrier=passed\n";}}
-  std::vector<std::uint8_t> cursor_close_result_bytes;if(cursor_close_root){const auto uuid_text=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return scratchbird::core::uuid::UuidToString(u);};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.trace_tags.push_back("private_cursor_close");const auto closed=scratchbird::engine::internal_api::CloseSblrCursor(c,uuid_text(cursor_close_operand.cursor),cursor_close_operand.cursor_generation,cursor_close_operand.position_generation,sha_text(cursor_close_operand.cursor_evidence),cursor_close_availability_generation,cursor_close_operand.close_reason);if(!closed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,closed.diagnostic.code,closed.diagnostic.message_key);scratchbird::engine::sblr::SblrCursorCloseResultV1 rr;rr.cursor=cursor_close_operand.cursor;rr.cursor_generation=cursor_close_operand.cursor_generation;rr.final_position_generation=cursor_close_operand.position_generation;rr.final_state=2;rr.close_reason=cursor_close_operand.close_reason;rr.cleanup_evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(closed.snapshot.cursor_evidence_sha256.begin(),closed.snapshot.cursor_evidence_sha256.end())).digest;rr.availability_generation=cursor_close_availability_generation;cursor_close_result_bytes=scratchbird::engine::sblr::EncodeSblrCursorCloseResultV1(rr);if(cursor_close_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.CLOSE_FAILED","sblr.cursor_close.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(cursor_close_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=cursor_close_executor\texecutor_id=engine.op.cursor_close\topcode=SBLR_CURSOR_CLOSE\topcode_code=514\topcode_version=1.0\toperand_descriptor_id=cursor_close_handle\tresult_descriptor_id=cursor_close_result\tresult_descriptor_version=1\tcursor_close_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<cursor_close_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  if(psql_autonomous_frame_root){auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_psql_autonomous_frame_coordination");const auto finalized=scratchbird::engine::internal_api::FinalizeSblrAutonomousFrame(c,scratchbird::core::platform::Uuid{autonomous_frame_descriptor.frame},autonomous_frame_descriptor.frame_generation,true);if(!finalized.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,finalized.diagnostic.code,finalized.diagnostic.message_key);scratchbird::engine::sblr::SblrAutonomousFrameResultV1 rr;rr.frame=autonomous_frame_descriptor.frame;rr.frame_generation=autonomous_frame_descriptor.frame_generation;rr.child_transaction=autonomous_frame_descriptor.child_transaction;rr.child_transaction_number=autonomous_frame_descriptor.child_transaction_number;rr.parent_transaction=autonomous_frame_descriptor.parent_transaction;rr.final_state=1;rr.intent=autonomous_frame_descriptor.intent;rr.depth=autonomous_frame_descriptor.depth;rr.commit_sequence=finalized.snapshot.finality_sequence;std::vector<std::uint8_t> material(autonomous_frame_descriptor.evidence_sha.begin(),autonomous_frame_descriptor.evidence_sha.end());const auto finality=scratchbird::core::hash::ComputeSha256Digest(material);if(!finality.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"PSQL.AUTONOMOUS_TRANSACTION_REFUSED","sblr.psql_autonomous.finality_evidence_failed");rr.finality_sha=finality.digest;rr.recovery_token=finalized.snapshot.recovery_token_uuid.bytes;rr.recovery_generation=finalized.snapshot.recovery_generation;rr.availability_generation=autonomous_frame_availability_generation;autonomous_frame_result_bytes=scratchbird::engine::sblr::EncodeSblrAutonomousFrameResultV1(rr);if(autonomous_frame_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"PSQL.AUTONOMOUS_TRANSACTION_REFUSED","sblr.psql_autonomous.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(autonomous_frame_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=psql_autonomous_frame_executor\texecutor_id=engine.op.psql_autonomous_frame\topcode=SBLR_PSQL_AUTONOMOUS_FRAME\topcode_code=262\topcode_version=1.0\toperand_descriptor_id=autonomous_frame_descriptor\tresult_descriptor_id=autonomous_frame_result\tresult_descriptor_version=1\tautonomous_frame_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<autonomous_frame_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  std::vector<std::uint8_t> reservation_release_result_bytes;if(reservation_release_root){const auto native_uuid=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return u;};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_transaction_relation_reservation");const auto released=scratchbird::engine::internal_api::ReleaseSblrRelationReservation(c,native_uuid(reservation_release_descriptor.reservation),reservation_release_descriptor.reservation_generation,native_uuid(reservation_release_descriptor.relation),sha_text(reservation_release_descriptor.reservation_evidence),reservation_release_availability_generation);if(!released.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,released.diagnostic.code,released.diagnostic.message_key);scratchbird::engine::sblr::SblrReservationReleaseResultV1 rr;rr.transaction=reservation_release_descriptor.transaction;rr.local_transaction_id=reservation_release_descriptor.local_transaction_id;rr.reservation=reservation_release_descriptor.reservation;rr.reservation_generation=reservation_release_descriptor.reservation_generation;rr.relation=reservation_release_descriptor.relation;rr.release_sequence=released.snapshot.release_sequence;rr.final_state=1;const auto parsed=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(released.snapshot.release_evidence_sha256.begin(),released.snapshot.release_evidence_sha256.end()));if(!parsed.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"TX.RESERVATION.RELEASE_FAILED","sblr.reservation_release.evidence_failed");rr.release_evidence=parsed.digest;rr.availability_generation=reservation_release_availability_generation;reservation_release_result_bytes=scratchbird::engine::sblr::EncodeSblrReservationReleaseResultV1(rr);if(reservation_release_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"TX.RESERVATION.RELEASE_FAILED","sblr.reservation_release.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(reservation_release_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=transaction_reservation_release_executor\texecutor_id=engine.op.transaction_reservation_release\topcode=SBLR_TRANSACTION_RESERVATION_RELEASE\topcode_code=263\topcode_version=1.0\toperand_descriptor_id=relation_reservation_release_descriptor\tresult_descriptor_id=transaction_reservation_result\tresult_descriptor_version=1\treservation_release_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<reservation_release_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  std::vector<std::uint8_t> temporary_cleanup_result_bytes;if(temporary_cleanup_root){const auto native_uuid=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return u;};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_temporary_instance_cleanup");const auto cleaned=scratchbird::engine::internal_api::CleanupSblrTemporaryInstance(c,native_uuid(temporary_cleanup_descriptor.descriptor),temporary_cleanup_descriptor.descriptor_generation,sha_text(temporary_cleanup_descriptor.evidence),temporary_cleanup_availability_generation);if(!cleaned.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,cleaned.diagnostic.code,cleaned.diagnostic.message_key);scratchbird::engine::sblr::SblrTemporaryInstanceCleanupResultV1 rr;rr.definition=temporary_cleanup_descriptor.definition;rr.instance=temporary_cleanup_descriptor.instance;rr.retired_generation=temporary_cleanup_descriptor.instance_generation;rr.owner_session=temporary_cleanup_descriptor.owner_session;rr.owner_transaction=temporary_cleanup_descriptor.owner_transaction;rr.cleanup_sequence=cleaned.snapshot.cleanup_sequence;rr.trigger=temporary_cleanup_descriptor.trigger;rr.state=2;rr.reclaimed_pages=cleaned.snapshot.reclaimed_pages;const auto evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(cleaned.snapshot.cleanup_evidence_sha256.begin(),cleaned.snapshot.cleanup_evidence_sha256.end()));if(!evidence.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"TEMP.TABLE.CLEANUP_FAILED","sblr.temporary_instance_cleanup.evidence_failed");rr.cleanup_evidence=evidence.digest;rr.availability_generation=temporary_cleanup_availability_generation;temporary_cleanup_result_bytes=scratchbird::engine::sblr::EncodeSblrTemporaryInstanceCleanupResultV1(rr);if(temporary_cleanup_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"TEMP.TABLE.CLEANUP_FAILED","sblr.temporary_instance_cleanup.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(temporary_cleanup_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=temporary_instance_cleanup_executor\texecutor_id=engine.op.temporary_instance_cleanup\topcode=SBLR_TEMPORARY_INSTANCE_CLEANUP\topcode_code=264\topcode_version=1.0\toperand_descriptor_id=temporary_instance_cleanup_descriptor\tresult_descriptor_id=temporary_cleanup_result\tresult_descriptor_version=1\ttemporary_cleanup_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<temporary_cleanup_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  std::vector<std::uint8_t> cursor_open_result_bytes;if(cursor_open_root){const auto native_uuid=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return u;};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_cursor_open");const auto opened=scratchbird::engine::internal_api::OpenSblrCursor(c,native_uuid(cursor_open_descriptor.descriptor),cursor_open_descriptor.descriptor_generation,sha_text(cursor_open_descriptor.descriptor_evidence),cursor_open_availability_generation);if(!opened.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,opened.diagnostic.code,opened.diagnostic.message_key);scratchbird::engine::sblr::SblrCursorHandleV1 handle;handle.cursor=opened.snapshot.cursor_uuid.bytes;handle.cursor_generation=opened.snapshot.cursor_generation;handle.plan=cursor_open_descriptor.plan;handle.plan_generation=cursor_open_descriptor.plan_generation;handle.row_shape=cursor_open_descriptor.row_shape;handle.row_shape_generation=cursor_open_descriptor.row_shape_generation;handle.transaction=cursor_open_descriptor.transaction;handle.session=cursor_open_descriptor.session;handle.position_generation=opened.snapshot.position_generation;handle.state=1;handle.mode=cursor_open_descriptor.mode;handle.hold=cursor_open_descriptor.hold;handle.fetch_size=cursor_open_descriptor.fetch_size;handle.availability_generation=cursor_open_availability_generation;const auto evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(opened.snapshot.cursor_evidence_sha256.begin(),opened.snapshot.cursor_evidence_sha256.end()));if(!evidence.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.OPEN_FAILED","sblr.cursor_open.evidence_failed");handle.cursor_evidence=evidence.digest;cursor_open_result_bytes=scratchbird::engine::sblr::EncodeSblrCursorHandleV1(handle);if(cursor_open_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.OPEN_FAILED","sblr.cursor_open.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(cursor_open_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=cursor_open_executor\texecutor_id=engine.op.cursor_open\topcode=SBLR_CURSOR_OPEN\topcode_code=512\topcode_version=1.0\toperand_descriptor_id=cursor_open_plan_ref\tresult_descriptor_id=cursor_handle\tresult_descriptor_version=1\tcursor_handle_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<cursor_open_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  std::vector<std::uint8_t> cursor_fetch_result_bytes;if(cursor_fetch_root){const auto native_uuid=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return u;};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.trace_tags.push_back("private_cursor_fetch");const auto fetched=scratchbird::engine::internal_api::FetchSblrCursor(c,native_uuid(cursor_fetch_operand.cursor),cursor_fetch_operand.cursor_generation,cursor_fetch_operand.position_generation,sha_text(cursor_fetch_operand.cursor_evidence),cursor_fetch_availability_generation,cursor_fetch_operand.maximum_rows);if(!fetched.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,fetched.diagnostic.code,fetched.diagnostic.message_key);scratchbird::engine::sblr::SblrCursorFetchResultV1 rr;rr.cursor=cursor_fetch_operand.cursor;rr.cursor_generation=cursor_fetch_operand.cursor_generation;rr.prior_position_generation=cursor_fetch_operand.position_generation;rr.resulting_position_generation=fetched.snapshot.position_generation;rr.returned_rows=0;rr.eof=1;rr.row_batch_sha=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{}).digest;rr.refreshed_cursor_evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(fetched.snapshot.cursor_evidence_sha256.begin(),fetched.snapshot.cursor_evidence_sha256.end())).digest;rr.availability_generation=cursor_fetch_availability_generation;cursor_fetch_result_bytes=scratchbird::engine::sblr::EncodeSblrCursorFetchResultV1(rr);if(cursor_fetch_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.FETCH_FAILED","sblr.cursor_fetch.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(cursor_fetch_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=cursor_fetch_executor\texecutor_id=engine.op.cursor_fetch\topcode=SBLR_CURSOR_FETCH\topcode_code=513\topcode_version=1.0\toperand_descriptor_id=cursor_fetch_handle\tresult_descriptor_id=cursor_fetch_result\tresult_descriptor_version=1\tcursor_fetch_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<cursor_fetch_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  std::vector<std::uint8_t> cursor_close_result_bytes;if(cursor_close_root){const auto native_uuid=[](const std::array<std::uint8_t,16>&b){scratchbird::core::platform::Uuid u{};std::copy(b.begin(),b.end(),u.bytes.begin());return u;};const auto sha_text=[](const std::array<std::uint8_t,32>&b){return std::string("sha256:")+scratchbird::core::hash::HexLower(b);};auto c=receipt->engine_context;c.trace_tags.push_back("private_cursor_close");const auto closed=scratchbird::engine::internal_api::CloseSblrCursor(c,native_uuid(cursor_close_operand.cursor),cursor_close_operand.cursor_generation,cursor_close_operand.position_generation,sha_text(cursor_close_operand.cursor_evidence),cursor_close_availability_generation,cursor_close_operand.close_reason);if(!closed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,closed.diagnostic.code,closed.diagnostic.message_key);scratchbird::engine::sblr::SblrCursorCloseResultV1 rr;rr.cursor=cursor_close_operand.cursor;rr.cursor_generation=cursor_close_operand.cursor_generation;rr.final_position_generation=cursor_close_operand.position_generation;rr.final_state=2;rr.close_reason=cursor_close_operand.close_reason;rr.cleanup_evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(closed.snapshot.cursor_evidence_sha256.begin(),closed.snapshot.cursor_evidence_sha256.end())).digest;rr.availability_generation=cursor_close_availability_generation;cursor_close_result_bytes=scratchbird::engine::sblr::EncodeSblrCursorCloseResultV1(rr);if(cursor_close_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.CLOSE_FAILED","sblr.cursor_close.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(cursor_close_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=cursor_close_executor\texecutor_id=engine.op.cursor_close\topcode=SBLR_CURSOR_CLOSE\topcode_code=514\topcode_version=1.0\toperand_descriptor_id=cursor_close_handle\tresult_descriptor_id=cursor_close_result\tresult_descriptor_version=1\tcursor_close_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<cursor_close_availability_generation<<"\tparent_success_barrier=passed\n";}}
   std::vector<std::uint8_t> read_by_key_result_bytes;if(read_by_key_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_read_by_key");auto consumed=scratchbird::engine::internal_api::ConsumeSblrReadByKeyDescriptor(c,read_by_key_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrReadByKeyResultV1 rr;rr.descriptor=read_by_key_descriptor.descriptor;rr.descriptor_generation=read_by_key_descriptor.descriptor_generation;rr.relation=read_by_key_descriptor.relation;rr.outcome=2;rr.row_sha=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{0}).digest;rr.redaction_evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{1}).digest;rr.availability_generation=read_by_key_availability_generation;read_by_key_result_bytes=scratchbird::engine::sblr::EncodeSblrReadByKeyResultV1(rr);if(read_by_key_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"READ.BY_KEY_FAILED","sblr.read_by_key.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(read_by_key_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=read_by_key_executor\texecutor_id=engine.op.read_by_key\topcode=SBLR_READ_BY_KEY\topcode_code=515\topcode_version=1.0\toperand_descriptor_id=uuid_object_key_descriptor\tresult_descriptor_id=row_descriptor\tresult_descriptor_version=1\tread_by_key_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<read_by_key_availability_generation<<"\tparent_success_barrier=passed\n";}}
 
   std::vector<std::uint8_t> read_range_result_bytes;
@@ -30796,8 +30629,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
           procedure_invoke_authority->procedure_uuid;
       invoke.target_object.object_kind = "procedure";
       invoke.option_envelopes.push_back(
-          "invocation_lease_uuid:" +
-          procedure_invoke_authority->invocation_uuid);
+          scratchbird::engine::internal_api::BinaryViewUuidOption("invocation_lease_uuid:", procedure_invoke_authority->invocation_uuid));
       invoke.canonical_procedure_abi_bytes =
           procedure_invoke_authority->canonical_procedure_abi_bytes;
       invoke.canonical_argument_vector_bytes =
@@ -31331,25 +31163,20 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     result->affected_rows = 0;
     result->rows_produced = 1;
     result->result_kind = "import_plan_result";
-    result->row_values = {
-        "surface_accepted_bool=1;planning_only_bool=1;"
-        "execution_requires_execute_import_rows_bool=1;"
-        "row_execution_completed_bool=0;row_persistence_claimed_bool=0;"
-        "normalized_insert_mode=" +
-        std::to_string(plan.normalized_insert_mode_code) +
-        ";normalized_source_kind=" +
-        std::to_string(plan.normalized_source_kind_code) +
-        ";normalized_format_family=" +
-        std::to_string(plan.normalized_format_family_code) +
-        ";mapped_column_count_u64=" +
-        std::to_string(plan.mapped_column_count) +
-        ";validated_request_descriptor_uuid_16=" +
-        plan.validated_request_descriptor_uuid +
-        ";validated_request_descriptor_generation_u64=" +
-        std::to_string(plan.validated_request_descriptor_generation) +
-        ";validated_request_projection_sha256_32=sha256:" +
-        scratchbird::core::hash::HexLower(
-            plan.validated_request_projection_sha256)};
+    result->row_values = {public_record({
+        {"surface_accepted_bool", public_result::Kind::text, "1"},
+        {"planning_only_bool", public_result::Kind::text, "1"},
+        {"execution_requires_execute_import_rows_bool", public_result::Kind::text, "1"},
+        {"row_execution_completed_bool", public_result::Kind::text, "0"},
+        {"row_persistence_claimed_bool", public_result::Kind::text, "0"},
+        {"normalized_insert_mode", public_result::Kind::text, std::to_string(plan.normalized_insert_mode_code)},
+        {"normalized_source_kind", public_result::Kind::text, std::to_string(plan.normalized_source_kind_code)},
+        {"normalized_format_family", public_result::Kind::text, std::to_string(plan.normalized_format_family_code)},
+        {"mapped_column_count_u64", public_result::Kind::text, std::to_string(plan.mapped_column_count)},
+        {"validated_request_descriptor_uuid_16", public_result::Kind::uuid, public_uuid_bytes(plan.validated_request_descriptor_uuid)},
+        {"validated_request_descriptor_generation_u64", public_result::Kind::text, std::to_string(plan.validated_request_descriptor_generation)},
+        {"validated_request_projection_sha256_32", public_result::Kind::bytes,
+         std::string(reinterpret_cast<const char*>(plan.validated_request_projection_sha256.data()), plan.validated_request_projection_sha256.size())}})};
     result->row_metadata_values = {
         "surface_accepted_bool:bool_u8:not_null;"
         "planning_only_bool:bool_u8:not_null;"
@@ -31365,8 +31192,8 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
         "validated_request_projection_sha256_32:bstr32:not_null"};
     result->evidence_values = api_evidence_values(dispatched.api_result);
     result->evidence_values.push_back(
-        "accepted_executor_evidence_ipev_v1:" +
-        HexBytes(plan.accepted_executor_evidence.exact_bytes));
+        public_record({{"accepted_executor_evidence_ipev_v1", public_result::Kind::bytes,
+        std::string(reinterpret_cast<const char*>(plan.accepted_executor_evidence.exact_bytes.data()), plan.accepted_executor_evidence.exact_bytes.size())}}));
   } else if (summary_only_native_bulk) {
     result->rows_produced = dispatched.api_result.dml_summary.rows_changed;
     if (result->rows_produced == 0) {
@@ -31379,17 +31206,16 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     if (result->result_kind.empty()) {
       result->result_kind = "native_bulk_ingest_summary";
     }
-    result->row_values = {
-        "accepted_rows=" + std::to_string(result->rows_produced) +
-        ";inserted_rows=" + std::to_string(result->rows_produced) +
-        ";rejected_rows=0"};
+    result->row_values = {public_record({
+        {"accepted_rows", public_result::Kind::text, std::to_string(result->rows_produced)},
+        {"inserted_rows", public_result::Kind::text, std::to_string(result->rows_produced)},
+        {"rejected_rows", public_result::Kind::text, "0"}})};
     result->row_metadata_values = {
         "accepted_rows:uint64:not_null;inserted_rows:uint64:not_null;"
         "rejected_rows:uint64:not_null"};
     result->evidence_values = {
-        "direct_physical_bulk_row_count:" +
-            std::to_string(result->rows_produced),
-        "result_payload_policy:summary_only"};
+        public_text_evidence("direct_physical_bulk_row_count", std::to_string(result->rows_produced)),
+        public_text_evidence("result_payload_policy", "summary_only")};
   } else {
     result->rows_produced = static_cast<std::uint64_t>(
         dispatched.api_result.result_shape.rows.size());
@@ -31592,7 +31418,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
           record.object_kinds !=
               std::vector<std::string>{expected_object_kind} ||
           record.grantee_uuids !=
-              std::vector<std::string>{bound.grantee_uuid} ||
+              std::vector<scratchbird::engine::internal_api::EngineUuid>{bound.grantee_uuid} ||
           record.privileges !=
               std::vector<std::string>{bound.canonical_privilege} ||
           record.grant_option_privileges != expected_grant_options ||
@@ -32711,11 +32537,11 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
               ddl_create_procedure_authority->canonical_procedure_abi_bytes
                   .size(),
               &persisted_abi, &abi_detail) ||
-          CanonicalUuidText(persisted_abi.abi_uuid) !=
+          NativeUuid(persisted_abi.abi_uuid) !=
               ddl_create_procedure_authority->procedure_abi_uuid ||
           persisted_abi.abi_generation !=
               ddl_create_procedure_authority->procedure_abi_generation ||
-          CanonicalUuidText(persisted_abi.procedure_uuid) !=
+          NativeUuid(persisted_abi.procedure_uuid) !=
               ddl_create_procedure_authority->procedure_uuid ||
           persisted_abi.procedure_generation !=
               ddl_create_procedure_authority->procedure_generation ||
@@ -32752,34 +32578,29 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
           "compiled_body_provenance:engine.bound.procedural_body.v1",
           "compiled_body_descriptor:sblr.psql.body.null.v1",
           "side_effect_class:none",
-          "procedure_body_sblr_uuid:" +
-              ddl_create_procedure_authority->body_sblr_uuid,
+          scratchbird::engine::internal_api::BinaryViewUuidOption("procedure_body_sblr_uuid:", ddl_create_procedure_authority->body_sblr_uuid),
           "procedure_body_sblr_generation:" +
               std::to_string(
                   ddl_create_procedure_authority->body_sblr_generation),
-          "procedure_body_bytes_hex:" +
-              HexBytes(ddl_create_procedure_authority
-                           ->canonical_body_sblr_bytes),
+          "procedure_body_bytes:" +
+              std::string(ddl_create_procedure_authority->canonical_body_sblr_bytes.begin(),
+                          ddl_create_procedure_authority->canonical_body_sblr_bytes.end()),
           "procedure_body_sha256:" + body_sha,
-          "procedure_abi_uuid:" +
-              ddl_create_procedure_authority->procedure_abi_uuid,
+          scratchbird::engine::internal_api::BinaryViewUuidOption("procedure_abi_uuid:", ddl_create_procedure_authority->procedure_abi_uuid),
           "procedure_abi_generation:" +
               std::to_string(
                   ddl_create_procedure_authority->procedure_abi_generation),
-          "procedure_abi_bytes_hex:" +
-              HexBytes(ddl_create_procedure_authority
-                           ->canonical_procedure_abi_bytes),
+          "procedure_abi_bytes:" +
+              std::string(ddl_create_procedure_authority->canonical_procedure_abi_bytes.begin(),
+                          ddl_create_procedure_authority->canonical_procedure_abi_bytes.end()),
           "procedure_abi_evidence_sha256:" + abi_evidence_sha,
           "procedure_parameter_count:" +
               std::to_string(ddl_create_procedure_authority->parameter_count),
           "procedure_signature_sha256:" + signature_sha,
           "procedure_effect_set_sha256:" + effect_sha,
-          "procedure_recovery_uuid:" +
-              ddl_create_procedure_authority->recovery_uuid,
-          "procedure_mutation_uuid:" +
-              ddl_create_procedure_authority->mutation_uuid,
-          "procedure_publication_barrier_uuid:" +
-              ddl_create_procedure_authority->publication_barrier_uuid,
+          scratchbird::engine::internal_api::BinaryViewUuidOption("procedure_recovery_uuid:", ddl_create_procedure_authority->recovery_uuid),
+          scratchbird::engine::internal_api::BinaryViewUuidOption("procedure_mutation_uuid:", ddl_create_procedure_authority->mutation_uuid),
+          scratchbird::engine::internal_api::BinaryViewUuidOption("procedure_publication_barrier_uuid:", ddl_create_procedure_authority->publication_barrier_uuid),
       };
       const auto created =
           scratchbird::engine::internal_api::EngineCreateProcedure(create);
@@ -32825,8 +32646,10 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
               : lifecycle.state.objects.end();
       const auto expected_payload_field = [](const std::string& payload,
                                              const std::string& field) {
-        const auto framed = ";" + payload + ";";
-        return framed.find(";" + field + ";") != std::string::npos;
+        const auto colon = field.find(':');
+        return colon != std::string::npos &&
+            scratchbird::engine::internal_api::BinaryViewOptionValue(
+                payload, field.substr(0, colon + 1)) == field.substr(colon + 1);
       };
       if (!lifecycle.ok || object == lifecycle.state.objects.end() ||
           object->schema_uuid != ddl_create_procedure_authority->schema_uuid ||
@@ -32842,19 +32665,17 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
               "compiled_body_descriptor:sblr.psql.body.null.v1") ||
           !expected_payload_field(
               object->payload,
-              "procedure_body_sblr_uuid:" +
-                  ddl_create_procedure_authority->body_sblr_uuid) ||
+              scratchbird::engine::internal_api::BinaryViewUuidOption("procedure_body_sblr_uuid:", ddl_create_procedure_authority->body_sblr_uuid)) ||
           !expected_payload_field(object->payload,
                                   "procedure_body_sha256:" + body_sha) ||
           !expected_payload_field(
               object->payload,
-              "procedure_abi_uuid:" +
-                  ddl_create_procedure_authority->procedure_abi_uuid) ||
+              scratchbird::engine::internal_api::BinaryViewUuidOption("procedure_abi_uuid:", ddl_create_procedure_authority->procedure_abi_uuid)) ||
           !expected_payload_field(
               object->payload,
-              "procedure_abi_bytes_hex:" +
-                  HexBytes(ddl_create_procedure_authority
-                               ->canonical_procedure_abi_bytes)) ||
+              "procedure_abi_bytes:" +
+                  std::string(ddl_create_procedure_authority->canonical_procedure_abi_bytes.begin(),
+                          ddl_create_procedure_authority->canonical_procedure_abi_bytes.end())) ||
           !expected_payload_field(
               object->payload,
               "procedure_abi_evidence_sha256:" + abi_evidence_sha) ||
@@ -33305,12 +33126,10 @@ if(ddl_drop_view_root){auto c=receipt->engine_context;c.trace_tags.push_back("pr
           std::string("trigger_scope:") +
               (ddl_create_trigger_authority->scope == 1 ? "row"
                                                         : "statement"),
-          "trigger_target_table_uuid:" +
-              ddl_create_trigger_authority->target_relation_uuid,
+          scratchbird::engine::internal_api::BinaryViewUuidOption("trigger_target_table_uuid:", ddl_create_trigger_authority->target_relation_uuid),
           "trigger_target_table_name:" +
               ddl_create_trigger_authority->canonical_target_path_utf8,
-          "trigger_body_sblr_uuid:" +
-              ddl_create_trigger_authority->body_sblr_uuid,
+          scratchbird::engine::internal_api::BinaryViewUuidOption("trigger_body_sblr_uuid:", ddl_create_trigger_authority->body_sblr_uuid),
           "trigger_body_sblr_generation:" +
               std::to_string(
                   ddl_create_trigger_authority->body_sblr_generation),
@@ -33338,10 +33157,8 @@ if(ddl_drop_view_root){auto c=receipt->engine_context;c.trace_tags.push_back("pr
                          : "suppress_nested"),
           "trigger_failure_policy:mandatory",
           "trigger_definition_generation:1",
-          "trigger_recovery_uuid:" +
-              ddl_create_trigger_authority->recovery_uuid,
-          "trigger_mutation_uuid:" +
-              ddl_create_trigger_authority->mutation_uuid,
+          scratchbird::engine::internal_api::BinaryViewUuidOption("trigger_recovery_uuid:", ddl_create_trigger_authority->recovery_uuid),
+          scratchbird::engine::internal_api::BinaryViewUuidOption("trigger_mutation_uuid:", ddl_create_trigger_authority->mutation_uuid),
       };
       const auto created =
           scratchbird::engine::internal_api::EngineCreateTrigger(create);
@@ -33684,14 +33501,13 @@ if(ddl_drop_srs_root){auto c=receipt->engine_context;c.trace_tags.push_back("pri
                 create.recovery_operation_uuid =
                     ddl_create_schema_authority->recovery_uuid;
                 create.requested_catalog_row_uuid =
-                    CanonicalUuidText(planned_result.catalog_row_uuid);
+                    NativeUuid(planned_result.catalog_row_uuid);
                 create.mutation_uuid =
-                    CanonicalUuidText(planned_result.mutation_uuid);
+                    NativeUuid(planned_result.mutation_uuid);
                 create.statement_publication_barrier_uuid =
-                    CanonicalUuidText(planned_result.publication_barrier);
+                    NativeUuid(planned_result.publication_barrier);
                 create.option_envelopes.push_back(
-                    "catalog_ddl_mutation_audit:" +
-                    ddl_create_schema_authority->recovery_uuid);
+                    scratchbird::engine::internal_api::BinaryViewUuidOption("catalog_ddl_mutation_audit:", ddl_create_schema_authority->recovery_uuid));
                 const auto created = scratchbird::engine::internal_api::
                     EngineCreateSchema(create);
                 if (!created.ok) {
@@ -33707,7 +33523,7 @@ if(ddl_drop_srs_root){auto c=receipt->engine_context;c.trace_tags.push_back("pri
                     created.primary_object.uuid !=
                         ddl_create_schema_authority->schema_uuid ||
                     created.catalog_row_uuid !=
-                        CanonicalUuidText(planned_result.catalog_row_uuid)) {
+                        NativeUuid(planned_result.catalog_row_uuid)) {
                   return scratchbird::engine::internal_api::
                       MakeEngineApiDiagnostic(
                           "MGA.AUTHORITY_MISMATCH",
@@ -34069,10 +33885,9 @@ if(ddl_drop_table_root){auto c=receipt->engine_context;c.trace_tags.push_back("p
     if (trace_path != nullptr && *trace_path != '\0') {
       std::ofstream trace(trace_path, std::ios::app | std::ios::binary);
       if (trace) {
-        const std::string evidence_sha =
-            dispatched.api_result.evidence.empty()
-                ? std::string{}
-                : dispatched.api_result.evidence.front().evidence_id;
+        const auto* evidence_text = dispatched.api_result.evidence.empty()
+            ? nullptr : std::get_if<std::string>(&dispatched.api_result.evidence.front().evidence_id);
+        const std::string_view evidence_sha = evidence_text ? std::string_view(*evidence_text) : std::string_view{};
         trace << "layer=source_map_executor"
               << "\texecutor_id=engine.op.source_map"
               << "\topcode=SBLR_SOURCE_MAP"
@@ -34203,7 +34018,7 @@ void SetPreparedMetadataBindingDispatchTestHookForTesting(
 sb_engine_status_t CreatePreparedMetadataBinding(
     sb_engine_session_t session,
     const sb_engine_request_context_v1_t* prepare_context,
-    std::string_view sealed_prepare_transaction_uuid,
+    const scratchbird::core::platform::Uuid& sealed_prepare_transaction_uuid,
     const sb_engine_sblr_dispatch_params_v1_t* invoke_params,
     PreparedMetadataBindingHandle* out_binding,
     sb_engine_result_t* out_result) {
@@ -34379,10 +34194,9 @@ sb_engine_status_t CreatePreparedMetadataBinding(
         "engine.prepared_metadata_binding.transaction_not_active",
         std::to_string(prepare_context->transaction_ref));
   }
-  if (sealed_prepare_transaction_uuid.empty() ||
+  if (sealed_prepare_transaction_uuid.is_nil() ||
       !prepare_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          prepare_transaction.entry.identity.transaction_uuid.value) !=
+      prepare_transaction.entry.identity.transaction_uuid.value !=
           sealed_prepare_transaction_uuid) {
     return fail_result(
         SB_ENGINE_STATUS_CONFLICT,
@@ -34424,7 +34238,7 @@ sb_engine_status_t CreatePreparedMetadataBinding(
         "engine.prepared_metadata_binding.snapshot_id_unavailable");
   }
   auto metadata_context =
-      make_internal_context(session->engine, *prepare_context);
+      make_metadata_inventory_read_context(session->engine, *prepare_context);
   metadata_context.statement_metadata_snapshot_engine_owned = true;
   metadata_context.statement_metadata_snapshot_uuid =
       metadata_snapshot_uuid;

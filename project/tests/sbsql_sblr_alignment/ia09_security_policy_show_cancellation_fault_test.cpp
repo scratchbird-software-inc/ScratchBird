@@ -1,3 +1,4 @@
+#include "wire/public_result_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
@@ -49,7 +50,7 @@ Fixture CreateSecurityFixture() {
 
 sblr::SblrOperationEnvelope SecurityPolicyShowMember(
     const bridge::StatementContextReceiptView& view,
-    std::string_view parser_uuid,
+    const platform::Uuid& parser_uuid,
     const std::array<std::uint8_t, 16>& policy_uuid) {
   auto member = sblr::MakeSblrEnvelope(
       "security.policy.show", "SBLR_SECURITY_POLICY_SHOW",
@@ -81,8 +82,8 @@ int main() {
   std::atomic<unsigned> cancel_on_probe{0};
   auto context = BeginTransaction(fixture, &probes);
   context.query_cancellation_requested = {};
-  context.current_schema_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::schema, 21640));
+  context.current_schema_uuid =
+      Identity(NewUuid(platform::UuidKind::schema, 21640));
   const auto security_catalog =
       api::LoadDatabaseLocalSecurityEventStoreV1(context);
   Require(security_catalog.ok &&
@@ -92,8 +93,8 @@ int main() {
       security_catalog.state.security_context_generation;
 
   api::EngineMaterializedAuthorizationGrant policy_admin;
-  policy_admin.grant_uuid.canonical =
-      Text(NewUuid(platform::UuidKind::object, 21641));
+  policy_admin.grant_uuid =
+      Identity(NewUuid(platform::UuidKind::object, 21641));
   policy_admin.subject_uuid = context.principal_uuid;
   policy_admin.subject_kind = "principal";
   policy_admin.right = "POLICY_ADMIN";
@@ -106,10 +107,10 @@ int main() {
       NewUuid(platform::UuidKind::object, 21643);
   api::EngineSecurityCreatePolicyRequest create;
   create.context = context;
-  create.policy_uuid = Text(policy_identity);
+  create.policy_uuid = Identity(policy_identity);
   create.policy_name = "show_cancel_policy";
-  create.target_schema_uuid = context.current_schema_uuid.canonical;
-  create.target_object_uuid = Text(target_identity);
+  create.target_schema_uuid = context.current_schema_uuid;
+  create.target_object_uuid = Identity(target_identity);
   create.target_object_kind = "table";
   create.policy_effect = "row_filter";
   create.predicate_envelope = "predicate:true";
@@ -135,8 +136,8 @@ int main() {
   context.authorization_context.security_context_generation =
       seeded_security.state.security_context_generation;
 
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 21644));
-  context.current_package_uuid.canonical = parser_uuid;
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 21644));
+  context.current_package_uuid = parser_uuid;
   context.query_cancellation_requested = [&] {
     const auto ordinal = probes.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto target = cancel_on_probe.load(std::memory_order_relaxed);
@@ -145,7 +146,7 @@ int main() {
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t result = nullptr;
@@ -160,7 +161,7 @@ int main() {
   const auto submission = PackageWithMember(
       fixture, view, parser_uuid,
       SecurityPolicyShowMember(view, parser_uuid,
-                               RawUuid(Text(policy_identity))));
+                               RawUuid(Identity(policy_identity))));
 
   const auto require_cancelled = [&](unsigned target,
                                      std::string_view expected_key) {
@@ -222,22 +223,26 @@ int main() {
           "002164 SHOW POLICY retry did not cross every checkpoint");
   const auto payload = ResultPayload(result);
   const std::string payload_text(payload.begin(), payload.end());
-  Require(payload_text.find("policy_uuid=" + Text(policy_identity)) !=
-                  std::string::npos &&
-              payload_text.find("policy_generation=" +
-                                std::to_string(created.policy_generation)) !=
-                  std::string::npos,
-          "002164 SHOW POLICY retry omitted the exact policy row");
+  namespace packet = scratchbird::wire::public_result;
+  const auto row = packet::Find(payload_text, "row[0]");
+  Require(row && row->kind == packet::Kind::row,
+          "002164 SHOW POLICY retry omitted the typed policy row");
+  const auto actual_policy = packet::Find(row->value, "policy_uuid");
+  const auto expected_policy = Identity(policy_identity);
+  Require(actual_policy && actual_policy->kind == packet::Kind::uuid &&
+              actual_policy->value == std::string(reinterpret_cast<const char*>(expected_policy.bytes.data()), 16) &&
+              packet::Value(row->value, "policy_generation") == std::to_string(created.policy_generation),
+          "002164 SHOW POLICY retry omitted the exact binary policy identity");
   (void)sb_engine_result_release(result);
 
   auto verify_context = context;
   verify_context.query_cancellation_requested = {};
   api::EngineSecurityShowPolicyRequest verify;
   verify.context = std::move(verify_context);
-  verify.policy_uuid = Text(policy_identity);
+  verify.policy_uuid = Identity(policy_identity);
   const auto verified = api::EngineSecurityShowPolicy(verify);
   Require(verified.ok && verified.policy_found &&
-              verified.policy.policy_uuid == Text(policy_identity) &&
+              verified.policy.policy_uuid == Identity(policy_identity) &&
               verified.current_policy_generation ==
                   created.policy_generation,
           "002164 SHOW POLICY cancellation changed the policy snapshot");

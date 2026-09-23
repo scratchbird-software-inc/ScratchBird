@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/binary_uuid_fixture.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -42,7 +43,7 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   session.principal_claim = "sml015-server-user";
   session.database_path =
       "/tmp/sbsql_server_language_resource_directory_conformance.sbdb";
-  session.database_uuid = "019e0a8c-f015-7000-8000-000000000015";
+  session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e0a8c-f015-7000-8000-000000000015");
   session.catalog_generation = 21;
   session.security_epoch = 22;
   session.descriptor_epoch = 24;
@@ -51,7 +52,7 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   session.admitted_parser_package_version_major = 1;
   session.local_transaction_id = 1;
   session.snapshot_visible_through_local_transaction_id = 1;
-  session.transaction_uuid = "019e0a8c-f015-7000-8000-000000000018";
+  session.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019e0a8c-f015-7000-8000-000000000018");
   session.transaction_timestamp = "2026-09-02T00:00:00Z";
   server::ApplyRequestedLanguageProfile(&session, "en");
   *session_uuid = session.session_uuid;
@@ -67,7 +68,7 @@ server::HostedEngineState MakeEngineState() {
   database.database_open = true;
   database.database_path =
       "/tmp/sbsql_server_language_resource_directory_conformance.sbdb";
-  database.database_uuid = "019e0a8c-f015-7000-8000-000000000015";
+  database.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e0a8c-f015-7000-8000-000000000015");
   state.databases.push_back(database);
   return state;
 }

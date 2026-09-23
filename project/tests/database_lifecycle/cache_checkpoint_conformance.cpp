@@ -150,7 +150,12 @@ void TestPreloadDirtyWritebackCheckpoint() {
           "page cache did not fail cluster paths closed in standalone mode");
   Require(page::PageCacheAuthorityBoundaryValid(started.publication.authority_boundary),
           "page cache authority boundary is invalid");
-  const auto json = page::SerializePageCacheCheckpointJson(started.publication, false);
+  const auto bytes = page::SerializePageCacheCheckpoint(started.publication, false);
+  page::PageCacheCheckpointEnvelope decoded;
+  Require(page::DecodePageCacheCheckpoint(bytes, &decoded), "checkpoint envelope decode failed");
+  Require(decoded.database_uuid == input.database_uuid.value &&
+              decoded.filespace_uuid == input.filespace_uuid.value, "checkpoint UUID mismatch");
+  const auto& json = decoded.details_json;
   Require(Contains(json, "\"authority_boundary_valid\":true"),
           "page cache JSON omitted authority boundary");
 
@@ -280,7 +285,7 @@ void TestDatabaseLifecycleIntegration() {
           "database open did not publish cache checkpoint state");
   Require(opened.state.cache_checkpoint.preload_complete,
           "database open did not record cache preload evidence");
-  Require(Contains(opened.state.cache_checkpoint_json, "\"page_cache_checkpoint\""),
+  Require(Contains(opened.state.cache_checkpoint_binary, "\"page_cache_checkpoint\""),
           "database open cache checkpoint JSON missing");
   Require(db::StartupLifecycleEvidencePresent(
               opened.state.startup_state,

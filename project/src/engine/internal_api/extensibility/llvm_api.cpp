@@ -77,17 +77,33 @@ std::string Fnv1aHex(const std::string& value) {
 }
 
 std::string CacheMaterial(const EngineApiRequest& request, const std::string& mode, const std::string& module) {
-  std::string material = "mode=" + mode + ";module=" + module;
-  material += ";target=" + request.target_object.uuid;
-  material += ";principal=" + request.context.principal_uuid;
-  material += ";policy_epoch=" + std::to_string(request.context.security_epoch);
+  std::string material("SBLLAPI2");
+  const auto append_size = [&](std::uint64_t value) {
+    for (unsigned i = 0; i < 8; ++i) {
+      material.push_back(static_cast<char>((value >> (i * 8)) & 0xff));
+    }
+  };
+  const auto text = [&](std::string_view value) {
+    material.push_back('s'); append_size(value.size()); material.append(value);
+  };
+  const auto identity = [&](const EngineUuid& value) {
+    material.push_back('u');
+    material.append(reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size());
+  };
+  text(mode); text(module);
+  identity(request.target_object.uuid);
+  identity(request.context.principal_uuid);
+  material.push_back('n'); append_size(request.context.security_epoch);
+  append_size(request.descriptors.size());
   for (const auto& descriptor : request.descriptors) {
-    material += ";descriptor=" + descriptor.descriptor_uuid + ":" +
-                descriptor.descriptor_kind + ":" + descriptor.canonical_type_name + ":" +
-                descriptor.encoded_descriptor;
+    identity(descriptor.descriptor_uuid);
+    text(descriptor.descriptor_kind); text(descriptor.canonical_type_name);
+    text(descriptor.encoded_descriptor);
   }
-  for (const auto& profile : request.policy_profile.encoded_profiles) { material += ";policy=" + profile; }
-  for (const auto& profile : request.physical_profile.encoded_profiles) { material += ";physical=" + profile; }
+  append_size(request.policy_profile.encoded_profiles.size());
+  for (const auto& profile : request.policy_profile.encoded_profiles) text(profile);
+  append_size(request.physical_profile.encoded_profiles.size());
+  for (const auto& profile : request.physical_profile.encoded_profiles) text(profile);
   return material;
 }
 
@@ -201,6 +217,9 @@ native::NativeCompileRequest BuildNativeCompileRequest(const EngineCompileLlvmMo
   native_request.target_object_uuid = request.target_object.uuid;
   native_request.principal_uuid = request.context.principal_uuid;
   native_request.database_path = request.context.database_path;
+  native_request.database_uuid = request.context.database_uuid;
+  native_request.session_uuid = request.context.session_uuid;
+  native_request.statement_uuid = request.context.statement_uuid;
   native_request.catalog_generation_id = request.context.catalog_generation_id;
   native_request.security_epoch = request.context.security_epoch;
   native_request.policy_epoch = request.context.security_epoch;

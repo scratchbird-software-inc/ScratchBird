@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_update_durable_store.hpp"
+#include "mga_relation_store/mga_savepoint_marker_codec.hpp"
 #include "mga_relation_store/mga_update_durable_frame_store_internal.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
@@ -308,7 +309,7 @@ bool DmlUpdateDurableReplaceFileAtomically(
 
 bool DmlUpdateDurableBytesEqualUuid(
     std::span<const std::uint8_t> bytes, std::size_t offset,
-    std::string_view uuid) {
+    const EngineUuid& uuid) {
   std::array<std::uint8_t, 16> expected{};
   return DmlUpdateDurableUuidBytes(uuid, &expected) &&
          offset <= bytes.size() && bytes.size() - offset >= expected.size() &&
@@ -961,7 +962,7 @@ std::string DmlUpdateDurablePathForLookup(
     return {};
   }
   return DmlUpdateDurableOperationStorePath(context) + "/" +
-         lookup.descriptor_uuid + ".duop";
+         scratchbird::core::uuid::UuidToString(lookup.descriptor_uuid) + ".duop";
 }
 
 bool DmlUpdateDurableSameReservationRequest(
@@ -983,11 +984,11 @@ bool DmlUpdateDurableSameReservationRequest(
          identity.recovery_generation == request.recovery_generation;
 }
 
-std::string DmlUpdateDurableFreshIdentity(
+EngineUuid DmlUpdateDurableFreshIdentity(
     const MgaDmlUpdateDurableOperationIdentityV1& identity,
-    std::string_view other = {}) {
+    const EngineUuid& other = {}) {
   for (std::size_t attempt = 0; attempt < 16; ++attempt) {
-    const std::string candidate = GenerateCrudEngineUuid("object");
+    const EngineUuid candidate = GenerateCrudEngineUuid("object");
     std::array<std::uint8_t, 16> ignored{};
     if (DmlUpdateDurableUuidBytes(candidate, &ignored) &&
         candidate != identity.database_uuid &&
@@ -1316,32 +1317,10 @@ DmlUpdateStatementSavepointFailure(std::string code, std::string key,
   return result;
 }
 
-bool DmlUpdateStatementParseU64(std::string_view text,
-                                std::uint64_t* value) {
-  if (value == nullptr || text.empty()) return false;
-  std::uint64_t parsed = 0;
-  const auto converted =
-      std::from_chars(text.data(), text.data() + text.size(), parsed, 10);
-  if (converted.ec != std::errc{} ||
-      converted.ptr != text.data() + text.size()) {
-    return false;
-  }
-  *value = parsed;
-  return true;
-}
-
-bool DmlUpdateStatementParseUuid(
-    std::string_view text, std::array<std::uint8_t, 16>* bytes = nullptr) {
-  if (text.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
-      scratchbird::core::uuid::UuidToString(parsed.value) != text) {
-    return false;
-  }
-  if (bytes != nullptr) {
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-              bytes->begin());
-  }
+bool DmlUpdateStatementUuidValid(
+    const EngineUuid& uuid, std::array<std::uint8_t, 16>* bytes = nullptr) {
+  if (uuid.is_nil() || !scratchbird::core::uuid::IsValidUuidVariant(uuid)) return false;
+  if (bytes) *bytes = uuid.bytes;
   return true;
 }
 
@@ -1349,25 +1328,6 @@ bool DmlUpdateStatementShaNonzero(
     const MgaDmlUpdateStatementAuthoritySha256V1& value) {
   return std::any_of(value.begin(), value.end(),
                      [](std::uint8_t byte) { return byte != 0; });
-}
-
-std::string DmlUpdateStatementShaHex(
-    const MgaDmlUpdateStatementAuthoritySha256V1& value) {
-  return scratchbird::core::hash::HexLower(value);
-}
-
-bool DmlUpdateStatementParseSha(
-    std::string_view text, MgaDmlUpdateStatementAuthoritySha256V1* value) {
-  if (value == nullptr || text.size() != value->size() * 2) return false;
-  MgaDmlUpdateStatementAuthoritySha256V1 parsed{};
-  for (std::size_t index = 0; index < parsed.size(); ++index) {
-    const int high = HexValue(text[index * 2]);
-    const int low = HexValue(text[index * 2 + 1]);
-    if (high < 0 || low < 0) return false;
-    parsed[index] = static_cast<std::uint8_t>((high << 4) | low);
-  }
-  *value = parsed;
-  return true;
 }
 
 void DmlUpdateStatementAppendU64(std::vector<std::uint8_t>* bytes,
@@ -1379,14 +1339,14 @@ void DmlUpdateStatementAppendU64(std::vector<std::uint8_t>* bytes,
 }
 
 bool DmlUpdateStatementAppendUuid(std::vector<std::uint8_t>* bytes,
-                                  std::string_view uuid,
+                                  const EngineUuid& uuid,
                                   bool optional = false) {
-  if (optional && uuid.empty()) {
+  if (optional && uuid.is_nil()) {
     bytes->insert(bytes->end(), 16, 0);
     return true;
   }
   std::array<std::uint8_t, 16> parsed{};
-  if (!DmlUpdateStatementParseUuid(uuid, &parsed)) return false;
+  if (!DmlUpdateStatementUuidValid(uuid, &parsed)) return false;
   bytes->insert(bytes->end(), parsed.begin(), parsed.end());
   return true;
 }
@@ -1444,14 +1404,9 @@ DmlUpdateStatementSavepointRecordSha256(
 }
 
 std::string DmlUpdateStatementPrivateSavepointMarker(
-    std::string_view savepoint_uuid) {
-  if (!DmlUpdateStatementParseUuid(savepoint_uuid)) return {};
-  std::string marker = "__sblr_dml_update_rows_";
-  marker.reserve(marker.size() + 32);
-  for (const char value : savepoint_uuid) {
-    if (value != '-') marker.push_back(value);
-  }
-  return marker;
+    const EngineUuid& savepoint_uuid) {
+  if (!DmlUpdateStatementUuidValid(savepoint_uuid)) return {};
+  return MgaSavepointUuidKey(savepoint_uuid);
 }
 
 MgaDmlUpdateDurableOperationIdentityV1
@@ -1537,9 +1492,9 @@ bool DmlUpdateStatementDecodeBinaryFrame(
       frame.identity.recovery_token_uuid;
   record->authority.binding.recovery_generation =
       frame.identity.recovery_generation;
-  record->authority.savepoint_uuid = DmlUpdateDurableUuidText(
+  record->authority.savepoint_uuid = DmlUpdateDurableUuidValue(
       std::span<const std::uint8_t>(frame.payload).subspan(0, 16));
-  record->authority.publication_barrier_uuid = DmlUpdateDurableUuidText(
+  record->authority.publication_barrier_uuid = DmlUpdateDurableUuidValue(
       std::span<const std::uint8_t>(frame.payload).subspan(24, 16));
   if (!DmlUpdateDurableReadU64(frame.payload, 16,
                                &record->authority.savepoint_generation) ||
@@ -1574,7 +1529,7 @@ bool DmlUpdateStatementDecodeBinaryFrame(
       record->authority.lifecycle !=
       MgaDmlUpdateStatementSavepointLifecycleV1::active;
   const bool barrier_shape =
-      DmlUpdateStatementParseUuid(
+      DmlUpdateStatementUuidValid(
           record->authority.publication_barrier_uuid) &&
       record->authority.publication_barrier_generation == 1 &&
       record->authority.publication_barrier_uuid !=
@@ -1607,7 +1562,7 @@ bool DmlUpdateStatementDecodeBinaryFrame(
   const auto expected = DmlUpdateStatementSavepointRecordSha256(*record);
   return frame.state == frame.payload[49] &&
          record->authority.savepoint_generation == 1 &&
-         DmlUpdateStatementParseUuid(record->authority.savepoint_uuid) &&
+         DmlUpdateStatementUuidValid(record->authority.savepoint_uuid) &&
          !record->private_marker.empty() &&
          record->journal_sequence == (terminal ? 2 : 1) && barrier_shape &&
          active_shape && release_shape && rollback_shape &&
@@ -1618,10 +1573,10 @@ bool DmlUpdateStatementDecodeBinaryFrame(
 }
 
 bool DmlUpdateStatementLoadBinaryChain(
-    const EngineRequestContext& context, std::string_view savepoint_uuid,
+    const EngineRequestContext& context, const EngineUuid& savepoint_uuid,
     std::vector<DmlUpdateStatementSavepointJournalRecordV1>* records,
     std::string* detail) {
-  if (records == nullptr || !DmlUpdateStatementParseUuid(savepoint_uuid)) {
+  if (records == nullptr || !DmlUpdateStatementUuidValid(savepoint_uuid)) {
     if (detail != nullptr) *detail = "savepoint_identity_invalid";
     return false;
   }
@@ -1756,9 +1711,15 @@ bool ApplyDmlUpdateBinarySavepointRecords(
   }
   for (const auto& path : paths) {
     const std::string filename = path.stem().string();
+    const auto filename_uuid = scratchbird::core::uuid::ParseUuid(filename);
+    if (!filename_uuid.ok() ||
+        scratchbird::core::uuid::UuidToString(filename_uuid.value) != filename) {
+      if (refusal_detail) *refusal_detail = "update_savepoint_filename_identity_invalid";
+      return false;
+    }
     std::vector<DmlUpdateStatementSavepointJournalRecordV1> records;
     std::string detail;
-    if (!DmlUpdateStatementLoadBinaryChain(context, filename, &records,
+    if (!DmlUpdateStatementLoadBinaryChain(context, filename_uuid.value, &records,
                                             &detail)) {
       if (refusal_detail != nullptr) {
         *refusal_detail = detail.empty()
@@ -1801,230 +1762,30 @@ bool DmlUpdateStatementBindingMatchesContext(
     const EngineRequestContext& context,
     const MgaDmlUpdateStatementSavepointBindingV1& binding) {
   return !context.database_path.empty() &&
-         DmlUpdateStatementParseUuid(binding.database_uuid) &&
+         DmlUpdateStatementUuidValid(binding.database_uuid) &&
          binding.database_uuid == context.database_uuid &&
-         DmlUpdateStatementParseUuid(binding.owning_transaction_uuid) &&
+         DmlUpdateStatementUuidValid(binding.owning_transaction_uuid) &&
          binding.owning_transaction_uuid == context.transaction_uuid &&
          binding.owning_local_transaction_id != 0 &&
          binding.owning_local_transaction_id == context.local_transaction_id &&
-         DmlUpdateStatementParseUuid(
+         DmlUpdateStatementUuidValid(
              binding.authenticated_statement_receipt_uuid) &&
          binding.authenticated_statement_receipt_uuid ==
              context.statement_receipt_uuid &&
-         DmlUpdateStatementParseUuid(binding.operation_uuid) &&
-         DmlUpdateStatementParseUuid(binding.descriptor_uuid) &&
+         DmlUpdateStatementUuidValid(binding.operation_uuid) &&
+         DmlUpdateStatementUuidValid(binding.descriptor_uuid) &&
          binding.descriptor_generation != 0 &&
-         DmlUpdateStatementParseUuid(binding.recovery_token_uuid) &&
+         DmlUpdateStatementUuidValid(binding.recovery_token_uuid) &&
          binding.recovery_generation != 0;
-}
-
-bool DmlUpdateStatementRecordKind(
-    std::string_view kind,
-    MgaDmlUpdateStatementSavepointLifecycleV1* lifecycle) {
-  if (lifecycle == nullptr) return false;
-  if (kind == kDmlUpdateStatementSavepointCreateKind) {
-    *lifecycle = MgaDmlUpdateStatementSavepointLifecycleV1::active;
-    return true;
-  }
-  if (kind == kDmlUpdateStatementSavepointRollbackKind) {
-    *lifecycle = MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back;
-    return true;
-  }
-  if (kind == kDmlUpdateStatementSavepointReleaseKind) {
-    *lifecycle = MgaDmlUpdateStatementSavepointLifecycleV1::released;
-    return true;
-  }
-  return false;
-}
-
-bool DmlUpdateStatementParseJournalRecord(
-    const std::vector<std::string>& fields,
-    DmlUpdateStatementSavepointJournalRecordV1* record) {
-  if (record == nullptr ||
-      fields.size() != kDmlUpdateStatementSavepointJournalFields ||
-      fields[0] != kRowStoreMagic ||
-      !DmlUpdateStatementRecordKind(fields[1],
-                                    &record->authority.lifecycle) ||
-      !DmlUpdateStatementParseU64(
-          fields[2], &record->authority.binding.owning_local_transaction_id) ||
-      record->authority.binding.owning_local_transaction_id == 0 ||
-      !DmlUpdateStatementParseU64(fields[4],
-                                  &record->cutoffs.row_event_sequence) ||
-      !DmlUpdateStatementParseU64(fields[5],
-                                  &record->cutoffs.metadata_event_sequence) ||
-      !DmlUpdateStatementParseU64(fields[6],
-                                  &record->cutoffs.index_event_sequence) ||
-      !DmlUpdateStatementParseU64(fields[7],
-                                  &record->row_upper_event_sequence) ||
-      !DmlUpdateStatementParseU64(fields[8],
-                                  &record->metadata_upper_event_sequence) ||
-      !DmlUpdateStatementParseU64(fields[9],
-                                  &record->index_upper_event_sequence)) {
-    return false;
-  }
-  std::uint64_t format_version = 0;
-  if (!DmlUpdateStatementParseU64(fields[10], &format_version) ||
-      format_version != 1 ||
-      !DmlUpdateStatementParseU64(fields[11], &record->journal_sequence)) {
-    return false;
-  }
-  auto& binding = record->authority.binding;
-  binding.database_uuid = fields[12];
-  binding.owning_transaction_uuid = fields[13];
-  binding.authenticated_statement_receipt_uuid = fields[14];
-  binding.operation_uuid = fields[15];
-  binding.descriptor_uuid = fields[16];
-  if (!DmlUpdateStatementParseU64(fields[17],
-                                  &binding.descriptor_generation)) {
-    return false;
-  }
-  binding.recovery_token_uuid = fields[18];
-  if (!DmlUpdateStatementParseU64(fields[19],
-                                  &binding.recovery_generation)) {
-    return false;
-  }
-  record->authority.savepoint_uuid = fields[20];
-  if (!DmlUpdateStatementParseU64(
-          fields[21], &record->authority.savepoint_generation)) {
-    return false;
-  }
-  record->authority.publication_barrier_uuid = fields[22];
-  if (!DmlUpdateStatementParseU64(
-          fields[23], &record->authority.publication_barrier_generation)) {
-    return false;
-  }
-  std::uint64_t barrier_present = 0;
-  if (!DmlUpdateStatementParseU64(fields[24], &barrier_present) ||
-      barrier_present > 1 ||
-      !DmlUpdateStatementParseSha(fields[25],
-                                  &record->prior_record_sha256) ||
-      !DmlUpdateStatementParseSha(
-          fields[26], &record->authority.durable_presence_sha256)) {
-    return false;
-  }
-  record->authority.publication_barrier_present = barrier_present == 1;
-  record->private_marker = DecodeCrudTextLocal(fields[3]);
-  const bool terminal =
-      record->authority.lifecycle !=
-      MgaDmlUpdateStatementSavepointLifecycleV1::active;
-  if (!DmlUpdateStatementParseUuid(binding.database_uuid) ||
-      !DmlUpdateStatementParseUuid(binding.owning_transaction_uuid) ||
-      !DmlUpdateStatementParseUuid(
-          binding.authenticated_statement_receipt_uuid) ||
-      !DmlUpdateStatementParseUuid(binding.operation_uuid) ||
-      !DmlUpdateStatementParseUuid(binding.descriptor_uuid) ||
-      binding.descriptor_generation == 0 ||
-      !DmlUpdateStatementParseUuid(binding.recovery_token_uuid) ||
-      binding.recovery_generation == 0 ||
-      !DmlUpdateStatementParseUuid(record->authority.savepoint_uuid) ||
-      record->authority.savepoint_generation != 1 ||
-      record->private_marker != DmlUpdateStatementPrivateSavepointMarker(
-                                    record->authority.savepoint_uuid) ||
-      record->journal_sequence != (terminal ? 2 : 1)) {
-    return false;
-  }
-  if (!DmlUpdateStatementParseUuid(
-          record->authority.publication_barrier_uuid) ||
-      record->authority.publication_barrier_generation != 1 ||
-      record->authority.publication_barrier_uuid ==
-          record->authority.savepoint_uuid ||
-      record->authority.publication_barrier_uuid == binding.database_uuid ||
-      record->authority.publication_barrier_uuid ==
-          binding.owning_transaction_uuid ||
-      record->authority.publication_barrier_uuid ==
-          binding.authenticated_statement_receipt_uuid ||
-      record->authority.publication_barrier_uuid == binding.operation_uuid ||
-      record->authority.publication_barrier_uuid == binding.descriptor_uuid ||
-      record->authority.publication_barrier_uuid ==
-          binding.recovery_token_uuid ||
-      record->authority.publication_barrier_present !=
-          (record->authority.lifecycle ==
-           MgaDmlUpdateStatementSavepointLifecycleV1::released)) {
-    return false;
-  }
-  if (record->authority.lifecycle ==
-          MgaDmlUpdateStatementSavepointLifecycleV1::active &&
-      (record->row_upper_event_sequence != 0 ||
-       record->metadata_upper_event_sequence != 0 ||
-       record->index_upper_event_sequence != 0 ||
-       DmlUpdateStatementShaNonzero(record->prior_record_sha256))) {
-    return false;
-  }
-  if (record->authority.lifecycle ==
-          MgaDmlUpdateStatementSavepointLifecycleV1::released &&
-      (record->row_upper_event_sequence != 0 ||
-       record->metadata_upper_event_sequence != 0 ||
-       record->index_upper_event_sequence != 0)) {
-    return false;
-  }
-  if (record->authority.lifecycle ==
-          MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back &&
-      (record->row_upper_event_sequence <
-           record->cutoffs.row_event_sequence ||
-       record->metadata_upper_event_sequence <
-           record->cutoffs.metadata_event_sequence ||
-       record->index_upper_event_sequence <
-           record->cutoffs.index_event_sequence)) {
-    return false;
-  }
-  const auto expected = DmlUpdateStatementSavepointRecordSha256(*record);
-  return DmlUpdateStatementShaNonzero(expected) &&
-         expected == record->authority.durable_presence_sha256;
-}
-
-std::string DmlUpdateStatementEncodeJournalRecord(
-    const DmlUpdateStatementSavepointJournalRecordV1& record) {
-  std::string kind;
-  switch (record.authority.lifecycle) {
-    case MgaDmlUpdateStatementSavepointLifecycleV1::active:
-      kind = std::string(kDmlUpdateStatementSavepointCreateKind);
-      break;
-    case MgaDmlUpdateStatementSavepointLifecycleV1::rolled_back:
-      kind = std::string(kDmlUpdateStatementSavepointRollbackKind);
-      break;
-    case MgaDmlUpdateStatementSavepointLifecycleV1::released:
-      kind = std::string(kDmlUpdateStatementSavepointReleaseKind);
-      break;
-  }
-  const auto& authority = record.authority;
-  const auto& binding = authority.binding;
-  return JoinLine(
-      {kRowStoreMagic,
-       kind,
-       std::to_string(binding.owning_local_transaction_id),
-       EncodeCrudText(record.private_marker),
-       std::to_string(record.cutoffs.row_event_sequence),
-       std::to_string(record.cutoffs.metadata_event_sequence),
-       std::to_string(record.cutoffs.index_event_sequence),
-       std::to_string(record.row_upper_event_sequence),
-       std::to_string(record.metadata_upper_event_sequence),
-       std::to_string(record.index_upper_event_sequence),
-       "1",
-       std::to_string(record.journal_sequence),
-       binding.database_uuid,
-       binding.owning_transaction_uuid,
-       binding.authenticated_statement_receipt_uuid,
-       binding.operation_uuid,
-       binding.descriptor_uuid,
-       std::to_string(binding.descriptor_generation),
-       binding.recovery_token_uuid,
-       std::to_string(binding.recovery_generation),
-       authority.savepoint_uuid,
-       std::to_string(authority.savepoint_generation),
-       authority.publication_barrier_uuid,
-       std::to_string(authority.publication_barrier_generation),
-       authority.publication_barrier_present ? "1" : "0",
-       DmlUpdateStatementShaHex(record.prior_record_sha256),
-       DmlUpdateStatementShaHex(authority.durable_presence_sha256)});
 }
 
 MgaDmlUpdateStatementSavepointAuthorityResultV1
 DmlUpdateStatementLoadSavepointAuthority(
     const EngineRequestContext& context,
     const MgaDmlUpdateStatementSavepointBindingV1& binding,
-    const std::string& savepoint_uuid, std::uint64_t savepoint_generation) {
+    const EngineUuid& savepoint_uuid, std::uint64_t savepoint_generation) {
   if (!DmlUpdateStatementBindingMatchesContext(context, binding) ||
-      !DmlUpdateStatementParseUuid(savepoint_uuid) ||
+      !DmlUpdateStatementUuidValid(savepoint_uuid) ||
       savepoint_generation != 1) {
     return DmlUpdateStatementSavepointFailure(
         "MGA.TRANSACTION.STALE",
@@ -2124,12 +1885,12 @@ bool DmlUpdateStatementAuthorityExact(
   return left == right;
 }
 
-std::string DmlUpdateStatementFreshDistinctUuid(
+EngineUuid DmlUpdateStatementFreshDistinctUuid(
     const MgaDmlUpdateStatementSavepointBindingV1& binding,
-    std::string_view other = {}) {
+    const EngineUuid& other = {}) {
   for (std::size_t attempt = 0; attempt < 8; ++attempt) {
-    const std::string candidate = GenerateCrudEngineUuid("object");
-    if (DmlUpdateStatementParseUuid(candidate) &&
+    const EngineUuid candidate = GenerateCrudEngineUuid("object");
+    if (DmlUpdateStatementUuidValid(candidate) &&
         candidate != binding.database_uuid &&
         candidate != binding.owning_transaction_uuid &&
         candidate != binding.authenticated_statement_receipt_uuid &&
@@ -2174,7 +1935,7 @@ struct DmlUpdateDurableSavepointLookupV1 {
 DmlUpdateDurableSavepointLookupV1 DmlUpdateDurableFindStatementSavepoint(
     const EngineRequestContext& context,
     const MgaDmlUpdateDurableOperationIdentityV1& identity,
-    std::string_view required_savepoint_uuid = {}) {
+    const EngineUuid& required_savepoint_uuid = {}) {
   DmlUpdateDurableSavepointLookupV1 result;
   const auto expected_binding = DmlUpdateDurableStatementBinding(identity);
   const std::string directory =
@@ -2194,8 +1955,8 @@ DmlUpdateDurableSavepointLookupV1 DmlUpdateDurableFindStatementSavepoint(
   }
 
   std::vector<std::filesystem::path> paths;
-  if (!required_savepoint_uuid.empty()) {
-    if (!DmlUpdateStatementParseUuid(required_savepoint_uuid)) {
+  if (!required_savepoint_uuid.is_nil()) {
+    if (!DmlUpdateStatementUuidValid(required_savepoint_uuid)) {
       result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
       result.detail = "required_savepoint_identity_invalid";
       return result;
@@ -2227,7 +1988,13 @@ DmlUpdateDurableSavepointLookupV1 DmlUpdateDurableFindStatementSavepoint(
       }
       continue;
     }
-    const std::string uuid = path.stem().string();
+    const auto filename_uuid = scratchbird::core::uuid::ParseUuid(path.stem().string());
+    if (!filename_uuid.ok() || scratchbird::core::uuid::UuidToString(filename_uuid.value) != path.stem().string()) {
+      result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
+      result.detail = "savepoint_filename_identity_invalid";
+      return result;
+    }
+    const EngineUuid uuid = filename_uuid.value;
     std::vector<DmlUpdateStatementSavepointJournalRecordV1> chain;
     std::string detail;
     if (!DmlUpdateStatementLoadBinaryChain(context, uuid, &chain, &detail)) {
@@ -2246,7 +2013,7 @@ DmlUpdateDurableSavepointLookupV1 DmlUpdateDurableFindStatementSavepoint(
     result.state = DmlUpdateDurableSavepointLookupStateV1::present;
     result.authority = chain.back().authority;
   }
-  if (!required_savepoint_uuid.empty() &&
+  if (!required_savepoint_uuid.is_nil() &&
       result.state == DmlUpdateDurableSavepointLookupStateV1::absent) {
     result.detail = "required_savepoint_identity_unknown";
   }
@@ -2308,7 +2075,7 @@ bool DmlUpdateDurableDecodeTypedJournalChain(
           extents[index].exact_dujr_bytes.size() >= 176 &&
           !DmlUpdateDurableZero(std::span<const std::uint8_t>(
               extents[index].exact_dujr_bytes).subspan(152, 16))) {
-        const std::string savepoint_uuid = DmlUpdateDurableUuidText(
+        const EngineUuid savepoint_uuid = DmlUpdateDurableUuidValue(
             std::span<const std::uint8_t>(extents[index].exact_dujr_bytes)
                 .subspan(152, 16));
         std::uint64_t savepoint_generation = 0;
@@ -2361,8 +2128,7 @@ bool DmlUpdateDurableTransactionState(
       inventory.inventory,
       MakeLocalTransactionId(identity.owning_local_transaction_id));
   if (!lookup.ok() ||
-      scratchbird::core::uuid::UuidToString(
-          lookup.entry.identity.transaction_uuid.value) !=
+      lookup.entry.identity.transaction_uuid.value !=
           identity.owning_transaction_uuid) {
     if (detail != nullptr) *detail = "transaction_inventory_identity_missing";
     return false;
@@ -2444,7 +2210,7 @@ MgaDmlUpdateValidatedDurableAuthorityHandleV1&
 MgaDmlUpdateValidatedDurableAuthorityHandleV1::operator=(
     MgaDmlUpdateValidatedDurableAuthorityHandleV1&&) noexcept = default;
 bool MgaDmlUpdateValidatedDurableAuthorityHandleV1::valid() const {
-  return impl_ != nullptr && !impl_->identity.validated_durable_handle_uuid.empty() &&
+  return impl_ != nullptr && !impl_->identity.validated_durable_handle_uuid.is_nil() &&
          impl_->identity.validated_durable_handle_generation != 0 &&
          !impl_->journal.empty() && impl_->exact_dumo.size() == 416;
 }
@@ -2483,7 +2249,7 @@ ReserveMgaDmlUpdateDurableOperationAuthorityV1(
         "sblr.dml_update_rows.durable_reservation_storage_failed");
     return result;
   }
-  const std::string path = directory + "/" + identity.descriptor_uuid + ".duop";
+  const std::string path = directory + "/" + scratchbird::core::uuid::UuidToString(identity.descriptor_uuid) + ".duop";
   DmlUpdateDurableFileLock lock(path);
   if (!lock.ok()) {
     result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::storage_failure;
@@ -2994,19 +2760,19 @@ bool DmlUpdateDurableBuildSavepointObservation(
   if (observation == nullptr) return fail("recovery_observation_required");
 
   const auto journal_state = journal_head.lifecycle_state;
-  std::string required_savepoint_uuid;
+  EngineUuid required_savepoint_uuid;
   const bool journal_savepoint_present =
-      !DmlUpdateDurableTypedUuidText(
-           journal_head.statement_savepoint_uuid).empty();
+      !DmlUpdateDurableTypedUuidValue(
+           journal_head.statement_savepoint_uuid).is_nil();
   if (journal_state != scratchbird::wire::TypedUpdateJournalState::bound) {
-    required_savepoint_uuid = DmlUpdateDurableTypedUuidText(
+    required_savepoint_uuid = DmlUpdateDurableTypedUuidValue(
         journal_head.statement_savepoint_uuid);
     const bool nil_aborted =
         journal_state == scratchbird::wire::TypedUpdateJournalState::aborted &&
         !journal_savepoint_present &&
         journal_head.statement_savepoint_generation == 0;
     if (!nil_aborted &&
-        (required_savepoint_uuid.empty() ||
+        (required_savepoint_uuid.is_nil() ||
          journal_head.statement_savepoint_generation == 0)) {
       return fail("journal_savepoint_identity_invalid");
     }
@@ -3054,7 +2820,7 @@ bool DmlUpdateDurableBuildSavepointObservation(
     if (journal_state != scratchbird::wire::TypedUpdateJournalState::bound &&
         !(journal_state ==
               scratchbird::wire::TypedUpdateJournalState::aborted &&
-          required_savepoint_uuid.empty())) {
+          required_savepoint_uuid.is_nil())) {
       return fail("journal_savepoint_authority_missing");
     }
     observation->savepoint_state =
@@ -3288,7 +3054,7 @@ RecoverMgaDmlUpdateDurableOperationChainV1(
         prior_observation.observation_generation;
     prior_present = true;
   } else {
-    const std::string fresh = DmlUpdateDurableFreshIdentity(
+    const EngineUuid fresh = DmlUpdateDurableFreshIdentity(
         current.identity, current.identity.reserved_statement_barrier_uuid);
     if (!DmlUpdateDurableTypedUuid(fresh, &observation.observation_uuid)) {
       return DmlUpdateDurableRecoveryFailure(
@@ -3435,7 +3201,7 @@ RollbackMgaDmlUpdateStatementFromValidatedDurableAuthorityV1(
         MgaDmlUpdateDurableOperationOutcomeV1::fork_or_terminal_conflict,
         "postbarrier_savepoint_cannot_rollback");
   }
-  const std::string savepoint_uuid = DmlUpdateDurableTypedUuidText(
+  const EngineUuid savepoint_uuid = DmlUpdateDurableTypedUuidValue(
       observation.statement_savepoint_uuid);
   const auto binding = DmlUpdateDurableStatementBinding(
       validated_handle.impl_->identity);
@@ -3742,9 +3508,9 @@ MgaDmlUpdateStatementSavepointAuthorityResultV1
 CreateMgaDmlUpdateStatementSavepointAuthorityV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateStatementSavepointBindingV1& binding) {
-  const std::string reserved_barrier =
+  const EngineUuid reserved_barrier =
       DmlUpdateStatementFreshDistinctUuid(binding);
-  if (reserved_barrier.empty()) {
+  if (reserved_barrier.is_nil()) {
     return DmlUpdateStatementSavepointFailure(
         "DML.UPDATE_FAILED",
         "sblr.dml_update_rows.statement_savepoint_create_failed",
@@ -3758,12 +3524,12 @@ MgaDmlUpdateStatementSavepointAuthorityResultV1
 CreateMgaDmlUpdateStatementSavepointAuthorityWithReservedBarrierV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateStatementSavepointBindingV1& binding,
-    const std::string& reserved_publication_barrier_uuid,
+    const EngineUuid& reserved_publication_barrier_uuid,
     std::uint64_t reserved_publication_barrier_generation) {
   std::lock_guard<std::mutex> guard(
       DmlUpdateStatementSavepointJournalMutex());
   if (!DmlUpdateStatementBindingMatchesContext(context, binding) ||
-      !DmlUpdateStatementParseUuid(reserved_publication_barrier_uuid) ||
+      !DmlUpdateStatementUuidValid(reserved_publication_barrier_uuid) ||
       reserved_publication_barrier_generation != 1 ||
       reserved_publication_barrier_uuid == binding.database_uuid ||
       reserved_publication_barrier_uuid == binding.owning_transaction_uuid ||
@@ -3799,8 +3565,8 @@ CreateMgaDmlUpdateStatementSavepointAuthorityWithReservedBarrierV1(
   record.cutoffs.index_event_sequence = NextIndexEventSequence(context) - 1;
   record.authority.durable_presence_sha256 =
       DmlUpdateStatementSavepointRecordSha256(record);
-  if (record.authority.savepoint_uuid.empty() ||
-      record.authority.publication_barrier_uuid.empty() ||
+  if (record.authority.savepoint_uuid.is_nil() ||
+      record.authority.publication_barrier_uuid.is_nil() ||
       record.private_marker.empty() ||
       !DmlUpdateStatementShaNonzero(
           record.authority.durable_presence_sha256)) {
@@ -3824,7 +3590,7 @@ MgaDmlUpdateStatementSavepointAuthorityResultV1
 RecoverMgaDmlUpdateStatementSavepointAuthorityV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateStatementSavepointBindingV1& binding,
-    const std::string& savepoint_uuid,
+    const EngineUuid& savepoint_uuid,
     std::uint64_t savepoint_generation) {
   std::lock_guard<std::mutex> guard(
       DmlUpdateStatementSavepointJournalMutex());
@@ -3965,7 +3731,7 @@ ReleaseMgaDmlUpdateStatementSavepointAuthorityV1(
   success.ok = true;
   success.diagnostic = OkDiagnostic();
   success.authority = record.authority;
-  if (record.authority.publication_barrier_uuid.empty() ||
+  if (record.authority.publication_barrier_uuid.is_nil() ||
       record.authority.publication_barrier_generation != 1 ||
       !DmlUpdateStatementShaNonzero(
           record.authority.durable_presence_sha256) ||

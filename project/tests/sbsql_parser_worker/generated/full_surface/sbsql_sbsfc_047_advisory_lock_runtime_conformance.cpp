@@ -1,3 +1,4 @@
+#include "../../../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -29,9 +30,9 @@ namespace sblr = scratchbird::engine::sblr;
 using sblr::SblrValue;
 using sblr::SblrValuePayloadKind;
 
-constexpr const char* kSessionUuid = "019f4700-0000-7000-8000-000000000002";
-constexpr const char* kOtherSessionUuid = "019f4700-0000-7000-8000-000000000099";
-constexpr const char* kPrincipalUuid = "019f4700-0000-7000-8000-000000000003";
+constexpr auto kSessionUuid = scratchbird::tests::FixtureUuidLiteral("019f4700-0000-7000-8000-000000000002");
+constexpr auto kOtherSessionUuid = scratchbird::tests::FixtureUuidLiteral("019f4700-0000-7000-8000-000000000099");
+constexpr auto kPrincipalUuid = scratchbird::tests::FixtureUuidLiteral("019f4700-0000-7000-8000-000000000003");
 constexpr std::uint64_t kBackendPid = 271828;
 constexpr std::int64_t kBlockingLockKey = 4242;
 constexpr std::int64_t kTryLockKey = 7777;
@@ -152,8 +153,8 @@ bool ContainsEvidence(const sblr::SblrExecutionContext& context,
   return std::any_of(
       context.session_runtime_state->advisory_lock_evidence.begin(),
       context.session_runtime_state->advisory_lock_evidence.end(),
-      [fragment](const std::string& evidence) {
-        return evidence.find(fragment) != std::string::npos;
+      [fragment](const sblr::SblrAdvisoryLockEvidence& evidence) {
+        return (evidence.function_name + "." + evidence.action + ":").find(fragment) != std::string::npos;
       });
 }
 
@@ -182,8 +183,8 @@ sblr::SblrOperationEnvelope ProjectionEnvelope(
 api::EngineRequestContext ProjectionContext() {
   api::EngineRequestContext context;
   context.request_id = "sbsfc047-advisory-lock-projection";
-  context.session_uuid.canonical = kSessionUuid;
-  context.principal_uuid.canonical = kPrincipalUuid;
+  context.session_uuid = kSessionUuid;
+  context.principal_uuid = kPrincipalUuid;
   context.application_name = "sbsfc047-advisory-lock";
   context.security_context_present = true;
   return context;

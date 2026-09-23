@@ -1,3 +1,5 @@
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -53,7 +55,7 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
   }
@@ -64,7 +66,7 @@ bool HasAgentEvidence(const agents::AgentClusterBoundaryResult& result,
                       std::string_view kind,
                       std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    if (evidence.evidence_kind == kind && scratchbird::tests::EvidenceTextEquals(evidence.evidence_id, id)) {
       return true;
     }
   }
@@ -92,9 +94,9 @@ api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.cluster_authority_available = true;
-  context.database_uuid.canonical = "database:public-cluster-boundary-pcr097";
-  context.cluster_uuid.canonical = "cluster:public-cluster-boundary-pcr097";
-  context.principal_uuid.canonical = "principal:public-cluster-boundary-pcr097";
+  context.database_uuid = scratchbird::tests::FixtureUuid(1161, 1);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(1161, 3);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1161, 2);
   context.trace_tags.push_back("public_cluster_provider_boundary_cleanup_gate");
   return context;
 }
@@ -118,9 +120,9 @@ agents::AgentRuntimeContext AgentContext() {
   context.security_context_present = true;
   context.cluster_authority_available = true;
   context.standalone_edition = false;
-  context.principal_uuid = "principal:public-cluster-boundary-pcr097";
-  context.database_uuid = "database:public-cluster-boundary-pcr097";
-  context.cluster_uuid = "cluster:public-cluster-boundary-pcr097";
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1161, 2);
+  context.database_uuid = scratchbird::tests::FixtureUuid(1161, 1);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(1436, 1);
   context.trace_tags.push_back("public_cluster_provider_boundary_cleanup_gate");
   return context;
 }
@@ -228,7 +230,7 @@ void TestAgentBoundaryStillRequiresExternalProvider() {
   agents::AgentClusterLeaseRequest request;
   request.surface = agents::AgentClusterLeaseSurface::acquire_lease;
   request.agent_type_id = "cluster_scheduler_manager";
-  request.instance_uuid = "public-cluster-boundary-instance";
+  request.instance_uuid = scratchbird::tests::FixtureUuid(1436, 2);
   request.now_microseconds = 100;
   request.lease_duration_microseconds = 500;
   request.production_live_path = true;

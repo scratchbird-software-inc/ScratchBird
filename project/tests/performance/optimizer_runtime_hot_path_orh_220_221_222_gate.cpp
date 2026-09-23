@@ -102,8 +102,10 @@ platform::TypedUuid ObjectUuid(platform::UuidKind kind, platform::byte suffix) {
   return uuid;
 }
 
-std::string UuidText(const platform::TypedUuid& typed) {
-  return uuid::UuidToString(typed.value);
+platform::TypedUuid RowIdentity(const platform::Uuid& value) {
+  const auto typed = uuid::MakeTypedUuid(platform::UuidKind::row, value);
+  Require(typed.ok(), "physical locator has invalid row identity");
+  return typed.value;
 }
 
 std::vector<platform::byte> Bytes(std::string_view text) {
@@ -476,11 +478,11 @@ void PhysicalJoinSuiteConsumesNonIndexOperatorsAndBlocksIndexClaims() {
   RequireIndexedOperatorEvidence(nested_result, "indexed_nested_loop");
   Require(nested_result.locators.size() == 3,
           "ORH-220 indexed nested-loop locator count mismatch");
-  Require(nested_result.locators[0].row_uuid == UuidText(physical.row_alpha) &&
+  Require(nested_result.locators[0].row_uuid == physical.row_alpha.value &&
               nested_result.locators[1].row_uuid ==
-                  UuidText(physical.row_charlie) &&
+                  physical.row_charlie.value &&
               nested_result.locators[2].row_uuid ==
-                  UuidText(physical.row_delta),
+                  physical.row_delta.value,
           "ORH-220 indexed nested-loop locators drifted");
   Require(HasEngineEvidence(nested_result.evidence,
                             "indexed_nested_loop_outer_ordinal",
@@ -803,15 +805,9 @@ idx::CoveringIndexPayloadAssemblyResult AssembleCoveringPayload(
   request.index_uuid = fixture.index_uuid;
   request.table_uuid = ObjectUuid(platform::UuidKind::object, 0x44);
   request.row_uuid = locator.from_physical_index
-                         ? uuid::ParseDurableEngineIdentityUuid(
-                               platform::UuidKind::row,
-                               locator.row_uuid)
-                               .value
+                         ? RowIdentity(locator.row_uuid)
                          : fixture.row_alpha;
-  request.version_uuid = uuid::ParseDurableEngineIdentityUuid(
-                             platform::UuidKind::row,
-                             locator.version_uuid)
-                             .value;
+  request.version_uuid = RowIdentity(locator.version_uuid);
   request.descriptor_result_contract_hash = "contract:orh222:v1";
   request.payload_generation = 10;
   request.redaction_policy_epoch = 20;
@@ -984,7 +980,7 @@ void LateMaterializationAndCoveringPathUseRowIdStreamsWithExactBlockers() {
             out.ok = true;
             out.row.row_uuid = locator.row_uuid;
             out.row.version_uuid = locator.version_uuid;
-            out.row.projected_values = {"base:" + locator.row_uuid};
+            out.row.projected_values = {"base-row-value"};
             out.row.evidence = {"orh222.base_row_exact_recheck=true"};
             out.evidence = {"orh222.provider.physical_locator_consumed=true"};
             return out;
@@ -996,6 +992,12 @@ void LateMaterializationAndCoveringPathUseRowIdStreamsWithExactBlockers() {
           "ORH-222 late materialization did not consume row-id stream route");
   Require(late_indexed.rows.size() == physical_stream.locators.size(),
           "ORH-222 late materialization row-id count mismatch");
+  for (std::size_t i = 0; i < late_indexed.rows.size(); ++i) {
+    Require(late_indexed.rows[i].row_uuid == physical_stream.locators[i].row_uuid &&
+                late_indexed.rows[i].version_uuid == physical_stream.locators[i].version_uuid &&
+                late_indexed.rows[i].projected_values == std::vector<std::string>{"base-row-value"},
+            "ORH-222 late materialization lost native locator identity or projected value");
+  }
   Require(HasEvidence(late_indexed.evidence,
                       "irc061.late_materialization.row_id_stream_only=true") &&
               HasEvidence(late_indexed.evidence,

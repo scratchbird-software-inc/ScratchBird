@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
@@ -59,8 +60,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
   return typed.value;
 }
 
-std::string Text(const platform::TypedUuid& value) {
-  return uuid::UuidToString(value.value);
+platform::Uuid Identity(const platform::TypedUuid& value) {
+  return value.value;
 }
 
 sb_engine_uuid_t PublicUuid(const platform::TypedUuid& value) {
@@ -69,21 +70,8 @@ sb_engine_uuid_t PublicUuid(const platform::TypedUuid& value) {
   return result;
 }
 
-std::array<std::uint8_t, 16> RawUuid(std::string_view text) {
-  std::array<std::uint8_t, 16> out{};
-  std::size_t byte = 0;
-  int high = -1;
-  for (const char ch : text) {
-    if (ch == '-') continue;
-    const int digit = ch >= '0' && ch <= '9' ? ch - '0' : ch - 'a' + 10;
-    if (high < 0) high = digit;
-    else {
-      out[byte++] = static_cast<std::uint8_t>((high << 4) | digit);
-      high = -1;
-    }
-  }
-  Require(byte == out.size(), "canonical UUID decoding failed");
-  return out;
+std::array<std::uint8_t, 16> RawUuid(const platform::Uuid& value) {
+  return value.bytes;
 }
 
 void U16(Bytes* out, std::uint16_t value) {
@@ -194,9 +182,9 @@ api::EngineRequestContext BeginTransaction(const Fixture& fixture,
   begin.context.trust_mode = api::EngineTrustMode::server_isolated;
   begin.context.request_id = "ia01-package-cancellation";
   begin.context.database_path = fixture.database_path.string();
-  begin.context.database_uuid.canonical = Text(fixture.database_uuid);
-  begin.context.principal_uuid.canonical = Text(fixture.principal_uuid);
-  begin.context.session_uuid.canonical = Text(fixture.session_uuid);
+  begin.context.database_uuid = Identity(fixture.database_uuid);
+  begin.context.principal_uuid = Identity(fixture.principal_uuid);
+  begin.context.session_uuid = Identity(fixture.session_uuid);
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 1;
@@ -211,7 +199,7 @@ api::EngineRequestContext BeginTransaction(const Fixture& fixture,
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid.canonical = Text(fixture.database_uuid);
+  context.authorization_context.authority_uuid = Identity(fixture.database_uuid);
   context.authorization_context.principal_uuid = context.principal_uuid;
   context.authorization_context.security_epoch = 1;
   context.authorization_context.policy_epoch = 1;
@@ -233,8 +221,8 @@ api::EngineRequestContext BeginTransaction(const Fixture& fixture,
   return context;
 }
 
-sblr::SblrOperationEnvelope Frame(bool begin, std::string_view parser,
-                                   std::string_view registry,
+sblr::SblrOperationEnvelope Frame(bool begin, const platform::Uuid& parser,
+                                   const platform::Uuid& registry,
                                    const std::array<std::uint8_t, 16>& package) {
   auto operation = sblr::MakeSblrEnvelope(
       begin ? "engine.op.package_begin" : "engine.op.package_end",
@@ -256,7 +244,7 @@ sblr::SblrOperationEnvelope Frame(bool begin, std::string_view parser,
 struct Submission { std::string container; std::string ingress; Bytes stream; };
 Submission BuildSubmission(const Fixture& fixture,
                            const bridge::StatementContextReceiptView& view,
-                           std::string_view parser_uuid) {
+                           const platform::Uuid& parser_uuid) {
   const auto package = RawUuid(view.bound_ast_uuid);
   auto member = sblr::MakeSblrEnvelope("query.execute", "SBLR_QUERY_EXECUTE",
                                       "ia01.cancel.contained_query");
@@ -276,12 +264,12 @@ Submission BuildSubmission(const Fixture& fixture,
   const auto stream = sblr::EncodeSblrOpcodeStream(package_stream);
   Require(!stream.empty(), "canonical cancellation SBOS encoding failed");
 
-  const auto database = RawUuid(Text(fixture.database_uuid));
-  const auto dialect = RawUuid(Text(NewUuid(platform::UuidKind::object, 501)));
+  const auto database = RawUuid(Identity(fixture.database_uuid));
+  const auto dialect = RawUuid(Identity(NewUuid(platform::UuidKind::object, 501)));
   const auto parser = RawUuid(parser_uuid);
   const auto registry = RawUuid(view.catalog_epoch_uuid);
   const auto statement = RawUuid(view.statement_uuid);
-  const auto principal = RawUuid(Text(fixture.principal_uuid));
+  const auto principal = RawUuid(Identity(fixture.principal_uuid));
   wire::SblrCanonicalContainer container;
   std::copy(database.begin(), database.end(), container.canonical_anchor.begin());
   std::copy(dialect.begin(), dialect.end(), container.canonical_anchor.begin() + 16);
@@ -327,7 +315,7 @@ int main() {
   auto context = BeginTransaction(fixture, &cancellation_probes);
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid.canonical;
+  acquire.exact_transaction_uuid = context.transaction_uuid;
   bridge::StatementContextReceiptHandle receipt;
   bridge::StatementContextReceiptView view;
   sb_engine_result_t acquire_result = nullptr;
@@ -338,7 +326,7 @@ int main() {
           "live statement receipt acquisition failed");
   if (acquire_result) (void)sb_engine_result_release(acquire_result);
 
-  const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 502));
+  const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 502));
   const auto submission = BuildSubmission(fixture, view, parser_uuid);
   bridge::StatementPackageAdmissionReservationRequest reservation_request;
   reservation_request.receipt = receipt;
@@ -360,7 +348,7 @@ int main() {
   admission.admitted_parser_package_uuid = parser_uuid;
   admission.admitted_parser_package_version_major = 1;
   admission.admitted_registry_snapshot_uuid = view.catalog_epoch_uuid;
-  admission.authenticated_principal_uuid = Text(fixture.principal_uuid);
+  admission.authenticated_principal_uuid = Identity(fixture.principal_uuid);
   admission.catalog_snapshot_uuid = view.statement_metadata_snapshot_uuid;
   admission.engine_mga_statement_uuid = view.statement_uuid;
   admission.engine_mga_snapshot_uuid = view.statement_snapshot_uuid;
