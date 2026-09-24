@@ -19,7 +19,6 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Globalization;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace ScratchBird.Data;
 
@@ -32,7 +31,6 @@ internal sealed class ProtocolClient
     private const ushort McpProtocolVersion = 0x0100;
     private const int ManagerHeaderSize = 12;
     private const int ManagerMaxPayloadSize = 16 * 1024 * 1024;
-    private static readonly Regex PositionalParamRegex = new(@"\$(\d+)\b", RegexOptions.Compiled);
 
     private const byte McpMsgConnectResponse = 0x02;
     private const byte McpMsgAuthChallenge = 0x12;
@@ -54,7 +52,7 @@ internal sealed class ProtocolClient
     private uint _sequence;
     private uint _lastQuerySequence;
     private bool _connected;
-    private readonly Dictionary<string, string> _parameters = new();
+    private readonly Dictionary<string, object> _parameters = new();
     private readonly List<Action<NotificationMessage>> _notificationHandlers = new();
     private (uint Format, ulong PlanningTimeUs, ulong EstimatedRows, ulong EstimatedCost, byte[] Plan)? _lastPlan;
     private (ulong Hash, uint Version, byte[] Bytecode)? _lastSblr;
@@ -259,10 +257,6 @@ internal sealed class ProtocolClient
         {
             SendSimpleQuery(sql, timeoutMs, maxRows);
         }
-        else if (ShouldInlineParameterizedSql(sql))
-        {
-            SendSimpleQuery(InlineSqlParameters(sql, parameters), timeoutMs, maxRows);
-        }
         else
         {
             SendPreparedQuery(sql, parameters, maxRows);
@@ -286,10 +280,6 @@ internal sealed class ProtocolClient
         if (parameters.Count == 0)
         {
             SendSimpleQuery(sql, timeoutMs, maxRows);
-        }
-        else if (ShouldInlineParameterizedSql(sql))
-        {
-            SendSimpleQuery(InlineSqlParameters(sql, parameters), timeoutMs, maxRows);
         }
         else
         {
@@ -721,7 +711,14 @@ sendPayload:
 
     public (uint Format, ulong PlanningTimeUs, ulong EstimatedRows, ulong EstimatedCost, byte[] Plan)? LastPlan => _lastPlan;
     public (ulong Hash, uint Version, byte[] Bytecode)? LastSblr => _lastSblr;
-    public bool TryGetParameter(string name, out string value) => _parameters.TryGetValue(name, out value!);
+    public bool TryGetUuidParameter(string name, out Guid value)
+    {
+        value = Guid.Empty;
+        if (!_parameters.TryGetValue(name, out var parameter) || parameter is not Guid identity)
+            return false;
+        value = identity;
+        return true;
+    }
 
     public void Cancel()
     {
@@ -902,16 +899,16 @@ sendPayload:
         throw new ScratchBirdAuthException("TOKEN auth requested but no token payload is configured", "28000");
     }
 
-    private Dictionary<string, string> BuildStartupParameters(ScratchBirdConfig config)
+    private Dictionary<string, object> BuildStartupParameters(ScratchBirdConfig config)
     {
-        var parameters = new Dictionary<string, string>
+        var parameters = new Dictionary<string, object>
         {
             ["database"] = config.Database,
             ["user"] = config.Username,
             ["client_flags"] = config.ConnectClientFlags.ToString(CultureInfo.InvariantCulture)
         };
-        if (!string.IsNullOrWhiteSpace(config.DormantId) !=
-            !string.IsNullOrWhiteSpace(config.DormantReattachToken))
+        if (config.DormantId.HasValue !=
+            config.DormantReattachToken.HasValue)
         {
             throw new ScratchBirdSyntaxException(
                 "dormant_id and dormant_reattach_token must be provided together",
@@ -925,10 +922,12 @@ sendPayload:
         {
             parameters["application_name"] = config.ApplicationName;
         }
-        if (!string.IsNullOrWhiteSpace(config.DormantId))
+        if (config.DormantId.HasValue)
         {
-            parameters["dormant_id"] = config.DormantId;
-            parameters["dormant_reattach_token"] = config.DormantReattachToken;
+            if (config.DormantId.Value == Guid.Empty || config.DormantReattachToken!.Value == Guid.Empty)
+                throw new ScratchBirdSyntaxException("dormant identities must be non-nil", "42601");
+            parameters["dormant_id"] = config.DormantId.Value;
+            parameters["dormant_reattach_token"] = config.DormantReattachToken!.Value;
         }
         if (!string.IsNullOrWhiteSpace(config.AuthMethodId))
         {
@@ -1159,7 +1158,7 @@ sendPayload:
                 {
                     foreach (var status in ProtocolCodec.ParseParameterStatuses(msg.Payload))
                     {
-                        _parameters[status.Name] = status.Value;
+                        ApplyParameterStatus(status.Name, status.Value);
                     }
                     continue;
                 }
@@ -1351,98 +1350,6 @@ sendPayload:
         return sb.ToString();
     }
 
-    private static bool ShouldInlineParameterizedSql(string sql)
-    {
-        var keyword = GetLeadingKeyword(sql);
-        return keyword is "INSERT"
-            or "UPDATE"
-            or "DELETE"
-            or "MERGE"
-            or "CREATE"
-            or "ALTER"
-            or "DROP"
-            or "TRUNCATE"
-            or "COMMENT"
-            or "ANALYZE";
-    }
-
-    private static string GetLeadingKeyword(string sql)
-    {
-        if (string.IsNullOrWhiteSpace(sql))
-        {
-            return string.Empty;
-        }
-
-        var trimmed = sql.TrimStart();
-        var i = 0;
-        while (i < trimmed.Length && (char.IsLetterOrDigit(trimmed[i]) || trimmed[i] == '_'))
-        {
-            i++;
-        }
-
-        return i == 0 ? string.Empty : trimmed[..i].ToUpperInvariant();
-    }
-
-    private static string InlineSqlParameters(string sql, IReadOnlyList<ScratchBirdParameter> parameters)
-    {
-        return PositionalParamRegex.Replace(sql, match =>
-        {
-            if (!int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ordinal))
-            {
-                return match.Value;
-            }
-
-            var index = ordinal - 1;
-            if (index < 0 || index >= parameters.Count)
-            {
-                throw new ScratchBirdSyntaxException($"missing parameter value for {match.Value}", "07001");
-            }
-
-            return ToSqlLiteral(parameters[index].Value);
-        });
-    }
-
-    private static string ToSqlLiteral(object? value)
-    {
-        if (value == null || value is DBNull)
-        {
-            return "NULL";
-        }
-
-        return value switch
-        {
-            bool boolean => boolean ? "TRUE" : "FALSE",
-            byte numeric => numeric.ToString(CultureInfo.InvariantCulture),
-            sbyte numeric => numeric.ToString(CultureInfo.InvariantCulture),
-            short numeric => numeric.ToString(CultureInfo.InvariantCulture),
-            ushort numeric => numeric.ToString(CultureInfo.InvariantCulture),
-            int numeric => numeric.ToString(CultureInfo.InvariantCulture),
-            uint numeric => numeric.ToString(CultureInfo.InvariantCulture),
-            long numeric => numeric.ToString(CultureInfo.InvariantCulture),
-            ulong numeric => numeric.ToString(CultureInfo.InvariantCulture),
-            float numeric => numeric.ToString("R", CultureInfo.InvariantCulture),
-            double numeric => numeric.ToString("R", CultureInfo.InvariantCulture),
-            decimal numeric => numeric.ToString(CultureInfo.InvariantCulture),
-            Guid guid => $"'{guid:D}'",
-            DateOnly date => $"'{date:yyyy-MM-dd}'",
-            TimeOnly time => $"'{time:HH:mm:ss.fffffff}'",
-            DateTime dateTime => $"'{dateTime.ToUniversalTime():yyyy-MM-dd HH:mm:ss.fffffff}'",
-            DateTimeOffset dateTimeOffset => $"'{dateTimeOffset:yyyy-MM-dd HH:mm:ss.fffffff zzz}'",
-            byte[] bytes => $"'\\x{Convert.ToHexString(bytes).ToLowerInvariant()}'",
-            _ => $"'{EscapeSqlLiteral(value.ToString() ?? string.Empty)}'"
-        };
-    }
-
-    private static string EscapeSqlLiteral(string value)
-    {
-        if (value.Length == 0)
-        {
-            return value;
-        }
-
-        return value.Replace("'", "''", StringComparison.Ordinal);
-    }
-
     private void RemovePreparedStatement(string key)
     {
         if (_preparedStatements.ContainsKey(key))
@@ -1572,17 +1479,7 @@ sendPayload:
             case MessageType.PARAMETER_STATUS:
             {
                 foreach (var status in ProtocolCodec.ParseParameterStatuses(msg.Payload))
-                {
-                    _parameters[status.Name] = status.Value;
-                    if (status.Name == "attachment_id" && TryParseUuidBytes(status.Value, out var attachment))
-                    {
-                        _attachmentId = attachment;
-                    }
-                    if (status.Name == "current_txn_id" && TryParseUInt64(status.Value, out var txnId))
-                    {
-                        ApplyRuntimeTxnId(txnId);
-                    }
-                }
+                    ApplyParameterStatus(status.Name, status.Value);
                 return true;
             }
             case MessageType.TXN_STATUS:
@@ -1704,22 +1601,17 @@ sendPayload:
         return value > long.MaxValue ? long.MaxValue : (long)value;
     }
 
-    private static bool TryParseUuidBytes(string value, out byte[] bytes)
+    private void ApplyParameterStatus(string name, object value)
     {
-        bytes = Array.Empty<byte>();
-        var hex = value.Replace("-", string.Empty).Trim();
-        if (hex.Length != 32)
+        _parameters[name] = value;
+        if (name == "attachment_id" && value is Guid attachment)
+            _attachmentId = attachment.ToByteArray(bigEndian: true);
+        if (name == "current_txn_id")
         {
-            return false;
-        }
-        try
-        {
-            bytes = Convert.FromHexString(hex);
-            return bytes.Length == 16;
-        }
-        catch (FormatException)
-        {
-            return false;
+            if (value is ulong binaryTxnId)
+                ApplyRuntimeTxnId(binaryTxnId);
+            else if (value is string text && TryParseUInt64(text, out var txnId))
+                ApplyRuntimeTxnId(txnId);
         }
     }
 

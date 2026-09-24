@@ -281,16 +281,21 @@ internal static class ProtocolCodec
     private const int P1RowDescriptionHeaderBytes = 72;
     private const int P1CanonicalTypeRefBytes = 144;
 
-    public static byte[] BuildStartupPayload(ulong features, IReadOnlyDictionary<string, string> parameters)
+    public static byte[] BuildStartupPayload(ulong features, IReadOnlyDictionary<string, object> parameters)
     {
         using var paramStream = new MemoryStream();
         foreach (var kvp in parameters.OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
         {
             WriteLengthPrefixedString(paramStream, kvp.Key);
             Span<byte> format = stackalloc byte[2];
-            BinaryPrimitives.WriteUInt16LittleEndian(format, ConnectValueText);
+            BinaryPrimitives.WriteUInt16LittleEndian(format, kvp.Value is Guid ? (ushort)4 : (ushort)ConnectValueText);
             paramStream.Write(format);
-            var value = Encoding.UTF8.GetBytes(kvp.Value);
+            var value = kvp.Value switch
+            {
+                Guid identity => identity.ToByteArray(bigEndian: true),
+                string text => Encoding.UTF8.GetBytes(text),
+                _ => throw new ArgumentException("Unsupported startup value type")
+            };
             Span<byte> valueLength = stackalloc byte[4];
             BinaryPrimitives.WriteUInt32LittleEndian(valueLength, (uint)value.Length);
             paramStream.Write(valueLength);
@@ -716,83 +721,71 @@ internal static class ProtocolCodec
         return (status, txnId);
     }
 
-    public static (string Name, string Value) ParseParameterStatus(byte[] payload)
+    private static bool IsUuidStatus(string name) =>
+        name is "attachment_id" or "dormant_id" or "dormant_reattach_token"
+        || name.EndsWith("_uuid", StringComparison.Ordinal);
+
+    public static List<(string Name, object Value)> ParseParameterStatuses(byte[] payload)
     {
-        var statuses = ParseParameterStatuses(payload);
-        if (statuses.Count == 0)
-        {
+        if (payload.Length < 4)
             throw new InvalidOperationException("Parameter status truncated");
+        var count = BinaryPrimitives.ReadInt32LittleEndian(payload);
+        if (count == 0 && payload.Length == 4)
+            return new();
+        // Legacy payloads start with a name length followed by the name. P1
+        // starts with a count and a bounded length-prefixed first name.
+        var firstNameLength = payload.Length >= 8
+            ? BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(4)) : -1;
+        if (count > 0 && count <= 256 && firstNameLength > 0
+            && firstNameLength <= payload.Length - 8)
+        {
+            var statuses = new List<(string Name, object Value)>(count);
+            var offset = 4;
+            for (var index = 0; index < count; index++)
+            {
+                var name = Encoding.UTF8.GetString(ReadParameterBytes(payload, ref offset));
+                if (payload.Length - offset < 3)
+                    throw new InvalidOperationException("Parameter status truncated");
+                var kind = payload[offset];
+                offset += 3; // value kind, redaction class, defaulted flag
+                var bytes = ReadParameterBytes(payload, ref offset);
+                if (IsUuidStatus(name) && kind != 4)
+                    throw new InvalidOperationException("UUID status requires binary16");
+                object value = kind switch
+                {
+                    1 => Encoding.UTF8.GetString(bytes),
+                    2 when bytes.Length == 8 => BinaryPrimitives.ReadUInt64LittleEndian(bytes),
+                    2 when bytes.Length == 4 => (ulong)BinaryPrimitives.ReadUInt32LittleEndian(bytes),
+                    3 when bytes.Length == 1 && bytes[0] <= 1 => bytes[0] != 0,
+                    4 when bytes.Length == 16 => new Guid(bytes, bigEndian: true),
+                    5 or 6 => bytes.ToArray(),
+                    _ => throw new InvalidOperationException("Parameter status value invalid")
+                };
+                statuses.Add((name, value));
+            }
+            if (offset != payload.Length)
+                throw new InvalidOperationException("Parameter status trailing bytes");
+            return statuses;
         }
-        return statuses[0];
+        var legacyOffset = 0;
+        var legacyName = Encoding.UTF8.GetString(ReadParameterBytes(payload, ref legacyOffset));
+        var legacyValue = ReadParameterBytes(payload, ref legacyOffset);
+        if (legacyOffset != payload.Length || IsUuidStatus(legacyName))
+            throw new InvalidOperationException("Legacy status cannot carry UUIDs or trailing bytes");
+        return new() { (legacyName, Encoding.UTF8.GetString(legacyValue)) };
     }
 
-    public static List<(string Name, string Value)> ParseParameterStatuses(byte[] payload)
+    private static ReadOnlySpan<byte> ReadParameterBytes(byte[] payload, ref int offset)
     {
-        if (payload.Length < 8)
-        {
+        if (payload.Length - offset < 4)
             throw new InvalidOperationException("Parameter status truncated");
-        }
-
-        var count = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(0, 4));
-        if (count > 0 && count <= 256)
-        {
-            try
-            {
-                var p1Offset = 4;
-                var statuses = new List<(string Name, string Value)>(count);
-                for (var index = 0; index < count; index++)
-                {
-                    if (p1Offset + 4 > payload.Length)
-                    {
-                        throw new InvalidOperationException("Parameter status truncated");
-                    }
-                    var p1NameLen = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(p1Offset, 4));
-                    p1Offset += 4;
-                    if (p1NameLen < 0 || p1Offset + p1NameLen + 7 > payload.Length)
-                    {
-                        throw new InvalidOperationException("Parameter status truncated");
-                    }
-                    var p1Name = Encoding.UTF8.GetString(payload, p1Offset, p1NameLen);
-                    p1Offset += p1NameLen;
-                    p1Offset += 3;
-                    var p1ValueLen = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(p1Offset, 4));
-                    p1Offset += 4;
-                    if (p1ValueLen < 0 || p1Offset + p1ValueLen > payload.Length)
-                    {
-                        throw new InvalidOperationException("Parameter status truncated");
-                    }
-                    var p1Value = Encoding.UTF8.GetString(payload, p1Offset, p1ValueLen);
-                    p1Offset += p1ValueLen;
-                    statuses.Add((p1Name, p1Value));
-                }
-                if (p1Offset == payload.Length)
-                {
-                    return statuses;
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // Fall through to the legacy single key/value payload shape.
-            }
-        }
-
-        var offset = 0;
-        var nameLen = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(offset, 4));
+        var length = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(offset));
         offset += 4;
-        if (nameLen > payload.Length - offset - 4)
-        {
+        if (length < 0 || length > payload.Length - offset)
             throw new InvalidOperationException("Parameter status truncated");
-        }
-        var name = Encoding.UTF8.GetString(payload, offset, (int)nameLen);
-        offset += (int)nameLen;
-        var valueLen = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(offset, 4));
-        offset += 4;
-        if (valueLen > payload.Length - offset)
-        {
-            throw new InvalidOperationException("Parameter status truncated");
-        }
-        var value = Encoding.UTF8.GetString(payload, offset, (int)valueLen);
-        return new List<(string Name, string Value)> { (name, value) };
+        var bytes = payload.AsSpan(offset, length);
+        offset += length;
+        return bytes;
     }
 
     public static List<uint> ParseParameterDescription(byte[] payload)

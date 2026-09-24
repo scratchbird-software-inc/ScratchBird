@@ -398,6 +398,7 @@ std::string DecodeConnectValue(std::uint8_t value_type,
                                std::uint32_t value_length) {
   if (value_offset + value_length > payload.size()) return {};
   const auto* data = payload.data() + value_offset;
+  if (value_type == 0x04 && value_length != 16) return {};
   if (value_type == 0x02 && value_length == 8) return std::to_string(ReadU64(payload, value_offset));
   if (value_type == 0x02 && value_length == 4) return std::to_string(ReadU32(payload, value_offset));
   if (value_type == 0x03) return value_length > 0 && data[0] != 0 ? "true" : "false";
@@ -470,6 +471,10 @@ StartupNegotiation ParseStartupNegotiation(const std::vector<std::uint8_t>& payl
     const auto redaction_class = payload[off++];
     const auto value_length = ReadU32(payload, off);
     off += 4;
+    if (value_type == 0x04 && value_length != 16) {
+      return RejectStartup("08P01", "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD",
+                           "UUID connect value must contain exactly 16 bytes");
+    }
     if (off + value_length > payload.size() || !IsKnownConnectKey(key)) {
       return RejectStartup("08P01",
                            IsKnownConnectKey(key) ? "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD"

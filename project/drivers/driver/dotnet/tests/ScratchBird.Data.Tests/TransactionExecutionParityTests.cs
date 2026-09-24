@@ -455,15 +455,15 @@ public class TransactionExecutionParityTests
     public void DetachToDormant_ReturnsEngineIssuedIdentifiers()
     {
         var stream = new ProtocolCaptureStream(
-            BuildParameterStatusMessage(1, "dormant_id", "00112233-4455-6677-8899-aabbccddeeff"),
-            BuildParameterStatusMessage(2, "dormant_reattach_token", "ffeeddcc-bbaa-9988-7766-554433221100"),
+            BuildUuidStatusMessage(1, "dormant_id", new Guid("00112233-4455-6677-8899-aabbccddeeff")),
+            BuildUuidStatusMessage(2, "dormant_reattach_token", new Guid("ffeeddcc-bbaa-9988-7766-554433221100")),
             BuildReadyMessage(3, 0));
         using var connection = CreateOpenConnectionWithHealthyClient(stream);
 
         var detached = connection.DetachToDormant();
 
-        Assert.Equal("00112233-4455-6677-8899-aabbccddeeff", detached.DormantId);
-        Assert.Equal("ffeeddcc-bbaa-9988-7766-554433221100", detached.ReattachToken);
+        Assert.Equal(new Guid("00112233-4455-6677-8899-aabbccddeeff"), detached.DormantId);
+        Assert.Equal(new Guid("ffeeddcc-bbaa-9988-7766-554433221100"), detached.ReattachToken);
 
         var messages = ParseWrittenMessages(stream.WrittenBytes);
         Assert.Single(messages);
@@ -493,8 +493,8 @@ public class TransactionExecutionParityTests
             Database = "main",
             Username = "sb_admin",
             ConnectClientFlags = 0x0100,
-            DormantId = "00112233-4455-6677-8899-aabbccddeeff",
-            DormantReattachToken = "ffeeddcc-bbaa-9988-7766-554433221100",
+            DormantId = new Guid("00112233-4455-6677-8899-aabbccddeeff"),
+            DormantReattachToken = new Guid("ffeeddcc-bbaa-9988-7766-554433221100"),
         };
 
         InvokePrivateMethod(client, "Handshake", config);
@@ -510,8 +510,8 @@ public class TransactionExecutionParityTests
         var startupText = Encoding.UTF8.GetString(messages[0].Payload);
         Assert.Contains("dormant_id", startupText, StringComparison.Ordinal);
         Assert.Contains("dormant_reattach_token", startupText, StringComparison.Ordinal);
-        Assert.Contains("00112233-4455-6677-8899-aabbccddeeff", startupText, StringComparison.Ordinal);
-        Assert.Contains("ffeeddcc-bbaa-9988-7766-554433221100", startupText, StringComparison.Ordinal);
+        AssertStartupUuid(messages[0].Payload, "dormant_id", new Guid("00112233-4455-6677-8899-aabbccddeeff"));
+        AssertStartupUuid(messages[0].Payload, "dormant_reattach_token", new Guid("ffeeddcc-bbaa-9988-7766-554433221100"));
     }
 
     [Fact]
@@ -523,13 +523,13 @@ public class TransactionExecutionParityTests
         var ex = Assert.Throws<TargetInvocationException>(() => InvokePrivateMethod(
             connection,
             "ReconnectWithDormantParams",
-            "00112233-4455-6677-8899-aabbccddeeff",
-            "ffeeddcc-bbaa-9988-7766-554433221100"));
+            new Guid("00112233-4455-6677-8899-aabbccddeeff"),
+            new Guid("ffeeddcc-bbaa-9988-7766-554433221100")));
         Assert.NotNull(ex.InnerException);
 
         var config = (ScratchBirdConfig)GetPrivateField(connection, "_config")!;
-        Assert.Equal(string.Empty, config.DormantId);
-        Assert.Equal(string.Empty, config.DormantReattachToken);
+        Assert.Null(config.DormantId);
+        Assert.Null(config.DormantReattachToken);
         Assert.False((bool)GetPrivateField(connection, "_skipSchemaApplyOnce")!);
     }
 
@@ -539,11 +539,11 @@ public class TransactionExecutionParityTests
         using var connection = CreateOpenConnection();
 
         var invalidUuid = Assert.Throws<ScratchBirdSyntaxException>(() =>
-            connection.ReattachDormant("not-a-uuid", "ffeeddcc-bbaa-9988-7766-554433221100"));
+            connection.ReattachDormant(Guid.Empty, new Guid("ffeeddcc-bbaa-9988-7766-554433221100")));
         Assert.Equal("42601", invalidUuid.SqlState);
 
         var missingToken = Assert.Throws<ScratchBirdSyntaxException>(() =>
-            connection.ReattachDormant("00112233-4455-6677-8899-aabbccddeeff", null));
+            connection.ReattachDormant(new Guid("00112233-4455-6677-8899-aabbccddeeff"), null));
         Assert.Equal("42601", missingToken.SqlState);
     }
 
@@ -573,6 +573,191 @@ public class TransactionExecutionParityTests
         Assert.Single(messages);
         Assert.Equal(MessageType.EXECUTE, (MessageType)messages[0].Header.Type);
         Assert.Equal(4u, BinaryPrimitives.ReadUInt32LittleEndian(messages[0].Payload.AsSpan(4, 4)));
+    }
+
+    [Theory]
+    [InlineData("INSERT INTO t(id) VALUES ($1)", false)]
+    [InlineData("UPDATE t SET id=$1", false)]
+    [InlineData("DELETE FROM t WHERE id=$1", false)]
+    [InlineData("CREATE TABLE t AS SELECT $1", false)]
+    [InlineData("INSERT INTO t(id) VALUES ($1)", true)]
+    [InlineData("UPDATE t SET id=$1", true)]
+    [InlineData("DELETE FROM t WHERE id=$1", true)]
+    [InlineData("CREATE TABLE t AS SELECT $1", true)]
+    [InlineData("SELECT $1, '$1' /* $1 */", false)]
+    [InlineData("SELECT $1, '$1' /* $1 */", true)]
+    public void ParameterizedCommands_KeepUuidBinaryAndSqlUnchanged(string sql, bool multi)
+    {
+        var stream = new ProtocolCaptureStream(BuildReadyMessage(1, 0));
+        var client = new ProtocolClient();
+        SetPrivateField(client, "_connected", true);
+        SetPrivateField(client, "_stream", stream);
+        // Delimiter, NUL, newline and non-UTF8 bytes must survive the bind frame.
+        var bytes = new byte[] { 0x0c, 0, 0, 0, 0x7c, 0x0a, 0x70, 0x0d,
+            0x80, 0x22, 0x5c, 0xff, 0, 1, 2, 3 };
+        var parameters = new[] { new ScratchBirdParameter("id", new Guid(bytes, bigEndian: true)) };
+        if (multi)
+            client.ExecuteQueryMulti(sql, parameters, 0, 0);
+        else
+            client.ExecuteQuery(sql, parameters, 0, 0);
+
+        var messages = ParseWrittenMessages(stream.WrittenBytes);
+        Assert.Equal(4, messages.Count);
+        Assert.Equal(MessageType.PARSE, (MessageType)messages[0].Header.Type);
+        Assert.Equal(MessageType.BIND, (MessageType)messages[1].Header.Type);
+        Assert.Equal(MessageType.EXECUTE, (MessageType)messages[2].Header.Type);
+        Assert.Equal(MessageType.SYNC, (MessageType)messages[3].Header.Type);
+        var parse = messages[0].Payload;
+        var offset = 4 + (int)BinaryPrimitives.ReadUInt32LittleEndian(parse);
+        var sqlLength = (int)BinaryPrimitives.ReadUInt32LittleEndian(parse.AsSpan(offset));
+        offset += 4;
+        Assert.Equal(sql, Encoding.UTF8.GetString(parse, offset, sqlLength));
+        offset += sqlLength;
+        Assert.Equal(1, BinaryPrimitives.ReadUInt16LittleEndian(parse.AsSpan(offset)));
+        Assert.Equal(TypeDecoder.OidUuid, BinaryPrimitives.ReadUInt32LittleEndian(parse.AsSpan(offset + 4)));
+
+        var bind = messages[1].Payload;
+        offset = 4 + (int)BinaryPrimitives.ReadUInt32LittleEndian(bind);
+        offset += 4 + (int)BinaryPrimitives.ReadUInt32LittleEndian(bind.AsSpan(offset));
+        Assert.Equal(1, BinaryPrimitives.ReadUInt16LittleEndian(bind.AsSpan(offset)));
+        Assert.Equal(TypeDecoder.FormatBinary, BinaryPrimitives.ReadUInt16LittleEndian(bind.AsSpan(offset + 2)));
+        Assert.Equal(1, BinaryPrimitives.ReadUInt16LittleEndian(bind.AsSpan(offset + 4)));
+        offset += 8;
+        Assert.Equal(16, BinaryPrimitives.ReadInt32LittleEndian(bind.AsSpan(offset)));
+        Assert.Equal(bytes, bind.AsSpan(offset + 4, 16).ToArray());
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void ParameterizedMutation_RejectsInvalidUuidBeforeSending(bool multi, bool array)
+    {
+        var stream = new ProtocolCaptureStream();
+        var client = new ProtocolClient();
+        SetPrivateField(client, "_connected", true);
+        SetPrivateField(client, "_stream", stream);
+        var parameter = array
+            ? new ScratchBirdParameter("id", new[] { Guid.Empty })
+            : new ScratchBirdParameter("id", "00112233-4455-6677-8899-aabbccddeeff") { DbType = DbType.Guid };
+        void Execute()
+        {
+            if (multi)
+                client.ExecuteQueryMulti("UPDATE t SET id=$1", new[] { parameter }, 0, 0);
+            else
+                client.ExecuteQuery("UPDATE t SET id=$1", new[] { parameter }, 0, 0);
+        }
+        if (array)
+            Assert.Throws<NotSupportedException>(Execute);
+        else
+            Assert.Throws<ArgumentException>(Execute);
+        Assert.Empty(stream.WrittenBytes);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UuidStatuses_PreserveBinaryIdentityDuringHandshakeAndQuery(bool handshake)
+    {
+        var identity = new Guid(new byte[] { 0x0c, 0, 0, 0, 0x7c, 0x0a, 0x70, 0x0d,
+            0x80, 0x22, 0x5c, 0xff, 0, 1, 2, 3 }, bigEndian: true);
+        var stream = new ProtocolCaptureStream(
+            BuildUuidStatusMessage(1, "attachment_id", identity),
+            BuildUuidStatusMessage(2, "session.authenticated_user_uuid", identity),
+            BuildReadyMessage(3, 0));
+        var client = new ProtocolClient();
+        SetPrivateField(client, "_connected", true);
+        SetPrivateField(client, "_stream", stream);
+        if (handshake)
+            InvokePrivateMethod(client, "Handshake", new ScratchBirdConfig { Database = "main", Username = "sb_admin" });
+        else
+            client.ExecuteQueryMulti("SELECT 1", Array.Empty<ScratchBirdParameter>(), 0, 0);
+        Assert.True(client.TryGetUuidParameter("session.authenticated_user_uuid", out var actual));
+        Assert.Equal(identity, actual);
+        Assert.Equal(identity.ToByteArray(bigEndian: true), (byte[])GetPrivateField(client, "_attachmentId")!);
+    }
+
+    [Fact]
+    public void UuidStatus_RejectsTruncationTrailingBytesAndTextWithoutPublishingPartialState()
+    {
+        var valid = BuildUuidStatusMessage(1, "attachment_id", Guid.NewGuid()).Payload;
+        for (var length = 0; length < valid.Length; length++)
+        {
+            var truncated = valid.AsSpan(0, length).ToArray();
+            Assert.Throws<InvalidOperationException>(() => ProtocolCodec.ParseParameterStatuses(truncated));
+        }
+        var trailing = new byte[valid.Length + 1];
+        valid.CopyTo(trailing, 0);
+        Assert.Throws<InvalidOperationException>(() => ProtocolCodec.ParseParameterStatuses(trailing));
+        var legacy = BuildParameterStatusMessage(1, "attachment_id", "00112233-4455-6677-8899-aabbccddeeff");
+        Assert.Throws<InvalidOperationException>(() => ProtocolCodec.ParseParameterStatuses(legacy.Payload));
+        var kindOffset = 8 + Encoding.UTF8.GetByteCount("attachment_id");
+        valid[kindOffset] = 1;
+        Assert.Throws<InvalidOperationException>(() => ProtocolCodec.ParseParameterStatuses(valid));
+
+        // A valid first identity followed by a truncated second record must not
+        // update live attachment state before the whole frame is validated.
+        valid = BuildUuidStatusMessage(1, "attachment_id", Guid.NewGuid()).Payload;
+        BinaryPrimitives.WriteUInt32LittleEndian(valid, 2);
+        var stream = new ProtocolCaptureStream(new ProtocolMessage(
+            new MessageHeader((byte)MessageType.PARAMETER_STATUS, 0, (uint)valid.Length, 1, new byte[16], 0), valid));
+        var client = new ProtocolClient();
+        SetPrivateField(client, "_connected", true);
+        SetPrivateField(client, "_stream", stream);
+        Assert.Throws<InvalidOperationException>(() => client.ExecuteQueryMulti("SELECT 1", Array.Empty<ScratchBirdParameter>(), 0, 0));
+        Assert.False(client.TryGetUuidParameter("attachment_id", out _));
+        Assert.Equal(new byte[16], (byte[])GetPrivateField(client, "_attachmentId")!);
+    }
+
+    [Theory]
+    [InlineData("DormantId")]
+    [InlineData("DormantReattachToken")]
+    public void TextDormantConnectionOptions_AreRejected(string key)
+    {
+        Assert.Throws<ArgumentException>(() => new ScratchBirdConnection(
+            key + "=00112233-4455-6677-8899-aabbccddeeff"));
+    }
+
+    private static ProtocolMessage BuildUuidStatusMessage(uint sequence, string name, Guid value)
+    {
+        var nameBytes = Encoding.UTF8.GetBytes(name);
+        var payload = new byte[4 + 4 + nameBytes.Length + 3 + 4 + 16];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(4), (uint)nameBytes.Length);
+        nameBytes.CopyTo(payload, 8);
+        var offset = 8 + nameBytes.Length;
+        payload[offset] = 4;
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(offset + 3), 16);
+        value.ToByteArray(bigEndian: true).CopyTo(payload, offset + 7);
+        return new ProtocolMessage(new MessageHeader((byte)MessageType.PARAMETER_STATUS,
+            0, (uint)payload.Length, sequence, new byte[16], 0), payload);
+    }
+
+    private static void AssertStartupUuid(byte[] payload, string key, Guid expected)
+    {
+        var count = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(80));
+        var offset = 84;
+        for (var i = 0; i < count; i++)
+        {
+            var nameLength = (int)BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(offset));
+            offset += 4;
+            var name = Encoding.UTF8.GetString(payload, offset, nameLength);
+            offset += nameLength;
+            var kind = payload[offset];
+            offset += 2;
+            var length = (int)BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(offset));
+            offset += 4;
+            if (name == key)
+            {
+                Assert.Equal(4, kind);
+                Assert.Equal(16, length);
+                Assert.Equal(expected.ToByteArray(bigEndian: true), payload.AsSpan(offset, length).ToArray());
+                return;
+            }
+            offset += length;
+        }
+        Assert.Fail("Missing binary startup identity " + key);
     }
 
     private static ScratchBirdConnection CreateOpenConnection()

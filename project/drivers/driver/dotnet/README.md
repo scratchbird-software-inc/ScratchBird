@@ -41,6 +41,14 @@ This lane now implements the shared staged auth/bootstrap contract.
   - auth hint/pinning fields
   - `ManagerAuthToken`
 
+## UUID parameters
+
+Pass UUID values as `Guid` (or SQL NULL with `DbType.Guid`). Parameterized
+commands use PARSE/BIND/EXECUTE for queries, mutations, and DDL, preserving the
+SQL and binary parameter values. UUIDs are never interpolated into SQL text.
+Explicit `DbType.Guid` with a string value is rejected before sending; UUID
+arrays remain unsupported.
+
 ## MGA Recovery Contract
 
 This lane follows ScratchBird's MGA/state-based engine recovery model.
@@ -52,10 +60,13 @@ This lane follows ScratchBird's MGA/state-based engine recovery model.
 - `PrepareTransaction(...)`, `CommitPrepared(...)`, and
   `RollbackPrepared(...)` now expose explicit prepared / limbo control
   surfaces through canonical transaction-control SQL
-- `SupportsDormantReattach() -> true`, `DetachToDormant()`, and
-  `ReattachDormant(...)` now expose the explicit dormant token flow on the
-  native public lane, with engine-issued `dormant_id` plus
-  `dormant_reattach_token` carried through the public startup contract
+- `DetachToDormant()` returns `(Guid DormantId, Guid ReattachToken)`;
+  `ReattachDormant(Guid dormantId, Guid? authToken)` consumes those engine-issued
+  identities. Both startup and status fields carry exactly 16 UUID bytes in
+  network order. String UUID arguments and dormant connection-string options
+  are rejected; any input parsing or display formatting belongs to application
+  code. The server must support the dormant operation; the driver's
+  `SupportsDormantReattach()` reports availability of the driver API.
 - `BeginTransaction(ScratchBirdTransactionOptions)` exposes the canonical MGA
   begin flags for `IsolationLevel`, `AccessMode`, `Deferrable`, `Wait`,
   `TimeoutMs`, `AutoCommit`, and `ReadCommittedMode`

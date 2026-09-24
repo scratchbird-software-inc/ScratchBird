@@ -17,6 +17,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -112,9 +113,9 @@ void PutSbpsString(std::vector<std::uint8_t>* out,
 
 void PutSbpsTransactionSelector(std::vector<std::uint8_t>* out,
                                 std::uint64_t local_transaction_id,
-                                std::string_view transaction_uuid) {
+                                const std::array<std::uint8_t, 16>& transaction_uuid) {
   PutU64(out, local_transaction_id);
-  PutSbpsString(out, transaction_uuid);
+  out->insert(out->end(), transaction_uuid.begin(), transaction_uuid.end());
 }
 
 std::uint32_t ReadU32(const std::array<std::uint8_t, kHeaderSize>& bytes,
@@ -508,6 +509,20 @@ void ExpectError(const std::vector<std::uint8_t>& request,
 }
 
 void CheckStartupNegotiationFailures() {
+  for (const std::size_t length : {0u, 15u, 17u, 36u}) {
+    auto startup = StartupPayload(kVersionP1Current, kVersionP1Current,
+                                  0, 0, 0, 0);
+    startup.resize(80);
+    PutU32(&startup, 1);
+    PutLpStr(&startup, "application_name");
+    startup.push_back(0x04);
+    startup.push_back(0);
+    PutU32(&startup, static_cast<std::uint32_t>(length));
+    startup.insert(startup.end(), length, 0x31);
+    PutU32(&startup, 0);
+    ExpectError(EncodeFrame(kStartup, startup),
+                "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD");
+  }
   ExpectError(
       EncodeFrame(kStartup,
                   StartupPayload(0x0102, 0x0102, 0, 0, 0, 0)),
@@ -730,7 +745,10 @@ std::vector<std::uint8_t> V2ExecuteResultFixture(
     std::uint8_t replacement_reason) {
   std::vector<std::uint8_t> payload;
   PutSbpsString(&payload, "accepted");
-  payload.insert(payload.end(), 16, 0x11);
+  const auto request_uuid = scratchbird::server::sbps::MakeUuidV7Bytes();
+  const auto selected_uuid = scratchbird::server::sbps::MakeUuidV7Bytes();
+  const auto replacement_uuid = scratchbird::server::sbps::MakeUuidV7Bytes();
+  payload.insert(payload.end(), request_uuid.begin(), request_uuid.end());
   payload.insert(payload.end(), 16, 0);
   PutU64(&payload, 0);
   PutSbpsString(&payload, operation_id);
@@ -741,15 +759,15 @@ std::vector<std::uint8_t> V2ExecuteResultFixture(
   payload.push_back(replacement_reason);
   if ((transaction_flags & (1u << 0)) != 0) {
     PutSbpsTransactionSelector(
-        &payload, 41, "11111111-1111-7111-8111-111111111111");
+        &payload, 41, selected_uuid);
   }
   if ((transaction_flags & (1u << 2)) != 0) {
     PutSbpsTransactionSelector(
-        &payload, 41, "11111111-1111-7111-8111-111111111111");
+        &payload, 41, selected_uuid);
   }
   if ((transaction_flags & (1u << 3)) != 0) {
     PutSbpsTransactionSelector(
-        &payload, 42, "22222222-2222-7222-8222-222222222222");
+        &payload, 42, replacement_uuid);
   }
   PutSbpsString(&payload, "typed_fixture");
   PutSbpsString(&payload, "");
@@ -912,18 +930,48 @@ void CheckScriptIngestPartialQueryFrames() {
 
 int main() {
   ::signal(SIGPIPE, SIG_IGN);
-  CheckStartupNegotiationFailures();
-  CheckSblrFeatureNegotiates();
-  CheckMultiplexRefusedBeforeAuthentication();
-  CheckAuthenticatedIdentityAndTransactionRefusal();
-  CheckFrameFailClosedPaths();
-  CheckPingPongEcho();
-  CheckSbpsUnknownCapabilityBits();
-  CheckEmbeddedClientNeverCreatesMissingDatabase();
-  CheckTransactionRoutingV2OutcomeCodec();
-  CheckArrayBindPacketNegotiated();
-  CheckScriptIngestQueryMetadata();
-  CheckScriptIngestPartialQueryFrames();
+  // Hosted engines bind one database per process for its lifetime. Each
+  // independent scenario must start with its own process, not reset that
+  // production ownership guard or inherit a previous fixture's database.
+  const std::pair<const char*, void (*)()> scenarios[] = {
+      {"CheckStartupNegotiationFailures", CheckStartupNegotiationFailures},
+      {"CheckSblrFeatureNegotiates", CheckSblrFeatureNegotiates},
+      {"CheckMultiplexRefusedBeforeAuthentication", CheckMultiplexRefusedBeforeAuthentication},
+      {"CheckAuthenticatedIdentityAndTransactionRefusal", CheckAuthenticatedIdentityAndTransactionRefusal},
+      {"CheckFrameFailClosedPaths", CheckFrameFailClosedPaths},
+      {"CheckPingPongEcho", CheckPingPongEcho},
+      {"CheckSbpsUnknownCapabilityBits", CheckSbpsUnknownCapabilityBits},
+      {"CheckEmbeddedClientNeverCreatesMissingDatabase", CheckEmbeddedClientNeverCreatesMissingDatabase},
+      {"CheckTransactionRoutingV2OutcomeCodec", CheckTransactionRoutingV2OutcomeCodec},
+      {"CheckArrayBindPacketNegotiated", CheckArrayBindPacketNegotiated},
+      {"CheckScriptIngestQueryMetadata", CheckScriptIngestQueryMetadata},
+      {"CheckScriptIngestPartialQueryFrames", CheckScriptIngestPartialQueryFrames},
+  };
+  bool passed = true;
+  for (const auto& [name, run] : scenarios) {
+    const pid_t child = ::fork();
+    if (child == 0) {
+      run();
+      std::cout.flush();
+      std::cerr.flush();
+      ::_exit(EXIT_SUCCESS);
+    }
+    if (child < 0) {
+      std::cerr << name << ": fork failed\n";
+      passed = false;
+      continue;
+    }
+    int status = 0;
+    pid_t waited;
+    do {
+      waited = ::waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+      std::cerr << name << ": failed\n";
+      passed = false;
+    }
+  }
+  if (!passed) return EXIT_FAILURE;
   std::cout << "sbsql_native_wire_p1_conformance ok\n";
   return EXIT_SUCCESS;
 }

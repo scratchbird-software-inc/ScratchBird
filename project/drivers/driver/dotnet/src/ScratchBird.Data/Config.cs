@@ -48,8 +48,8 @@ public sealed class ScratchBirdConfig
     public bool AuthRequireChannelBinding { get; set; } = false;
     public string WorkloadIdentityToken { get; set; } = "";
     public string ProxyPrincipalAssertion { get; set; } = "";
-    public string DormantId { get; set; } = "";
-    public string DormantReattachToken { get; set; } = "";
+    public Guid? DormantId { get; set; }
+    public Guid? DormantReattachToken { get; set; }
     public int DefaultFetchSize { get; set; } = 0;
     public bool Pooling { get; set; } = false;
     public int MinPoolSize { get; set; } = 0;
@@ -368,12 +368,9 @@ internal static class DsnParser
                 break;
             case "dormant_id":
             case "dormantid":
-                cfg.DormantId = value;
-                break;
             case "dormant_reattach_token":
             case "dormantreattachtoken":
-                cfg.DormantReattachToken = value;
-                break;
+                throw new ArgumentException("Dormant identities require the binary Guid ReattachDormant API, not connection-string text");
             case "fetch_size":
             case "fetchsize":
             case "default_fetch_size":

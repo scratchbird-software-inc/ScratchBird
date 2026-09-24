@@ -1804,18 +1804,9 @@ std::string DecodeConnectValue(std::uint8_t value_type,
       return {};
     case 0x03:
       return value_length > 0 && data[0] != 0 ? "true" : "false";
-    case 0x04: {
+    case 0x04:
       if (value_length != 16) return {};
-      static constexpr char kHex[] = "0123456789abcdef";
-      std::string out;
-      out.reserve(36);
-      for (std::size_t i = 0; i < 16; ++i) {
-        if (i == 4 || i == 6 || i == 8 || i == 10) out.push_back('-');
-        out.push_back(kHex[data[i] >> 4u]);
-        out.push_back(kHex[data[i] & 0x0fu]);
-      }
-      return out;
-    }
+      return std::string(reinterpret_cast<const char*>(data), 16);
     default:
       return {};
   }
@@ -1925,6 +1916,10 @@ StartupNegotiation ParseStartupNegotiation(const std::vector<std::uint8_t>& payl
     const std::uint8_t redaction_class = payload[off++];
     const std::uint32_t value_length = ReadU32(payload, off);
     off += 4;
+    if (value_type == 0x04 && value_length != 16) {
+      return RejectStartup("08P01", "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD",
+                           "UUID connect value must contain exactly 16 bytes");
+    }
     if (off + value_length > payload.size() || !IsKnownConnectKey(key)) {
       return RejectStartup("08P01",
                            IsKnownConnectKey(key) ? "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD"
