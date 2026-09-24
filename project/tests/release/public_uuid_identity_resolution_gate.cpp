@@ -12,7 +12,10 @@
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "memory.hpp"
-#include "public_release_authz_fixture.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "security/security_principal_lifecycle.hpp"
+#include "security/security_model.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -84,8 +87,9 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.value;
 }
 
-std::string UuidText(const TypedUuid& typed_uuid) {
-  return uuid::UuidToString(typed_uuid.value);
+std::string IdentityBytes(const TypedUuid& typed_uuid) {
+  return std::string(reinterpret_cast<const char*>(typed_uuid.value.bytes.data()),
+                     typed_uuid.value.bytes.size());
 }
 
 bool IsGeneratedObjectUuid(const api::EngineUuid& value) {
@@ -139,6 +143,13 @@ DatabaseFixture CreateDatabaseFixture(const std::filesystem::path& root, u64 see
   create.require_resource_seed_pack = false;
   create.allow_minimal_resource_bootstrap = true;
   create.allow_overwrite = true;
+  create.bootstrap_principal_name = "uuid_resolution_owner";
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
 
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -158,40 +169,68 @@ api::EngineRequestContext Context(const DatabaseFixture& fixture,
   context.request_id = std::move(request_id);
   context.database_path = fixture.path.string();
   context.database_uuid = fixture.database_uuid.value;
-  context.principal_uuid = MakeUuid(UuidKind::principal, 20).value;
+  context.default_root_uuid = fixture.filespace_uuid.value;
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(context.database_path);
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "PCR-008 durable bootstrap principal unavailable");
+  context.principal_uuid = bootstrap.state.principal_uuid.value;
   context.session_uuid = MakeUuid(UuidKind::object, 21).value;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+  context.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
+  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("right:CATALOG_MUTATE");
-  scratchbird::tests::release::GrantMaterializedRight(
-      &context, "CATALOG_MUTATE");
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(context);
+  Require(loaded.ok, "PCR-008 durable security catalog unavailable");
+  const auto& lifecycle = loaded.state;
+  api::DurableAuthorizationState authority;
+  authority.authority_uuid = context.database_uuid;
+  authority.security_context_generation = lifecycle.security_context_generation;
+  authority.security_epoch = lifecycle.security_generation;
+  authority.policy_epoch = lifecycle.policy_generation;
+  authority.catalog_generation_id = 1;
+  authority.engine_owned_sysarch_role_uuid = bootstrap.state.sysarch_role_uuid.value;
+  for (const auto& principal : lifecycle.principals)
+    if (!principal.deleted && principal.lifecycle_state == "active")
+      authority.principals.push_back({principal.principal_uuid, "principal", true,
+                                     authority.security_epoch});
+  for (const auto& role : lifecycle.roles)
+    if (!role.deleted && role.lifecycle_state == "active")
+      authority.roles.push_back({role.role_uuid, true, authority.security_epoch});
+  for (const auto& membership : lifecycle.memberships)
+    if (!membership.revoked)
+      authority.memberships.push_back({membership.member_principal_uuid, "principal",
+          membership.container_uuid, membership.container_kind, true, authority.security_epoch});
+  for (const auto& grant : lifecycle.grants)
+    if (!grant.revoked)
+      authority.grants.push_back({grant.grant_uuid, grant.grantee_uuid, grant.grantee_kind,
+          grant.target_object_uuid, grant.privilege, grant.grant_effect == "deny", true,
+          authority.security_epoch});
+  const auto materialized = api::MaterializeDurableAuthorizationContext(authority,
+      {context.principal_uuid, authority.security_epoch, authority.policy_epoch,
+       authority.catalog_generation_id});
+  Require(materialized.ok, "PCR-008 durable authorization unavailable");
+  context.authorization_context = materialized.context;
+  context.security_epoch = authority.security_epoch;
+  context.authorization_context.security_epoch = authority.security_epoch;
   return context;
 }
 
 api::EngineRequestContext BackupContext(const DatabaseFixture& fixture,
                                         std::string request_id) {
   auto context = Context(fixture, std::move(request_id));
-  context.trace_tags.push_back("right:BACKUP_CREATE");
-  scratchbird::tests::release::GrantMaterializedRight(
-      &context, "BACKUP_CREATE");
   return context;
 }
 
 api::EngineRequestContext RestoreContext(const DatabaseFixture& fixture,
                                          std::string request_id) {
   auto context = Context(fixture, std::move(request_id));
-  context.trace_tags.push_back("right:BACKUP_RESTORE");
-  scratchbird::tests::release::GrantMaterializedRight(
-      &context, "BACKUP_RESTORE");
   return context;
 }
 
@@ -253,9 +292,28 @@ api::EngineCreateTableResult CreateGeneratedTable(
   request.table_names.push_back(Name("pcr008_customer"));
   api::EngineColumnDefinition id_column;
   id_column.names.push_back(Name("id"));
-  id_column.descriptor.descriptor_kind = "datatype";
+  namespace datatypes = scratchbird::core::datatypes;
+  const auto manifest = datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "PCR-008 datatype manifest unavailable");
+  const auto datatype = datatypes::LookupDatatypeCatalogRow(
+      manifest.manifest, datatypes::CanonicalTypeId::int64);
+  Require(datatype.ok() && datatype.manifest.descriptor_rows.size() == 1,
+          "PCR-008 int64 descriptor binding unavailable");
+  const auto& descriptor = datatype.manifest.descriptor_rows.front();
+  const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
+      request.context.datatype_catalog_snapshot_uuid,
+      request.context.datatype_catalog_generation,
+      request.context.datatype_registry_generation,
+      descriptor.descriptor_uuid.value, descriptor.descriptor_epoch);
+  Require(codec.ok, "PCR-008 int64 codec binding unavailable");
+  id_column.requested_column_uuid = MakeUuid(UuidKind::object, 40).value;
+  id_column.descriptor.descriptor_uuid = MakeUuid(UuidKind::object, 41).value;
+  id_column.descriptor.datatype_descriptor_uuid = descriptor.descriptor_uuid.value;
+  id_column.descriptor.datatype_descriptor_generation = descriptor.descriptor_epoch;
+  id_column.descriptor.type_uuid = codec.row.type_uuid;
+  id_column.descriptor.descriptor_kind = "scalar";
   id_column.descriptor.canonical_type_name = "int64";
-  id_column.descriptor.encoded_descriptor = "type=int64";
+  id_column.descriptor.encoded_descriptor = "canonical=int64;nullable=false";
   id_column.ordinal = 0;
   id_column.nullable = false;
   request.table_columns.push_back(std::move(id_column));
@@ -365,7 +423,10 @@ api::EngineStartLogicalBackupResult StartLogicalBackup(
   request.context = BackupContext(fixture, "pcr009-source-logical-backup");
   request.option_envelopes.push_back("target_uri:" + manifest_path.string());
   request.option_envelopes.push_back("filespace_uuid:" +
-                                     UuidText(fixture.filespace_uuid));
+                                     IdentityBytes(fixture.filespace_uuid));
+  request.option_envelopes.push_back("timeline_uuid:" + IdentityBytes(MakeUuid(UuidKind::object, 50)));
+  request.option_envelopes.push_back("fork_uuid:" + IdentityBytes(MakeUuid(UuidKind::object, 51)));
+  request.option_envelopes.push_back("key_lineage_id:" + IdentityBytes(MakeUuid(UuidKind::object, 52)));
   const auto backed_up = api::EngineStartLogicalBackup(request);
   RequireApiOk(backed_up, "PCR-009 logical backup failed");
   Require(backed_up.table_count == 1,
@@ -378,9 +439,6 @@ api::EngineStartLogicalBackupResult StartLogicalBackup(
 void RestoreLogicalBackup(const DatabaseFixture& target,
                           const std::filesystem::path& manifest_path) {
   auto restore_context = Begin(target, "pcr009-target-logical-restore");
-  restore_context.trace_tags.push_back("right:BACKUP_RESTORE");
-  scratchbird::tests::release::GrantMaterializedRight(
-      &restore_context, "BACKUP_RESTORE");
   api::EngineRestoreLogicalBackupRequest request;
   request.context = restore_context;
   request.option_envelopes.push_back("source_manifest_uri:" +

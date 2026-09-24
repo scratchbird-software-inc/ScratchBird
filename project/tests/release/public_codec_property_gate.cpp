@@ -233,6 +233,25 @@ void CatalogTypedRecordProperties() {
       "kind=1\nrecord_version=1\ndeleted=0\nrow_uuid=not-a-uuid\n";
   Require(!catalog::DecodeCatalogTypedRecord(malformed_uuid).ok(),
           "typed catalog record decoded malformed row UUID");
+
+  // Corrupt UUIDs in an otherwise valid SBCTREC2 frame so these cases reach
+  // identity admission rather than merely failing the legacy text header.
+  for (const std::size_t uuid_offset : {40u, 56u}) {
+    for (const bool corrupt_variant : {false, true}) {
+      auto invalid_identity = encoded.row;
+      const auto byte_offset = uuid_offset + (corrupt_variant ? 8 : 6);
+      invalid_identity.payload[byte_offset] = static_cast<char>(
+          static_cast<unsigned char>(invalid_identity.payload[byte_offset]) &
+          (corrupt_variant ? 0x3fu : 0x0fu));
+      RequireDiagnostic(catalog::DecodeCatalogTypedRecord(invalid_identity),
+          uuid_offset == 40 ? "SB-CATALOG-RECORD-CODEC-ROW-UUID-MUST-BE-V7"
+                            : "SB-CATALOG-RECORD-CODEC-OBJECT-UUID-MUST-BE-V7",
+          "typed binary catalog record accepted malformed UUID version or variant");
+    }
+  }
+  Require(decoded.record.header.row_uuid.value == record.header.row_uuid.value &&
+              decoded.record.header.object_uuid.value == record.header.object_uuid.value,
+          "typed binary catalog record changed UUID bytes");
 }
 
 void ClusterCatalogRecordProperties() {
