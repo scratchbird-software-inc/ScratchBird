@@ -22,9 +22,9 @@
 
 namespace scratchbird::server {
 
-inline constexpr std::uint32_t kServerIpcEndpointDescriptorFormatCurrent = 1;
-inline constexpr std::uint32_t kServerIpcEndpointDescriptorFormatMinSupported = 1;
-inline constexpr std::uint32_t kServerIpcEndpointDescriptorFormatMaxSupported = 1;
+inline constexpr std::uint32_t kServerIpcEndpointDescriptorFormatCurrent = 2;
+inline constexpr std::uint32_t kServerIpcEndpointDescriptorFormatMinSupported = 2;
+inline constexpr std::uint32_t kServerIpcEndpointDescriptorFormatMaxSupported = 2;
 inline constexpr std::uint32_t kServerLifecycleStateFileFormatCurrent = 1;
 inline constexpr std::uint32_t kServerLifecycleStateFileFormatMinSupported = 1;
 inline constexpr std::uint32_t kServerLifecycleStateFileFormatMaxSupported = 1;
@@ -164,6 +164,9 @@ ServerIpcEndpointLifecycleEvaluation EvaluateServerIpcEndpointLifecycle(
     const ServerIpcEndpointDescriptor& descriptor,
     ServerIpcEndpointOperation operation);
 
-std::string ServerIpcEndpointDescriptorText(const ServerIpcEndpointDescriptor& descriptor);
+// V2 uses a framed binary packet. The database identity is exactly 16 octets;
+// legacy newline-delimited UUID text is not a supported system descriptor.
+bool EncodeServerIpcEndpointDescriptor(const ServerIpcEndpointDescriptor& descriptor,
+                                       std::string* output);
 
 }  // namespace scratchbird::server

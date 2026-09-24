@@ -281,12 +281,10 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
             "statement-context UTF8 resource authority is unavailable");
   }
   if (!credentialed_full_route) {
-    const auto empty_inventory =
-        db::PersistLocalTransactionInventoryToDatabase(
-            fixture.database_path.string(),
-            scratchbird::transaction::mga::MakeEmptyLocalTransactionInventory());
-    Require(empty_inventory.ok(),
-            "statement-context empty inventory initialization failed");
+    const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(
+        fixture.database_path.string());
+    Require(inventory.ok() && inventory.inventory.publication_base.has_value(),
+            "statement-context lifecycle inventory unavailable");
   }
   return fixture;
 }

@@ -151,6 +151,16 @@ page::LargePayloadDescriptor StorePayload(page::LargePayloadStore* store,
   request.mga_write_admitted_by_transaction_inventory = true;
   auto stored = page::StoreLargePayloadGeneration(store, request);
   Require(stored.ok(), "ODF-093 payload fixture store failed");
+  Require(!store->overflow_ledger.values.empty(), "ODF-093 overflow record missing");
+  const auto& overflow = store->overflow_ledger.values.back();
+  const auto bound = page::ParseLargePayloadDescriptor(overflow.value_descriptor);
+  Require(bound.has_value() && SameUuid(bound->overflow_value_uuid, overflow.overflow_value_uuid) &&
+              SameUuid(bound->overflow_value_uuid, stored.descriptor.overflow_value_uuid),
+          "ODF-093 stored descriptor must bind the actual overflow identity");
+  auto unbound = stored.descriptor;
+  unbound.overflow_value_uuid = {};
+  Require(page::SerializeLargePayloadDescriptor(unbound).empty(),
+          "ODF-093 unbound overflow descriptor must remain invalid");
   return stored.descriptor;
 }
 
@@ -234,7 +244,12 @@ void FetchesOnlyFinalAuthorizedPrunedRowsAndRedactsProtectedPayloads() {
         requested_rows.push_back(request.reference.row_uuid);
         auto storage_request = request;
         storage_request.large_payload_store = &store;
-        return page::FetchLateMaterializationPayload(storage_request);
+        const auto fetched = page::FetchLateMaterializationPayload(storage_request);
+        Require(SameUuid(fetched.row_uuid, request.reference.row_uuid),
+                "ODF-093 storage lost native row identity");
+        Require(!EvidenceHas(fetched.evidence, "late_payload_fetch.row_uuid="),
+                "ODF-093 storage rendered a row UUID as text");
+        return fetched;
       });
 
   if (!result.ok()) {
@@ -281,9 +296,12 @@ void FetchesOnlyFinalAuthorizedPrunedRowsAndRedactsProtectedPayloads() {
   Require(EvidenceHas(result.evidence,
                       "late_materialization.redacted_payload_count=1"),
           "ODF-093 redaction counter evidence missing");
-  Require(EvidenceHas(result.evidence,
-                      "late_materialization.materialization_order="),
-          "ODF-093 materialization order evidence missing");
+  Require(result.counters.materialization_order.size() == 2 &&
+              SameUuid(result.counters.materialization_order[0], r1.row_uuid) &&
+              SameUuid(result.counters.materialization_order[1], r4.row_uuid),
+          "ODF-093 native materialization order evidence missing");
+  Require(!EvidenceHas(result.evidence, "late_materialization.materialization_order="),
+          "ODF-093 engine rendered binary row identities as text");
   RequireEvidenceHygiene(result.evidence);
 }
 
@@ -555,6 +573,36 @@ void StaleDescriptorAndUnsafeFetcherRowsFailClosed() {
 }  // namespace
 
 int main() {
+  // A failed identity binder must not publish any overflow value or chunks.
+  const Ids ids;
+  page::OverflowLedger ledger;
+  page::OverflowPersistRequest request;
+  request.row_uuid = Row(0x31, 1.0).row_uuid;
+  request.object_uuid = ids.owner_uuid;
+  request.transaction_uuid = ids.transaction_uuid;
+  request.local_transaction_id = 93;
+  request.payload_bytes = Bytes("unpublished");
+  bool invoked = false;
+  request.bind_value_descriptor = [&](const platform::TypedUuid& allocated) {
+    invoked = allocated.valid() && allocated.kind == platform::UuidKind::object;
+    return std::string{};
+  };
+  Require(!page::PersistOverflowValue(&ledger, request).ok() && invoked && ledger.values.empty(),
+          "ODF-093 rejected descriptor binder published overflow state");
+  invoked = false;
+  request.value_descriptor = "ambiguous descriptor";
+  Require(!page::PersistOverflowValue(&ledger, request).ok() && !invoked && ledger.values.empty(),
+          "ODF-093 ambiguous descriptor sources reached identity binding");
+  // A diagnostic counter can span all of uint64; it must never become a
+  // 48-bit UUID timestamp or influence the identity issuer's clock.
+  page::LargePayloadStore high_sequence_store;
+  high_sequence_store.next_evidence_sequence = (platform::u64{1} << 60);
+  high_sequence_store.overflow_ledger.next_evidence_sequence = (platform::u64{1} << 60);
+  const auto high_sequence_descriptor = StorePayload(
+      &high_sequence_store, ids, Row(0x32, 2.0).row_uuid, "high diagnostic sequence");
+  Require(high_sequence_descriptor.payload_uuid.valid() &&
+              high_sequence_descriptor.overflow_value_uuid.valid(),
+          "ODF-093 diagnostic sequence invalidated engine-issued UUIDs");
   FetchesOnlyFinalAuthorizedPrunedRowsAndRedactsProtectedPayloads();
   MissingPlanAndAuthorityContractsFailBeforeFetcher();
   StorageRedactionAndDescriptorContractsFailClosed();

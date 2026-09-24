@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "catalog/structured_type_api.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
@@ -82,20 +83,7 @@ void Require(bool condition, std::string_view message) {
 }
 
 void Cleanup(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const char* suffix : {".dirty.manifest",
-                             ".sb.api_events",
-                             ".sb.mga_event_sequence_allocator",
-                             ".sb.mga_index_entries",
-                             ".sb.mga_large_values",
-                             ".sb.mga_relation_descriptors",
-                             ".sb.mga_relation_metadata",
-                             ".sb.mga_row_versions",
-                             ".sb.mga_savepoints",
-                             ".sb.mga_secondary_index_delta_ledger"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
 bool HasDiagnostic(const api::EngineApiResult& result, std::string_view code) {
@@ -206,7 +194,10 @@ Fixture CreateFixture() {
   create.allow_overwrite = true;
   Require(db::CreateDatabaseFile(create).ok(), "database creation failed");
 
-  fixture.inventory = txn::MakeEmptyLocalTransactionInventory();
+  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(fixture.path.string());
+  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
+          "lifecycle-published transaction inventory unavailable");
+  fixture.inventory = std::move(initial_inventory.inventory);
   const auto transaction_uuid =
       uuid::GenerateEngineIdentityV7(UuidKind::transaction, 1790600000003);
   Require(transaction_uuid.ok(), "transaction UUID generation failed");
@@ -227,6 +218,10 @@ Fixture CreateFixture() {
 }
 
 void CommitFixture(Fixture* fixture) {
+  auto published = db::LoadLocalTransactionInventoryFromDatabase(fixture->path.string());
+  Require(published.ok() && published.inventory.publication_base.has_value(),
+          "current transaction inventory unavailable before commit");
+  fixture->inventory = std::move(published.inventory);
   auto committed = txn::CommitLocalTransaction(std::move(fixture->inventory),
                                                fixture->typed_local_transaction_id,
                                                1790600000100);
@@ -525,8 +520,18 @@ void TestCreateFamilies(Fixture* fixture) {
   show_one.target_object.object_kind = "structured_type_descriptor";
   const auto one = api::EngineShowStructuredType(show_one);
   Require(one.ok, "SHOW TYPE failed");
-  Require(FieldValue(one, "type_uuid") == api::MetadataUuidBytes(scratchbird::tests::FixtureUuidLiteral("019f0600-0000-7000-8000-000000000101")),
-          "SHOW TYPE returned wrong UUID");
+  bool matched_uuid = false;
+  Require(one.result_shape.rows.size() == 1, "SHOW TYPE returned wrong row count");
+  for (const auto& [name, value] : one.result_shape.rows.front().fields) {
+    if (name != "type_uuid") continue;
+    Require(!matched_uuid && value.descriptor.canonical_type_name == "uuid" &&
+                value.encoded_value.empty() && value.binary_value.size() == 16 &&
+                std::equal(value.binary_value.begin(), value.binary_value.end(),
+                           show_one.target_object.uuid.bytes.begin()),
+            "SHOW TYPE returned wrong binary UUID");
+    matched_uuid = true;
+  }
+  Require(matched_uuid, "SHOW TYPE omitted the binary UUID");
   Require(FieldValue(one, "field_count") == "2",
           "composite descriptor fields not projected");
 }
@@ -692,7 +697,10 @@ void TestCommittedReopenVisibility(Fixture* fixture) {
   show_enum.target_object.object_kind = "structured_type_descriptor";
   const auto enum_result = api::EngineShowStructuredType(show_enum);
   Require(enum_result.ok, "committed enum descriptor not visible after reopen");
-  Require(FieldValue(enum_result, "retired_labels") == "green",
+  // The structured descriptor persists a counted binary list, including when
+  // that list contains only one label.
+  const std::string expected_retired_labels("\x01\x00\x00\x00\x05\x00\x00\x00green", 13);
+  Require(FieldValue(enum_result, "retired_labels") == expected_retired_labels,
           "enum tombstone not durable after commit/reopen");
 
   api::EngineShowStructuredTypeRequest show_range;

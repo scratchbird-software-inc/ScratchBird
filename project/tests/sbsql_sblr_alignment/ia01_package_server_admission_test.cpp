@@ -206,9 +206,40 @@ Submission BuildPlanImportRowsSubmission(
 }
 
 Submission RepackSubmission(Submission submission,
-                            const sblr::SblrOpcodeStream& package) {
+                            const sblr::SblrOpcodeStream& package,
+                            bool corrupt_source_identity = false) {
   submission.stream = sblr::EncodeSblrOpcodeStream(package);
   Require(!submission.stream.empty(), "companion package encoding failed");
+  if (corrupt_source_identity) {
+    // The canonical encoder correctly refuses a non-v7 system UUID. Build a
+    // well-framed hostile wire packet after encoding to exercise admission too.
+    const auto source = std::ranges::find_if(package.operations, [](const auto& operation) {
+      return operation.operation_id == "engine.op.source_map";
+    });
+    Require(source != package.operations.end() && source->operands.size() == 1,
+            "source identity corruption fixture missing");
+    const auto encoded = sblr::EncodeSblrEnvelope(*source);
+    const Bytes operation_bytes(encoded.begin(), encoded.end());
+    const auto operation = std::search(submission.stream.begin(), submission.stream.end(),
+                                      operation_bytes.begin(), operation_bytes.end());
+    Require(operation != submission.stream.end(), "source operation bytes missing");
+    const auto& reference = source->operands.front().value_body;
+    const auto identity = std::search(operation_bytes.begin(), operation_bytes.end(),
+                                     reference.begin(), reference.end());
+    Require(identity != operation_bytes.end() && reference.size() == 24 &&
+                std::search(identity + 1, operation_bytes.end(), reference.begin(), reference.end()) ==
+                    operation_bytes.end(), "source identity corruption offset ambiguous");
+    const auto operation_offset = static_cast<std::size_t>(operation - submission.stream.begin());
+    submission.stream[operation_offset + (identity - operation_bytes.begin()) + 6] = 0x40;
+    const auto put_crc = [&](std::size_t at, std::uint32_t crc) {
+      for (unsigned byte = 0; byte < 4; ++byte)
+        submission.stream[at + byte] = static_cast<std::uint8_t>(crc >> (8 * byte));
+    };
+    put_crc(operation_offset + operation_bytes.size() - 4,
+            sblr::SblrCrc32c(submission.stream.data() + operation_offset, operation_bytes.size() - 8));
+    put_crc(submission.stream.size() - 4,
+            sblr::SblrCrc32c(submission.stream.data(), submission.stream.size() - 4));
+  }
   auto outer = wire::DecodeSblrContainerBytes(
       reinterpret_cast<const std::uint8_t*>(submission.container.data()),
       submission.container.size());
@@ -642,12 +673,12 @@ void TestCompanionAdmission(
         for (unsigned mutation = 0; mutation != 5; ++mutation) {
           auto malformed = with_map;
           auto& source = malformed.operations[position];
-          if (mutation == 0) source.operands.front().value_body[6] = 0x40;
+          // Mutation zero is applied to encoded bytes by RepackSubmission.
           if (mutation == 1) source.result_shape = "rowset";
           if (mutation == 2) source.parser_package_version_patch++;
           if (mutation == 3) malformed.operations.insert(malformed.operations.end() - 1, map);
           if (mutation == 4) malformed.operations.insert(malformed.operations.end() - 1, command);
-          const auto invalid = RepackSubmission(base, malformed);
+          const auto invalid = RepackSubmission(base, malformed, mutation == 0);
           auto wrong = request;
           wrong.encoded_sblr_container = invalid.container;
           wrong.encoded_execution_envelope = invalid.ingress;

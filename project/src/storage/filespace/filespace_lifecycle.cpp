@@ -1332,9 +1332,6 @@ FilespacePlacementDecision ResolveFilespacePlacement(
   result.evidence.push_back("filespace_placement_admitted=true");
   result.evidence.push_back(std::string("filespace_placement_binding=") +
                             (binding == nullptr ? "role_default" : "explicit_policy"));
-  result.evidence.push_back(std::string("filespace_uuid=") +
-                            scratchbird::core::uuid::UuidToString(
-                                selected->filespace_uuid.value));
   result.evidence.push_back(std::string("filespace_role=") +
                             FilespaceRoleName(selected->role));
   result.evidence.push_back(std::string("preallocation_required=") +

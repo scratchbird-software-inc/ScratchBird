@@ -236,17 +236,6 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
         MakeInvalidRequestDiagnostic("ddl.create_table", "bound_column_identities_required"));
   }
-  for (const auto& column : request.table_columns) {
-    const auto& descriptor = column.descriptor;
-    const auto datatype = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-        request.context.datatype_catalog_snapshot_uuid, request.context.datatype_catalog_generation,
-        request.context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
-        descriptor.datatype_descriptor_generation);
-    if (!datatype.ok || datatype.row.type_uuid != descriptor.type_uuid) {
-      return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
-          MakeInvalidRequestDiagnostic("ddl.create_table", "bound_column_datatype_catalog_mismatch"));
-    }
-  }
   const auto loaded = LoadCrudState(request.context);
   if (!loaded.ok) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table", loaded.diagnostic);
@@ -271,6 +260,8 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
         MakeInvalidRequestDiagnostic(
             "ddl.create_table", "builtin_type_catalog_manifest_invalid"));
   }
+  std::vector<EngineColumnDefinition> published_bound_columns;
+  published_bound_columns.reserve(request.table_columns.size());
   for (const auto& column : request.table_columns) {
     std::string column_name = "column_" + std::to_string(column.ordinal);
     if (!column.names.empty() && !column.names.front().name.empty()) { column_name = column.names.front().name; }
@@ -284,6 +275,18 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(
           request.context, "ddl.create_table", MakeInvalidRequestDiagnostic(
               "ddl.create_table", "column_metadata_invalid:" + column_name));
+    }
+    // Reconcile native resource operands with the binary metadata before the
+    // owning resource resolver admits the charset/collation relationship.
+    const auto bind_resource_operand = [&](const char* key, const EngineUuid& identity) {
+      if (identity.is_nil()) return true;
+      const auto [it, inserted] = admitted_column.identities.emplace(key, identity);
+      return inserted || it->second == identity;
+    };
+    if (!bind_resource_operand("charset_uuid", column.descriptor.charset_uuid) ||
+        !bind_resource_operand("collation_uuid", column.descriptor.collation_uuid)) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
+          MakeInvalidRequestDiagnostic("ddl.create_table", "bound_column_resource_identity_mismatch"));
     }
     if (!admitted_column.text.contains("type") && !admitted_column.text.contains("canonical")) {
       admitted_column.text["type"] = column.descriptor.canonical_type_name.empty()
@@ -506,6 +509,18 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
       }
       engine_type_uuid = identity.row.type_uuid;
     }
+    // Validate the supplied binary binding against the catalog that owns this
+    // datatype. The six-row scalar codec registry is not the complete builtin
+    // catalog: UUID and other admitted builtin types retain their catalog row.
+    const auto descriptor_generation = persist_full_registry_tuple
+        ? identity.row.descriptor_generation
+        : type_row.manifest.descriptor_rows.front().descriptor_epoch;
+    if (column.descriptor.datatype_descriptor_uuid != engine_datatype_descriptor_uuid ||
+        column.descriptor.datatype_descriptor_generation != descriptor_generation ||
+        column.descriptor.type_uuid != engine_type_uuid) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
+          MakeInvalidRequestDiagnostic("ddl.create_table", "bound_column_datatype_catalog_mismatch"));
+    }
     CatalogColumnMetadata registry_fields;
     if (!DecodeCatalogColumnMetadata(column_descriptor, &registry_fields)) {
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(
@@ -538,6 +553,14 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
           request.context, "ddl.create_table", MakeInvalidRequestDiagnostic(
               "ddl.create_table", "column_datatype_codec_registry_tuple_mismatch:" + column_name));
     }
+    auto published_column = column;
+    const auto resource_identity = [&](const char* key) {
+      const auto found = registry_fields.identities.find(key);
+      return found == registry_fields.identities.end() ? EngineUuid{} : found->second;
+    };
+    published_column.descriptor.charset_uuid = resource_identity("charset_uuid");
+    published_column.descriptor.collation_uuid = resource_identity("collation_uuid");
+    published_bound_columns.push_back(std::move(published_column));
     columns.push_back({column_name, column_descriptor});
   }
   bool primary_key_seen = false;
@@ -760,7 +783,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   created_table.table_uuid = table_uuid;
   created_table.default_name = table_name;
   created_table.columns = columns;
-  created_table.bound_columns = request.table_columns;
+  created_table.bound_columns = std::move(published_bound_columns);
   created_table.temporary = temporary_options.temporary;
   created_table.temporary_scope = temporary_options.temporary ? temporary_options.scope : "";
   created_table.temporary_session_uuid =

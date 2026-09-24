@@ -39,6 +39,17 @@ EngineApiDiagnostic OkDiagnostic() {
                                  false);
 }
 
+EngineApiDiagnostic IdentityDiagnostic(std::string code,
+                                       std::string message_key,
+                                       std::string detail,
+                                       std::string field,
+                                       const EngineUuid& identity) {
+  auto diagnostic = MakeEngineApiDiagnostic(
+      std::move(code), std::move(message_key), std::move(detail), true);
+  diagnostic.identity_fields.push_back({std::move(field), identity});
+  return diagnostic;
+}
+
 EngineApiDiagnostic Invalid(std::string_view detail) {
   return MakeInvalidRequestDiagnostic("dml.index_write_path",
                                       std::string(detail));
@@ -300,11 +311,10 @@ EncodedKeyResult EncodePhysicalKey(const CrudIndexRecord& index,
                                            index.index_uuid);
   if (!descriptor_uuid.ok()) {
     EncodedKeyResult result;
-    result.diagnostic = MakeEngineApiDiagnostic(
+    result.diagnostic = IdentityDiagnostic(
         "SB-DML-INDEX-WRITE-INDEX-UUID-PROOF-REQUIRED",
         "dml.index_write.index_uuid_proof_required",
-        "index_uuid=" + uuid::UuidToString(index.index_uuid),
-        true);
+        {}, "index_uuid", index.index_uuid);
     return result;
   }
 
@@ -340,22 +350,20 @@ TypedRowUuidResult ParseRowImageUuids(const DmlIndexWriteRowImage& row,
       uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::row,
                                            row.row_uuid);
   if (!parsed_row.ok()) {
-    result.diagnostic = MakeEngineApiDiagnostic(
+    result.diagnostic = IdentityDiagnostic(
         "SB-DML-INDEX-WRITE-ROW-UUID-PROOF-REQUIRED",
         "dml.index_write.row_uuid_proof_required",
-        std::string(label) + ":row_uuid=" + uuid::UuidToString(row.row_uuid),
-        true);
+        std::string(label), "row_uuid", row.row_uuid);
     return result;
   }
   const auto parsed_version =
       uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::row,
                                            row.version_uuid);
   if (!parsed_version.ok()) {
-    result.diagnostic = MakeEngineApiDiagnostic(
+    result.diagnostic = IdentityDiagnostic(
         "SB-DML-INDEX-WRITE-VERSION-UUID-PROOF-REQUIRED",
         "dml.index_write.version_uuid_proof_required",
-        std::string(label) + ":version_uuid=" + uuid::UuidToString(row.version_uuid),
-        true);
+        std::string(label), "version_uuid", row.version_uuid);
     return result;
   }
   result.ok = true;
@@ -407,33 +415,30 @@ ParsedDeltaIdentities ParseDeltaIdentities(const DmlIndexWriteEvent& event) {
       uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::object,
                                            event.index.index_uuid);
   if (!parsed_index.ok()) {
-    result.diagnostic = MakeEngineApiDiagnostic(
+    result.diagnostic = IdentityDiagnostic(
         "SB-DML-HOT-DELTA-INDEX-UUID-PROOF-REQUIRED",
         "dml.hot_delta.index_uuid_proof_required",
-        "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
-        true);
+        {}, "index_uuid", event.index.index_uuid);
     return result;
   }
   const auto parsed_table =
       uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::object,
                                            event.table_uuid);
   if (!parsed_table.ok()) {
-    result.diagnostic = MakeEngineApiDiagnostic(
+    result.diagnostic = IdentityDiagnostic(
         "SB-DML-HOT-DELTA-TABLE-UUID-PROOF-REQUIRED",
         "dml.hot_delta.table_uuid_proof_required",
-        "table_uuid=" + uuid::UuidToString(event.table_uuid),
-        true);
+        {}, "table_uuid", event.table_uuid);
     return result;
   }
   const auto parsed_tx =
       uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::transaction,
                                            event.transaction_uuid);
   if (!parsed_tx.ok()) {
-    result.diagnostic = MakeEngineApiDiagnostic(
+    result.diagnostic = IdentityDiagnostic(
         "SB-DML-HOT-DELTA-TRANSACTION-UUID-PROOF-REQUIRED",
         "dml.hot_delta.transaction_uuid_proof_required",
-        "transaction_uuid=" + uuid::UuidToString(event.transaction_uuid),
-        true);
+        {}, "transaction_uuid", event.transaction_uuid);
     return result;
   }
   result.ok = true;
@@ -518,29 +523,26 @@ EngineApiDiagnostic ValidateProofs(const DmlIndexWriteEvent& event,
         true);
   }
   if (!event.index_descriptor_capability_proof) {
-    return MakeEngineApiDiagnostic(
+    return IdentityDiagnostic(
         "SB-DML-INDEX-WRITE-DESCRIPTOR-CAPABILITY-PROOF-REQUIRED",
         "dml.index_write.descriptor_capability_proof_required",
-        "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
-        true);
+        {}, "index_uuid", event.index.index_uuid);
   }
   if ((family == "expression" && !event.key_extraction_proof) ||
       (family == "partial" && !event.partial_predicate_proof) ||
       (family == "covering" && !event.covering_payload_proof)) {
-    return MakeEngineApiDiagnostic(
+    return IdentityDiagnostic(
         "SB-DML-INDEX-WRITE-KEY-PAYLOAD-PROOF-REQUIRED",
         "dml.index_write.key_payload_proof_required",
-        "family=" + family + ";index_uuid=" + uuid::UuidToString(event.index.index_uuid),
-        true);
+        "family=" + family, "index_uuid", event.index.index_uuid);
   }
   if (unique &&
       (!event.unique_preflight_proof ||
        !event.unique_reservation_preflight_proof)) {
-    return MakeEngineApiDiagnostic(
+    return IdentityDiagnostic(
         "SB-DML-INDEX-WRITE-UNIQUE-PREFLIGHT-PROOF-REQUIRED",
         "dml.index_write.unique_preflight_proof_required",
-        "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
-        true);
+        {}, "index_uuid", event.index.index_uuid);
   }
   return OkDiagnostic();
 }
@@ -575,11 +577,11 @@ EngineApiDiagnostic ValidateDeferredLedgerProofs(
   }
   if (unique && (!request.unique_reservation_protocol_proof ||
                  !request.unique_deferred_route_closure_proof)) {
-    return HotDeltaDiagnostic(
+    return IdentityDiagnostic(
         "SB-DML-HOT-DELTA-UNIQUE-PROOF-REQUIRED",
         "dml.hot_delta.unique_proof_required",
-        "unique index " + uuid::UuidToString(event.index.index_uuid) +
-            " requires reservation protocol and deferred route closure proof");
+        "unique index requires reservation protocol and deferred route closure proof",
+        "index_uuid", event.index.index_uuid);
   }
   return OkDiagnostic();
 }
@@ -637,11 +639,10 @@ EngineApiDiagnostic PreflightUniqueInsert(const PlannedEvent& planned,
   }
   for (const auto& locator : scan.locators) {
     if (!SameRow(locator, cell)) {
-      return MakeEngineApiDiagnostic(
-          "SB-DML-INDEX-WRITE-UNIQUE-DUPLICATE",
-          "dml.index_write.unique_duplicate_refused",
-          "index_uuid=" + uuid::UuidToString(planned.event->index.index_uuid),
-          true);
+      return IdentityDiagnostic(
+        "SB-DML-INDEX-WRITE-UNIQUE-DUPLICATE",
+        "dml.index_write.unique_duplicate_refused",
+        {}, "index_uuid", planned.event->index.index_uuid);
     }
   }
   return OkDiagnostic();
@@ -1209,11 +1210,10 @@ DmlIndexWritePathResult ApplyDmlIndexWritePath(
             FindStagedLedger(&staged_ledgers, event.index.index_uuid);
         if (planned.delta_ledger == nullptr) {
           return FailWithEvidence(
-              MakeEngineApiDiagnostic(
-                  "SB-DML-HOT-DELTA-LEDGER-REQUIRED",
-                  "dml.hot_delta.ledger_required",
-                  "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
-                  true),
+              IdentityDiagnostic(
+        "SB-DML-HOT-DELTA-LEDGER-REQUIRED",
+        "dml.hot_delta.ledger_required",
+        {}, "index_uuid", event.index.index_uuid),
               std::move(result.evidence));
         }
       }
@@ -1230,11 +1230,10 @@ DmlIndexWritePathResult ApplyDmlIndexWritePath(
           FindStagedLedger(&staged_ledgers, event.index.index_uuid);
       if (planned.delta_ledger == nullptr) {
         return FailWithEvidence(
-            MakeEngineApiDiagnostic(
-                "SB-DML-HOT-DELTA-LEDGER-REQUIRED",
-                "dml.hot_delta.ledger_required",
-                "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
-                true),
+            IdentityDiagnostic(
+        "SB-DML-HOT-DELTA-LEDGER-REQUIRED",
+        "dml.hot_delta.ledger_required",
+        {}, "index_uuid", event.index.index_uuid),
             std::move(result.evidence));
       }
     }
@@ -1242,11 +1241,10 @@ DmlIndexWritePathResult ApplyDmlIndexWritePath(
       auto* staged_tree = FindStagedTree(&staged_trees, event.index.index_uuid);
       if (staged_tree == nullptr) {
         return FailWithEvidence(
-            MakeEngineApiDiagnostic(
-                "SB-DML-INDEX-WRITE-PHYSICAL-TREE-REQUIRED",
-                "dml.index_write.physical_tree_required",
-                "index_uuid=" + uuid::UuidToString(event.index.index_uuid),
-                true),
+            IdentityDiagnostic(
+        "SB-DML-INDEX-WRITE-PHYSICAL-TREE-REQUIRED",
+        "dml.index_write.physical_tree_required",
+        {}, "index_uuid", event.index.index_uuid),
             std::move(result.evidence));
       }
       planned.tree = &staged_tree->staged;

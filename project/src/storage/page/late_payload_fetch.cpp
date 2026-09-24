@@ -41,13 +41,6 @@ bool ValidRowUuid(const TypedUuid& value) {
   return value.valid() && value.kind == UuidKind::row;
 }
 
-std::string UuidText(const TypedUuid& value) {
-  if (!value.valid()) {
-    return "invalid";
-  }
-  return scratchbird::core::uuid::UuidToString(value.value);
-}
-
 bool DescriptorMatchesRecord(const LargePayloadDescriptor& descriptor,
                              const LargePayloadGenerationRecord& record) {
   return SameUuid(descriptor.payload_uuid, record.descriptor.payload_uuid) &&
@@ -67,10 +60,8 @@ bool DescriptorMatchesRecord(const LargePayloadDescriptor& descriptor,
          descriptor.family == record.descriptor.family;
 }
 
-void AppendBaseEvidence(std::vector<std::string>* evidence,
-                        const LatePayloadReference& reference) {
-  evidence->push_back("late_payload_fetch.row_uuid=" +
-                      UuidText(reference.row_uuid));
+void AppendBaseEvidence(std::vector<std::string>* evidence) {
+  // LatePayloadFetchResult::row_uuid carries the native identity separately.
   evidence->push_back("late_payload_fetch.descriptor_checked=true");
   evidence->push_back("payload_finality_authority=false");
   evidence->push_back("payload_visibility_authority=false");
@@ -86,7 +77,7 @@ LatePayloadFetchResult Refuse(const LatePayloadReference& reference,
   result.fail_closed = true;
   result.row_uuid = reference.row_uuid;
   result.descriptor = reference.descriptor;
-  AppendBaseEvidence(&result.evidence, reference);
+  AppendBaseEvidence(&result.evidence);
   result.evidence.push_back("late_payload_fetch.fail_closed=true");
   result.evidence.push_back("late_payload_fetch.refused=" + diagnostic_code);
   result.diagnostic =
@@ -193,7 +184,7 @@ LatePayloadFetchResult FetchLateMaterializationPayload(
     result.row_uuid = reference.row_uuid;
     result.descriptor = reference.descriptor;
     result.redacted = true;
-    AppendBaseEvidence(&result.evidence, reference);
+    AppendBaseEvidence(&result.evidence);
     result.evidence.push_back("late_payload_fetch.redacted=true");
     result.evidence.push_back("late_payload_fetch.payload_bytes_exposed=false");
     result.evidence.push_back("late_payload_fetch.cache_not_touched=true");
@@ -239,7 +230,7 @@ LatePayloadFetchResult FetchLateMaterializationPayload(
   result.descriptor = reference.descriptor;
   result.fetched = true;
   result.payload_bytes = std::move(loaded.payload_bytes);
-  AppendBaseEvidence(&result.evidence, reference);
+  AppendBaseEvidence(&result.evidence);
   result.evidence.push_back("late_payload_fetch.full_payload=true");
   result.evidence.push_back("late_payload_fetch.payload_bytes=" +
                             std::to_string(result.payload_bytes.size()));

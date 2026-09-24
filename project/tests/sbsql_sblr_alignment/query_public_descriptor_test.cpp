@@ -6,6 +6,7 @@
 #include "ia05_result_page_cancellation_fault_test.cpp"
 #undef main
 #include "wire/typed_result_transport_codec.hpp"
+#include "wire/public_result_packet.hpp"
 #include <new>
 #include <thread>
 
@@ -45,6 +46,23 @@ void CheckDescriptor(bool ok, const char* detail) {
   ++descriptor_checks;
   Require(ok, detail);
 }
+sblr::SblrOperand ParenthesizedExpression(std::uint32_t ordinal,
+                                           std::uint32_t descriptor_id) {
+  api::RelationalExpressionRecord expression;
+  expression.expression_id = 2;
+  expression.expression_kind = api::RelationalExpressionKind::kParenthesized;
+  expression.child_expression_ids = {1};
+  expression.result_descriptor_id = descriptor_id;
+  sblr::SblrOperand operand;
+  operand.ordinal = ordinal;
+  operand.type = "relational_expression_v2";
+  operand.name = "slot_2";
+  operand.value_kind = sblr::SblrValueKind::relational_expression;
+  Require(sblr::EncodeRelationalExpressionV1(expression, &operand.value_body),
+          "descriptor fixture binary expression encoding failed");
+  return operand;
+}
+
 sb_engine_result_descriptor_view_v1_t DescriptorView() {
   sb_engine_result_descriptor_view_v1_t out{};
   out.struct_size = sizeof(out);
@@ -98,8 +116,8 @@ void VerifyDescriptor(sb_engine_result_t result,
   else CheckDescriptor(*exact == packet, "immutable public result schema changed");
 }
 
-// An independent oracle for the CURRENT legacy carrier, not approval of that
-// carrier as the typed wire contract. Schema is still checked above separately.
+// Check framed binary payloads, exact batch byte limits and failure atomicity.
+// The independent typed schema is checked separately above.
 void VerifyBatchBudget(sb_engine_result_t result, bool faults_only) {
   auto payload = [&] {
     sb_engine_string_view_t view{};
@@ -108,30 +126,38 @@ void VerifyBatchBudget(sb_engine_result_t result, bool faults_only) {
     return std::string(view.data ? view.data : "", view.size_bytes);
   };
   const auto initial = payload();
-  std::string prefix, evidence;
-  std::vector<std::string> rows, metadata;
-  std::istringstream lines(initial);
-  for (std::string line; std::getline(lines, line);) {
-    if (line.starts_with("operation_id=") || line.starts_with("result_kind="))
-      prefix += line + '\n';
-    else if (line.starts_with("evidence=")) evidence += line + '\n';
-    else if (line.starts_with("row[")) rows.push_back(line);
-    else if (line.starts_with("row_meta[")) metadata.push_back(line);
+  namespace packet = scratchbird::wire::public_result;
+  std::vector<packet::Field> fields, prefix, evidence, rows, metadata;
+  CheckDescriptor(packet::Decode(initial, &fields), "binary batch payload invalid");
+  for (const auto& field : fields) {
+    if (field.name == "operation_id" || field.name == "result_kind") prefix.push_back(field);
+    else if (field.name == "evidence" && field.kind == packet::Kind::evidence) evidence.push_back(field);
+    else if (field.name.starts_with("row[") && field.kind == packet::Kind::row) rows.push_back(field);
+    else if (field.name.starts_with("row_meta[")) metadata.push_back(field);
   }
-  CheckDescriptor(rows.size() == 24 && metadata.size() == 24 && !evidence.empty(),
+  CheckDescriptor(prefix.size() == 2 && rows.size() == 24 && metadata.size() == 24 && !evidence.empty(),
                   "batch fixture lacks actual rows, metadata or evidence");
   for (unsigned i = 0; i != 24; ++i) {
-    CheckDescriptor(rows[i] == "row[" + std::to_string(i) + "]=value=1",
+    std::vector<packet::Field> cells;
+    CheckDescriptor(rows[i].name == "row[" + std::to_string(i) + "]" &&
+                        packet::Decode(rows[i].value, &cells) && cells.size() == 1 &&
+                        cells[0].name == "value" && cells[0].kind == packet::Kind::text &&
+                        cells[0].value == "1",
                     "actual bounded VALUES query returned a false row");
-    CheckDescriptor(metadata[i] == "row_meta[" + std::to_string(i) +
-                        "]=value:int64:not_null",
+    CheckDescriptor(metadata[i].name == "row_meta[" + std::to_string(i) + "]" &&
+                        metadata[i].kind == packet::Kind::text && metadata[i].value == "value:int64:not_null",
                     "actual bounded VALUES query lost its row metadata");
   }
   auto expected = [&](unsigned first, unsigned count) {
-    std::string bytes = prefix + "row_count=" + std::to_string(count) + '\n';
-    for (unsigned i = first; i < first + count; ++i)
-      bytes += rows[i] + '\n' + metadata[i] + '\n';
-    return bytes + evidence;
+    auto selected = prefix;
+    selected.push_back({"row_count", packet::Kind::text, std::to_string(count)});
+    for (unsigned i = first; i < first + count; ++i) {
+      selected.push_back(rows[i]); selected.push_back(metadata[i]);
+    }
+    selected.insert(selected.end(), evidence.begin(), evidence.end());
+    std::string bytes;
+    CheckDescriptor(packet::Encode(selected, &bytes), "expected binary batch encoding failed");
+    return bytes;
   };
   sb_engine_batch_request_v1_t request{};
   request.struct_size = sizeof(request);
@@ -267,26 +293,28 @@ int main(int argc, char** argv) {
   if (duplicate_names) {
     member.operands[14] = TypedQueryOperand(15, "relational_values_row_v1", "slot_1", "1,2");
     member.operands[15] = TypedQueryOperand(16, "relational_node_v1", "slot_1", "13|0|-|1,2|1");
-    member.operands[16] = TypedQueryOperand(17, "relational_node_binding_v1", "slot_1",
-        "76616c7565732e6c69746572616c2d7461626c652e7631|1,2|-|-|-");
+    member.operands[16] = BinaryQueryBinding(17, 1, "values.literal-table.v1", {1, 2});
     auto second_descriptor = member.operands[11];
     second_descriptor.ordinal = 19;
     second_descriptor.name = "slot_2";
+    api::RelationalTypeDescriptor second_record;
+    Require(sblr::DecodeRelationalTypeDescriptorV1(second_descriptor.value_body.data(),
+                second_descriptor.value_body.size(), &second_record), "duplicate descriptor decode failed");
+    second_record.descriptor_id = 2;
+    Require(sblr::EncodeRelationalTypeDescriptorV1(second_record, &second_descriptor.value_body),
+            "duplicate descriptor encode failed");
     member.operands.push_back(std::move(second_descriptor));
     member.operands.push_back(TypedQueryOperand(20, "relational_output_v1", "slot_2",
                                                "1|2|2|1|1|76616c7565"));
-    member.operands.push_back(TypedQueryOperand(21, "relational_expression_v1", "slot_2",
-                                               "7|1|2|-|-|-|-|-"));
+    member.operands.push_back(ParenthesizedExpression(21, 2));
   }
   if (empty_query) {
     // One actual VALUES row, LIMIT 1 OFFSET 1: the engine must produce a
     // genuinely empty rowset with its independent one-column schema.
     member.operands[10] = TypedQueryOperand(11, "uint32", "relational_root_node_id", "2");
     member.operands.push_back(TypedQueryOperand(19, "relational_node_v1", "slot_2", "7|0|1|1|-"));
-    member.operands.push_back(TypedQueryOperand(20, "relational_node_binding_v1", "slot_2",
-        "6c696d69742e626f756e642d636f756e742d6f66667365742e7631|1,2|-|-|-"));
-    member.operands.push_back(TypedQueryOperand(21, "relational_expression_v1", "slot_2",
-                                               "7|1|1|-|-|-|-|-"));
+    member.operands.push_back(BinaryQueryBinding(20, 2, "limit.bound-count-offset.v1", {1, 2}));
+    member.operands.push_back(ParenthesizedExpression(21, 1));
   }
   const auto submission = PackageWithMember(fixture, view, parser_uuid, std::move(member));
   const auto digest = scratchbird::core::hash::ComputeSha256Digest(submission.stream);

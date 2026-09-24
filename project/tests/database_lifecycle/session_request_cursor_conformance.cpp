@@ -339,7 +339,7 @@ scratchbird::server::ServerRequestRecord RequireRequest(
     const std::array<std::uint8_t, 16>& target_uuid,
     ServerRequestLifecycleState expected_state,
     std::string_view message) {
-  const auto record = scratchbird::server::FindServerRequestLifecycle(registry, UuidText(target_uuid));
+  const auto record = scratchbird::server::FindServerRequestLifecycle(registry, std::string(reinterpret_cast<const char*>(target_uuid.data()), 16));
   Require(record.has_value(), message);
   Require(record->state == expected_state, message);
   const auto finality = registry.finality_by_request_uuid.find(scratchbird::core::platform::Uuid{record->request_uuid});

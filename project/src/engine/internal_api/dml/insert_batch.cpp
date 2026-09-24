@@ -1285,7 +1285,7 @@ InsertBatchContext BeginInsertBatchContext(const EngineInsertRowsRequest& reques
                      !context.index_plan.rejected &&
                      context.page_reservation.reservation_available;
   CaptureInsertMemoryArenaProof(request, &context);
-  if (!context.accepted) {
+  if (!context.accepted && context.fallback_reason.empty()) {
     if (context.prepared_descriptor_authority_refused) {
       context.fallback_reason =
           "prepared_descriptor_authority_refused:" +

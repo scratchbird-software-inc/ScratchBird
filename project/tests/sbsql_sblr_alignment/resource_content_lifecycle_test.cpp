@@ -11,6 +11,7 @@
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/resource_catalog_admission.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "behavior_support/api_behavior_record_codec.hpp"
 #include "local_transaction_store.hpp"
 #include "transaction_inventory.hpp"
 #include <algorithm>
@@ -67,7 +68,7 @@ void BehaviorReadFailures(const fs::path& path) {
   // actual storage. This does not certify the legacy record format or SQL/IPC.
   engine::EngineRequestContext context;
   context.database_path = path.string();
-  const fs::path journal = path.string() + ".sb.api_events";
+  const fs::path journal = path.string() + ".sb.api_events.v2";
   Require(!fs::exists(journal), "behavior journal fixture must be isolated");
   unsigned checks = 0;
   const auto check = [&](bool ok, const char* detail) { ++checks; Require(ok, detail); };
@@ -108,31 +109,56 @@ void BehaviorReadFailures(const fs::path& path) {
   { std::ofstream out(journal, std::ios::binary); Require(out.good(), "empty journal create failed"); }
   probe(context, true, nullptr);
   Require(fs::remove(journal), "empty journal cleanup failed");
-  // Deliberately malformed legacy frames: no accepted text UUID fixture and no
-  // claim that the legacy journal is canonical catalog/MGA authority.
-  const std::string frame = "SBAPI1\tRECORD\t0\top\tinvalid_fixture_identity\tobject\t\t\tactive\t0";
-  const auto malformed = [&](std::string bytes, const char* detail) {
+  const auto object = uuid::GenerateEngineIdentityV7(UuidKind::object, Now());
+  Require(object.ok(), "behavior binary fixture object identity");
+  engine::ApiBehaviorRecord record;
+  record.object_uuid = object.value.value;
+  record.operation_id = "behavior_read_fixture";
+  record.object_kind = "object";
+  record.state = "active";
+  record.payload = std::string("binary\0payload\n|", 16);
+  std::string frame;
+  Require(engine::EncodeApiBehaviorRecord(record, &frame), "native behavior frame encoding");
+  Require(!frame.empty(), "native behavior frame encoding failed");
+  const auto malformed = [&](const std::string& bytes) {
     { std::ofstream out(journal, std::ios::binary); out.write(bytes.data(), bytes.size());
       Require(out.good(), "malformed journal fixture write failed"); }
-    probe(context, false, detail);
+    probe(context, false, "api_journal_binary_record_invalid");
     Require(fs::remove(journal), "malformed journal cleanup failed");
   };
-  malformed("junk" + frame + "\n", "api_journal_record_prefix_invalid");
-  malformed(frame, "api_journal_record_truncated");
-  malformed("SBAPI1\tRECORD\n", "api_journal_record_shape_invalid");
-  malformed(frame + "\t\n", "api_journal_record_shape_invalid");
-  malformed(frame + "\textra\n", "api_journal_record_shape_invalid");
-  for (const char* creator : {"", "-1", "+1", "01", "1x", "18446744073709551616"})
-    malformed(std::string("SBAPI1\tRECORD\t") + creator +
-        "\top\tinvalid_fixture_identity\tobject\t\t\tactive\t0\n", "api_journal_creator_invalid");
-  for (const char* encoded : {"a", "zz", "0z"}) {
-    malformed(std::string("SBAPI1\tRECORD\t0\top\tinvalid_fixture_identity\tobject\t") + encoded +
-        "\t\tactive\t0\n", "api_journal_record_encoding_invalid");
-    malformed(std::string("SBAPI1\tRECORD\t0\top\tinvalid_fixture_identity\tobject\t\t") + encoded +
-        "\tactive\t0\n", "api_journal_record_encoding_invalid");
+  // Every nonempty truncated prefix must fail without exposing partial state.
+  for (std::size_t size = 1; size < frame.size(); ++size)
+    malformed(frame.substr(0, size));
+  malformed("SBAPI1\tRECORD\tlegacy-text-identity\n");
+  malformed(frame + "trailing");
+  const auto checksum = [&](std::string bytes) {
+    const auto hash = scratchbird::core::hash::ComputeSha256Digest(
+        reinterpret_cast<const std::uint8_t*>(bytes.data() + 4), bytes.size() - 36);
+    Require(hash.ok(), "hostile behavior fixture checksum");
+    std::copy(hash.digest.begin(), hash.digest.end(), bytes.end() - 32);
+    return bytes;
+  };
+  auto corrupt = frame; corrupt.back() ^= 1; malformed(corrupt);
+  corrupt = frame; corrupt[4] ^= 1; malformed(checksum(corrupt));
+  for (unsigned identity = 0; identity < 4; ++identity) {
+    corrupt = frame; corrupt[20 + identity * 16 + 6] = 0x40;
+    malformed(checksum(corrupt));
+    corrupt = frame; corrupt[20 + identity * 16 + 8] = 0x00;
+    // Optional nil UUIDs are valid; make the malformed identity nonnil.
+    corrupt[20 + identity * 16] = 1;
+    malformed(checksum(corrupt));
   }
-  malformed(frame.substr(0, frame.size() - 1) + "TRUE\n", "api_journal_deleted_invalid");
-  malformed(frame.substr(0, frame.size() - 1) + "2\n", "api_journal_deleted_invalid");
+  corrupt = frame; std::fill_n(corrupt.begin() + 20, 16, '\0');
+  malformed(checksum(corrupt));
+  corrupt = frame; corrupt[corrupt.size() - 33] = 2;
+  malformed(checksum(corrupt));
+  corrupt = frame; std::fill_n(corrupt.begin() + 84, 4, static_cast<char>(0xff));
+  malformed(checksum(corrupt));
+  const fs::path legacy = path.string() + ".sb.api_events";
+  { std::ofstream out(legacy, std::ios::binary); out << "SBAPI1\tRECORD\n";
+    Require(out.good(), "legacy refusal fixture write failed"); }
+  probe(context, false, "legacy_format_unsupported");
+  Require(fs::remove(legacy), "legacy refusal fixture cleanup failed");
   Require(fs::create_directory(journal), "directory journal create failed");
   probe(context, false, "api_journal_not_regular");
   Require(fs::remove(journal), "directory journal cleanup failed");
@@ -152,8 +178,7 @@ void BehaviorReadFailures(const fs::path& path) {
   probe(bad, false, nullptr, true);
   Require(fs::remove(bad.database_path), "invalid database fixture cleanup failed");
   probe(context, true, nullptr); // A prior failed lookup cannot poison a valid empty read.
-  // Exercise the current legacy consumer against actual durable archive origins.
-  // This fixture does not admit SBAPI1 as the required native catalog format.
+  // Native journal visibility follows actual durable archived MGA origins.
   for (const bool commit : {false, true}) {
     const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(path.string());
     Require(loaded.ok(), "load native archive visibility fixture");
@@ -170,14 +195,22 @@ void BehaviorReadFailures(const fs::path& path) {
     Require(persisted.ok(), "persist native archive visibility fixture");
     {
       std::ofstream out(journal, std::ios::binary);
-      out << "SBAPI1\tRECORD\t" << begun.entry.identity.local_id.value
-          << "\top\tlegacy-fixture\tobject\t\t\tactive\t0\n";
-      out.close(); Require(out.good(), "write isolated legacy visibility fixture");
+      record.creator_tx = begun.entry.identity.local_id.value;
+      std::string bytes;
+      Require(engine::EncodeApiBehaviorRecord(record, &bytes), "native archive frame encoding");
+      Require(!bytes.empty(), "native archive visibility record encoding failed");
+      out.write(bytes.data(), bytes.size());
+      out.close(); Require(out.good(), "write native archive visibility fixture");
     }
     const auto visible = engine::LoadApiBehaviorState(context);
     check(visible.ok && visible.state.records.size() == (commit ? 1u : 0u),
         "archived terminal origin lost in engine metadata visibility");
-    Require(fs::remove(journal), "remove isolated legacy visibility fixture");
+    if (commit) {
+      check(visible.state.records.front().object_uuid == record.object_uuid &&
+                visible.state.records.front().payload == record.payload,
+            "native journal changed binary identity or embedded payload bytes");
+    }
+    Require(fs::remove(journal), "remove native visibility fixture");
   }
   std::cout << "PASS behavior storage read failure propagation checks=" << checks << '\n';
 }

@@ -261,13 +261,14 @@ std::string UpdateOptionText(const EngineUpdateRowsRequest& request,
   return {};
 }
 
-// The legacy option envelope is a text input boundary. Resolve its UUID once;
-// catalog lookup and all subsequent identity comparisons use the binary value.
+// Option names are labels; the source identity is exactly sixteen native bytes.
 EngineUuid UpdateSourceUuid(const EngineUpdateRowsRequest& request) {
-  const auto parsed = uuid::ParseDurableEngineIdentityUuid(
-      scratchbird::core::platform::UuidKind::object,
-      UpdateOptionText(request, "source_uuid:"));
-  return parsed.ok() ? parsed.value.value : EngineUuid{};
+  const auto bytes = UpdateOptionText(request, "source_uuid:");
+  EngineUuid identity;
+  if (bytes.size() != identity.bytes.size()) return {};
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()),
+              identity.bytes.size(), identity.bytes.begin());
+  return uuid::IsEngineIdentityUuid(identity) ? identity : EngineUuid{};
 }
 
 // Fixed-width UUID/epoch key material. Embedded zero bytes are significant;
@@ -6863,8 +6864,8 @@ EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
         "DML.UPDATE_FAILED",
         "sblr.dml_update_rows.known_applied_terminal_append_required",
         "known_applied_recovery_required");
-    known_applied_diagnostic.fields.push_back(
-        {"recovery_token_uuid", uuid::UuidToString(recovery_token_uuid)});
+    known_applied_diagnostic.identity_fields.push_back(
+        {"recovery_token_uuid", recovery_token_uuid});
     known_applied_diagnostic.fields.push_back(
         {"recovery_generation", std::to_string(recovery_generation)});
     known_applied_failure = failure_result(std::move(known_applied_diagnostic));

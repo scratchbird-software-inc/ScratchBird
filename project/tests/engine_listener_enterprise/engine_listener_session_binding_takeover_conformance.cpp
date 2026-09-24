@@ -9,6 +9,7 @@
 
 #include "control_plane.hpp"
 #include "session_registry.hpp"
+#include "../../drivers/tool/cli/binary_status_display.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -118,7 +119,113 @@ scratchbird::server::ServerSessionTakeoverRequest ConnectionTakeoverRequest(
   return request;
 }
 
+void ProveNativeRequestLookup() {
+  using namespace scratchbird::server;
+  ServerSessionRegistry registry;
+  ServerRequestRecord request;
+  request.request_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "019d0000-0000-7000-8000-000000000001").bytes;
+  request.session_uuid = Uuid(0x80);
+  request.finality_token_uuid = Uuid(0x20);
+  request.prepared_statement_uuid = Uuid(0x40);
+  request.cursor_uuid = Uuid(0x60);
+  request.cursor_uuid[10] = '\n';
+  request.cursor_uuid[11] = 0;
+  request.state = ServerRequestLifecycleState::kCursorOpen;
+  registry.requests_by_uuid.emplace(scratchbird::core::platform::Uuid{request.request_uuid}, request);
+  for (const auto& id : {request.request_uuid, request.finality_token_uuid,
+                        request.prepared_statement_uuid, request.cursor_uuid}) {
+    const std::string bytes(reinterpret_cast<const char*>(id.data()), id.size());
+    const auto found = FindServerRequestLifecycle(registry, bytes);
+    Require(found && found->request_uuid == request.request_uuid,
+            "request lookup must compare exact native UUIDs, including delimiter octets");
+  }
+  for (const std::string bytes : {std::string{}, std::string(16, '\0'), std::string(15, 'x'),
+                                std::string("019d0000-0000-7000-8000-000000000001")})
+    Require(!FindServerRequestLifecycle(registry, bytes),
+            "request lookup admitted absent, malformed, or human-readable UUID");
+  const std::string token(reinterpret_cast<const char*>(request.finality_token_uuid.data()), 16);
+  ServerSessionRecord actor;
+  actor.session_uuid = Uuid(0xa0);
+  const auto denied = CancelServerRequestLifecycle(&registry, token, actor, false);
+  Require(denied.error && denied.diagnostics.size() == 1 &&
+              denied.diagnostics.front().identity_fields.size() == 1 &&
+              denied.diagnostics.front().identity_fields.front().second.bytes == request.request_uuid &&
+              registry.requests_by_uuid.begin()->second.state == ServerRequestLifecycleState::kCursorOpen,
+          "native cancellation authorization refusal lost identity or mutated the request");
+  actor.session_uuid = request.session_uuid;
+  const auto cancelled = CancelServerRequestLifecycle(&registry, token, actor, false);
+  Require(cancelled.accepted && !cancelled.error && !cancelled.unknown_outcome &&
+              cancelled.record.has_value() && cancelled.record->request_uuid == request.request_uuid &&
+              cancelled.record->state == ServerRequestLifecycleState::kCancelled,
+          "native finality-token cancellation did not select the exact request");
+}
+
+void ProveNativeRequestStatus() {
+  using namespace scratchbird::server;
+  namespace status = scratchbird::wire::binary_status;
+  namespace packet = scratchbird::wire::public_result;
+  ServerSessionRegistry registry;
+  ServerRequestRecord request;
+  request.request_uuid = Uuid(1);
+  request.request_uuid[10] = '\n';
+  request.request_uuid[11] = '\0';
+  request.request_uuid[12] = ']';
+  request.request_uuid[13] = '"';
+  request.finality_token_uuid = Uuid(20);
+  request.session_uuid = Uuid(40);
+  request.prepared_statement_uuid = Uuid(60);
+  request.cursor_uuid = Uuid(80);
+  registry.requests_by_uuid.emplace(scratchbird::core::platform::Uuid{request.request_uuid}, request);
+  const std::string target(reinterpret_cast<const char*>(request.request_uuid.data()), 16);
+  auto verify = [&](const std::string& bytes) {
+    std::vector<packet::Field> fields;
+    Require(status::Decode(bytes, &fields), "request status must be a valid binary status packet");
+    std::vector<std::string> identities;
+    for (const auto& field : fields)
+      if (field.kind == packet::Kind::uuid) identities.push_back(field.value);
+    std::vector<std::string> expected;
+    for (const auto& id : {request.request_uuid, request.finality_token_uuid, request.session_uuid,
+                          request.prepared_statement_uuid, request.cursor_uuid})
+      expected.emplace_back(reinterpret_cast<const char*>(id.data()), 16);
+    Require(identities == expected, "request status must preserve all five exact binary UUID atoms");
+    const auto display = scratchbird::cli::RenderBinaryStatus(bytes);
+    Require(display && display->starts_with("[{"), "client must render the framed request array");
+  };
+  verify(ServerRequestLifecycleRecordsJson(registry, target, true));
+  ServerSessionRecord actor;
+  actor.session_uuid = Uuid(100);
+  const auto denied = CancelServerRequestLifecycle(&registry, target, actor, false, 0);
+  Require(denied.error && denied.outcome == "authorization_required", "cross-session cancellation must remain denied");
+  verify(denied.records_json);
+  Require(registry.requests_by_uuid.begin()->second.state == request.state, "denied cancellation mutated request");
+  for (const auto& malformed : {std::string(15,'x'), std::string(16,'\0'),
+                               std::string("019d0000-0000-7000-8000-000000000001")}) {
+    const auto rejected = CancelServerRequestLifecycle(&registry, malformed, actor, true, 0);
+    Require(rejected.error && rejected.outcome == "invalid_target_uuid", "malformed cancellation target must fail closed");
+  }
+  const auto missing_id = Uuid(120);
+  const std::string missing(reinterpret_cast<const char*>(missing_id.data()), 16);
+  const auto unknown = CancelServerRequestLifecycle(&registry, missing, actor, true, 0);
+  std::vector<packet::Field> fields;
+  Require(unknown.unknown_outcome && status::Decode(unknown.records_json, &fields), "unknown target must retain framed status");
+  std::size_t count = 0;
+  for (const auto& field : fields) if (field.kind == packet::Kind::uuid) {
+    ++count; Require(field.value == missing, "unknown target bytes changed");
+  }
+  Require(count == 1 && unknown.diagnostics.front().identity_fields.front().second.bytes == missing_id,
+          "unknown target diagnostic must carry the same native identity");
+  actor.session_uuid = request.session_uuid;
+  const auto cancelled = CancelServerRequestLifecycle(&registry, target, actor, false, 0);
+  Require(cancelled.accepted && !cancelled.error, "owner cancellation must remain accepted");
+  verify(cancelled.records_json);
+}
+
 void ProveControlPlaneCodecCompatibility() {
+  using Statement = scratchbird::server::ServerStatementContextRecord;
+  static_assert(sizeof(Statement{}.variable_final_receipt_uuid) == 16);
+  static_assert(sizeof(Statement{}.variable_admission_token_uuid) == 16);
+
   static_assert(scratchbird::listener::kTakeoverClaimAttachmentId ==
                 scratchbird::server::kServerTakeoverClaimAttachmentId);
   static_assert(scratchbird::listener::kTakeoverClaimCatalogSessionId ==
@@ -192,6 +299,17 @@ void ProveBindingTakeoverAndClear() {
   Require(!wrong_principal.accepted &&
               wrong_principal.diagnostic_code == "SERVER.SESSION_BINDING.PRINCIPAL_MISMATCH",
           "binding report with wrong principal must be refused");
+  Require(wrong_principal.diagnostics.size() == 1,
+          "principal mismatch must retain its diagnostic");
+  const auto& principal_diagnostic = wrong_principal.diagnostics.front();
+  Require(principal_diagnostic.identity_fields.size() == 1 &&
+              principal_diagnostic.identity_fields.front().first == "session_uuid" &&
+              principal_diagnostic.identity_fields.front().second == session_key,
+          "principal mismatch must retain the exact native session UUID");
+  for (const auto& field : principal_diagnostic.fields)
+    Require(field.key != "session_uuid",
+            "session identity must not be converted into diagnostic text");
+
 
   scratchbird::listener::TakeoverRequestPayload takeover;
   takeover.mask = scratchbird::listener::kTakeoverClaimAttachmentId |
@@ -390,6 +508,8 @@ void ProveMissingCapabilityRecordClearsInheritedAuthority() {
 }  // namespace
 
 int main() {
+  ProveNativeRequestLookup();
+  ProveNativeRequestStatus();
   ProveControlPlaneCodecCompatibility();
   ProveBindingTakeoverAndClear();
   ProveTakeoverRejectsUnadmittedPhysicalChannel();

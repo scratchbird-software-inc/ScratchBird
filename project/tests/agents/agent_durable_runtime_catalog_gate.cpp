@@ -186,7 +186,7 @@ void TestProductionRefusals() {
 
   agents::AgentInstanceRecord instance;
   instance.instance_uuid = "legacy";
-  const auto legacy = agents::SerializeAgentInstanceRecord(instance);
+  const std::string legacy = "legacy|agent|policy|scope|running|0|0|0|0|0";
   const auto validation = agents::ValidateDurableAgentCatalogImage(legacy, true);
   Require(!validation.status.ok &&
               validation.status.diagnostic_code ==

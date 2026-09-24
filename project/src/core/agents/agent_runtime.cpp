@@ -1494,79 +1494,101 @@ std::string DeterministicAgentInstanceUuid(const std::string& database_uuid,
                                   std::to_string(policy_generation));
 }
 
+namespace {
+// Instance snapshots are not durable catalog publication or transaction authority.
+// SBAINS02: magic, three native UUIDs (nil for absent optional IDs), twelve
+// little-endian u64 values, state/flags bytes, four u32-length-prefixed strings.
+constexpr std::string_view kInstanceMagic = "SBAINS02";
+constexpr std::size_t kInstanceTextLimit = 65536;
+constexpr std::size_t kInstanceRecordLimit = 8 + 48 + 12 * 8 + 2 + 4 * (4 + kInstanceTextLimit);
+using InstanceNumber = u64 AgentInstanceRecord::*;
+constexpr InstanceNumber kInstanceNumbers[] = {
+    &AgentInstanceRecord::run_generation, &AgentInstanceRecord::policy_generation,
+    &AgentInstanceRecord::instance_generation, &AgentInstanceRecord::retired_generation,
+    &AgentInstanceRecord::lease_until_microseconds, &AgentInstanceRecord::last_run_start_microseconds,
+    &AgentInstanceRecord::last_run_end_microseconds, &AgentInstanceRecord::crash_loop_count,
+    &AgentInstanceRecord::supervision_failure_count, &AgentInstanceRecord::restart_attempts,
+    &AgentInstanceRecord::restart_not_before_microseconds, &AgentInstanceRecord::cooldown_until_microseconds};
+using InstanceText = std::string AgentInstanceRecord::*;
+constexpr InstanceText kInstanceTexts[] = {
+    &AgentInstanceRecord::agent_type_id, &AgentInstanceRecord::scope,
+    &AgentInstanceRecord::last_failure_diagnostic_code, &AgentInstanceRecord::last_supervision_detail};
+bool InstanceIdentityValid(std::string_view value, bool optional) {
+  return (optional && value.empty()) ||
+      (value.size() == 16 && uuid::IsEngineIdentityUuid(BinaryIdentity(value)));
+}
+void AppendInstanceNumber(std::string& out, u64 value, unsigned count) {
+  for (unsigned i = 0; i < count; ++i) out.push_back(static_cast<char>((value >> (8 * i)) & 0xff));
+}
+}
+
 std::string SerializeAgentInstanceRecord(const AgentInstanceRecord& instance) {
-  return instance.instance_uuid + "|" + instance.agent_type_id + "|" + instance.policy_uuid + "|" +
-         instance.scope + "|" + AgentLifecycleStateName(instance.state) + "|" +
-         std::to_string(instance.run_generation) + "|" + std::to_string(instance.lease_until_microseconds) + "|" +
-         (instance.disabled_by_operator ? "1" : "0") + "|" + (instance.safe_mode ? "1" : "0") + "|" +
-         (instance.quarantined ? "1" : "0") + "|" + std::to_string(instance.policy_generation) + "|" +
-         std::to_string(instance.instance_generation) + "|" + std::to_string(instance.retired_generation) + "|" +
-         instance.retirement_evidence_uuid + "|" +
-         std::to_string(instance.supervision_failure_count) + "|" +
-         std::to_string(instance.restart_attempts) + "|" +
-         std::to_string(instance.restart_not_before_microseconds) + "|" +
-         std::to_string(instance.cooldown_until_microseconds) + "|" +
-         (instance.cancellation_requested ? "1" : "0") + "|" +
-         instance.last_failure_diagnostic_code + "|" + instance.last_supervision_detail;
+  if (!InstanceIdentityValid(instance.instance_uuid, false) ||
+      !InstanceIdentityValid(instance.policy_uuid, true) ||
+      !InstanceIdentityValid(instance.retirement_evidence_uuid, true) ||
+      static_cast<unsigned>(instance.state) > static_cast<unsigned>(AgentLifecycleState::failed)) return {};
+  for (const auto field : kInstanceTexts)
+    if ((instance.*field).size() > kInstanceTextLimit) return {};
+  std::string out(kInstanceMagic);
+  for (const auto* identity : {&instance.instance_uuid, &instance.policy_uuid, &instance.retirement_evidence_uuid})
+    out.append(identity->empty() ? std::string(16, '\0') : *identity);
+  for (const auto field : kInstanceNumbers) AppendInstanceNumber(out, instance.*field, 8);
+  out.push_back(static_cast<char>(instance.state));
+  out.push_back(static_cast<char>((instance.disabled_by_operator ? 1 : 0) |
+      (instance.safe_mode ? 2 : 0) | (instance.quarantined ? 4 : 0) |
+      (instance.cancellation_requested ? 8 : 0)));
+  for (const auto field : kInstanceTexts) {
+    const auto& value = instance.*field;
+    AppendInstanceNumber(out, value.size(), 4);
+    out.append(value);
+  }
+  return out;
 }
 
 AgentRuntimeStatus RestoreAgentInstanceRecord(const std::string& encoded,
                                               AgentInstanceRecord* instance) {
-  if (instance == nullptr) { return AgentError("SB_AGENT_INSTANCE.RESTORE_TARGET_REQUIRED"); }
-  std::vector<std::string> parts;
-  std::stringstream stream(encoded);
-  std::string part;
-  while (std::getline(stream, part, '|')) { parts.push_back(part); }
-  if (parts.size() < 10) { return AgentError("SB_AGENT_INSTANCE.ENCODING_INVALID", encoded); }
-  instance->instance_uuid = parts[0];
-  instance->agent_type_id = parts[1];
-  instance->policy_uuid = parts[2];
-  instance->scope = parts[3];
-  const std::string& state = parts[4];
-  for (AgentLifecycleState candidate : {AgentLifecycleState::created, AgentLifecycleState::registered,
-                                        AgentLifecycleState::disabled, AgentLifecycleState::observe_only,
-                                        AgentLifecycleState::recommend_only, AgentLifecycleState::dry_run,
-                                        AgentLifecycleState::running, AgentLifecycleState::paused,
-                                        AgentLifecycleState::safe_mode, AgentLifecycleState::quarantined,
-                                        AgentLifecycleState::stopping, AgentLifecycleState::stopped,
-                                        AgentLifecycleState::retired, AgentLifecycleState::failed}) {
-    if (state == AgentLifecycleStateName(candidate)) { instance->state = candidate; break; }
+  if (instance == nullptr) return AgentError("SB_AGENT_INSTANCE.RESTORE_TARGET_REQUIRED");
+  const auto invalid = [] { return AgentError("SB_AGENT_INSTANCE.ENCODING_INVALID"); };
+  if (encoded.size() < kInstanceMagic.size() || encoded.size() > kInstanceRecordLimit ||
+      encoded.compare(0, kInstanceMagic.size(), kInstanceMagic) != 0) return invalid();
+  std::size_t offset = kInstanceMagic.size();
+  AgentInstanceRecord decoded;
+  for (auto* identity : {&decoded.instance_uuid, &decoded.policy_uuid, &decoded.retirement_evidence_uuid}) {
+    if (encoded.size() - offset < 16) return invalid();
+    identity->assign(encoded, offset, 16);
+    offset += 16;
+    if (*identity == std::string(16, '\0')) identity->clear();
+    if (!InstanceIdentityValid(*identity, identity != &decoded.instance_uuid)) return invalid();
   }
-  try {
-    instance->run_generation = static_cast<u64>(std::stoull(parts[5]));
-    instance->lease_until_microseconds = static_cast<u64>(std::stoull(parts[6]));
-  } catch (...) {
-    return AgentError("SB_AGENT_INSTANCE.NUMERIC_FIELD_INVALID", encoded);
+  const auto read_number = [&](unsigned count, u64& value) {
+    if (encoded.size() - offset < count) return false;
+    value = 0;
+    for (unsigned i = 0; i < count; ++i)
+      value |= static_cast<u64>(static_cast<unsigned char>(encoded[offset++])) << (8 * i);
+    return true;
+  };
+  for (const auto field : kInstanceNumbers)
+    if (!read_number(8, decoded.*field)) return invalid();
+  if (encoded.size() - offset < 2) return invalid();
+  const auto state = static_cast<unsigned char>(encoded[offset++]);
+  const auto flags = static_cast<unsigned char>(encoded[offset++]);
+  if (state > static_cast<unsigned>(AgentLifecycleState::failed) || (flags & 0xf0)) return invalid();
+  decoded.state = static_cast<AgentLifecycleState>(state);
+  decoded.disabled_by_operator = flags & 1;
+  decoded.safe_mode = flags & 2;
+  decoded.quarantined = flags & 4;
+  decoded.cancellation_requested = flags & 8;
+  for (const auto field : kInstanceTexts) {
+    u64 length = 0;
+    if (!read_number(4, length) || length > kInstanceTextLimit || length > encoded.size() - offset)
+      return invalid();
+    (decoded.*field).assign(encoded, offset, static_cast<std::size_t>(length));
+    offset += static_cast<std::size_t>(length);
   }
-  instance->disabled_by_operator = parts[7] == "1";
-  instance->safe_mode = parts[8] == "1";
-  instance->quarantined = parts[9] == "1";
-  if (parts.size() >= 13) {
-    try {
-      instance->policy_generation = static_cast<u64>(std::stoull(parts[10]));
-      instance->instance_generation = static_cast<u64>(std::stoull(parts[11]));
-      instance->retired_generation = static_cast<u64>(std::stoull(parts[12]));
-    } catch (...) {
-      return AgentError("SB_AGENT_INSTANCE.NUMERIC_FIELD_INVALID", encoded);
-    }
-  }
-  if (parts.size() >= 14) { instance->retirement_evidence_uuid = parts[13]; }
-  if (parts.size() >= 19) {
-    try {
-      instance->supervision_failure_count = static_cast<u64>(std::stoull(parts[14]));
-      instance->restart_attempts = static_cast<u64>(std::stoull(parts[15]));
-      instance->restart_not_before_microseconds = static_cast<u64>(std::stoull(parts[16]));
-      instance->cooldown_until_microseconds = static_cast<u64>(std::stoull(parts[17]));
-    } catch (...) {
-      return AgentError("SB_AGENT_INSTANCE.NUMERIC_FIELD_INVALID", encoded);
-    }
-    instance->cancellation_requested = parts[18] == "1";
-  }
-  if (parts.size() >= 20) { instance->last_failure_diagnostic_code = parts[19]; }
-  if (parts.size() >= 21) { instance->last_supervision_detail = parts[20]; }
-  if (instance->state == AgentLifecycleState::retired && instance->retirement_evidence_uuid.empty()) {
-    return AgentError("SB_AGENT_INSTANCE.RETIREMENT_EVIDENCE_REQUIRED", instance->instance_uuid);
-  }
+  if (offset != encoded.size()) return invalid();
+  if (decoded.state == AgentLifecycleState::retired && decoded.retirement_evidence_uuid.empty())
+    return AgentError("SB_AGENT_INSTANCE.RETIREMENT_EVIDENCE_REQUIRED");
+  *instance = std::move(decoded);
   return AgentOk();
 }
 

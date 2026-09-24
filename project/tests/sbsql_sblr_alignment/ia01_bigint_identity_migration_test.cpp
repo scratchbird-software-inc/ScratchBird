@@ -740,10 +740,10 @@ Fixture MakeFixture(const std::string_view mode) {
               !fixture.collation_uuid.empty() &&
               fixture.collation_generation != 0,
           "canonical UTF8 resource authority unavailable");
-  const auto inventory = db::PersistLocalTransactionInventoryToDatabase(
-      fixture.path.string(),
-      scratchbird::transaction::mga::MakeEmptyLocalTransactionInventory());
-  Require(inventory.ok(), "transaction inventory initialization failed");
+  const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(
+      fixture.path.string());
+  Require(inventory.ok() && inventory.inventory.publication_base.has_value(),
+          "transaction inventory load failed");
   fixture.database_uuid = IdentityBytes(config.database_uuid.value);
   return fixture;
 }

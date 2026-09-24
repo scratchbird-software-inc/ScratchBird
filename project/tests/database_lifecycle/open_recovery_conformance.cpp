@@ -252,52 +252,28 @@ void WriteTextFile(const std::filesystem::path& path, const std::string& text) {
   Require(static_cast<bool>(out), "could not write text artifact");
 }
 
-std::string ManualDirtyManifestChecksumMaterial(const db::DirtyObjectManifest& manifest) {
-  std::ostringstream out;
-  out << "SBDIRTY1\t"
-      << manifest.format_version << "\tclassification_only\t"
-      << manifest.checkpoint_generation << '\t'
-      << (manifest.completed ? 1 : 0) << '\t'
-      << manifest.entries.size() << '\n';
+// Independent encoder permits deliberately nonauthoritative evidence that
+// the production writer refuses, so recovery quarantine policy is exercised.
+std::string ManualDirtyManifestSerialize(const db::DirtyObjectManifest& manifest) {
+  std::string bytes("SBDIRTY2");
+  const auto put = [&](u64 value, unsigned width) {
+    for (unsigned n = 0; n < width; ++n) bytes.push_back(static_cast<char>(value >> (8 * n)));
+  };
+  put(manifest.format_version, 4);
+  put((manifest.classification_only ? 1u : 0u) | (manifest.completed ? 2u : 0u), 4);
+  put(manifest.checkpoint_generation, 8); put(manifest.entries.size(), 8); put(0, 8);
   for (const auto& entry : manifest.entries) {
-    out << "ENTRY\t"
-        << db::DirtyObjectKindName(entry.kind) << "\tobject\t"
-        << UuidString(entry.object_uuid) << '\t'
-        << entry.page_number << '\t'
-        << entry.page_generation << '\t'
-        << entry.object_checksum << '\t'
-        << entry.local_transaction_id << '\t'
-        << entry.operation_envelope_checksum << '\t'
-        << entry.transaction_evidence_checksum << '\t'
-        << (entry.dirty ? 1 : 0) << '\t'
-        << (entry.authoritative ? 1 : 0) << '\n';
+    put(static_cast<unsigned>(entry.kind), 2);
+    put(static_cast<unsigned>(entry.object_uuid.kind), 2);
+    bytes.append(reinterpret_cast<const char*>(entry.object_uuid.value.bytes.data()), 16);
+    put(entry.page_number, 8); put(entry.page_generation, 8); put(entry.object_checksum, 8);
+    put(entry.local_transaction_id, 8); put(entry.operation_envelope_checksum, 8);
+    put(entry.transaction_evidence_checksum, 8);
+    put((entry.dirty ? 1u : 0u) | (entry.authoritative ? 2u : 0u), 4);
   }
-  return out.str();
-}
-
-std::string ManualDirtyManifestSerialize(db::DirtyObjectManifest manifest) {
-  manifest.manifest_checksum = StableTextChecksum(ManualDirtyManifestChecksumMaterial(manifest));
-  std::ostringstream out;
-  out << "SBDIRTY1\t"
-      << manifest.format_version << "\tclassification_only\t"
-      << manifest.checkpoint_generation << '\t'
-      << (manifest.completed ? 1 : 0) << '\t'
-      << manifest.entries.size() << '\t'
-      << manifest.manifest_checksum << '\n';
-  for (const auto& entry : manifest.entries) {
-    out << "ENTRY\t"
-        << db::DirtyObjectKindName(entry.kind) << "\tobject\t"
-        << UuidString(entry.object_uuid) << '\t'
-        << entry.page_number << '\t'
-        << entry.page_generation << '\t'
-        << entry.object_checksum << '\t'
-        << entry.local_transaction_id << '\t'
-        << entry.operation_envelope_checksum << '\t'
-        << entry.transaction_evidence_checksum << '\t'
-        << (entry.dirty ? 1 : 0) << '\t'
-        << (entry.authoritative ? 1 : 0) << '\n';
-  }
-  return out.str();
+  const auto checksum = StableTextChecksum(bytes);
+  for (unsigned n = 0; n < 8; ++n) bytes[32 + n] = static_cast<char>(checksum >> (8 * n));
+  return bytes;
 }
 
 void WriteRecoverableDirtyManifest(const Fixture& fixture) {
@@ -397,11 +373,11 @@ void TestCleanDirtyAndDirtyManifestRecovery(Cleanup* cleanup) {
   Require(std::filesystem::exists(evidence_path),
           "dirty manifest recovery did not persist recovery evidence");
   const auto evidence = ReadTextFile(evidence_path);
-  Require(evidence.find("SBRECOVERY1") != std::string::npos,
-          "dirty manifest recovery evidence missing marker");
-  Require(evidence.find("WAL") == std::string::npos &&
-              evidence.find("wal") == std::string::npos,
-          "dirty manifest recovery evidence contained WAL language");
+  Require(evidence.size() == 64 && evidence.starts_with("SBRECV02"),
+          "dirty manifest recovery evidence must use the binary record format");
+  scratchbird::core::platform::Uuid run_uuid;
+  std::copy_n(reinterpret_cast<const unsigned char*>(evidence.data() + 8), 16, run_uuid.bytes.begin());
+  Require(uuid::IsEngineIdentityUuid(run_uuid), "recovery evidence omitted the binary run UUID");
 
   const auto second_recovery_open = OpenFixture(fixture, false);
   RequireOk(second_recovery_open, "dirty manifest second recovery open failed");
@@ -470,9 +446,9 @@ void TestDirtyManifestChecksumMismatchRefuses(Cleanup* cleanup) {
   RequireOk(first_open, "first writable open for checksum manifest failed");
   WriteRecoverableDirtyManifest(fixture);
   auto manifest = ReadTextFile(fixture.path.string() + ".dirty.manifest");
-  const auto pos = manifest.find("\t177\t");
-  Require(pos != std::string::npos, "test manifest checksum field not found");
-  manifest.replace(pos, 5, "\t178\t");
+  Require(manifest.size() == 112 && manifest.starts_with("SBDIRTY2"),
+          "test manifest must contain one binary entry");
+  manifest[76] ^= 1;  // Mutate the entry checksum without repairing the manifest checksum.
   WriteTextFile(fixture.path.string() + ".dirty.manifest", manifest);
 
   const auto failed = OpenFixture(fixture, false);

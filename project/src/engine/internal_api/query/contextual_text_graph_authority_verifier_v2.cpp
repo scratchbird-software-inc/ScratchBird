@@ -14,6 +14,7 @@
 #include "query/contextual_text_policy_registry_v2.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_stream.hpp"
+#include "engine/sblr/relational_descriptor_codec.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -220,19 +221,6 @@ bool DecodeHex(const std::string_view encoded, std::string* out) {
   return true;
 }
 
-bool DecodeOptionalHex(const std::string_view encoded,
-                       std::optional<std::string>* out) {
-  if (out == nullptr) return false;
-  if (encoded == "-") {
-    out->reset();
-    return true;
-  }
-  std::string decoded;
-  if (!DecodeHex(encoded, &decoded)) return false;
-  *out = std::move(decoded);
-  return true;
-}
-
 bool ParseHandleList(const std::string_view encoded,
                      std::vector<std::uint32_t>* out) {
   if (out == nullptr || encoded.empty()) return false;
@@ -259,27 +247,6 @@ bool ParseHandleList(const std::string_view encoded,
   return false;
 }
 
-bool ParseStringList(const std::string_view encoded,
-                     std::vector<std::string>* out) {
-  if (out == nullptr || encoded.empty()) return false;
-  out->clear();
-  if (encoded == "-") return true;
-  std::size_t start = 0;
-  while (start <= encoded.size()) {
-    const auto separator = encoded.find(',', start);
-    const auto token = encoded.substr(
-        start, separator == std::string_view::npos
-                   ? encoded.size() - start
-                   : separator - start);
-    if (token.empty()) return false;
-    out->emplace_back(token);
-    if (out->size() > 524288) return false;
-    if (separator == std::string_view::npos) return true;
-    start = separator + 1;
-  }
-  return false;
-}
-
 bool TypedPayload(const sblr::SblrOperand& operand,
                   std::string_view* payload) {
   if (payload == nullptr ||
@@ -295,24 +262,13 @@ bool TypedPayload(const sblr::SblrOperand& operand,
   return true;
 }
 
-bool ParseUuidText(const std::string_view text, Uuid* out) {
-  if (out == nullptr) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
-      scratchbird::core::uuid::UuidToString(parsed.value) != text) {
-    return false;
-  }
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), out->begin());
-  return true;
-}
-
 struct CanonicalNodeRecord {
   std::uint32_t node_id = 0;
   std::uint8_t node_kind = 0;
   std::uint32_t top_level_operand_ordinal = 0;
   std::vector<std::uint32_t> output_descriptor_ids;
   std::vector<std::uint32_t> bound_expression_ids;
-  std::vector<std::string> required_object_uuids;
+  std::vector<EngineUuid> required_object_uuids;
   std::string semantic_variant;
   bool binding_present = false;
 };
@@ -327,8 +283,8 @@ struct CanonicalExpressionRecord {
   std::uint8_t kind = 0;
   std::vector<std::uint32_t> children;
   std::uint32_t result_descriptor_handle = 0;
-  std::optional<std::string> function_uuid;
-  std::optional<std::string> bound_name_uuid;
+  std::optional<EngineUuid> function_uuid;
+  std::optional<EngineUuid> bound_name_uuid;
   std::optional<std::uint8_t> literal_kind;
   std::optional<std::string> operator_name;
   std::optional<std::string> literal_or_parameter_ref;
@@ -507,28 +463,22 @@ class CanonicalOperandGraphSelector final
           }
           continue;
         }
-        if (operand.type == "relational_node_binding_v1") {
-          std::uint32_t node_id = 0;
-          std::string_view payload;
-          std::array<std::string_view, 5> fields{};
-          std::vector<std::string> ignored;
-          const auto found = [&]() -> CanonicalNodeRecord* {
-            if (!ParseSlotHandle(operand.name, &node_id)) return nullptr;
-            const auto item = nodes.find(node_id);
-            return item == nodes.end() ? nullptr : &item->second;
-          }();
-          if (found == nullptr || found->binding_present ||
-              !TypedPayload(operand, &payload) ||
-              !SplitFields(payload, &fields) ||
-              !DecodeHex(fields[0], &found->semantic_variant) ||
-              found->semantic_variant.empty() ||
-              !ParseHandleList(fields[1], &found->bound_expression_ids) ||
-              !ParseStringList(fields[2], &found->required_object_uuids) ||
-              !ParseStringList(fields[3], &ignored) ||
-              !ParseStringList(fields[4], &ignored)) {
+        if (operand.type == "relational_node_binding_v1")
+          return Invalid("legacy_node_binding_transport", diagnostic);
+        if (operand.type == "relational_node_binding_v2") {
+          sblr::RelationalNodeBindingRecord binding;
+          if (operand.value_kind != sblr::SblrValueKind::relational_node_binding ||
+              !sblr::DecodeRelationalNodeBindingV1(operand.value_body.data(),
+                  operand.value_body.size(), &binding) ||
+              operand.name != "slot_" + std::to_string(binding.node_id))
             return Invalid("node_binding_invalid", diagnostic);
-          }
-          found->binding_present = true;
+          const auto found = nodes.find(binding.node_id);
+          if (found == nodes.end() || found->second.binding_present)
+            return Invalid("node_binding_invalid", diagnostic);
+          found->second.semantic_variant = std::move(binding.semantic_variant_id);
+          found->second.bound_expression_ids = std::move(binding.bound_expression_ids);
+          found->second.required_object_uuids = std::move(binding.required_object_uuids);
+          found->second.binding_present = true;
           continue;
         }
         if (operand.type == "relational_descriptor_v1" ||
@@ -568,48 +518,29 @@ class CanonicalOperandGraphSelector final
             }
             continue;
           }
-          CanonicalExpressionRecord expression;
-          std::string_view payload;
-          std::array<std::string_view, 8> fields{};
-          std::uint64_t value = 0;
-          if (!ParseSlotHandle(operand.name, &expression.expression_id) ||
-              !TypedPayload(operand, &payload) ||
-              !SplitFields(payload, &fields) ||
-              !ParseUnsigned(fields[0],
-                             std::numeric_limits<std::uint8_t>::max(),
-                             &value) ||
-              value == 0) {
+          return Invalid("legacy_expression_transport", diagnostic);
+        }
+        if (operand.type == "relational_expression_v2") {
+          RelationalExpressionRecord decoded;
+          if (operand.value_kind != sblr::SblrValueKind::relational_expression ||
+              !sblr::DecodeRelationalExpressionV1(operand.value_body.data(),
+                  operand.value_body.size(), &decoded) ||
+              operand.name != "slot_" + std::to_string(decoded.expression_id))
             return Invalid("expression_record_invalid", diagnostic);
-          }
-          expression.kind = static_cast<std::uint8_t>(value);
-          if (!ParseHandleList(fields[1], &expression.children) ||
-              !ParseUnsigned(fields[2],
-                             std::numeric_limits<std::uint32_t>::max(),
-                             &value) ||
-              value == 0) {
-            return Invalid("expression_handles_invalid", diagnostic);
-          }
-          expression.result_descriptor_handle =
-              static_cast<std::uint32_t>(value);
-          if (fields[3] != "-") expression.function_uuid = fields[3];
-          if (fields[4] != "-") expression.bound_name_uuid = fields[4];
-          if (fields[5] != "-") {
-            if (!ParseUnsigned(fields[5],
-                               std::numeric_limits<std::uint8_t>::max(),
-                               &value) ||
-                value == 0) {
-              return Invalid("expression_literal_kind_invalid", diagnostic);
-            }
-            expression.literal_kind = static_cast<std::uint8_t>(value);
-          }
-          if (!DecodeOptionalHex(fields[6], &expression.operator_name) ||
-              !DecodeOptionalHex(fields[7],
-                                 &expression.literal_or_parameter_ref) ||
-              !expression_ids.insert(expression.expression_id).second ||
-              !expressions.emplace(expression.expression_id,
-                                   std::move(expression)).second) {
+          CanonicalExpressionRecord expression;
+          expression.expression_id = decoded.expression_id;
+          expression.kind = static_cast<std::uint8_t>(decoded.expression_kind);
+          expression.children = std::move(decoded.child_expression_ids);
+          expression.result_descriptor_handle = decoded.result_descriptor_id;
+          expression.function_uuid = decoded.function_uuid;
+          expression.bound_name_uuid = decoded.bound_name_uuid;
+          if (decoded.literal_kind)
+            expression.literal_kind = static_cast<std::uint8_t>(*decoded.literal_kind);
+          expression.operator_name = std::move(decoded.operator_name);
+          expression.literal_or_parameter_ref = std::move(decoded.literal_or_parameter_ref);
+          if (!expression_ids.insert(expression.expression_id).second ||
+              !expressions.emplace(expression.expression_id, std::move(expression)).second)
             return Invalid("expression_identity_invalid", diagnostic);
-          }
           continue;
         }
         if (operand.type == "relational_output_v1") {
@@ -692,9 +623,8 @@ class CanonicalOperandGraphSelector final
              node.semantic_variant != "SBLR_MODEL_SOURCE_V1")) {
           continue;
         }
-        Uuid relation{};
         if (node.required_object_uuids.size() != 1 ||
-            !ParseUuidText(node.required_object_uuids.front(), &relation)) {
+            !scratchbird::core::uuid::IsEngineIdentityUuid(node.required_object_uuids.front())) {
           return Invalid("source_relation_invalid", diagnostic);
         }
         EngineContextualTextGraphSourceV2 source;
@@ -702,7 +632,7 @@ class CanonicalOperandGraphSelector final
         source.top_level_operand_ordinal = node.top_level_operand_ordinal;
         source.node_kind_is_scan = true;
         source.semantic_variant_is_catalog_or_model_source = true;
-        source.required_relation_uuid = relation;
+        source.required_relation_uuid = node.required_object_uuids.front().bytes;
         graph.sources.push_back(std::move(source));
       }
       std::ranges::sort(graph.sources, {},
@@ -718,11 +648,8 @@ class CanonicalOperandGraphSelector final
         }
       }
 
-      Uuid contextual_descriptor{};
-      if (!ParseUuidText("019d0000-0000-7000-8000-00000000d718",
-                         &contextual_descriptor)) {
-        return Invalid("contextual_descriptor_identity_invalid", diagnostic);
-      }
+      constexpr Uuid contextual_descriptor{
+          0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x18};
       struct ContextualNode {
         const sblr::SblrExpressionLiteralNodeV1* node = nullptr;
         const CanonicalLiteralReferenceRecord* reference = nullptr;
@@ -810,9 +737,10 @@ class CanonicalOperandGraphSelector final
             target->second.literal_kind.has_value() ||
             target->second.operator_name.has_value() ||
             target->second.literal_or_parameter_ref.has_value() ||
-            !ParseUuidText(*target->second.bound_name_uuid, &column)) {
+            !scratchbird::core::uuid::IsEngineIdentityUuid(*target->second.bound_name_uuid)) {
           return TargetMismatch("target_expression_invalid", diagnostic);
         }
+        column = target->second.bound_name_uuid->bytes;
 
         const std::array<std::uint32_t, 3> source_owned_expression_ids{
             target_id, comparison->first, item.reference->expression_id};

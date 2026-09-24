@@ -397,7 +397,6 @@
 #include <string_view>
 
 namespace scratchbird::server {
-static std::string UuidBytesToText(const std::uint8_t* begin, const std::uint8_t* end) { std::array<std::uint8_t,16> value{}; if (end-begin==16) std::copy(begin,end,value.begin()); return UuidBytesToText(value); }
 
 namespace engine_api = scratchbird::engine::internal_api;
 namespace engine_bridge = scratchbird::server_engine_bridge;
@@ -798,12 +797,16 @@ ServerDiagnostic AuthDiagnostic(std::string code, std::string message, std::stri
 ServerDiagnostic DetachCleanupDiagnostic(std::string code,
                                          ServerDiagnosticSeverity severity,
                                          std::string message,
-                                         std::vector<ServerDiagnosticField> fields = {}) {
-  return ServerDiagnostic{std::move(code),
-                          std::move(code),
+                                         std::vector<ServerDiagnosticField> fields = {},
+    std::vector<std::pair<std::string, core::platform::Uuid>> identities = {}) {
+  const auto message_key = code;
+  ServerDiagnostic diagnostic{std::move(code),
+                          message_key,
                           severity,
                           std::move(message),
                           std::move(fields)};
+  diagnostic.identity_fields = std::move(identities);
+  return diagnostic;
 }
 
 ServerDiagnostic DblcAttachAdmissionDenied(std::string phase, std::string detail) {
@@ -929,7 +932,9 @@ engine_api::EngineRequestContext EngineContextBase(const HostedEngineState& engi
                                                    const std::string& language = "en") {
   engine_api::EngineRequestContext context;
   context.trust_mode = engine_api::EngineTrustMode::server_isolated;
-  context.request_id = UuidBytesToText(request.header.request_uuid);
+  context.request_id.assign(
+      reinterpret_cast<const char*>(request.header.request_uuid.data()),
+      request.header.request_uuid.size());
   context.database_path = FirstOpenDatabasePath(engine_state);
   context.database_uuid = FirstOpenDatabaseUuid(engine_state);
   context.database_page_size_bytes = FirstOpenDatabasePageSizeBytes(engine_state);
@@ -1313,14 +1318,8 @@ bool ApplyDurableAuthorizationProjectionToSession(ServerSessionRecord* session,
     AddUniqueTraceTag(&session->engine_authorization_trace_tags,
                       std::string(grant.deny ? "deny:" : "right:") + grant.right);
   }
-  for (const auto& role : session->effective_role_uuids) {
-    AddUniqueTraceTag(&session->engine_authorization_trace_tags,
-                      "role_uuid:" + UuidBytesToText(role));
-  }
-  for (const auto& group : session->effective_group_uuids) {
-    AddUniqueTraceTag(&session->engine_authorization_trace_tags,
-                      "group_uuid:" + UuidBytesToText(group));
-  }
+  // Role/group identities already live in the native session projection and
+  // materialized authorization subjects. Trace labels are not identity carriers.
   AddUniqueTraceTag(&session->engine_authorization_trace_tags,
                     "server.session.durable_role_group_projection");
   return true;
@@ -1795,25 +1794,34 @@ bool TerminalRequestState(ServerRequestLifecycleState state) {
          state == ServerRequestLifecycleState::kFailed;
 }
 
+std::optional<core::platform::Uuid> BinaryRequestTarget(const std::string& bytes) {
+  if (bytes.size() != 16) return std::nullopt;
+  core::platform::Uuid target;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()), 16, target.bytes.begin());
+  if (!core::uuid::IsEngineIdentityUuid(target)) return std::nullopt;
+  return target;
+}
+
 bool RequestTargetMatches(const ServerRequestRecord& request, const std::string& target_uuid) {
   if (target_uuid.empty()) return true;
-  return UuidBytesToText(request.request_uuid) == target_uuid ||
-         UuidBytesToText(request.finality_token_uuid) == target_uuid ||
-         UuidBytesToText(request.prepared_statement_uuid) == target_uuid ||
-         UuidBytesToText(request.cursor_uuid) == target_uuid;
+  const auto target = BinaryRequestTarget(target_uuid);
+  return target && (request.request_uuid == target->bytes ||
+                    request.finality_token_uuid == target->bytes ||
+                    request.prepared_statement_uuid == target->bytes ||
+                    request.cursor_uuid == target->bytes);
 }
 
 std::string RequestLifecycleRecordJson(const ServerRequestRecord& request) {
-  std::ostringstream out;
-  out << "{\"request_uuid\":\"" << UuidBytesToText(request.request_uuid)
-      << "\",\"finality_token_uuid\":\"" << UuidBytesToText(request.finality_token_uuid)
-      << "\",\"session_uuid\":\"" << UuidBytesToText(request.session_uuid)
+  scratchbird::wire::binary_status::Stream out;
+  out << "{\"request_uuid\":\"" << scratchbird::wire::binary_status::Identity(request.request_uuid)
+      << "\",\"finality_token_uuid\":\"" << scratchbird::wire::binary_status::Identity(request.finality_token_uuid)
+      << "\",\"session_uuid\":\"" << scratchbird::wire::binary_status::Identity(request.session_uuid)
       << "\",\"request_kind\":\"" << JsonEscape(request.request_kind)
       << "\",\"operation_id\":\"" << JsonEscape(request.operation_id)
       << "\",\"state\":\"" << ServerRequestLifecycleStateName(request.state)
       << "\",\"detail\":\"" << JsonEscape(request.detail)
-      << "\",\"prepared_statement_uuid\":\"" << UuidBytesToText(request.prepared_statement_uuid)
-      << "\",\"cursor_uuid\":\"" << UuidBytesToText(request.cursor_uuid)
+      << "\",\"prepared_statement_uuid\":\"" << scratchbird::wire::binary_status::Identity(request.prepared_statement_uuid)
+      << "\",\"cursor_uuid\":\"" << scratchbird::wire::binary_status::Identity(request.cursor_uuid)
       << "\",\"local_transaction_id_at_start\":" << request.local_transaction_id_at_start
       << ",\"snapshot_visible_through_local_transaction_id\":"
       << request.snapshot_visible_through_local_transaction_id
@@ -1831,12 +1839,16 @@ std::string RequestLifecycleRecordJson(const ServerRequestRecord& request) {
 ServerDiagnostic RequestLifecycleDiagnostic(std::string code,
                                             ServerDiagnosticSeverity severity,
                                             std::string message,
-                                            std::vector<ServerDiagnosticField> fields = {}) {
-  return ServerDiagnostic{std::move(code),
-                          std::move(code),
+                                            std::vector<ServerDiagnosticField> fields = {},
+    std::vector<std::pair<std::string, core::platform::Uuid>> identities = {}) {
+  const auto message_key = code;
+  ServerDiagnostic diagnostic{std::move(code),
+                          message_key,
                           severity,
                           std::move(message),
                           std::move(fields)};
+  diagnostic.identity_fields = std::move(identities);
+  return diagnostic;
 }
 
 ServerDiagnostic DriverTransactionDiagnostic(std::string code,
@@ -1935,22 +1947,27 @@ ServerDiagnostic SessionControlDiagnostic(std::string code,
                                           ServerDiagnosticSeverity severity,
                                           std::string message,
                                           std::string detail,
-                                          std::vector<ServerDiagnosticField> fields = {}) {
+                                          std::vector<ServerDiagnosticField> fields = {},
+    std::vector<std::pair<std::string, core::platform::Uuid>> identities = {}) {
   if (!detail.empty()) fields.push_back({"detail", detail});
   fields.push_back({"server_session_registry_authority", "true"});
   fields.push_back({"parser_session_authority", "false"});
-  return ServerDiagnostic{std::move(code),
-                          std::move(code),
+  const auto message_key = code;
+  ServerDiagnostic diagnostic{std::move(code),
+                          message_key,
                           severity,
                           std::move(message),
                           std::move(fields)};
+  diagnostic.identity_fields = std::move(identities);
+  return diagnostic;
 }
 
 ServerSessionBindingControlResult SessionControlRejected(
     std::string code,
     std::string detail,
     std::string message,
-    std::vector<ServerDiagnosticField> fields = {}) {
+    std::vector<ServerDiagnosticField> fields = {},
+    std::vector<std::pair<std::string, core::platform::Uuid>> identities = {}) {
   ServerSessionBindingControlResult result;
   result.diagnostic_code = code;
   result.detail = detail;
@@ -1961,7 +1978,8 @@ ServerSessionBindingControlResult SessionControlRejected(
                                                         ServerDiagnosticSeverity::kError,
                                                         std::move(message),
                                                         std::move(detail),
-                                                        std::move(fields)));
+                                                        std::move(fields),
+                                                        std::move(identities)));
   return result;
 }
 
@@ -5229,9 +5247,9 @@ SessionOperationResult HandleFinalizeVariableBinding(
   }
   result.payload = std::move(engine_sbva);
   receipt_record->variable_final_receipt_uuid =
-      UuidBytesToText(engine_admission.final_receipt_uuid);
+      engine_admission.final_receipt_uuid;
   receipt_record->variable_admission_token_uuid =
-      UuidBytesToText(engine_admission.admission_token_uuid);
+      engine_admission.admission_token_uuid;
   receipt_record->variable_binding_sha256 = engine_admission.binding_sha256;
   receipt_record->variable_binding_finalized = true;
   result.accepted = true;
@@ -5475,15 +5493,17 @@ void CompleteServerRequestLifecycle(ServerSessionRegistry* registry,
 std::optional<ServerRequestRecord> FindServerRequestLifecycle(
     const ServerSessionRegistry& registry,
     const std::string& target_uuid) {
+  const auto target = BinaryRequestTarget(target_uuid);
+  if (!target) return std::nullopt;
   for (const auto& [_, request] : registry.requests_by_uuid) {
-    if (UuidBytesToText(request.request_uuid) == target_uuid ||
-        UuidBytesToText(request.finality_token_uuid) == target_uuid ||
-        UuidBytesToText(request.prepared_statement_uuid) == target_uuid) {
+    if (request.request_uuid == target->bytes ||
+        request.finality_token_uuid == target->bytes ||
+        request.prepared_statement_uuid == target->bytes) {
       return request;
     }
   }
   for (const auto& [_, request] : registry.requests_by_uuid) {
-    if (UuidBytesToText(request.cursor_uuid) == target_uuid &&
+    if (request.cursor_uuid == target->bytes &&
         (request.state == ServerRequestLifecycleState::kCursorOpen ||
          request.state == ServerRequestLifecycleState::kActive)) {
       return request;
@@ -5498,7 +5518,7 @@ std::optional<ServerRequestRecord> FindServerRequestLifecycle(
 std::string ServerRequestLifecycleRecordsJson(const ServerSessionRegistry& registry,
                                               const std::string& target_uuid,
                                               bool include_history) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "[";
   bool first = true;
   for (const auto& [_, request] : registry.requests_by_uuid) {
@@ -5529,6 +5549,16 @@ ServerRequestLifecycleResult CancelServerRequestLifecycle(
     return result;
   }
 
+  const auto target = BinaryRequestTarget(target_uuid);
+  if (!target_uuid.empty() && !target) {
+    result.error = true;
+    result.outcome = "invalid_target_uuid";
+    result.diagnostics.push_back(RequestLifecycleDiagnostic(
+        "SERVER.REQUEST.INVALID_TARGET_UUID", ServerDiagnosticSeverity::kError,
+        "Request cancellation requires a native binary16 engine UUID."));
+    return result;
+  }
+
   std::vector<scratchbird::core::platform::Uuid> matched_keys;
   for (const auto& [key, request] : registry->requests_by_uuid) {
     if (RequestTargetMatches(request, target_uuid)) {
@@ -5539,14 +5569,16 @@ ServerRequestLifecycleResult CancelServerRequestLifecycle(
     result.accepted = true;
     result.unknown_outcome = true;
     result.outcome = "unknown_finality";
-    result.records_json =
-        "[{\"requested_target_uuid\":\"" + JsonEscape(target_uuid) +
-        "\",\"finality_state\":\"unknown\",\"diagnostic_code\":\"SERVER.REQUEST.FINALITY_UNKNOWN\"}]";
+    scratchbird::wire::binary_status::Stream records;
+    records << "[{\"requested_target_uuid\":\""
+            << scratchbird::wire::binary_status::Identity(std::string_view(target_uuid))
+            << "\",\"finality_state\":\"unknown\",\"diagnostic_code\":\"SERVER.REQUEST.FINALITY_UNKNOWN\"}]";
+    result.records_json = records.str();
     result.diagnostics.push_back(RequestLifecycleDiagnostic(
         "SERVER.REQUEST.FINALITY_UNKNOWN",
         ServerDiagnosticSeverity::kWarning,
         "The requested request finality token is unknown.",
-        {{"target_uuid", target_uuid}}));
+        {}, {{"target_uuid", target.value_or(core::platform::Uuid{})}}));
     return result;
   }
 
@@ -5554,12 +5586,15 @@ ServerRequestLifecycleResult CancelServerRequestLifecycle(
   if (request.session_uuid != actor.session_uuid && !authorization_proven) {
     result.error = true;
     result.outcome = "authorization_required";
-    result.records_json = "[" + RequestLifecycleRecordJson(request) + "]";
+    scratchbird::wire::binary_status::Stream records;
+    records << "[" << RequestLifecycleRecordJson(request) << "]";
+    result.records_json = records.str();
     result.diagnostics.push_back(RequestLifecycleDiagnostic(
         "SECURITY.AUTHORIZATION.DENIED",
         ServerDiagnosticSeverity::kError,
         "Cancelling another session request requires engine authorization.",
-        {{"target_request_uuid", UuidBytesToText(request.request_uuid)}}));
+        {},
+        {{"target_request_uuid", core::platform::Uuid{request.request_uuid}}}));
     return result;
   }
 
@@ -5604,9 +5639,9 @@ ServerRequestLifecycleResult CancelServerRequestLifecycle(
         "PARSER_SERVER_IPC.DISCONNECT_OUTCOME_UNKNOWN",
         ServerDiagnosticSeverity::kWarning,
         "Request cancellation preserved unknown transaction or engine result outcome under MGA authority.",
-        {{"request_uuid", UuidBytesToText(request.request_uuid)},
-         {"finality_token_uuid", UuidBytesToText(request.finality_token_uuid)},
-         {"mga_finality_authority", "engine"}}));
+        {{"mga_finality_authority", "engine"}},
+        {{"request_uuid", core::platform::Uuid{request.request_uuid}},
+         {"finality_token_uuid", core::platform::Uuid{request.finality_token_uuid}}}));
   }
   return result;
 }
@@ -6887,7 +6922,6 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
             : "Orderly parser disconnect rolled back an exact MGA transaction before detaching.",
         {{"local_transaction_id",
           std::to_string(transaction.local_transaction_id)},
-         {"transaction_uuid", UuidBytesToText(transaction.transaction_uuid.bytes)},
          {"snapshot_visible_through_local_transaction_id",
           std::to_string(
               transaction
@@ -6896,7 +6930,8 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
          {"engine_finality_detail", outcome.engine_detail},
          {"post_inventory_secondary_failure",
           outcome.secondary_failure ? "true" : "false"},
-         {"mga_finality_authority", "engine"}}));
+         {"mga_finality_authority", "engine"}},
+        {{"transaction_uuid", core::platform::Uuid{transaction.transaction_uuid.bytes}}}));
   }
   for (const auto& outcome : retained_transactions) {
     const auto& transaction = outcome.transaction;
@@ -6911,25 +6946,25 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
             : "Disconnect retained an exact active MGA selector because the engine conclusively did not apply rollback.",
         {{"local_transaction_id",
           std::to_string(transaction.local_transaction_id)},
-         {"transaction_uuid", UuidBytesToText(transaction.transaction_uuid.bytes)},
          {"snapshot_visible_through_local_transaction_id",
           std::to_string(
               transaction
                   .snapshot_visible_through_local_transaction_id)},
          {"finality", outcome.finality},
          {"engine_finality_detail", outcome.engine_detail},
-         {"mga_finality_authority", "engine"}}));
+         {"mga_finality_authority", "engine"}},
+        {{"transaction_uuid", core::platform::Uuid{transaction.transaction_uuid.bytes}}}));
   }
   if (retained_for_recovery) {
     result.diagnostics.push_back(DetachCleanupDiagnostic(
         "ENGINE.DBLC_DETACH_RECOVERY_QUARANTINED",
         ServerDiagnosticSeverity::kWarning,
         "The session remains quarantined until engine-owned transaction recovery and session cleanup complete.",
-        {{"session_uuid", UuidBytesToText(key.bytes)},
-         {"temporary_cleanup_state", temporary_cleanup_state},
+        {{"temporary_cleanup_state", temporary_cleanup_state},
          {"unresolved_transaction_count",
           std::to_string(unresolved_transaction_count)},
-         {"session_erased", "false"}}));
+         {"session_erased", "false"}},
+        {{"session_uuid", core::platform::Uuid{key.bytes}}}));
   }
   if (erased != 0) {
     result.diagnostics.push_back(DetachCleanupDiagnostic(
@@ -6937,7 +6972,6 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
         ServerDiagnosticSeverity::kInfo,
         "Detach cleanup released session-scoped runtime resources deterministically.",
         {{"detail", cleanup_detail},
-         {"session_uuid", UuidBytesToText(key.bytes)},
          {"auth_contexts_removed", std::to_string(auth_contexts_removed)},
          {"prepared_tombstoned", std::to_string(prepared_tombstoned)},
          {"cursors_tombstoned", std::to_string(cursors_tombstoned)},
@@ -6948,7 +6982,8 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
          {"temporary_rows_deleted", std::to_string(temporary_rows_deleted)},
          {"temporary_large_values_reclaimed", std::to_string(temporary_large_values_reclaimed)},
          {"temporary_private_metadata_retired", std::to_string(temporary_private_metadata_retired)},
-         {"temporary_cleanup_state", temporary_cleanup_state}}));
+         {"temporary_cleanup_state", temporary_cleanup_state}},
+        {{"session_uuid", core::platform::Uuid{key.bytes}}}));
     if (rolled_back_local_transaction_id != 0) {
       result.diagnostics.push_back(DetachCleanupDiagnostic(
           "ENGINE.DBLC_DETACH_TRANSACTION_ROLLED_BACK",
@@ -7025,10 +7060,12 @@ ServerSessionBindingControlResult ApplyServerSessionBindingReport(
                                                       report.catalog_session_id,
                                                       report.protocol_session_id);
   if (session_it == registry->sessions_by_uuid.end()) {
-    return SessionControlRejected("SERVER.SESSION_BINDING.SESSION_NOT_FOUND",
-                                  "session_not_found",
-                                  "SESSION_BINDING_REPORT target session is not active.",
-                                  {{"catalog_session_id", UuidBytesToText(report.catalog_session_id)}});
+    return SessionControlRejected(
+        "SERVER.SESSION_BINDING.SESSION_NOT_FOUND",
+        "session_not_found",
+        "SESSION_BINDING_REPORT target session is not active.",
+        {},
+        {{"catalog_session_id", core::platform::Uuid{report.catalog_session_id}}});
   }
   auto& session = session_it->second;
   if (authority.sequence <= session.session_binding_control_sequence) {
@@ -7039,30 +7076,37 @@ ServerSessionBindingControlResult ApplyServerSessionBindingReport(
                                    {"last_sequence", std::to_string(session.session_binding_control_sequence)}});
   }
   if (!UuidMatchesIfPresent(report.attachment_id, session.connection_uuid)) {
-    return SessionControlRejected("SERVER.SESSION_BINDING.ROUTE_MISMATCH",
-                                  "attachment_id_mismatch",
-                                  "SESSION_BINDING_REPORT attachment did not match the server session.",
-                                  {{"session_uuid", UuidBytesToText(session_it->first.bytes)}});
+    return SessionControlRejected(
+        "SERVER.SESSION_BINDING.ROUTE_MISMATCH",
+        "attachment_id_mismatch",
+        "SESSION_BINDING_REPORT attachment did not match the server session.",
+        {},
+        {{"session_uuid", core::platform::Uuid{session_it->first.bytes}}});
   }
   if (!UuidMatchesIfPresent(report.authenticated_principal_id, session.principal_uuid)) {
-    return SessionControlRejected("SERVER.SESSION_BINDING.PRINCIPAL_MISMATCH",
-                                  "authenticated_principal_id_mismatch",
-                                  "SESSION_BINDING_REPORT principal did not match the server session.",
-                                  {{"session_uuid", UuidBytesToText(session_it->first.bytes)}});
+    return SessionControlRejected(
+        "SERVER.SESSION_BINDING.PRINCIPAL_MISMATCH",
+        "authenticated_principal_id_mismatch",
+        "SESSION_BINDING_REPORT principal did not match the server session.",
+        {},
+        {{"session_uuid", core::platform::Uuid{session_it->first.bytes}}});
   }
   if (!UuidMatchesIfPresent(report.session_user_id, session.effective_user_uuid)) {
-    return SessionControlRejected("SERVER.SESSION_BINDING.USER_MISMATCH",
-                                  "session_user_id_mismatch",
-                                  "SESSION_BINDING_REPORT user did not match the server session.",
-                                  {{"session_uuid", UuidBytesToText(session_it->first.bytes)}});
+    return SessionControlRejected(
+        "SERVER.SESSION_BINDING.USER_MISMATCH",
+        "session_user_id_mismatch",
+        "SESSION_BINDING_REPORT user did not match the server session.",
+        {},
+        {{"session_uuid", core::platform::Uuid{session_it->first.bytes}}});
   }
   if (report.current_txn_id != session.local_transaction_id) {
-    return SessionControlRejected("SERVER.SESSION_BINDING.TRANSACTION_MISMATCH",
-                                  "current_txn_id_mismatch",
-                                  "SESSION_BINDING_REPORT transaction id did not match the engine-owned session transaction.",
-                                  {{"session_uuid", UuidBytesToText(session_it->first.bytes)},
-                                   {"reported_txn_id", std::to_string(report.current_txn_id)},
-                                   {"server_txn_id", std::to_string(session.local_transaction_id)}});
+    return SessionControlRejected(
+        "SERVER.SESSION_BINDING.TRANSACTION_MISMATCH",
+        "current_txn_id_mismatch",
+        "SESSION_BINDING_REPORT transaction id did not match the engine-owned session transaction.",
+        {{"reported_txn_id", std::to_string(report.current_txn_id)},
+         {"server_txn_id", std::to_string(session.local_transaction_id)}},
+        {{"session_uuid", core::platform::Uuid{session_it->first.bytes}}});
   }
 
   session.session_binding_present = true;
@@ -7227,10 +7271,12 @@ ServerSessionBindingControlResult ApplyServerSessionTakeoverRequest(
   }
   std::string detail;
   if (!TakeoverClaimsMatch(session, request, &detail)) {
-    return SessionControlRejected("SERVER.SESSION_TAKEOVER.CLAIM_MISMATCH",
-                                  detail,
-                                  "TAKEOVER_REQUEST claims did not match the server-owned session binding.",
-                                  {{"session_uuid", UuidBytesToText(session_it->first.bytes)}});
+    return SessionControlRejected(
+        "SERVER.SESSION_TAKEOVER.CLAIM_MISMATCH",
+        detail,
+        "TAKEOVER_REQUEST claims did not match the server-owned session binding.",
+        {},
+        {{"session_uuid", core::platform::Uuid{session_it->first.bytes}}});
   }
 
   const auto physical_projection =
@@ -7241,9 +7287,9 @@ ServerSessionBindingControlResult ApplyServerSessionTakeoverRequest(
         "SERVER.SESSION_TAKEOVER.PHYSICAL_CHANNEL_REQUIRED",
         "takeover_physical_channel_not_admitted",
         "TAKEOVER_REQUEST destination is not an admitted physical parser channel.",
-        {{"session_uuid", UuidBytesToText(session_it->first.bytes)},
-         {"destination_connection_uuid",
-          UuidBytesToText(request.attachment_id)}});
+        {},
+        {{"session_uuid", core::platform::Uuid{session_it->first.bytes}},
+         {"destination_connection_uuid", core::platform::Uuid{request.attachment_id}}});
   }
 
   if ((request.mask & kServerTakeoverClaimAttachmentId) &&

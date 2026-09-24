@@ -17,7 +17,8 @@ static void Check(bool ok, const char* message) {
 
 int main() {
   const auto relation = scratchbird::tests::FixtureUuid(6047, 10);
-  const auto policy = scratchbird::tests::FixtureUuid(6047, 11);
+  auto policy = scratchbird::tests::FixtureUuid(6047, 11);
+  policy.bytes[0] = 0; policy.bytes[1] = '\n'; policy.bytes[2] = '|';
   page::OrderedIngestPhysicalClusteringRequest request;
   request.current_descriptor = {relation, "city", policy, 7, true};
   request.requested_placement_key_column = "city";
@@ -49,7 +50,7 @@ int main() {
   append.target_table.uuid = relation;
   append.option_envelopes = {"ordered_ingest=enabled", "ordered_ingest.placement_key=city",
       "physical_clustering=enabled", "physical_clustering.policy_uuid=" +
-      scratchbird::core::uuid::UuidToString(policy)};
+      std::string(reinterpret_cast<const char*>(policy.bytes.data()), policy.bytes.size())};
   api::CrudRowVersionRecord first, second;
   first.row_uuid = scratchbird::tests::FixtureUuid(6047, 20);
   second.row_uuid = first.row_uuid;
@@ -67,8 +68,14 @@ int main() {
             staged[0].row_uuid == second.row_uuid && staged[1].row_uuid == first.row_uuid &&
             logical[0] == values[1] && logical[1] == values[0],
         "placement permutation changed binary row identity or logical alignment");
-  for (const char* invalid : {"policy-old", "00000000-0000-0000-0000-000000000000",
-                             "018f1234-5678-4abc-8def-0123456789ab"}) {
+  auto wrong_version = policy; wrong_version.bytes[6] = 0x40;
+  const std::vector<std::string> invalid_values{
+      "policy-old", "00000000-0000-0000-0000-000000000000",
+      "018f1234-5678-4abc-8def-0123456789ab",
+      "018f1234-5678-7abc-8def-0123456789ab",
+      std::string(16, '\0'), std::string(15, 'x'), std::string(17, 'x'),
+      std::string(reinterpret_cast<const char*>(wrong_version.bytes.data()), 16)};
+  for (const auto& invalid : invalid_values) {
     append.option_envelopes.back() = std::string("physical_clustering.policy_uuid=") + invalid;
     staged = original;
     logical = values;
@@ -76,6 +83,6 @@ int main() {
     Check(!selected.ok && selected.failure_reason == "physical_clustering_policy_uuid_invalid" &&
               staged[0].row_uuid == first.row_uuid && staged[1].row_uuid == second.row_uuid &&
               logical == values,
-          "invalid policy text was accepted or changed staged input");
+          "invalid policy carrier was accepted or changed staged input");
   }
 }

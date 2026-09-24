@@ -105,6 +105,58 @@ db::RepairAccessRequest AccessFor(const RepairFixture& fixture,
   return request;
 }
 
+bool BinaryLedgerCodecProof(const std::filesystem::path& directory) {
+  RepairFixture fixture;
+  // Delimiters and NUL bytes are ordinary UUID bytes, never record framing.
+  fixture.operation_uuid.value.bytes[9] = '|';
+  fixture.operation_uuid.value.bytes[10] = '\n';
+  fixture.operation_uuid.value.bytes[11] = 0;
+  auto event = EventFor(fixture, db::RepairEventPhase::finding_recorded, 1, 0,
+                        "BINARY_UUID_REGRESSION");
+  const auto built = db::BuildRepairEventRecord(event);
+  if (!Expect(built.ok(), "binary repair event build failed")) return false;
+  const std::string identity(reinterpret_cast<const char*>(fixture.operation_uuid.value.bytes.data()), 16);
+  bool ok = Expect(built.serialized.starts_with("SBREPR02") &&
+                   built.serialized.find(identity) != std::string::npos,
+                   "repair event must carry the exact binary16 identity");
+  const auto parsed = db::ParseRepairEventRecord(built.serialized);
+  ok = Expect(parsed.ok() && parsed.event.operation_uuid.value == fixture.operation_uuid.value &&
+              parsed.serialized == built.serialized, "binary repair event round trip changed identity") && ok;
+  ok = Expect(!db::ParseRepairEventRecord("SB_REPAIR_EVENT_V1|1|1|finding_recorded").ok(),
+              "legacy text repair record was admitted") && ok;
+  for (std::size_t size = 0; size < built.serialized.size(); ++size) {
+    if (!Expect(!db::ParseRepairEventRecord(built.serialized.substr(0, size)).ok(),
+                "truncated repair record was admitted")) return false;
+  }
+  auto overlong = built.serialized;
+  overlong[8] = overlong[9] = overlong[10] = overlong[11] = static_cast<char>(0xff);
+  ok = Expect(!db::ParseRepairEventRecord(overlong).ok(), "oversized repair frame was admitted") && ok;
+  ok = Expect(!db::ParseRepairEventRecord(built.serialized + "x").ok(),
+              "trailing repair-record byte was admitted") && ok;
+  auto optional_nil = event;
+  optional_nil.object_uuid = {}; optional_nil.row_uuid = {};
+  optional_nil.version_uuid = {}; optional_nil.transaction_uuid = {};
+  const auto nil_built = db::BuildRepairEventRecord(optional_nil);
+  const auto nil_parsed = db::ParseRepairEventRecord(nil_built.serialized);
+  ok = Expect(nil_built.ok() && nil_parsed.ok() && nil_parsed.event.row_uuid.value.is_nil(),
+              "optional nil repair identity did not round trip") && ok;
+  const auto ledger_path = directory / "binary-delimiter-ledger.sbrel";
+  const auto first = db::AppendRepairEventToLedger(ledger_path.string(), event);
+  event.sequence = 2; event.previous_event_digest = first.event.event_digest;
+  const auto second = db::AppendRepairEventToLedger(ledger_path.string(), event);
+  ok = Expect(first.ok() && second.ok() && second.ledger.events.size() == 2,
+              "binary-framed repair records did not retain the append-only chain") && ok;
+  const auto broken_path = directory / "binary-truncated-ledger.sbrel";
+  {
+    std::ofstream output(broken_path, std::ios::binary | std::ios::trunc);
+    output.write(built.serialized.data(), built.serialized.size());
+    output.write(built.serialized.data(), built.serialized.size() - 1);
+  }
+  ok = Expect(!db::LoadRepairEventLedger(broken_path.string()).ok(),
+              "truncated binary ledger tail was accepted") && ok;
+  return ok;
+}
+
 bool LedgerAppendAndAccessProof(const std::filesystem::path& ledger_path,
                                 const RepairFixture& fixture,
                                 u64* scan_digest,
@@ -474,10 +526,11 @@ int main(int argc, char** argv) {
   u64 scan_digest = 0;
   u64 mutation_digest = 0;
 
-  bool ok = LedgerAppendAndAccessProof(ledger_path,
+  bool ok = BinaryLedgerCodecProof(work_dir);
+  ok = LedgerAppendAndAccessProof(ledger_path,
                                        fixture,
                                        &scan_digest,
-                                       &mutation_digest);
+                                       &mutation_digest) && ok;
   ok = LedgerRefusalProof(ledger_path, fixture) && ok;
   ok = LedgerTamperProof(ledger_path, tampered_path) && ok;
   ok = PageQuarantineProof(fixture, scan_digest, mutation_digest) && ok;

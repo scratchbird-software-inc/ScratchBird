@@ -6,6 +6,7 @@
 #include "core/hash/hash_digest.hpp"
 #include "uuid.hpp"
 #include <cstdlib>
+#include <algorithm>
 #include <iostream>
 
 namespace s = scratchbird::engine::sblr;
@@ -114,6 +115,34 @@ int main(){
         // These are already rejected by the canonical operand codec. Do not
         // substitute an empty package and call it a gateway validation test.
         Check(s::EncodeSblrOpcodeStream(bad).empty(),"canonical codec admitted invalid source-map operand");
+        continue;
+      }
+      if(mutation==2||mutation==3){
+        Check(s::EncodeSblrOpcodeStream(bad).empty(),
+              "canonical codec admitted malformed source-map UUID");
+        auto hostile=Request(package,false,0);
+        const auto encoded=s::EncodeSblrEnvelope(package.operations[position]);
+        const std::vector<std::uint8_t> operation_bytes(encoded.begin(),encoded.end());
+        const auto operation=std::search(hostile.canonical_sbos.begin(),hostile.canonical_sbos.end(),
+                                         operation_bytes.begin(),operation_bytes.end());
+        const auto& body=package.operations[position].operands.front().value_body;
+        const auto identity=std::search(operation_bytes.begin(),operation_bytes.end(),body.begin(),body.end());
+        Check(operation!=hostile.canonical_sbos.end()&&identity!=operation_bytes.end(),
+              "hostile source-map fixture offset missing");
+        if(operation==hostile.canonical_sbos.end()||identity==operation_bytes.end())continue;
+        Check(std::search(identity+1,operation_bytes.end(),body.begin(),body.end())==operation_bytes.end(),
+              "hostile source-map identity offset ambiguous");
+        const auto offset=static_cast<std::size_t>(operation-hostile.canonical_sbos.begin());
+        hostile.canonical_sbos[offset+(identity-operation_bytes.begin())+(mutation==2?6:8)]=
+            mutation==2?0x40:0;
+        const auto put_crc=[&](std::size_t at,std::uint32_t crc){
+          for(unsigned byte=0;byte<4;++byte)hostile.canonical_sbos[at+byte]=static_cast<std::uint8_t>(crc>>(8*byte));
+        };
+        put_crc(offset+operation_bytes.size()-4,
+                s::SblrCrc32c(hostile.canonical_sbos.data()+offset,operation_bytes.size()-8));
+        put_crc(hostile.canonical_sbos.size()-4,
+                s::SblrCrc32c(hostile.canonical_sbos.data(),hostile.canonical_sbos.size()-4));
+        Refused(hostile);
         continue;
       }
       Refused(Request(bad,false,0));

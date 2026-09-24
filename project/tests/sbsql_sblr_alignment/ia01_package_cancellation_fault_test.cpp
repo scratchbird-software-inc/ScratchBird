@@ -133,10 +133,10 @@ Fixture CreateFixture() {
   Require(created.ok(), "fixture database creation failed");
   fixture.resource_epoch = created.state.resource_seed_catalog.resource_epoch == 0
       ? 1 : created.state.resource_seed_catalog.resource_epoch;
-  const auto inventory = db::PersistLocalTransactionInventoryToDatabase(
-      fixture.database_path.string(),
-      scratchbird::transaction::mga::MakeEmptyLocalTransactionInventory());
-  Require(inventory.ok(), "fixture MGA inventory initialization failed");
+  const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(
+      fixture.database_path.string());
+  Require(inventory.ok() && inventory.inventory.publication_base.has_value(),
+          "fixture MGA inventory load failed");
   return fixture;
 }
 

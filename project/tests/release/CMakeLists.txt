@@ -921,7 +921,7 @@ if(NOT TARGET public_driver_test_database_seed)
   )
   target_compile_features(public_driver_test_database_seed PRIVATE cxx_std_23)
   target_link_libraries(public_driver_test_database_seed PRIVATE
-    sb_engine_internal_api
+    sb_engine sb_engine_internal_api
     sb_storage_database
     sb_core_memory
     sb_core_uuid

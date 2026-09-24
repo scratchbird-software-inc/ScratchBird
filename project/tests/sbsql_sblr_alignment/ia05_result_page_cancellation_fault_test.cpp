@@ -112,6 +112,20 @@ sblr::SblrOperand TypedQueryOperand(std::uint32_t ordinal, std::string type,
   return operand;
 }
 
+sblr::SblrOperand BinaryQueryBinding(std::uint32_t ordinal, std::uint32_t node_id,
+                                     std::string variant,
+                                     std::vector<std::uint32_t> expression_ids) {
+  sblr::SblrOperand binding;
+  binding.ordinal = ordinal;
+  binding.type = "relational_node_binding_v2";
+  binding.name = "slot_" + std::to_string(node_id);
+  binding.value_kind = sblr::SblrValueKind::relational_node_binding;
+  Require(sblr::EncodeRelationalNodeBindingV1(
+              {node_id, std::move(variant), std::move(expression_ids), {}, {}, {}},
+              &binding.value_body), "result page binary node binding encoding failed");
+  return binding;
+}
+
 sblr::SblrOperationEnvelope ValuesQueryMember(
     const bridge::StatementContextReceiptView& view,
     const platform::Uuid& parser_uuid,
@@ -213,9 +227,8 @@ sblr::SblrOperationEnvelope ValuesQueryMember(
       ordinal++, "relational_values_row_v1", "slot_1", "1"));
   member.operands.push_back(TypedQueryOperand(
       ordinal++, "relational_node_v1", "slot_1", "13|0|-|1|1"));
-  member.operands.push_back(TypedQueryOperand(
-      ordinal++, "relational_node_binding_v1", "slot_1",
-      "76616c7565732e6c69746572616c2d7461626c652e7631|1|-|-|-"));
+  member.operands.push_back(BinaryQueryBinding(
+      ordinal++, 1, "values.literal-table.v1", {1}));
 
   sblr::SblrOperand table;
   table.ordinal = ordinal++;

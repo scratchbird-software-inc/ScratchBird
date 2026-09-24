@@ -77,7 +77,7 @@ int main() {
   const auto literal_binding = literal_fixture::FinalizeLiteral(receipt, view);
   const auto nested_submission = PackageWithMember(
       fixture, view, parser_uuid,
-      SourceFreeValuesQueryMember(view, parser_uuid, literal_binding));
+      SourceFreeValuesQueryMember(view, parser_uuid, literal_binding, receipt));
 
   bind::ParseTextBindRequestV1 public_bind;
   public_bind.authenticated_receipt_uuid = RawUuid(view.receipt_uuid);

@@ -784,10 +784,13 @@ EngineUuid DirectConstraintUuid(
     const std::string& constraint_class) {
   (void)table;
   (void)column_name;
-  (void)constraint_class;
-  const auto identity = DirectIdentityField(fields, {"constraint_uuid", "uuid"});
-  if (identity.is_nil()) throw std::invalid_argument("bulk_constraint_identity_required");
-  return identity;
+  // CREATE TABLE publishes a distinct candidate-key identity. A column may
+  // also carry a foreign-key identity; never substitute that for its own key.
+  const bool candidate_key = constraint_class == "primary_key" ||
+                             constraint_class == "unique_key";
+  return candidate_key
+      ? DirectIdentityField(fields, {"candidate_key_constraint_uuid"})
+      : DirectIdentityField(fields, {"constraint_uuid", "uuid"});
 }
 
 void PopulateDirectUniqueViolationDiagnostic(
@@ -1800,9 +1803,13 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
       }
     }
     if (unique_key && !deferred_timing) {
+      const auto published_support = DirectIdentityField(fields, {"support_uuid"});
+      if (published_support.is_nil())
+        return fail_before_proof("bulk_unique_proof_support_index_missing");
       std::optional<CrudIndexRecord> support_index;
       for (const auto& index : visible_indexes) {
-        if (DirectIndexIsUnique(index) &&
+        if (index.index_uuid == published_support &&
+            DirectIndexIsUnique(index) &&
             DirectIndexCoversColumn(index, column_name)) {
           support_index = index;
           break;
@@ -1818,6 +1825,8 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
                                table,
                                column_name,
                                primary_key ? "primary_key" : "unique_key");
+      if (unique.constraint_uuid.is_nil())
+        return fail_before_proof("bulk_constraint_identity_required");
       unique.index_uuid = support_index->index_uuid;
       unique.table_uuid = table.table_uuid;
       unique.column_name = column_name;
@@ -1908,6 +1917,8 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     scratchbird::core::bulk_load::BulkForeignKeyProofRequest foreign_key;
     foreign_key.constraint_uuid =
         DirectConstraintUuid(fields, table, column_name, "foreign_key");
+    if (foreign_key.constraint_uuid.is_nil())
+      return fail_before_proof("bulk_constraint_identity_required");
     foreign_key.child_table_uuid = table.table_uuid;
     foreign_key.child_column_name = column_name;
     foreign_key.parent_table_uuid = parent->table_uuid;

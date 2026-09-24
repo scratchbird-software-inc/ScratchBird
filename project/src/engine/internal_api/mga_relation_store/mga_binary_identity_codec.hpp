@@ -14,36 +14,6 @@
 
 namespace scratchbird::engine::internal_api {
 
-// Explicit migration boundary for legacy storage TEXT identities. Never use
-// names/labels as identities; invalid input leaves the destination unchanged.
-inline bool ReadLegacyEngineUuidText(std::string_view text, EngineUuid* out,
-                                    bool optional = false) {
-  if (!out) return false;
-  if (text.empty() || text == "00000000-0000-0000-0000-000000000000") {
-    if (!optional) return false;
-    *out = {}; return true;
-  }
-  const auto parsed = core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() || !(core::uuid::IsEngineIdentityUuid(parsed.value) ||
-                       (optional && parsed.value.is_nil()))) return false;
-  *out = parsed.value; return true;
-}
-
-// Legacy length-framed TEXT UUID boundary. Preserve cursor and output on
-// malformed length, spelling or engine-identity admission failure.
-inline bool ReadLegacyBinaryEngineUuid(std::span<const std::uint8_t> bytes,
-    std::size_t* cursor, EngineUuid* output, bool optional = false) {
-  if (!cursor || !output) return false;
-  auto next = *cursor;
-  std::string text;
-  EngineUuid identity;
-  if (!ReadBinaryString(bytes, &next, &text) ||
-      !ReadLegacyEngineUuidText(text, &identity, optional)) return false;
-  *cursor = next;
-  *output = identity;
-  return true;
-}
-
 // Binary row/version authority only. The string is an encoded-byte buffer,
 // not a UUID spelling. User UUID values use their datatype codec and policy.
 // No allocation or destination modification occurs for invalid identities.

@@ -60,8 +60,9 @@ sblr::SblrOperationEnvelope ExactEnvelope(const OperationSpec& spec) {
   operand.type = spec.operand_type;
   operand.name = spec.operand_name;
   operand.value_kind = sblr::SblrValueKind::descriptor_ref;
-  operand.value_body.assign(16, 0);
-  operand.value_body.front() = 1;
+  const auto descriptor_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "018f1000-0000-7000-8000-000000003857");
+  operand.value_body.assign(descriptor_uuid.bytes.begin(), descriptor_uuid.bytes.end());
   envelope.operands.push_back(std::move(operand));
   return envelope;
 }

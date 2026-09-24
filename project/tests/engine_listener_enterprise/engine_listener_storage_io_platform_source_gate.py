@@ -48,6 +48,7 @@ def compile_windows_object(compiler: str, project_root: Path, source: Path, outp
         f"-I{project_root / 'src/storage/page'}",
         f"-I{project_root / 'src/core/platform'}",
         f"-I{project_root / 'src/core/uuid'}",
+        f"-I{project_root / 'src/core/time'}",
         f"-I{project_root / 'src/core/memory'}",
         f"-I{project_root / 'src/core/metrics'}",
         f"-I{project_root / 'src/core/agents'}",

@@ -1,3 +1,4 @@
+#include "wire/binary_status_packet.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -361,6 +362,22 @@ void TestLifecycleStartReloadAndAdmission(const std::filesystem::path& database_
                                                       false));
   Require(start.ok(), "config/policy/security lifecycle failed to start");
   const auto json = server::SerializeConfigPolicySecurityLifecycleJson(start.lifecycle);
+  std::vector<scratchbird::wire::public_result::Field> status_fields;
+  Require(scratchbird::wire::binary_status::Decode(json, &status_fields),
+          "security lifecycle status is not a binary status packet");
+  unsigned identities = 0;
+  for (const auto& field : status_fields) {
+    if (field.kind != scratchbird::wire::public_result::Kind::uuid) continue;
+    Require(field.value.size() == 16 &&
+                std::equal(field.value.begin(), field.value.end(),
+                           start.lifecycle.database_uuid.bytes.begin(),
+                           [](char byte, std::uint8_t expected) {
+                             return static_cast<std::uint8_t>(byte) == expected;
+                           }),
+            "security lifecycle status changed native database UUID");
+    ++identities;
+  }
+  Require(identities == 1, "security lifecycle status UUID missing or duplicated");
   Require(Contains(json, "prepared_statements"), "cache invalidation target missing");
   Require(Contains(json, "password_hash_verification_engine_owned"),
           "password hash authority was not published");

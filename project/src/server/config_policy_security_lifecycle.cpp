@@ -1,3 +1,4 @@
+#include "wire/binary_status_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -591,11 +592,11 @@ std::string SerializeDatabaseLifecycleThreatModelResultJson(
 
 std::string SerializeConfigPolicySecurityLifecycleJson(
     const ConfigPolicySecurityLifecycle& lifecycle) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "{\"config_policy_security_lifecycle\":{"
       << "\"descriptor_version\":" << lifecycle.descriptor_version << ","
       << "\"database_uuid\":\""
-      << JsonEscape(scratchbird::core::uuid::UuidToString(lifecycle.database_uuid))
+      << scratchbird::wire::binary_status::Identity(lifecycle.database_uuid)
       << "\","
       << "\"config_source\":\"" << JsonEscape(lifecycle.config_source) << "\","
       << "\"config_source_epoch\":" << lifecycle.config_source_epoch << ","

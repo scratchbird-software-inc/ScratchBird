@@ -209,7 +209,7 @@ Submission SourceQuerySubmission(
   auto submission = PackageWithMember(
       fixture, receipt.view, parser_uuid,
       SourceFreeValuesQueryMember(receipt.view, parser_uuid,
-                                  literal_binding));
+                                  literal_binding, receipt.handle));
   FaultRequire(profile, !submission.stream.empty(),
                "source-free query fixture was not canonical");
   return submission;

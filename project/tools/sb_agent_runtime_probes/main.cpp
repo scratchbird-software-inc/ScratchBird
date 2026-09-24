@@ -252,9 +252,9 @@ void RunAllChecks(CheckState* state) {
   Require(state, ResolveAgentTimeAuthority(cluster_ctx, true).status.ok, "cluster majority time authority available");
 
   AgentInstanceRecord instance;
-  instance.instance_uuid = "instance:memory_governor";
+  instance.instance_uuid = DeterministicAgentInstanceUuid(std::string(reinterpret_cast<const char*>(local_ctx.database_uuid.bytes.data()), local_ctx.database_uuid.bytes.size()), "memory_governor", memory.scope, 1);
   instance.agent_type_id = "memory_governor";
-  instance.policy_uuid = "policy:memory_governor:baseline";
+  instance.policy_uuid = policy.policy_uuid;
   instance.scope = "node/database/session/workload";
   AgentInstanceRecord restored_instance;
   Require(state, RestoreAgentInstanceRecord(SerializeAgentInstanceRecord(instance), &restored_instance).ok, "agent instance serializes and restores");

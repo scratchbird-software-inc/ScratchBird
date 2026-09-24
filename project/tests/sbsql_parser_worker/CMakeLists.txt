@@ -6445,7 +6445,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     )
     target_compile_features(cdp_database_seed PRIVATE cxx_std_23)
     target_link_libraries(cdp_database_seed PRIVATE
-      sb_engine_internal_api
+      sb_engine sb_engine_internal_api
       sb_storage_database
       sb_core_memory
       sb_core_uuid

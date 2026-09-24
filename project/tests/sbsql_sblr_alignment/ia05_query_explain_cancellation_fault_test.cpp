@@ -50,12 +50,26 @@ sblr::SblrOperand TypedQueryOperand(std::uint32_t ordinal, std::string type,
 sblr::SblrOperationEnvelope SourceFreeValuesQueryMember(
     const bridge::StatementContextReceiptView& view,
     const platform::Uuid& parser_uuid,
-    const literal_fixture::Binding& literal_binding) {
+    const literal_fixture::Binding& literal_binding,
+    const bridge::StatementContextReceiptHandle& receipt) {
+  api::EngineRequestContext admitted_context;
+  Require(bridge::CopyStatementContextEngineContextV1(
+              receipt, &admitted_context, nullptr) == SB_ENGINE_STATUS_OK,
+          "query fixture live datatype context unavailable");
   api::RelationalTypeDescriptor descriptor_record;
   descriptor_record.descriptor_id = 1;
   descriptor_record.descriptor_uuid.bytes = literal_binding.descriptor_uuid;
   descriptor_record.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
   descriptor_record.nullability = api::RelationalNullability::kNonNull;
+  descriptor_record.datatype_identity_authoritative = true;
+  descriptor_record.descriptor_generation = literal_binding.descriptor_generation;
+  descriptor_record.type_generation = 1;
+  descriptor_record.codec_id = "datatype.int64.le.v1";
+  descriptor_record.codec_version = 1; descriptor_record.codec_generation = 1;
+  descriptor_record.statement_receipt_uuid = view.receipt_uuid;
+  descriptor_record.datatype_catalog_snapshot_uuid = admitted_context.datatype_catalog_snapshot_uuid;
+  descriptor_record.datatype_catalog_generation = admitted_context.datatype_catalog_generation;
+  descriptor_record.datatype_registry_generation = admitted_context.datatype_registry_generation;
 
   auto member = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
@@ -138,9 +152,15 @@ sblr::SblrOperationEnvelope SourceFreeValuesQueryMember(
       ordinal++, "relational_values_row_v1", "slot_1", "1"));
   member.operands.push_back(TypedQueryOperand(
       ordinal++, "relational_node_v1", "slot_1", "13|0|-|1|1"));
-  member.operands.push_back(TypedQueryOperand(
-      ordinal++, "relational_node_binding_v1", "slot_1",
-      "76616c7565732e6c69746572616c2d7461626c652e7631|1|-|-|-"));
+  sblr::SblrOperand binding;
+  binding.ordinal = ordinal++;
+  binding.type = "relational_node_binding_v2";
+  binding.name = "slot_1";
+  binding.value_kind = sblr::SblrValueKind::relational_node_binding;
+  Require(sblr::EncodeRelationalNodeBindingV1(
+              {1, "values.literal-table.v1", {1}, {}, {}, {}}, &binding.value_body),
+          "003608 source VALUES binary binding encoding failed");
+  member.operands.push_back(std::move(binding));
 
   sblr::SblrOperand table;
   table.ordinal = ordinal++;
@@ -356,7 +376,7 @@ int main() {
   auto literal_binding = literal_fixture::FinalizeLiteral(receipt, view);
   const auto query_submission = PackageWithMember(
       fixture, view, parser_uuid,
-      SourceFreeValuesQueryMember(view, parser_uuid, literal_binding));
+      SourceFreeValuesQueryMember(view, parser_uuid, literal_binding, receipt));
 
   bind::QueryExplainBindRequestV1 public_bind;
   public_bind.authenticated_receipt_uuid = RawUuid(view.receipt_uuid);

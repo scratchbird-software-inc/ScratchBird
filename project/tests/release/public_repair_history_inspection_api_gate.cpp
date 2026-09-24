@@ -339,6 +339,29 @@ bool EngineInspectionProof(const Fixture& fixture,
   const auto result = api::EngineInspectRepairHistory(request);
   ok = Expect(result.ok && result.repair_history_ready,
               "engine repair history inspection should pass") && ok;
+  // Every identity column retains a native UUID descriptor and exactly 16
+  // binary bytes, including nil optional references. No display text crosses
+  // the engine API boundary.
+  for (const auto& row : result.result_shape.rows) {
+    for (const auto& [name, value] : row.fields) {
+      if (name == "row_uuid" || name == "version_uuid" || name == "page_uuid" ||
+          name == "finding_uuid" || name == "operation_uuid") {
+        ok = Expect(value.descriptor.canonical_type_name == "uuid" &&
+                        value.binary_value.size() == 16 && value.encoded_value.empty(),
+                    "repair history identity must remain binary16") && ok;
+      }
+    }
+  }
+  const auto* ordinary = RowByKind(result, "ordinary_version");
+  if (ordinary != nullptr) {
+    for (const auto& [name, value] : ordinary->fields) {
+      if (name == "row_uuid") {
+        ok = Expect(value.binary_value == std::vector<unsigned char>(
+                        fixture.row_uuid.value.bytes.begin(), fixture.row_uuid.value.bytes.end()),
+                    "repair history row identity bytes must remain unchanged") && ok;
+      }
+    }
+  }
   ok = Expect(result.ordinary_version_count == 2,
               "engine inspection should count ordinary versions") && ok;
   ok = Expect(result.archive_entry_count == 1,

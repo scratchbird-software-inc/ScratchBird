@@ -249,7 +249,7 @@ NativeCheckpointHorizonResult VerifyCurrentNativeCheckpointHorizonFromOpenDevice
     const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
     u64 maximum_retained_image_bytes) noexcept;
 
-inline constexpr u32 kDirtyObjectManifestFormatVersion = 1;
+inline constexpr u32 kDirtyObjectManifestFormatVersion = 2;
 
 enum class DirtyObjectKind : u16 {
   database_header,
@@ -342,7 +342,7 @@ struct CheckpointRootSelectionResult {
 };
 
 struct DirtyManifestRecoveryRunEvidence {
-  std::string recovery_run_uuid;
+  TypedUuid recovery_run_uuid;
   u64 checkpoint_generation = 0;
   u64 classification_count = 0;
   u64 classification_checksum = 0;
@@ -371,7 +371,7 @@ DirtyManifestRecoveryRunEvidenceResult PersistDirtyManifestRecoveryRunEvidence(
     const std::string& evidence_store_path,
     const DirtyObjectManifest& manifest,
     const DirtyManifestRecoveryResult& recovery,
-    const std::string& recovery_run_uuid);
+    const TypedUuid& recovery_run_uuid);
 DiagnosticRecord MakeDirtyManifestDiagnostic(Status status,
                                              std::string diagnostic_code,
                                              std::string message_key,

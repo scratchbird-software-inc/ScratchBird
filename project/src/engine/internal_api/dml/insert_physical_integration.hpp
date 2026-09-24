@@ -116,7 +116,7 @@ struct InsertPhysicalIntegrationResult {
   TypedUuid preallocation_operation_id;
   TypedUuid overflow_value_uuid;
   TypedUuid strict_bulk_load_id;
-  std::vector<std::string> evidence_refs;
+  std::vector<EngineEvidenceReference> evidence_refs;
   DiagnosticRecord diagnostic;
 
   bool ok() const { return status.ok() && (integrated || filespace_growth_admitted); }

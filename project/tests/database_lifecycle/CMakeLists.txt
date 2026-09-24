@@ -4956,7 +4956,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		      sb_core_bulk_load
 		      sb_core_platform
 		      sb_core_uuid
-		      sb_engine_internal_api
+		      sb_engine sb_engine_internal_api
 		      sb_engine_sblr
 		      sb_storage_database
 		      sb_storage_filespace
@@ -5002,6 +5002,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		  target_compile_features(ipar_unique_index_probe_gate PRIVATE cxx_std_23)
 		  target_link_libraries(ipar_unique_index_probe_gate
 		    PRIVATE
+		      sb_engine
 		      sb_core_platform
 		      sb_core_uuid
 		      sb_engine_internal_api

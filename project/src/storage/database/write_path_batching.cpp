@@ -16,6 +16,7 @@
 #include "transaction_inventory_page.hpp"
 #include "transaction_recovery.hpp"
 #include "uuid.hpp"
+#include "time.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -501,9 +502,14 @@ WritePathBatchingResult ExecuteDurabilityWritePathBatch(
   const auto recovery_path =
       request.scratch_directory / "orh284_recovery_evidence.txt";
   std::filesystem::create_directories(recovery_path.parent_path());
+  const auto clock = scratchbird::core::time::ReadLocalNodeClockSnapshot();
+  if (!clock.ok()) return Refuse(request, "ORH_WRITE_BATCHING_RECOVERY_PROOF_MISSING", "recovery_clock_unavailable");
+  const auto millis = scratchbird::core::time::WallClockToUuidV7Millis(clock.value.wall_clock);
+  if (!millis.ok()) return Refuse(request, "ORH_WRITE_BATCHING_RECOVERY_PROOF_MISSING", "recovery_clock_invalid");
+  const auto run = uuid::GenerateEngineIdentityV7(platform::UuidKind::object, millis.unix_epoch_millis);
+  if (!run.ok()) return Refuse(request, "ORH_WRITE_BATCHING_RECOVERY_PROOF_MISSING", "recovery_identity_unavailable");
   const auto recovery_evidence = PersistDirtyManifestRecoveryRunEvidence(
-      recovery_path.string(), parsed_manifest.manifest, manifest_recovery,
-      "orh284-recovery-run");
+      recovery_path.string(), parsed_manifest.manifest, manifest_recovery, run.value);
   if (!recovery_evidence.ok()) {
     return Refuse(request, "ORH_WRITE_BATCHING_RECOVERY_PROOF_MISSING",
                   recovery_evidence.diagnostic.diagnostic_code);

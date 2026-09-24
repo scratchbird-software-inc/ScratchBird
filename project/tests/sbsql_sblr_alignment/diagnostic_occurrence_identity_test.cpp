@@ -48,7 +48,10 @@ void VerifyActualSources() {
   const auto second = api::LookupEngineResourceDescriptorByUuid({}, {}, "charset");
   Check(!first.ok && !second.ok && !first.resource_descriptor.present &&
             !second.resource_descriptor.present, "resource UUID guard falsely succeeded");
-  VerifyActualEmission(first.diagnostic, second.diagnostic, "CATALOG.RESOURCE.UUID_REQUIRED");
+  VerifyActualEmission(first.diagnostic, second.diagnostic, "CATALOG.INVALID_INPUT");
+  Check(first.diagnostic.message_key == "catalog.resource.uuid_required" &&
+            second.diagnostic.message_key == "catalog.resource.uuid_required",
+        "resource UUID refusal lost its specific required-identity cause");
   const auto decoded = scratchbird::engine::sblr::DecodeSblrEnvelope({});
   const auto repeated = scratchbird::engine::sblr::DecodeSblrEnvelope({});
   Check(!decoded.ok && !repeated.ok && decoded.diagnostics.size() == 1 &&

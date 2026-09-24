@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../../src/core/resources/resource_seed_pack.hpp"
+#include <filesystem>
+#include <stdexcept>
 #include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
 
 #include <cstdio>
@@ -93,7 +96,26 @@ api::EngineTypedValue WindowNull(const api::EngineDescriptor& descriptor) {
 }
 
 dt::DatatypeTextSeedAuthority WindowCollationSeed() {
+  namespace resources = scratchbird::core::resources;
+  static const auto image = [] {
+    resources::ResourceSeedLoadConfig config;
+    config.seed_pack_root = (std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path().parent_path() /
+        "resources/seed-packs/initial-resource-pack").string();
+    const auto loaded = resources::LoadResourceSeedPack(config);
+    if (!loaded.ok() || !loaded.image.unicode_collation)
+      throw std::runtime_error("window fixture collation resource failed admission");
+    return loaded.image;
+  }();
+  // Component bindings plus real qualified comparison data; this test seam
+  // does not claim a live catalog transaction or SQL admission receipt.
   dt::DatatypeTextSeedAuthority seed;
+  seed.database_uuid = WindowUuid(4310);
+  seed.charset_uuid = WindowUuid(4200);
+  seed.collation_uuid = kWindowCollationUuid;
+  seed.resource_epoch = 401;
+  seed.collation_epoch = 402;
+  seed.comparison_profile = resources::CollationProfile::uca17_root_secondary;
+  seed.unicode_collation = image.unicode_collation;
   seed.active = true;
   seed.seed_pack_name = "qow.window.seed";
   seed.seed_pack_version = "1";

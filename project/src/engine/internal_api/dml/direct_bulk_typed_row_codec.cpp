@@ -8,8 +8,6 @@
 
 #include "dml/direct_bulk_typed_row_codec.hpp"
 
-#include "uuid.hpp"
-
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -892,17 +890,15 @@ bool DirectParseRealPayload(dt::CanonicalTypeId type_id,
   return false;
 }
 
-bool DirectParseUuidPayload(std::string_view text,
-                            std::vector<scratchbird::core::platform::byte>* out) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok()) { return false; }
-  out->assign(parsed.value.bytes.begin(), parsed.value.bytes.end());
-  return true;
-}
-
 bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
                             const EngineTypedValue& typed,
                             std::vector<scratchbird::core::platform::byte>* out) {
+  if (target_type == dt::CanonicalTypeId::uuid ||
+      target_type == dt::CanonicalTypeId::enum_value) {
+    if (typed.binary_value.size() != 16 || !typed.encoded_value.empty()) return false;
+    *out = typed.binary_value;
+    return true;
+  }
   const auto layout = dt::LookupDatatypeStorageLayout(target_type);
   const std::size_t inline_bytes =
       layout.ok() ? static_cast<std::size_t>(layout.layout.inline_bytes) : 0;
@@ -945,9 +941,6 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
     case dt::CanonicalTypeId::real32:
     case dt::CanonicalTypeId::real64:
       return DirectParseRealPayload(target_type, typed.encoded_value, out);
-    case dt::CanonicalTypeId::uuid:
-    case dt::CanonicalTypeId::enum_value:
-      return DirectParseUuidPayload(typed.encoded_value, out);
     case dt::CanonicalTypeId::date:
       return DirectParseDatePayload(typed.encoded_value, out);
     case dt::CanonicalTypeId::time:
@@ -1191,6 +1184,12 @@ std::string DirectFixedWidthTypedPayloadFailure(
       continue;
     }
     const std::size_t inline_bytes = column.inline_bytes;
+    if ((target_type == dt::CanonicalTypeId::uuid ||
+         target_type == dt::CanonicalTypeId::enum_value) &&
+        (typed.binary_value.size() != 16 || !typed.encoded_value.empty())) {
+      return "typed_fixed_payload_invalid:" + column.column_name + ":" +
+             std::string(dt::CanonicalTypeName(target_type));
+    }
     if (!typed.binary_value.empty() &&
         inline_bytes != 0 &&
         typed.binary_value.size() == inline_bytes) {

@@ -717,6 +717,21 @@ ParserServerEventEngineContext EventEngineContextFromSession(
   context.language_context.resource_version_identity =
       language.resource_version_identity;
   context.trace_tags.push_back("sb_server.event_notification");
+  engine_api::EngineRequestContext authority;
+  authority.database_path = context.database_path;
+  authority.database_uuid = context.database_uuid;
+  authority.principal_uuid = context.principal_uuid;
+  authority.session_uuid = context.session_uuid;
+  authority.transaction_uuid = context.transaction_uuid;
+  authority.local_transaction_id = context.local_transaction_id;
+  authority.snapshot_visible_through_local_transaction_id = context.snapshot_visible_through_local_transaction_id;
+  authority.security_context_present = context.security_context_present;
+  authority.catalog_generation_id = context.catalog_generation_id;
+  authority.security_epoch = context.security_epoch;
+  authority.resource_epoch = context.resource_epoch;
+  authority.name_resolution_epoch = context.name_resolution_epoch;
+  context.authorization_context = std::make_shared<const engine_api::EngineMaterializedAuthorizationContext>(
+      MaterializeDurableManagementAuthorizationContext(session, authority));
   return context;
 }
 

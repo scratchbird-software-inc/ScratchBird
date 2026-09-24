@@ -7,6 +7,10 @@
 #include "ia05_query_explain_cancellation_fault_test.cpp"
 
 #include "engine/internal_api/ddl/create_api.hpp"
+#include "engine/internal_api/security/security_principal_lifecycle.hpp"
+#include "engine/internal_api/crud_support/crud_store.hpp"
+#include "core/datatypes/datatype_catalog_manifest.hpp"
+#include "core/datatypes/datatype_operations.hpp"
 #include "engine/sblr/sblr_catalog_introspect_runtime.hpp"
 #include "wire/parser_server_ipc/sbps_statement_management_bind_codec.hpp"
 
@@ -27,11 +31,30 @@ api::EngineLocalizedName CatalogName(std::string value) {
   return name;
 }
 
-api::EngineColumnDefinition CatalogColumn(std::uint32_t ordinal,
+api::EngineColumnDefinition CatalogColumn(const api::EngineRequestContext& context,
+                                          std::uint32_t ordinal,
                                           std::string value,
                                           std::string type) {
+  namespace datatypes = scratchbird::core::datatypes;
+  const auto manifest = datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "catalog fixture datatype catalog unavailable");
+  const auto row = datatypes::LookupDatatypeCatalogRow(
+      manifest.manifest, datatypes::CanonicalTypeIdFromStableName(type));
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "catalog fixture datatype missing from catalog");
+  const auto& descriptor = row.manifest.descriptor_rows.front();
+  const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, descriptor.descriptor_uuid.value,
+      descriptor.descriptor_epoch);
+  Require(codec.ok, "catalog fixture exact datatype codec binding unavailable");
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
+  column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
+  column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+  column.descriptor.datatype_descriptor_uuid = descriptor.descriptor_uuid.value;
+  column.descriptor.datatype_descriptor_generation = descriptor.descriptor_epoch;
+  column.descriptor.type_uuid = codec.row.type_uuid;
   column.names.push_back(CatalogName(std::move(value)));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
@@ -41,7 +64,8 @@ api::EngineColumnDefinition CatalogColumn(std::uint32_t ordinal,
   return column;
 }
 
-void SeedCatalogObject(api::EngineRequestContext context) {
+void SeedCatalogObject(api::EngineRequestContext context, const Fixture& fixture) {
+  context.default_root_uuid = Identity(fixture.filespace_uuid);
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
   schema.target_object.uuid =
@@ -52,14 +76,15 @@ void SeedCatalogObject(api::EngineRequestContext context) {
   Require(created_schema.ok,
           "003612 catalog-introspect fixture schema creation failed");
 
+  context.current_schema_uuid = schema.target_object.uuid;
   api::EngineCreateTableRequest table;
   table.context = context;
   table.target_schema = schema.target_object;
   table.requested_table_uuid =
       Identity(NewUuid(platform::UuidKind::object, 36122));
   table.table_names.push_back(CatalogName("catalog_probe_table"));
-  table.table_columns.push_back(CatalogColumn(0, "id", "int64"));
-  table.table_columns.push_back(CatalogColumn(1, "value", "int64"));
+  table.table_columns.push_back(CatalogColumn(context, 0, "id", "int64"));
+  table.table_columns.push_back(CatalogColumn(context, 1, "value", "int64"));
   const auto created_table = api::EngineCreateTable(table);
   if (!created_table.ok) {
     for (const auto& diagnostic : created_table.diagnostics) {
@@ -112,6 +137,13 @@ void VerifyCatalogSnapshot(bool retire_owner) {
     probes.fetch_add(1, std::memory_order_relaxed);
     return cancel.load(std::memory_order_relaxed);
   };
+  const auto security = api::LoadSecurityPrincipalLifecycleState(context);
+  Require(security.ok && security.state.security_context_generation != 0 &&
+              security.state.security_generation == context.security_epoch &&
+              security.state.policy_generation == context.authorization_context.policy_epoch,
+          "catalog fixture durable security cohort unavailable");
+  context.authorization_context.security_context_generation =
+      security.state.security_context_generation;
   api::EngineMaterializedAuthorizationGrant select_grant;
   select_grant.grant_uuid =
       Identity(NewUuid(platform::UuidKind::object, 36123));
@@ -159,7 +191,7 @@ void VerifyCatalogSnapshot(bool retire_owner) {
       seed_context.datatype_catalog_generation;
   context.datatype_registry_generation =
       seed_context.datatype_registry_generation;
-  SeedCatalogObject(context);
+  SeedCatalogObject(context, fixture);
 
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;

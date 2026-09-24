@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <limits>
@@ -32,13 +33,11 @@ using scratchbird::core::platform::Severity;
 using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::UuidKind;
-using scratchbird::core::uuid::ParseTypedUuid;
 using scratchbird::core::uuid::UuidKindName;
-using scratchbird::core::uuid::UuidToString;
 
-constexpr const char* kDirtyManifestMagic = "SBDIRTY1";
-constexpr const char* kClassificationOnlyMode = "classification_only";
-constexpr const char* kRecoveryEvidenceMagic = "SBRECOVERY1";
+constexpr const char* kDirtyManifestMagic = "SBDIRTY2";
+constexpr const char* kRecoveryEvidenceMagic = "SBRECV02";
+constexpr std::size_t kRecoveryEvidenceBytes = 64;
 
 Status DirtyManifestOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::storage_disk};
@@ -96,53 +95,6 @@ DirtyManifestRecoveryRunEvidenceResult RecoveryEvidenceError(std::string diagnos
   return result;
 }
 
-std::vector<std::string> Split(const std::string& text, char delimiter) {
-  std::vector<std::string> parts;
-  std::string current;
-  std::istringstream in(text);
-  while (std::getline(in, current, delimiter)) {
-    parts.push_back(current);
-  }
-  return parts;
-}
-
-u64 ParseU64(const std::string& text) {
-  try {
-    return static_cast<u64>(std::stoull(text));
-  } catch (...) {
-    return 0;
-  }
-}
-
-bool ParseBool(const std::string& text) {
-  return text == "1" || text == "true" || text == "TRUE";
-}
-
-DirtyObjectKind ParseDirtyObjectKind(const std::string& text) {
-  if (text == "database_header") { return DirtyObjectKind::database_header; }
-  if (text == "startup_state") { return DirtyObjectKind::startup_state; }
-  if (text == "transaction_inventory") { return DirtyObjectKind::transaction_inventory; }
-  if (text == "catalog_page") { return DirtyObjectKind::catalog_page; }
-  if (text == "allocation_map") { return DirtyObjectKind::allocation_map; }
-  if (text == "row_data_page") { return DirtyObjectKind::row_data_page; }
-  if (text == "index_page") { return DirtyObjectKind::index_page; }
-  if (text == "filespace_header") { return DirtyObjectKind::filespace_header; }
-  if (text == "metric_history") { return DirtyObjectKind::metric_history; }
-  return DirtyObjectKind::unknown;
-}
-
-UuidKind ParseUuidKindName(const std::string& text) {
-  if (text == "database") { return UuidKind::database; }
-  if (text == "filespace") { return UuidKind::filespace; }
-  if (text == "page") { return UuidKind::page; }
-  if (text == "object") { return UuidKind::object; }
-  if (text == "row") { return UuidKind::row; }
-  if (text == "transaction") { return UuidKind::transaction; }
-  if (text == "schema") { return UuidKind::schema; }
-  if (text == "cluster") { return UuidKind::cluster; }
-  return UuidKind::unknown;
-}
-
 bool ContainsForbiddenRedoTerm(const std::string& serialized) {
   return serialized.find("WAL") != std::string::npos ||
          serialized.find("wal") != std::string::npos ||
@@ -160,55 +112,43 @@ u64 StableTextChecksum(const std::string& value) {
   return checksum;
 }
 
-std::string DirtyManifestChecksumMaterial(const DirtyObjectManifest& manifest) {
-  std::ostringstream out;
-  out << kDirtyManifestMagic << '\t'
-      << manifest.format_version << '\t'
-      << kClassificationOnlyMode << '\t'
-      << manifest.checkpoint_generation << '\t'
-      << (manifest.completed ? 1 : 0) << '\t'
-      << manifest.entries.size() << '\n';
-  for (const auto& entry : manifest.entries) {
-    out << "ENTRY" << '\t'
-        << DirtyObjectKindName(entry.kind) << '\t'
-        << UuidKindName(entry.object_uuid.kind) << '\t'
-        << UuidToString(entry.object_uuid.value) << '\t'
-        << entry.page_number << '\t'
-        << entry.page_generation << '\t'
-        << entry.object_checksum << '\t'
-        << entry.local_transaction_id << '\t'
-        << entry.operation_envelope_checksum << '\t'
-        << entry.transaction_evidence_checksum << '\t'
-        << (entry.dirty ? 1 : 0) << '\t'
-        << (entry.authoritative ? 1 : 0) << '\n';
-  }
-  return out.str();
+constexpr std::size_t kDirtyHeaderBytes = 40;
+constexpr std::size_t kDirtyEntryBytes = 72;
+void PutDirtyInteger(std::string* bytes, u64 value, unsigned width) {
+  for (unsigned n = 0; n < width; ++n) bytes->push_back(static_cast<char>(value >> (8 * n)));
 }
-
-std::string SerializeDirtyManifest(const DirtyObjectManifest& manifest) {
-  std::ostringstream out;
-  out << kDirtyManifestMagic << '\t'
-      << manifest.format_version << '\t'
-      << kClassificationOnlyMode << '\t'
-      << manifest.checkpoint_generation << '\t'
-      << (manifest.completed ? 1 : 0) << '\t'
-      << manifest.entries.size() << '\t'
-      << manifest.manifest_checksum << '\n';
+u64 GetDirtyInteger(const std::string& bytes, std::size_t offset, unsigned width) {
+  u64 value = 0;
+  for (unsigned n = 0; n < width; ++n)
+    value |= static_cast<u64>(static_cast<unsigned char>(bytes[offset + n])) << (8 * n);
+  return value;
+}
+std::string EncodeDirtyManifest(const DirtyObjectManifest& manifest, bool include_checksum) {
+  std::string bytes(kDirtyManifestMagic);
+  PutDirtyInteger(&bytes, manifest.format_version, 4);
+  PutDirtyInteger(&bytes, (manifest.classification_only ? 1u : 0u) | (manifest.completed ? 2u : 0u), 4);
+  PutDirtyInteger(&bytes, manifest.checkpoint_generation, 8);
+  PutDirtyInteger(&bytes, manifest.entries.size(), 8);
+  PutDirtyInteger(&bytes, include_checksum ? manifest.manifest_checksum : 0, 8);
   for (const auto& entry : manifest.entries) {
-    out << "ENTRY" << '\t'
-        << DirtyObjectKindName(entry.kind) << '\t'
-        << UuidKindName(entry.object_uuid.kind) << '\t'
-        << UuidToString(entry.object_uuid.value) << '\t'
-        << entry.page_number << '\t'
-        << entry.page_generation << '\t'
-        << entry.object_checksum << '\t'
-        << entry.local_transaction_id << '\t'
-        << entry.operation_envelope_checksum << '\t'
-        << entry.transaction_evidence_checksum << '\t'
-        << (entry.dirty ? 1 : 0) << '\t'
-        << (entry.authoritative ? 1 : 0) << '\n';
+    PutDirtyInteger(&bytes, static_cast<u16>(entry.kind), 2);
+    PutDirtyInteger(&bytes, static_cast<u16>(entry.object_uuid.kind), 2);
+    bytes.append(reinterpret_cast<const char*>(entry.object_uuid.value.bytes.data()), 16);
+    PutDirtyInteger(&bytes, entry.page_number, 8);
+    PutDirtyInteger(&bytes, entry.page_generation, 8);
+    PutDirtyInteger(&bytes, entry.object_checksum, 8);
+    PutDirtyInteger(&bytes, entry.local_transaction_id, 8);
+    PutDirtyInteger(&bytes, entry.operation_envelope_checksum, 8);
+    PutDirtyInteger(&bytes, entry.transaction_evidence_checksum, 8);
+    PutDirtyInteger(&bytes, (entry.dirty ? 1u : 0u) | (entry.authoritative ? 2u : 0u), 4);
   }
-  return out.str();
+  return bytes;
+}
+std::string DirtyManifestChecksumMaterial(const DirtyObjectManifest& manifest) {
+  return EncodeDirtyManifest(manifest, false);
+}
+std::string SerializeDirtyManifest(const DirtyObjectManifest& manifest) {
+  return EncodeDirtyManifest(manifest, true);
 }
 
 u64 DirtyManifestChecksum(const DirtyObjectManifest& manifest) {
@@ -225,9 +165,9 @@ u64 RecoveryClassificationChecksum(const DirtyObjectManifest& manifest,
   for (const auto& classification : recovery.classifications) {
     stable << '|'
            << DirtyObjectKindName(classification.kind) << ':'
-           << UuidKindName(classification.object_uuid.kind) << ':'
-           << UuidToString(classification.object_uuid.value) << ':'
-           << classification.page_number << ':'
+           << UuidKindName(classification.object_uuid.kind) << ':';
+    stable.write(reinterpret_cast<const char*>(classification.object_uuid.value.bytes.data()), 16);
+    stable << ':' << classification.page_number << ':'
            << DirtyManifestRecoveryActionName(classification.action) << ':'
            << (classification.fail_closed ? 1 : 0) << ':'
            << classification.stable_reason;
@@ -242,28 +182,39 @@ std::string RecoveryActionSummary(const DirtyManifestRecoveryResult& recovery) {
 }
 
 std::string SerializeRecoveryEvidence(const DirtyManifestRecoveryRunEvidence& evidence) {
-  std::ostringstream out;
-  out << kRecoveryEvidenceMagic << '\t'
-      << evidence.recovery_run_uuid << '\t'
-      << evidence.checkpoint_generation << '\t'
-      << evidence.classification_count << '\t'
-      << evidence.classification_checksum << '\t'
-      << evidence.recovery_action << '\t'
-      << (evidence.completed ? 1 : 0);
-  return out.str();
+  std::string bytes(kRecoveryEvidenceMagic);
+  bytes.append(reinterpret_cast<const char*>(evidence.recovery_run_uuid.value.bytes.data()), 16);
+  PutDirtyInteger(&bytes, evidence.checkpoint_generation, 8);
+  PutDirtyInteger(&bytes, evidence.classification_count, 8);
+  PutDirtyInteger(&bytes, evidence.classification_checksum, 8);
+  const u32 action = evidence.recovery_action == "quarantine" ? 1u :
+      evidence.recovery_action == "classify_and_rebuild_by_manifest" ? 2u : 3u;
+  PutDirtyInteger(&bytes, action, 4);
+  PutDirtyInteger(&bytes, evidence.completed ? 1u : 0u, 4);
+  PutDirtyInteger(&bytes, StableTextChecksum(bytes), 8);
+  return bytes;
 }
 
-bool ParseRecoveryEvidenceLine(const std::string& line, DirtyManifestRecoveryRunEvidence* evidence) {
-  if (evidence == nullptr || ContainsForbiddenRedoTerm(line)) { return false; }
-  const auto parts = Split(line, '\t');
-  if (parts.size() != 7 || parts[0] != kRecoveryEvidenceMagic) { return false; }
-  evidence->recovery_run_uuid = parts[1];
-  evidence->checkpoint_generation = ParseU64(parts[2]);
-  evidence->classification_count = ParseU64(parts[3]);
-  evidence->classification_checksum = ParseU64(parts[4]);
-  evidence->recovery_action = parts[5];
-  evidence->completed = ParseBool(parts[6]);
-  return evidence->checkpoint_generation != 0 && evidence->completed;
+bool ParseRecoveryEvidenceRecord(const std::string& bytes, DirtyManifestRecoveryRunEvidence* evidence) {
+  if (!evidence || bytes.size() != kRecoveryEvidenceBytes || !bytes.starts_with(kRecoveryEvidenceMagic) ||
+      GetDirtyInteger(bytes, 56, 8) != StableTextChecksum(bytes.substr(0, 56)) ||
+      GetDirtyInteger(bytes, 52, 4) != 1) return false;
+  scratchbird::core::platform::Uuid identity;
+  std::copy_n(reinterpret_cast<const unsigned char*>(bytes.data() + 8), 16, identity.bytes.begin());
+  const auto typed = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(UuidKind::object, identity);
+  if (!typed.ok() || !scratchbird::core::uuid::IsEngineIdentityUuid(identity)) return false;
+  DirtyManifestRecoveryRunEvidence staged;
+  staged.recovery_run_uuid = typed.value;
+  staged.checkpoint_generation = GetDirtyInteger(bytes, 24, 8);
+  staged.classification_count = GetDirtyInteger(bytes, 32, 8);
+  staged.classification_checksum = GetDirtyInteger(bytes, 40, 8);
+  const auto action = GetDirtyInteger(bytes, 48, 4);
+  if (action < 1 || action > 3 || staged.checkpoint_generation == 0) return false;
+  staged.recovery_action = action == 1 ? "quarantine" :
+      action == 2 ? "classify_and_rebuild_by_manifest" : "no_action";
+  staged.completed = true;
+  *evidence = std::move(staged);
+  return true;
 }
 
 }  // namespace
@@ -319,7 +270,10 @@ DirtyObjectManifestResult BuildDirtyObjectManifest(const DirtyObjectManifest& ma
   result.status = DirtyManifestOkStatus();
   result.manifest = manifest;
   for (const auto& entry : result.manifest.entries) {
-    if (entry.kind == DirtyObjectKind::unknown || !entry.object_uuid.valid() || !entry.authoritative ||
+    if (static_cast<u16>(entry.kind) >= static_cast<u16>(DirtyObjectKind::unknown) ||
+        !scratchbird::core::uuid::MakeDurableEngineIdentityUuid(entry.object_uuid.kind, entry.object_uuid.value).ok() ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(entry.object_uuid.value) ||
+        !entry.authoritative ||
         entry.page_generation == 0 || entry.object_checksum == 0 ||
         entry.local_transaction_id == 0 || entry.operation_envelope_checksum == 0 ||
         entry.transaction_evidence_checksum == 0) {
@@ -334,77 +288,71 @@ DirtyObjectManifestResult BuildDirtyObjectManifest(const DirtyObjectManifest& ma
 }
 
 DirtyObjectManifestResult ParseDirtyObjectManifest(const std::string& serialized) {
-  if (ContainsForbiddenRedoTerm(serialized)) {
-    return ManifestError("RECOVERY.MANIFEST_WAL_CONFUSION_FORBIDDEN",
-                         "recovery.dirty_manifest.redo_terms_forbidden",
-                         "dirty manifest must not contain WAL, LSN, or write-ahead redo authority");
-  }
-
-  std::istringstream in(serialized);
-  std::string line;
-  if (!std::getline(in, line)) {
-    return ManifestError("SB-DIRTY-MANIFEST-EMPTY", "recovery.dirty_manifest.empty");
-  }
-  const auto header = Split(line, '\t');
-  if (header.size() != 7 || header[0] != kDirtyManifestMagic) {
+  // Text formats are not admitted. Scan only refused legacy input for its
+  // historical diagnostic; arbitrary binary UUID bytes are never prose.
+  if (!serialized.starts_with(kDirtyManifestMagic)) {
+    if (ContainsForbiddenRedoTerm(serialized)) {
+      return ManifestError("RECOVERY.MANIFEST_WAL_CONFUSION_FORBIDDEN",
+                           "recovery.dirty_manifest.redo_terms_forbidden",
+                           "dirty manifest must not contain WAL, LSN, or write-ahead redo authority");
+    }
     return ManifestError("SB-DIRTY-MANIFEST-MAGIC-INVALID", "recovery.dirty_manifest.magic_invalid");
   }
-  DirtyObjectManifest manifest;
-  manifest.format_version = static_cast<u32>(ParseU64(header[1]));
-  if (manifest.format_version != kDirtyObjectManifestFormatVersion) {
-    return ManifestError("SB-DIRTY-MANIFEST-FORMAT-UNSUPPORTED",
-                         "recovery.dirty_manifest.format_unsupported",
-                         header[1]);
-  }
-  if (header[2] != kClassificationOnlyMode) {
-    return ManifestError("RECOVERY.MANIFEST_WAL_CONFUSION_FORBIDDEN",
-                         "recovery.dirty_manifest.classification_only_required",
-                         header[2]);
-  }
-
-  manifest.classification_only = true;
-  manifest.checkpoint_generation = ParseU64(header[3]);
-  manifest.completed = ParseBool(header[4]);
-  const u64 expected_entry_count = ParseU64(header[5]);
-  manifest.manifest_checksum = ParseU64(header[6]);
-  if (manifest.checkpoint_generation == 0 || !manifest.completed) {
+  if (serialized.size() < kDirtyHeaderBytes) {
     return ManifestError("SB-DIRTY-MANIFEST-HEADER-INVALID", "recovery.dirty_manifest.header_invalid");
   }
-
-  while (std::getline(in, line)) {
-    if (line.empty()) { continue; }
-    const auto parts = Split(line, '\t');
-    if (parts.size() != 12 || parts[0] != "ENTRY") {
-      return ManifestError("SB-DIRTY-MANIFEST-ENTRY-INVALID", "recovery.dirty_manifest.entry_invalid", line);
-    }
+  DirtyObjectManifest manifest;
+  manifest.format_version = static_cast<u32>(GetDirtyInteger(serialized, 8, 4));
+  if (manifest.format_version != kDirtyObjectManifestFormatVersion) {
+    return ManifestError("SB-DIRTY-MANIFEST-FORMAT-UNSUPPORTED", "recovery.dirty_manifest.format_unsupported");
+  }
+  const auto flags = GetDirtyInteger(serialized, 12, 4);
+  if ((flags & 1u) == 0) {
+    return ManifestError("RECOVERY.MANIFEST_WAL_CONFUSION_FORBIDDEN",
+                         "recovery.dirty_manifest.classification_only_required");
+  }
+  if (flags != 3) {
+    return ManifestError("SB-DIRTY-MANIFEST-HEADER-INVALID", "recovery.dirty_manifest.header_invalid");
+  }
+  manifest.classification_only = true;
+  manifest.completed = true;
+  manifest.checkpoint_generation = GetDirtyInteger(serialized, 16, 8);
+  const auto count = GetDirtyInteger(serialized, 24, 8);
+  manifest.manifest_checksum = GetDirtyInteger(serialized, 32, 8);
+  if ((serialized.size() - kDirtyHeaderBytes) % kDirtyEntryBytes != 0 ||
+      count != (serialized.size() - kDirtyHeaderBytes) / kDirtyEntryBytes) {
+    return ManifestError("SB-DIRTY-MANIFEST-ENTRY-COUNT-MISMATCH", "recovery.dirty_manifest.entry_count_mismatch");
+  }
+  for (std::size_t offset = kDirtyHeaderBytes; offset < serialized.size(); offset += kDirtyEntryBytes) {
     DirtyObjectManifestEntry entry;
-    entry.kind = ParseDirtyObjectKind(parts[1]);
-    const UuidKind uuid_kind = ParseUuidKindName(parts[2]);
-    const auto parsed_uuid = ParseTypedUuid(uuid_kind, parts[3]);
-    if (entry.kind == DirtyObjectKind::unknown || !parsed_uuid.ok()) {
-      return ManifestError("SB-DIRTY-MANIFEST-ENTRY-INVALID", "recovery.dirty_manifest.entry_invalid", parts[1]);
+    entry.kind = static_cast<DirtyObjectKind>(GetDirtyInteger(serialized, offset, 2));
+    const auto kind = static_cast<UuidKind>(GetDirtyInteger(serialized, offset + 2, 2));
+    scratchbird::core::platform::Uuid identity;
+    std::copy_n(reinterpret_cast<const unsigned char*>(serialized.data() + offset + 4), 16,
+                identity.bytes.begin());
+    const auto parsed = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(kind, identity);
+    const auto entry_flags = GetDirtyInteger(serialized, offset + 68, 4);
+    if (!parsed.ok() || entry_flags > 3 ||
+        static_cast<u16>(entry.kind) >= static_cast<u16>(DirtyObjectKind::unknown)) {
+      return ManifestError("SB-DIRTY-MANIFEST-ENTRY-INVALID", "recovery.dirty_manifest.entry_invalid");
     }
-    entry.object_uuid = parsed_uuid.value;
-    entry.page_number = ParseU64(parts[4]);
-    entry.page_generation = ParseU64(parts[5]);
-    entry.object_checksum = ParseU64(parts[6]);
-    entry.local_transaction_id = ParseU64(parts[7]);
-    entry.operation_envelope_checksum = ParseU64(parts[8]);
-    entry.transaction_evidence_checksum = ParseU64(parts[9]);
-    entry.dirty = ParseBool(parts[10]);
-    entry.authoritative = ParseBool(parts[11]);
-    manifest.entries.push_back(entry);
+    entry.object_uuid = parsed.value;
+    entry.page_number = GetDirtyInteger(serialized, offset + 20, 8);
+    entry.page_generation = GetDirtyInteger(serialized, offset + 28, 8);
+    entry.object_checksum = GetDirtyInteger(serialized, offset + 36, 8);
+    entry.local_transaction_id = GetDirtyInteger(serialized, offset + 44, 8);
+    entry.operation_envelope_checksum = GetDirtyInteger(serialized, offset + 52, 8);
+    entry.transaction_evidence_checksum = GetDirtyInteger(serialized, offset + 60, 8);
+    entry.dirty = (entry_flags & 1u) != 0;
+    entry.authoritative = (entry_flags & 2u) != 0;
+    manifest.entries.push_back(std::move(entry));
   }
-  if (manifest.entries.size() != expected_entry_count) {
-    return ManifestError("SB-DIRTY-MANIFEST-ENTRY-COUNT-MISMATCH",
-                         "recovery.dirty_manifest.entry_count_mismatch");
+  if (manifest.checkpoint_generation == 0) {
+    return ManifestError("SB-DIRTY-MANIFEST-HEADER-INVALID", "recovery.dirty_manifest.header_invalid");
   }
-  if (manifest.manifest_checksum == 0 ||
-      manifest.manifest_checksum != DirtyManifestChecksum(manifest)) {
-    return ManifestError("SB-DIRTY-MANIFEST-CHECKSUM-MISMATCH",
-                         "recovery.dirty_manifest.checksum_mismatch");
+  if (manifest.manifest_checksum == 0 || manifest.manifest_checksum != DirtyManifestChecksum(manifest)) {
+    return ManifestError("SB-DIRTY-MANIFEST-CHECKSUM-MISMATCH", "recovery.dirty_manifest.checksum_mismatch");
   }
-
   DirtyObjectManifestResult result;
   result.status = DirtyManifestOkStatus();
   result.manifest = std::move(manifest);
@@ -513,7 +461,7 @@ DirtyManifestRecoveryRunEvidenceResult PersistDirtyManifestRecoveryRunEvidence(
     const std::string& evidence_store_path,
     const DirtyObjectManifest& manifest,
     const DirtyManifestRecoveryResult& recovery,
-    const std::string& recovery_run_uuid) {
+    const TypedUuid& recovery_run_uuid) {
   if (evidence_store_path.empty()) {
     return RecoveryEvidenceError("SB-RECOVERY-EVIDENCE-PATH-REQUIRED",
                                  "recovery.run_evidence.path_required");
@@ -522,7 +470,8 @@ DirtyManifestRecoveryRunEvidenceResult PersistDirtyManifestRecoveryRunEvidence(
     return RecoveryEvidenceError("SB-RECOVERY-EVIDENCE-INPUT-INVALID",
                                  "recovery.run_evidence.input_invalid");
   }
-  if (recovery_run_uuid.empty()) {
+  if (recovery_run_uuid.kind != UuidKind::object ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(recovery_run_uuid.value)) {
     return RecoveryEvidenceError("SB-RECOVERY-EVIDENCE-RUN-UUID-REQUIRED",
                                  "recovery.run_evidence.run_uuid_required");
   }
@@ -536,10 +485,21 @@ DirtyManifestRecoveryRunEvidenceResult PersistDirtyManifestRecoveryRunEvidence(
   evidence.completed = true;
 
   std::ifstream existing_in(evidence_store_path, std::ios::binary);
-  std::string existing_line;
-  while (std::getline(existing_in, existing_line)) {
+  if (!existing_in.is_open() && std::filesystem::exists(evidence_store_path)) {
+    return RecoveryEvidenceError("SB-RECOVERY-EVIDENCE-INPUT-INVALID",
+                                 "recovery.run_evidence.input_invalid", "evidence_read_failed");
+  }
+  std::optional<DirtyManifestRecoveryRunEvidenceResult> recorded;
+  while (existing_in.is_open()) {
+    std::string existing_line(kRecoveryEvidenceBytes, '\0');
+    existing_in.read(existing_line.data(), existing_line.size());
+    if (existing_in.gcount() == 0 && existing_in.eof() && !existing_in.bad()) break;
     DirtyManifestRecoveryRunEvidence existing;
-    if (!ParseRecoveryEvidenceLine(existing_line, &existing)) { continue; }
+    if (existing_in.gcount() != static_cast<std::streamsize>(existing_line.size()) ||
+        existing_in.bad() || !ParseRecoveryEvidenceRecord(existing_line, &existing)) {
+      return RecoveryEvidenceError("SB-RECOVERY-EVIDENCE-INPUT-INVALID",
+                                   "recovery.run_evidence.input_invalid", "invalid_or_truncated_evidence");
+    }
     if (existing.checkpoint_generation == evidence.checkpoint_generation &&
         existing.classification_count == evidence.classification_count &&
         existing.classification_checksum == evidence.classification_checksum) {
@@ -548,17 +508,18 @@ DirtyManifestRecoveryRunEvidenceResult PersistDirtyManifestRecoveryRunEvidence(
       result.already_recorded = true;
       result.evidence = std::move(existing);
       result.serialized = existing_line;
-      return result;
+      recorded = std::move(result);
     }
   }
 
+  if (recorded) return std::move(*recorded);
   const std::string serialized = SerializeRecoveryEvidence(evidence);
   std::ofstream out(evidence_store_path, std::ios::app | std::ios::binary);
   if (!out) {
     return RecoveryEvidenceError("SB-RECOVERY-EVIDENCE-APPEND-FAILED",
                                  "recovery.run_evidence.append_failed");
   }
-  out << serialized << '\n';
+  out.write(serialized.data(), serialized.size());
   out.flush();
   if (!out) {
     return RecoveryEvidenceError("SB-RECOVERY-EVIDENCE-APPEND-FAILED",

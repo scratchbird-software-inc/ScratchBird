@@ -26,7 +26,6 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::IsEngineIdentityUuid;
-using scratchbird::core::uuid::UuidToString;
 
 Status SelectionOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::storage_page};
@@ -49,9 +48,11 @@ bool StartupModeAllowsSelection(InsertReservationStartupMode mode) {
 }
 
 std::string MakeFence(const InsertPageCandidate& candidate, u64 sequence) {
-  return UuidToString(candidate.page_uuid.value) + ":" +
-         std::to_string(candidate.page_generation) + ":" +
-         std::to_string(sequence);
+  std::string fence("SBPGF002");
+  fence.append(reinterpret_cast<const char*>(candidate.page_uuid.value.bytes.data()), 16);
+  for (const auto value : {candidate.page_generation, sequence})
+    for (unsigned n = 0; n < 8; ++n) fence.push_back(static_cast<char>(value >> (8 * n)));
+  return fence;
 }
 
 void EmitMetric(const std::string& family,

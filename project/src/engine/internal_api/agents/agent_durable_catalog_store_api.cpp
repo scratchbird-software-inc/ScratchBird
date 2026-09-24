@@ -12,6 +12,14 @@
 // SEARCH_KEY: AEIC_DURABLE_AGENT_MANAGEMENT_SURFACES
 
 #include "crud_support/crud_store.hpp"
+#include "catalog/schema_tree_api.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "ddl/create_api.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
+#include "database_format.hpp"
+#include "disk_device.hpp"
+#include "startup_state.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include <algorithm>
@@ -74,8 +82,8 @@ std::string Sha256Hex(const std::string& value) {
 std::vector<std::pair<std::string, std::string>> CatalogColumns() {
   return {{"record_kind", "text:not_null"},
           {"catalog_root_digest", "text:not_null"},
-          {"encoded_catalog_image", "bytea:not_null"},
-          {"catalog_generation", "u64:not_null"},
+          {"encoded_catalog_image", "binary:not_null"},
+          {"catalog_generation", "uint64:not_null"},
           {"authority_evidence_uuid", "uuid:not_null"},
           {"storage_commit_evidence_uuid", "uuid:not_null"},
           {"storage_linkage_digest", "text:not_null"}};
@@ -108,11 +116,99 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
   if (existing) {
     table = *existing;
   } else {
-    table.table_uuid = GenerateCrudEngineUuid("agent_catalog_table");
-    table.default_name = kAgentDurableCatalogStoreTableName;
-    table.columns = CatalogColumns();
-    const auto appended = AppendMgaTableMetadata(context, table);
-    if (appended.error) { return ErrorResult(appended); }
+    // Publish the system relation through DDL so its column cohort and
+    // descriptor generations come from the same catalog as user relations.
+    EngineCreateTableRequest create;
+    create.context = context;
+    EngineApiDiagnostic schema_diagnostic;
+    const auto schemas = VisibleSchemaTreeRecords(
+        context, context.local_transaction_id, schema_diagnostic);
+    if (schema_diagnostic.error) return ErrorResult(schema_diagnostic);
+    for (const auto& schema : schemas)
+      for (const auto& name : schema.localized_names)
+        if (name.path == "sys") create.target_schema.uuid = schema.schema_uuid;
+    if (create.target_schema.uuid.is_nil()) return ErrorResult("system_schema_unavailable");
+    create.target_schema.object_kind = "schema";
+    create.context.current_schema_uuid = create.target_schema.uuid;
+    // Read the owning filespace identity without reopening lifecycle recovery
+    // while this catalog transaction is active.
+    namespace disk = scratchbird::storage::disk;
+    disk::FileDevice device;
+    if (!device.Open(context.database_path, disk::FileOpenMode::open_existing_read_only).ok())
+      return ErrorResult("database_identity_read_failed");
+    disk::SerializedDatabaseHeader header_bytes{};
+    if (!device.ReadAt(0, header_bytes.data(), header_bytes.size()).ok())
+      return ErrorResult("database_header_read_failed");
+    const auto header = disk::ParseDatabaseHeader(header_bytes);
+    if (!header.ok() || header.header.database_uuid != context.database_uuid)
+      return ErrorResult("database_header_identity_invalid");
+    const auto startup = scratchbird::storage::database::ReadStartupStatePageBody(
+        &device, header.header.page_size);
+    if (!startup.ok() || startup.state.database_uuid.value != context.database_uuid ||
+        !startup.state.first_filespace_uuid.valid())
+      return ErrorResult("database_filespace_authority_unavailable");
+    create.context.default_root_uuid = startup.state.first_filespace_uuid.value;
+    // The identity read is complete. DDL acquires its own device ownership;
+    // retaining this exclusive read handle would refuse embedded callers.
+    device.Close();
+    namespace types = scratchbird::core::datatypes;
+    const auto manifest = types::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) return ErrorResult("datatype_catalog_unavailable");
+    // This system relation is an engine bootstrap publication. Use the exact
+    // bootstrap cohort shared with the receipt issuer, never a registry row
+    // selected by enumeration order or a caller-supplied default.
+    if (manifest.manifest.catalog_epoch != kBootstrapDatatypeCatalogGeneration)
+      return ErrorResult("datatype_bootstrap_catalog_generation_mismatch");
+    create.context.datatype_catalog_snapshot_uuid = kBootstrapDatatypeCatalogUuid;
+    create.context.datatype_catalog_generation = kBootstrapDatatypeCatalogGeneration;
+    create.context.datatype_registry_generation = kBootstrapDatatypeRegistryGeneration;
+    create.requested_table_uuid = GenerateCrudEngineUuid("object");
+    EngineLocalizedName name;
+    name.language_tag = "en";
+    name.name_class = "primary";
+    name.path = kAgentDurableCatalogStoreTableName;
+    name.name = kAgentDurableCatalogStoreTableName;
+    name.default_name = true;
+    create.table_names.push_back(name);
+    for (const auto& [column_name, shape] : CatalogColumns()) {
+      const auto type_name = shape.substr(0, shape.find(':'));
+      const auto type = types::CanonicalTypeIdFromStableName(type_name);
+      const auto row = types::LookupDatatypeCatalogRow(manifest.manifest, type);
+      if (!row.ok() || row.manifest.descriptor_rows.size() != 1)
+        return ErrorResult("catalog_column_datatype_unavailable");
+      const auto& catalog = row.manifest.descriptor_rows.front();
+      EngineColumnDefinition column;
+      column.ordinal = create.table_columns.size();
+      column.nullable = false;
+      column.requested_column_uuid = GenerateCrudEngineUuid("object");
+      name.name = column_name;
+      name.path = column_name;
+      column.names.push_back(name);
+      column.descriptor.descriptor_uuid = GenerateCrudEngineUuid("object");
+      column.descriptor.descriptor_kind = "scalar";
+      column.descriptor.canonical_type_name = type_name;
+      column.descriptor.encoded_descriptor = "type=" + type_name + ";nullable=false";
+      column.descriptor.datatype_descriptor_uuid = catalog.descriptor_uuid.value;
+      column.descriptor.datatype_descriptor_generation = catalog.descriptor_epoch;
+      column.descriptor.type_uuid = catalog.descriptor_uuid.value;
+      const auto codec = types::LookupDatatypeTypeCodecIdentityV1(
+          create.context.datatype_catalog_snapshot_uuid,
+          create.context.datatype_catalog_generation,
+          create.context.datatype_registry_generation,
+          catalog.descriptor_uuid.value, catalog.descriptor_epoch);
+      if (codec.ok) column.descriptor.type_uuid = codec.row.type_uuid;
+      create.table_columns.push_back(std::move(column));
+    }
+    const auto created = EngineCreateTable(create);
+    if (!created.ok)
+      return created.diagnostics.empty() ? ErrorResult("catalog_table_publication_failed")
+                                        : ErrorResult(created.diagnostics.front());
+    loaded = LoadMgaRelationStoreState(context);
+    if (!loaded.ok) return ErrorResult(loaded.diagnostic);
+    const auto published = FindCatalogTable(BuildCrudCompatibilityStateFromMga(loaded.state), context);
+    if (!published || published->table_uuid != created.table_object.uuid)
+      return ErrorResult("catalog_table_publication_not_visible");
+    table = *published;
   }
 
   // The durable agent catalog is an MGA relation, not an exceptional

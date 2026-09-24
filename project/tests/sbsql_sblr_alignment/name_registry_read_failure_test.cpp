@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
     api::EngineRequestContext context;
     context.database_path = create.path;
     context.database_uuid = database.value.value;
-    const fs::path journal = create.path + ".sb.api_events";
+    const fs::path journal = create.path + ".sb.name_events.v2";
     Setup(!fs::exists(journal), "unexpected preexisting catalog fixture journal");
     const auto identity = object.value.value;
     // Exercise the real writer and reader with the issued binary identities.

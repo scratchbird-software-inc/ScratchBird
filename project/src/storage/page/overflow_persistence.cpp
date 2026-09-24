@@ -8,6 +8,7 @@
 
 // SB-OVERFLOW-PERSISTENCE-ANCHOR
 #include "overflow_persistence.hpp"
+#include "time.hpp"
 
 #include "disk_device.hpp"
 #include "page_body_integrity.hpp"
@@ -52,8 +53,13 @@ bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
   return uuid.kind == kind && uuid.valid() && IsEngineIdentityUuid(uuid.value);
 }
 
-TypedUuid GeneratedId(UuidKind kind, u64 seed) {
-  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, seed);
+TypedUuid GeneratedId(UuidKind kind) {
+  // Diagnostic sequence numbers are not timestamps or identity authority.
+  const auto clock = scratchbird::core::time::ReadLocalNodeClockSnapshot();
+  if (!clock.ok()) return {};
+  const auto millis = scratchbird::core::time::WallClockToUuidV7Millis(clock.value.wall_clock);
+  if (!millis.ok()) return {};
+  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, millis.unix_epoch_millis);
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
@@ -216,7 +222,7 @@ OverflowEvidenceRecord BuildEvidence(OverflowLedger* ledger,
   OverflowEvidenceRecord evidence;
   evidence.sequence = ledger == nullptr ? 0 : ledger->next_evidence_sequence++;
   evidence.action = std::move(action);
-  evidence.evidence_id = GeneratedId(UuidKind::object, evidence.sequence);
+  evidence.evidence_id = GeneratedId(UuidKind::object);
   evidence.overflow_value_uuid = record.overflow_value_uuid;
   evidence.row_uuid = record.row_uuid;
   evidence.object_uuid = record.object_uuid;
@@ -385,12 +391,13 @@ OverflowPersistResult PersistOverflowValue(OverflowLedger* ledger, const Overflo
                          "storage.page.overflow.invalid_transaction",
                          "local_transaction_id must be non-zero");
   }
-  if (request.value_descriptor.empty()) {
+  if ((request.value_descriptor.empty() && !request.bind_value_descriptor) ||
+      (!request.value_descriptor.empty() && request.bind_value_descriptor)) {
     return RefusePersist(ledger,
                          request,
                          "overflow_persist_missing_descriptor",
                          "storage.page.overflow.missing_descriptor",
-                         "value_descriptor is required");
+                         "exactly one descriptor or identity-bound descriptor producer is required");
   }
   if (request.payload_bytes.empty()) {
     return RefusePersist(ledger,
@@ -408,14 +415,25 @@ OverflowPersistResult PersistOverflowValue(OverflowLedger* ledger, const Overflo
   }
 
   OverflowValueRecord record;
-  record.overflow_value_uuid = GeneratedId(UuidKind::object, 100000 + ledger->next_evidence_sequence);
+  record.overflow_value_uuid = GeneratedId(UuidKind::object);
+  if (!record.overflow_value_uuid.valid()) {
+    return RefusePersist(ledger, request, "overflow_persist_identity_failed",
+                         "storage.page.overflow.identity_failed",
+                         "overflow identity allocation failed");
+  }
+  record.value_descriptor = request.bind_value_descriptor
+      ? request.bind_value_descriptor(record.overflow_value_uuid) : request.value_descriptor;
+  if (record.value_descriptor.empty()) {
+    return RefusePersist(ledger, request, "overflow_persist_missing_descriptor",
+                         "storage.page.overflow.missing_descriptor",
+                         "identity-bound descriptor producer refused the allocated identity");
+  }
   record.row_uuid = request.row_uuid;
   record.object_uuid = request.object_uuid;
   record.transaction_uuid = request.transaction_uuid;
   record.chunk_policy_uuid = request.chunk_policy_uuid;
   record.local_transaction_id = request.local_transaction_id;
   record.generation = request.generation == 0 ? 1 : request.generation;
-  record.value_descriptor = request.value_descriptor;
   record.content_hash = HashPayload(request.payload_bytes);
   record.state = OverflowValueState::durable_uncommitted;
 
@@ -423,8 +441,13 @@ OverflowPersistResult PersistOverflowValue(OverflowLedger* ledger, const Overflo
   for (std::size_t offset = 0; offset < request.payload_bytes.size(); offset += request.chunk_size) {
     const std::size_t end = std::min<std::size_t>(request.payload_bytes.size(), offset + request.chunk_size);
     OverflowChunkRecord chunk;
-    chunk.chunk_uuid = GeneratedId(UuidKind::object, 110000 + ledger->next_evidence_sequence + ordinal);
-    chunk.page_uuid = GeneratedId(UuidKind::page, 120000 + ledger->next_evidence_sequence + ordinal);
+    chunk.chunk_uuid = GeneratedId(UuidKind::object);
+    chunk.page_uuid = GeneratedId(UuidKind::page);
+    if (!chunk.chunk_uuid.valid() || !chunk.page_uuid.valid()) {
+      return RefusePersist(ledger, request, "overflow_persist_identity_failed",
+                           "storage.page.overflow.identity_failed",
+                           "chunk or page identity allocation failed");
+    }
     chunk.ordinal = ordinal++;
     chunk.byte_count = static_cast<u32>(end - offset);
     chunk.payload_fragment.assign(request.payload_bytes.begin() + static_cast<std::ptrdiff_t>(offset),

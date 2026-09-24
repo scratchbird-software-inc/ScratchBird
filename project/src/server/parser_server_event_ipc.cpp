@@ -87,6 +87,7 @@ api::EngineRequestContext EngineContextFrom(const ParserServerEventEngineContext
   out.language_context.resource_version_identity =
       context.language_context.resource_version_identity;
   out.trace_tags = context.trace_tags;
+  if (context.authorization_context) out.authorization_context = *context.authorization_context;
   return out;
 }
 

@@ -8,6 +8,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "memory.hpp"
+#include "server_engine_bridge/statement_context.hpp"
+#include <memory>
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
+#include "ddl/create_api.hpp"
+#include "security/security_principal_lifecycle.hpp"
+#include "security/security_model.hpp"
+#include "time.hpp"
+#include <algorithm>
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/savepoint_api.hpp"
@@ -38,6 +50,17 @@ void Require(bool condition, std::string_view message) {
   if (!condition) { Fail(message); }
 }
 
+template <typename TResult>
+void RequireOk(const TResult& result, std::string_view message) {
+  if (!result.ok) {
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+                << diagnostic.detail << '\n';
+    }
+    Fail(message);
+  }
+}
+
 platform::u64 MillisSeed() {
   return static_cast<platform::u64>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -45,9 +68,18 @@ platform::u64 MillisSeed() {
           .count());
 }
 
-platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
-  const auto generated = uuid::GenerateEngineIdentityV7(kind, MillisSeed() + salt);
-  Require(generated.ok(), "IPAR unique-probe UUID generation failed");
+platform::u64 IdentityClockMillis() {
+  const auto clock = scratchbird::core::time::ReadLocalNodeClockSnapshot();
+  Require(clock.ok(), "IPAR-P7-09 node clock unavailable");
+  const auto millis = scratchbird::core::time::WallClockToUuidV7Millis(clock.value.wall_clock);
+  Require(millis.ok(), "IPAR-P7-09 UUID clock conversion failed");
+  return millis.unix_epoch_millis;
+}
+
+platform::TypedUuid NewUuid(platform::UuidKind kind, [[maybe_unused]] platform::u64 salt) {
+  // A fixture's steady-clock directory suffix is not a UUID timestamp.
+  const auto generated = uuid::GenerateEngineIdentityV7(kind, IdentityClockMillis());
+  Require(generated.ok(), "IPAR-P7-09 UUID generation failed");
   return generated.value;
 }
 
@@ -95,16 +127,105 @@ void DumpDiagnostics(const api::EngineApiResult& result) {
   }
 }
 
+class ProbeSession {
+ public:
+  explicit ProbeSession(const api::EngineRequestContext& context) {
+    sb_engine_open_params_v1_t open{};
+    open.struct_size = sizeof(open);
+    open.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    open.database_path_utf8 = context.database_path.data();
+    open.database_path_size = context.database_path.size();
+    open.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
+    Check(sb_engine_open(&open, &engine_, nullptr), nullptr, "engine open");
+    sb_engine_session_params_v1_t begin{};
+    begin.struct_size = sizeof(begin);
+    begin.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    std::copy(context.principal_uuid.bytes.begin(), context.principal_uuid.bytes.end(),
+              begin.effective_user_uuid.bytes);
+    std::copy(context.session_uuid.bytes.begin(), context.session_uuid.bytes.end(),
+              begin.session_uuid.bytes);
+    begin.default_language_utf8 = "en";
+    begin.default_language_size = 2;
+    begin.trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
+    Check(sb_engine_session_begin(engine_, &begin, &session_, nullptr), nullptr,
+          "session begin");
+  }
+  ~ProbeSession() {
+    sb_engine_session_end_params_v1_t end{};
+    end.struct_size = sizeof(end);
+    end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    end.rollback_active_transactions = 1;
+    end.cancel_open_results = 1;
+    (void)sb_engine_session_end(session_, &end, nullptr);
+    (void)sb_engine_close(engine_, nullptr);
+  }
+  ProbeSession(const ProbeSession&) = delete;
+  ProbeSession& operator=(const ProbeSession&) = delete;
+  sb_engine_session_t get() const { return session_; }
+  static void Check(sb_engine_status_t status, sb_engine_result_t result,
+                    const char* phase) {
+    if (status != SB_ENGINE_STATUS_OK && result != nullptr) {
+      sb_engine_diagnostic_set_view_t diagnostics{};
+      if (sb_engine_result_diagnostics(result, &diagnostics) == SB_ENGINE_STATUS_OK) {
+        for (std::size_t i = 0; i < diagnostics.diagnostic_count; ++i) {
+          const auto& d = diagnostics.diagnostics[i];
+          for (const auto text : {d.symbolic_code, d.message_key, d.safe_detail}) {
+            if (text.data) std::cerr.write(text.data, text.size_bytes);
+            std::cerr << ':';
+          }
+          std::cerr << '\n';
+        }
+      }
+    }
+    if (result) sb_engine_result_release(result);
+    if (status != SB_ENGINE_STATUS_OK)
+      Fail(std::string("unique probe fixture ") + phase + " failed");
+  }
+ private:
+  sb_engine_handle_t engine_ = nullptr;
+  sb_engine_session_t session_ = nullptr;
+};
+
+class ProbeStatement {
+ public:
+  ProbeStatement(const ProbeSession& session, const api::EngineRequestContext& base) {
+    namespace bridge = scratchbird::server_engine_bridge;
+    bridge::StatementContextAcquireRequest request;
+    request.engine_context = &base;
+    request.exact_transaction_uuid = base.transaction_uuid;
+    bridge::StatementContextReceiptView view;
+    sb_engine_result_t result = nullptr;
+    const auto status = bridge::AcquireStatementContextReceipt(
+        session.get(), &request, &receipt_, &view, &result);
+    ProbeSession::Check(status, result, "statement acquisition");
+    result = nullptr;
+    const auto copied = bridge::CopyStatementContextEngineContextV1(
+        receipt_, &context, &result);
+    ProbeSession::Check(copied, result, "statement context copy");
+  }
+  ~ProbeStatement() {
+    (void)scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_);
+  }
+  ProbeStatement(const ProbeStatement&) = delete;
+  ProbeStatement& operator=(const ProbeStatement&) = delete;
+  api::EngineRequestContext context;
+ private:
+  scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt_;
+};
+
 struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<ProbeSession> session;
   api::EngineUuid schema_uuid;
   api::EngineUuid table_uuid;
   api::EngineUuid index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     if (!dir.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(dir, ignored);
@@ -128,13 +249,79 @@ api::EngineRowValue Row(std::string payload) {
   return row;
 }
 
-api::CrudTableRecord Table(const Fixture& fixture, std::uint64_t creator_tx) {
-  api::CrudTableRecord table;
-  table.creator_tx = creator_tx;
-  table.table_uuid = fixture.table_uuid;
-  table.default_name = "ipar_unique_probe_target";
-  table.columns.push_back({"payload", "canonical=character"});
-  return table;
+api::EngineLocalizedName Name(std::string name) {
+  api::EngineLocalizedName value;
+  value.language_tag = "en";
+  value.name_class = "primary";
+  value.name = name;
+  value.path = name;
+  value.raw_name_text = name;
+  value.display_name = name;
+  value.default_name = true;
+  return value;
+}
+
+void CreateTable(Fixture& fixture, const api::EngineRequestContext& context) {
+  api::EngineCreateSchemaRequest schema;
+  schema.context = context;
+  schema.target_object.uuid = fixture.schema_uuid;
+  schema.target_object.object_kind = "schema";
+  schema.localized_names.push_back(Name("ipar_unique_probe"));
+  RequireOk(api::EngineCreateSchema(schema), "IPAR unique-probe schema publication failed");
+
+  namespace datatypes = scratchbird::core::datatypes;
+  const auto manifest = datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "IPAR unique-probe datatype catalog unavailable");
+  const std::vector<std::pair<std::string, std::string>> definitions{{"payload", "text"}};
+  api::EngineCreateTableRequest request;
+  request.context = context;
+  request.target_schema.uuid = fixture.schema_uuid;
+  request.target_schema.object_kind = "schema";
+  request.requested_table_uuid = fixture.table_uuid;
+  request.table_names.push_back(Name("ipar_unique_probe_target"));
+  for (const auto& [name, type] : definitions) {
+    const auto catalog = datatypes::LookupDatatypeCatalogRow(
+        manifest.manifest, datatypes::CanonicalTypeIdFromStableName(type));
+    Require(catalog.ok() && catalog.manifest.descriptor_rows.size() == 1,
+            "IPAR unique-probe datatype binding unavailable");
+    const auto& row = catalog.manifest.descriptor_rows.front();
+    const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
+        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+        context.datatype_registry_generation, row.descriptor_uuid.value,
+        row.descriptor_epoch);
+    Require(codec.ok,
+            "IPAR unique-probe datatype codec binding unavailable");
+    api::EngineColumnDefinition column;
+    column.ordinal = request.table_columns.size();
+    column.requested_column_uuid = NewIdentity(platform::UuidKind::object, 0);
+    column.names.push_back(Name(name));
+    column.nullable = true;
+    column.descriptor.descriptor_uuid = NewIdentity(platform::UuidKind::object, 0);
+    column.descriptor.descriptor_kind = "scalar";
+    column.descriptor.canonical_type_name = type;
+    column.descriptor.datatype_descriptor_uuid = row.descriptor_uuid.value;
+    column.descriptor.datatype_descriptor_generation = row.descriptor_epoch;
+    column.descriptor.type_uuid = codec.row.type_uuid;
+    column.descriptor.encoded_descriptor = "canonical=" + type +
+        (column.nullable ? ";nullable=true" : ";nullable=false");
+    request.table_columns.push_back(std::move(column));
+  }
+  const auto created = api::EngineCreateTable(request);
+  RequireOk(created, "IPAR unique-probe table publication failed");
+  Require(created.table_object.uuid == fixture.table_uuid,
+          "IPAR unique-probe table publication changed native identity");
+  const auto descriptor = api::LoadMgaRelationStorageDescriptor(context, fixture.table_uuid);
+  Require(descriptor.ok && descriptor.descriptor.relation_uuid == fixture.table_uuid &&
+              descriptor.descriptor.relation_generation != 0 &&
+              descriptor.descriptor.columns.size() == 1,
+          "IPAR unique-probe published column binding absent");
+  const auto& column = descriptor.descriptor.columns.front();
+  const auto& requested = request.table_columns.front();
+  Require(column.column_generation != 0 && column.column_uuid == requested.requested_column_uuid &&
+              column.value_descriptor.descriptor_uuid == requested.descriptor.descriptor_uuid &&
+              column.value_descriptor.datatype_descriptor_uuid == requested.descriptor.datatype_descriptor_uuid &&
+              column.value_descriptor.type_uuid == requested.descriptor.type_uuid,
+          "IPAR unique-probe publication changed native column bindings");
 }
 
 api::CrudIndexRecord UniquePayloadIndex(const Fixture& fixture,
@@ -153,18 +340,18 @@ api::CrudIndexRecord UniquePayloadIndex(const Fixture& fixture,
   return index;
 }
 
-api::EngineRequestContext BaseContext(const Fixture& fixture, std::string request_id) {
-  api::EngineRequestContext context;
+api::EngineRequestContext BaseContext(const Fixture& fixture,
+                                      std::string request_id) {
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.current_schema_uuid = fixture.schema_uuid;
   context.security_context_present = true;
+  context.identifier_profile_uuid = "sbsql_v3";
+  context.language_context.language_tag = "en";
+  context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
@@ -250,9 +437,18 @@ Fixture MakeFixture() {
   create.path = fixture.database_path.string();
   create.database_uuid = NewUuid(platform::UuidKind::database, fixture.salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, fixture.salt + 2);
-  create.creation_unix_epoch_millis = MillisSeed() + 3;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  create.creation_unix_epoch_millis = IdentityClockMillis();
+  create.require_resource_seed_pack = true;
+  create.resource_seed_pack_root =
+      (std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path()
+          .parent_path() / "resources/seed-packs/initial-resource-pack").string();
+  create.bootstrap_principal_name = "ipar_unique_probe_owner";
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -262,20 +458,62 @@ Fixture MakeFixture() {
   Require(created.ok(), "IPAR unique-probe database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  auto& owner = fixture.owner_context;
+  owner.database_uuid = fixture.database_uuid;
+  owner.database_path = fixture.database_path.string();
+  owner.default_root_uuid = created.state.filespace_uuid.value;
+  owner.session_uuid = NewIdentity(platform::UuidKind::object, 0);
+  owner.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
+  owner.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  owner.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(owner.database_path);
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "IPAR unique-probe durable bootstrap principal unavailable");
+  owner.principal_uuid = bootstrap.state.principal_uuid.value;
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(owner);
+  Require(loaded.ok, "IPAR unique-probe durable security catalog unavailable");
+  const auto& lifecycle = loaded.state;
+  api::DurableAuthorizationState authority;
+  authority.authority_uuid = owner.database_uuid;
+  authority.security_context_generation = lifecycle.security_context_generation;
+  authority.security_epoch = lifecycle.security_generation;
+  authority.policy_epoch = lifecycle.policy_generation;
+  authority.catalog_generation_id = 1;
+  authority.engine_owned_sysarch_role_uuid = bootstrap.state.sysarch_role_uuid.value;
+  for (const auto& principal : lifecycle.principals)
+    if (!principal.deleted && principal.lifecycle_state == "active")
+      authority.principals.push_back({principal.principal_uuid, "principal", true,
+                                     authority.security_epoch});
+  for (const auto& role : lifecycle.roles)
+    if (!role.deleted && role.lifecycle_state == "active")
+      authority.roles.push_back({role.role_uuid, true, authority.security_epoch});
+  for (const auto& membership : lifecycle.memberships)
+    if (!membership.revoked)
+      authority.memberships.push_back({membership.member_principal_uuid, "principal",
+          membership.container_uuid, membership.container_kind, true, authority.security_epoch});
+  for (const auto& grant : lifecycle.grants)
+    if (!grant.revoked)
+      authority.grants.push_back({grant.grant_uuid, grant.grantee_uuid, grant.grantee_kind,
+          grant.target_object_uuid, grant.privilege, grant.grant_effect == "deny", true,
+          authority.security_epoch});
+  const auto materialized = api::MaterializeDurableAuthorizationContext(authority,
+      {owner.principal_uuid, authority.security_epoch, authority.policy_epoch,
+       authority.catalog_generation_id});
+  Require(materialized.ok, "IPAR unique-probe durable authorization unavailable");
+  owner.authorization_context = materialized.context;
+
   fixture.schema_uuid = NewIdentity(platform::UuidKind::schema, fixture.salt + 10);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 20);
   fixture.index_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 21);
 
   auto metadata = Begin(fixture, "ipar-unique-probe-metadata");
-  const auto table = api::AppendMgaTableMetadata(
-      metadata,
-      Table(fixture, metadata.local_transaction_id));
-  Require(!table.error, "IPAR unique-probe table metadata append failed");
+  CreateTable(fixture, metadata);
   const auto index = api::AppendMgaIndexMetadata(
       metadata,
       UniquePayloadIndex(fixture, metadata.local_transaction_id));
   Require(!index.error, "IPAR unique-probe index metadata append failed");
   Commit(metadata);
+  fixture.session = std::make_shared<ProbeSession>(BaseContext(fixture, "unique-probe-session"));
   return fixture;
 }
 
@@ -284,8 +522,9 @@ api::EngineInsertRowsResult InsertBatchInto(
     const api::EngineRequestContext& context,
     std::vector<std::string> payloads,
     std::vector<std::string> options = {}) {
+  ProbeStatement statement(*fixture.session, context);
   api::EngineInsertRowsRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.target_schema.uuid = fixture.schema_uuid;
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
@@ -575,6 +814,11 @@ void VerifyPhysicalUniqueProbe() {
 }  // namespace
 
 int main() {
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "ipar_unique_index_probe");
+  Require(memory.ok() && memory.fixture_mode,
+          "IPAR unique-probe engine memory fixture configuration failed");
+
   VerifyDuplicateWithinStatementAndTransaction();
   VerifyRollbackSavepointAndRestartRelease();
   VerifyPhysicalUniqueProbe();

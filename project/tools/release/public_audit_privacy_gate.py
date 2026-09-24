@@ -117,7 +117,12 @@ CHECKS: tuple[dict[str, Any], ...] = (
         "tokens": (
             "ContainsProtectedMaterial",
             "SafeOrRedacted",
-            "<redacted:actor_uuid>",
+            "EngineUuid VisibleActor(",
+            "if (!PrivilegedView(request) || !record.actor_visible || record.actor_uuid.empty()) {\n    return {};",
+            '{"actor_uuid", VisibleActor(request, record)}',
+            '{"actor_redacted", !record.actor_uuid.empty() &&',
+            '(!PrivilegedView(request) || !record.actor_visible) ? "true" : "false"',
+            "return ValidatedEvidenceIdentity(record.actor_uuid);",
             "<redacted:policy_body>",
             "<redacted:evidence_body>",
             "<redacted:support_bundle>",

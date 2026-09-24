@@ -8,11 +8,14 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
+#include "transaction/transaction_api.hpp"
 #include "parser_server_event_ipc.hpp"
 #include "parser_server_ipc.hpp"
 #include "notification/notification_api.hpp"
 #include "sbps.hpp"
 #include "server_ipc_lifecycle.hpp"
+#include "../../src/wire/public_result_packet.hpp"
 #include "uuid.hpp"
 
 #include <cstdlib>
@@ -71,7 +74,7 @@ std::filesystem::path MakeTempDir() {
   return std::filesystem::path(made);
 }
 
-std::string CreateOpenDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateOpenDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, 1779130601000).value;
@@ -87,7 +90,7 @@ std::string CreateOpenDatabase(const std::filesystem::path& path) {
   Require(opened.ok(), "DBLC-013F first open activation failed for event IPC");
   const auto clean = db::MarkDatabaseCleanShutdown(path.string());
   Require(clean.ok(), "DBLC-013F clean shutdown marker failed for event IPC");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 ServerLifecycleArtifacts Artifacts() {
@@ -128,7 +131,7 @@ bool HasDiagnostic(const std::vector<scratchbird::server::ServerDiagnostic>& dia
 }
 
 std::string ReadFile(const std::filesystem::path& path) {
-  std::ifstream in(path);
+  std::ifstream in(path, std::ios::binary);
   Require(static_cast<bool>(in), "failed to read DBLC-013F descriptor file");
   return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
@@ -143,15 +146,51 @@ void TestDescriptorWriteAndAdmission() {
   Require(WriteServerIpcEndpointDescriptor(descriptor, &diagnostics),
           "DBLC-013F descriptor write failed");
   Require(diagnostics.empty(), "DBLC-013F descriptor write produced diagnostics");
-  const auto descriptor_text = ReadFile(descriptor.descriptor_path);
-  Require(Contains(descriptor_text, "endpoint_class=parser_server"),
-          "DBLC-013F descriptor missing endpoint class");
-  Require(Contains(descriptor_text, "protocol_family=parser_server_ipc"),
-          "DBLC-013F descriptor missing protocol family");
-  Require(Contains(descriptor_text, "database_uuid=018f58bd-98f0-7000-8000-00000013060f"),
-          "DBLC-013F descriptor missing hosted durable database UUID");
-  Require(Contains(descriptor_text, "service_ready=true"),
-          "DBLC-013F descriptor missing service-ready proof");
+  namespace packet = scratchbird::wire::public_result;
+  const auto descriptor_bytes = ReadFile(descriptor.descriptor_path);
+  std::vector<packet::Field> fields;
+  Require(packet::Decode(descriptor_bytes, &fields), "DBLC-013F descriptor frame invalid");
+  const auto field = [&](std::string_view name) -> const packet::Field& {
+    const packet::Field* found = nullptr;
+    for (const auto& item : fields) if (item.name == name) {
+      Require(found == nullptr, "DBLC-013F duplicate descriptor field");
+      found = &item;
+    }
+    Require(found != nullptr, "DBLC-013F missing descriptor field");
+    return *found;
+  };
+  Require(field("format").value == "SBPS_ENDPOINT_V2" &&
+              field("endpoint_class").value == "parser_server" &&
+              field("protocol_family").value == "parser_server_ipc" &&
+              field("service_ready").value == "true",
+          "DBLC-013F descriptor lost endpoint metadata");
+  Require(field("database_uuid").kind == packet::Kind::uuid &&
+              field("database_uuid").value == std::string(
+                  reinterpret_cast<const char*>(descriptor.database_uuid.bytes.data()), 16),
+          "DBLC-013F descriptor lost exact binary database identity");
+  auto special = descriptor;
+  special.database_uuid.bytes[10] = '\n';
+  special.database_uuid.bytes[11] = 0;
+  special.endpoint_id = "endpoint\nwith=delimiters";
+  std::string encoded;
+  Require(scratchbird::server::EncodeServerIpcEndpointDescriptor(special, &encoded) &&
+              packet::Decode(encoded, &fields), "DBLC-013F binary octets were not framed");
+  Require(field("database_uuid").value == std::string(
+              reinterpret_cast<const char*>(special.database_uuid.bytes.data()), 16) &&
+              field("endpoint_id").value == special.endpoint_id,
+          "DBLC-013F framing altered embedded delimiters");
+  for (std::size_t size = 0; size < encoded.size(); ++size)
+    Require(!packet::Decode(std::string_view(encoded).substr(0, size), &fields),
+            "DBLC-013F truncated descriptor frame admitted");
+  Require(!packet::Decode(encoded + "tail", &fields), "DBLC-013F trailing bytes admitted");
+  std::string sentinel = "unchanged";
+  special.descriptor_format_version = 1;
+  Require(!scratchbird::server::EncodeServerIpcEndpointDescriptor(special, &sentinel) &&
+              sentinel == "unchanged", "DBLC-013F legacy format silently encoded");
+  special.descriptor_format_version = scratchbird::server::kServerIpcEndpointDescriptorFormatCurrent;
+  special.database_uuid.bytes[6] = 0x40;
+  Require(!scratchbird::server::EncodeServerIpcEndpointDescriptor(special, &sentinel) &&
+              sentinel == "unchanged", "DBLC-013F malformed engine identity encoded");
 #ifndef _WIN32
   struct stat descriptor_stat {};
   Require(::stat(descriptor.descriptor_path.c_str(), &descriptor_stat) == 0,
@@ -378,32 +417,28 @@ void PrintEventVectors(const std::vector<scratchbird::server::ParserServerMessag
   }
 }
 
-ParserServerEventSession EventSession(const std::filesystem::path& database_path,
-                                      bool session_bound,
-                                      bool draining = false,
-                                      std::uint64_t local_transaction_id = 0) {
+ParserServerEventSession EventSession(const api::EngineRequestContext& context,
+                                      bool session_bound, bool draining = false) {
   ParserServerEventSession session;
-  session.parser_channel_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306aa");
+  session.parser_channel_uuid = scratchbird::tests::FixtureUuid(1388, 100);
   session.session_bound = session_bound;
   session.draining = draining;
-  session.engine_context.database_path = database_path.string();
-  session.engine_context.session_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306bb");
-  session.engine_context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306cc");
-  session.engine_context.local_transaction_id = local_transaction_id;
+  session.engine_context.database_path = context.database_path;
+  session.engine_context.database_uuid = context.database_uuid;
+  session.engine_context.session_uuid = context.session_uuid;
+  session.engine_context.principal_uuid = context.principal_uuid;
+  session.engine_context.local_transaction_id = context.local_transaction_id;
+  session.engine_context.transaction_uuid = context.transaction_uuid;
+  session.engine_context.snapshot_visible_through_local_transaction_id = context.snapshot_visible_through_local_transaction_id;
+  session.engine_context.catalog_generation_id = context.catalog_generation_id;
+  session.engine_context.security_epoch = context.security_epoch;
+  session.engine_context.resource_epoch = context.resource_epoch;
+  session.engine_context.name_resolution_epoch = context.name_resolution_epoch;
   session.engine_context.security_context_present = true;
-  session.engine_context.trust_mode =
-      scratchbird::server::ParserServerEventTrustMode::embedded_in_process;
-  session.engine_context.trace_tags.push_back("security.fixture_trace_authority");
-  session.engine_context.trace_tags.push_back("right:EVENT_CREATE");
-  session.engine_context.trace_tags.push_back("right:EVENT_SUBSCRIBE");
+  session.engine_context.trust_mode = scratchbird::server::ParserServerEventTrustMode::embedded_in_process;
+  session.engine_context.authorization_context =
+      std::make_shared<const api::EngineMaterializedAuthorizationContext>(context.authorization_context);
   return session;
-}
-
-void SeedActiveTransaction(const std::filesystem::path& database_path, std::uint64_t tx) {
-  std::ofstream out(database_path.string() + ".sb.crud_events", std::ios::binary | std::ios::app);
-  out << "SBCRUD1\tTX_BEGIN\t" << tx << "\tdblc013f_event_ipc\n";
-  out << "SBCRUD1\tTX_COMMIT\t" << tx << "\n";
-  Require(static_cast<bool>(out), "DBLC-013F failed to seed event IPC transaction evidence");
 }
 
 void CreateEventChannel(const ParserServerEventSession& session,
@@ -411,6 +446,13 @@ void CreateEventChannel(const ParserServerEventSession& session,
   api::EngineCreateEventChannelRequest request;
   request.context.request_id = "dblc013f-event-channel-create";
   request.context.database_path = session.engine_context.database_path;
+  request.context.database_uuid = session.engine_context.database_uuid;
+  request.context.transaction_uuid = session.engine_context.transaction_uuid;
+  request.context.snapshot_visible_through_local_transaction_id = session.engine_context.snapshot_visible_through_local_transaction_id;
+  request.context.catalog_generation_id = session.engine_context.catalog_generation_id;
+  request.context.security_epoch = session.engine_context.security_epoch;
+  request.context.resource_epoch = session.engine_context.resource_epoch;
+  request.context.authorization_context = *session.engine_context.authorization_context;
   request.context.session_uuid = session.engine_context.session_uuid;
   request.context.principal_uuid = session.engine_context.principal_uuid;
   request.context.local_transaction_id = session.engine_context.local_transaction_id;
@@ -425,20 +467,31 @@ void CreateEventChannel(const ParserServerEventSession& session,
   request.target_object = {channel_uuid, "event_channel"};
   request.option_envelopes.push_back("channel:dblc013f_event_channel");
   const auto created = api::EngineCreateEventChannel(request);
+  if (!created.ok) for (const auto& diagnostic : created.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(created.ok, "DBLC-013F failed to create engine-authorized event channel");
 }
 
 void TestEventIpcSessionDrainAndCleanup() {
   const auto work = MakeTempDir();
   const auto database_path = work / "event_ipc.sbdb";
-  (void)CreateOpenDatabase(database_path);
+  api::EngineRequestContext context;
+  context.database_uuid = CreateOpenDatabase(database_path);
+  context.database_path = database_path.string();
+  context.session_uuid = scratchbird::tests::FixtureUuid(1388, 101);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(1388, 102);
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
+  context.catalog_generation_id = context.security_epoch = context.resource_epoch = 1;
+  context.name_resolution_epoch = 1;
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &context, "dblc013f_event_ipc", {"EVENT_CREATE", "EVENT_SUBSCRIBE"});
   ParserEventNotificationRouter router;
   ParserServerEventIpcRuntime runtime(&router);
   const auto channel_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306ff");
 
   PsEventSubscribeRequest unbound;
   unbound.request_uuid = scratchbird::tests::FixtureUuid(1388, 1);
-  unbound.session = EventSession(database_path, false);
+  unbound.session = EventSession(context, false);
   unbound.channel_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306dd");
   auto unbound_result = runtime.HandleSubscribe(unbound);
   Require(unbound_result.outcome == "rejected" &&
@@ -447,20 +500,53 @@ void TestEventIpcSessionDrainAndCleanup() {
 
   PsEventSubscribeRequest draining;
   draining.request_uuid = scratchbird::tests::FixtureUuid(1388, 2);
-  draining.session = EventSession(database_path, true, true);
+  draining.session = EventSession(context, true, true);
   draining.channel_uuid = scratchbird::tests::FixtureUuidLiteral("018f58bd-98f0-7000-8000-0000001306ee");
   auto draining_result = runtime.HandleSubscribe(draining);
   Require(draining_result.outcome == "rejected" &&
               HasEventVector(draining_result.message_vector_set, "PARSER_SERVER_IPC.DRAINING"),
           "DBLC-013F event subscribe while draining was not rejected");
 
-  SeedActiveTransaction(database_path, 1306);
-  CreateEventChannel(EventSession(database_path, true, false, 1306), channel_uuid);
+  api::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  const auto begun = api::EngineBeginTransaction(begin);
+  if (!begun.ok) for (const auto& diagnostic : begun.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(begun.ok, "DBLC-013F durable event transaction begin failed");
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+  CreateEventChannel(EventSession(context, true), channel_uuid);
+  api::EngineCommitTransactionRequest commit;
+  commit.context = context;
+  Require(api::EngineCommitTransaction(commit).ok, "DBLC-013F durable event transaction commit failed");
+  context.snapshot_visible_through_local_transaction_id = context.local_transaction_id;
+  context.local_transaction_id = 0;
+  context.transaction_uuid = {};
 
   PsEventSubscribeRequest accepted;
   accepted.request_uuid = scratchbird::tests::FixtureUuid(1388, 3);
-  accepted.session = EventSession(database_path, true);
+  accepted.session = EventSession(context, true);
   accepted.channel_uuid = channel_uuid;
+  auto unauthorized = accepted;
+  unauthorized.session.engine_context.authorization_context.reset();
+  unauthorized.session.engine_context.trace_tags = {"security.fixture_trace_authority", "right:EVENT_SUBSCRIBE"};
+  const auto refused = runtime.HandleSubscribe(unauthorized);
+  Require(refused.outcome == "rejected" &&
+              HasEventVector(refused.message_vector_set, "EVENT.AUTHORIZATION_DENIED") &&
+              router.ActiveSubscriptionCount() == 0,
+          "DBLC-013F trace tags bypassed materialized event authorization");
+  for (bool stale_epoch : {false, true}) {
+    auto replayed = accepted;
+    if (stale_epoch) ++replayed.session.engine_context.security_epoch;
+    else replayed.session.engine_context.principal_uuid = scratchbird::tests::FixtureUuid(1388, 103);
+    const auto replay_result = runtime.HandleSubscribe(replayed);
+    Require(replay_result.outcome == "rejected" &&
+                HasEventVector(replay_result.message_vector_set, "EVENT.AUTHORIZATION_DENIED") &&
+                router.ActiveSubscriptionCount() == 0,
+            "DBLC-013F event authorization replay crossed principal or security epoch");
+  }
+
   auto accepted_result = runtime.HandleSubscribe(accepted);
   if (accepted_result.outcome != "accepted") { PrintEventVectors(accepted_result.message_vector_set); }
   Require(accepted_result.outcome == "accepted",

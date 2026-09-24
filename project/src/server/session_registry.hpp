@@ -604,7 +604,7 @@ struct ServerStatementContextRecord {
   // Logical revocation precedes physical cleanup. A failed engine release
   // retains this record/handle for retry but must never admit new execution.
   bool release_in_progress = false;
-  std::string variable_final_receipt_uuid, variable_admission_token_uuid;
+  std::array<std::uint8_t, 16> variable_final_receipt_uuid{}, variable_admission_token_uuid{};
   std::array<std::uint8_t,32> variable_binding_sha256{};
   bool variable_binding_finalized = false, variable_token_consumed = false;
 };

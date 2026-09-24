@@ -1,3 +1,4 @@
+#include "../support/database_fixture_cleanup.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -518,10 +519,7 @@ platform::TypedUuid Generate(platform::UuidKind kind, std::uint64_t millis) {
 }
 
 void CreateRouteDatabase() {
-  std::remove(std::string(kDatabasePath).c_str());
-  std::remove((std::string(kDatabasePath) + ".sb.owner.lock").c_str());
-  std::remove((std::string(kDatabasePath) + ".sb.api_events").c_str());
-  std::remove((std::string(kDatabasePath) + ".sb.crud_events").c_str());
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(std::string(kDatabasePath));
 
   scratchbird::storage::database::DatabaseCreateConfig create;
   const auto seed = NowMillis();
@@ -533,8 +531,14 @@ void CreateRouteDatabase() {
   create.allow_overwrite = true;
   Require(create.database_uuid.valid() && create.filespace_uuid.valid(),
           "failed to generate database/filespace UUIDs for UDR route test");
-  Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
-          "failed to create database for UDR route test");
+  const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key;
+    for (const auto& argument : created.diagnostic.arguments)
+      std::cerr << ' ' << argument.key << '=' << argument.value;
+    std::cerr << '\n';
+  }
+  Require(created.ok(), "failed to create database for UDR route test");
   g_database_uuid = create.database_uuid.value;
 }
 

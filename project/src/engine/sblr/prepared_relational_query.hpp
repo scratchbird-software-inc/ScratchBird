@@ -165,9 +165,10 @@ inline bool ValidatePreparedRelationalQueryV1(const SblrOperationEnvelope& op, P
     if (!d::Descriptors(op, 1, &descriptors) ||
         !DecodeSblrExpressionNodeReferenceV1(op.operands[12].value_body.data(), op.operands[12].value_body.size(), &ref)) return false;
     const auto table = DecodeSblrExpressionNodeTableV1(op.operands[17].value_body.data(), op.operands[17].value_body.size());
-    return table.ok && table.table.nodes.size() == 1 && table.table.nodes[0].node_id == 1 &&
+    return table.ok && table.table.nodes.size() == 1 &&
+        table.table.nodes[0].node_id == ref.node_id &&
         table.table.nodes[0].parent_node_id == 0 && table.table.nodes[0].parent_operand_ordinal == 1 &&
-        ref.occurrence_ordinal == 1 && ref.node_id == 1 && ref.descriptor_uuid == descriptors[0].descriptor_uuid.bytes &&
+        ref.occurrence_ordinal == 1 && ref.descriptor_uuid == descriptors[0].descriptor_uuid.bytes &&
         (!descriptors[0].datatype_identity_authoritative || ref.descriptor_generation == descriptors[0].descriptor_generation) &&
         ValidateSblrLiteralReferenceBijectionV1(table, {ref});
   }
@@ -255,9 +256,14 @@ struct PreparedRelationalContextV1 {
   core::platform::Uuid catalog_epoch_uuid, security_context_uuid, statement_uuid, transaction_uuid,
       statement_snapshot_uuid, statement_metadata_snapshot_uuid;
   std::uint64_t local_transaction_id{0}, snapshot_visible_through_local_transaction_id{0};
+  core::platform::Uuid statement_receipt_uuid, datatype_catalog_snapshot_uuid;
+  std::uint64_t datatype_catalog_generation{0}, datatype_registry_generation{0};
 };
 inline bool RebindPreparedRelationalQueryV1(SblrOperationEnvelope* operation, const PreparedRelationalContextV1& context) {
-  if (!operation || !context.local_transaction_id) return false;
+  if (!operation || !context.local_transaction_id ||
+      !core::uuid::IsEngineIdentityUuid(context.statement_receipt_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(context.datatype_catalog_snapshot_uuid) ||
+      !context.datatype_catalog_generation || !context.datatype_registry_generation) return false;
   const std::array ids{context.catalog_epoch_uuid, context.security_context_uuid, context.statement_uuid,
                        context.transaction_uuid, context.statement_snapshot_uuid, context.statement_metadata_snapshot_uuid};
   if (std::ranges::any_of(ids, [](const auto& id) { return !core::uuid::IsEngineIdentityUuid(id); })) return false;
@@ -268,6 +274,20 @@ inline bool RebindPreparedRelationalQueryV1(SblrOperationEnvelope* operation, co
   }
   if (!recognized) return false;
   auto staged = *operation;
+  for (auto& operand : staged.operands) {
+    if (operand.value_kind != SblrValueKind::relational_type_descriptor) continue;
+    internal_api::RelationalTypeDescriptor descriptor;
+    if (!DecodeRelationalTypeDescriptorV1(operand.value_body.data(),
+                                         operand.value_body.size(), &descriptor)) return false;
+    if (!descriptor.datatype_identity_authoritative) continue;
+    // The execution receipt may replace the statement owner, never the catalog
+    // cohort or datatype identity captured by the prepared template.
+    if (descriptor.datatype_catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+        descriptor.datatype_catalog_generation != context.datatype_catalog_generation ||
+        descriptor.datatype_registry_generation != context.datatype_registry_generation) return false;
+    descriptor.statement_receipt_uuid = context.statement_receipt_uuid;
+    if (!EncodeRelationalTypeDescriptorV1(descriptor, &operand.value_body)) return false;
+  }
   for (std::size_t i = 0; i < ids.size(); ++i)
     staged.operands[i + 2].value_body.assign(ids[i].bytes.begin(), ids[i].bytes.end());
   const std::array numbers{context.local_transaction_id, context.snapshot_visible_through_local_transaction_id};

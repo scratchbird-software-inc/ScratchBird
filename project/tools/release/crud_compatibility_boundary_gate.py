@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 ScratchBird Software Inc.
+# SPDX-License-Identifier: MPL-2.0
 """Freeze compatibility projection use outside canonical MGA DML."""
 
 from __future__ import annotations

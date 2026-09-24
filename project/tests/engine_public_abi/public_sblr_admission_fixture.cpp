@@ -15,137 +15,12 @@
 #include <string_view>
 #include <vector>
 
-// This public-ABI fixture deliberately does not gain a private include path.
-// Declare the frozen SBOP v1 codec value contract locally and link the same
-// production encoder/decoder already carried by sb_engine.
-namespace scratchbird::engine::sblr {
-
-inline constexpr std::uint32_t kEngineSblrEnvelopeMajor = 1;
-inline constexpr std::uint32_t kEngineSblrEnvelopeMinor = 0;
-
-enum class SblrValueKind : std::uint16_t {
-  uuid_ref = 1,
-  descriptor_ref = 2,
-  policy_ref = 3,
-  principal_ref = 4,
-  literal_typed = 5,
-  parameter_slot = 6,
-  result_target = 7,
-  proof_token = 8,
-  epoch_token = 9,
-  profile_ref = 10,
-  artifact_ref = 11,
-  udr_ref = 12,
-  list = 13,
-  map = 14,
-  null_value = 15,
-  transaction_begin_options = 22,
-};
-
-using SblrTxnUuidV1 = std::array<std::uint8_t, 16>;
-using SblrTxnShaV1 = std::array<std::uint8_t, 32>;
-
-struct SblrTransactionBeginOptionsV1 {
-  SblrTxnUuidV1 isolation_profile_uuid{};
-  SblrTxnUuidV1 transaction_policy_snapshot_uuid{};
-  std::uint64_t isolation_profile_generation = 0;
-  std::uint64_t transaction_policy_generation = 0;
-  std::uint64_t deadline_monotonic_ns = 0;
-  std::uint8_t read_mode = 0;
-  std::uint8_t authority_scope = 0;
-  std::uint8_t wait_policy = 0;
-  SblrTxnShaV1 options_sha256{};
-};
-
-std::vector<std::uint8_t> EncodeSblrTransactionBeginOptionsV1(
-    SblrTransactionBeginOptionsV1* options);
-
-struct SblrOperand {
-  std::string type;
-  std::string name;
-  std::string value;
-  std::uint32_t ordinal = 0;
-  SblrValueKind value_kind = SblrValueKind::null_value;
-  std::uint16_t value_flags = 0;
-  std::vector<std::uint8_t> value_body;
-};
-
-struct SblrSourceSymbolArtifact {
-  std::string symbol_kind;
-  std::string stable_key;
-  std::string resolved_uuid;
-  std::string render_hint;
-  std::string scope;
-  std::string source_hash;
-  bool authoritative = false;
-  bool contains_sql_text = false;
-};
-
-struct SblrOperationRenderHint {
-  std::string hint_kind;
-  std::string stable_key;
-  std::string value;
-  bool authoritative = false;
-  bool contains_sql_text = false;
-};
-
-struct SblrSourceArtifactMap {
-  std::string policy_status = "absent";
-  std::string source_identity;
-  std::string source_hash;
-  std::string artifact_format = "sblr.source_artifact_map.v1";
-  bool render_metadata_only = true;
-  bool contains_sql_text = false;
-  bool raw_sql_text_authoritative = false;
-  std::vector<SblrSourceSymbolArtifact> symbols;
-  std::vector<SblrOperationRenderHint> operation_render_hints;
-};
-
-struct SblrOperationEnvelope {
-  std::uint32_t envelope_major = kEngineSblrEnvelopeMajor;
-  std::uint32_t envelope_minor = kEngineSblrEnvelopeMinor;
-  std::uint16_t opcode_code = 0;
-  std::uint16_t operation_version_major = 1;
-  std::uint16_t operation_version_minor = 0;
-  std::string operation_id;
-  std::string opcode;
-  std::string result_shape;
-  std::string diagnostic_shape;
-  std::string parser_package_uuid;
-  std::uint32_t parser_package_version_major = 1;
-  std::uint32_t parser_package_version_minor = 0;
-  std::uint32_t parser_package_version_patch = 0;
-  std::string registry_snapshot_uuid;
-  std::string trace_key;
-  std::vector<SblrOperand> operands;
-  SblrSourceArtifactMap source_artifact_map;
-  bool contains_sql_text = false;
-  bool parser_resolved_names_to_uuids = false;
-  bool requires_security_context = true;
-  bool requires_transaction_context = false;
-  bool requires_cluster_authority = false;
-};
-
-struct SblrEnvelopeDiagnostic {
-  std::string code;
-  std::string message;
-  bool error = true;
-};
-
-struct SblrDecodeResult {
-  bool ok = false;
-  SblrOperationEnvelope envelope;
-  std::vector<std::uint8_t> canonical_bytes;
-  std::vector<SblrEnvelopeDiagnostic> diagnostics;
-};
-
-SblrOperationEnvelope MakeSblrEnvelope(std::string operation_id,
-                                       std::string opcode,
-                                       std::string trace_key = {});
-SblrDecodeResult DecodeSblrEnvelope(std::string_view encoded);
-std::string EncodeSblrEnvelope(const SblrOperationEnvelope& envelope);
-
-}  // namespace scratchbird::engine::sblr
+// Only serialized bytes cross between this public-ABI test and its codec
+// fixture producer. Never redeclare private C++ types: their layouts are not ABI.
+namespace scratchbird::test {
+std::string CanonicalOperationBytes();
+bool ValidateCanonicalOperationBytes(std::string_view bytes);
+}
 
 namespace {
 
@@ -156,6 +31,7 @@ sb_engine_uuid_t TestUuid(unsigned char tail) {
   sb_engine_uuid_t uuid{};
   uuid.bytes[0] = 0x01;
   uuid.bytes[6] = 0x70;
+  uuid.bytes[8] = 0x80;
   uuid.bytes[15] = tail;
   return uuid;
 }
@@ -256,64 +132,19 @@ sb_engine_status_t Dispatch(Harness& harness,
       harness.session, nullptr, &context, &params, result);
 }
 
-std::string CanonicalOperationBytes() {
-  namespace sblr = scratchbird::engine::sblr;
-  auto envelope = sblr::MakeSblrEnvelope(
-      "engine.op.txn_begin", "SBLR_TXN_BEGIN",
-      "public-abi-canonical-codec-structure");
-  envelope.opcode_code = 0x0100u;
-  envelope.result_shape = "transaction_handle";
-  envelope.diagnostic_shape = "diagnostic_vector";
-  envelope.parser_package_uuid =
-      "019e05b1-f009-7000-8000-000000000020";
-  envelope.registry_snapshot_uuid =
-      "019e05b1-f009-7000-8000-000000000021";
-
-  sblr::SblrTransactionBeginOptionsV1 options;
-  options.isolation_profile_uuid[0] = 1;
-  options.isolation_profile_generation = 1;
-  options.transaction_policy_snapshot_uuid[0] = 2;
-  options.transaction_policy_generation = 1;
-  options.read_mode = 1;
-  options.authority_scope = 1;
-  options.wait_policy = 1;
-
-  sblr::SblrOperand operand;
-  operand.type = "transaction.begin_options";
-  operand.name = "options";
-  operand.ordinal = 1;
-  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
-  operand.value_body =
-      sblr::EncodeSblrTransactionBeginOptionsV1(&options);
-  envelope.operands.push_back(std::move(operand));
-  return sblr::EncodeSblrEnvelope(envelope);
-}
 
 }  // namespace
 
 int main() {
-  namespace sblr = scratchbird::engine::sblr;
-
   Harness harness;
   if (!harness.Open()) return 1;
 
-  const std::string canonical = CanonicalOperationBytes();
+  const std::string canonical = scratchbird::test::CanonicalOperationBytes();
   if (canonical.size() < 4 || canonical[0] != 'S' || canonical[1] != 'B' ||
       canonical[2] != 'O' || canonical[3] != 'P') {
     return 2;
   }
-  const auto decoded = sblr::DecodeSblrEnvelope(canonical);
-  if (!decoded.ok ||
-      decoded.envelope.operation_id != "engine.op.txn_begin" ||
-      decoded.envelope.opcode != "SBLR_TXN_BEGIN" ||
-      std::string(decoded.canonical_bytes.begin(),
-                  decoded.canonical_bytes.end()) != canonical ||
-      sblr::EncodeSblrEnvelope(decoded.envelope) != canonical) {
-    return 3;
-  }
-  std::string corrupt = canonical;
-  corrupt.back() ^= 0x01;
-  if (sblr::DecodeSblrEnvelope(corrupt).ok) return 4;
+  if (!scratchbird::test::ValidateCanonicalOperationBytes(canonical)) return 3;
 
   const std::vector<std::uint8_t> nonempty(canonical.begin(), canonical.end());
   sb_engine_result_t result = nullptr;

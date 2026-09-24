@@ -68,7 +68,7 @@ bool CreateFixtureDatabase(const std::filesystem::path& path) {
   create.allow_uncredentialed_bootstrap = false;
   create.allow_overwrite = true;
   if (!db::CreateDatabaseFile(create).ok()) return false;
-  const auto database_uuid = uuid::UuidToString(create.database_uuid.value);
+  const auto database_uuid = create.database_uuid.value;
   const auto bootstrap =
       scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
           path, "server_managed_listener_smoke");
@@ -87,7 +87,7 @@ bool CreateFixtureDatabase(const std::filesystem::path& path) {
       path, database_uuid, kSysdbaUuid, database_uuid, "database", "CONNECT", tx_id,
       "server_managed_listener_smoke:sysdba-connect", tx_uuid);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
-      path, database_uuid, kSysdbaUuid, "", "server_management", "OBS_MANAGEMENT_CONTROL", tx_id,
+      path, database_uuid, kSysdbaUuid, scratchbird::core::platform::Uuid{}, "server_management", "OBS_MANAGEMENT_CONTROL", tx_id,
       "server_managed_listener_smoke:sysdba-management", tx_uuid);
   scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
       bootstrap);

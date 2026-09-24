@@ -1004,6 +1004,9 @@ void OwnedInventoryFaults(unsigned route,unsigned shard) {
  const auto call=[&](u64 budget){return db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,budget,*f.issuer);};
  byte scratch=0;for(unsigned n=0;n<4097;++n)Check(f.device.ReadAt(0,&scratch,1).ok(),"stabilize optional observation allocations");
  owned_clock_controlled=true;owned_clock_millis=1700000000123ULL;
+ // Genesis used the real clock. Start the fault experiment with a fresh issuer
+ // bound to its controlled clock, as every subsequent reset already does.
+ f.ResetIssuer();
  reads=writes=syncs=entropy_calls=hash_seen=0;allocations=0;
  counting=hash_counting=io_counting=true;const auto good=call(f.budget);counting=hash_counting=io_counting=false;
  const auto nr=reads,nw=writes,ns=syncs,nh=hash_seen,ne=entropy_calls;const auto na=allocations;

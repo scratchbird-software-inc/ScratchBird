@@ -8,6 +8,11 @@
 #include "ia05_query_explain_cancellation_fault_test.cpp"
 
 #include "engine/internal_api/catalog/catalog_object_lifecycle.hpp"
+#include "engine/internal_api/ddl/create_api.hpp"
+#include "engine/internal_api/catalog/schema_tree_api.hpp"
+#include "engine/internal_api/security/security_principal_lifecycle.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "engine/internal_api/catalog/name_resolution_api.hpp"
 #include "catalog/name_registry.hpp"
 #include "engine/internal_api/mga_relation_store/mga_relation_store.hpp"
@@ -55,11 +60,11 @@ std::string DiagnosticDetail(sb_engine_result_t result) {
           diagnostics.diagnostics[0].safe_detail.size_bytes};
 }
 
-TriggerTarget PrepareTriggerTarget(const Fixture& fixture,
+TriggerTarget PrepareTriggerTarget(const Fixture& fixture, PublicSession& session,
                                    api::EngineRequestContext* context) {
   Require(context != nullptr, "002624 trigger context is required");
   TriggerTarget target{
-      NewUuid(platform::UuidKind::schema, 26240),
+      {},
       NewUuid(platform::UuidKind::object, 26241), {}};
   context->database_page_size_bytes = 16384;
   context->default_root_uuid = Identity(fixture.filespace_uuid);
@@ -82,24 +87,27 @@ TriggerTarget PrepareTriggerTarget(const Fixture& fixture,
   grant.security_epoch = context->security_epoch;
   context->authorization_context.grants.push_back(std::move(grant));
 
-  api::CrudTableRecord table;
-  table.table_uuid = Identity(target.relation_uuid);
-  table.default_name = "trig_items";
-  table.columns = {
-      {"item_id",
-       "type=int64;datatype_descriptor_uuid="
-       "019d0000-0000-7000-8000-00000000d716;type_uuid="
-       "019d0000-0000-7000-8000-00000000d717;nullable=false"},
-      {"item_price",
-       "type=int64;datatype_descriptor_uuid="
-       "019d0000-0000-7000-8000-00000000d716;type_uuid="
-       "019d0000-0000-7000-8000-00000000d717;nullable=false"}};
-  Require(!api::AppendMgaTableMetadata(*context, table).error,
-          "002624 target-table metadata publication failed");
-  Require(!api::EnsureMgaRelationStorageDescriptor(
-               *context, table, {}, &target.descriptor)
-               .error,
-          "002624 target-table descriptor publication failed");
+  const auto security = api::LoadSecurityPrincipalLifecycleState(*context);
+  Require(security.ok && security.state.security_context_generation != 0 &&
+              security.state.security_generation == context->security_epoch &&
+              security.state.policy_generation == context->authorization_context.policy_epoch,
+          "002624 durable security cohort unavailable");
+  context->authorization_context.security_context_generation = security.state.security_context_generation;
+  bridge::StatementContextAcquireRequest acquire;
+  acquire.engine_context = context;
+  acquire.exact_transaction_uuid = context->transaction_uuid;
+  bridge::StatementContextReceiptHandle receipt;
+  bridge::StatementContextReceiptView view;
+  Require(bridge::AcquireStatementContextReceipt(session.session, &acquire, &receipt, &view, nullptr) ==
+              SB_ENGINE_STATUS_OK, "002624 datatype authority receipt unavailable");
+  api::EngineRequestContext admitted;
+  Require(bridge::CopyStatementContextEngineContextV1(receipt, &admitted, nullptr) == SB_ENGINE_STATUS_OK,
+          "002624 datatype receipt context unavailable");
+  context->datatype_catalog_snapshot_uuid = admitted.datatype_catalog_snapshot_uuid;
+  context->datatype_catalog_generation = admitted.datatype_catalog_generation;
+  context->datatype_registry_generation = admitted.datatype_registry_generation;
+  Require(bridge::ReleaseStatementContextReceipt(receipt) == SB_ENGINE_STATUS_OK,
+          "002624 datatype receipt cleanup failed");
   const auto lifecycle_name = [](std::string value) {
     api::EngineLocalizedName name;
     name.name = value;
@@ -111,34 +119,67 @@ TriggerTarget PrepareTriggerTarget(const Fixture& fixture,
     name.identifier_profile_uuid = "sbsql_v3";
     return name;
   };
-  api::EngineCatalogCreateObjectRequest schema;
-  schema.context = *context;
-  schema.target_object.uuid = Identity(target.schema_uuid);
-  schema.target_object.object_kind = "schema";
-  schema.localized_names.push_back(lifecycle_name("app"));
-  Require(api::EngineCatalogCreateObject(schema).ok,
-          "002624 target schema lifecycle publication failed");
-  api::EngineCatalogCreateObjectRequest relation;
+  api::EngineApiDiagnostic schema_diagnostic;
+  const auto schemas = api::VisibleSchemaTreeRecords(*context, context->local_transaction_id,
+                                                     schema_diagnostic);
+  Require(!schema_diagnostic.error, "002624 bootstrap schema read failed");
+  for (const auto& schema : schemas) for (const auto& name : schema.localized_names) {
+    if (name.path != "app") continue;
+    Require(target.schema_uuid.value.is_nil() || target.schema_uuid.value == schema.schema_uuid,
+            "002624 bootstrap app schema is ambiguous");
+    target.schema_uuid = {platform::UuidKind::schema, schema.schema_uuid};
+  }
+  Require(target.schema_uuid.valid(), "002624 bootstrap app schema unavailable");
+  context->current_schema_uuid = target.schema_uuid.value;
+  api::EngineCreateTableRequest relation;
   relation.context = *context;
-  relation.target_object.uuid = table.table_uuid;
-  relation.target_object.object_kind = "table";
-  relation.target_schema.uuid = Identity(target.schema_uuid);
+  relation.requested_table_uuid = Identity(target.relation_uuid);
+  relation.target_schema.uuid = target.schema_uuid.value;
   relation.target_schema.object_kind = "schema";
-  relation.localized_names.push_back(lifecycle_name(table.default_name));
-  Require(api::EngineCatalogCreateObject(relation).ok,
-          "002624 target-table lifecycle publication failed");
+  relation.table_names.push_back(lifecycle_name("trig_items"));
+  namespace types = scratchbird::core::datatypes;
+  const auto catalog = types::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(catalog.ok(), "002624 datatype catalog unavailable");
+  const auto type = types::LookupDatatypeCatalogRow(catalog.manifest, types::CanonicalTypeId::int64);
+  Require(type.ok() && type.manifest.descriptor_rows.size() == 1, "002624 int64 descriptor unavailable");
+  const auto& datatype = type.manifest.descriptor_rows.front();
+  const auto codec = types::LookupDatatypeTypeCodecIdentityV1(context->datatype_catalog_snapshot_uuid,
+      context->datatype_catalog_generation, context->datatype_registry_generation,
+      datatype.descriptor_uuid.value, datatype.descriptor_epoch);
+  Require(codec.ok, "002624 exact int64 codec unavailable");
+  for (const auto name : {"item_id", "item_price"}) {
+    api::EngineColumnDefinition column;
+    column.ordinal = relation.table_columns.size();
+    column.names.push_back(lifecycle_name(name));
+    column.nullable = false;
+    column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
+    column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+    column.descriptor.descriptor_kind = "scalar";
+    column.descriptor.canonical_type_name = "int64";
+    column.descriptor.encoded_descriptor = "type=int64;nullable=false";
+    column.descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
+    column.descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
+    column.descriptor.type_uuid = codec.row.type_uuid;
+    relation.table_columns.push_back(std::move(column));
+  }
+  const auto created = api::EngineCreateTable(relation);
+  if (!created.ok) for (const auto& diagnostic : created.diagnostics)
+    std::cerr << "002624 table seed: " << diagnostic.code << ':' << diagnostic.message_key << '\n';
+  Require(created.ok, "002624 target-table DDL publication failed");
+  const auto loaded = api::LoadMgaRelationStoreState(*context);
+  Require(loaded.ok, "002624 target-table metadata unavailable");
+  const auto published = api::FindVisibleCrudTable(api::BuildCrudCompatibilityStateFromMga(loaded.state), relation.requested_table_uuid,
+                                                  context->local_transaction_id);
+  Require(published.has_value(), "002624 target-table metadata not visible");
+  const auto& table = *published;
+  Require(!api::EnsureMgaRelationStorageDescriptor(*context, table, {}, &target.descriptor).error,
+          "002624 target-table descriptor unavailable");
   const auto lifecycle = api::LoadCatalogObjectLifecycleState(*context);
   Require(lifecycle.ok && lifecycle.state.metadata_epoch != 0,
           "002624 catalog lifecycle epoch was unavailable");
   context->catalog_generation_id = lifecycle.state.metadata_epoch;
   context->authorization_context.catalog_generation_id =
       lifecycle.state.metadata_epoch;
-  Require(!api::PersistNameRegistryEntriesForObject(
-               *context, "test.ddl_create_trigger.cancellation",
-               table.table_uuid, "table", Identity(target.schema_uuid),
-               {lifecycle_name(table.default_name)}, table.default_name)
-               .error,
-          "002624 target-table resolver publication failed");
   const auto names =
       api::LoadNameRegistryState(*context, context->local_transaction_id);
   Require(names.ok &&
@@ -404,7 +445,7 @@ int main() {
     const auto target = cancel_on_probe.load(std::memory_order_relaxed);
     return target != 0 && ordinal == target;
   };
-  const auto target = PrepareTriggerTarget(fixture, &context);
+  const auto target = PrepareTriggerTarget(fixture, session, &context);
   (void)target;
 
   const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 26243));

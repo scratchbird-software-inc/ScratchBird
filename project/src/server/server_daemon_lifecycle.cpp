@@ -88,7 +88,7 @@ ServerDaemonLifecycleSnapshot EvaluateServerDaemonLifecycle(
 
   for (const auto& database : engine_state.databases) {
     ServerDaemonDatabaseAssociation association;
-    association.database_uuid.assign(reinterpret_cast<const char*>(database.database_uuid.bytes.data()),database.database_uuid.bytes.size());
+    association.database_uuid = database.database_uuid;
     association.database_path = database.database_path;
     association.state = HostedDatabaseStateName(database.state);
     association.database_open = database.database_open;
@@ -175,8 +175,8 @@ ServerDaemonLifecycleSnapshot EvaluateServerDaemonLifecycle(
 
 bool ServerDaemonShouldStopForDatabaseShutdown(
     const ServerDaemonLifecycleSnapshot& snapshot,
-    const std::string& target_database_uuid) {
-  if (!snapshot.daemon_exclusive_to_database || target_database_uuid.empty()) return false;
+    const core::platform::Uuid& target_database_uuid) {
+  if (!snapshot.daemon_exclusive_to_database || target_database_uuid.is_nil()) return false;
   return snapshot.databases.size() == 1 &&
          snapshot.databases.front().database_uuid == target_database_uuid;
 }

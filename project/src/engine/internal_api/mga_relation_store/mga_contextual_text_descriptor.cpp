@@ -743,11 +743,11 @@ bool BindFreshCanonicalTextColumnIdentitiesV2(
     if (BinaryCatalogUuid(fields, "datatype_descriptor_uuid") == kCanonicalTextDescriptorUuid) {
       const auto carried = fields.identities.find("column_uuid");
       if (carried != fields.identities.end()) {
-        if (!CanonicalNonNilMigrationUuid(carried->second)) {
-          *diagnostic = ContextualTextMgaDiagnostic("fresh canonical column UUID is invalid");
+        if (!CanonicalNonNilMigrationUuid(carried->second) ||
+            carried->second != relation_column.column_uuid) {
+          *diagnostic = ContextualTextMgaDiagnostic("fresh canonical column UUID conflicts with its bound identity");
           return false;
         }
-        relation_column.column_uuid = carried->second;
       } else {
         if (!CanonicalNonNilMigrationUuid(relation_column.column_uuid)) {
           *diagnostic = ContextualTextMgaDiagnostic("fresh canonical generated column UUID is invalid");
@@ -762,12 +762,14 @@ bool BindFreshCanonicalTextColumnIdentitiesV2(
       relation_column.value_descriptor.datatype_descriptor_uuid = kCanonicalTextDescriptorUuid;
       relation_column.value_descriptor.encoded_descriptor =
           table_column.second;
-      // The persisted relation column owns a distinct public descriptor
-      // handle.  The canonical datatype descriptor remains embedded in the
-      // exact registry suffix and is projected separately into the live DAG.
-      // This is the same split retained by the canonical TEXT migration path.
-      relation_column.value_descriptor.descriptor_uuid =
-          relation_column.column_uuid;
+      // Keep the descriptor occurrence issued by the owning DDL binding.
+      // The column identity and canonical datatype identity are separate
+      // authorities; neither replaces this already-bound descriptor handle.
+      if (!CanonicalNonNilMigrationUuid(
+              relation_column.value_descriptor.descriptor_uuid)) {
+        *diagnostic = ContextualTextMgaDiagnostic("fresh canonical descriptor UUID is invalid");
+        return false;
+      }
       relation_column.value_descriptor.canonical_type_name = "text";
     }
     if (!CanonicalNonNilMigrationUuid(
@@ -793,7 +795,8 @@ bool BuildMgaSealedContextualTextDescriptorMaterialV2(
   *output = {};
   if (table.creator_tx == 0 || table.event_sequence == 0 ||
       relation_descriptor.relation_uuid != table.table_uuid ||
-      relation_descriptor.relation_generation != table.event_sequence) {
+      table.bound_relation_generation == 0 ||
+      relation_descriptor.relation_generation != table.bound_relation_generation) {
     *diagnostic = ContextualTextMgaDiagnostic(
         "sealed descriptor table or relation owner is invalid");
     return false;

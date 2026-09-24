@@ -485,9 +485,12 @@ def run_cmake_component(ctx: Context, source_dir: Path, extra_configure_args: li
         "-DBUILD_TESTING=ON",
         f"-DCMAKE_INSTALL_PREFIX={ctx.component_build_root / 'install'}",
     ] + (extra_configure_args or [])
+    parallel = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "2") or "2"
+    if not parallel.isdecimal() or int(parallel) < 1:
+        return fail("CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer")
     for name, argv in (
         ("configure", configure),
-        ("build", ["cmake", "--build", str(build_dir), "--parallel"]),
+        ("build", ["cmake", "--build", str(build_dir), "--parallel", parallel]),
         ("ctest", ["ctest", "--test-dir", str(build_dir), "--output-on-failure"]),
     ):
         result = run_command(ctx, name, argv, cwd=ctx.repo_root)

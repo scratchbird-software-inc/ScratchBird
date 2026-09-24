@@ -280,7 +280,10 @@ void DomainBinaryCatalogProof() {
 
   auto writer = Context(fixture, "eler031-domain-writer");
   Begin(&writer);
-  const auto domain_uuid = NativeIdentity(UuidKind::object, 350);
+  auto domain_uuid = NativeIdentity(UuidKind::object, 350);
+  domain_uuid.bytes[10] = '\n';
+  domain_uuid.bytes[11] = '|';
+  domain_uuid.bytes[12] = 0;
   const auto domain = Domain(writer.local_transaction_id, domain_uuid);
 
   auto bad_domain = domain;
@@ -337,8 +340,30 @@ void DomainBinaryCatalogProof() {
 
   auto encoded = ReadAllBytes(BinaryCatalogPath(fixture));
   Require(encoded.size() > 128, "binary domain catalog too small to prove payload");
-  Require(std::string(encoded.data(), encoded.data() + 8) == "SBDOMC01",
+  Require(std::string(encoded.data(), encoded.data() + 8) == "SBDOMC02",
           "binary domain catalog magic mismatch");
+  Require(static_cast<unsigned char>(encoded[8]) == 2 && encoded[9] == 0 &&
+              static_cast<unsigned char>(encoded[10]) == 80 && encoded[11] == 0 &&
+              std::string(encoded.data() + 80, 8) == "SBDOMR02",
+          "binary domain catalog version/header mismatch");
+  std::size_t identity_offset = 80 + 88;
+  for (const auto& identity : {domain.domain_uuid, domain.catalog_row_uuid,
+                             domain.schema_uuid, domain.base_descriptor_uuid}) {
+    Require(encoded.size() >= identity_offset + 16 &&
+                std::string(encoded.data() + identity_offset, 16) == std::string(
+                    reinterpret_cast<const char*>(identity.bytes.data()), 16),
+            "binary domain catalog did not persist exact 16-byte identity");
+    identity_offset += 16;
+  }
+  auto legacy = encoded;
+  legacy[7] = '1';
+  legacy[8] = 1;
+  WriteAllBytes(BinaryCatalogPath(fixture), legacy);
+  const auto legacy_load = api::LoadDomainState(Context(fixture, "eler031-legacy-reader"));
+  Require(!legacy_load.ok && DiagnosticText(legacy_load).find("header_invalid") != std::string::npos,
+          "legacy UUID-text domain catalog header was accepted");
+  WriteAllBytes(BinaryCatalogPath(fixture), encoded);
+
   encoded[encoded.size() - 1] = static_cast<char>(encoded.back() ^ 0x01);
   WriteAllBytes(BinaryCatalogPath(fixture), encoded);
 

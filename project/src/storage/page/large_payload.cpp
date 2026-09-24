@@ -8,6 +8,7 @@
 
 // SB-LARGE-PAYLOAD-SEPARATION-ANCHOR
 #include "large_payload.hpp"
+#include "time.hpp"
 
 #include "uuid.hpp"
 #include "payload_binary_codec.hpp"
@@ -41,8 +42,13 @@ bool SameUuid(const TypedUuid& left, const TypedUuid& right) {
   return left.valid() && right.valid() && left.kind == right.kind && left.value == right.value;
 }
 
-TypedUuid GeneratedId(UuidKind kind, u64 seed) {
-  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, 1779620000000ull + seed);
+TypedUuid GeneratedId(UuidKind kind) {
+  // Diagnostic sequence numbers are not timestamps or identity authority.
+  const auto clock = scratchbird::core::time::ReadLocalNodeClockSnapshot();
+  if (!clock.ok()) return {};
+  const auto millis = scratchbird::core::time::WallClockToUuidV7Millis(clock.value.wall_clock);
+  if (!millis.ok()) return {};
+  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, millis.unix_epoch_millis);
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
@@ -416,7 +422,12 @@ LargePayloadStoreResult StoreLargePayloadGeneration(LargePayloadStore* store,
   const bool inline_payload = request.allow_inline_payload &&
                               request.payload_bytes.size() <= request.inline_threshold_bytes;
   LargePayloadDescriptor descriptor;
-  descriptor.payload_uuid = GeneratedId(UuidKind::object, 300000 + store->next_evidence_sequence);
+  descriptor.payload_uuid = GeneratedId(UuidKind::object);
+  if (!descriptor.payload_uuid.valid()) {
+    return RefuseStore(store, request, "large_payload_store_identity_failed",
+                       "storage.page.large_payload.identity_failed",
+                       "payload identity allocation failed");
+  }
   descriptor.owner_object_uuid = request.owner_object_uuid;
   descriptor.generation_scope_uuid = request.generation_scope_uuid.valid()
                                          ? request.generation_scope_uuid
@@ -460,7 +471,10 @@ LargePayloadStoreResult StoreLargePayloadGeneration(LargePayloadStore* store,
     overflow_request.transaction_uuid = request.transaction_uuid;
     overflow_request.local_transaction_id = request.local_transaction_id;
     overflow_request.generation = descriptor.generation;
-    overflow_request.value_descriptor = SerializeLargePayloadDescriptor(descriptor);
+    overflow_request.bind_value_descriptor = [&descriptor](const TypedUuid& allocated) {
+      descriptor.overflow_value_uuid = allocated;
+      return SerializeLargePayloadDescriptor(descriptor);
+    };
     overflow_request.payload_bytes = request.payload_bytes;
     overflow_request.chunk_policy_uuid = request.chunk_policy_uuid.valid()
                                              ? request.chunk_policy_uuid

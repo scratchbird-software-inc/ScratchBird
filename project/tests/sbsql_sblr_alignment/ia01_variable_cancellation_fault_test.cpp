@@ -73,9 +73,9 @@ std::map<std::string, std::string> SnapshotDurableState(
   const auto database_name = fixture.database_path.filename().generic_string();
   Require(snapshot.contains(database_name) &&
               snapshot.contains(database_name +
-                                ".sb.sblr_variable_registry.v1") &&
+                                ".sb.sblr_variable_registry.v2") &&
               snapshot.contains(database_name +
-                                ".sb.sblr_variable_frame_coordinator.v1") &&
+                                ".sb.sblr_variable_frame_coordinator.v2") &&
               snapshot.contains(
                   database_name +
                   ".sb.sblr_executor_availability_registry.v1.variable"),

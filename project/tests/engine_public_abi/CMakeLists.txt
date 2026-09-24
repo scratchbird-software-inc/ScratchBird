@@ -58,6 +58,14 @@ set_tests_properties(sb_engine_public_typed_result_abi_fixture PROPERTIES
   LABELS "public_abi;typed_result;PS-RESULT-TRANSPORT-BINARY-V1"
 )
 
+# Private codec construction stays in a separate translation unit. The ABI
+# consumer itself sees only the installed engine headers and serialized bytes.
+add_library(sb_engine_public_sblr_codec_fixture STATIC
+  public_sblr_admission_codec_fixture.cpp
+)
+target_compile_features(sb_engine_public_sblr_codec_fixture PRIVATE cxx_std_23)
+target_link_libraries(sb_engine_public_sblr_codec_fixture PRIVATE sb_engine_sblr)
+
 add_executable(sb_engine_public_sblr_admission_fixture
   public_sblr_admission_fixture.cpp
 )
@@ -65,7 +73,8 @@ target_compile_features(sb_engine_public_sblr_admission_fixture PRIVATE cxx_std_
 target_include_directories(sb_engine_public_sblr_admission_fixture PRIVATE
   ${PROJECT_SOURCE_DIR}/src/server_engine_bridge
 )
-target_link_libraries(sb_engine_public_sblr_admission_fixture PRIVATE sb_engine)
+target_link_libraries(sb_engine_public_sblr_admission_fixture PRIVATE
+  sb_engine sb_engine_public_sblr_codec_fixture)
 add_test(NAME sb_engine_public_sblr_admission_fixture COMMAND sb_engine_public_sblr_admission_fixture)
 set_tests_properties(sb_engine_public_sblr_admission_fixture PROPERTIES
   LABELS "sb_engine_backed_streaming_conformance;sbsql_parser_worker")

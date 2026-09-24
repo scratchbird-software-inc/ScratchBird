@@ -128,7 +128,7 @@ void TestSharedDaemonRefused() {
   Require(HasDiagnostic(snapshot, "SERVER.DAEMON.SCOPE_INVALID"),
           "shared daemon scope was not explicitly refused");
   Require(!ServerDaemonShouldStopForDatabaseShutdown(snapshot,
-                                                     "019e1305-0000-7000-8000-000000000001"),
+                                                     scratchbird::tests::FixtureUuidLiteral("019e1305-0000-7000-8000-000000000001")),
           "shared daemon would stop for one target database shutdown");
   const auto status = scratchbird::server::ServerDaemonLifecycleStatusJson(snapshot);
   Require(Contains(status, "\"daemon_scope\":\"shared\""),
@@ -149,11 +149,16 @@ void TestDedicatedDaemonExclusiveStopDecision() {
   Require(snapshot.service_ready, "dedicated daemon did not become service-ready");
   Require(snapshot.daemon_exclusive_to_database,
           "dedicated daemon did not record exclusive database association");
+  Require(snapshot.databases.size() == 1 &&
+              snapshot.databases.front().database_uuid == engine.databases.front().database_uuid,
+          "daemon association changed native database identity");
+  Require(!ServerDaemonShouldStopForDatabaseShutdown(snapshot, {}),
+          "dedicated daemon would stop for nil database identity");
   Require(ServerDaemonShouldStopForDatabaseShutdown(snapshot,
-                                                   "019e1305-0000-7000-8000-000000000101"),
+                                                   scratchbird::tests::FixtureUuidLiteral("019e1305-0000-7000-8000-000000000101")),
           "dedicated daemon would not stop for its exclusive database shutdown");
   Require(!ServerDaemonShouldStopForDatabaseShutdown(snapshot,
-                                                    "019e1305-0000-7000-8000-000000000202"),
+                                                    scratchbird::tests::FixtureUuidLiteral("019e1305-0000-7000-8000-000000000202")),
           "dedicated daemon would stop for unrelated database shutdown");
 }
 

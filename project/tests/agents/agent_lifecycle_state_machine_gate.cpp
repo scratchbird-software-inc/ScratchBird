@@ -49,9 +49,9 @@ void RequireDenied(agents::AgentLifecycleState from, agents::AgentLifecycleState
 
 agents::AgentInstanceRecord Instance(agents::AgentLifecycleState state) {
   agents::AgentInstanceRecord instance;
-  instance.instance_uuid = "agent-instance:lifecycle-gate";
+  instance.instance_uuid = agents::DeterministicAgentInstanceUuid({}, "lifecycle_instance", "fixture", 1);
   instance.agent_type_id = "storage_health_manager";
-  instance.policy_uuid = "policy:storage_health_manager:baseline";
+  instance.policy_uuid = agents::BaselinePolicyForAgent(*agents::FindAgentType("storage_health_manager")).policy_uuid;
   instance.scope = "database/filespace";
   instance.state = state;
   return instance;
@@ -102,7 +102,7 @@ void TestRetiredIsExplicitAndTerminal() {
   const auto status = agents::ApplyAgentLifecycleTransition(
       &retired, agents::AgentLifecycleState::retired, "operator_retirement");
   Require(status.ok, "retirement transition failed");
-  retired.retirement_evidence_uuid = "agent-evidence:retired:lifecycle-gate";
+  retired.retirement_evidence_uuid = agents::DeterministicAgentInstanceUuid({}, "lifecycle_retirement", "fixture", 1);
   retired.retired_generation = 1;
   Require(retired.state == agents::AgentLifecycleState::retired,
           "retirement transition did not set retired state");

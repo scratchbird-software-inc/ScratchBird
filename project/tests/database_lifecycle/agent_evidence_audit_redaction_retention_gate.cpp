@@ -1,3 +1,4 @@
+#include "database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,6 +7,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "server/diagnostic_rendering/diagnostic_rendering.hpp"
 #include "management/support_bundle_api.hpp"
@@ -81,19 +83,7 @@ std::string Id(platform::UuidKind kind, platform::u64 seed) {
 }
 
 void CleanupDatabase(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const char* suffix : {".dirty.manifest",
-                             ".sb.mga_event_sequence_allocator",
-                             ".sb.mga_index_entries",
-                             ".sb.mga_large_values",
-                             ".sb.mga_relation_descriptors",
-                             ".sb.mga_relation_metadata",
-                             ".sb.mga_row_versions",
-                             ".sb.mga_savepoints",
-                             ".sb.mga_secondary_index_delta_ledger"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
 TestDatabase CreateActiveDatabase(const char* basename,
@@ -119,7 +109,10 @@ TestDatabase CreateActiveDatabase(const char* basename,
   Require(db::CreateDatabaseFile(create).ok(),
           "retention durable catalog database creation failed");
 
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
+  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
+          "lifecycle-published transaction inventory unavailable");
+  auto inventory = std::move(initial_inventory.inventory);
   const auto transaction_uuid = uuid::GenerateEngineIdentityV7(
       platform::UuidKind::transaction, timestamp_base + 4);
   Require(transaction_uuid.ok(), "transaction UUID generation failed");
@@ -174,9 +167,11 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id = {}) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && (id.empty() || (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id))) {
-      return true;
-    }
+    if (evidence.evidence_kind != kind) continue;
+    if (id.empty()) return true;
+    if (const auto* identity = std::get_if<api::EngineUuid>(&evidence.evidence_id)) {
+      if (IdentityBytes(*identity) == id) return true;
+    } else if (std::get<std::string>(evidence.evidence_id) == id) return true;
   }
   return false;
 }
@@ -197,7 +192,7 @@ void RequireUuidFieldAuthority(const api::EngineApiResult& result) {
     for (const auto& field : row.fields) {
       if (field.first.ends_with("_uuid")) {
         const auto value = Field(row, field.first);
-        if (!value.empty() && !value.starts_with("<redacted")) {
+        if (!value.empty() && value != std::string(16, '\0')) {
           const auto identity = NativeIdentity(value);
           const auto kind = field.first == "filespace_uuid" ? platform::UuidKind::filespace
                           : field.first == "actor_uuid" ? platform::UuidKind::principal
@@ -223,12 +218,10 @@ api::EngineRequestContext Context() {
   context.session_uuid = NativeIdentity(Id(platform::UuidKind::object, 3));
   context.principal_uuid = NativeIdentity(Id(platform::UuidKind::principal, 4));
   context.transaction_uuid = NativeIdentity(Id(platform::UuidKind::transaction, 5));
-  context.trace_tags = {
-      "right:OBS_AGENT_EVIDENCE_READ",
-      "right:OBS_AGENT_STATE_READ",
-      "right:OBS_CONFIG_INSPECT",
-      "right:SUPPORT_BUNDLE_EXPORT",
-      "security.fixture_trace_authority"};
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &context, "agent-evidence-retention-fixture",
+      {"OBS_AGENT_EVIDENCE_READ", "OBS_AGENT_STATE_READ",
+       "OBS_CONFIG_INSPECT", "SUPPORT_EXPORT"});
   return context;
 }
 
@@ -242,12 +235,14 @@ api::EngineRequestContext DurableContext(const TestDatabase& database,
   context.local_transaction_id = database.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       database.local_transaction_id;
-  context.trace_tags = {"right:OBS_AGENT_STATE_READ",
-                        "right:OBS_CONFIG_INSPECT",
-                        "right:SUPPORT_BUNDLE_EXPORT",
-                        "security.fixture_trace_authority"};
-  if (evidence_right) {
-    context.trace_tags.push_back("right:OBS_AGENT_EVIDENCE_READ");
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &context, "agent-evidence-retention-durable-fixture",
+      {"OBS_AGENT_EVIDENCE_READ", "OBS_AGENT_STATE_READ",
+       "OBS_CONFIG_INSPECT", "SUPPORT_EXPORT"});
+  if (!evidence_right) {
+    std::erase_if(context.authorization_context.grants, [](const auto& grant) {
+      return grant.right == "OBS_AGENT_EVIDENCE_READ";
+    });
   }
   return context;
 }
@@ -356,6 +351,9 @@ void TestUserRedactionAndRetentionDecision() {
   request.records.push_back(EvidenceRecord());
 
   const auto result = api::EngineEvaluateAgentEvidenceRetention(request);
+  for (const auto& diagnostic : result.diagnostics) {
+    if (diagnostic.error) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(result.ok, "evidence retention API refused valid user-visible evidence");
   Require(result.evidence_before_success_enforced && result.retention_decision_recorded &&
               result.redaction_applied,
@@ -364,7 +362,8 @@ void TestUserRedactionAndRetentionDecision() {
           "generated agent UUID was not passed through");
   Require(HasRowField(result, "filespace_uuid", request.records.front().filespace_uuid),
           "generated filespace UUID was not passed through");
-  Require(HasRowField(result, "actor_uuid", "<redacted:actor_uuid>"),
+  Require(HasRowField(result, "actor_uuid", std::string(16, '\0')) &&
+              HasRowField(result, "actor_redacted", "true"),
           "user-visible evidence did not redact actor UUID");
   Require(HasRowField(result, "reason_text", "<redacted:reason_text>"),
           "user-visible evidence did not redact reason text");
@@ -397,8 +396,9 @@ void TestUserRedactionAndRetentionDecision() {
   render.transaction_uuid = IdentityBytes(request.context.transaction_uuid);
   const auto envelope = rendering::RenderEngineApiResultForParserPackage(result, std::move(render));
   std::vector<std::string> errors;
-  Require(rendering::ValidateLegacyRenderedProjectionStructure(envelope, &errors),
-          "parser/client rendered envelope failed validation");
+  const bool rendered_valid = rendering::ValidateLegacyRenderedProjectionStructure(envelope, &errors);
+  for (const auto& error : errors) std::cerr << error << '\n';
+  Require(rendered_valid, "parser/client rendered envelope failed validation");
   Require(!envelope.parser_finality_authority && !envelope.reference_finality_authority,
           "parser/client envelope claimed finality authority");
   for (const auto& row : envelope.rows) {
@@ -485,6 +485,11 @@ void TestExactRefusals() {
   Require(!malformed.ok, "malformed UUID was accepted");
   Require(HasDiagnostic(malformed, "AGENT.EVIDENCE.INVALID_CATALOG_UUID"),
           "malformed UUID diagnostic drifted");
+
+  malformed_uuid.records.front().policy_uuid = "019f0300-0000-7000-8000-000000000090";
+  const auto textual = api::EngineEvaluateAgentEvidenceRetention(malformed_uuid);
+  Require(!textual.ok && HasDiagnostic(textual, "AGENT.EVIDENCE.INVALID_CATALOG_UUID"),
+          "text UUID must be rejected at the engine evidence boundary");
 
   api::EngineEvaluateAgentEvidenceRetentionRequest synthetic_uuid;
   synthetic_uuid.context = Context();
@@ -611,7 +616,8 @@ void TestProductionRetentionRedactsWithoutEvidenceRight() {
 
   const auto result = api::EngineEvaluateAgentEvidenceRetention(request);
   Require(result.ok, "production retention refused redacted durable view");
-  Require(HasRowField(result, "actor_uuid", "<redacted:actor_uuid>"),
+  Require(HasRowField(result, "actor_uuid", std::string(16, '\0')) &&
+              HasRowField(result, "actor_redacted", "true"),
           "production retention trusted caller admin_view instead of rights");
   RequireUuidFieldAuthority(result);
 
@@ -642,6 +648,14 @@ void TestProductionRetentionRejectsTamperMismatch() {
 }  // namespace
 
 int main() {
+  // Exercise the binary-only boundary before unrelated rendering checks.
+  api::EngineEvaluateAgentEvidenceRetentionRequest textual_uuid;
+  textual_uuid.context = Context();
+  textual_uuid.records.push_back(EvidenceRecord());
+  textual_uuid.records.front().policy_uuid = "019f0300-0000-7000-8000-000000000090";
+  const auto refused = api::EngineEvaluateAgentEvidenceRetention(textual_uuid);
+  Require(!refused.ok && HasDiagnostic(refused, "AGENT.EVIDENCE.INVALID_CATALOG_UUID"),
+          "retention admitted a textual UUID at the engine boundary");
   TestUserRedactionAndRetentionDecision();
   TestAdminSafeVisibility();
   TestEvidenceBeforeSuccess();

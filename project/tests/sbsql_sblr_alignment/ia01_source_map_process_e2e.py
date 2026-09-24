@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import struct
 import os
 import subprocess
 import sys
@@ -15,22 +17,50 @@ from pathlib import Path
 from ia01_package_process_e2e import ProofError, allocate_work, seed_database, stop, wait_unix
 
 
-def durable_api_authority_rows(raw_journal: bytes) -> tuple[bytes, ...]:
-    """Return the byte-exact catalog/name rows from the multiplexed API journal."""
-    authority_prefixes = (b"SBAPI1\t", b"SBNAME1\t")
-    telemetry_prefix = b"SBAGENTHOOK1\t"
-    rows = raw_journal.splitlines(keepends=True)
-    unexpected = [
-        row for row in rows
-        if not row.startswith(authority_prefixes) and
-        not row.startswith(telemetry_prefix)
-    ]
-    if unexpected:
-        raise ProofError(
-            "DDL recovery encountered an unknown durable API "
-            f"journal record: {unexpected[0]!r}"
-        )
-    return tuple(row for row in rows if row.startswith(authority_prefixes))
+def durable_api_authority_rows(name_journal: Path) -> tuple[tuple[str, bytes], ...]:
+    """Validate and retain exact native API/name frames for restart comparison."""
+    suffix = ".sb.name_events.v2"
+    if not str(name_journal).endswith(suffix):
+        raise ProofError("expected the native name journal path")
+    database = str(name_journal)[:-len(suffix)]
+    rows = []
+    for journal_suffix in (suffix, ".sb.api_events.v2"):
+        path = Path(database + journal_suffix)
+        if not path.exists():
+            continue
+        raw = path.read_bytes()
+        offset = 0
+        while offset < len(raw):
+            if len(raw) - offset < 4:
+                raise ProofError("truncated native authority frame length")
+            length = struct.unpack_from("<I", raw, offset)[0]
+            end = offset + 4 + length
+            if length < 133 or length > 64 * 1024 * 1024 or end > len(raw):
+                raise ProofError("invalid native authority frame length")
+            frame = raw[offset:end]
+            body = frame[4:-32]
+            if body[:8] != b"SBAPI002" or hashlib.sha256(body).digest() != frame[-32:]:
+                raise ProofError("invalid native authority frame header or digest")
+            for slot in range(4):
+                identity = body[16 + slot * 16:32 + slot * 16]
+                if identity == bytes(16) and slot != 0:
+                    continue
+                if identity == bytes(16) or identity[6] >> 4 != 7 or identity[8] & 0xc0 != 0x80:
+                    raise ProofError("invalid binary authority UUID")
+            cursor = 80
+            for field in range(5):
+                if cursor + 4 > len(body):
+                    raise ProofError("truncated native authority field")
+                size = struct.unpack_from("<I", body, cursor)[0]
+                cursor += 4
+                if size > len(body) - cursor or (field in (0, 1, 4) and size == 0):
+                    raise ProofError("invalid native authority field length")
+                cursor += size
+            if cursor + 1 != len(body) or body[cursor] not in (0, 1):
+                raise ProofError("invalid native authority frame tail")
+            rows.append((journal_suffix, frame))
+            offset = end
+    return tuple(rows)
 
 
 STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
@@ -440,7 +470,7 @@ def main() -> int:
         catalog_event_path = Path(f"{database}.sb.catalog_object_events")
         catalog_event_before = None
         executor_availability_before = None
-        policy_observer_api_event_path = Path(f"{database}.sb.api_events")
+        policy_observer_api_event_path = Path(f"{database}.sb.name_events.v2")
         policy_observer_protected_paths = (
             catalog_event_path,
             Path(f"{database}.sb.security_principal_events"),
@@ -454,7 +484,7 @@ def main() -> int:
             }
             policy_observer_api_before = (
                 durable_api_authority_rows(
-                    policy_observer_api_event_path.read_bytes()
+                    policy_observer_api_event_path
                 )
                 if policy_observer_api_event_path.exists()
                 else ()
@@ -1798,7 +1828,7 @@ def main() -> int:
             )
             wait_unix(restart_endpoint)
             command[1] = f"unix:{restart_endpoint}"
-            api_event_path = Path(f"{database}.sb.api_events")
+            api_event_path = Path(f"{database}.sb.name_events.v2")
             if not catalog_event_path.exists() or not api_event_path.exists():
                 raise ProofError(
                     "CREATE SCHEMA recovery requires both durable catalog "
@@ -1806,7 +1836,7 @@ def main() -> int:
                 )
             catalog_before_recovery = catalog_event_path.read_bytes()
             api_authority_before_recovery = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             run_schema_auxiliary(
                 "ddl-create-schema-recover",
@@ -1822,12 +1852,12 @@ def main() -> int:
                     "catalog-object journal"
                 )
             api_authority_after_recovery = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             if api_authority_after_recovery != api_authority_before_recovery:
                 raise ProofError(
                     "authenticated CREATE SCHEMA recovery changed byte-exact "
-                    "SBAPI1 or SBNAME1 authority rows"
+                    "native API or name authority frames"
                 )
             run_schema_auxiliary(
                 "ddl-create-schema-observe",
@@ -1851,7 +1881,7 @@ def main() -> int:
                     "independent authenticated CREATE TRIGGER observer did "
                     "not resolve the committed exact trigger identity"
                 )
-            api_event_path = Path(f"{database}.sb.api_events")
+            api_event_path = Path(f"{database}.sb.name_events.v2")
             if not catalog_event_path.exists() or not api_event_path.exists():
                 raise ProofError(
                     "CREATE TRIGGER durability proof requires both catalog "
@@ -1859,7 +1889,7 @@ def main() -> int:
                 )
             catalog_before_restart = catalog_event_path.read_bytes()
             api_authority_before_restart = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             stop(server)
             server = None
@@ -1913,7 +1943,7 @@ def main() -> int:
                     "catalog-object journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_authority_before_restart:
                 raise ProofError(
                     "CREATE TRIGGER restart observation changed durable "
@@ -1938,7 +1968,7 @@ def main() -> int:
                     "did not prove the committed successor/tombstone: "
                     f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
                 )
-            api_event_path = Path(f"{database}.sb.api_events")
+            api_event_path = Path(f"{database}.sb.name_events.v2")
             executable_event_path = Path(
                 f"{database}.sb.executable_object_events"
             )
@@ -1956,7 +1986,7 @@ def main() -> int:
                 )
             catalog_before_restart = catalog_event_path.read_bytes()
             api_authority_before_restart = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             executable_before_restart = executable_event_path.read_bytes()
             stop(server)
@@ -2039,7 +2069,7 @@ def main() -> int:
                     "catalog-object journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_authority_before_restart:
                 raise ProofError(
                     "ALTER/DROP TRIGGER restart observation changed durable "
@@ -2062,7 +2092,7 @@ def main() -> int:
                     "not resolve the committed exact procedure identity: "
                     f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
                 )
-            api_event_path = Path(f"{database}.sb.api_events")
+            api_event_path = Path(f"{database}.sb.name_events.v2")
             executable_event_path = Path(
                 f"{database}.sb.executable_object_events"
             )
@@ -2115,7 +2145,7 @@ def main() -> int:
             # canonical SBLR, catalog mutation, or executable publication.
             catalog_before_invalid = catalog_event_path.read_bytes()
             api_before_invalid = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             executable_before_invalid = executable_event_path.read_bytes()
             run_procedure_auxiliary(
@@ -2131,7 +2161,7 @@ def main() -> int:
                     "journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_before_invalid:
                 raise ProofError(
                     "malformed CREATE PROCEDURE changed catalog/name authority"
@@ -2159,7 +2189,7 @@ def main() -> int:
             )
             catalog_before_restart = catalog_event_path.read_bytes()
             api_authority_before_restart = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             executable_before_restart = executable_event_path.read_bytes()
             stop(server)
@@ -2214,7 +2244,7 @@ def main() -> int:
                     "catalog-object journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_authority_before_restart:
                 raise ProofError(
                     "CREATE PROCEDURE restart observation changed durable "
@@ -2238,7 +2268,7 @@ def main() -> int:
                     "the catalog-object journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_authority_before_restart:
                 raise ProofError(
                     "rolled-back CREATE PROCEDURE restart observation changed "
@@ -2262,7 +2292,7 @@ def main() -> int:
                     f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
                 )
 
-            api_event_path = Path(f"{database}.sb.api_events")
+            api_event_path = Path(f"{database}.sb.name_events.v2")
             if not catalog_event_path.exists() or not api_event_path.exists():
                 raise ProofError(
                     "ACTIVATE POLICY proof requires catalog and name-registry "
@@ -2302,7 +2332,7 @@ def main() -> int:
 
             catalog_before_refusals = catalog_event_path.read_bytes()
             api_before_refusals = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             run_policy_auxiliary(
                 "security-alter-policy-invalid",
@@ -2317,7 +2347,7 @@ def main() -> int:
                     "journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_before_refusals:
                 raise ProofError(
                     "missing-policy ACTIVATE POLICY changed durable catalog/name "
@@ -2337,7 +2367,7 @@ def main() -> int:
                     "catalog-object journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_before_refusals:
                 raise ProofError(
                     "resource-budget SHOW SECURITY POLICY changed durable "
@@ -2359,7 +2389,7 @@ def main() -> int:
 
             catalog_before_restart = catalog_event_path.read_bytes()
             api_authority_before_restart = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             stop(server)
             server = None
@@ -2400,7 +2430,7 @@ def main() -> int:
                     "catalog-object journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_authority_before_restart:
                 raise ProofError(
                     "ACTIVATE POLICY restart observation changed durable "
@@ -2434,7 +2464,7 @@ def main() -> int:
                     "independent authenticated PROCEDURE INVOKE did not "
                     "execute the committed typed body"
                 )
-            api_event_path = Path(f"{database}.sb.api_events")
+            api_event_path = Path(f"{database}.sb.name_events.v2")
             executable_event_path = Path(
                 f"{database}.sb.executable_object_events"
             )
@@ -2483,7 +2513,7 @@ def main() -> int:
 
             catalog_before_invalid = catalog_event_path.read_bytes()
             api_before_invalid = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             executable_before_invalid = executable_event_path.read_bytes()
             run_invalid_invocation(endpoint)
@@ -2492,7 +2522,7 @@ def main() -> int:
                     "malformed PROCEDURE INVOKE changed the catalog journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_before_invalid:
                 raise ProofError(
                     "malformed PROCEDURE INVOKE changed catalog/name authority"
@@ -2504,7 +2534,7 @@ def main() -> int:
 
             catalog_before_restart = catalog_event_path.read_bytes()
             api_authority_before_restart = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             executable_size_before_restart = executable_event_path.stat().st_size
             stop(server)
@@ -2558,7 +2588,7 @@ def main() -> int:
                     "PROCEDURE INVOKE mutated the catalog-object journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_authority_before_restart:
                 raise ProofError(
                     "PROCEDURE INVOKE mutated catalog/name authority rows"
@@ -2570,7 +2600,7 @@ def main() -> int:
                 )
             catalog_after_restart_invoke = catalog_event_path.read_bytes()
             api_after_restart_invoke = durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             )
             executable_after_restart_invoke = executable_event_path.read_bytes()
             run_invalid_invocation(restart_endpoint)
@@ -2580,7 +2610,7 @@ def main() -> int:
                     "journal"
                 )
             if durable_api_authority_rows(
-                api_event_path.read_bytes()
+                api_event_path
             ) != api_after_restart_invoke:
                 raise ProofError(
                     "restarted malformed PROCEDURE INVOKE changed catalog/name "
@@ -2656,7 +2686,7 @@ def main() -> int:
                     )
             policy_observer_api_after = (
                 durable_api_authority_rows(
-                    policy_observer_api_event_path.read_bytes()
+                    policy_observer_api_event_path
                 )
                 if policy_observer_api_event_path.exists()
                 else ()

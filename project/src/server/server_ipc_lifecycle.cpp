@@ -11,6 +11,7 @@
 #include "server_ipc_lifecycle.hpp"
 
 #include "sbps.hpp"
+#include "../wire/public_result_packet.hpp"
 #include "../core/uuid/uuid.hpp"
 
 #include <algorithm>
@@ -305,44 +306,64 @@ ServerIpcEndpointDescriptor BuildParserServerEndpointDescriptor(
   return descriptor;
 }
 
-std::string ServerIpcEndpointDescriptorText(const ServerIpcEndpointDescriptor& descriptor) {
-  std::ostringstream out;
-  out << "format=SBPS_ENDPOINT_V1\n";
-  out << "descriptor_format_version=" << descriptor.descriptor_format_version << "\n";
-  out << "endpoint_class=" << ServerIpcEndpointClassName(descriptor.endpoint_class) << "\n";
-  out << "endpoint_id=" << descriptor.endpoint_id << "\n";
-  out << "protocol_family=" << descriptor.protocol_family << "\n";
-  out << "transport=" << descriptor.transport << "\n";
-  out << "endpoint=" << descriptor.endpoint_path.string() << "\n";
-  out << "database_uuid="
-      << (descriptor.database_uuid.is_nil() ? std::string{}
-          : scratchbird::core::uuid::UuidToString(descriptor.database_uuid)) << "\n";
-  out << "database_path=" << descriptor.database_path << "\n";
-  out << "protocol_major=" << descriptor.protocol_major << "\n";
-  out << "protocol_minor=" << descriptor.protocol_minor << "\n";
-  out << "protocol_supported_min=" << sbps::kProtocolMajorMinSupported << "."
-      << sbps::kProtocolMinorMinSupported << "\n";
-  out << "protocol_supported_max=" << sbps::kProtocolMajorMaxSupported << "."
-      << sbps::kProtocolMinorMaxSupported << "\n";
-  out << "config_source_epoch=" << descriptor.config_source_epoch << "\n";
-  out << "config_reload_generation=" << descriptor.config_reload_generation << "\n";
-  out << "capability_policy_generation=" << descriptor.capability_policy_generation << "\n";
-  out << "policy_generation=" << descriptor.policy_generation << "\n";
-  out << "security_epoch=" << descriptor.security_epoch << "\n";
-  out << "resource_epoch=" << descriptor.resource_epoch << "\n";
-  out << "cache_invalidation_epoch=" << descriptor.cache_invalidation_epoch << "\n";
-  out << "max_frame_bytes=" << descriptor.max_frame_bytes << "\n";
-  out << "max_streams=" << descriptor.max_streams << "\n";
-  out << "lifecycle_generation=" << descriptor.lifecycle_generation << "\n";
-  out << "descriptor_generation=" << descriptor.descriptor_generation << "\n";
-  out << "file_mode_octal=" << std::oct << descriptor.file_mode << std::dec << "\n";
-  out << "service_ready=" << (descriptor.service_ready ? "true" : "false") << "\n";
-  out << "cluster_private=" << (descriptor.cluster_private ? "true" : "false") << "\n";
-  return out.str();
+bool EncodeServerIpcEndpointDescriptor(const ServerIpcEndpointDescriptor& descriptor,
+                                       std::string* output) {
+  if (output == nullptr ||
+      descriptor.descriptor_format_version != kServerIpcEndpointDescriptorFormatCurrent ||
+      (!descriptor.database_uuid.is_nil() &&
+       !scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.database_uuid))) return false;
+  namespace packet = scratchbird::wire::public_result;
+  std::vector<packet::Field> fields;
+  const auto text = [&](std::string key, std::string value) {
+    fields.push_back({std::move(key), packet::Kind::text, std::move(value)});
+  };
+  const auto integer = [&](std::string key, std::uint64_t value) {
+    std::string bytes(8, '\0');
+    for (unsigned i = 0; i < 8; ++i) bytes[i] = static_cast<char>(value >> (8 * i));
+    fields.push_back({std::move(key), packet::Kind::unsigned_integer, std::move(bytes)});
+  };
+  text("format", "SBPS_ENDPOINT_V2");
+  text("endpoint_class", ServerIpcEndpointClassName(descriptor.endpoint_class));
+  text("endpoint_id", descriptor.endpoint_id);
+  text("protocol_family", descriptor.protocol_family);
+  text("transport", descriptor.transport);
+  text("endpoint", descriptor.endpoint_path.string());
+  text("database_path", descriptor.database_path);
+  fields.push_back({"database_uuid", packet::Kind::uuid,
+      std::string(reinterpret_cast<const char*>(descriptor.database_uuid.bytes.data()), 16)});
+  integer("descriptor_format_version", descriptor.descriptor_format_version);
+  integer("protocol_major", descriptor.protocol_major);
+  integer("protocol_minor", descriptor.protocol_minor);
+  integer("config_source_epoch", descriptor.config_source_epoch);
+  integer("config_reload_generation", descriptor.config_reload_generation);
+  integer("capability_policy_generation", descriptor.capability_policy_generation);
+  integer("policy_generation", descriptor.policy_generation);
+  integer("security_epoch", descriptor.security_epoch);
+  integer("resource_epoch", descriptor.resource_epoch);
+  integer("cache_invalidation_epoch", descriptor.cache_invalidation_epoch);
+  integer("max_frame_bytes", descriptor.max_frame_bytes);
+  integer("max_streams", descriptor.max_streams);
+  integer("lifecycle_generation", descriptor.lifecycle_generation);
+  integer("descriptor_generation", descriptor.descriptor_generation);
+  text("protocol_supported_min", std::to_string(sbps::kProtocolMajorMinSupported) + "." +
+      std::to_string(sbps::kProtocolMinorMinSupported));
+  text("protocol_supported_max", std::to_string(sbps::kProtocolMajorMaxSupported) + "." +
+      std::to_string(sbps::kProtocolMinorMaxSupported));
+  integer("file_mode", descriptor.file_mode);
+  text("service_ready", descriptor.service_ready ? "true" : "false");
+  text("cluster_private", descriptor.cluster_private ? "true" : "false");
+  return packet::Encode(fields, output);
 }
 
 bool WriteServerIpcEndpointDescriptor(const ServerIpcEndpointDescriptor& descriptor,
                                       std::vector<ServerDiagnostic>* diagnostics) {
+  std::string encoded;
+  if (!EncodeServerIpcEndpointDescriptor(descriptor, &encoded)) {
+    if (diagnostics != nullptr) diagnostics->push_back(IpcLifecycleDiagnostic(
+        "PARSER_SERVER_IPC.ENDPOINT_DESCRIPTOR_WRITE_FAILED",
+        "The parser-server endpoint descriptor has an invalid format or identity."));
+    return false;
+  }
   std::error_code ec;
   std::filesystem::create_directories(descriptor.descriptor_path.parent_path(), ec);
   if (ec) {
@@ -355,7 +376,7 @@ bool WriteServerIpcEndpointDescriptor(const ServerIpcEndpointDescriptor& descrip
     return false;
   }
 
-  std::ofstream out(descriptor.descriptor_path, std::ios::trunc);
+  std::ofstream out(descriptor.descriptor_path, std::ios::binary | std::ios::trunc);
   if (!out) {
     if (diagnostics != nullptr) {
       diagnostics->push_back(IpcLifecycleDiagnostic(
@@ -365,8 +386,15 @@ bool WriteServerIpcEndpointDescriptor(const ServerIpcEndpointDescriptor& descrip
     }
     return false;
   }
-  out << ServerIpcEndpointDescriptorText(descriptor);
+  out.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
   out.close();
+  if (!out) {
+    if (diagnostics != nullptr) diagnostics->push_back(IpcLifecycleDiagnostic(
+        "PARSER_SERVER_IPC.ENDPOINT_DESCRIPTOR_WRITE_FAILED",
+        "The parser-server endpoint descriptor could not be completely written.",
+        {{"endpoint_descriptor", descriptor.descriptor_path.string()}}));
+    return false;
+  }
 #ifndef _WIN32
   ::chmod(descriptor.descriptor_path.c_str(), descriptor.file_mode);
 #endif

@@ -58,14 +58,13 @@ public class TypeDecoderTests
     }
 
     [Fact]
-    public void DecodeUuidBinary_AcceptsLengthPrefixedTextPayload()
+    public void DecodeUuidBinary_RejectsLengthPrefixedTextPayload()
     {
         var guid = Guid.Parse("12345678-9abc-def0-1234-56789abcdef0");
         var encoded = WithLengthPrefix(Encoding.UTF8.GetBytes(guid.ToString()));
 
-        var decoded = TypeDecoder.Decode(TypeDecoder.OidUuid, encoded, (byte)TypeDecoder.FormatBinary);
-
-        Assert.Equal(guid, Assert.IsType<Guid>(decoded));
+        Assert.Throws<FormatException>(() =>
+            TypeDecoder.Decode(TypeDecoder.OidUuid, encoded, (byte)TypeDecoder.FormatBinary));
     }
 
     [Fact]
@@ -222,16 +221,73 @@ public class TypeDecoderTests
         Assert.Equal(typeof(object), TypeDecoder.GetClrType(999999));
     }
 
-    private static byte[] GuidToDriverBytes(Guid guid)
+    [Fact]
+    public void UuidBinary_PreservesNetworkOrderAndDelimiterBytes()
     {
-        var text = guid.ToString("N");
-        var buffer = new byte[16];
-        for (var i = 0; i < 16; i++)
+        byte[] bytes = { 12, 0, 0, 0, 0x7c, 0x0a, 0x70, 0x0d, 0x80, 0x22, 0x5c, 0xff, 0, 1, 2, 3 };
+        var expected = new Guid("0c000000-7c0a-700d-8022-5cff00010203");
+        foreach (var payload in new[] { bytes, WithLengthPrefix(bytes) })
         {
-            buffer[i] = Convert.ToByte(text.Substring(i * 2, 2), 16);
+            Assert.Equal(expected, Assert.IsType<Guid>(
+                TypeDecoder.Decode(TypeDecoder.OidUuid, payload, (byte)TypeDecoder.FormatBinary)));
         }
-        return buffer;
+        var encoded = TypeDecoder.EncodeParam(expected, System.Data.DbType.Guid);
+        Assert.Equal(TypeDecoder.OidUuid, encoded.Oid);
+        Assert.Equal(TypeDecoder.FormatBinary, encoded.Param.Format);
+        Assert.Equal(bytes, encoded.Param.Data);
+        Assert.Equal(new byte[16], TypeDecoder.EncodeParam(Guid.Empty).Param.Data);
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(4)]
+    [InlineData(15)]
+    [InlineData(17)]
+    [InlineData(19)]
+    [InlineData(20)]
+    [InlineData(21)]
+    [InlineData(32)]
+    [InlineData(36)]
+    public void UuidBinary_RejectsMalformedLengths(int length)
+    {
+        Assert.Throws<FormatException>(() =>
+            TypeDecoder.Decode(TypeDecoder.OidUuid, new byte[length], (byte)TypeDecoder.FormatBinary));
+    }
+
+    [Fact]
+    public void UuidBinary_RejectsTrailingBytesAndTextFormat()
+    {
+        var trailing = new byte[21];
+        BinaryPrimitives.WriteUInt32LittleEndian(trailing, 16);
+        Assert.Throws<FormatException>(() =>
+            TypeDecoder.Decode(TypeDecoder.OidUuid, trailing, (byte)TypeDecoder.FormatBinary));
+        Assert.Throws<FormatException>(() =>
+            TypeDecoder.Decode(TypeDecoder.OidUuid, Encoding.UTF8.GetBytes("11111111-2222-3333-4444-555555555555"), (byte)TypeDecoder.FormatText));
+    }
+
+    [Fact]
+    public void UuidParameters_RequireNativeValuesAndDoNotGuessFromText()
+    {
+        const string text = "11111111-2222-3333-4444-555555555555";
+        var encoded = TypeDecoder.EncodeParam(text);
+        Assert.Equal(TypeDecoder.OidText, encoded.Oid);
+        Assert.Throws<ArgumentException>(() => TypeDecoder.EncodeParam(text, System.Data.DbType.Guid));
+        Assert.Throws<ArgumentException>(() => TypeDecoder.EncodeParam(new ScratchBirdRaw(TypeDecoder.OidUuid, Encoding.UTF8.GetBytes(text))));
+        var bytes = new byte[16];
+        Assert.Equal(bytes, TypeDecoder.EncodeParam(new ScratchBirdRaw(TypeDecoder.OidUuid, bytes)).Param.Data);
+    }
+
+    [Fact]
+    public void UuidArrays_DoNotFallBackToHumanReadableArrayLiterals()
+    {
+        Assert.Throws<NotSupportedException>(() => TypeDecoder.EncodeParam(new[] { Guid.Empty }));
+        Assert.Throws<NotSupportedException>(() => TypeDecoder.EncodeParam(Array.Empty<Guid>()));
+        Assert.Throws<NotSupportedException>(() => TypeDecoder.EncodeParam(new Guid?[] { null }));
+        Assert.Throws<NotSupportedException>(() => TypeDecoder.EncodeParam(new object[] { "prefix", Guid.Empty }));
+        Assert.Throws<NotSupportedException>(() => TypeDecoder.EncodeParam(new object[] { new object[] { Guid.Empty } }));
+    }
+
+    private static byte[] GuidToDriverBytes(Guid guid) => guid.ToByteArray(bigEndian: true);
 
     private static byte[] WithLengthPrefix(byte[] payload)
     {

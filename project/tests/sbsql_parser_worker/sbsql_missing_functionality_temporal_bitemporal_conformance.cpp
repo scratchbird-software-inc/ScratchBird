@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/temporal_bitemporal_api.hpp"
@@ -57,20 +58,7 @@ void Require(bool condition, std::string_view message) {
 }
 
 void Cleanup(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const char* suffix : {".dirty.manifest",
-                             ".sb.api_events",
-                             ".sb.mga_event_sequence_allocator",
-                             ".sb.mga_index_entries",
-                             ".sb.mga_large_values",
-                             ".sb.mga_relation_descriptors",
-                             ".sb.mga_relation_metadata",
-                             ".sb.mga_row_versions",
-                             ".sb.mga_savepoints",
-                             ".sb.mga_secondary_index_delta_ledger"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
 bool HasDiagnostic(const api::EngineApiResult& result, std::string_view code) {
@@ -203,7 +191,10 @@ Fixture CreateFixture() {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "database creation failed");
 
-  fixture.inventory = txn::MakeEmptyLocalTransactionInventory();
+  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(fixture.path.string());
+  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
+          "lifecycle-published transaction inventory unavailable");
+  fixture.inventory = std::move(initial_inventory.inventory);
   const auto transaction_uuid =
       uuid::GenerateEngineIdentityV7(UuidKind::transaction, 1790500000003);
   Require(transaction_uuid.ok(), "transaction UUID generation failed");
@@ -224,6 +215,10 @@ Fixture CreateFixture() {
 }
 
 void CommitFixture(Fixture* fixture) {
+  auto published = db::LoadLocalTransactionInventoryFromDatabase(fixture->path.string());
+  Require(published.ok() && published.inventory.publication_base.has_value(),
+          "current transaction inventory unavailable before commit");
+  fixture->inventory = std::move(published.inventory);
   auto committed = txn::CommitLocalTransaction(std::move(fixture->inventory),
                                                fixture->typed_local_transaction_id,
                                                1790500000100);

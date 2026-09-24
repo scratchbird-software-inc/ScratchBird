@@ -187,7 +187,7 @@ int main() {
     auto foreign=context.database_uuid;
     context.database_uuid=uuid::GenerateEngineIdentityV7(p::UuidKind::database,millis).value.value;
     refused();context.database_uuid=foreign;healthy();
-    const fs::path journal=cfg.path+".sb.api_events";
+    const fs::path journal=cfg.path+".sb.api_events.v2";
     Setup(!fs::exists(journal),"refused DDL must not create journal");
     Write(journal,"");healthy();fs::remove(journal);
     Setup(fs::create_directory(journal),"journal directory");refused();fs::remove(journal);

@@ -26,7 +26,7 @@ using scratchbird::core::platform::u32;
 using scratchbird::core::platform::u64;
 using scratchbird::storage::disk::PageType;
 
-inline constexpr u32 kRepairEventLedgerFormatVersion = 1;
+inline constexpr u32 kRepairEventLedgerFormatVersion = 2;
 
 enum class RepairEventPhase : u16 {
   unknown = 0,

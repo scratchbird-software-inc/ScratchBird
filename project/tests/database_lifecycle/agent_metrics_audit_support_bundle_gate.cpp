@@ -1,3 +1,5 @@
+#include "database_lifecycle_test_memory.hpp"
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -107,19 +109,7 @@ std::filesystem::path MakeTempDir() {
 }
 
 void CleanupDatabase(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const char* suffix : {".dirty.manifest",
-                             ".sb.mga_event_sequence_allocator",
-                             ".sb.mga_index_entries",
-                             ".sb.mga_large_values",
-                             ".sb.mga_relation_descriptors",
-                             ".sb.mga_relation_metadata",
-                             ".sb.mga_row_versions",
-                             ".sb.mga_savepoints",
-                             ".sb.mga_secondary_index_delta_ledger"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
 TestDatabase CreateActiveDatabase(const std::filesystem::path& temp_dir) {
@@ -144,7 +134,10 @@ TestDatabase CreateActiveDatabase(const std::filesystem::path& temp_dir) {
   Require(db::CreateDatabaseFile(create).ok(),
           "durable support-bundle database creation failed");
 
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
+  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
+          "lifecycle-published transaction inventory unavailable");
+  auto inventory = std::move(initial_inventory.inventory);
   const auto transaction_uuid = uuid::GenerateEngineIdentityV7(
       platform::UuidKind::transaction, 1915017000104ull);
   Require(transaction_uuid.ok(), "transaction UUID generation failed");
@@ -252,12 +245,10 @@ api::EngineRequestContext Context(const std::filesystem::path& temp_dir) {
   context.session_uuid = NativeIdentity(Id(platform::UuidKind::object, 3));
   context.principal_uuid = NativeIdentity(Id(platform::UuidKind::principal, 4));
   context.transaction_uuid = NativeIdentity(Id(platform::UuidKind::transaction, 5));
-  context.trace_tags = {
-      "right:OBS_METRICS_READ_FAMILY",
-      "right:OBS_AGENT_EVIDENCE_READ",
-      "right:OBS_AGENT_STATE_READ",
-      "right:OBS_CONFIG_INSPECT",
-      "security.fixture_trace_authority"};
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &context, "agent-metrics-audit-support-fixture",
+      {"OBS_METRICS_READ_FAMILY", "OBS_AGENT_EVIDENCE_READ",
+       "OBS_AGENT_STATE_READ", "OBS_CONFIG_INSPECT"});
   return context;
 }
 
@@ -275,12 +266,10 @@ api::EngineRequestContext DurableContext(const TestDatabase& database) {
   context.node_uuid = NativeIdentity(Id(platform::UuidKind::object, 102));
   context.session_uuid = NativeIdentity(Id(platform::UuidKind::object, 103));
   context.principal_uuid = NativeIdentity(Id(platform::UuidKind::principal, 104));
-  context.trace_tags = {
-      "right:OBS_METRICS_READ_FAMILY",
-      "right:OBS_AGENT_EVIDENCE_READ",
-      "right:OBS_AGENT_STATE_READ",
-      "right:OBS_CONFIG_INSPECT",
-      "security.fixture_trace_authority"};
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &context, "agent-metrics-audit-support-fixture",
+      {"OBS_METRICS_READ_FAMILY", "OBS_AGENT_EVIDENCE_READ",
+       "OBS_AGENT_STATE_READ", "OBS_CONFIG_INSPECT"});
   return context;
 }
 
@@ -419,6 +408,9 @@ void TestEngineCollectorAndMetrics(const std::filesystem::path& temp_dir) {
   request.records.push_back(EvidenceRecord());
 
   const auto result = api::EngineCollectAgentRuntimeObservability(request);
+  for (const auto& diagnostic : result.diagnostics) {
+    if (diagnostic.error) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(result.ok, "agent observability collector refused valid evidence");
   Require(result.metrics_recorded && result.audit_recorded &&
               result.diagnostics_rendered && result.support_bundle_ready &&

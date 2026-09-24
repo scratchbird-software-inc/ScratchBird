@@ -8,6 +8,16 @@ ScratchBird ADO.NET provider using the native wire protocol.
 - API reference
 - [Baseline requirement mapping](BASELINE_REQUIREMENT_MAPPING.md)
 
+## UUID parameters and results
+
+Pass UUID parameters as `System.Guid`. The driver transports them as exactly
+16 bytes in network byte order and returns UUID results as `Guid` values.
+Client code owns parsing user-entered UUID text and formatting UUIDs for display.
+A string parameter remains text; using a string with `DbType.Guid` is rejected.
+UUID results must use binary format. Raw UUID parameters must contain exactly
+16 bytes. UUID arrays are currently rejected because this driver does not yet
+implement their native binary array codec; they are never sent as text literals.
+
 ## Auth / Bootstrap Contract
 
 This lane now implements the shared staged auth/bootstrap contract.

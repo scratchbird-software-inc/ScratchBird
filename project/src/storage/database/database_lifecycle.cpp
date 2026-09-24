@@ -909,7 +909,7 @@ DatabaseLifecycleResult EmitDirtyManifestForCheckpoint(const std::string& databa
         std::to_string(page.page_number) + ":" +
         std::to_string(page.page_generation) + ":" +
         std::to_string(static_cast<u32>(page.page_type)) + ":" +
-        scratchbird::core::uuid::UuidToString(page.page_uuid.value);
+        std::string(reinterpret_cast<const char*>(page.page_uuid.value.bytes.data()), 16);
     entry.object_checksum = StableRecoveryTextChecksum(object_material);
     entry.local_transaction_id = local_transaction_id;
     entry.operation_envelope_checksum = StableRecoveryTextChecksum(
@@ -963,7 +963,7 @@ DatabaseLifecycleResult PersistDirtyManifestRecoveryEvidenceForOpen(
       DirtyRecoveryEvidencePathForDatabase(database_path),
       dirty_manifest.manifest,
       dirty_manifest.recovery,
-      scratchbird::core::uuid::UuidToString(recovery_run_uuid.value.value));
+      recovery_run_uuid.value);
   if (!evidence.ok()) {
     return PropagateDiagnostic(evidence.status, evidence.diagnostic);
   }

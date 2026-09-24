@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "agent_binary_identity_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
@@ -94,19 +95,7 @@ struct TestDatabase {
 };
 
 void Cleanup(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const char* suffix : {".dirty.manifest",
-                             ".sb.mga_event_sequence_allocator",
-                             ".sb.mga_index_entries",
-                             ".sb.mga_large_values",
-                             ".sb.mga_relation_descriptors",
-                             ".sb.mga_relation_metadata",
-                             ".sb.mga_row_versions",
-                             ".sb.mga_savepoints",
-                             ".sb.mga_secondary_index_delta_ledger"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
 api::EngineRequestContext BeginTransactionContext(const TestDatabase& database,
@@ -140,7 +129,10 @@ TestDatabase CreateActiveDatabase(const char* basename,
   create.allow_overwrite = true;
   Require(db::CreateDatabaseFile(create).ok(), "database creation failed");
 
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
+  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
+          "lifecycle-published transaction inventory unavailable");
+  auto inventory = std::move(initial_inventory.inventory);
   const auto transaction_uuid = uuid::GenerateEngineIdentityV7(
       UuidKind::transaction, current_base + 4);
   Require(transaction_uuid.ok(), "transaction UUID generation failed");

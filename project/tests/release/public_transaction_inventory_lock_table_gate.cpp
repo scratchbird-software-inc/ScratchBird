@@ -1,3 +1,4 @@
+#include "../support/database_fixture_cleanup.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -210,7 +211,7 @@ bool DurableDatabaseStoreProof(const std::filesystem::path& work_dir) {
   bool ok = true;
   std::filesystem::create_directories(work_dir);
   const auto database_path = work_dir / "pcr071_inventory.sbdb";
-  std::filesystem::remove(database_path);
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(database_path);
 
   db::DatabaseCreateConfig create;
   create.path = database_path.string();

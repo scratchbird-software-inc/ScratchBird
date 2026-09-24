@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_binary_identity_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
 using scratchbird::tests::NativeFixtureIdentity;
@@ -75,10 +76,7 @@ api::EngineRequestContext Context(const Fixture& fixture,
   context.catalog_generation_id = 22;
   context.security_epoch = 23;
   context.resource_epoch = 24;
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  for (const auto right : rights) {
-    context.trace_tags.push_back("right:" + std::string(right));
-  }
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(&context, "pfar016b", rights);
   return context;
 }
 
@@ -126,7 +124,14 @@ bool HasDiagnostic(const api::EngineApiResult& result, std::string_view code) {
 std::string Field(const api::EngineApiResult& result, std::string_view name) {
   for (const auto& row : result.result_shape.rows) {
     for (const auto& field : row.fields) {
-      if (field.first == name) { return field.second.encoded_value; }
+      if (field.first == name) {
+        if (field.second.descriptor.canonical_type_name == "uuid") {
+          Require(field.second.encoded_value.empty() && field.second.binary_value.size() == 16,
+                  "UUID result was not exclusively binary16");
+          return {reinterpret_cast<const char*>(field.second.binary_value.data()), 16};
+        }
+        return field.second.encoded_value;
+      }
     }
   }
   return {};
@@ -148,8 +153,9 @@ void RequireUuidField(const api::EngineApiResult& result,
               value.rfind("policy.", 0) != 0 &&
               value.rfind("scope.", 0) != 0,
           std::string(field) + " used label-prefixed identity");
-  Require(uuid::ParseDurableEngineIdentityUuid(kind, value).ok(),
-          std::string(field) + " is not a durable typed UUID: " + value);
+  Require(value.size() == 16 &&
+              uuid::MakeDurableEngineIdentityUuid(kind, NativeFixtureIdentity(value)).ok(),
+          std::string(field) + " is not a native durable UUID");
 }
 
 void TestAcceptedMutatingRequest(const Fixture& fixture) {
@@ -178,6 +184,12 @@ void TestAcceptedMutatingRequest(const Fixture& fixture) {
   RequireUuidField(result, "request_evidence_uuid", platform::UuidKind::object);
   Require(HasEvidence(result, "agent_third_party_request_evidence"),
           "accepted request did not expose request evidence");
+  for (const auto& evidence : result.evidence) {
+    if (evidence.evidence_kind != "agent_third_party_request_evidence") continue;
+    const auto* identity = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    Require(identity != nullptr && *identity == NativeFixtureIdentity(fixture.request_uuid),
+            "request evidence did not preserve the exact native UUID");
+  }
 }
 
 void TestReadOnlyRequest(const Fixture& fixture) {
@@ -313,6 +325,16 @@ void TestRequiredFieldsAndTypedUuid(const Fixture& fixture) {
   Require(HasEvidence(missing_principal_result, "agent_third_party_request_evidence"),
           "authenticated missing-principal denial did not write evidence");
 
+  for (unsigned slot = 0; slot < 3; ++slot) {
+    auto textual = Request(fixture, "agents.restart", {"OBS_AGENT_CONTROL"});
+    auto& record = textual.management_request;
+    auto& identity = slot == 0 ? record.request_uuid :
+                     slot == 1 ? record.requester_principal_uuid : record.policy_ref;
+    identity = "018f7a10-1280-7000-8000-000000000105";
+    const auto refused = api::EngineSubmitThirdPartyAgentManagementRequest(textual);
+    Require(!refused.ok && HasDiagnostic(refused, "AGENT.THIRD_PARTY.INVALID_UUID"),
+            "third-party engine boundary accepted a text UUID");
+  }
   auto malformed_policy = Request(fixture, "agents.restart", {"OBS_AGENT_CONTROL"});
   malformed_policy.management_request.policy_ref = "policy.page_allocation.default";
   const auto malformed_policy_result =

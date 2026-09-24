@@ -12,6 +12,7 @@
 #include "runtime_platform.hpp"
 #include "uuid.hpp"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -55,6 +56,10 @@ struct OverflowPersistRequest {
   std::vector<byte> payload_bytes;
   TypedUuid chunk_policy_uuid;
   u32 chunk_size = 4096;
+  // Internal producer binds its descriptor to the identity allocated by this
+  // storage operation, before any overflow value or chunk is published.
+  // Supply either this binder or value_descriptor, never both.
+  std::function<std::string(const TypedUuid&)> bind_value_descriptor;
 };
 
 struct OverflowChunkRecord {

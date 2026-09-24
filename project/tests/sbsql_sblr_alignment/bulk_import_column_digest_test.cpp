@@ -126,6 +126,48 @@ int main() {
     if(field==10) col.canonical_name_key+="x";
     Check(ComputeBulkImportColumnDigestV2(changed,&digest) && digest!=expected,"bound field sensitivity");
   }
+  // Binary UUID bytes are not UTF-8 and may contain punctuation or NUL.
+  auto binary=d;
+  CatalogColumnMetadata fields;
+  fields.text.emplace("type", "int32");
+  auto resource=Id(88);
+  resource.bytes[0]=0xff;resource.bytes[1]=0;resource.bytes[2]=';';
+  fields.identities.emplace("charset_uuid", resource);
+  auto& encoded=binary.columns[0].value_descriptor.encoded_descriptor;
+  Check(EncodeCatalogColumnMetadata(fields,&encoded),"encode binary metadata");
+  Hash binary_hash{};
+  Check(ComputeBulkImportColumnDigestV2(binary,&binary_hash),"binary column metadata refused");
+  Check(binary_hash!=expected,"binary descriptor bytes omitted from digest");
+  Check(!BulkImportColumnHasForbiddenDefaultOrConstraint(encoded),"binary UUID scanned as prose");
+  for(std::size_t length=0;length<encoded.size();++length) {
+    auto bad=binary;
+    bad.columns[0].value_descriptor.encoded_descriptor.resize(length);
+    // Empty or scalar spelling prefixes are independently valid text inputs;
+    // once the binary marker is present, every truncation must be refused.
+    if(length>=6) Refuse(bad);
+  }
+  auto trailing=binary;
+  trailing.columns[0].value_descriptor.encoded_descriptor.push_back('x');
+  Refuse(trailing);
+  for(const auto key:{"default", "generated", "identity", "primary_key", "unique",
+                      "foreign_key", "references", "check", "constraint_kind", "constraint"}) {
+    auto constrained=fields;constrained.text.emplace(key,"true");
+    std::string bytes;
+    Check(EncodeCatalogColumnMetadata(constrained,&bytes),"encode constrained metadata");
+    Check(BulkImportColumnHasForbiddenDefaultOrConstraint(bytes),"framed constraint bypassed eligibility");
+  }
+  for(const auto key:{"default_uuid", "constraint_uuid"}) {
+    auto constrained=fields;constrained.identities.emplace(key,Id(91));
+    std::string bytes;
+    Check(EncodeCatalogColumnMetadata(constrained,&bytes),"encode constrained identity");
+    Check(BulkImportColumnHasForbiddenDefaultOrConstraint(bytes),"native constraint UUID bypassed eligibility");
+  }
+  auto changed_binary=binary;
+  fields.identities.at("charset_uuid").bytes[15]^=1;
+  Check(EncodeCatalogColumnMetadata(fields,&changed_binary.columns[0].value_descriptor.encoded_descriptor),
+        "encode altered native identity");
+  Check(ComputeBulkImportColumnDigestV2(changed_binary,&digest) && digest!=binary_hash,
+        "embedded binary UUID omitted from hash");
   unsigned faults=0;
   for(long n=0;n<4096;++n) {
     auto h=Sentinel(); bool ok=false; injected=false;allocation=n;

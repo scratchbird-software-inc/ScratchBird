@@ -187,6 +187,7 @@ void Visibility(api::EngineRequestContext c){
   c.trace_tags={"right:READ_DIAGNOSTIC_DETAIL","right:AUDIT_READ"};
   Check(mask()==0x05fe,"trace labels disclosed metadata");
   auto& a=c.authorization_context;a.present=true;a.principal_uuid=c.principal_uuid;
+  a.authority_uuid=Identity();a.security_context_generation=1;
   a.security_epoch=1;a.policy_epoch=1;a.catalog_generation_id=1;
   a.effective_subjects.push_back({c.principal_uuid,"principal"});
   api::EngineMaterializedAuthorizationGrant g;g.grant_uuid=Identity();g.subject_uuid=c.principal_uuid;
@@ -198,6 +199,7 @@ void Visibility(api::EngineRequestContext c){
   a.principal_uuid=Identity();Check(mask()==0x05fe,"principal mismatch");a.principal_uuid=c.principal_uuid;
   a.security_epoch=2;Check(mask()==0x05fe,"expired epoch");a.security_epoch=1;
   api::EngineMaterializedAuthorizationPolicy policy;policy.subject_uuid=c.principal_uuid;
+  policy.policy_uuid=Identity();policy.policy_epoch=1;
   policy.subject_kind="principal";policy.target_uuid=c.database_uuid;policy.right="READ_DIAGNOSTIC_DETAIL";
   policy.requires_runtime_recheck=true;a.policies.push_back(policy);
   Check(mask()==0x05fe,"runtime pending disclosed metadata");a.policies.back().requires_runtime_recheck=false;
@@ -250,9 +252,17 @@ void AllocationFaults(const api::EngineRequestContext& c,const std::string& path
       std::cerr<<"allocation_index="<<at<<" exception="<<error.what()<<'\n';
       throw std::runtime_error("registry leaked allocation exception");}
     allocation_fault::remaining=-1;
-    if(!allocation_fault::injected||result.ok)std::cerr<<"allocation_index="<<at<<" injected="<<allocation_fault::injected<<" ok="<<result.ok<<'\n';
-    Check(allocation_fault::injected&&!result.ok,"allocation failure published success");
-    Check(result.snapshot.rows.empty()&&result.snapshot.generation==0,"allocation failure published snapshot");
+    Check(allocation_fault::injected,"allocation fault boundary was not reached");
+    // FileDevice telemetry is best effort. Failure there may preserve a fully
+    // successful read; authoritative allocations must remain all-or-nothing.
+    if(result.ok) {
+      Check(Oracle(result.snapshot)==Oracle(baseline.snapshot),
+            "allocation recovery changed the complete admitted projection");
+      Check(Read(path)==original,"successful allocation recovery changed durable registry");
+    } else {
+      Check(result.snapshot.rows.empty()&&result.snapshot.generation==0,
+            "allocation failure published partial snapshot");
+    }
     const auto recovered=api::LoadSblrDiagnosticIdentitySnapshotV1(c);
     if(!recovered.ok)std::cerr<<"allocation_recovery_index="<<at<<" key="<<recovered.diagnostic.message_key<<'\n';
     Check(recovered.ok,"allocation failure poisoned a later registry load");
@@ -275,12 +285,18 @@ void BootstrapAllocationFaults(const api::EngineRequestContext& c,const std::str
       std::cerr<<"bootstrap_allocation_index="<<at<<" exception="<<error.what()<<'\n';
       throw std::runtime_error("bootstrap leaked allocation exception");}
     allocation_fault::remaining=-1;
-    if(!allocation_fault::injected||result.ok)std::cerr<<"bootstrap_allocation_index="<<at<<" injected="<<allocation_fault::injected<<" ok="<<result.ok<<'\n';
-    Check(allocation_fault::injected&&!result.ok,"bootstrap allocation failure published success");
-    Check(result.snapshot.rows.empty()&&result.snapshot.generation==0,"bootstrap failure published snapshot");
+    Check(allocation_fault::injected,"bootstrap allocation fault boundary was not reached");
+    if(!result.ok) Check(result.snapshot.rows.empty()&&result.snapshot.generation==0,
+                        "bootstrap failure published partial snapshot");
     const bool exists=std::filesystem::exists(path);
     const auto evidence=exists?Read(path):Bytes{};
     const auto recovered=api::LoadSblrDiagnosticIdentitySnapshotV1(c);
+    if(result.ok) {
+      Check(exists&&recovered.ok&&result.snapshot.generation==1,
+            "successful bootstrap allocation recovery lacked durable publication");
+      Check(Oracle(result.snapshot)==Oracle(recovered.snapshot)&&Read(path)==evidence,
+            "successful bootstrap allocation recovery changed on replay");
+    }
     if(recovered.ok)Check(recovered.snapshot.generation==1,"bootstrap recovery generation");
     else {
       Check(exists&&recovered.diagnostic.code=="SBLR.ERROR_VECTOR.STALE","bootstrap failure retained unowned lock");

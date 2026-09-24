@@ -9,7 +9,7 @@
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 if(NOT TARGET sb_core_time)
-  add_subdirectory(${PROJECT_SOURCE_DIR}/src/core/time
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../time
                    ${CMAKE_CURRENT_BINARY_DIR}/core_time)
 endif()
 

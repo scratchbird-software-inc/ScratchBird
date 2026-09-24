@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../../support/database_fixture_cleanup.hpp"
+#include "../../database_lifecycle/credentialed_database_fixture.hpp"
 #include "../../support/binary_uuid_fixture.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/schema_tree_api.hpp"
@@ -19,6 +21,7 @@
 #include "sblr_admission.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "security/security_model.hpp"
+#include "security/security_principal_lifecycle.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
 
@@ -57,7 +60,6 @@ namespace txn = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
-constexpr auto kPrincipalUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000001");
 constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000101");
 constexpr auto kLifecycleSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000102");
 constexpr auto kUnionMemberUuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000103");
@@ -77,6 +79,7 @@ struct Fixture {
   api::EngineUuid database_uuid;
   api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
+  std::uint64_t resource_epoch = 0;
   txn::LocalTransactionId typed_local_transaction_id;
   txn::LocalTransactionInventory inventory;
 };
@@ -93,23 +96,7 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 }
 
 void Cleanup(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const char* suffix : {".dirty.manifest",
-                             ".recovery.evidence",
-                             ".sb.api_events",
-                             ".sb.catalog_object_events",
-                             ".sb.name_events",
-                             ".sb.mga_event_sequence_allocator",
-                             ".sb.mga_index_entries",
-                             ".sb.mga_large_values",
-                             ".sb.mga_relation_descriptors",
-                             ".sb.mga_relation_metadata",
-                             ".sb.mga_row_versions",
-                             ".sb.mga_savepoints",
-                             ".sb.mga_secondary_index_delta_ledger"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
 bool HasEvidence(const api::EngineApiResult& result,
@@ -201,46 +188,62 @@ api::EngineLocalizedName Name(std::string path, std::string name) {
   return localized;
 }
 
-void Grant(api::EngineRequestContext* context,
-           std::string right,
-           api::EngineUuid target_uuid = {}) {
-  api::EngineAuthorizationSubject subject;
-  subject.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000001");
-  subject.subject_kind = "user";
-  context->authorization_context.effective_subjects.push_back(subject);
-
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.subject_uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000001");
-  grant.subject_kind = "user";
-  grant.target_uuid = std::move(target_uuid);
-  grant.right = std::move(right);
-  context->authorization_context.grants.push_back(std::move(grant));
-}
-
 api::EngineRequestContext Context(const Fixture& fixture, bool grant_catalog_mutate) {
   api::EngineRequestContext context;
   context.database_path = fixture.path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000001");
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(fixture.path.string());
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "durable bootstrap principal unavailable");
+  context.principal_uuid = bootstrap.state.principal_uuid.value;
   context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000010");
   context.transaction_uuid = fixture.transaction_uuid;
   context.local_transaction_id = fixture.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       fixture.local_transaction_id;
-  context.catalog_generation_id = 77;
-  context.security_epoch = 78;
-  context.resource_epoch = 79;
+  const auto catalog = api::LoadCatalogObjectLifecycleState(context);
+  Require(catalog.ok, "durable catalog epoch unavailable");
+  // A verified fresh bootstrap precedes the first catalog mutation event.
+  // Catalog consumers use generation one for that initial namespace.
+  context.catalog_generation_id = std::max<std::uint64_t>(1, catalog.state.metadata_epoch);
+  context.resource_epoch = fixture.resource_epoch;
   context.security_context_present = true;
-  context.authorization_context.present = true;
-  context.authorization_context.principal_uuid =
-      kPrincipalUuid;
-  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0700-0000-7000-8000-000000000020");
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = 80;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  context.authorization_context.evidence_tags.push_back("sbsql_miss_007");
-  if (grant_catalog_mutate) Grant(&context, "CATALOG_MUTATE");
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(context);
+  if (!loaded.ok) throw std::runtime_error("driver fixture durable security catalog unavailable");
+  const auto& lifecycle = loaded.state;
+  if (!lifecycle.row_policies.empty())
+    throw std::runtime_error("driver fixture requires a fresh bootstrap security catalog");
+  api::DurableAuthorizationState authority;
+  authority.authority_uuid = context.database_uuid;
+  authority.security_context_generation = lifecycle.security_context_generation;
+  authority.security_epoch = lifecycle.security_generation;
+  authority.policy_epoch = lifecycle.policy_generation;
+  authority.catalog_generation_id = context.catalog_generation_id;
+  authority.engine_owned_sysarch_role_uuid = bootstrap.state.sysarch_role_uuid.value;
+  context.security_epoch = authority.security_epoch;
+  for (const auto& principal : lifecycle.principals)
+    if (!principal.deleted && principal.lifecycle_state == "active")
+      authority.principals.push_back({principal.principal_uuid, "principal", true,
+                                     authority.security_epoch});
+  for (const auto& role : lifecycle.roles)
+    if (!role.deleted && role.lifecycle_state == "active")
+      authority.roles.push_back({role.role_uuid, true, authority.security_epoch});
+  for (const auto& membership : lifecycle.memberships)
+    if (!membership.revoked)
+      authority.memberships.push_back({membership.member_principal_uuid, "principal",
+          membership.container_uuid, membership.container_kind, true, authority.security_epoch});
+  for (const auto& grant : lifecycle.grants)
+    if (!grant.revoked)
+      authority.grants.push_back({grant.grant_uuid, grant.grantee_uuid, grant.grantee_kind,
+          grant.target_object_uuid, grant.privilege, grant.grant_effect == "deny", true,
+          authority.security_epoch});
+  const auto materialized = api::MaterializeDurableAuthorizationContext(authority,
+      {context.principal_uuid, authority.security_epoch, authority.policy_epoch,
+       authority.catalog_generation_id});
+  if (!materialized.ok) throw std::runtime_error("driver fixture durable authorization materialization failed");
+  context.authorization_context = materialized.context;
+  // The negative fixture has no admitted authorization context.
+  if (!grant_catalog_mutate) context.authorization_context = {};
   return context;
 }
 
@@ -266,9 +269,18 @@ Fixture CreateFixture() {
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;
-  Require(db::CreateDatabaseFile(create).ok(), "database creation failed");
+  create.bootstrap_principal_name = std::string(scratchbird::tests::database_lifecycle::kCredentialedFixturePrincipal);
+  create.bootstrap_credential_fingerprint = std::string(scratchbird::tests::database_lifecycle::kCredentialedFixtureFingerprint);
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "database creation failed");
+  fixture.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
 
-  fixture.inventory = txn::MakeEmptyLocalTransactionInventory();
+  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(fixture.path.string());
+  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
+          "lifecycle-published transaction inventory unavailable");
+  fixture.inventory = std::move(initial_inventory.inventory);
   const auto transaction_uuid =
       uuid::GenerateEngineIdentityV7(UuidKind::transaction, 1790700000003);
   Require(transaction_uuid.ok(), "transaction UUID generation failed");
@@ -289,6 +301,10 @@ Fixture CreateFixture() {
 }
 
 void CommitFixture(Fixture* fixture) {
+  auto published = db::LoadLocalTransactionInventoryFromDatabase(fixture->path.string());
+  Require(published.ok() && published.inventory.publication_base.has_value(),
+          "current transaction inventory unavailable before commit");
+  fixture->inventory = std::move(published.inventory);
   auto committed = txn::CommitLocalTransaction(std::move(fixture->inventory),
                                                fixture->typed_local_transaction_id,
                                                1790700000100);
@@ -447,8 +463,9 @@ void RequireCreateAndAlterSchema(api::EngineRequestContext context) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
   Require(created.ok, "EngineCreateSchema rejected schema metadata options");
-  Require(HasEvidence(created, "schema_union_member", kUnionMemberUuid),
-          "create schema missing schema-union member evidence");
+  Require(HasEvidence(created, "schema_union_member.0", kUnionMemberUuid) &&
+              HasEvidence(created, "schema_union_member.1", kUnionMember2Uuid),
+          "create schema missing ordered binary schema-union member evidence");
   Require(HasEvidence(created, "schema_union_policy", "ordered_overlay"),
           "create schema missing schema-union policy evidence");
   Require(HasEvidence(created, "catalog_ddl_mutation_audit",

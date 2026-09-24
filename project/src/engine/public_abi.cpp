@@ -24,6 +24,7 @@
 #include "canonical_aggregate_registry.hpp"
 #include "core/agents/resource_governance_admission.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "engine/internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_operations.hpp"
 #include "executor_foundation.hpp"
 #include "cluster_provider/cluster_provider.hpp"
@@ -885,9 +886,8 @@ namespace {
 constexpr scratchbird::engine::internal_api::EngineUuid
     kParameterBigintDescriptor{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
                                0x80, 0, 0, 0, 0, 0, 0xd7, 0x11}};
-constexpr scratchbird::engine::internal_api::EngineUuid
-    kCanonicalDatatypeCatalogUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
-                                  0x80, 0, 0, 0, 0, 0, 0xd7, 0x01}};
+constexpr auto kCanonicalDatatypeCatalogUuid =
+    scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid;
 constexpr scratchbird::engine::internal_api::EngineUuid
     kCanonicalTextDescriptorUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
                                  0x80, 0, 0, 0, 0, 0, 0xd7, 0x18}};
@@ -898,15 +898,6 @@ constexpr scratchbird::engine::internal_api::EngineUuid
 constexpr scratchbird::engine::internal_api::EngineUuid
     kCanonicalInt128TypeUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
                              0x80, 0, 0, 0, 0, 0, 0xd7, 0x15}};
-
-std::array<std::uint8_t, 16> TextToUuid(const std::string& text) {
-  std::array<std::uint8_t, 16> bytes{};
-  const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-  if (parsed.ok()) {
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), bytes.begin());
-  }
-  return bytes;
-}
 
 scratchbird::core::platform::Uuid NativeUuid(
     const std::array<std::uint8_t, 16>& bytes) {
@@ -1095,44 +1086,6 @@ bool generate_distinct_statement_context_uuid(
 bool valid_engine_identity(
     const scratchbird::engine::internal_api::EngineUuid& value) {
   return scratchbird::core::uuid::IsEngineIdentityUuid(value);
-}
-
-bool encoded_descriptor_has_field(std::string_view descriptor,
-                                  std::string_view requested_field) {
-  const auto normalize = [](std::string_view text) {
-    while (!text.empty() &&
-           std::isspace(static_cast<unsigned char>(text.front())) != 0) {
-      text.remove_prefix(1);
-    }
-    while (!text.empty() &&
-           std::isspace(static_cast<unsigned char>(text.back())) != 0) {
-      text.remove_suffix(1);
-    }
-    std::string normalized;
-    normalized.reserve(text.size());
-    for (const char character : text) {
-      normalized.push_back(static_cast<char>(
-          std::tolower(static_cast<unsigned char>(character))));
-    }
-    return normalized;
-  };
-  const auto expected = normalize(requested_field);
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto delimiter = descriptor.find(';', offset);
-    const auto end = delimiter == std::string_view::npos
-                         ? descriptor.size()
-                         : delimiter;
-    const auto field = descriptor.substr(offset, end - offset);
-    const auto equals = field.find('=');
-    if (equals != std::string_view::npos &&
-        normalize(field.substr(0, equals)) == expected) {
-      return true;
-    }
-    if (delimiter == std::string_view::npos) break;
-    offset = delimiter + 1;
-  }
-  return false;
 }
 
 scratchbird::core::datatypes::CanonicalTypeId
@@ -2134,7 +2087,9 @@ bool statement_management_rebind_source_free_query_template(
       context.statement_uuid, context.transaction_uuid,
       context.statement_snapshot_uuid, context.statement_metadata_snapshot_uuid,
       context.local_transaction_id,
-      context.snapshot_visible_through_local_transaction_id};
+      context.snapshot_visible_through_local_transaction_id,
+      context.statement_receipt_uuid, context.datatype_catalog_snapshot_uuid,
+      context.datatype_catalog_generation, context.datatype_registry_generation};
   if (scratchbird::engine::sblr::RebindPreparedRelationalQueryV1(operation, replacement)) {
     return true;
   }
@@ -2815,8 +2770,8 @@ BulkImportHashV1 bulk_import_policy_digest(
         column->column_generation == 0 ||
         !valid_engine_identity(
             column->value_descriptor.descriptor_uuid) ||
-        !bulk_import_canonical_utf8(
-            column->value_descriptor.encoded_descriptor, true)) {
+        !scratchbird::engine::internal_api::BulkImportColumnMetadataValid(
+            column->value_descriptor.encoded_descriptor)) {
       return {};
     }
     std::vector<std::uint8_t> converter_material;
@@ -3852,7 +3807,12 @@ std::string api_row_value(const scratchbird::engine::internal_api::EngineApiResu
     }
     auto kind = public_result::Kind::text;
     const auto& type = value.descriptor.canonical_type_name;
-    if (!value.is_null && (type == "uuid" || type == "uuid16")) kind = public_result::Kind::uuid;
+    if (!value.is_null && (type == "uuid" || type == "uuid16")) {
+      if (!value.encoded_value.empty() || value.binary_value.size() != 16)
+        throw std::invalid_argument("public_result_uuid_carrier_invalid");
+      kind = public_result::Kind::uuid;
+      bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), 16);
+    }
     else if (type == "bytea" || type == "binary" || type == "varbinary") kind = public_result::Kind::bytes;
     fields.push_back({name, kind, std::move(bytes)});
   }
@@ -4372,27 +4332,48 @@ void visit_api_result_payload(std::string_view operation_id,
   if (visible_rows > (public_result::kMaximumFields - 3) / 2 ||
       evidence_values.size() > public_result::kMaximumFields - 3 - visible_rows * 2)
     throw std::length_error("public_result_field_count_exceeded");
-  const std::string count = std::to_string(row_count);
-  std::vector<std::string> names;
-  names.reserve(visible_rows * 2);
-  std::vector<public_result::FieldView> fields = {
-      {"operation_id", public_result::Kind::text, operation_id},
-      {"result_kind", public_result::Kind::text, result_kind},
-      {"row_count", public_result::Kind::text, count}};
-  fields.reserve(3 + visible_rows * 2 + evidence_values.size());
+  // This visitor is also the admission sizing pass. Build framing and decimal
+  // indices on the stack so an over-budget request cannot allocate first.
+  const auto number = [&](std::uint64_t value, std::size_t width) {
+    std::array<char, 8> bytes{};
+    for (std::size_t i = 0; i < width; ++i)
+      bytes[i] = static_cast<char>(value >> (i * 8));
+    emit(std::string_view(bytes.data(), width));
+  };
+  const auto field = [&](std::string_view name, public_result::Kind kind,
+                         std::string_view value) {
+    if (!public_result::Valid({name, kind, value}))
+      throw std::invalid_argument("public_result_payload_invalid");
+    number(name.size(), 4); emit(name);
+    number(static_cast<std::uint8_t>(kind), 1);
+    number(value.size(), 8); emit(value);
+  };
+  const auto visible_metadata = first_row < row_metadata.size()
+      ? std::min<std::uint64_t>(visible_rows, row_metadata.size() - first_row) : 0;
+  emit(public_result::kMagic);
+  number(3 + visible_rows + visible_metadata + evidence_values.size(), 4);
+  field("operation_id", public_result::Kind::text, operation_id);
+  field("result_kind", public_result::Kind::text, result_kind);
+  std::array<char, 20> count{};
+  const auto count_end = std::to_chars(count.data(), count.data() + count.size(), row_count).ptr;
+  field("row_count", public_result::Kind::text,
+        std::string_view(count.data(), count_end - count.data()));
+  const auto indexed_field = [&](std::string_view prefix, std::uint64_t index,
+                                 public_result::Kind kind, std::string_view value) {
+    std::array<char, 32> name{};
+    std::copy(prefix.begin(), prefix.end(), name.begin());
+    auto end = std::to_chars(name.data() + prefix.size(), name.data() + name.size() - 1, index).ptr;
+    *end++ = ']';
+    field(std::string_view(name.data(), end - name.data()), kind, value);
+  };
   for (std::uint64_t offset = 0; offset < visible_rows; ++offset) {
     const auto index = first_row + offset;
-    names.push_back("row[" + std::to_string(index) + "]");
-    fields.push_back({names.back(), public_result::Kind::row, rows[index]});
-    if (index < row_metadata.size()) {
-      names.push_back("row_meta[" + std::to_string(index) + "]");
-      fields.push_back({names.back(), public_result::Kind::text, row_metadata[index]});
-    }
+    indexed_field("row[", index, public_result::Kind::row, rows[index]);
+    if (index < row_metadata.size())
+      indexed_field("row_meta[", index, public_result::Kind::text, row_metadata[index]);
   }
   for (const auto& evidence : evidence_values)
-    fields.push_back({"evidence", public_result::Kind::evidence, evidence});
-  if (!public_result::Visit(fields, std::forward<Emit>(emit)))
-    throw std::invalid_argument("public_result_payload_invalid");
+    field("evidence", public_result::Kind::evidence, evidence);
 }
 
 std::optional<std::string> bounded_api_result_payload(std::string_view operation_id,
@@ -6994,8 +6975,10 @@ sb_engine_status_t AcquireStatementContextReceipt(
   // epoch and publish it only as the preliminary V11 bootstrap authority.
   view.literal_catalog_snapshot_uuid =
       kCanonicalDatatypeCatalogUuid;
-  view.literal_catalog_generation = 1;
-  view.literal_registry_generation = 1;
+  view.literal_catalog_generation =
+      scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration;
+  view.literal_registry_generation =
+      scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration;
   {
     auto diagnostic_context = engine_context;
     diagnostic_context.statement_metadata_snapshot_engine_owned = true;
@@ -8348,9 +8331,9 @@ sb_engine_status_t BindStatementBulkImportAuthorityV1(
                 column.value_descriptor.canonical_type_name);
             return column.generated || column.identity_column ||
                    !admitted_type ||
-                   encoded_descriptor_has_field(
-                       column.value_descriptor.encoded_descriptor,
-                       "default");
+                   scratchbird::engine::internal_api::
+                       BulkImportColumnHasForbiddenDefaultOrConstraint(
+                           column.value_descriptor.encoded_descriptor);
           }) ||
       scratchbird::engine::internal_api::dml_trigger_runtime::
           HasActiveTableTriggerDescriptors(
@@ -30435,16 +30418,16 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
   std::vector<std::uint8_t> read_by_key_result_bytes;if(read_by_key_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_read_by_key");auto consumed=scratchbird::engine::internal_api::ConsumeSblrReadByKeyDescriptor(c,read_by_key_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrReadByKeyResultV1 rr;rr.descriptor=read_by_key_descriptor.descriptor;rr.descriptor_generation=read_by_key_descriptor.descriptor_generation;rr.relation=read_by_key_descriptor.relation;rr.outcome=2;rr.row_sha=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{0}).digest;rr.redaction_evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{1}).digest;rr.availability_generation=read_by_key_availability_generation;read_by_key_result_bytes=scratchbird::engine::sblr::EncodeSblrReadByKeyResultV1(rr);if(read_by_key_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"READ.BY_KEY_FAILED","sblr.read_by_key.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(read_by_key_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=read_by_key_executor\texecutor_id=engine.op.read_by_key\topcode=SBLR_READ_BY_KEY\topcode_code=515\topcode_version=1.0\toperand_descriptor_id=uuid_object_key_descriptor\tresult_descriptor_id=row_descriptor\tresult_descriptor_version=1\tread_by_key_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<read_by_key_availability_generation<<"\tparent_success_barrier=passed\n";}}
 
   std::vector<std::uint8_t> read_range_result_bytes;
-  if(read_range_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_read_range");auto consumed=scratchbird::engine::internal_api::ConsumeSblrReadRangeDescriptor(c,read_range_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrReadRangeResultV1 rr;rr.descriptor=read_range_descriptor.descriptor;rr.descriptor_generation=read_range_descriptor.descriptor_generation;rr.relation=read_range_descriptor.relation;rr.batch=TextToUuid("019d0000-0000-7000-8000-000000000516");rr.rows=0;rr.eof=1;rr.batch_sha=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{0}).digest;rr.continuation=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{1}).digest;rr.availability_generation=read_range_availability_generation;read_range_result_bytes=scratchbird::engine::sblr::EncodeSblrReadRangeResultV1(rr);if(read_range_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"READ.RANGE_FAILED","sblr.read_range.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(read_range_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=read_range_executor\texecutor_id=engine.op.read_range\topcode=SBLR_READ_RANGE\topcode_code=516\topcode_version=1.0\toperand_descriptor_id=range_scan_descriptor\tresult_descriptor_id=rowset_descriptor\tresult_descriptor_version=1\tread_range_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<read_range_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  if(read_range_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_read_range");auto consumed=scratchbird::engine::internal_api::ConsumeSblrReadRangeDescriptor(c,read_range_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrReadRangeResultV1 rr;rr.descriptor=read_range_descriptor.descriptor;rr.descriptor_generation=read_range_descriptor.descriptor_generation;rr.relation=read_range_descriptor.relation;rr.batch=std::array<std::uint8_t,16>{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x05,0x16};rr.rows=0;rr.eof=1;rr.batch_sha=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{0}).digest;rr.continuation=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{1}).digest;rr.availability_generation=read_range_availability_generation;read_range_result_bytes=scratchbird::engine::sblr::EncodeSblrReadRangeResultV1(rr);if(read_range_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"READ.RANGE_FAILED","sblr.read_range.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(read_range_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=read_range_executor\texecutor_id=engine.op.read_range\topcode=SBLR_READ_RANGE\topcode_code=516\topcode_version=1.0\toperand_descriptor_id=range_scan_descriptor\tresult_descriptor_id=rowset_descriptor\tresult_descriptor_version=1\tread_range_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<read_range_availability_generation<<"\tparent_success_barrier=passed\n";}}
 
   std::vector<std::uint8_t> read_stream_result_bytes;
-  if(read_stream_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_read_stream");auto consumed=scratchbird::engine::internal_api::ConsumeSblrReadStreamDescriptor(c,read_stream_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrReadStreamHandleV1 handle;handle.descriptor=read_stream_descriptor.descriptor;handle.descriptor_generation=read_stream_descriptor.descriptor_generation;handle.stream=TextToUuid("019d0000-0000-7000-8000-000000000517");handle.stream_generation=read_stream_descriptor.descriptor_generation;handle.relation=read_stream_descriptor.relation;handle.row_shape=read_stream_descriptor.row_shape;handle.state=1;handle.continuation=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(read_stream_descriptor.evidence.begin(),read_stream_descriptor.evidence.end())).digest;handle.availability_generation=read_stream_availability_generation;read_stream_result_bytes=scratchbird::engine::sblr::EncodeSblrReadStreamHandleV1(handle);if(read_stream_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"READ.STREAM_FAILED","sblr.read_stream.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(read_stream_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=read_stream_executor\texecutor_id=engine.op.read_stream\topcode=SBLR_READ_STREAM\topcode_code=517\topcode_version=1.0\toperand_descriptor_id=stream_descriptor\tresult_descriptor_id=stream_handle\tresult_descriptor_version=1\tread_stream_handle_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<read_stream_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  if(read_stream_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_read_stream");auto consumed=scratchbird::engine::internal_api::ConsumeSblrReadStreamDescriptor(c,read_stream_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrReadStreamHandleV1 handle;handle.descriptor=read_stream_descriptor.descriptor;handle.descriptor_generation=read_stream_descriptor.descriptor_generation;handle.stream=std::array<std::uint8_t,16>{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x05,0x17};handle.stream_generation=read_stream_descriptor.descriptor_generation;handle.relation=read_stream_descriptor.relation;handle.row_shape=read_stream_descriptor.row_shape;handle.state=1;handle.continuation=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(read_stream_descriptor.evidence.begin(),read_stream_descriptor.evidence.end())).digest;handle.availability_generation=read_stream_availability_generation;read_stream_result_bytes=scratchbird::engine::sblr::EncodeSblrReadStreamHandleV1(handle);if(read_stream_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"READ.STREAM_FAILED","sblr.read_stream.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(read_stream_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=read_stream_executor\texecutor_id=engine.op.read_stream\topcode=SBLR_READ_STREAM\topcode_code=517\topcode_version=1.0\toperand_descriptor_id=stream_descriptor\tresult_descriptor_id=stream_handle\tresult_descriptor_version=1\tread_stream_handle_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<read_stream_availability_generation<<"\tparent_success_barrier=passed\n";}}
   std::vector<std::uint8_t> result_set_pass_result_bytes;
-  if(result_set_pass_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_result_set_pass");auto consumed=scratchbird::engine::internal_api::ConsumeSblrResultSetPassDescriptor(c,result_set_pass_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrResultSetPassHandleV1 handle;handle.descriptor=result_set_pass_descriptor.descriptor;handle.descriptor_generation=result_set_pass_descriptor.descriptor_generation;handle.passed_handle=TextToUuid("019d0000-0000-7000-8000-000000000518");handle.passed_generation=result_set_pass_descriptor.descriptor_generation;handle.source_handle=result_set_pass_descriptor.source_handle;handle.recipient_session=result_set_pass_descriptor.recipient_session;handle.row_shape=result_set_pass_descriptor.row_shape;handle.lifetime=result_set_pass_descriptor.lifetime;handle.state=1;handle.expiry_monotonic_ns=result_set_pass_descriptor.expiry_monotonic_ns;handle.transfer_evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(result_set_pass_descriptor.descriptor_evidence.begin(),result_set_pass_descriptor.descriptor_evidence.end())).digest;handle.availability_generation=result_set_pass_availability_generation;handle.lease=TextToUuid("019d0000-0000-7000-8000-000000001518");result_set_pass_result_bytes=scratchbird::engine::sblr::EncodeSblrResultSetPassHandleV1(handle);if(result_set_pass_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"RESULT_SET.PASS_FAILED","sblr.result_set_pass.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(result_set_pass_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=result_set_pass_executor\texecutor_id=engine.op.result_set_pass\topcode=SBLR_RESULT_SET_PASS\topcode_code=518\topcode_version=1.0\toperand_descriptor_id=result_set_handle_and_lifetime\tresult_descriptor_id=result_set_handle\tresult_descriptor_version=1\tresult_set_pass_handle_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<result_set_pass_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  if(result_set_pass_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_result_set_pass");auto consumed=scratchbird::engine::internal_api::ConsumeSblrResultSetPassDescriptor(c,result_set_pass_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrResultSetPassHandleV1 handle;handle.descriptor=result_set_pass_descriptor.descriptor;handle.descriptor_generation=result_set_pass_descriptor.descriptor_generation;handle.passed_handle=std::array<std::uint8_t,16>{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x05,0x18};handle.passed_generation=result_set_pass_descriptor.descriptor_generation;handle.source_handle=result_set_pass_descriptor.source_handle;handle.recipient_session=result_set_pass_descriptor.recipient_session;handle.row_shape=result_set_pass_descriptor.row_shape;handle.lifetime=result_set_pass_descriptor.lifetime;handle.state=1;handle.expiry_monotonic_ns=result_set_pass_descriptor.expiry_monotonic_ns;handle.transfer_evidence=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(result_set_pass_descriptor.descriptor_evidence.begin(),result_set_pass_descriptor.descriptor_evidence.end())).digest;handle.availability_generation=result_set_pass_availability_generation;handle.lease=std::array<std::uint8_t,16>{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x15,0x18};result_set_pass_result_bytes=scratchbird::engine::sblr::EncodeSblrResultSetPassHandleV1(handle);if(result_set_pass_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"RESULT_SET.PASS_FAILED","sblr.result_set_pass.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(result_set_pass_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=result_set_pass_executor\texecutor_id=engine.op.result_set_pass\topcode=SBLR_RESULT_SET_PASS\topcode_code=518\topcode_version=1.0\toperand_descriptor_id=result_set_handle_and_lifetime\tresult_descriptor_id=result_set_handle\tresult_descriptor_version=1\tresult_set_pass_handle_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<result_set_pass_availability_generation<<"\tparent_success_barrier=passed\n";}}
   std::vector<std::uint8_t> access_cursor_open_result_bytes;
   if(access_cursor_open_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_access_cursor_open");auto consumed=scratchbird::engine::internal_api::ConsumeSblrAccessCursorOpenDescriptor(c,access_cursor_open_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrAccessCursorHandleV1 handle;handle.descriptor=access_cursor_open_descriptor.descriptor;handle.descriptor_generation=access_cursor_open_descriptor.descriptor_generation;handle.cursor=access_cursor_open_descriptor.cursor;handle.cursor_generation=access_cursor_open_descriptor.cursor_generation;handle.relation=access_cursor_open_descriptor.relation;handle.index=access_cursor_open_descriptor.index;handle.session=access_cursor_open_descriptor.session;handle.transaction=access_cursor_open_descriptor.transaction;handle.position_token=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(access_cursor_open_descriptor.evidence.begin(),access_cursor_open_descriptor.evidence.end())).digest;handle.state=1;handle.direction=access_cursor_open_descriptor.open_mode==2?2:1;handle.availability_generation=access_cursor_open_availability_generation;access_cursor_open_result_bytes=scratchbird::engine::sblr::EncodeSblrAccessCursorHandleV1(handle);if(access_cursor_open_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.OPEN_FAILED","sblr.access_cursor_open.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(access_cursor_open_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=access_cursor_open_executor\texecutor_id=engine.op.access_cursor_open\topcode=SBLR_ACCESS_CURSOR_OPEN\topcode_code=519\topcode_version=1.0\toperand_descriptor_id=access_cursor_open_descriptor\tresult_descriptor_id=access_cursor_handle\tresult_descriptor_version=1\taccess_cursor_handle_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<access_cursor_open_availability_generation<<"\tparent_success_barrier=passed\n";}}
   std::vector<std::uint8_t> access_cursor_fetch_result_bytes;
-  if(access_cursor_fetch_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_access_cursor_fetch");auto consumed=scratchbird::engine::internal_api::ConsumeSblrAccessCursorFetchDescriptor(c,access_cursor_fetch_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrAccessCursorFetchResultV1 rr;rr.descriptor=access_cursor_fetch_descriptor.descriptor;rr.descriptor_generation=access_cursor_fetch_descriptor.descriptor_generation;rr.cursor=access_cursor_fetch_descriptor.cursor;rr.cursor_generation=access_cursor_fetch_descriptor.cursor_generation;rr.row_batch=TextToUuid("019d0000-0000-7000-8000-000000000520");rr.prior_position_generation=access_cursor_fetch_descriptor.prior_position_generation;rr.resulting_position_generation=rr.prior_position_generation+1;rr.returned_rows=0;rr.eof=1;rr.direction=access_cursor_fetch_descriptor.direction;rr.row_batch_sha=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{0}).digest;rr.refreshed_position_token=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(access_cursor_fetch_descriptor.evidence.begin(),access_cursor_fetch_descriptor.evidence.end())).digest;rr.availability_generation=access_cursor_fetch_availability_generation;access_cursor_fetch_result_bytes=scratchbird::engine::sblr::EncodeSblrAccessCursorFetchResultV1(rr);if(access_cursor_fetch_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.FETCH_FAILED","sblr.access_cursor_fetch.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(access_cursor_fetch_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=access_cursor_fetch_executor\texecutor_id=engine.op.access_cursor_fetch\topcode=SBLR_ACCESS_CURSOR_FETCH\topcode_code=520\topcode_version=1.0\toperand_descriptor_id=access_cursor_fetch_descriptor\tresult_descriptor_id=access_cursor_rowset_or_eof\tresult_descriptor_version=1\taccess_cursor_fetch_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<access_cursor_fetch_availability_generation<<"\tparent_success_barrier=passed\n";}}
+  if(access_cursor_fetch_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_access_cursor_fetch");auto consumed=scratchbird::engine::internal_api::ConsumeSblrAccessCursorFetchDescriptor(c,access_cursor_fetch_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrAccessCursorFetchResultV1 rr;rr.descriptor=access_cursor_fetch_descriptor.descriptor;rr.descriptor_generation=access_cursor_fetch_descriptor.descriptor_generation;rr.cursor=access_cursor_fetch_descriptor.cursor;rr.cursor_generation=access_cursor_fetch_descriptor.cursor_generation;rr.row_batch=std::array<std::uint8_t,16>{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x05,0x20};rr.prior_position_generation=access_cursor_fetch_descriptor.prior_position_generation;rr.resulting_position_generation=rr.prior_position_generation+1;rr.returned_rows=0;rr.eof=1;rr.direction=access_cursor_fetch_descriptor.direction;rr.row_batch_sha=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>{0}).digest;rr.refreshed_position_token=scratchbird::core::hash::ComputeSha256Digest(std::vector<std::uint8_t>(access_cursor_fetch_descriptor.evidence.begin(),access_cursor_fetch_descriptor.evidence.end())).digest;rr.availability_generation=access_cursor_fetch_availability_generation;access_cursor_fetch_result_bytes=scratchbird::engine::sblr::EncodeSblrAccessCursorFetchResultV1(rr);if(access_cursor_fetch_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"CURSOR.FETCH_FAILED","sblr.access_cursor_fetch.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(access_cursor_fetch_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=access_cursor_fetch_executor\texecutor_id=engine.op.access_cursor_fetch\topcode=SBLR_ACCESS_CURSOR_FETCH\topcode_code=520\topcode_version=1.0\toperand_descriptor_id=access_cursor_fetch_descriptor\tresult_descriptor_id=access_cursor_rowset_or_eof\tresult_descriptor_version=1\taccess_cursor_fetch_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<access_cursor_fetch_availability_generation<<"\tparent_success_barrier=passed\n";}}
   if(access_cursor_close_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_access_cursor_close");auto consumed=scratchbird::engine::internal_api::ConsumeSblrAccessCursorCloseDescriptor(c,access_cursor_close_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);const auto bytes=scratchbird::engine::sblr::EncodeSblrAccessCursorCloseDescriptorV1(access_cursor_close_descriptor,true);const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=access_cursor_close_executor\texecutor_id=engine.op.access_cursor_close\topcode=SBLR_ACCESS_CURSOR_CLOSE\topcode_code=521\topcode_version=1.0\toperand_descriptor_id=access_cursor_close_descriptor\tresult_descriptor_id=void\tresult_descriptor_version=1\taccess_cursor_close_evidence_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<access_cursor_close_availability_generation<<"\tparent_success_barrier=passed\n";}}
   std::vector<std::uint8_t> insert_result_bytes;
   if(insert_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_insert");auto consumed=scratchbird::engine::internal_api::ConsumeSblrInsertDescriptor(c,insert_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrInsertResultV1 rr;rr.canonical_body[0]=1;std::copy_n(insert_descriptor.evidence.begin(),32,rr.canonical_body.begin()+32);rr.availability_generation=insert_availability_generation;insert_result_bytes=scratchbird::engine::sblr::EncodeSblrInsertResultV1(rr);if(insert_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4065,"DML.INSERT_FAILED","sblr.insert.result_encoding_failed");const auto digest=scratchbird::core::hash::ComputeSha256Digest(insert_result_bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=insert_executor\texecutor_id=engine.op.insert\topcode=SBLR_INSERT\topcode_code=768\topcode_version=1.0\toperand_descriptor_id=insert_descriptor\tresult_descriptor_id=mutation_result\tresult_descriptor_version=1\tinsert_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<insert_availability_generation<<"\tparent_success_barrier=passed\n";}}

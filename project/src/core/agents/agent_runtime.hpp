@@ -1112,6 +1112,9 @@ std::string DeterministicAgentInstanceUuid(const std::string& database_uuid,
                                            const std::string& agent_type_id,
                                            const std::string& scope,
                                            u64 policy_generation);
+// SBAINS02 bounded binary snapshots: UUIDs are exact native 16-byte values.
+// Encoding returns empty on invalid identity/state/size; restore rejects legacy
+// text and malformed input atomically. This codec supplies no catalog authority.
 std::string SerializeAgentInstanceRecord(const AgentInstanceRecord& instance);
 AgentRuntimeStatus RestoreAgentInstanceRecord(const std::string& encoded,
                                               AgentInstanceRecord* instance);

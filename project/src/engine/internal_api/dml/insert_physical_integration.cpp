@@ -60,7 +60,6 @@
 #include <optional>
 #include <set>
 #include <span>
-#include <sstream>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -102,10 +101,8 @@ InsertPhysicalIntegrationResult Refuse(std::string diagnostic_code,
   return result;
 }
 
-std::string EvidenceRef(const std::string& kind, const TypedUuid& uuid) {
-  std::ostringstream out;
-  out << kind << ":" << scratchbird::core::uuid::UuidToString(uuid.value);
-  return out.str();
+EngineEvidenceReference EvidenceRef(const std::string& kind, const TypedUuid& uuid) {
+  return {kind, uuid.value};
 }
 
 }  // namespace
@@ -181,7 +178,7 @@ InsertPhysicalIntegrationResult ExecuteInsertPhysicalIntegration(
     result.evidence_refs.push_back(EvidenceRef("filespace_placement",
                                                resolved_filespace_uuid));
     for (const auto& evidence : placement.evidence) {
-      result.evidence_refs.push_back("filespace_placement:" + evidence);
+      result.evidence_refs.push_back({"filespace_placement_detail", evidence});
     }
 
     if (placement.preallocation_required) {
@@ -353,7 +350,6 @@ InsertPhysicalIntegrationResult ExecuteInsertPhysicalIntegration(
   } else {
     result.page_selected = true;
     result.selection_fence = selection.selection.selection_fence;
-    result.evidence_refs.push_back("page_selection:" + selection.selection.selection_fence);
   }
 
   if (request.enable_deferred_secondary_index) {

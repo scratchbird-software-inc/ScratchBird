@@ -390,6 +390,16 @@ scratchbird::server::ParserServerEventSession EventSessionFor(
   event_session.engine_context.trace_tags.push_back("right:EVENT_CREATE");
   event_session.engine_context.trace_tags.push_back("right:EVENT_PUBLISH");
   event_session.engine_context.trace_tags.push_back("right:EVENT_SUBSCRIBE");
+  api::EngineRequestContext authority;
+  authority.database_uuid = event_session.engine_context.database_uuid;
+  authority.principal_uuid = event_session.engine_context.principal_uuid;
+  authority.session_uuid = event_session.engine_context.session_uuid;
+  authority.catalog_generation_id = event_session.engine_context.catalog_generation_id;
+  authority.security_epoch = event_session.engine_context.security_epoch;
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &authority, "dblc009_event_ipc", {"EVENT_CREATE", "EVENT_PUBLISH", "EVENT_SUBSCRIBE"});
+  event_session.engine_context.authorization_context =
+      std::make_shared<const api::EngineMaterializedAuthorizationContext>(authority.authorization_context);
   event_session.session_bound = true;
   return event_session;
 }
@@ -421,10 +431,16 @@ void CreateEventChannel(const scratchbird::server::ParserServerEventSession& eve
           ? api::EngineTrustMode::embedded_in_process
           : api::EngineTrustMode::server_isolated;
   request.context.trace_tags = event_session.engine_context.trace_tags;
+  request.context.catalog_generation_id = event_session.engine_context.catalog_generation_id;
+  request.context.security_epoch = event_session.engine_context.security_epoch;
+  request.context.resource_epoch = event_session.engine_context.resource_epoch;
+  request.context.authorization_context = *event_session.engine_context.authorization_context;
   request.target_object = {channel_uuid, "event_channel"};
   request.option_envelopes.push_back("channel_uuid:" + IdentityBytes(channel_uuid));
   request.option_envelopes.push_back("channel:dblc009_event_channel");
   const auto created = api::EngineCreateEventChannel(request);
+  if (!created.ok) for (const auto& diagnostic : created.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(created.ok, "DBLC-009 failed to create engine-authorized event channel");
 }
 

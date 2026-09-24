@@ -25,8 +25,8 @@ namespace db = scratchbird::storage::database;
 
 constexpr const char* kOperation = "observability.repair_history.inspect";
 
-std::string UuidText(const scratchbird::core::platform::TypedUuid& uuid) {
-  return uuid.valid() ? scratchbird::core::uuid::UuidToString(uuid.value) : "";
+EngineUuid NativeIdentity(const scratchbird::core::platform::TypedUuid& identity) {
+  return identity.value;
 }
 
 EngineApiDiagnostic DiagnosticFromStorage(
@@ -88,11 +88,11 @@ void AddRepairHistoryRow(EngineApiResult* result,
   AddApiBehaviorRow(
       result,
       {{"record_kind", db::RepairHistoryRecordKindName(row.record_kind)},
-       {"row_uuid", UuidText(row.row_uuid)},
-       {"version_uuid", UuidText(row.version_uuid)},
-       {"page_uuid", UuidText(row.page_uuid)},
-       {"finding_uuid", UuidText(row.finding_uuid)},
-       {"operation_uuid", UuidText(row.operation_uuid)},
+       {"row_uuid", NativeIdentity(row.row_uuid)},
+       {"version_uuid", NativeIdentity(row.version_uuid)},
+       {"page_uuid", NativeIdentity(row.page_uuid)},
+       {"finding_uuid", NativeIdentity(row.finding_uuid)},
+       {"operation_uuid", NativeIdentity(row.operation_uuid)},
        {"page_number", std::to_string(row.page_number)},
        {"local_transaction_id", std::to_string(row.local_transaction_id)},
        {"version_sequence", std::to_string(row.version_sequence)},

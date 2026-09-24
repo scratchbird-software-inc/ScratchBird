@@ -22,7 +22,7 @@
 namespace scratchbird::server {
 
 struct ServerDaemonDatabaseAssociation {
-  std::string database_uuid;
+  core::platform::Uuid database_uuid;
   std::string database_path;
   std::string state;
   bool database_open = false;
@@ -61,7 +61,7 @@ ServerDaemonLifecycleSnapshot EvaluateServerDaemonLifecycle(
 
 bool ServerDaemonShouldStopForDatabaseShutdown(
     const ServerDaemonLifecycleSnapshot& snapshot,
-    const std::string& target_database_uuid);
+    const core::platform::Uuid& target_database_uuid);
 
 std::string ServerDaemonLifecycleStatusJson(
     const ServerDaemonLifecycleSnapshot& snapshot);

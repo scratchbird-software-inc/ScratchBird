@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_runtime_manager.hpp"
+#include "uuid.hpp"
+#include <algorithm>
 
 #include <cstdlib>
 #include <iostream>
@@ -43,10 +45,17 @@ const agents::AgentRuntimeSelectionDecision* FindDecision(
   return nullptr;
 }
 
+std::string Identity(unsigned salt) {
+  scratchbird::core::platform::Uuid value;
+  value.bytes = {0x01, 0x9e, 0x0f, 0x2a, 0, 0x3a, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 0};
+  value.bytes[15] = static_cast<unsigned char>(salt);
+  return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
+}
+
 agents::AgentRuntimeActivationEvidence Evidence(unsigned generation) {
   agents::AgentRuntimeActivationEvidence evidence;
-  evidence.database_uuid = "019e0f2a-003a-7000-8000-000000000002";
-  evidence.engine_instance_uuid = "engine-instance:019e0f2a-003a";
+  evidence.database_uuid = Identity(2);
+  evidence.engine_instance_uuid = Identity(3);
   evidence.lifecycle_mode = agents::AgentLifecycleMode::database_open;
   evidence.policy_generation = generation;
   evidence.catalog_generation = 1;
@@ -86,20 +95,39 @@ void TestDeterministicIdentityStableByDatabaseAgentScopeGeneration() {
       Evidence(11).database_uuid, descriptor->type_id, descriptor->scope, 12);
   Require(first == second, "deterministic instance UUID changed for same identity tuple");
   Require(first != next_generation, "instance UUID did not change across policy generation");
-  Require(first.size() == 36 && first[8] == '-' && first[13] == '-' &&
-              first[18] == '-' && first[23] == '-',
-          "deterministic instance ID is not UUID-shaped");
+  Require(first.size() == 16, "deterministic instance ID is not binary16");
+  scratchbird::core::platform::Uuid identity;
+  std::copy(first.begin(), first.end(), identity.bytes.begin());
+  Require(scratchbird::core::uuid::IsEngineIdentityUuid(identity),
+          "deterministic instance identity is not an engine UUID");
 }
 
 void TestStateAndPolicyGenerationSerializeRestore() {
   agents::AgentInstanceRecord instance;
-  instance.instance_uuid = "019e0f2a-003a-7000-8000-0000000000aa";
+  instance.instance_uuid = Identity(0xaa);
   instance.agent_type_id = "storage_health_manager";
-  instance.policy_uuid = "policy:storage_health_manager:storage_health_policy:baseline";
+  instance.policy_uuid = Identity(4);
   instance.scope = "node/database/filespace";
   instance.state = agents::AgentLifecycleState::recommend_only;
   instance.policy_generation = 11;
   instance.instance_generation = 11;
+  instance.instance_uuid[10] = '|';
+  instance.instance_uuid[11] = '\n';
+  instance.policy_uuid[10] = '\0';
+  instance.scope = std::string("node|database\n\0filespace", 24);
+  instance.last_supervision_detail = "detail|with\nseparator";
+  instance.last_failure_diagnostic_code = "SB_AGENT_TEST";
+  instance.last_run_start_microseconds = 19;
+  instance.last_run_end_microseconds = 23;
+  instance.crash_loop_count = 2;
+  instance.supervision_failure_count = 7;
+  instance.restart_attempts = 8;
+  instance.restart_not_before_microseconds = 29;
+  instance.cooldown_until_microseconds = 31;
+  instance.disabled_by_operator = true;
+  instance.safe_mode = true;
+  instance.quarantined = true;
+  instance.cancellation_requested = true;
   instance.run_generation = 3;
   instance.lease_until_microseconds = 44;
 
@@ -111,6 +139,42 @@ void TestStateAndPolicyGenerationSerializeRestore() {
   Require(restored.state == instance.state, "instance state did not restore");
   Require(restored.policy_generation == 11, "policy generation did not restore");
   Require(restored.instance_generation == 11, "instance generation did not restore");
+  Require(restored.policy_uuid == instance.policy_uuid && restored.scope == instance.scope &&
+              restored.last_supervision_detail == instance.last_supervision_detail &&
+              restored.last_failure_diagnostic_code == instance.last_failure_diagnostic_code &&
+              restored.last_run_start_microseconds == 19 && restored.last_run_end_microseconds == 23 &&
+              restored.crash_loop_count == 2 && restored.supervision_failure_count == 7 &&
+              restored.restart_attempts == 8 && restored.restart_not_before_microseconds == 29 &&
+              restored.cooldown_until_microseconds == 31 && restored.run_generation == 3 &&
+              restored.lease_until_microseconds == 44 && restored.disabled_by_operator &&
+              restored.safe_mode && restored.quarantined && restored.cancellation_requested,
+          "binary snapshot lost supervision state or delimiter-containing values");
+  Require(agents::SerializeAgentInstanceRecord(restored) == encoded,
+          "binary snapshot lost runtime fields");
+  Require(encoded.substr(8, 16) == instance.instance_uuid &&
+              encoded.substr(24, 16) == instance.policy_uuid,
+          "snapshot did not retain exact native UUID bytes");
+  const auto reject = [&](const std::string& malformed) {
+    auto target = restored;
+    const auto before = agents::SerializeAgentInstanceRecord(target);
+    Require(!agents::RestoreAgentInstanceRecord(malformed, &target).ok,
+            "malformed snapshot accepted");
+    Require(agents::SerializeAgentInstanceRecord(target) == before,
+            "malformed snapshot partially mutated restore target");
+  };
+  for (std::size_t size = 0; size < encoded.size(); ++size) reject(encoded.substr(0, size));
+  reject(encoded + "trailing");
+  reject("legacy|agent|policy|scope|running|0|0|0|0|0");
+  auto bad = encoded; bad[0] = 'X'; reject(bad);
+  bad = encoded; bad[8 + 6] = 0; reject(bad);
+  bad = encoded; bad[8 + 48 + 96] = static_cast<char>(255); reject(bad);
+  bad = encoded; bad[8 + 48 + 96 + 1] = static_cast<char>(128); reject(bad);
+  bad = encoded; bad.replace(8 + 48 + 96 + 2, 4, 4, static_cast<char>(255)); reject(bad);
+  auto invalid = instance; invalid.instance_uuid = "019e0f2a-003a-7000-8000-0000000000aa";
+  Require(agents::SerializeAgentInstanceRecord(invalid).empty(), "text UUID snapshot accepted");
+  invalid = instance; invalid.scope.assign(65537, 'x');
+  Require(agents::SerializeAgentInstanceRecord(invalid).empty(), "oversize snapshot accepted");
+
 }
 
 void TestManagerReusesPersistedIdentityAndState() {
@@ -162,7 +226,7 @@ void TestRetiredInstanceRequiresEvidenceAndDoesNotRestartNormally() {
   Require(save_status.ok, "instance persistence failed");
 
   auto retire_status = persistence.RetireInstance(
-      first_page->instance_uuid, "agent-evidence:page-allocation-retired", 12);
+      first_page->instance_uuid, Identity(5), 12);
   Require(retire_status.ok, "retirement with evidence failed: " + retire_status.diagnostic_code);
 
   config.persisted_instances = persistence.instances();
@@ -173,7 +237,7 @@ void TestRetiredInstanceRequiresEvidenceAndDoesNotRestartNormally() {
   Require(retired != nullptr, "retired page_allocation_manager was not inspectable");
   Require(retired->state == agents::AgentLifecycleState::retired,
           "retired instance re-entered normal state");
-  Require(retired->retirement_evidence_uuid == "agent-evidence:page-allocation-retired",
+  Require(retired->retirement_evidence_uuid == Identity(5),
           "retirement evidence did not survive reopen");
 
   const auto* decision = FindDecision(retired_snapshot, "page_allocation_manager");

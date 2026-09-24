@@ -130,7 +130,7 @@ EngineResourceDescriptorLookupResult ProjectResourceDescriptor(
       }
       return fail("CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE",
                   "catalog.resource.uuid_not_found",
-                  scratchbird::core::uuid::UuidToString(resource_uuid));
+                  "requested resource identity");
     }
     descriptor.canonical_name = matched->canonical_name;
     descriptor.resource_uuid = matched->resource_uuid;
@@ -161,7 +161,7 @@ EngineResourceDescriptorLookupResult ProjectResourceDescriptor(
       }
       return fail("CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE",
                   "catalog.resource.uuid_not_found",
-                  scratchbird::core::uuid::UuidToString(resource_uuid));
+                  "requested resource identity");
     }
     descriptor.canonical_name = matched->canonical_name;
     descriptor.resource_uuid = matched->resource_uuid;

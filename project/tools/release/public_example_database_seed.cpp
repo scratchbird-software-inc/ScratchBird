@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -32,6 +33,35 @@ struct Args {
   std::filesystem::path resource_seed_pack_root;
   bool overwrite = false;
 };
+
+bool RemoveExampleDatabaseArtifacts(const std::filesystem::path& output) {
+  const auto name = output.filename().string();
+  if (name.empty() || name == "." || name == "..") {
+    std::cerr << "example database output must name a file\n";
+    return false;
+  }
+  try {
+    if (std::filesystem::is_directory(output)) {
+      std::cerr << "example database output is a directory\n";
+      return false;
+    }
+    const auto parent = output.has_parent_path() ? output.parent_path()
+                                                : std::filesystem::path(".");
+    if (!std::filesystem::exists(parent)) return true;
+    std::vector<std::filesystem::path> owned;
+    for (const auto& entry : std::filesystem::directory_iterator(parent)) {
+      const auto candidate = entry.path().filename().string();
+      if (candidate == name || candidate.starts_with(name + ".sb.") ||
+          candidate == name + ".dirty.manifest" || candidate == name + ".recovery.evidence")
+        owned.push_back(entry.path());
+    }
+    for (const auto& artifact : owned) std::filesystem::remove_all(artifact);
+    return true;
+  } catch (const std::filesystem::filesystem_error& error) {
+    std::cerr << "example database overwrite failed: " << error.what() << '\n';
+    return false;
+  }
+}
 
 void Usage() {
   std::cerr << "usage: public_example_database_seed --output PATH --manifest PATH "
@@ -140,13 +170,14 @@ int main(int argc, char** argv) {
     std::cerr << "resource seed pack root is missing: " << args.resource_seed_pack_root << '\n';
     return EXIT_FAILURE;
   }
-  if (std::filesystem::exists(args.output)) {
-    if (!args.overwrite) {
-      std::cerr << "example database already exists: " << args.output << '\n';
-      return EXIT_FAILURE;
-    }
-    std::filesystem::remove(args.output);
+  if (std::filesystem::exists(args.output) && !args.overwrite) {
+    std::cerr << "example database already exists: " << args.output << '\n';
+    return EXIT_FAILURE;
   }
+  // Explicit overwrite replaces the exact database and its owned sidecars;
+  // stale publication records must not survive a new database identity.
+  if (args.overwrite && !RemoveExampleDatabaseArtifacts(args.output))
+    return EXIT_FAILURE;
   std::filesystem::create_directories(args.output.parent_path());
 
   if (!ConfigureMemory()) {

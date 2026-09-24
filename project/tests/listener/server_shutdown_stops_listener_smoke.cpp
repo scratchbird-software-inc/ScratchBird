@@ -83,28 +83,28 @@ bool CreateFixtureDatabase(const std::filesystem::path& path) {
   create.allow_overwrite = true;
   if (!db::CreateDatabaseFile(create).ok()) return false;
 
-  const auto database_uuid_text = uuid::UuidToString(create.database_uuid.value);
+  const auto database_identity = create.database_uuid.value;
   const auto bootstrap =
       scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
           path, "server_shutdown_stops_listener_smoke");
   const auto transaction_uuid = bootstrap.transaction_uuid;
   const auto transaction_id = bootstrap.local_transaction_id;
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
-      path, database_uuid_text, kAliceUuid, "alice", kVerifier, transaction_id,
+      path, database_identity, kAliceUuid, "alice", kVerifier, transaction_id,
       "server_shutdown_stops_listener_smoke:alice", transaction_uuid);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
-      path, database_uuid_text, kAliceUuid, database_uuid_text, "database",
+      path, database_identity, kAliceUuid, database_identity, "database",
       "CONNECT", transaction_id,
       "server_shutdown_stops_listener_smoke:alice-connect", transaction_uuid);
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
-      path, database_uuid_text, kSysdbaUuid, "sysdba", kVerifier, transaction_id,
+      path, database_identity, kSysdbaUuid, "sysdba", kVerifier, transaction_id,
       "server_shutdown_stops_listener_smoke:sysdba", transaction_uuid);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
-      path, database_uuid_text, kSysdbaUuid, database_uuid_text, "database",
+      path, database_identity, kSysdbaUuid, database_identity, "database",
       "CONNECT", transaction_id,
       "server_shutdown_stops_listener_smoke:sysdba-connect", transaction_uuid);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
-      path, database_uuid_text, kSysdbaUuid, "", "server_management",
+      path, database_identity, kSysdbaUuid, scratchbird::core::platform::Uuid{}, "server_management",
       "OBS_MANAGEMENT_CONTROL", transaction_id,
       "server_shutdown_stops_listener_smoke:sysdba-management", transaction_uuid);
   scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(

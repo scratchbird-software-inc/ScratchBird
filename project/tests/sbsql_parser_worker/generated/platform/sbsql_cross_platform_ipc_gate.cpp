@@ -251,7 +251,7 @@ void ValidateSourceContracts(const std::filesystem::path& source_root,
                      Contains(socket_identity, "::kill") &&
                      Contains(socket_identity, "clean_shutdown_required=true"),
                  "listener socket identity lacks owner-token live-pid cleanup evidence");
-  harness->Check(Contains(server_ipc_surface, "format=SBPS_ENDPOINT_V1") &&
+  harness->Check(Contains(server_ipc_surface, "SBPS_ENDPOINT_V2") &&
                      Contains(server_ipc_surface, "descriptor.transport = \"af_unix\"") &&
                      Contains(server_ipc_surface, "PARSER_SERVER_IPC.ENDPOINT_DESCRIPTOR_WRITE_FAILED") &&
                      Contains(server_ipc_surface, "sizeof(addr.sun_path)") &&

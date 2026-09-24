@@ -166,6 +166,26 @@ namespace planner = scratchbird::engine::planner;
 
 namespace {
 
+// Native relational carriers retain their typed byte payload throughout both
+// preflight and execution. Only legacy scalar shape fields are materialized.
+bool HasNativeRelationalPayload(const SblrOperand& operand) {
+  return (operand.value_kind == SblrValueKind::uuid_ref &&
+          IsRelationalContextIdentitySlot(operand.name)) ||
+      operand.value_kind == SblrValueKind::relational_type_descriptor ||
+      operand.value_kind == SblrValueKind::relational_expression ||
+      operand.value_kind == SblrValueKind::relational_node_binding ||
+      operand.value_kind == SblrValueKind::relational_window_invocation ||
+      operand.value_kind == SblrValueKind::relational_window_definition ||
+      operand.value_kind == SblrValueKind::relational_property ||
+      operand.value_kind == SblrValueKind::relational_row_pattern ||
+      operand.value_kind == SblrValueKind::expression_node_table ||
+      operand.value_kind == SblrValueKind::expression_node_ref ||
+      operand.value_kind == SblrValueKind::parameter_node_table ||
+      operand.value_kind == SblrValueKind::parameter_node_ref ||
+      operand.value_kind == SblrValueKind::contextual_text_literal_profile_set;
+}
+
+
 struct TypedPlanOperationDecodeResult {
   bool ok{false};
   api::EngineTypedRelationalPlanRequest request;
@@ -10539,12 +10559,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
     return result;
   }
   for (auto& operand : request.envelope.operands) {
-    if (operand.value_kind == SblrValueKind::expression_node_table ||
-        operand.value_kind == SblrValueKind::expression_node_ref ||
-        operand.value_kind == SblrValueKind::parameter_node_table ||
-        operand.value_kind == SblrValueKind::parameter_node_ref ||
-        operand.value_kind ==
-            SblrValueKind::contextual_text_literal_profile_set) {
+    if (HasNativeRelationalPayload(operand)) {
       continue;
     }
     if (operand.value_kind != SblrValueKind::literal_typed ||
@@ -11016,22 +11031,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       request.envelope.operation_id == "query.evaluate_projection";
   if (materialize_query_slots || materialize_typed_options) {
     for (auto& operand : request.envelope.operands) {
-      if (materialize_query_slots &&
-          ((operand.value_kind == SblrValueKind::uuid_ref &&
-            IsRelationalContextIdentitySlot(operand.name)) ||
-           operand.value_kind == SblrValueKind::relational_type_descriptor ||
-           operand.value_kind == SblrValueKind::relational_expression ||
-           operand.value_kind == SblrValueKind::relational_node_binding ||
-           operand.value_kind == SblrValueKind::relational_window_invocation ||
-           operand.value_kind == SblrValueKind::relational_window_definition ||
-           operand.value_kind == SblrValueKind::relational_property ||
-           operand.value_kind == SblrValueKind::relational_row_pattern ||
-           operand.value_kind == SblrValueKind::expression_node_table ||
-           operand.value_kind == SblrValueKind::expression_node_ref ||
-           operand.value_kind == SblrValueKind::parameter_node_table ||
-           operand.value_kind == SblrValueKind::parameter_node_ref ||
-           operand.value_kind ==
-               SblrValueKind::contextual_text_literal_profile_set)) {
+      if (materialize_query_slots && HasNativeRelationalPayload(operand)) {
         continue;
       }
       if (operand.value_kind != SblrValueKind::literal_typed ||

@@ -11,6 +11,8 @@
 #include "disk_device.hpp"
 
 #include <algorithm>
+#include <array>
+#include <string_view>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -98,36 +100,38 @@ bool ContainsUnsafeAuthorityText(const std::string& text) {
 }
 
 std::string UuidField(const TypedUuid& value) {
-  if (!value.valid()) {
-    return "-";
-  }
-  return scratchbird::core::uuid::UuidToString(value.value);
+  return {reinterpret_cast<const char*>(value.value.bytes.data()), 16};
 }
 
 bool SameTypedUuid(const TypedUuid& left, const TypedUuid& right) {
   return left.kind == right.kind && left.value == right.value;
 }
 
-RepairEventLedgerResult ParseUuidField(const std::string& text,
+RepairEventLedgerResult ParseUuidField(const std::string& bytes,
                                        UuidKind kind,
                                        bool required,
                                        TypedUuid* out) {
-  if (text == "-") {
-    if (required) {
-      return LedgerError("SB-REPAIR-EVENT-UUID-REQUIRED",
-                         "storage.repair_event_ledger.uuid_required");
+  if (bytes.size() != 16) {
+    return LedgerError("SB-REPAIR-EVENT-CODEC-INVALID",
+                       "storage.repair_event_ledger.codec_invalid");
+  }
+  scratchbird::core::platform::Uuid identity;
+  std::copy_n(reinterpret_cast<const unsigned char*>(bytes.data()), 16,
+              identity.bytes.begin());
+  if (identity.is_nil()) {
+    if (required) return LedgerError("SB-REPAIR-EVENT-UUID-REQUIRED",
+                                    "storage.repair_event_ledger.uuid_required");
+    *out = {};
+  } else {
+    const auto parsed = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(kind, identity);
+    if (!parsed.ok()) {
+      RepairEventLedgerResult result;
+      result.status = parsed.status;
+      result.diagnostic = parsed.diagnostic;
+      return result;
     }
-    *out = TypedUuid{};
-    return RepairEventLedgerResult{LedgerOkStatus(), {}, {}, {}, {}};
+    *out = parsed.value;
   }
-  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(kind, text);
-  if (!parsed.ok()) {
-    RepairEventLedgerResult result;
-    result.status = parsed.status;
-    result.diagnostic = parsed.diagnostic;
-    return result;
-  }
-  *out = parsed.value;
   return RepairEventLedgerResult{LedgerOkStatus(), {}, {}, {}, {}};
 }
 
@@ -179,12 +183,35 @@ RepairEventPhase ParsePhase(const std::string& text) {
   return RepairEventPhase::unknown;
 }
 
+// Version two frames every record and field. UUID fields are fixed binary16;
+// no delimiter, escaping, text UUID fallback or newline scanning is involved.
+constexpr std::string_view kRepairFrameMagic = "SBREPR02";
+constexpr std::size_t kRepairFrameHeaderBytes = 12;
+constexpr std::size_t kRepairMaximumFieldBytes = 1024 * 1024;
+constexpr std::size_t kRepairMaximumRecordBytes = 4 * 1024 * 1024;
+void PutRepairU32(std::string* bytes, u32 value) {
+  for (unsigned n = 0; n < 4; ++n) bytes->push_back(static_cast<char>(value >> (8 * n)));
+}
+u32 GetRepairU32(std::string_view bytes, std::size_t offset) {
+  u32 value = 0;
+  for (unsigned n = 0; n < 4; ++n)
+    value |= static_cast<u32>(static_cast<unsigned char>(bytes[offset + n])) << (8 * n);
+  return value;
+}
 std::vector<std::string> SplitFields(const std::string& serialized) {
+  if (serialized.size() < kRepairFrameHeaderBytes ||
+      !serialized.starts_with(kRepairFrameMagic) ||
+      serialized.size() > kRepairMaximumRecordBytes ||
+      GetRepairU32(serialized, 8) != serialized.size() - kRepairFrameHeaderBytes) return {};
   std::vector<std::string> fields;
-  std::string field;
-  std::istringstream in(serialized);
-  while (std::getline(in, field, '|')) {
-    fields.push_back(field);
+  std::size_t cursor = kRepairFrameHeaderBytes;
+  while (cursor < serialized.size()) {
+    if (fields.size() == 31 || serialized.size() - cursor < 4) return {};
+    const auto size = GetRepairU32(serialized, cursor);
+    cursor += 4;
+    if (size > kRepairMaximumFieldBytes || size > serialized.size() - cursor) return {};
+    fields.emplace_back(serialized.data() + cursor, size);
+    cursor += size;
   }
   return fields;
 }
@@ -192,7 +219,7 @@ std::vector<std::string> SplitFields(const std::string& serialized) {
 std::string CanonicalRepairEventPayload(const RepairEventRecord& event,
                                         bool include_digest) {
   std::vector<std::string> fields = {
-      "SB_REPAIR_EVENT_V1",
+      "SB_REPAIR_EVENT_V2",
       std::to_string(event.sequence),
       std::to_string(event.ledger_epoch),
       RepairEventPhaseName(event.phase),
@@ -225,14 +252,15 @@ std::string CanonicalRepairEventPayload(const RepairEventRecord& event,
       event.reason_code,
       event.stable_detail};
 
-  std::ostringstream out;
-  for (std::size_t i = 0; i < fields.size(); ++i) {
-    if (i != 0) {
-      out << '|';
-    }
-    out << fields[i];
+  std::string body;
+  for (const auto& field : fields) {
+    PutRepairU32(&body, static_cast<u32>(field.size()));
+    body.append(field);
   }
-  return out.str();
+  std::string framed(kRepairFrameMagic);
+  PutRepairU32(&framed, static_cast<u32>(body.size()));
+  framed.append(body);
+  return framed;
 }
 
 RepairEventLedgerResult ValidateRepairEvent(const RepairEventRecord& event,
@@ -262,11 +290,27 @@ RepairEventLedgerResult ValidateRepairEvent(const RepairEventRecord& event,
     return LedgerError("SB-REPAIR-EVENT-UUID-KIND-MISMATCH",
                        "storage.repair_event_ledger.uuid_kind_mismatch");
   }
+  const auto valid_identity = [](const TypedUuid& identity, UuidKind kind, bool required) {
+    if (identity.value.is_nil()) return !required;
+    return identity.kind == kind && scratchbird::core::uuid::IsEngineIdentityUuid(identity.value);
+  };
+  if (!valid_identity(event.database_uuid, UuidKind::database, true) ||
+      !valid_identity(event.operation_uuid, UuidKind::object, true) ||
+      !valid_identity(event.finding_uuid, UuidKind::object, true) ||
+      !valid_identity(event.page_uuid, UuidKind::page, true) ||
+      !valid_identity(event.object_uuid, UuidKind::object, false) ||
+      !valid_identity(event.row_uuid, UuidKind::row, false) ||
+      !valid_identity(event.version_uuid, UuidKind::row, false) ||
+      !valid_identity(event.transaction_uuid, UuidKind::transaction, false)) {
+    return LedgerError("SB-REPAIR-EVENT-UUID-KIND-MISMATCH",
+                       "storage.repair_event_ledger.uuid_kind_mismatch");
+  }
   if (event.page_number == 0 || event.page_type == PageType::unknown) {
     return LedgerError("SB-REPAIR-EVENT-PAGE-IDENTITY-REQUIRED",
                        "storage.repair_event_ledger.page_identity_required");
   }
-  if (event.reason_code.empty() || ContainsDelimiter(event.reason_code) ||
+  if (event.reason_code.empty() || event.reason_code.size() > kRepairMaximumFieldBytes ||
+      event.stable_detail.size() > kRepairMaximumFieldBytes || ContainsDelimiter(event.reason_code) ||
       ContainsDelimiter(event.stable_detail) ||
       ContainsUnsafeAuthorityText(event.reason_code) ||
       ContainsUnsafeAuthorityText(event.stable_detail)) {
@@ -485,7 +529,7 @@ RepairEventLedgerResult SerializeRepairEventRecord(
 
 RepairEventLedgerResult ParseRepairEventRecord(const std::string& serialized) {
   const auto fields = SplitFields(serialized);
-  if (fields.size() != 31 || fields[0] != "SB_REPAIR_EVENT_V1") {
+  if (fields.size() != 31 || fields[0] != "SB_REPAIR_EVENT_V2") {
     return LedgerError("SB-REPAIR-EVENT-CODEC-INVALID",
                        "storage.repair_event_ledger.codec_invalid");
   }
@@ -606,14 +650,30 @@ RepairEventLedgerResult LoadRepairEventLedger(const std::string& ledger_path) {
                        ledger_path);
   }
 
-  std::string line;
   u64 expected_sequence = 1;
   u64 previous_digest = 0;
-  while (std::getline(in, line)) {
-    if (line.empty()) {
-      continue;
+  for (;;) {
+    std::array<char, kRepairFrameHeaderBytes> header{};
+    in.read(header.data(), header.size());
+    if (in.gcount() == 0 && in.eof() && !in.bad()) break;
+    if (in.gcount() != static_cast<std::streamsize>(header.size()) || in.bad() ||
+        std::string_view(header.data(), 8) != kRepairFrameMagic) {
+      return LedgerError("SB-REPAIR-EVENT-CODEC-INVALID",
+                         "storage.repair_event_ledger.codec_invalid", "invalid_or_truncated_frame");
     }
-    const auto parsed = ParseRepairEventRecord(line);
+    const auto body_size = GetRepairU32(std::string_view(header.data(), header.size()), 8);
+    if (body_size == 0 || body_size > kRepairMaximumRecordBytes - kRepairFrameHeaderBytes) {
+      return LedgerError("SB-REPAIR-EVENT-CODEC-INVALID",
+                         "storage.repair_event_ledger.codec_invalid", "record_size_invalid");
+    }
+    std::string record(header.data(), header.size());
+    record.resize(kRepairFrameHeaderBytes + body_size);
+    in.read(record.data() + kRepairFrameHeaderBytes, body_size);
+    if (in.gcount() != static_cast<std::streamsize>(body_size) || in.bad()) {
+      return LedgerError("SB-REPAIR-EVENT-CODEC-INVALID",
+                         "storage.repair_event_ledger.codec_invalid", "truncated_record");
+    }
+    const auto parsed = ParseRepairEventRecord(record);
     if (!parsed.ok()) {
       return parsed;
     }
@@ -652,7 +712,7 @@ RepairEventLedgerResult AppendRepairEventToLedger(
   if (!built.ok()) {
     return built;
   }
-  const std::string line = built.serialized + "\n";
+  const std::string& line = built.serialized;
 
   scratchbird::storage::disk::FileDevice device;
   const bool exists = std::filesystem::exists(ledger_path);

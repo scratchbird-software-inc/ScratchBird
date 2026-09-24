@@ -4,6 +4,7 @@
 #include "catalog_metric_descriptor.hpp"
 #include "catalog_metric_label_schema.hpp"
 #include "catalog_metric_series.hpp"
+#include "catalog_metric_current_value.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -148,7 +149,8 @@ void PageContainer(const cat::CatalogTypedRecord& record) {
 bool HasTypedMetricPayload(cat::CatalogRecordKind kind) {
   return kind == cat::CatalogRecordKind::metric_descriptor ||
       kind == cat::CatalogRecordKind::metric_label_schema ||
-      kind == cat::CatalogRecordKind::metric_series;
+      kind == cat::CatalogRecordKind::metric_series ||
+      kind == cat::CatalogRecordKind::metric_current_value;
 }
 void SetFamilyPayload(cat::CatalogTypedRecord& record, const std::string& annotation) {
   if (!HasTypedMetricPayload(record.header.kind)) {
@@ -162,7 +164,8 @@ void SetFamilyPayload(cat::CatalogTypedRecord& record, const std::string& annota
     p::Uuid id; id.bytes[6] = 0x70; id.bytes[8] = 0x80; id.bytes[15] = tag; return id;
   };
   cat::CatalogValueEncodeResult encoded;
-  if (record.header.kind == cat::CatalogRecordKind::metric_descriptor) {
+  if (record.header.kind == cat::CatalogRecordKind::metric_descriptor ||
+      record.header.kind == cat::CatalogRecordKind::metric_current_value) {
     cat::CatalogMetricDescriptor descriptor;
     descriptor.binding.metric_uuid = record.header.object_uuid.value;
     descriptor.binding.descriptor_generation = 1;
@@ -178,7 +181,18 @@ void SetFamilyPayload(cat::CatalogTypedRecord& record, const std::string& annota
     descriptor.definition.help = annotation;
     descriptor.origin_transaction_uuid = {UuidKind::transaction, identity(3)};
     descriptor.origin_local_transaction_id = 1;
-    encoded = cat::EncodeCatalogMetricDescriptor(descriptor);
+    if (record.header.kind == cat::CatalogRecordKind::metric_current_value) {
+      cat::CatalogMetricCurrentValue current;
+      current.object_uuid = record.header.object_uuid;
+      current.database_uuid = {UuidKind::database, identity(4)};
+      current.descriptor = descriptor;
+      current.value.family = descriptor.definition.family;
+      current.value.type = descriptor.definition.type;
+      current.value.value = p::u64(42);
+      encoded = cat::EncodeCatalogMetricCurrentValue(current);
+    } else {
+      encoded = cat::EncodeCatalogMetricDescriptor(descriptor);
+    }
   } else if (record.header.kind == cat::CatalogRecordKind::metric_series) {
     cat::CatalogMetricSeries series;
     series.series_uuid=record.header.object_uuid.value;series.generation=1;

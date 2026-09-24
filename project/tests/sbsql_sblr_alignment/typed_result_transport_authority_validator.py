@@ -38,7 +38,7 @@ def require_contains(
 def main() -> int:
     args = parse_args()
     workspace = args.workspace_root.resolve()
-    specifications = workspace / "Specifications" / "Core"
+    specifications = (workspace / "Specifications" / "Core").resolve()
     repository = workspace / "ScratchBird"
     failures: list[str] = []
 

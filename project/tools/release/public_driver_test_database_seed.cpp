@@ -8,12 +8,17 @@
 
 #include "catalog/schema_tree_api.hpp"
 #include "database_lifecycle.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/insert_api.hpp"
 #include "hash_digest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_principal_lifecycle.hpp"
+#include "security/security_model.hpp"
+#include <algorithm>
 #include "memory.hpp"
+#include "server_engine_bridge/statement_context.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -39,7 +44,6 @@ using scratchbird::core::platform::UuidKind;
 
 constexpr scratchbird::core::platform::u64 kDriverFixtureCreationMillis = 1767225600000ull;
 constexpr scratchbird::core::platform::u32 kDriverFixturePageSize = 16384;
-constexpr std::string_view kAlicePrincipalUuid = "019f0a11-ce00-7000-8000-000000000001";
 constexpr std::string_view kAliceBootstrapCredentialFingerprint =
     "local-password-pbkdf2-sha256:v1:iterations=600000:"
     "salt=0123456789abcdef0123456789abcdef:"
@@ -332,28 +336,29 @@ void ConfigureMemory() {
 }
 
 void RemoveDatabaseArtifacts(const std::filesystem::path& output) {
-  static const std::vector<std::string> suffixes = {
-      "",
-      ".sb.api_events",
-      ".sb.catalog_object_events",
-      ".sb.event_sequence_allocator",
-      ".sb.local_password_auth",
-      ".sb.security_principal_events",
-      ".sb.owner.lock",
-      ".sb.route.owner.lock",
-      ".sb.mga_index_entries",
-      ".sb.mga_large_values",
-      ".sb.mga_relation_descriptors",
-      ".sb.mga_relation_metadata",
-      ".sb.mga_relation_scope",
-      ".sb.mga_row_versions",
-      ".sb.mga_savepoints",
-      ".sb.mga_event_sequence_allocator",
-      ".sb.local_transaction_inventory",
-  };
-  for (const auto& suffix : suffixes) {
-    std::error_code ignored;
-    std::filesystem::remove_all(output.string() + suffix, ignored);
+  // Explicit overwrite replaces the database and its engine-owned .sb.*
+  // sidecars as a unit. A fixed suffix list left diagnostic/availability and
+  // publication records belonging to the previous database UUID behind.
+  std::vector<std::filesystem::path> artifacts{output};
+  const auto parent = output.has_parent_path() ? output.parent_path()
+                                                : std::filesystem::path(".");
+  const auto prefix = output.filename().string() + ".sb.";
+  std::error_code error;
+  const bool parent_exists = std::filesystem::exists(parent, error);
+  if (error) Fail("driver fixture overwrite inspection failed: " + error.message());
+  if (parent_exists) {
+    std::filesystem::directory_iterator entry(parent, error), end;
+    if (error) Fail("driver fixture overwrite enumeration failed: " + error.message());
+    for (; entry != end; entry.increment(error)) {
+      if (error) Fail("driver fixture overwrite enumeration failed: " + error.message());
+      if (entry->path().filename().string().starts_with(prefix))
+        artifacts.push_back(entry->path());
+    }
+    if (error) Fail("driver fixture overwrite enumeration failed: " + error.message());
+  }
+  for (const auto& artifact : artifacts) {
+    std::filesystem::remove_all(artifact, error);
+    if (error) Fail("driver fixture overwrite cleanup failed: " + error.message());
   }
 }
 
@@ -369,19 +374,35 @@ api::EngineLocalizedName Name(std::string path, std::string name) {
   return localized;
 }
 
-api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name, std::string type) {
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
+                                  std::uint32_t ordinal,
+                                  std::string name,
+                                  std::string type) {
+  namespace datatypes = scratchbird::core::datatypes;
+  const auto manifest = datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) Fail("driver fixture datatype catalog unavailable");
+  const auto row = datatypes::LookupDatatypeCatalogRow(
+      manifest.manifest, datatypes::CanonicalTypeIdFromStableName(type));
+  if (!row.ok() || row.manifest.descriptor_rows.size() != 1)
+    Fail("driver fixture datatype is not in the engine catalog");
+  const auto& catalog = row.manifest.descriptor_rows.front();
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
+  column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
   column.names.push_back(Name(name, name));
+  column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
-  if (column.descriptor.canonical_type_name == "bigint") {
-    column.descriptor.type_uuid = ClientFixtureUuid("019d0000-0000-7000-8000-00000000d712");
-    column.descriptor.encoded_descriptor = "type=bigint;nullable=true";
-  } else {
-    column.descriptor.encoded_descriptor =
-        "type=" + column.descriptor.canonical_type_name;
-  }
+  column.descriptor.datatype_descriptor_uuid = catalog.descriptor_uuid.value;
+  column.descriptor.datatype_descriptor_generation = catalog.descriptor_epoch;
+  column.descriptor.type_uuid = catalog.descriptor_uuid.value;
+  const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, catalog.descriptor_uuid.value,
+      catalog.descriptor_epoch);
+  if (codec.ok) column.descriptor.type_uuid = codec.row.type_uuid;
+  column.descriptor.encoded_descriptor =
+      "type=" + column.descriptor.canonical_type_name + ";nullable=true";
   return column;
 }
 
@@ -409,14 +430,18 @@ api::EngineRowValue Row(const std::vector<std::pair<std::string, std::string>>& 
   return row;
 }
 
-api::EngineRequestContext BaseContext(const Args& args, const api::EngineUuid& database_uuid) {
+api::EngineRequestContext BaseContext(const Args& args, const CreatedDatabaseFixture& fixture) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.security_context_present = true;
   context.request_id = "public-driver-test-database-seed";
   context.database_path = args.output.string();
-  context.database_uuid = database_uuid;
-  context.principal_uuid = ClientFixtureUuid(kAlicePrincipalUuid);
+  context.database_uuid = fixture.database_uuid;
+  context.default_root_uuid = fixture.state.filespace_uuid.value;
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(args.output.string());
+  if (!bootstrap.ok() || !bootstrap.state.present || !bootstrap.state.committed_by_inventory)
+    Fail("driver fixture durable bootstrap principal unavailable");
+  context.principal_uuid = bootstrap.state.principal_uuid.value;
   context.session_uuid = ClientFixtureUuid("019f0a11-ce00-7000-8000-0000000000ff");
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -426,6 +451,48 @@ api::EngineRequestContext BaseContext(const Args& args, const api::EngineUuid& d
       ClientFixtureUuid(kDatatypeCatalogSnapshotUuid);
   context.datatype_catalog_generation = 1;
   context.datatype_registry_generation = 1;
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(context);
+  if (!loaded.ok) Fail("driver fixture durable security catalog unavailable");
+  const auto& lifecycle = loaded.state;
+  if (!lifecycle.row_policies.empty())
+    Fail("driver fixture requires a fresh bootstrap security catalog");
+  api::DurableAuthorizationState authority;
+  authority.authority_uuid = context.database_uuid;
+  authority.security_context_generation = lifecycle.security_context_generation;
+  authority.security_epoch = lifecycle.security_generation;
+  authority.policy_epoch = lifecycle.policy_generation;
+  authority.catalog_generation_id = context.catalog_generation_id;
+  authority.engine_owned_sysarch_role_uuid = bootstrap.state.sysarch_role_uuid.value;
+  context.security_epoch = authority.security_epoch;
+  for (const auto& principal : lifecycle.principals)
+    if (!principal.deleted && principal.lifecycle_state == "active")
+      authority.principals.push_back({principal.principal_uuid, "principal", true,
+                                     authority.security_epoch});
+  for (const auto& role : lifecycle.roles)
+    if (!role.deleted && role.lifecycle_state == "active")
+      authority.roles.push_back({role.role_uuid, true, authority.security_epoch});
+  for (const auto& membership : lifecycle.memberships)
+    if (!membership.revoked)
+      authority.memberships.push_back({membership.member_principal_uuid, "principal",
+          membership.container_uuid, membership.container_kind, true, authority.security_epoch});
+  for (const auto& grant : lifecycle.grants)
+    if (!grant.revoked)
+      authority.grants.push_back({grant.grant_uuid, grant.grantee_uuid, grant.grantee_kind,
+          grant.target_object_uuid, grant.privilege, grant.grant_effect == "deny", true,
+          authority.security_epoch});
+  const auto materialized = api::MaterializeDurableAuthorizationContext(authority,
+      {context.principal_uuid, authority.security_epoch, authority.policy_epoch,
+       authority.catalog_generation_id});
+  if (!materialized.ok) Fail("driver fixture durable authorization materialization failed");
+  context.authorization_context = materialized.context;
+  context.optimizer_route_epoch = 1;
+  context.optimizer_route_generation = 1;
+  context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
+  context.optimizer_maximum_candidate_count = 131072;
+  context.optimizer_maximum_memo_groups = 131072;
+  context.optimizer_maximum_search_steps = 1048576;
+  context.optimizer_maximum_planning_time_ns = 5'000'000'000ull;
+  context.optimizer_spill_allowed = true;
   context.trace_tags.push_back("public.driver_test_database_seed");
   context.trace_tags.push_back("security.bootstrap");
   context.trace_tags.push_back("group:SEC");
@@ -478,11 +545,10 @@ api::EngineUuid SchemaUuidForPath(const api::EngineRequestContext& context, cons
 }
 
 CreatedDatabaseFixture CreateDatabase(const Args& args) {
-  if (std::filesystem::exists(args.output)) {
-    if (!args.overwrite) {
-      Fail("driver test database already exists");
-    }
+  if (args.overwrite) {
     RemoveDatabaseArtifacts(args.output);
+  } else if (std::filesystem::exists(args.output)) {
+    Fail("driver test database already exists");
   }
   std::filesystem::create_directories(args.output.parent_path());
 
@@ -548,12 +614,13 @@ api::EngineObjectReference CreateTable(const api::EngineRequestContext& context,
                                        const api::EngineUuid& schema_uuid) {
   api::EngineCreateTableRequest request;
   request.context = context;
+  request.context.current_schema_uuid = schema_uuid;
   request.target_schema.uuid = schema_uuid;
   request.target_schema.object_kind = "schema";
   request.requested_table_uuid = fixture.uuid;
   request.table_names.push_back(Name(fixture.path, fixture.name));
   for (std::uint32_t ordinal = 0; ordinal < fixture.columns.size(); ++ordinal) {
-    request.table_columns.push_back(Column(ordinal + 1,
+    request.table_columns.push_back(Column(context, ordinal,
                                            fixture.columns[ordinal].first,
                                            fixture.columns[ordinal].second));
   }
@@ -569,14 +636,104 @@ api::EngineObjectReference CreateTable(const api::EngineRequestContext& context,
   return result.table_object;
 }
 
-void InsertRows(const api::EngineRequestContext& context,
+// The seeder owns an embedded engine session; statement identities and resource
+// snapshots are issued by that engine, never reconstructed by the fixture.
+class SeedSession {
+ public:
+  explicit SeedSession(const api::EngineRequestContext& context) {
+    sb_engine_open_params_v1_t open{};
+    open.struct_size = sizeof(open);
+    open.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    open.database_path_utf8 = context.database_path.data();
+    open.database_path_size = context.database_path.size();
+    open.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
+    Check(sb_engine_open(&open, &engine_, nullptr), nullptr, "engine open");
+    sb_engine_session_params_v1_t begin{};
+    begin.struct_size = sizeof(begin);
+    begin.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    std::copy(context.principal_uuid.bytes.begin(), context.principal_uuid.bytes.end(),
+              begin.effective_user_uuid.bytes);
+    std::copy(context.session_uuid.bytes.begin(), context.session_uuid.bytes.end(),
+              begin.session_uuid.bytes);
+    begin.default_language_utf8 = "en";
+    begin.default_language_size = 2;
+    begin.trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
+    Check(sb_engine_session_begin(engine_, &begin, &session_, nullptr), nullptr,
+          "session begin");
+  }
+  ~SeedSession() {
+    sb_engine_session_end_params_v1_t end{};
+    end.struct_size = sizeof(end);
+    end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    end.rollback_active_transactions = 1;
+    end.cancel_open_results = 1;
+    (void)sb_engine_session_end(session_, &end, nullptr);
+    (void)sb_engine_close(engine_, nullptr);
+  }
+  SeedSession(const SeedSession&) = delete;
+  SeedSession& operator=(const SeedSession&) = delete;
+  sb_engine_session_t get() const { return session_; }
+  static void Check(sb_engine_status_t status, sb_engine_result_t result,
+                    const char* phase) {
+    if (status != SB_ENGINE_STATUS_OK && result != nullptr) {
+      sb_engine_diagnostic_set_view_t diagnostics{};
+      if (sb_engine_result_diagnostics(result, &diagnostics) == SB_ENGINE_STATUS_OK) {
+        for (std::size_t i = 0; i < diagnostics.diagnostic_count; ++i) {
+          const auto& d = diagnostics.diagnostics[i];
+          for (const auto text : {d.symbolic_code, d.message_key, d.safe_detail}) {
+            if (text.data) std::cerr.write(text.data, text.size_bytes);
+            std::cerr << ':';
+          }
+          std::cerr << '\n';
+        }
+      }
+    }
+    if (result) sb_engine_result_release(result);
+    if (status != SB_ENGINE_STATUS_OK)
+      Fail(std::string("driver fixture ") + phase + " failed");
+  }
+ private:
+  sb_engine_handle_t engine_ = nullptr;
+  sb_engine_session_t session_ = nullptr;
+};
+
+class SeedStatement {
+ public:
+  SeedStatement(const SeedSession& session, const api::EngineRequestContext& base) {
+    namespace bridge = scratchbird::server_engine_bridge;
+    bridge::StatementContextAcquireRequest request;
+    request.engine_context = &base;
+    request.exact_transaction_uuid = base.transaction_uuid;
+    bridge::StatementContextReceiptView view;
+    sb_engine_result_t result = nullptr;
+    const auto status = bridge::AcquireStatementContextReceipt(
+        session.get(), &request, &receipt_, &view, &result);
+    SeedSession::Check(status, result, "statement acquisition");
+    result = nullptr;
+    const auto copied = bridge::CopyStatementContextEngineContextV1(
+        receipt_, &context, &result);
+    SeedSession::Check(copied, result, "statement context copy");
+  }
+  ~SeedStatement() {
+    (void)scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_);
+  }
+  SeedStatement(const SeedStatement&) = delete;
+  SeedStatement& operator=(const SeedStatement&) = delete;
+  api::EngineRequestContext context;
+ private:
+  scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt_;
+};
+
+void InsertRows(const SeedSession& session,
+                const api::EngineRequestContext& context,
                 const api::EngineObjectReference& table,
                 const FixtureTable& fixture) {
   if (fixture.rows.empty()) {
     return;
   }
+  SeedStatement statement(session, context);
   api::EngineInsertRowsRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.target_table = table;
   for (const auto& fields : fixture.rows) {
     request.input_rows.push_back(Row(fields));
@@ -584,11 +741,16 @@ void InsertRows(const api::EngineRequestContext& context,
   const auto result = api::EngineInsertRows(request);
   if (!result.ok || result.inserted_count != fixture.rows.size()) {
     std::cerr << "table_insert_failed=" << fixture.path << '\n';
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+                << diagnostic.detail << '\n';
+    }
     Fail("driver test database row seed failed");
   }
 }
 
-std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
+std::vector<FixtureTable> FixtureTables(const api::EngineUuid& principal_uuid,
+                                        bool include_bulk_import_fixture,
                                         bool include_trigger_fixture) {
   std::vector<FixtureTable> fixtures{
       {
@@ -622,7 +784,7 @@ std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
           "users",
           ClientFixtureUuid("018f0a2b-0000-7000-9000-000000000401"),
           {{"principal_uuid", "uuid"}, {"principal_name", "text"}, {"principal_state", "text"}},
-          {{{"principal_uuid", std::string(kAlicePrincipalUuid)}, {"principal_name", "alice"}, {"principal_state", "active"}}},
+          {{{"principal_uuid", uuid::UuidToString(principal_uuid)}, {"principal_name", "alice"}, {"principal_state", "active"}}},
       },
   };
   if (include_bulk_import_fixture) {
@@ -669,6 +831,7 @@ void CreateTriggerFixtureSequence(const api::EngineRequestContext& context,
                                   const api::EngineUuid& schema_uuid) {
   api::EngineCreateSequenceRequest request;
   request.context = context;
+  request.context.current_schema_uuid = schema_uuid;
   request.target_schema.uuid = schema_uuid;
   request.target_schema.object_kind = "schema";
   request.target_object.uuid =
@@ -733,7 +896,7 @@ void CreateSecurityAlterPolicyFixture(
   create.target_object_kind = "relation";
   create.policy_effect = "row_filter";
   create.predicate_envelope = "predicate:true";
-  create.definer_principal_uuid = ClientFixtureUuid(kAlicePrincipalUuid);
+  create.definer_principal_uuid = context.principal_uuid;
   create.localized_names.push_back(Name("app.app_policy", "app_policy"));
   create.native_authority.present = true;
   create.native_authority.policy_version_uuid =
@@ -783,20 +946,21 @@ void CreateSecurityAlterPolicyFixture(
   }
 }
 
-void SeedFixtureObjects(const api::EngineRequestContext& context,
+void SeedFixtureObjects(const SeedSession& session,
+                        const api::EngineRequestContext& context,
                         bool include_bulk_import_fixture,
                         bool include_trigger_fixture,
                         bool include_security_alter_policy_fixture) {
   CreateAppSchema(context);
   for (const auto& fixture :
-       FixtureTables(include_bulk_import_fixture, include_trigger_fixture)) {
+       FixtureTables(context.principal_uuid, include_bulk_import_fixture, include_trigger_fixture)) {
     const api::EngineUuid schema_uuid = SchemaUuidForPath(context, fixture.schema_path);
     if (schema_uuid.is_nil()) {
       std::cerr << "schema_not_visible=" << fixture.schema_path << '\n';
       Fail("driver test database fixture schema not visible");
     }
     const auto table = CreateTable(context, fixture, schema_uuid);
-    InsertRows(context, table, fixture);
+    InsertRows(session, context, table, fixture);
   }
   if (include_trigger_fixture) {
     const auto schema_uuid = SchemaUuidForPath(context, "app");
@@ -883,6 +1047,7 @@ void WriteResourceSeedCatalogJson(std::ofstream& out,
 
 void WriteManifest(const Args& args,
                    const api::EngineUuid& database_uuid,
+                   const api::EngineUuid& principal_uuid,
                    const db::DatabaseLifecycleState& state) {
   std::filesystem::create_directories(args.manifest.parent_path());
   std::ofstream out(args.manifest, std::ios::trunc);
@@ -906,7 +1071,7 @@ void WriteManifest(const Args& args,
   WriteResourceSeedCatalogJson(out, state.resource_seed_catalog);
   out << "  \"fixture_objects_seeded\": [\n";
   const auto tables =
-      FixtureTables(args.bulk_import_fixture, args.trigger_fixture);
+      FixtureTables(principal_uuid, args.bulk_import_fixture, args.trigger_fixture);
   for (std::size_t index = 0; index < tables.size(); ++index) {
     out << "    {\"path\": \"" << tables[index].path << "\", \"uuid\": \"" << uuid::UuidToString(tables[index].uuid) << "\"}";
     out << (index + 1 == tables.size() && !args.trigger_fixture &&
@@ -926,7 +1091,7 @@ void WriteManifest(const Args& args,
   out << "  ],\n";
   out << "  \"security\": {\n";
   out << "    \"principal\": \"alice\",\n";
-  out << "    \"principal_uuid\": \"" << kAlicePrincipalUuid << "\",\n";
+  out << "    \"principal_uuid\": \"" << uuid::UuidToString(principal_uuid) << "\",\n";
   out << "    \"role\": \"sysarch\",\n";
   out << "    \"grant_count\": " << SysarchRights().size() << "\n";
   out << "  },\n";
@@ -958,8 +1123,9 @@ int main(int argc, char** argv) {
 
   ConfigureMemory();
   const CreatedDatabaseFixture fixture = CreateDatabase(args);
-  const auto context = Begin(BaseContext(args, fixture.database_uuid));
-  SeedFixtureObjects(context, args.bulk_import_fixture, args.trigger_fixture,
+  const auto context = Begin(BaseContext(args, fixture));
+  SeedSession session(context);
+  SeedFixtureObjects(session, context, args.bulk_import_fixture, args.trigger_fixture,
                      args.security_alter_policy_fixture);
   Commit(context);
   const auto bootstrap_security = db::ReadDatabaseBootstrapSecurityCatalog(
@@ -973,12 +1139,12 @@ int main(int argc, char** argv) {
           ClientFixtureUuid(db::kCanonicalSysarchRoleObjectUuid)) {
     Fail("driver test database durable bootstrap security verification failed");
   }
-  WriteManifest(args, fixture.database_uuid, fixture.state);
+  WriteManifest(args, fixture.database_uuid, context.principal_uuid, fixture.state);
 
   std::cout << "public_driver_test_database_seed=passed database="
             << args.output.filename().string()
             << " full_create_database=true fixture_objects="
-            << (FixtureTables(args.bulk_import_fixture, args.trigger_fixture).size() +
+            << (FixtureTables(context.principal_uuid, args.bulk_import_fixture, args.trigger_fixture).size() +
                 (args.trigger_fixture ? 1U : 0U) +
                 (args.security_alter_policy_fixture ? 1U : 0U))
             << '\n';

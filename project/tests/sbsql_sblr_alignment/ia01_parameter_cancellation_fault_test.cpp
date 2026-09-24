@@ -5,6 +5,7 @@
 #include "hash_digest.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_parameter_runtime.hpp"
+#include "relational_descriptor_codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -68,9 +69,17 @@ sblr::SblrOperand TypedOperand(std::uint32_t ordinal, std::string type,
   operand.ordinal = ordinal;
   operand.type = std::move(type);
   operand.name = std::move(name);
+  if (operand.type == "uuid") {
+    operand.value_kind = sblr::SblrValueKind::uuid_ref;
+    const auto identity = RawUuid(value);
+    operand.value_body.assign(identity.begin(), identity.end());
+    return operand;
+  }
   operand.value_kind = sblr::SblrValueKind::literal_typed;
   operand.value_body.assign(24, 0);
-  operand.value_body[0] = 1;
+  const auto datatype = scratchbird::tests::FixtureUuidLiteral(
+      "019f0000-0000-7300-8000-000000000302");
+  std::copy(datatype.bytes.begin(), datatype.bytes.end(), operand.value_body.begin());
   Store64(&operand.value_body, 16, value.size());
   operand.value_body.insert(operand.value_body.end(), value.begin(),
                             value.end());
@@ -146,10 +155,19 @@ ExactParameterCarrier BuildCarrier() {
       "relational_snapshot_visible_through_local_transaction_id", "35"));
   envelope.operands.push_back(TypedOperand(
       ordinal++, "uint32", "relational_root_node_id", "1"));
-  envelope.operands.push_back(TypedOperand(
-      ordinal++, "relational_descriptor_v1", "slot_1",
-      std::string(kSlotUuid) + "|" + std::string(kTypeUuid) +
-          "|1|-|-|-|-|-"));
+  api::RelationalTypeDescriptor descriptor;
+  descriptor.descriptor_id = 1;
+  descriptor.descriptor_uuid.bytes = RawUuid(kSlotUuid);
+  descriptor.type_uuid.bytes = RawUuid(kTypeUuid);
+  descriptor.nullability = api::RelationalNullability::kNonNull;
+  sblr::SblrOperand descriptor_operand;
+  descriptor_operand.ordinal = ordinal++;
+  descriptor_operand.type = "relational_descriptor_v3";
+  descriptor_operand.name = "slot_1";
+  descriptor_operand.value_kind = sblr::SblrValueKind::relational_type_descriptor;
+  Require(sblr::EncodeRelationalTypeDescriptorV1(descriptor, &descriptor_operand.value_body),
+          "binary relational descriptor encoding failed");
+  envelope.operands.push_back(std::move(descriptor_operand));
 
   sblr::SblrParameterNodeV1 node;
   node.node_id = 7;
@@ -206,9 +224,18 @@ ExactParameterCarrier BuildCarrier() {
       ordinal++, "relational_values_row_v1", "slot_1", "1"));
   envelope.operands.push_back(TypedOperand(
       ordinal++, "relational_node_v1", "slot_1", "13|0|-|1|1"));
-  envelope.operands.push_back(TypedOperand(
-      ordinal++, "relational_node_binding_v1", "slot_1",
-      "76616c7565732e706172616d657465722d7461626c652e7631|1|-|-|-"));
+  sblr::RelationalNodeBindingRecord binding;
+  binding.node_id = 1;
+  binding.semantic_variant_id = "values.parameter-table.v1";
+  binding.bound_expression_ids = {1};
+  sblr::SblrOperand binding_operand;
+  binding_operand.ordinal = ordinal++;
+  binding_operand.type = "relational_node_binding_v2";
+  binding_operand.name = "slot_1";
+  binding_operand.value_kind = sblr::SblrValueKind::relational_node_binding;
+  Require(sblr::EncodeRelationalNodeBindingV1(binding, &binding_operand.value_body),
+          "binary relational node binding encoding failed");
+  envelope.operands.push_back(std::move(binding_operand));
 
   sblr::SblrParameterValueSetV1 values;
   values.parameter_set_descriptor_uuid = node.parameter_set_descriptor_uuid;

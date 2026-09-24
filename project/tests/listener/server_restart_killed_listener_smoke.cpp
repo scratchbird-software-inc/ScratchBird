@@ -243,7 +243,7 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
               << created.diagnostic.message_key << '\n';
     return false;
   }
-  const auto database_uuid_text = uuid::UuidToString(create.database_uuid.value);
+  const auto database_identity = create.database_uuid.value;
   const auto bootstrap =
       scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
           database_path, "server_restart_killed_listener_smoke");
@@ -252,7 +252,7 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
 
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       database_path,
-      database_uuid_text,
+      database_identity,
       kAlicePrincipalUuid,
       "alice",
       kAliceVerifier,
@@ -260,16 +260,16 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
       "server_restart_killed_listener_smoke:alice", tx_uuid);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
       database_path,
-      database_uuid_text,
+      database_identity,
       kAlicePrincipalUuid,
-      database_uuid_text,
+      database_identity,
       "database",
       "CONNECT",
       tx_id,
       "server_restart_killed_listener_smoke:alice-connect", tx_uuid);
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       database_path,
-      database_uuid_text,
+      database_identity,
       kSysdbaPrincipalUuid,
       "sysdba",
       kAliceVerifier,
@@ -280,18 +280,18 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
       "verifier=0358b60b6875c81e17d3e0ab67f8b785f49d4146547c79da401f21dc641c2c16");
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
       database_path,
-      database_uuid_text,
+      database_identity,
       kSysdbaPrincipalUuid,
-      database_uuid_text,
+      database_identity,
       "database",
       "CONNECT",
       tx_id,
       "server_restart_killed_listener_smoke:sysdba-connect", tx_uuid);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
       database_path,
-      database_uuid_text,
+      database_identity,
       kSysdbaPrincipalUuid,
-      "",
+      scratchbird::core::platform::Uuid{},
       "server_management",
       "OBS_MANAGEMENT_CONTROL",
       tx_id,

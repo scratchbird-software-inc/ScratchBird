@@ -201,6 +201,58 @@ api::DmlIndexWritePathResult ApplyOneLedger(
   return api::ApplyDmlIndexWritePath(request);
 }
 
+void RequireIdentityDiagnostic(const api::EngineApiDiagnostic& diagnostic,
+                               std::string_view field,
+                               const platform::Uuid& expected) {
+  Require(diagnostic.identity_fields.size() == 1 &&
+              diagnostic.identity_fields.front().first == field &&
+              diagnostic.identity_fields.front().second == expected,
+          "diagnostic did not preserve the exact native UUID");
+  Require(diagnostic.detail.find("uuid=") == std::string::npos,
+          "diagnostic rendered an engine UUID as text");
+  for (const auto& item : diagnostic.fields) {
+    Require(item.key != field, "diagnostic duplicated UUID in a text field");
+  }
+}
+
+void TestBinaryIdentityRefusals() {
+  auto identity = UuidValue(platform::UuidKind::object, 1700002400000ull, 0x91);
+  identity.bytes[0] = 0;
+  identity.bytes[1] = '\n';
+  identity.bytes[2] = '|';
+  auto tree = MakeTree(identity);
+  const auto index = Index(identity, api::kCrudIndexFamilyBtree, "name");
+  auto event = BaseEvent(api::DmlIndexWriteOperation::insert, index);
+  event.has_new_row = true;
+  event.new_row = Row(UuidValue(platform::UuidKind::row, 1700003400000ull, 0x92),
+                      UuidValue(platform::UuidKind::row, 1700003401000ull, 0x93),
+                      "1", "refused");
+  auto missing_proof = event;
+  missing_proof.index_descriptor_capability_proof = false;
+  auto result = ApplyOne(missing_proof, &tree);
+  Require(!result.ok, "missing index descriptor proof was admitted");
+  RequireIdentityDiagnostic(result.diagnostic, "index_uuid", identity);
+  Require(CountKey(tree, identity, "refused") == 0,
+          "proof refusal changed the physical tree");
+
+  for (bool version : {false, true}) {
+    auto invalid = event;
+    auto& value = version ? invalid.new_row.version_uuid : invalid.new_row.row_uuid;
+    value.bytes[6] = 0x40;
+    result = ApplyOne(invalid, &tree);
+    Require(!result.ok, "non-v7 row identity was admitted");
+    RequireIdentityDiagnostic(result.diagnostic,
+                              version ? "version_uuid" : "row_uuid", value);
+    Require(CountKey(tree, identity, "refused") == 0,
+            "identity refusal changed the physical tree");
+  }
+  api::DmlIndexWritePathRequest missing_tree;
+  missing_tree.events.push_back(event);
+  result = api::ApplyDmlIndexWritePath(missing_tree);
+  Require(!result.ok, "missing physical tree was admitted");
+  RequireIdentityDiagnostic(result.diagnostic, "index_uuid", identity);
+}
+
 void TestInsertUpdateDeleteMaintenance() {
   const platform::Uuid index_uuid =
       UuidValue(platform::UuidKind::object, 1700002000000ull, 0x41);
@@ -287,6 +339,7 @@ void TestUniqueDuplicateRefusal() {
   Require(!result.ok, "unique duplicate was admitted");
   Require(result.diagnostic.code == "SB-DML-INDEX-WRITE-UNIQUE-DUPLICATE",
           "unique duplicate diagnostic mismatch");
+  RequireIdentityDiagnostic(result.diagnostic, "index_uuid", index_uuid);
   Require(CountKey(tree, index_uuid, "1") == 1,
           "duplicate refusal changed physical unique tree");
 }
@@ -553,6 +606,7 @@ void TestBatchFailureDoesNotCommitStagedMutations() {
 }  // namespace
 
 int main() {
+  TestBinaryIdentityRefusals();
   TestInsertUpdateDeleteMaintenance();
   TestUniqueDuplicateRefusal();
   TestMergeBatchOrder();

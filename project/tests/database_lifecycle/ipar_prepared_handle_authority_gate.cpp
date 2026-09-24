@@ -151,7 +151,7 @@ int main() {
           "retired prepare input opened an engine result route");
 
   const auto request = server::FindServerRequestLifecycle(
-      registry, server::UuidBytesToText(frame.header.request_uuid));
+      registry, std::string(reinterpret_cast<const char*>(frame.header.request_uuid.data()), 16));
   Require(request.has_value(), "retired prepare refusal lifecycle is missing");
   Require(request->state == server::ServerRequestLifecycleState::kFailed,
           "retired prepare refusal lifecycle did not fail");

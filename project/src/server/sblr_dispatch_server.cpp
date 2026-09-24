@@ -5785,11 +5785,17 @@ std::string ServerApiRowValue(const engine_api::EngineApiResult& api_result,
                               std::size_t row_index) {
   std::vector<public_result::Field> fields;
   for (const auto& [name, value] : api_result.result_shape.rows[row_index].fields) {
+    std::string bytes = value.encoded_value;
     auto kind = public_result::Kind::text;
     const auto& type = value.descriptor.canonical_type_name;
-    if (!value.is_null && (type == "uuid" || type == "uuid16")) kind = public_result::Kind::uuid;
+    if (!value.is_null && (type == "uuid" || type == "uuid16")) {
+      if (!value.encoded_value.empty() || value.binary_value.size() != 16)
+        throw std::invalid_argument("public_result_uuid_carrier_invalid");
+      kind = public_result::Kind::uuid;
+      bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), 16);
+    }
     else if (type == "bytea" || type == "binary" || type == "varbinary") kind = public_result::Kind::bytes;
-    fields.push_back({name, kind, value.encoded_value});
+    fields.push_back({name, kind, std::move(bytes)});
   }
   return ResultRecord(std::move(fields));
 }

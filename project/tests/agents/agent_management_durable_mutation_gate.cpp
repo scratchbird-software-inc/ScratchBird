@@ -6,6 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "agents/agent_management_api.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
@@ -46,29 +49,8 @@ api::EngineRequestContext Context(std::initializer_list<std::string_view> rights
   context.catalog_generation_id = 11;
   context.security_epoch = 12;
   context.resource_epoch = 13;
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000100");
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = context.security_epoch;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  context.authorization_context.effective_subjects.push_back(
-      {context.principal_uuid, "principal"});
-  std::uint64_t grant_index = 0;
-  for (const auto right : rights) {
-    context.trace_tags.push_back("right:" + std::string(right));
-    api::EngineMaterializedAuthorizationGrant grant;
-    const auto grant_uuid = uuid::GenerateEngineIdentityV7(
-        UuidKind::object, 1790000000200 + grant_index++);
-    Require(grant_uuid.ok(), "grant UUID generation failed");
-    grant.grant_uuid = grant_uuid.value.value;
-    grant.subject_uuid = context.principal_uuid;
-    grant.subject_kind = "principal";
-    grant.right = std::string(right);
-    grant.security_epoch = context.security_epoch;
-    context.authorization_context.grants.push_back(std::move(grant));
-  }
+  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
+      &context, context.request_id, rights);
   return context;
 }
 
@@ -80,19 +62,7 @@ struct TestDatabase {
 };
 
 void Cleanup(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const char* suffix : {".dirty.manifest",
-                             ".sb.mga_event_sequence_allocator",
-                             ".sb.mga_index_entries",
-                             ".sb.mga_large_values",
-                             ".sb.mga_relation_descriptors",
-                             ".sb.mga_relation_metadata",
-                             ".sb.mga_row_versions",
-                             ".sb.mga_savepoints",
-                             ".sb.mga_secondary_index_delta_ledger"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
 TestDatabase CreateActiveDatabase() {
@@ -120,7 +90,10 @@ TestDatabase CreateActiveDatabase() {
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "database creation failed");
 
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
+  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
+          "lifecycle-published transaction inventory unavailable");
+  auto inventory = std::move(initial_inventory.inventory);
   const auto transaction_uuid = uuid::GenerateEngineIdentityV7(UuidKind::transaction,
                                                               1790000000104);
   Require(transaction_uuid.ok(), "transaction UUID generation failed");
@@ -161,11 +134,11 @@ agents::DurableAgentCatalogImage DurableCatalog(
   image.schema_version = 1;
   image.authority.durable_catalog_authority = true;
   image.authority.mga_transaction_evidence = true;
-  image.authority.mga_transaction_uuid = "019f0300-0000-7000-8000-000000000010";
+  image.authority.mga_transaction_uuid = scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000010"));
   image.authority.transaction_generation = 3;
-  image.authority.evidence_uuid = "019f0300-0000-7000-8000-000000000011";
-  image.authority.database_uuid = "019f0300-0000-7000-8000-000000000012";
-  image.authority.catalog_storage_uuid = "019f0300-0000-7000-8000-000000000013";
+  image.authority.evidence_uuid = scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000011"));
+  image.authority.database_uuid = scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000012"));
+  image.authority.catalog_storage_uuid = scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000013"));
   image.authority.storage_commit_evidence_uuid = image.authority.evidence_uuid;
   image.authority.catalog_generation = 1;
   image.authority.local_transaction_id = 3003;
@@ -177,9 +150,9 @@ agents::DurableAgentCatalogImage DurableCatalog(
   Require(descriptor.has_value(), "storage_health_manager descriptor missing");
 
   agents::AgentInstanceRecord instance;
-  instance.instance_uuid = "019f0300-0000-7000-8000-000000000020";
+  instance.instance_uuid = scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000020"));
   instance.agent_type_id = descriptor->type_id;
-  instance.policy_uuid = "019f0300-0000-7000-8000-000000000021";
+  instance.policy_uuid = scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000021"));
   instance.scope = "database";
   instance.state = state;
   instance.policy_generation = 3;
@@ -242,7 +215,14 @@ std::string FieldValue(const api::EngineApiResult& result,
                        std::string_view field) {
   for (const auto& row : result.result_shape.rows) {
     for (const auto& [name, value] : row.fields) {
-      if (name == field) { return value.encoded_value; }
+      if (name == field) {
+        if (value.descriptor.canonical_type_name == "uuid") {
+          Require(value.encoded_value.empty() && value.binary_value.size() == 16,
+                  "UUID result must use binary16 only");
+          return {reinterpret_cast<const char*>(value.binary_value.data()), 16};
+        }
+        return value.encoded_value;
+      }
     }
   }
   return {};
@@ -259,7 +239,8 @@ void AddObservedMetricSnapshotEvidence(TRequest* request) {
   request->option_envelopes.push_back(
       "agent_metric_snapshot_id:metric-snapshot-arhc042");
   request->option_envelopes.push_back(
-      "agent_metric_snapshot_evidence_uuid:019f0300-0000-7000-8000-000000000090");
+      "agent_metric_snapshot_evidence_uuid:" + scratchbird::tests::BinaryFixtureIdentity(
+          scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000090")));
 }
 
 void TestDurableReadProjection() {
@@ -311,7 +292,7 @@ void TestDurableMutationUpdatesCatalog() {
 
   const auto before_generation = catalog.authority.catalog_generation;
   const auto result = api::EngineStartAgent(start);
-  Require(result.ok, "durable start mutation failed");
+  Require(result.ok, "durable start mutation failed: " + DiagnosticCodes(result));
   Require(FieldValue(result, "runtime_state_source") == "durable_runtime_catalog",
           "durable mutation did not report durable source");
   Require(FieldValue(result, "durable_catalog_mutated") == "true",
@@ -355,7 +336,7 @@ void TestProductionMutationPersistsThroughMGAStore() {
   api::AgentDurableCatalogStoreRequest initial_store;
   initial_store.context = context;
   initial_store.image = DurableCatalog(agents::AgentLifecycleState::registered);
-  initial_store.evidence_uuid = "019f0300-0000-7000-8000-000000000111";
+  initial_store.evidence_uuid = scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000111"));
   initial_store.production_live_path = true;
   initial_store.fsync_or_checkpoint_evidence = true;
   const auto initial_persist =
@@ -428,7 +409,7 @@ void TestProductionMutationRequiresObservedMetricSnapshot() {
   api::AgentDurableCatalogStoreRequest initial_store;
   initial_store.context = context;
   initial_store.image = DurableCatalog(agents::AgentLifecycleState::registered);
-  initial_store.evidence_uuid = "019f0300-0000-7000-8000-000000000121";
+  initial_store.evidence_uuid = scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000121"));
   initial_store.production_live_path = true;
   initial_store.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(initial_store).ok,
@@ -460,7 +441,7 @@ void TestProductionMutationRejectsFixtureMode() {
   api::AgentDurableCatalogStoreRequest initial_store;
   initial_store.context = context;
   initial_store.image = DurableCatalog(agents::AgentLifecycleState::registered);
-  initial_store.evidence_uuid = "019f0300-0000-7000-8000-000000000122";
+  initial_store.evidence_uuid = scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000122"));
   initial_store.production_live_path = true;
   initial_store.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(initial_store).ok,
@@ -493,7 +474,7 @@ void TestProductionMutationRejectsUntrustedObservedMetricSnapshot() {
   api::AgentDurableCatalogStoreRequest initial_store;
   initial_store.context = context;
   initial_store.image = DurableCatalog(agents::AgentLifecycleState::registered);
-  initial_store.evidence_uuid = "019f0300-0000-7000-8000-000000000123";
+  initial_store.evidence_uuid = scratchbird::tests::BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0300-0000-7000-8000-000000000123"));
   initial_store.production_live_path = true;
   initial_store.fsync_or_checkpoint_evidence = true;
   Require(api::PersistAgentDurableCatalogImage(initial_store).ok,

@@ -6,8 +6,12 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "large_payload.hpp"
 #include "database_lifecycle.hpp"
+#include "../database_lifecycle/credentialed_database_fixture.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
+#include "security/security_principal_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 #include <filesystem>
 #include "nosql/key_value_api.hpp"
@@ -255,7 +259,7 @@ void GcRespectsMgaHorizonAndStaleLookupFailsClosed() {
 
 void NoSqlKeyValueStoresAndFetchesDescriptor() {
   const Ids ids;
-  std::string pattern = "/tmp/sb_odf062_api.XXXXXX";
+  std::string pattern = (std::filesystem::temp_directory_path() / "sb_odf062_api.XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   const char* made = ::mkdtemp(writable.data());
@@ -268,16 +272,30 @@ void NoSqlKeyValueStoresAndFetchesDescriptor() {
   create.filespace_uuid = ids.filespace_uuid;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779621000000ull;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
-          "ODF-062 database creation failed");
+  create.resource_seed_pack_root = (std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+      "resources/seed-packs/initial-resource-pack").string();
+  create.allow_minimal_resource_bootstrap = false;
+  create.require_resource_seed_pack = true;
+  create.bootstrap_principal_name = std::string(scratchbird::tests::database_lifecycle::kCredentialedFixturePrincipal);
+  create.bootstrap_credential_fingerprint = std::string(scratchbird::tests::database_lifecycle::kCredentialedFixtureFingerprint);
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
+  Require(created.ok(), "ODF-062 database creation failed");
   api::EngineBeginTransactionRequest begin;
   begin.context.database_path = database_path;
   begin.context.database_uuid = ids.database_uuid.value;
-  begin.context.principal_uuid = NewUuid(platform::UuidKind::principal, 6).value;
+  begin.context.principal_uuid = created.bootstrap_principal_uuid.value;
   begin.context.session_uuid = NewUuid(platform::UuidKind::object, 7).value;
   begin.context.security_context_present = true;
+  const auto catalog = api::LoadCatalogObjectLifecycleState(begin.context);
+  const auto security = api::LoadSecurityPrincipalLifecycleState(begin.context);
+  Require(catalog.ok && security.ok && created.state.resource_seed_catalog.resource_epoch != 0,
+          "ODF-062 database authority generations unavailable");
+  begin.context.catalog_generation_id = std::max<std::uint64_t>(1, catalog.state.metadata_epoch);
+  begin.context.name_resolution_epoch = std::max<std::uint64_t>(1, catalog.state.name_resolution_epoch);
+  begin.context.security_epoch = security.state.security_generation;
+  begin.context.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
   begin.isolation_level = "read_committed";
   begin.transaction_policy_profile.encoded_profiles = {
       "fail_closed:true", "transaction_read_only:false", "transaction_read_mode:read_write"};
@@ -299,6 +317,9 @@ void NoSqlKeyValueStoresAndFetchesDescriptor() {
   put.option_envelopes.push_back("large_payload.chunk_policy_uuid=" + IdentityOptionBytes(ids.chunk_policy_uuid.value));
 
   const auto put_result = api::EngineKeyValuePut(put);
+  for (const auto& diagnostic : put_result.diagnostics) {
+    if (diagnostic.error) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(put_result.ok, "ODF-062 NoSQL key/value large payload put failed");
   const auto payload = RowField(put_result, "payload");
   const auto descriptor = page::ParseLargePayloadDescriptor(payload);
@@ -345,6 +366,7 @@ void NoSqlKeyValueStoresAndFetchesDescriptor() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("optimizer_deficiency_odf_062_gate");
   AllLargeFamiliesUseBlobDescriptors();
   RoundTripInlineCacheAndPrefetch();
   GcRespectsMgaHorizonAndStaleLookupFailsClosed();

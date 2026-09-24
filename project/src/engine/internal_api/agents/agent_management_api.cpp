@@ -798,22 +798,23 @@ EngineApiDiagnostic ThirdPartyDiagnostic(std::string code, std::string detail, b
                                  error);
 }
 
-bool ParseDurableUuid(platform::UuidKind kind, std::string_view value) {
-  return uuid::ParseDurableEngineIdentityUuid(kind, std::string(value)).ok();
+bool HasBinaryDurableUuid(platform::UuidKind kind, std::string_view value) {
+  return value.size() == 16 &&
+      uuid::MakeDurableEngineIdentityUuid(kind, BinaryIdentity(value)).ok();
 }
 
 std::optional<std::string> ValidateThirdPartyUuidField(
     const EngineThirdPartyAgentManagementRequestRecord& record) {
   if (record.request_uuid.empty() ||
-      !ParseDurableUuid(platform::UuidKind::object, record.request_uuid)) {
+      !HasBinaryDurableUuid(platform::UuidKind::object, record.request_uuid)) {
     return "request_uuid";
   }
   if (record.requester_principal_uuid.empty() ||
-      !ParseDurableUuid(platform::UuidKind::principal, record.requester_principal_uuid)) {
+      !HasBinaryDurableUuid(platform::UuidKind::principal, record.requester_principal_uuid)) {
     return "requester_principal_uuid";
   }
   if (record.policy_ref.empty() ||
-      !ParseDurableUuid(platform::UuidKind::object, record.policy_ref)) {
+      !HasBinaryDurableUuid(platform::UuidKind::object, record.policy_ref)) {
     return "policy_ref";
   }
   return std::nullopt;
@@ -833,7 +834,7 @@ bool ThirdPartyResolvedAgentHasUuidAuthority(
     const EngineAgentCatalogIdentitySource* agent) {
   return agent != nullptr &&
          !agent->agent_uuid.empty() &&
-         ParseDurableUuid(platform::UuidKind::object, agent->agent_uuid);
+         HasBinaryDurableUuid(platform::UuidKind::object, agent->agent_uuid);
 }
 
 bool ThirdPartyResolvedPolicyMatchesRequest(
@@ -841,7 +842,7 @@ bool ThirdPartyResolvedPolicyMatchesRequest(
     std::string_view policy_ref) {
   return !agent.policy_uuid.empty() &&
          agent.policy_uuid == policy_ref &&
-         ParseDurableUuid(platform::UuidKind::object, agent.policy_uuid);
+         HasBinaryDurableUuid(platform::UuidKind::object, agent.policy_uuid);
 }
 
 bool ThirdPartyDirectActuatorBypass(const EngineThirdPartyAgentManagementRequestRecord& record) {
@@ -891,24 +892,26 @@ void AddThirdPartyRequestRow(EngineApiResult* result,
                              bool payload_redacted,
                              std::string protected_payload) {
   AddApiBehaviorRow(result,
-                    {{"request_uuid", record.request_uuid},
-                     {"requester_principal_uuid", record.requester_principal_uuid},
+                    {{"request_uuid", BinaryIdentity(record.request_uuid)},
+                     {"requester_principal_uuid", BinaryIdentity(record.requester_principal_uuid)},
                      {"external_system_id", record.external_system_id},
-                     {"agent_ref", record.agent_ref},
+                     {"agent_ref", HasBinaryDurableUuid(platform::UuidKind::object, record.agent_ref)
+                         ? ApiBehaviorValueInput{BinaryIdentity(record.agent_ref)}
+                         : ApiBehaviorValueInput{record.agent_ref}},
                      {"agent_type_id", agent == nullptr ? std::string{} : agent->agent_type_id},
-                     {"agent_uuid", agent == nullptr ? std::string{} : agent->agent_uuid},
+                     {"agent_uuid", agent == nullptr ? EngineUuid{} : BinaryIdentity(agent->agent_uuid)},
                      {"operation", record.operation},
                      {"requested_action", record.requested_action},
                      {"sblr_operation", spec.opcode},
                      {"api_call", spec.api_call},
-                     {"policy_uuid", record.policy_ref},
+                     {"policy_uuid", BinaryIdentity(record.policy_ref)},
                      {"reason_code", record.reason_code},
                      {"requested_expiry", record.requested_expiry},
                      {"redaction_context", record.redaction_context},
                      {"idempotency_key_present", record.idempotency_key.empty() ? "false" : "true"},
                      {"result_state", result_state},
                      {"diagnostic_code", diagnostic_code},
-                     {"request_evidence_uuid", record.request_uuid},
+                     {"request_evidence_uuid", BinaryIdentity(record.request_uuid)},
                      {"evidence_kind", "agent_third_party_request_evidence"},
                      {"queued", queued ? "true" : "false"},
                      {"third_party_authority", "false"},
@@ -931,8 +934,8 @@ EngineThirdPartyAgentManagementResult ThirdPartyFailure(
 
 void AddThirdPartyRequestEvidenceIfTyped(EngineApiResult* result,
                                          const EngineThirdPartyAgentManagementRequestRecord& record) {
-  if (ParseDurableUuid(platform::UuidKind::object, record.request_uuid)) {
-    AddApiBehaviorEvidence(result, "agent_third_party_request_evidence", record.request_uuid);
+  if (HasBinaryDurableUuid(platform::UuidKind::object, record.request_uuid)) {
+    AddApiBehaviorEvidence(result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
   }
 }
 
@@ -1531,7 +1534,7 @@ void AddAgentCommandSurfaceRow(EngineApiResult* result,
                      {"api_call", spec.api_call},
                      {"sys_surface", sys_surface},
                      {"agent_type_id", agent_type},
-                     {"agent_uuid", AgentUuidForCommandSurface(request, agent_type)},
+                     {"agent_uuid", BinaryIdentity(AgentUuidForCommandSurface(request, agent_type))},
                      {"result_state", result_state},
                      {"diagnostic_code", diagnostic_code},
                      {"evidence_required", spec.evidence_kind[0] == '\0' ? "false" : "true"},
@@ -2393,7 +2396,7 @@ EngineThirdPartyAgentManagementResult EngineSubmitThirdPartyAgentManagementReque
     auto result = ThirdPartyFailure(effective_request,
                                     "AGENT.THIRD_PARTY.ACTUATOR_BYPASS_DENIED",
                                     "third_party_requests_cannot_call_actuators");
-    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", record.request_uuid);
+    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
     return result;
   }
 
@@ -2402,14 +2405,14 @@ EngineThirdPartyAgentManagementResult EngineSubmitThirdPartyAgentManagementReque
     auto result = ThirdPartyFailure(effective_request,
                                     "AGENT.THIRD_PARTY.OPERATION_NOT_ALLOWED",
                                     record.operation);
-    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", record.request_uuid);
+    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
     return result;
   }
   if (!ThirdPartyRequestedActionAllowed(*spec, record.requested_action)) {
     auto result = ThirdPartyFailure(effective_request,
                                     "AGENT.THIRD_PARTY.ACTION_NOT_ALLOWED",
                                     record.requested_action);
-    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", record.request_uuid);
+    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
     return result;
   }
 
@@ -2419,14 +2422,14 @@ EngineThirdPartyAgentManagementResult EngineSubmitThirdPartyAgentManagementReque
     auto result = ThirdPartyFailure(effective_request,
                                     "AGENT.THIRD_PARTY.AGENT_NOT_FOUND",
                                     record.agent_ref);
-    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", record.request_uuid);
+    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
     return result;
   }
   if (!ThirdPartyResolvedPolicyMatchesRequest(*agent, record.policy_ref)) {
     auto result = ThirdPartyFailure(effective_request,
                                     "AGENT.THIRD_PARTY.POLICY_MISMATCH",
                                     "agent_policy_uuid_mismatch");
-    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", record.request_uuid);
+    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
     return result;
   }
 
@@ -2434,7 +2437,7 @@ EngineThirdPartyAgentManagementResult EngineSubmitThirdPartyAgentManagementReque
     auto result = ThirdPartyFailure(effective_request,
                                     "AGENT.THIRD_PARTY.PERMISSION_DENIED",
                                     spec->required_right_primary);
-    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", record.request_uuid);
+    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
     bool payload_redacted = false;
     auto protected_payload = RedactThirdPartyPayload(record.protected_payload, &payload_redacted);
     AddThirdPartyRequestRow(&result,
@@ -2451,7 +2454,7 @@ EngineThirdPartyAgentManagementResult EngineSubmitThirdPartyAgentManagementReque
   if (spec->mutating) {
     if (const char* denial = AgentOpenStateMutationDenialCode(effective_request); denial != nullptr) {
       auto result = ThirdPartyFailure(effective_request, denial, record.operation);
-      AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", record.request_uuid);
+      AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
       bool payload_redacted = false;
       auto protected_payload = RedactThirdPartyPayload(record.protected_payload, &payload_redacted);
       AddThirdPartyRequestRow(&result,
@@ -2473,7 +2476,7 @@ EngineThirdPartyAgentManagementResult EngineSubmitThirdPartyAgentManagementReque
     auto result = ThirdPartyFailure(effective_request,
                                     "AGENT.THIRD_PARTY.RESIDENCY_DENIED",
                                     record.external_system_id);
-    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", record.request_uuid);
+    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
     AddThirdPartyRequestRow(&result,
                             record,
                             *spec,
@@ -2504,7 +2507,7 @@ EngineThirdPartyAgentManagementResult EngineSubmitThirdPartyAgentManagementReque
     auto result = ThirdPartyFailure(effective_request,
                                     "AGENT.REQUEST_BACKPRESSURE",
                                     record.retry_after.empty() ? "retry_after_required" : record.retry_after);
-    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", record.request_uuid);
+    AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
     AddThirdPartyRequestRow(&result,
                             record,
                             *spec,
@@ -2521,7 +2524,7 @@ EngineThirdPartyAgentManagementResult EngineSubmitThirdPartyAgentManagementReque
       effective_request.context,
       kOperation);
   result.result_shape.result_kind = "agent.third_party_request.v1";
-  AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", record.request_uuid);
+  AddApiBehaviorEvidence(&result, "agent_third_party_request_evidence", BinaryIdentity(record.request_uuid));
   AddApiBehaviorEvidence(&result, "agent_command_surface", spec->operation_id);
   result.diagnostics.push_back(ThirdPartyDiagnostic(
       spec->mutating ? "AGENT.THIRD_PARTY.REQUEST_ACCEPTED"

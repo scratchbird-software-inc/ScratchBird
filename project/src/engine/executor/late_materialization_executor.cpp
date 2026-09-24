@@ -13,7 +13,6 @@
 
 #include <algorithm>
 #include <map>
-#include <sstream>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -83,25 +82,6 @@ bool ValidRowUuid(const TypedUuid& value) {
   return value.valid() && value.kind == UuidKind::row;
 }
 
-std::string UuidText(const TypedUuid& value) {
-  if (!value.valid()) {
-    return "invalid";
-  }
-  return scratchbird::core::uuid::UuidToString(value.value);
-}
-
-std::string JoinUuidOrder(const std::vector<TypedUuid>& values) {
-  std::ostringstream out;
-  bool first = true;
-  for (const auto& value : values) {
-    if (!first) {
-      out << ',';
-    }
-    first = false;
-    out << UuidText(value);
-  }
-  return out.str();
-}
 
 void AppendEvidence(std::vector<std::string>* target,
                     const std::vector<std::string>& source) {
@@ -133,8 +113,8 @@ void AppendCounterEvidence(LateMaterializationResult* result) {
       std::to_string(counters.skipped_by_exact_mga_security_count));
   result->evidence.push_back("late_materialization.skipped_by_top_k_count=" +
                              std::to_string(counters.skipped_by_top_k_count));
-  result->evidence.push_back("late_materialization.materialization_order=" +
-                             JoinUuidOrder(counters.materialization_order));
+  // Row identities remain in counters.materialization_order as binary UUIDs.
+  // Client display code can render that typed evidence when needed.
 }
 
 LateMaterializationResult Fail(LateMaterializationResult result,

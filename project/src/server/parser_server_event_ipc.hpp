@@ -12,9 +12,12 @@
 #include "../core/platform/runtime_platform.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 #include <variant>
+
+namespace scratchbird::engine::internal_api { struct EngineMaterializedAuthorizationContext; }
 
 namespace scratchbird::server {
 
@@ -89,6 +92,10 @@ struct ParserServerEventEngineContext {
   std::uint64_t name_resolution_epoch = 0;
   ParserServerEventLanguageContext language_context;
   std::vector<std::string> trace_tags;
+  // Server-owned materialization from durable security state. This opaque
+  // native context is not accepted from, or serialized onto, parser IPC.
+  std::shared_ptr<const engine::internal_api::EngineMaterializedAuthorizationContext>
+      authorization_context;
 };
 
 struct ParserServerEventSession {

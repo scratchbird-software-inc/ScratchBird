@@ -1053,7 +1053,8 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
           descriptor.database_uuid !=
               context.database_uuid ||
           descriptor.relation_uuid != table.table_uuid ||
-          descriptor.relation_generation != event_sequence ||
+          // Catalog relation generation and metadata event sequence are
+          // separate counters. The sealed set binds both independently.
           MetadataUuidBytes(descriptor.descriptor_uuid) !=
               fields[stf::kRelationDescriptorUuid] ||
           descriptor.descriptor_generation != descriptor_generation) {

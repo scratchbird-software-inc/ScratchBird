@@ -13,6 +13,8 @@
 #include "catalog/name_resolution_api.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "disk_device.hpp"
 #include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -255,19 +257,12 @@ void RequireRuntimeCacheInvalidation(const resources::ResourceSeedCatalogImage& 
   Require(current.ok() && current.cache_epoch_current,
           "current runtime cache epoch was not accepted");
 
-  auto replacement = image;
-  ++replacement.resource_epoch;
-  ++replacement.collation_epoch;
-  ++replacement.runtime_cache_epoch;
-  replacement.collation_version += ":replacement";
-  for (auto& family : replacement.family_versions) {
-    if (family.family == resources::ResourceSeedFamily::collation) {
-      family.version = replacement.collation_version;
-      family.activation_epoch = replacement.collation_epoch;
-    }
-  }
-
-  const auto stale = resources::EvaluateResourceSeedRuntimeCache(replacement, cache_epoch);
+  // Keep the admitted catalog image internally consistent; only the cached
+  // epoch is stale. Mutating image versions without rebuilding their compiled
+  // artifacts tests catalog corruption, not cache invalidation.
+  auto stale_cache_epoch = cache_epoch;
+  ++stale_cache_epoch.resource_epoch;
+  const auto stale = resources::EvaluateResourceSeedRuntimeCache(image, stale_cache_epoch);
   Require(!stale.ok(), "stale runtime cache epoch was accepted");
   Require(stale.runtime_cache_invalidation_required,
           "stale runtime cache did not require invalidation");
@@ -408,6 +403,7 @@ engine::EngineRequestContext BeginEngineTransaction(
                            : "resource-seed-descriptor-conformance";
   context.database_path = database_path.string();
   context.database_uuid = created.state.database_uuid.value;
+  context.default_root_uuid = created.state.filespace_uuid.value;
   const auto principal = uuid::GenerateEngineIdentityV7(UuidKind::principal, now + 300);
   const auto session = uuid::GenerateEngineIdentityV7(UuidKind::object, now + 301);
   Require(principal.ok() && session.ok(), "engine context UUID generation failed");
@@ -564,6 +560,30 @@ engine::EngineCreateTableResult CreateEngineTable(
   table.target_schema.uuid = schema_uuid;
   table.target_schema.object_kind = "schema";
   table.table_names.push_back(EngineName(std::move(table_name)));
+  namespace types = scratchbird::core::datatypes;
+  const auto manifest = types::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "resource fixture datatype catalog unavailable");
+  const auto name = column.descriptor.canonical_type_name.substr(
+      0, column.descriptor.canonical_type_name.find('('));
+  const auto type = types::LookupDatatypeCatalogRow(
+      manifest.manifest, types::CanonicalTypeIdFromStableName(name));
+  Require(type.ok() && type.manifest.descriptor_rows.size() == 1,
+          "resource fixture exact datatype descriptor unavailable");
+  const auto& datatype = type.manifest.descriptor_rows.front();
+  const auto codec = types::LookupDatatypeTypeCodecIdentityV1(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, datatype.descriptor_uuid.value,
+      datatype.descriptor_epoch);
+  Require(codec.ok || types::CanonicalTypeIdFromStableName(name) == types::CanonicalTypeId::blob,
+          "resource fixture exact datatype codec unavailable");
+  column.ordinal = 0;
+  column.requested_column_uuid = NewEngineIdentity(UuidKind::object, CurrentUnixMillis());
+  column.descriptor.descriptor_uuid = NewEngineIdentity(UuidKind::object, CurrentUnixMillis());
+  column.descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
+  column.descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
+  // BLOB belongs to the full builtin catalog, not the six-row scalar codec
+  // registry. DDL validates its catalog descriptor identity directly.
+  column.descriptor.type_uuid = codec.ok ? codec.row.type_uuid : datatype.descriptor_uuid.value;
   table.table_columns.push_back(std::move(column));
   return engine::EngineCreateTable(table);
 }
@@ -711,6 +731,13 @@ void RequireGbkRelationDescriptorPersistence(
                   "explicit GBK/GBK_UNICODE table creation failed");
   Require(!explicit_table.effective_table_descriptor.descriptor_uuid.is_nil(),
           "CREATE TABLE did not publish its MGA descriptor identity");
+
+  auto conflicting_column = EngineColumn("f1", "text",
+      ResourceColumnMetadata("type=text;character_length=20", gbk->resource_uuid, gbk_unicode->resource_uuid));
+  conflicting_column.descriptor.charset_uuid = gbk_unicode->resource_uuid;
+  const auto conflicting = CreateEngineTable(context, schema_uuid, "conflicting_native_resource", conflicting_column);
+  Require(!conflicting.ok && HasDiagnosticDetail(conflicting, "bound_column_resource_identity_mismatch"),
+          "native resource identity conflict was accepted");
 
   const auto default_table = CreateEngineTable(
       context,
@@ -980,9 +1007,9 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
           if(selected) targets.push_back({number,offset,body,decoded.record});
         }
         if(row.kind==page::CatalogPageRowKind::charset_alias_record) {
-          const auto fields=ParsePayloadFields(row.payload);
-          if(fields.contains("alias") && fields.at("alias")=="GB2312" &&
-             fields.contains("canonical_name") && fields.at("canonical_name")=="GB_2312")
+          const auto alias=catalog::DecodeCatalogResourceAliasRecord(row.payload);
+          Require(alias.ok(),"corruption fixture original binary alias invalid");
+          if(alias.record->alias=="GB2312" && alias.record->canonical_name=="GB_2312")
             alias_targets.push_back({number,offset,body,row.payload});
         }
         offset+=20+row.payload.size();
@@ -1077,12 +1104,23 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
   {
     const auto& target=alias_targets.front();
     auto body=target.body;
-    const auto label=target.payload.find("alias=GB2312");
-    Require(label!=std::string::npos,"alias corruption fixture label missing");
+    // Locate alias field 2 through the independent SBCV framing oracle.
+    std::size_t label=std::string::npos;
+    for(std::size_t at=24;at+8<=target.payload.size();) {
+      const auto* raw=reinterpret_cast<const p::byte*>(target.payload.data()+at);
+      const auto length=p::LoadLittle32(raw+4);
+      Require(length<=target.payload.size()-at-8,"alias corruption field extent invalid");
+      if(p::LoadLittle16(raw)==2) {
+        Require(target.payload.substr(at+8,length)=="GB2312","alias corruption field value invalid");
+        label=at+8;break;
+      }
+      at+=8+length;
+    }
+    Require(label!=std::string::npos,"alias corruption fixture field missing");
     const auto record_start=target.row_offset+20;
     const auto record_size=p::LoadLittle32(body.data()+target.row_offset+8);
     Require(record_size==target.payload.size(),"alias corruption fixture row size invalid");
-    body[record_start+label+6]='X';
+    body[record_start+label]='X';
     p::u64 hash=1469598103934665603ULL;
     for(std::size_t i=0;i<record_size;++i) { hash^=body[record_start+i]; hash*=1099511628211ULL; }
     p::StoreLittle64(body.data()+target.row_offset+12,hash);

@@ -3185,7 +3185,7 @@ void TestNativeArtifactPublication() {
 namespace {
 // Independent carrier fixtures: this is shape/rebinding coverage, not a live
 // receipt, parser route, parameter execution or catalog-authority oracle.
-wire::SblrOperationEnvelope PreparedFixture(unsigned count, bool match = false) {
+wire::SblrOperationEnvelope PreparedFixture(unsigned count, bool match = false, std::uint64_t literal_node_id = 1) {
   auto op = wire::MakeSblrEnvelope("query.execute", "SBLR_QUERY_EXECUTE", "prepared.binary.fixture");
   op.opcode_code = 4615; op.parser_package_uuid = Id(6); op.registry_snapshot_uuid = Id(7);
   op.result_shape = "query_execute_result"; op.diagnostic_shape = "diagnostic_vector";
@@ -3230,7 +3230,7 @@ wire::SblrOperationEnvelope PreparedFixture(unsigned count, bool match = false) 
   std::string handles; std::vector<std::uint32_t> ids;
   if (!count) {
     wire::SblrExpressionLiteralNodeV1 node;
-    node.node_id = 1; node.parent_operand_ordinal = 1;
+    node.node_id = literal_node_id; node.parent_operand_ordinal = 1;
     node.descriptor_uuid = descriptors[0].descriptor_uuid.bytes;
     node.descriptor_generation = descriptors[0].descriptor_generation;
     const auto literal = wire::EncodeSblrLiteralInt64LeV1(42);
@@ -3238,7 +3238,7 @@ wire::SblrOperationEnvelope PreparedFixture(unsigned count, bool match = false) 
     table_bytes = wire::EncodeSblrExpressionNodeTableV1({{node}});
     const auto hash = scratchbird::core::hash::ComputeSha256Digest(table_bytes);
     Require(!table_bytes.empty() && hash.ok(), "prepared literal table encoding");
-    Bytes ref; Append(ref, 1, 2); Append(ref, 0, 2); Append(ref, 1, 4); Append(ref, 1, 8);
+    Bytes ref; Append(ref, 1, 2); Append(ref, 0, 2); Append(ref, 1, 4); Append(ref, literal_node_id, 8);
     ref.insert(ref.end(), hash.digest.begin(), hash.digest.end());
     ref.insert(ref.end(), node.descriptor_uuid.begin(), node.descriptor_uuid.end());
     Append(ref, node.descriptor_generation, 8);
@@ -3311,8 +3311,14 @@ wire::SblrOperationEnvelope PreparedFixture(unsigned count, bool match = false) 
 
 void TestPreparedRelationalQuery() {
   using Profile = wire::PreparedRelationalQueryProfileV1;
+  auto nontrivial_literal = PreparedFixture(0, false, 7);
+  Require(wire::ValidatePreparedRelationalQueryV1(nontrivial_literal, Profile::kLiteralValues),
+          "literal node identity need not equal its relational expression slot");
+  nontrivial_literal.operands[12].value_body[8] = 1;
+  Require(!wire::ValidatePreparedRelationalQueryV1(nontrivial_literal, Profile::kLiteralValues),
+          "mismatched literal node/reference identity accepted");
   const wire::PreparedRelationalContextV1 context{Id(201), Id(202), Id(203), Id(204), Id(205), Id(206),
-      std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
+      std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max(), Id(207), Id(5), 4, 5};
   for (const auto [count, match] : {std::pair{0u,false}, {1u,false}, {2u,false}, {16u,false}, {2u,true}, {3u,true}}) {
     const auto original = PreparedFixture(count, match);
     const auto profile = match ? Profile::kParameterMatchRecognize : count ? Profile::kParameterValues : Profile::kLiteralValues;
@@ -3336,13 +3342,32 @@ void TestPreparedRelationalQuery() {
       constexpr std::string_view max_u64 = "18446744073709551615";
       Append(body, 20, 8); body.insert(body.end(), max_u64.begin(), max_u64.end());
     }
+    for (auto& operand : expected.operands) {
+      if (operand.value_kind != wire::SblrValueKind::relational_type_descriptor) continue;
+      Descriptor descriptor;
+      Require(wire::DecodeRelationalTypeDescriptorV1(operand.value_body.data(),
+                  operand.value_body.size(), &descriptor), "expected descriptor decode failed");
+      descriptor.statement_receipt_uuid = Id(207);
+      operand.value_body = Oracle(descriptor);
+    }
     Require(wire::EncodeSblrEnvelope(changed) == wire::EncodeSblrEnvelope(expected),
-            "rebinding changed non-context metadata, descriptors, references or property identities");
+            "rebinding changed metadata beyond context and descriptor receipt ownership");
+    for (unsigned mismatch = 0; mismatch != 3; ++mismatch) {
+      auto stale = context;
+      if (mismatch == 0) stale.datatype_catalog_snapshot_uuid = Id(208);
+      if (mismatch == 1) ++stale.datatype_catalog_generation;
+      if (mismatch == 2) ++stale.datatype_registry_generation;
+      auto untouched = original;
+      Require(!wire::RebindPreparedRelationalQueryV1(&untouched, stale) &&
+                  wire::EncodeSblrEnvelope(untouched) == bytes,
+              "prepared rebind accepted a changed datatype cohort or partially published");
+    }
     auto zero_visible = context; zero_visible.snapshot_visible_through_local_transaction_id = 0;
     Require(wire::RebindPreparedRelationalQueryV1(&changed, zero_visible), "zero visible horizon refused");
     for (auto member : {&wire::PreparedRelationalContextV1::catalog_epoch_uuid, &wire::PreparedRelationalContextV1::security_context_uuid,
         &wire::PreparedRelationalContextV1::statement_uuid, &wire::PreparedRelationalContextV1::transaction_uuid,
-        &wire::PreparedRelationalContextV1::statement_snapshot_uuid, &wire::PreparedRelationalContextV1::statement_metadata_snapshot_uuid}) {
+        &wire::PreparedRelationalContextV1::statement_snapshot_uuid, &wire::PreparedRelationalContextV1::statement_metadata_snapshot_uuid,
+        &wire::PreparedRelationalContextV1::statement_receipt_uuid, &wire::PreparedRelationalContextV1::datatype_catalog_snapshot_uuid}) {
       for (bool nil : {false, true}) {
         auto invalid = context; if (nil) invalid.*member = {}; else (invalid.*member).bytes[6] = 0x40;
         changed = original;
@@ -3383,7 +3408,7 @@ void TestPreparedRelationalQuery() {
 
 void TestPreparedRelationalSubstitutions() {
   using Profile = wire::PreparedRelationalQueryProfileV1;
-  const wire::PreparedRelationalContextV1 context{Id(201), Id(202), Id(203), Id(204), Id(205), Id(206), 123, 0};
+  const wire::PreparedRelationalContextV1 context{Id(201), Id(202), Id(203), Id(204), Id(205), Id(206), 123, 0, Id(207), Id(5), 4, 5};
   const auto reject = [&](const wire::SblrOperationEnvelope& input, Profile profile) {
     Require(!wire::ValidatePreparedRelationalQueryV1(input, profile), "prepared semantic shape substitution accepted");
     // These are canonical envelopes with invalid profile relationships. Their

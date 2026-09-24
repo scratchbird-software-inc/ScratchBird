@@ -187,7 +187,10 @@ api::EngineRequestContext BootstrapContext(const TestDatabase& database,
                                            std::uint64_t timestamp_base) {
   (void)timestamp_base;
   const std::uint64_t current_base = CurrentTestBaseMillis();
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(database.path.string());
+  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
+          "lifecycle-published transaction inventory unavailable");
+  auto inventory = std::move(initial_inventory.inventory);
   const auto transaction_uuid =
       uuid::GenerateEngineIdentityV7(platform::UuidKind::transaction,
                                      current_base + 10);

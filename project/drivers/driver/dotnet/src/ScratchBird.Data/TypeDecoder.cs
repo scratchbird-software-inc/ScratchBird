@@ -269,7 +269,16 @@ internal static class TypeDecoder
 
         if (value is ScratchBirdRaw raw)
         {
+            if (raw.Oid == OidUuid && raw.Data.Length != 16)
+            {
+                throw new ArgumentException("UUID raw parameters require exactly 16 bytes.", nameof(value));
+            }
             return (new ParamValue { Data = raw.Data, Format = FormatBinary }, raw.Oid);
+        }
+
+        if (dbType == DbType.Guid && value is not Guid)
+        {
+            throw new ArgumentException("UUID parameters require a Guid value; client code owns text parsing.", nameof(value));
         }
 
         if (value is ScratchBirdComposite composite)
@@ -498,6 +507,11 @@ internal static class TypeDecoder
             return (new ParamValue { Data = EncodeLengthPrefixed(Encoding.UTF8.GetBytes(literal)), Format = FormatBinary }, OidSbVector);
         }
 
+        if (value is IEnumerable<Guid> || value is IEnumerable<Guid?>)
+        {
+            throw new NotSupportedException("UUID arrays require a native binary array codec.");
+        }
+
         if (value is IEnumerable enumerable && value is not string)
         {
             var items = new List<object?>();
@@ -517,10 +531,6 @@ internal static class TypeDecoder
 
         if (value is string text)
         {
-            if (Guid.TryParse(text, out var parsedGuid))
-            {
-                return (new ParamValue { Data = GuidToBytes(parsedGuid), Format = FormatBinary }, OidUuid);
-            }
             return (new ParamValue { Data = EncodeLengthPrefixed(Encoding.UTF8.GetBytes(text)), Format = FormatBinary }, OidText);
         }
 
@@ -550,6 +560,10 @@ internal static class TypeDecoder
         if (data == null)
         {
             return null;
+        }
+        if (typeOid == OidUuid && format != FormatBinary)
+        {
+            throw new FormatException("UUID results require binary format.");
         }
         if (typeOid == 0)
         {
@@ -821,7 +835,7 @@ internal static class TypeDecoder
             2 => BinaryPrimitives.ReadInt16LittleEndian(data),
             4 => BinaryPrimitives.ReadInt32LittleEndian(data),
             8 => BinaryPrimitives.ReadInt64LittleEndian(data),
-            16 => Guid.Parse(BytesToUuid(data)),
+            16 => new Guid(data, bigEndian: true),
             _ => data
         };
     }
@@ -1146,39 +1160,19 @@ internal static class TypeDecoder
         return BinaryPrimitives.ReadDoubleLittleEndian(data.AsSpan(0, 8));
     }
 
-    private static string BytesToUuid(byte[] data)
-    {
-        var hex = Convert.ToHexString(data).ToLowerInvariant();
-        if (hex.Length != 32)
-        {
-            return hex;
-        }
-        return $"{hex[..8]}-{hex.Substring(8, 4)}-{hex.Substring(12, 4)}-{hex.Substring(16, 4)}-{hex.Substring(20)}";
-    }
-
     private static Guid DecodeUuidBinary(byte[] data)
     {
-        var payload = StripLengthPrefix(data);
-        if (payload.Length == 16)
+        // UUID data may contain any byte sequence, including one that resembles
+        // a length prefix. Direct binary16 takes precedence over framed values.
+        if (data.Length == 16)
         {
-            return Guid.Parse(BytesToUuid(payload));
+            return new Guid(data, bigEndian: true);
         }
-
-        if (payload.Length > 0 && LooksLikeText(payload))
+        if (data.Length == 20 && BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0, 4)) == 16)
         {
-            var text = Encoding.UTF8.GetString(payload).TrimEnd('\0');
-            if (Guid.TryParse(text, out var parsedText))
-            {
-                return parsedText;
-            }
+            return new Guid(data.AsSpan(4, 16), bigEndian: true);
         }
-
-        if (Guid.TryParse(BytesToUuid(payload), out var parsed))
-        {
-            return parsed;
-        }
-
-        throw new FormatException($"Invalid UUID binary payload length {payload.Length}.");
+        throw new FormatException($"Invalid UUID binary payload length {data.Length}.");
     }
 
     private static bool TryParseIntegralText(byte[] data, out long value)
@@ -1383,13 +1377,7 @@ internal static class TypeDecoder
 
     private static byte[] GuidToBytes(Guid guid)
     {
-        var text = guid.ToString("N");
-        var buffer = new byte[16];
-        for (var i = 0; i < 16; i++)
-        {
-            buffer[i] = Convert.ToByte(text.Substring(i * 2, 2), 16);
-        }
-        return buffer;
+        return guid.ToByteArray(bigEndian: true);
     }
 
     private static object ParseDecimal(byte[] data)
@@ -1418,6 +1406,10 @@ internal static class TypeDecoder
         if (value == null)
         {
             return "NULL";
+        }
+        if (value is Guid || value is IEnumerable<Guid> || value is IEnumerable<Guid?>)
+        {
+            throw new NotSupportedException("UUID arrays require a native binary array codec.");
         }
         if (value is IEnumerable enumerable && value is not string)
         {

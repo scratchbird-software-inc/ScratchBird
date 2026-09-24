@@ -273,21 +273,24 @@ DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
       request.target_table.uuid;
   clustering.current_descriptor.placement_key_column =
       DirectOptionValue(request, "physical_clustering.current_key");
-  // Option envelopes are a text input boundary. Decode once; the storage
-  // policy owner receives only binary identities and never a display spelling.
+  // Option keys are labels; UUID values are opaque binary16 payloads. Text
+  // conversion belongs to the client before this engine boundary.
   const auto bind_policy = [&](const char* key, EngineUuid& destination) {
-    const auto text = DirectOptionValue(request, key);
-    if (text.empty()) return true;
-    const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
-        scratchbird::core::platform::UuidKind::object, text);
-    if (!parsed.ok()) {
+    const auto bytes = DirectOptionValue(request, key);
+    if (bytes.empty()) return true;
+    EngineUuid identity;
+    if (bytes.size() == identity.bytes.size())
+      std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes.data()),
+                  identity.bytes.size(), identity.bytes.begin());
+    if (bytes.size() != identity.bytes.size() ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(identity)) {
       selection.ok = false;
       selection.failure_reason = "physical_clustering_policy_uuid_invalid";
       selection.diagnostic = MakeInvalidRequestDiagnostic(
           "dml.direct_physical_bulk_append", selection.failure_reason);
       return false;
     }
-    destination = parsed.value.value;
+    destination = identity;
     return true;
   };
   if (!bind_policy("physical_clustering.current_policy_uuid",

@@ -1441,7 +1441,7 @@ if(TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql AND TARGET sb_is
   target_link_libraries(
     optimizer_runtime_hot_path_orh_125_database_seed
     PRIVATE
-      sb_engine_internal_api
+      sb_engine sb_engine_internal_api
       sb_storage_database
       sb_core_memory
       sb_core_uuid

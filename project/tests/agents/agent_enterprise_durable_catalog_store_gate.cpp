@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
+#include "../support/database_fixture_cleanup.hpp"
 #include "agent_binary_identity_fixture.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
 using scratchbird::tests::NativeFixtureIdentity;
@@ -51,22 +53,11 @@ struct TestDatabase {
   api::EngineUuid database_uuid;
   api::EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
+  std::uint64_t resource_epoch = 0;
 };
 
 void Cleanup(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const char* suffix : {".dirty.manifest",
-                             ".sb.mga_event_sequence_allocator",
-                             ".sb.mga_index_entries",
-                             ".sb.mga_large_values",
-                             ".sb.mga_relation_descriptors",
-                             ".sb.mga_relation_metadata",
-                             ".sb.mga_row_versions",
-                             ".sb.mga_savepoints",
-                             ".sb.mga_secondary_index_delta_ledger"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
 TestDatabase CreateActiveDatabase() {
@@ -88,8 +79,10 @@ TestDatabase CreateActiveDatabase() {
   create.filespace_uuid = filespace_uuid.value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1790000000003;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  create.resource_seed_pack_root = (std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+      "resources/seed-packs/initial-resource-pack").string();
+  create.allow_minimal_resource_bootstrap = false;
+  create.require_resource_seed_pack = true;
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -98,7 +91,10 @@ TestDatabase CreateActiveDatabase() {
   }
   Require(created.ok(), "database creation failed");
 
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
+  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
+          "lifecycle-published transaction inventory unavailable");
+  auto inventory = std::move(initial_inventory.inventory);
   const auto transaction_uuid = uuid::GenerateEngineIdentityV7(UuidKind::transaction,
                                                               1790000000004);
   Require(transaction_uuid.ok(), "transaction UUID generation failed");
@@ -117,6 +113,7 @@ TestDatabase CreateActiveDatabase() {
 
   TestDatabase result;
   result.path = path;
+  result.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
   result.database_uuid = database_uuid.value.value;
   result.transaction_uuid = transaction_uuid.value.value;
   result.local_transaction_id = begun.entry.identity.local_id.value;
@@ -127,6 +124,7 @@ api::EngineRequestContext Context(const TestDatabase& database) {
   api::EngineRequestContext context;
   context.request_id = "aeic-agent-catalog-store";
   context.database_path = database.path.string();
+  context.resource_epoch = database.resource_epoch;
   context.database_uuid = database.database_uuid;
   context.transaction_uuid = database.transaction_uuid;
   context.local_transaction_id = database.local_transaction_id;
@@ -386,6 +384,7 @@ void TestRefusals() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("agent_enterprise_durable_catalog_store_gate");
   TestPersistLoadRoundTrip();
   TestLoadMigratesAndPersistsOldSchemaImage();
   TestRefusals();

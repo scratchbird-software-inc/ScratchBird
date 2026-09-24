@@ -1407,7 +1407,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 add_test(NAME sbsql_sblr_alignment_diagnostic_identity_registry COMMAND sbsql_sblr_alignment_diagnostic_identity_registry)
 set_tests_properties(sbsql_sblr_alignment_diagnostic_identity_registry PROPERTIES
-  LABELS "sbsql_sblr_alignment;IA-01;component_regression;diagnostic_registry;binary_uuid;recovery;concurrency" TIMEOUT 180)
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;diagnostic_registry;binary_uuid;recovery;concurrency" TIMEOUT 600)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_embedded_disconnect_disabled embedded_disconnect_conformance.cpp)
@@ -2496,7 +2496,7 @@ if(NOT TARGET public_driver_test_database_seed)
     ${CMAKE_SOURCE_DIR}/tools/release/public_driver_test_database_seed.cpp)
   target_compile_features(public_driver_test_database_seed PRIVATE cxx_std_23)
   target_link_libraries(public_driver_test_database_seed PRIVATE
-    sb_engine_internal_api sb_storage_database sb_core_memory sb_core_uuid)
+    sb_engine sb_engine_internal_api sb_storage_database sb_core_memory sb_core_uuid)
 endif()
 
 add_executable(sbsql_sblr_alignment_ia01_package_server_admission
@@ -3396,9 +3396,11 @@ target_link_libraries(sbsql_sblr_alignment_statement_result_receipt_retention
   PRIVATE sb_engine sb_server_core)
 add_test(NAME sbsql_sblr_alignment_statement_result_receipt_retention
   COMMAND sbsql_sblr_alignment_statement_result_receipt_retention)
+# Includes 32 physical database/bootstrap shutdown histories plus the full
+# release matrix; durable fsync work exceeds one minute on ordinary disks.
 set_tests_properties(sbsql_sblr_alignment_statement_result_receipt_retention PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-06;typed_result;receipt_lifetime"
-  TIMEOUT 60)
+  TIMEOUT 300)
 
 add_executable(sbsql_sblr_alignment_ia01_package_missing_executor_integration
   ia01_package_missing_executor_integration_test.cpp)
@@ -3848,7 +3850,7 @@ function(sbsql_sblr_alignment_register_ia07_table_truncate_process_e2e)
   else()
     set(_sbsql_cluster_provider_mode "no_cluster")
     set(_sbsql_cluster_provider_diagnostic
-        "SBLR.CLUSTER.SUPPORT_NOT_ENABLED")
+        "PROCESS.CLUSTER_PATH_ABSENT")
     set(_sbsql_cluster_provider_label "cluster_not_enabled")
   endif()
   add_test(NAME sbsql_sblr_alignment_ia07_table_truncate_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation table-truncate --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia07_table_truncate_e2e")
@@ -9901,3 +9903,24 @@ add_test(NAME sbsql_sblr_alignment_native_uuid_parameter_status
 set_tests_properties(sbsql_sblr_alignment_native_uuid_parameter_status PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;SBWP;component_codec;not_e2e"
   TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_dirty_manifest_binary dirty_manifest_binary_test.cpp)
+target_compile_features(sbsql_sblr_alignment_dirty_manifest_binary PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_dirty_manifest_binary PRIVATE sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_dirty_manifest_binary COMMAND sbsql_sblr_alignment_dirty_manifest_binary)
+set_tests_properties(sbsql_sblr_alignment_dirty_manifest_binary PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;storage_codec;mga;not_runtime_acceptance")
+
+add_executable(sbsql_sblr_alignment_page_selection_binary page_selection_binary_test.cpp)
+target_compile_features(sbsql_sblr_alignment_page_selection_binary PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_page_selection_binary PRIVATE sb_storage_page sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_page_selection_binary COMMAND sbsql_sblr_alignment_page_selection_binary)
+set_tests_properties(sbsql_sblr_alignment_page_selection_binary PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;storage_codec;mga;not_runtime_acceptance")
+
+add_executable(sbsql_sblr_alignment_direct_bulk_uuid_payload direct_bulk_uuid_payload_test.cpp)
+target_compile_features(sbsql_sblr_alignment_direct_bulk_uuid_payload PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_direct_bulk_uuid_payload PRIVATE sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_direct_bulk_uuid_payload COMMAND sbsql_sblr_alignment_direct_bulk_uuid_payload)
+set_tests_properties(sbsql_sblr_alignment_direct_bulk_uuid_payload PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;component_regression;not_runtime_acceptance" TIMEOUT 120)

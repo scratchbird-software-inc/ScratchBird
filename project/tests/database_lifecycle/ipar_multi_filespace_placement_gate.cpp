@@ -219,6 +219,25 @@ void RequirePlaced(const RunResult& run,
   Require(run.result.ok(), std::string(label) + " integration failed");
   Require(run.result.filespace_placement_resolved,
           std::string(label) + " placement was not resolved");
+  const auto require_identity = [&](std::string_view kind, const platform::Uuid& expected) {
+    unsigned matched = 0;
+    for (const auto& evidence : run.result.evidence_refs) {
+      if (evidence.evidence_kind != kind) continue;
+      const auto* identity = std::get_if<platform::Uuid>(&evidence.evidence_id);
+      Require(identity && *identity == expected,
+              std::string(label) + " integration evidence lost native UUID");
+      ++matched;
+    }
+    Require(matched == 1, std::string(label) + " integration identity evidence count mismatch");
+  };
+  require_identity("filespace_placement", expected_filespace_uuid.value);
+  require_identity("filespace_preallocation", run.result.preallocation_operation_id.value);
+  require_identity("page_reservation", run.result.reservation_id.value);
+  for (const auto& evidence : run.result.evidence_refs) {
+    if (const auto* text = std::get_if<std::string>(&evidence.evidence_id))
+      Require(text->find("filespace_uuid=") == std::string::npos,
+              "placement duplicated its native UUID in text evidence");
+  }
   Require(run.result.filespace_preallocation_admitted,
           std::string(label) + " preallocation was not admitted");
   Require(run.result.resolved_filespace_uuid.value == expected_filespace_uuid.value,

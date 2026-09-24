@@ -281,6 +281,18 @@ bool CanonicalUtf8NoNul(const std::uint8_t* bytes, std::size_t size) {
   return true;
 }
 
+bool TakeEncodedBytes(std::span<const std::uint8_t> bytes,
+                      std::size_t* cursor,
+                      std::string* output) {
+  const std::uint8_t* prefix = nullptr;
+  if (output == nullptr || !Take(bytes, 4, cursor, &prefix)) return false;
+  const auto size = static_cast<std::size_t>(U32(prefix));
+  const std::uint8_t* value = nullptr;
+  if (!Take(bytes, size, cursor, &value)) return false;
+  output->assign(reinterpret_cast<const char*>(value), size);
+  return true;
+}
+
 bool TakeText(std::span<const std::uint8_t> bytes,
               std::size_t* cursor,
               std::string* output) {
@@ -315,6 +327,13 @@ void AppendU64(std::vector<std::uint8_t>* bytes, std::uint64_t value) {
 
 void AppendUuid(std::vector<std::uint8_t>* bytes, const Uuid& value) {
   bytes->insert(bytes->end(), value.begin(), value.end());
+}
+
+bool AppendEncodedBytes(std::vector<std::uint8_t>* bytes, std::string_view value) {
+  if (value.size() > std::numeric_limits<std::uint32_t>::max()) return false;
+  AppendU32(bytes, static_cast<std::uint32_t>(value.size()));
+  bytes->insert(bytes->end(), value.begin(), value.end());
+  return true;
 }
 
 bool AppendText(std::vector<std::uint8_t>* bytes, std::string_view value) {
@@ -382,7 +401,7 @@ bool DecodeProjectionV3(const std::vector<std::uint8_t>& exact,
         !TakeUuid(bytes, &cursor, &column.descriptor_uuid) ||
         !TakeText(bytes, &cursor, &column.descriptor_kind) ||
         !TakeText(bytes, &cursor, &column.canonical_type_name) ||
-        !TakeText(bytes, &cursor, &column.encoded_type_descriptor) ||
+        !TakeEncodedBytes(bytes, &cursor, &column.encoded_type_descriptor) ||
         !Take(bytes, 1, &cursor, &fixed)) {
       return false;
     }
@@ -946,7 +965,7 @@ bool EncodeEnginePublicRelationProjectionV3(
       AppendUuid(&encoded, column.descriptor_uuid);
       if (!AppendText(&encoded, column.descriptor_kind) ||
           !AppendText(&encoded, column.canonical_type_name) ||
-          !AppendText(&encoded, column.encoded_type_descriptor)) {
+          !AppendEncodedBytes(&encoded, column.encoded_type_descriptor)) {
         return fail_text_encoding();
       }
       encoded.push_back(column.attributes);

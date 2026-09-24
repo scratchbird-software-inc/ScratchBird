@@ -50,6 +50,10 @@ target_link_libraries(sb_transaction_mga PUBLIC sb_core_platform sb_core_uuid sb
 
 if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Threads REQUIRED)
+  if(NOT TARGET sb_core_diagnostic_catalog)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/diagnostics
+                     ${CMAKE_CURRENT_BINARY_DIR}/core_diagnostics)
+  endif()
   # Real projection/classification source closure; not SQL/transport acceptance.
   add_executable(sbsql_sblr_alignment_transaction_evidence_binary
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/sbsql_sblr_alignment/transaction_evidence_binary_test.cpp

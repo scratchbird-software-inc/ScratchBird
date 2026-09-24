@@ -154,7 +154,7 @@ int main() {
     const auto target = cancel_on_probe.load(std::memory_order_relaxed);
     return target != 0 && ordinal == target;
   };
-  (void)PrepareTriggerTarget(fixture, &context);
+  (void)PrepareTriggerTarget(fixture, session, &context);
   const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 26283));
   context.current_package_uuid = parser_uuid;
   PublishBaselineTrigger(fixture, session, &context, parser_uuid);

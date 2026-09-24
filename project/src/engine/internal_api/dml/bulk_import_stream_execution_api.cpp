@@ -436,20 +436,6 @@ bool ColumnDigest(const MgaRelationStorageDescriptor& descriptor, BulkSha* outpu
   return ComputeBulkImportColumnDigestV2(descriptor, output);
 }
 
-bool DescriptorHasForbiddenDefaultOrConstraint(std::string_view encoded) {
-  std::string lower(encoded);
-  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
-    return static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
-  });
-  constexpr std::array<std::string_view, 12> forbidden{{
-      "default=", "default_uuid=", "generated=", "identity=",
-      "primary_key", "unique=", "foreign_key", "references=",
-      "check=", "constraint_uuid=", "constraint_kind=", "constraint="}};
-  return std::any_of(forbidden.begin(), forbidden.end(), [&](auto token) {
-    return lower.find(token) != std::string::npos;
-  });
-}
-
 struct TargetAuthority {
   MgaRelationStorageDescriptor descriptor;
   std::vector<const MgaRelationColumnStorageDescriptor*> columns;
@@ -504,7 +490,7 @@ bool LoadTargetAuthority(const EngineRequestContext& context,
     if (column.generated || column.identity_column ||
         !AdmittedBulkColumnType(
             column.value_descriptor.canonical_type_name) ||
-        DescriptorHasForbiddenDefaultOrConstraint(
+        BulkImportColumnHasForbiddenDefaultOrConstraint(
             column.value_descriptor.encoded_descriptor)) {
       *diagnostic = Diagnostic(
           "BULK.IMPORT.TARGET_NOT_ELIGIBLE",

@@ -196,12 +196,11 @@ std::optional<ServerAgentActionTestHook> TryParseServerAgentActionTestHook(
 std::string NewTypedUuidBytes(platform::UuidKind kind,
                              const std::string& key,
                              std::uint64_t salt) {
-  std::uint64_t folded = salt + CurrentUnixMillis();
-  for (const unsigned char ch : key) {
-    folded ^= static_cast<std::uint64_t>(ch);
-    folded *= 1099511628211ull;
-  }
-  const auto generated = uuid::GenerateEngineIdentityV7(kind, folded);
+  // UUIDv7 takes a 48-bit timestamp; uniqueness comes from the engine RNG.
+  // A folded context key is not a timestamp and can make generation fail.
+  (void)key;
+  (void)salt;
+  const auto generated = uuid::GenerateEngineIdentityV7(kind, CurrentUnixMillis());
   return generated.ok() ? IdentityBytes(generated.value.value) : std::string{};
 }
 

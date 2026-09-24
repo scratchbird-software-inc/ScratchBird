@@ -378,7 +378,7 @@ class FakeTargetResolver final
   }
 
   bool CopyComparisonResourceSnapshot(
-      const api::EngineRequestContext&,
+      const api::EngineRequestContext& context,
       const sblr::ContextualTextLiteralDemandV2&,
       const api::EngineResolvedContextualTextTargetV2& target,
       const sblr::ContextualTextLiteralProfileV2& profile,
@@ -400,12 +400,20 @@ class FakeTargetResolver final
     value.collation_resource_epoch = profile.resource_epoch;
     value.collation_family_epoch = profile.collation_generation;
     value.text_seed.active = true;
+    value.text_seed.database_uuid = context.database_uuid;
+    value.text_seed.charset_uuid = value.charset_identity;
+    value.text_seed.collation_uuid = value.collation_identity;
+    value.text_seed.resource_epoch = profile.resource_epoch;
+    value.text_seed.collation_epoch = profile.collation_generation;
+    value.text_seed.comparison_profile =
+        scratchbird::core::resources::CollationProfile::utf8_binary;
     value.text_seed.seed_pack_name =
         resource_mutation ? "test.seed.changed" : "test.seed";
     value.text_seed.seed_pack_version = "1";
     value.text_seed.charset_name = value.charset_name;
     value.text_seed.collation_name = value.collation_name;
     value.charset_resource.present = true;
+    value.charset_resource.database_uuid = context.database_uuid;
     value.charset_resource.resource_family = "charset";
     value.charset_resource.canonical_name = value.charset_name;
     value.charset_resource.resource_uuid =
@@ -417,6 +425,8 @@ class FakeTargetResolver final
     value.charset_resource.max_bytes = 4;
     value.charset_resource.variable_width = true;
     value.collation_resource.present = true;
+    value.collation_resource.database_uuid = context.database_uuid;
+    value.collation_resource.comparison_profile = value.text_seed.comparison_profile;
     value.collation_resource.resource_family = "collation";
     value.collation_resource.canonical_name = value.collation_name;
     value.collation_resource.resource_uuid =
@@ -785,7 +795,7 @@ CanonicalGraphEvidence GraphEvidence(
     binding.required_object_uuids = {api::EngineUuid{profile.relation_uuid}};
     sblr::SblrOperand operand;
     operand.ordinal = static_cast<std::uint32_t>(operands.size() + 1);
-    operand.type = "relational_node_binding_v1"; operand.name = "slot_" + std::to_string(node);
+    operand.type = "relational_node_binding_v2"; operand.name = "slot_" + std::to_string(node);
     operand.value_kind = sblr::SblrValueKind::relational_node_binding;
     assert(sblr::EncodeRelationalNodeBindingV1(binding, &operand.value_body));
     operands.push_back(std::move(operand));
@@ -820,7 +830,7 @@ CanonicalGraphEvidence GraphEvidence(
     } else record.bound_name_uuid = api::EngineUuid{profile.column_uuid};
     sblr::SblrOperand operand;
     operand.ordinal = static_cast<std::uint32_t>(operands.size() + 1);
-    operand.type = "relational_expression_v1"; operand.name = "slot_" + std::to_string(id);
+    operand.type = "relational_expression_v2"; operand.name = "slot_" + std::to_string(id);
     operand.value_kind = sblr::SblrValueKind::relational_expression;
     assert(sblr::EncodeRelationalExpressionV1(record, &operand.value_body));
     operands.push_back(std::move(operand));
@@ -1044,6 +1054,13 @@ void RequireProjectionKindRefusal(const std::uint64_t ordinal,
   request.pre_contextual_operand_count = graph.pre_contextual_operand_count;
   request.exact_sbxn = sbxn;
   const auto prepared = api::PrepareContextualTextLiteralAuthorityV2(request);
+  if (prepared.ok || prepared.diagnostic.code != "CTB.TEXT.DESCRIPTOR_INVALID" ||
+      prepared.diagnostic.message_key != "engine.contextual_text_literal.target_projection_column_mismatch") {
+    std::cerr << "projection kind refusal: kind=" << descriptor_kind
+              << " ok=" << prepared.ok << " code=" << prepared.diagnostic.code
+              << " key=" << prepared.diagnostic.message_key
+              << " detail=" << prepared.diagnostic.detail << '\n';
+  }
   assert(!prepared.ok &&
          prepared.diagnostic.code == "CTB.TEXT.DESCRIPTOR_INVALID" &&
          prepared.diagnostic.message_key ==

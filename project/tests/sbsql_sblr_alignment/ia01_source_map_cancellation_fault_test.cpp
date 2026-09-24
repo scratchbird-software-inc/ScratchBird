@@ -1,3 +1,4 @@
+#include "wire/public_result_packet.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #define SCRATCHBIRD_IA01_MISSING_EXECUTOR_FIXTURE_ONLY
@@ -349,11 +350,15 @@ int main(){auto fixture=CreateFixture();PublicSession session(fixture);std::atom
                   summary.rows_produced == 0 && summary.diagnostics_count == 0,
               "SOURCE_MAP void must not fabricate rows or diagnostics");
       sb_engine_string_view_t payload{};
-      Require(sb_engine_result_payload(result, &payload) == SB_ENGINE_STATUS_OK &&
-                  std::string_view(payload.data, payload.size_bytes).find("result_kind=void\n")
-                      != std::string_view::npos &&
-                  std::string_view(payload.data, payload.size_bytes).find(evidence)
-                      != std::string_view::npos,
+      Require(sb_engine_result_payload(result, &payload) == SB_ENGINE_STATUS_OK,
+              "SOURCE_MAP public payload unavailable");
+      namespace packet = scratchbird::wire::public_result;
+      const std::string_view bytes(payload.data, payload.size_bytes);
+      const auto kind = packet::Find(bytes, "result_kind");
+      const auto bound_evidence = packet::Evidence(bytes, "engine.op.source_map");
+      Require(kind && kind->kind == packet::Kind::text && kind->value == "void" &&
+                  bound_evidence && bound_evidence->kind == packet::Kind::text &&
+                  bound_evidence->value == evidence,
               "SOURCE_MAP public payload must carry typed void and correctly bound evidence");
       const auto suffix = trace_after.substr(trace_before.size());
       Require(suffix.find("layer=source_map_executor") != std::string::npos &&
