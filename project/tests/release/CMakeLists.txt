@@ -879,6 +879,7 @@ add_executable(public_sblr_uuid_mga_route_integration_gate
 )
 target_compile_features(public_sblr_uuid_mga_route_integration_gate PRIVATE cxx_std_23)
 target_link_libraries(public_sblr_uuid_mga_route_integration_gate PRIVATE
+  sb_engine
   sb_engine_sblr
   sb_core_memory
   sb_core_index

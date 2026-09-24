@@ -11,6 +11,11 @@
 #include "api_types.hpp"
 #include "catalog/datatype_index_optimizer_admission_api.hpp"
 #include "database_lifecycle.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "security/security_principal_lifecycle.hpp"
+#include "security/security_model.hpp"
+#include "server_engine_bridge/statement_context.hpp"
+#include "engine/sblr/sblr_literal_runtime.hpp"
 #include "hash_digest.hpp"
 #include "index_route_capability.hpp"
 #include "local_transaction_store.hpp"
@@ -18,6 +23,7 @@
 #include "query/plan_api.hpp"
 #include "security/authorization_api.hpp"
 #include "sblr_dispatch.hpp"
+#include "scratchbird/engine/sblr_envelope.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "relational_descriptor_codec.hpp"
@@ -152,9 +158,11 @@ TypedUuid MakeUuid(UuidKind kind, u64 offset) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-std::string UuidText(const TypedUuid& typed_uuid) {
-  return typed_uuid.valid() ? uuid::UuidToString(typed_uuid.value)
-                            : std::string{};
+std::string IdentityBytes(const TypedUuid& typed_uuid) {
+  return typed_uuid.valid()
+      ? std::string(reinterpret_cast<const char*>(typed_uuid.value.bytes.data()),
+                    typed_uuid.value.bytes.size())
+      : std::string{};
 }
 
 api::EngineDescriptor Descriptor(std::string canonical_type_name,
@@ -175,19 +183,7 @@ api::EngineTypedValue TypedValue(std::string canonical_type_name,
   return value;
 }
 
-void AddGrant(api::EngineRequestContext* context,
-              const TypedUuid& target_uuid,
-              std::string right,
-              u64 offset) {
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid = MakeUuid(UuidKind::object, offset).value;
-  grant.subject_uuid = context->principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = target_uuid.value;
-  grant.right = std::move(right);
-  grant.security_epoch = context->security_epoch;
-  context->authorization_context.grants.push_back(std::move(grant));
-}
+void Require(bool ok, std::string_view message);
 
 api::EngineRequestContext Context(const Fixture& fixture,
                                   std::string request_id) {
@@ -196,51 +192,56 @@ api::EngineRequestContext Context(const Fixture& fixture,
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid.value;
-  context.node_uuid = MakeUuid(UuidKind::object, 10).value;
-  context.principal_uuid = fixture.principal_uuid.value;
+  context.default_root_uuid = fixture.filespace_uuid.value;
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(context.database_path);
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "PCR-006 durable bootstrap principal unavailable");
+  context.principal_uuid = bootstrap.state.principal_uuid.value;
   context.session_uuid = fixture.session_uuid.value;
-  context.statement_uuid = MakeUuid(UuidKind::object, 11).value;
-  context.statement_metadata_snapshot_uuid =
-      MakeUuid(UuidKind::object, 13).value;
-  context.catalog_epoch_uuid =
-      MakeUuid(UuidKind::object, 14).value;
-  context.statement_metadata_snapshot_engine_owned = true;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 7;
-  context.security_epoch = 11;
-  context.resource_epoch = 13;
-  context.name_resolution_epoch = 17;
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid =
-      MakeUuid(UuidKind::object, 12).value;
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = 19;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  context.authorization_context.effective_subjects.push_back(
-      {context.principal_uuid, "principal"});
-  context.authorization_context.evidence_tags.push_back(
-      "public_sblr_uuid_mga_route_integration_gate");
-  context.optimizer_capability_snapshot_uuid =
-      MakeUuid(UuidKind::object, 15).value;
-  context.optimizer_resource_snapshot_uuid =
-      MakeUuid(UuidKind::object, 16).value;
-  context.optimizer_route_snapshot_uuid =
-      MakeUuid(UuidKind::object, 17).value;
-  context.optimizer_route_epoch = 23;
-  context.optimizer_route_generation = 29;
-  context.optimizer_memory_budget_bytes = 8 * 1024 * 1024;
-  context.optimizer_maximum_candidate_count = 4096;
-  context.optimizer_maximum_memo_groups = 512;
-  context.optimizer_maximum_search_steps = 16384;
-  context.optimizer_maximum_planning_time_ns = 10'000'000;
-  context.current_monotonic_ns = "31000000";
-  AddGrant(&context, fixture.relation_uuid, "OBS_INDEX_PROFILE_READ", 20);
-  AddGrant(&context, fixture.relation_uuid, "OBS_AGENT_STATE_READ", 21);
+  context.catalog_generation_id = 1;
+  context.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
+  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
+  context.security_epoch = 1;
+  context.resource_epoch = 1;
+  context.name_resolution_epoch = 1;
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(context);
+  Require(loaded.ok, "PCR-006 durable security catalog unavailable");
+  const auto& lifecycle = loaded.state;
+  api::DurableAuthorizationState authority;
+  authority.authority_uuid = context.database_uuid;
+  authority.security_context_generation = lifecycle.security_context_generation;
+  authority.security_epoch = lifecycle.security_generation;
+  authority.policy_epoch = lifecycle.policy_generation;
+  authority.catalog_generation_id = 1;
+  authority.engine_owned_sysarch_role_uuid = bootstrap.state.sysarch_role_uuid.value;
+  for (const auto& principal : lifecycle.principals)
+    if (!principal.deleted && principal.lifecycle_state == "active")
+      authority.principals.push_back({principal.principal_uuid, "principal", true,
+                                     authority.security_epoch});
+  for (const auto& role : lifecycle.roles)
+    if (!role.deleted && role.lifecycle_state == "active")
+      authority.roles.push_back({role.role_uuid, true, authority.security_epoch});
+  for (const auto& membership : lifecycle.memberships)
+    if (!membership.revoked)
+      authority.memberships.push_back({membership.member_principal_uuid, "principal",
+          membership.container_uuid, membership.container_kind, true, authority.security_epoch});
+  for (const auto& grant : lifecycle.grants)
+    if (!grant.revoked)
+      authority.grants.push_back({grant.grant_uuid, grant.grantee_uuid, grant.grantee_kind,
+          grant.target_object_uuid, grant.privilege, grant.grant_effect == "deny", true,
+          authority.security_epoch});
+  const auto materialized = api::MaterializeDurableAuthorizationContext(authority,
+      {context.principal_uuid, authority.security_epoch, authority.policy_epoch,
+       authority.catalog_generation_id});
+  Require(materialized.ok, "PCR-006 durable authorization unavailable");
+  context.authorization_context = materialized.context;
+  context.security_epoch = authority.security_epoch;
+  context.authorization_context.security_epoch = authority.security_epoch;
   return context;
 }
 
@@ -331,6 +332,13 @@ Fixture CreateFixture(const std::filesystem::path& root) {
   create.require_resource_seed_pack = false;
   create.allow_minimal_resource_bootstrap = true;
   create.allow_overwrite = true;
+  create.bootstrap_principal_name = "public_route_owner";
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
@@ -339,149 +347,372 @@ Fixture CreateFixture(const std::filesystem::path& root) {
   return fixture;
 }
 
-std::string EncodeHex(std::string_view value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string encoded;
-  encoded.reserve(value.size() * 2);
-  for (const unsigned char ch : value) {
-    encoded.push_back(kHex[ch >> 4]);
-    encoded.push_back(kHex[ch & 0x0f]);
+namespace platform = scratchbird::core::platform;
+namespace bridge = scratchbird::server_engine_bridge;
+namespace runtime = scratchbird::engine::sblr;
+using Bytes = std::vector<std::uint8_t>;
+[[noreturn]] void Fail(std::string_view message) { std::cerr << message << '\n'; std::exit(EXIT_FAILURE); }
+void Require(bool ok, std::string_view message) { if (!ok) Fail(message); }
+std::array<std::uint8_t, 16> RawUuid(const platform::Uuid& value) { return value.bytes; }
+void U16(Bytes* out, std::uint16_t value) { for (unsigned i=0;i<2;++i) out->push_back(value>>(8*i)); }
+void U32(Bytes* out, std::uint32_t value) { for (unsigned i=0;i<4;++i) out->push_back(value>>(8*i)); }
+void U64(Bytes* out, std::uint64_t value) { for (unsigned i=0;i<8;++i) out->push_back(value>>(8*i)); }
+struct LiteralBinding {
+  Bytes sbxn;
+  std::array<std::uint8_t,16> descriptor_uuid{};
+  std::uint64_t descriptor_generation = 0;
+};
+class ProbeSession {
+ public:
+  explicit ProbeSession(const api::EngineRequestContext& context) {
+    sb_engine_open_params_v1_t open{};
+    open.struct_size = sizeof(open);
+    open.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    open.database_path_utf8 = context.database_path.data();
+    open.database_path_size = context.database_path.size();
+    open.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
+    Check(sb_engine_open(&open, &engine_, nullptr), nullptr, "engine open");
+    sb_engine_session_params_v1_t begin{};
+    begin.struct_size = sizeof(begin);
+    begin.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    std::copy(context.principal_uuid.bytes.begin(), context.principal_uuid.bytes.end(),
+              begin.effective_user_uuid.bytes);
+    std::copy(context.session_uuid.bytes.begin(), context.session_uuid.bytes.end(),
+              begin.session_uuid.bytes);
+    begin.default_language_utf8 = "en";
+    begin.default_language_size = 2;
+    begin.trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
+    Check(sb_engine_session_begin(engine_, &begin, &session_, nullptr), nullptr,
+          "session begin");
   }
-  return encoded;
-}
-
-void AppendLittleEndianU64(std::vector<std::uint8_t>* output,
-                           std::uint64_t value) {
-  for (unsigned byte = 0; byte < 8; ++byte) {
-    output->push_back(
-        static_cast<std::uint8_t>((value >> (byte * 8)) & 0xffu));
+  ~ProbeSession() {
+    sb_engine_session_end_params_v1_t end{};
+    end.struct_size = sizeof(end);
+    end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    end.rollback_active_transactions = 1;
+    end.cancel_open_results = 1;
+    (void)sb_engine_session_end(session_, &end, nullptr);
+    (void)sb_engine_close(engine_, nullptr);
   }
-}
-
-void RequireEncoding(bool ok, std::string_view detail) {
-  if (!Expect(ok, detail)) std::abort();
-}
-
-sblr::SblrOperand IdentityOperand(std::string name, const scratchbird::core::platform::Uuid& id) {
-  sblr::SblrOperand out;
-  out.type = "uuid";
-  out.name = std::move(name);
-  out.value_kind = sblr::SblrValueKind::uuid_ref;
-  out.value_body.assign(id.bytes.begin(), id.bytes.end());
-  return out;
-}
-
-sblr::SblrOperand DescriptorOperand(std::uint32_t id, const scratchbird::core::platform::Uuid& identity,
-                                   const scratchbird::core::platform::Uuid& type) {
-  api::RelationalTypeDescriptor value;
-  value.descriptor_id = id;
-  value.descriptor_uuid = identity;
-  value.type_uuid = type;
-  value.nullability = api::RelationalNullability::kNonNull;
-  sblr::SblrOperand out;
-  out.type = "relational_descriptor_v1";
-  out.name = "slot_" + std::to_string(id);
-  out.value_kind = sblr::SblrValueKind::relational_type_descriptor;
-  RequireEncoding(sblr::EncodeRelationalTypeDescriptorV1(value, &out.value_body), "PCR-006 descriptor encoding failed");
-  return out;
-}
-
-sblr::SblrOperand ExpressionOperand(std::uint32_t id, std::uint32_t descriptor,
-    api::RelationalExpressionKind kind, std::vector<std::uint32_t> children = {},
-    std::optional<scratchbird::core::platform::Uuid> name = {}, std::optional<std::string> literal = {},
-    std::optional<std::string> op = {}) {
-  api::RelationalExpressionRecord value;
-  value.expression_id = id;
-  value.result_descriptor_id = descriptor;
-  value.expression_kind = kind;
-  value.child_expression_ids = std::move(children);
-  value.bound_name_uuid = name;
-  value.literal_or_parameter_ref = std::move(literal);
-  value.operator_name = std::move(op);
-  if (kind == api::RelationalExpressionKind::kLiteral)
-    value.literal_kind = api::RelationalLiteralKind::kNumeric;
-  sblr::SblrOperand out;
-  out.type = "relational_expression_v1";
-  out.name = "slot_" + std::to_string(id);
-  out.value_kind = sblr::SblrValueKind::relational_expression;
-  RequireEncoding(sblr::EncodeRelationalExpressionV1(value, &out.value_body), "PCR-006 expression encoding failed");
-  return out;
-}
-
-sblr::SblrOperand BindingOperand(std::uint32_t node, std::string variant,
-    std::vector<std::uint32_t> expressions, std::optional<scratchbird::core::platform::Uuid> property = {}) {
-  sblr::RelationalNodeBindingRecord value;
-  value.node_id = node;
-  value.semantic_variant_id = std::move(variant);
-  value.bound_expression_ids = std::move(expressions);
-  if (property) {
-    value.required_property_uuids = {*property};
-    value.delivered_property_uuids = {*property};
-  }
-  sblr::SblrOperand out;
-  out.type = "relational_node_binding_v1";
-  out.name = "slot_" + std::to_string(node);
-  out.value_kind = sblr::SblrValueKind::relational_node_binding;
-  RequireEncoding(sblr::EncodeRelationalNodeBindingV1(value, &out.value_body), "PCR-006 binding encoding failed");
-  return out;
-}
-
-void FinalizeProductionOperands(sblr::SblrOperationEnvelope* envelope) {
-  std::uint32_t ordinal = 1;
-  for (auto& operand : envelope->operands) {
-    if (!operand.value_body.empty()) { operand.ordinal = ordinal++; continue; }
-    if (!operand.name.empty() &&
-        std::all_of(operand.name.begin(), operand.name.end(),
-                    [](const unsigned char ch) {
-                      return ch >= '0' && ch <= '9';
-                    })) {
-      operand.name = "slot_" + operand.name;
+  ProbeSession(const ProbeSession&) = delete;
+  ProbeSession& operator=(const ProbeSession&) = delete;
+  sb_engine_session_t get() const { return session_; }
+  static void Check(sb_engine_status_t status, sb_engine_result_t result,
+                    const char* phase) {
+    if (status != SB_ENGINE_STATUS_OK && result != nullptr) {
+      sb_engine_diagnostic_set_view_t diagnostics{};
+      if (sb_engine_result_diagnostics(result, &diagnostics) == SB_ENGINE_STATUS_OK) {
+        for (std::size_t i = 0; i < diagnostics.diagnostic_count; ++i) {
+          const auto& d = diagnostics.diagnostics[i];
+          for (const auto text : {d.symbolic_code, d.message_key, d.safe_detail}) {
+            if (text.data) std::cerr.write(text.data, text.size_bytes);
+            std::cerr << ':';
+          }
+          std::cerr << '\n';
+        }
+      }
     }
-    const auto value = std::move(operand.value);
-    operand.value.clear();
-    operand.value_kind = sblr::SblrValueKind::literal_typed;
-    operand.value_body.assign(16, 0);
-    operand.value_body.front() = 0x73;
-    AppendLittleEndianU64(&operand.value_body, value.size());
-    operand.value_body.insert(operand.value_body.end(), value.begin(),
-                              value.end());
-    operand.ordinal = ordinal++;
+    if (result) sb_engine_result_release(result);
+    if (status != SB_ENGINE_STATUS_OK)
+      Fail(std::string("public route fixture ") + phase + " failed");
   }
+ private:
+  sb_engine_handle_t engine_ = nullptr;
+  sb_engine_session_t session_ = nullptr;
+};
+
+class ProbeStatement {
+ public:
+  ProbeStatement(const ProbeSession& session, const api::EngineRequestContext& base) {
+    namespace bridge = scratchbird::server_engine_bridge;
+    bridge::StatementContextAcquireRequest request;
+    request.engine_context = &base;
+    request.exact_transaction_uuid = base.transaction_uuid;
+    sb_engine_result_t result = nullptr;
+    const auto status = bridge::AcquireStatementContextReceipt(
+        session.get(), &request, &receipt_, &view, &result);
+    ProbeSession::Check(status, result, "statement acquisition");
+    result = nullptr;
+    const auto copied = bridge::CopyStatementContextEngineContextV1(
+        receipt_, &context, &result);
+    ProbeSession::Check(copied, result, "statement context copy");
+  }
+  ~ProbeStatement() {
+    (void)scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_);
+  }
+  ProbeStatement(const ProbeStatement&) = delete;
+  ProbeStatement& operator=(const ProbeStatement&) = delete;
+  api::EngineRequestContext context;
+  bridge::StatementContextReceiptView view;
+  bridge::StatementContextReceiptHandle get() const { return receipt_; }
+ private:
+  scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt_;
+};
+
+inline LiteralBinding FinalizeLiteral(bridge::StatementContextReceiptHandle receipt,
+                               const bridge::StatementContextReceiptView& view) {
+  runtime::SblrLiteralPrebindRequestV1 request;
+  request.preliminary_receipt_uuid = RawUuid(view.receipt_uuid);
+  request.catalog_snapshot_uuid = RawUuid(view.literal_catalog_snapshot_uuid);
+  request.catalog_generation = view.literal_catalog_generation;
+  request.security_epoch = view.security_epoch;
+  request.resource_epoch = view.resource_epoch;
+  request.mga_snapshot_uuid = RawUuid(view.statement_snapshot_uuid);
+  runtime::SblrLiteralDemandV1 demand;
+  demand.occurrence_id = 1;
+  demand.lexical_class = 1;
+  demand.context_class = 1;
+  const Bytes lexical{'4', '2'};
+  demand.lexical_sha256 = scratchbird::core::hash::ComputeSha256Digest(lexical).digest;
+  request.demands.push_back(demand);
+  request.demand_sha256 = runtime::ComputeSblrLiteralDemandSequenceSha256V1(request.demands);
+  const auto sbln = runtime::EncodeSblrLiteralPrebindRequestV1(request);
+  Bytes sblq;
+  sb_engine_result_t result = nullptr;
+  Require(bridge::NegotiateStatementLiteralDescriptorsV1(
+              receipt, sbln, &sblq, &result) == SB_ENGINE_STATUS_OK,
+          "live literal descriptor negotiation failed");
+  if (result) (void)sb_engine_result_release(result);
+  Require(sblq.size()==356 && std::equal(sblq.begin(),sblq.begin()+4,"SBLQ") &&
+              scratchbird::engine::SblrReadU32(sblq.data()+120)==1 &&
+              scratchbird::engine::SblrReadU64(sblq.data()+160)==1 &&
+              scratchbird::engine::SblrReadU32(sblq.data()+168)==184,
+          "live literal descriptor result was not canonical");
+  runtime::SblrLiteralPrebindResultV1 negotiated;
+  std::copy_n(sblq.begin()+128,32,negotiated.ordered_profile_sha256.begin());
+  runtime::SblrLiteralProfileMappingV1 mapping;
+  mapping.occurrence_id=1;mapping.sblp_bytes.assign(sblq.begin()+172,sblq.end());
+  negotiated.mappings.push_back(mapping);
+  const auto profile = runtime::DecodeSblrLiteralDescriptorProfileV1(
+      negotiated.mappings[0].sblp_bytes.data(),
+      negotiated.mappings[0].sblp_bytes.size());
+  Require(profile.ok, "live literal descriptor profile was not canonical");
+
+  runtime::SblrExpressionNodeTableV1 table;
+  runtime::SblrExpressionLiteralNodeV1 node;
+  node.node_id = 7;
+  node.parent_operand_ordinal = 1;
+  node.descriptor_uuid = profile.profile.profile_uuid;
+  node.descriptor_generation = profile.profile.descriptor_generation;
+  const auto literal_body=runtime::EncodeSblrLiteralInt64LeV1(42);
+  node.literal_body.assign(literal_body.begin(),literal_body.end());
+  table.nodes.push_back(node);
+  const auto sbxn = runtime::EncodeSblrExpressionNodeTableV1(table);
+  const auto sbxn_sha = scratchbird::core::hash::ComputeSha256Digest(sbxn).digest;
+
+  runtime::SblrLiteralBoundAstV1 bound;
+  bound.preliminary_receipt_uuid = request.preliminary_receipt_uuid;
+  bound.demand_sha256 = request.demand_sha256;
+  runtime::SblrLiteralBoundAstNodeV1 ast;
+  ast.parent_operand_ordinal = 1;
+  ast.node_id = 7;
+  ast.descriptor_uuid = profile.profile.profile_uuid;
+  ast.descriptor_generation = profile.profile.descriptor_generation;
+  ast.type_uuid = profile.profile.type_uuid;
+  ast.profile_uuid = profile.profile.profile_uuid;
+  ast.occurrence_id = 1;
+  ast.lexical_sha256 = demand.lexical_sha256;
+  bound.nodes.push_back(ast);
+  const auto sbba = runtime::EncodeSblrLiteralBoundAstV1(bound);
+  const auto bound_sha = runtime::ComputeSblrLiteralBoundAstSha256V1(sbba);
+
+  Bytes sblf(208, 0);
+  std::copy_n("SBLF", 4, sblf.begin());
+  auto store16 = [&](std::size_t o, std::uint16_t v) { sblf[o]=v; sblf[o+1]=v>>8; };
+  auto store32 = [&](std::size_t o, std::uint32_t v) { for(unsigned i=0;i<4;++i)sblf[o+i]=v>>(8*i); };
+  auto store64 = [&](std::size_t o, std::uint64_t v) { for(unsigned i=0;i<8;++i)sblf[o+i]=v>>(8*i); };
+  store16(4,1); store16(6,208); store32(8,static_cast<std::uint32_t>(208+sbba.size()+sbxn.size()));
+  std::copy(request.preliminary_receipt_uuid.begin(),request.preliminary_receipt_uuid.end(),sblf.begin()+16);
+  std::copy(request.demand_sha256.begin(),request.demand_sha256.end(),sblf.begin()+32);
+  std::copy(negotiated.ordered_profile_sha256.begin(),negotiated.ordered_profile_sha256.end(),sblf.begin()+64);
+  std::copy(bound_sha.begin(),bound_sha.end(),sblf.begin()+96);
+  std::copy(sbxn_sha.begin(),sbxn_sha.end(),sblf.begin()+128);
+  store64(160,request.catalog_generation); store64(168,request.security_epoch); store64(176,request.resource_epoch);
+  std::copy(request.mga_snapshot_uuid.begin(),request.mga_snapshot_uuid.end(),sblf.begin()+184);
+  store32(200,static_cast<std::uint32_t>(sbba.size())); store32(204,static_cast<std::uint32_t>(sbxn.size()));
+  sblf.insert(sblf.end(),sbba.begin(),sbba.end()); sblf.insert(sblf.end(),sbxn.begin(),sbxn.end());
+  Bytes sbla;
+  result = nullptr;
+  const auto finalize_status = bridge::FinalizeStatementLiteralBindingV1(
+      receipt, sblf, &sbla, &result);
+  if (finalize_status != SB_ENGINE_STATUS_OK) {
+    std::cerr << "literal-finalize:" << sb_engine_status_name(finalize_status);
+    if (result != nullptr) {
+      sb_engine_diagnostic_set_view_t diagnostics{};
+      if (sb_engine_result_diagnostics(result, &diagnostics) ==
+              SB_ENGINE_STATUS_OK &&
+          diagnostics.diagnostic_count != 0) {
+        const auto& diagnostic = diagnostics.diagnostics[0];
+        std::cerr << ':'
+                  << std::string(diagnostic.symbolic_code.data,
+                                 diagnostic.symbolic_code.size_bytes)
+                  << ':'
+                  << std::string(diagnostic.message_key.data,
+                                 diagnostic.message_key.size_bytes);
+      }
+    }
+    std::cerr << '\n';
+  }
+  Require(finalize_status == SB_ENGINE_STATUS_OK,
+          "live literal binding finalize failed");
+  if(result)(void)sb_engine_result_release(result);
+  Require(sbla.size()==264,"live literal admission record size differed");
+  LiteralBinding binding; binding.sbxn=sbxn; binding.descriptor_uuid=profile.profile.profile_uuid;
+  binding.descriptor_generation=profile.profile.descriptor_generation;
+  return binding;
+}
+sblr::SblrOperand UuidQueryOperand(std::uint32_t ordinal, std::string type,
+                                  std::string name, const platform::Uuid& value) {
+  Require(type == "uuid", "UUID operand type required");
+  sblr::SblrOperand operand;
+  operand.ordinal = ordinal; operand.type = std::move(type); operand.name = std::move(name);
+  operand.value_kind = sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(value.bytes.begin(), value.bytes.end());
+  return operand;
+}
+
+sblr::SblrOperand TypedQueryOperand(std::uint32_t ordinal, std::string type,
+                                    std::string name,
+                                    std::string_view value) {
+  sblr::SblrOperand operand;
+  operand.ordinal = ordinal;
+  operand.type = std::move(type);
+  operand.name = std::move(name);
+  operand.value_kind = sblr::SblrValueKind::literal_typed;
+  const auto carrier_type_uuid =
+      RawUuid(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712"));
+  operand.value_body.assign(carrier_type_uuid.begin(),
+                            carrier_type_uuid.end());
+  U64(&operand.value_body, value.size());
+  operand.value_body.insert(operand.value_body.end(), value.begin(),
+                            value.end());
+  return operand;
 }
 
 sblr::SblrOperationEnvelope QueryExecuteEnvelope(
-    const api::EngineRequestContext& context) {
-  constexpr auto kInt64TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
-  auto envelope =
-      Envelope("query.execute", "SBLR_QUERY_EXECUTE", "pcr006.query");
-  envelope.requires_transaction_context = true;
+    const bridge::StatementContextReceiptView& view,
+    const platform::Uuid& parser_uuid,
+    const LiteralBinding& literal_binding,
+    const bridge::StatementContextReceiptHandle& receipt) {
+  api::EngineRequestContext admitted_context;
+  Require(bridge::CopyStatementContextEngineContextV1(
+              receipt, &admitted_context, nullptr) == SB_ENGINE_STATUS_OK,
+          "query fixture live datatype context unavailable");
+  api::RelationalTypeDescriptor descriptor_record;
+  descriptor_record.descriptor_id = 1;
+  descriptor_record.descriptor_uuid.bytes = literal_binding.descriptor_uuid;
+  descriptor_record.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
+  descriptor_record.nullability = api::RelationalNullability::kNonNull;
+  descriptor_record.datatype_identity_authoritative = true;
+  descriptor_record.descriptor_generation = literal_binding.descriptor_generation;
+  descriptor_record.type_generation = 1;
+  descriptor_record.codec_id = "datatype.int64.le.v1";
+  descriptor_record.codec_version = 1; descriptor_record.codec_generation = 1;
+  descriptor_record.statement_receipt_uuid = view.receipt_uuid;
+  descriptor_record.datatype_catalog_snapshot_uuid = admitted_context.datatype_catalog_snapshot_uuid;
+  descriptor_record.datatype_catalog_generation = admitted_context.datatype_catalog_generation;
+  descriptor_record.datatype_registry_generation = admitted_context.datatype_registry_generation;
 
-  const auto descriptor_uuid =
-      MakeUuid(UuidKind::object, 50).value;
-  envelope.operands = {
-      {"uint16", "relational_wire_version", "2"},
-      IdentityOperand("relational_bound_sblr_tree_uuid", MakeUuid(UuidKind::object, 51).value),
-      IdentityOperand("relational_catalog_epoch_uuid", context.catalog_epoch_uuid),
-      IdentityOperand("relational_security_context_uuid", context.authorization_context.authority_uuid),
-      IdentityOperand("relational_statement_uuid", context.statement_uuid),
-      IdentityOperand("relational_owning_transaction_uuid", context.transaction_uuid),
-      IdentityOperand("relational_statement_snapshot_uuid", context.statement_snapshot_uuid),
-      IdentityOperand("relational_statement_metadata_snapshot_uuid", context.statement_metadata_snapshot_uuid),
-      {"uint64", "relational_local_transaction_id",
-       std::to_string(context.local_transaction_id)},
-      {"uint64", "relational_snapshot_visible_through_local_transaction_id",
-       std::to_string(
-           context.snapshot_visible_through_local_transaction_id)},
-      {"uint32", "relational_root_node_id", "1"},
-      DescriptorOperand(1, descriptor_uuid, kInt64TypeUuid),
-      ExpressionOperand(1, 1, api::RelationalExpressionKind::kLiteral, {}, {}, "42"),
-      {"relational_values_row_v1", "1", "1"},
-      {"relational_output_v1", "1", "1|1|1|1|0|" + EncodeHex("id")},
-      {"relational_node_v1", "1", "13|0|-|1|1"},
-      BindingOperand(1, "values.literal-table.v1", {1}),
-  };
-  FinalizeProductionOperands(&envelope);
-  return envelope;
+  auto member = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      "pcr006.query");
+  member.opcode_code = 4615;
+  member.result_shape = "query_execute_result";
+  member.diagnostic_shape = "diagnostic_vector";
+  member.parser_package_uuid = parser_uuid;
+  member.registry_snapshot_uuid = view.catalog_epoch_uuid;
+  member.requires_security_context = true;
+  member.requires_transaction_context = true;
+  member.parser_resolved_names_to_uuids = true;
+
+  std::uint32_t ordinal = 1;
+  member.operands.push_back(TypedQueryOperand(
+      ordinal++, "uint16", "relational_wire_version", "2"));
+  member.operands.push_back(UuidQueryOperand(
+      ordinal++, "uuid", "relational_bound_sblr_tree_uuid",
+      view.bound_ast_uuid));
+  member.operands.push_back(UuidQueryOperand(
+      ordinal++, "uuid", "relational_catalog_epoch_uuid",
+      view.catalog_epoch_uuid));
+  member.operands.push_back(UuidQueryOperand(
+      ordinal++, "uuid", "relational_security_context_uuid",
+      view.security_context_uuid));
+  member.operands.push_back(UuidQueryOperand(
+      ordinal++, "uuid", "relational_statement_uuid", view.statement_uuid));
+  member.operands.push_back(UuidQueryOperand(
+      ordinal++, "uuid", "relational_owning_transaction_uuid",
+      view.owning_transaction_uuid));
+  member.operands.push_back(UuidQueryOperand(
+      ordinal++, "uuid", "relational_statement_snapshot_uuid",
+      view.statement_snapshot_uuid));
+  member.operands.push_back(UuidQueryOperand(
+      ordinal++, "uuid", "relational_statement_metadata_snapshot_uuid",
+      view.statement_metadata_snapshot_uuid));
+  member.operands.push_back(TypedQueryOperand(
+      ordinal++, "uint64", "relational_local_transaction_id",
+      std::to_string(view.owning_local_transaction_id)));
+  member.operands.push_back(TypedQueryOperand(
+      ordinal++, "uint64",
+      "relational_snapshot_visible_through_local_transaction_id",
+      std::to_string(view.visible_committed_high_watermark)));
+  member.operands.push_back(TypedQueryOperand(
+      ordinal++, "uint32", "relational_root_node_id", "1"));
+  sblr::SblrOperand descriptor_operand;
+  descriptor_operand.ordinal = ordinal++;
+  descriptor_operand.type = "relational_descriptor_v3";
+  descriptor_operand.name = "slot_1";
+  descriptor_operand.value_kind = sblr::SblrValueKind::relational_type_descriptor;
+  Require(sblr::EncodeRelationalTypeDescriptorV1(descriptor_record, &descriptor_operand.value_body),
+          "relational descriptor encode failed");
+  member.operands.push_back(std::move(descriptor_operand));
+
+  const auto table_sha = scratchbird::core::hash::ComputeSha256Digest(
+      literal_binding.sbxn);
+  Require(table_sha.ok(), "PCR-006 literal table hash failed");
+  sblr::SblrOperand reference;
+  reference.ordinal = ordinal++;
+  reference.type = "relational_expression_v1";
+  reference.name = "1";
+  reference.value_kind = sblr::SblrValueKind::expression_node_ref;
+  U16(&reference.value_body, 1);
+  U16(&reference.value_body, 0);
+  U32(&reference.value_body, 1);
+  U64(&reference.value_body, 7);
+  reference.value_body.insert(reference.value_body.end(),
+                              table_sha.digest.begin(),
+                              table_sha.digest.end());
+  reference.value_body.insert(reference.value_body.end(),
+                              literal_binding.descriptor_uuid.begin(),
+                              literal_binding.descriptor_uuid.end());
+  U64(&reference.value_body, literal_binding.descriptor_generation);
+  member.operands.push_back(std::move(reference));
+
+  member.operands.push_back(TypedQueryOperand(
+      ordinal++, "relational_output_v1", "slot_1",
+      "1|1|1|1|0|6964"));
+  member.operands.push_back(TypedQueryOperand(
+      ordinal++, "relational_values_row_v1", "slot_1", "1"));
+  member.operands.push_back(TypedQueryOperand(
+      ordinal++, "relational_node_v1", "slot_1", "13|0|-|1|1"));
+  sblr::SblrOperand binding;
+  binding.ordinal = ordinal++;
+  binding.type = "relational_node_binding_v2";
+  binding.name = "slot_1";
+  binding.value_kind = sblr::SblrValueKind::relational_node_binding;
+  Require(sblr::EncodeRelationalNodeBindingV1(
+              {1, "values.literal-table.v1", {1}, {}, {}, {}}, &binding.value_body),
+          "PCR-006 source VALUES binary binding encoding failed");
+  member.operands.push_back(std::move(binding));
+
+  sblr::SblrOperand table;
+  table.ordinal = ordinal++;
+  table.type = "expression.node_table.v1";
+  table.name = "expression_nodes";
+  table.value_kind = sblr::SblrValueKind::expression_node_table;
+  table.value_body = literal_binding.sbxn;
+  member.operands.push_back(std::move(table));
+  Require(ordinal == 19, "PCR-006 source VALUES operand count drifted");
+  return member;
 }
 
 bool ProveSblrEnvelopeAuthority() {
@@ -611,24 +842,31 @@ bool BeginRouteTransaction(Fixture const& fixture,
       begun.snapshot_visible_through_local_transaction_id;
   context->transaction_isolation_level = begun.isolation_level;
 
-  api::EnginePublishStatementSnapshotRequest publish;
-  publish.context = *context;
-  const auto published = api::EnginePublishStatementSnapshot(publish);
-  if (!ExpectApiOk(published,
-                   "engine-owned statement snapshot publication failed")) {
-    return false;
-  }
-  context->statement_snapshot_uuid = published.statement_snapshot_uuid;
-  context->snapshot_visible_through_local_transaction_id =
-      published.snapshot_vector.visible_committed_high_watermark;
+  // Statement identity and snapshot are issued together by the receipt
+  // acquisition in ProveRoutePlanning, after transaction admission.
   (void)fixture;
   return true;
 }
 
 bool ProveRoutePlanning(const Fixture& fixture,
-                        const api::EngineRequestContext& context) {
+                        const api::EngineRequestContext& base) {
   (void)fixture;
-  auto parser_authority = QueryExecuteEnvelope(context);
+  ProbeSession session(base);
+  ProbeStatement statement(session, base);
+  const auto binding = FinalizeLiteral(statement.get(), statement.view);
+  api::EngineRequestContext context;
+  Require(bridge::CopyStatementContextEngineContextV1(statement.get(), &context, nullptr) ==
+              SB_ENGINE_STATUS_OK, "PCR-006 finalized statement context unavailable");
+  Require(!context.statement_uuid.is_nil() &&
+              !context.statement_snapshot_uuid.is_nil() &&
+              context.statement_metadata_snapshot_engine_owned &&
+              context.transaction_uuid == base.transaction_uuid &&
+              context.local_transaction_id == base.local_transaction_id,
+          "PCR-006 receipt did not retain engine-owned statement and MGA identities");
+  const auto parser_uuid = MakeUuid(UuidKind::object, 40).value;
+  const auto query = [&] { return QueryExecuteEnvelope(statement.view, parser_uuid,
+                                                       binding, statement.get()); };
+  auto parser_authority = query();
   parser_authority.contains_sql_text = true;
   const auto parser_refused = Dispatch(context, std::move(parser_authority));
   bool ok = Expect(!parser_refused.accepted &&
@@ -639,7 +877,7 @@ bool ProveRoutePlanning(const Fixture& fixture,
                        "SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY"),
                    "optimizer route did not preserve parser SQL refusal") ;
 
-  auto transaction_authority = QueryExecuteEnvelope(context);
+  auto transaction_authority = query();
   transaction_authority.requires_transaction_context = true;
   auto transactionless = context;
   transactionless.transaction_uuid = {};
@@ -651,8 +889,19 @@ bool ProveRoutePlanning(const Fixture& fixture,
               "optimizer route did not reject parser transaction authority") &&
        ok;
 
+  for (const bool replace_receipt : {false, true}) {
+    auto crossed = context;
+    if (replace_receipt)
+      crossed.statement_receipt_uuid = MakeUuid(UuidKind::object, 70).value;
+    else
+      crossed.statement_snapshot_uuid = MakeUuid(UuidKind::object, 71).value;
+    const auto refused = Dispatch(crossed, query());
+    ok = Expect(!refused.api_result.ok && !refused.canonical_result_published,
+                "query.execute accepted a crossed binary statement receipt or snapshot UUID") && ok;
+  }
+
   const auto executed = sblr::DispatchSblrOperation(
-      {context, QueryExecuteEnvelope(context), api::EngineApiRequest{},
+      {context, query(), api::EngineApiRequest{},
        std::nullopt});
   return ExpectDispatchOk(executed,
                           "canonical query.execute descriptor DAG failed") &&
@@ -742,10 +991,10 @@ bool ProveIndexDatatypeAndAgentBoundaries(const Fixture& fixture) {
        ok;
 
   agents::AgentPolicyRecommendationApplicationRequest agent_request;
-  agent_request.recommendation_uuid = UuidText(MakeUuid(UuidKind::object, 60));
-  agent_request.evidence_uuid = UuidText(MakeUuid(UuidKind::object, 61));
+  agent_request.recommendation_uuid = IdentityBytes(MakeUuid(UuidKind::object, 60));
+  agent_request.evidence_uuid = IdentityBytes(MakeUuid(UuidKind::object, 61));
   agent_request.policy_family = "memory_governor_policy";
-  agent_request.scope_uuid = UuidText(fixture.database_uuid);
+  agent_request.scope_uuid = IdentityBytes(fixture.database_uuid);
   agent_request.metric_digest = "sha256:pcr006-memory-metric";
   agent_request.proposed_field_name = "emergency_reserve_percent";
   agent_request.proposed_field_value = "25";
@@ -821,7 +1070,8 @@ bool CommitRouteTransaction(api::EngineRequestContext* context,
   return ok;
 }
 
-bool ProveMGAInventoryFinality(const Fixture& fixture) {
+bool ProveMGAInventoryFinality(const Fixture& fixture, u64 transaction_id,
+                              const api::EngineUuid& transaction_uuid) {
   const auto loaded =
       db::LoadLocalTransactionInventoryFromDatabase(
           fixture.database_path.string());
@@ -832,8 +1082,8 @@ bool ProveMGAInventoryFinality(const Fixture& fixture) {
   for (const auto& entry : loaded.inventory.entries) {
     committed = committed ||
                 (entry.state == txn::TransactionState::committed &&
-                 entry.identity.local_id.value == 1 &&
-                 entry.identity.transaction_uuid.valid());
+                 entry.identity.local_id.value == transaction_id &&
+                 entry.identity.transaction_uuid.value == transaction_uuid);
   }
   ok = Expect(committed,
               "committed transaction was not recorded in MGA inventory") &&
@@ -879,8 +1129,10 @@ int main(int argc, char** argv) {
   ok = ProveRoutePlanning(fixture, context) && ok;
   ok = ProveSecurityAuthorization(fixture, context) && ok;
   ok = ProveIndexDatatypeAndAgentBoundaries(fixture) && ok;
+  const auto transaction_id = context.local_transaction_id;
+  const auto transaction_uuid = context.transaction_uuid;
   ok = CommitRouteTransaction(&context, transaction_evidence) && ok;
-  ok = ProveMGAInventoryFinality(fixture) && ok;
+  ok = ProveMGAInventoryFinality(fixture, transaction_id, transaction_uuid) && ok;
   ok = ProveClusterSblrFailsClosed(context) && ok;
 
   if (!ok) return 1;
