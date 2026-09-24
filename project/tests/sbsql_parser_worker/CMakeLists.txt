@@ -6218,6 +6218,7 @@ if(TARGET sb_engine_functions)
     sbsql_fixed_uuid_catalog_seed_gate
     PRIVATE
       sb_engine_functions
+      sbl_sbsql_parser_pipeline
   )
   add_test(
     NAME sbsql_fixed_uuid_catalog_seed_gate

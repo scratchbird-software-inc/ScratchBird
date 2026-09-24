@@ -8,6 +8,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "registry/function_seed_registry.hpp"
+#include "registry/generated/sbsql_generated_registry.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -622,8 +623,45 @@ void ValidateParserRegistryEvidence(const std::filesystem::path& repo_root, Harn
   const auto source = ReadText(repo_root / "project/src/parsers/sbsql_worker/registry/generated/sbsql_generated_registry.cpp");
   harness->Check(Contains(header, "GeneratedSurfaceRegistryRow"), "parser registry evidence header missing row type");
   harness->Check(Contains(header, "fixed_uuid_v7"), "parser registry evidence missing fixed_uuid_v7 field");
-  harness->Check(Contains(header, "kGeneratedSurfaceRegistryRowCount = 2617"),
-                 "parser registry evidence row count changed from corrected authority baseline");
+  // Compare compiled evidence with its checked-in generator input. Parser
+  // surface metadata is not the engine function UUID registry.
+  namespace parser = scratchbird::parser::sbsql;
+  const auto input = ReadCsv(repo_root /
+      "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
+      "SURFACE_IMPLEMENTATION_BACKLOG.csv");
+  if (!RequireColumns(input, {"surface_id", "fixed_uuid_v7", "canonical_name",
+                              "surface_kind", "family", "source_status"}, harness)) {
+    return;
+  }
+  const auto by_id = IndexUnique(input, "surface_id", harness);
+  IndexUnique(input, "fixed_uuid_v7", harness);
+  const auto rows = parser::GeneratedSurfaceRegistryRows();
+  harness->Check(!rows.empty(), "compiled parser registry evidence is empty");
+  harness->Check(rows.size() == parser::kGeneratedSurfaceRegistryRowCount &&
+                     rows.size() == input.rows.size(),
+                 "compiled parser registry count disagrees with generator input");
+  std::set<std::string_view> seen;
+  std::set<std::string_view> identities;
+  for (const auto& row : rows) {
+    harness->Check(seen.insert(row.surface_id).second,
+                   "compiled parser evidence repeats a surface id");
+    harness->Check(identities.insert(row.fixed_uuid_v7).second,
+                   "compiled parser evidence repeats an identity");
+    const auto found = by_id.find(std::string(row.surface_id));
+    harness->Check(found != by_id.end(),
+                   "compiled parser evidence has no generator input row");
+    if (found == by_id.end()) continue;
+    const auto& expected = *found->second;
+    harness->Check(row.fixed_uuid_v7 == Field(expected, "fixed_uuid_v7") &&
+                       row.canonical_name == Field(expected, "canonical_name") &&
+                       row.surface_kind == Field(expected, "surface_kind") &&
+                       row.family == Field(expected, "family") &&
+                       row.source_status == Field(expected, "source_status"),
+                   std::string(row.surface_id) +
+                       " compiled parser evidence differs from generator input");
+    harness->Check(parser::FindGeneratedSurfaceRegistryRowById(row.surface_id) == &row,
+                   std::string(row.surface_id) + " parser evidence lookup mismatch");
+  }
   harness->Check(Contains(source, "canonical_spec_plus_sblr_matrix"),
                  "parser registry evidence no longer references canonical/SBLR matrix evidence");
   harness->Check(!Contains(source, "019b76da-a800-"),
