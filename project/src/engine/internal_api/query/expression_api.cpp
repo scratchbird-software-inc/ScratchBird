@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/expression_api.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 #include "datatype_operations.hpp"
 #include "datatype_temporal_wire.hpp"
@@ -146,6 +147,12 @@ bool QowCanonicalUuidV1(const std::string_view value) {
 
 std::string QowCanonicalDescriptorFieldV1(const std::string& descriptor,
                                           const std::string& key) {
+  if (descriptor.starts_with("SBMETA")) {
+    CatalogColumnMetadata metadata;
+    if (!DecodeCatalogColumnMetadata(descriptor, &metadata)) return {};
+    const auto field = metadata.text.find(key);
+    return field == metadata.text.end() ? std::string{} : field->second;
+  }
   const std::string prefix = key + "=";
   std::string value;
   bool found = false;
@@ -303,6 +310,11 @@ bool QowCanonicalDescriptorIdentityV1(const EngineDescriptor& descriptor) {
   // These identities have dedicated binary slots. A second textual carrier
   // is ambiguous even when both values appear to agree; never parse it back.
   std::string_view fields = descriptor.encoded_descriptor;
+  if (fields.starts_with("SBMETA")) {
+    CatalogColumnMetadata metadata;
+    if (!DecodeCatalogColumnMetadata(fields, &metadata)) return false;
+    fields = {};
+  }
   while (!fields.empty()) {
     const auto end = fields.find(';');
     const auto field = fields.substr(0, end);

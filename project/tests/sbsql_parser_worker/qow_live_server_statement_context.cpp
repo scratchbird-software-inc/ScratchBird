@@ -9,6 +9,8 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
 #include <type_traits>
+#include <stdexcept>
+#include "wire/public_result_packet.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "ddl/create_api.hpp"
@@ -28,9 +30,12 @@
 #include "sblr_executor_availability_registry.hpp"
 #include "server_engine_bridge/statement_context.hpp"
 #include "session_registry.hpp"
+#include "session_metadata_context.hpp"
 #include "sbps.hpp"
 #include "transaction/transaction_api.hpp"
 #include "transaction_inventory.hpp"
+#include "transaction_snapshot.hpp"
+#include "security/security_principal_lifecycle.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -98,8 +103,7 @@ constexpr std::uint64_t kDefaultMgaRelationDecodedBytesPerPass =
     64ull * 1024ull * 1024ull;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -223,6 +227,10 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
   create.page_size = 16384;
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
+  create.bootstrap_principal_name = std::string(kFullRoutePrincipal);
+  create.bootstrap_credential_fingerprint = std::string(kFullRouteCredentialFingerprint);
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
   if (credentialed_full_route) {
     create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
     create.require_resource_seed_pack = true;
@@ -247,10 +255,7 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
 
   fixture.database_uuid = create.database_uuid.value;
   fixture.filespace_uuid = create.filespace_uuid.value;
-  fixture.principal_uuid = credentialed_full_route
-                               ? created.bootstrap_principal_uuid
-                               : NewTypedUuid(platform::UuidKind::principal,
-                                              fixture.salt + 4);
+  fixture.principal_uuid = created.bootstrap_principal_uuid;
   fixture.session_uuid =
       NewTypedUuid(platform::UuidKind::session, fixture.salt + 5);
   fixture.schema_uuid =
@@ -295,6 +300,7 @@ api::EngineRequestContext BeginTransaction(const Fixture& fixture) {
   begin.context.request_id = "qow-live-statement-context-begin";
   begin.context.database_path = fixture.database_path.string();
   begin.context.database_uuid = fixture.database_uuid;
+  begin.context.default_root_uuid = fixture.filespace_uuid;
   begin.context.principal_uuid = fixture.principal_uuid.value;
   begin.context.session_uuid = fixture.session_uuid.value;
   begin.context.security_context_present = true;
@@ -312,19 +318,17 @@ api::EngineRequestContext BeginTransaction(const Fixture& fixture) {
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
 
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid =
-      NewIdentity(platform::UuidKind::object, fixture.salt + 6);
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = 1;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  api::EngineAuthorizationSubject subject;
-  subject.subject_uuid = context.principal_uuid;
-  subject.subject_kind = "principal";
-  context.authorization_context.effective_subjects.push_back(
-      std::move(subject));
+  const auto security = api::LoadSecurityPrincipalLifecycleState(context);
+  Require(security.ok, "statement-context durable security catalog unavailable");
+  context.security_epoch = security.state.security_generation;
+  server::ServerSessionRecord session;
+  session.session_uuid = context.session_uuid.bytes;
+  session.effective_user_uuid = context.principal_uuid.bytes;
+  session.policy_generation = security.state.policy_generation;
+  session.catalog_generation = context.catalog_generation_id;
+  context.authorization_context = server::MaterializeDurableManagementAuthorizationContext(session, context);
+  Require(context.authorization_context.present,
+          "statement-context durable authorization unavailable");
   context.optimizer_route_epoch = 1;
   context.optimizer_route_generation = 1;
   context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
@@ -501,8 +505,9 @@ api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
       scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
       manifest.manifest.catalog_epoch, 1, found->descriptor_uuid.value, found->descriptor_epoch);
-  Require(identity.ok && !identity.row.type_uuid.is_nil(), "core type-codec identity unavailable");
-  return identity.row.type_uuid;
+  // The six-row scalar codec registry is a subset of the builtin catalog.
+  // Other builtin types use their actual manifest identity, as DDL does.
+  return identity.ok ? identity.row.type_uuid : found->descriptor_uuid.value;
 }
 
 std::string IdentityBytes(const api::EngineUuid& identity) {
@@ -1001,6 +1006,18 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
       receipt_context.datatype_catalog_generation,
       receipt_context.datatype_registry_generation, descriptor_uuid,
       int64_row.manifest.descriptor_rows.front().descriptor_epoch);
+  // Current DDL publishes the complete registry tuple. Derive the legacy
+  // suffix-absent test carrier explicitly, retaining its bound identities.
+  auto suffix_absent = persisted;
+  auto absent_fields = DescriptorFields(suffix_absent.value_descriptor.encoded_descriptor);
+  for (const auto key : {"datatype_descriptor_uuid", "datatype_descriptor_generation",
+                         "type_generation", "codec_id", "codec_version", "codec_generation",
+                         "null_encoding"}) {
+    absent_fields.text.erase(key);
+    absent_fields.identities.erase(key);
+  }
+  suffix_absent.value_descriptor.encoded_descriptor =
+      scratchbird::tests::NativeCatalogColumnFixture(std::move(absent_fields));
   const bool exact_suffix_absent =
       identity.ok && identity.row.codec_uuid.is_nil() &&
       persisted.value_descriptor.canonical_type_name == "int64" &&
@@ -1008,7 +1025,7 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
       persisted.value_descriptor.descriptor_uuid !=
           identity.row.descriptor_uuid &&
       sblr::Rcp079ExactPersistedColumnDescriptorV1(receipt_context,
-                                                   persisted);
+                                                   suffix_absent);
   if (!exact_suffix_absent) std::cerr << "qow_int64_suffix_authority_invalid\n";
   Require(exact_suffix_absent,
           "suffix-absent non-TEXT descriptor handle was not preserved");
@@ -1062,7 +1079,7 @@ void VerifyCanonicalNonTextPersistedSuffixAuthority(
   refused_field("codec_version", "01",
                 "non-canonical non-TEXT numeric suffix was admitted");
 
-  auto partial = persisted;
+  auto partial = suffix_absent;
   auto partial_fields = DescriptorFields(partial.value_descriptor.encoded_descriptor);
   partial_fields.identities["datatype_descriptor_uuid"] = identity.row.descriptor_uuid;
   partial.value_descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture(std::move(partial_fields));
@@ -1377,6 +1394,30 @@ void CreateObjectBackedRelation(Fixture* fixture) {
       ddl_receipt_context.datatype_catalog_generation;
   context.datatype_registry_generation =
       ddl_receipt_context.datatype_registry_generation;
+  const auto bind_descriptor = [&](api::EngineDescriptor& descriptor) {
+    const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    Require(manifest.ok(), "object-backed datatype catalog unavailable");
+    const auto found = dt::LookupDatatypeCatalogRow(manifest.manifest,
+        dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name));
+    Require(found.ok() && found.manifest.descriptor_rows.size() == 1,
+            "object-backed datatype descriptor unavailable");
+    const auto& row = found.manifest.descriptor_rows.front();
+    const auto codec = dt::LookupDatatypeTypeCodecIdentityV1(
+        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+        context.datatype_registry_generation, row.descriptor_uuid.value, row.descriptor_epoch);
+    descriptor.datatype_descriptor_uuid = row.descriptor_uuid.value;
+    descriptor.datatype_descriptor_generation = row.descriptor_epoch;
+    descriptor.type_uuid = codec.ok ? codec.row.type_uuid : row.descriptor_uuid.value;
+  };
+  std::uint64_t column_salt = fixture->salt + 200;
+  const auto bind_columns = [&](api::EngineCreateTableRequest& request) {
+    for (auto& definition : request.table_columns) {
+      definition.descriptor.descriptor_kind = "canonical_type_descriptor";
+      definition.requested_column_uuid = NewIdentity(platform::UuidKind::object, column_salt++);
+      definition.descriptor.descriptor_uuid = NewIdentity(platform::UuidKind::object, column_salt++);
+      bind_descriptor(definition.descriptor);
+    }
+  };
   const auto fixture_text_descriptor = [&]() {
     return scratchbird::tests::NativeCatalogColumnFixture({
         {{"type", "text"}, {"character_length", "256"}},
@@ -1437,6 +1478,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   text_column.descriptor.encoded_descriptor = fixture_text_descriptor();
   text_column.nullable = true;
   table.table_columns.push_back(std::move(text_column));
+  bind_columns(table);
   RequireEngineOk(api::EngineCreateTable(table),
                   "object-backed fixture table create failed");
 
@@ -1471,6 +1513,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   join_limit_column.descriptor.encoded_descriptor = "type=int64";
   join_limit_column.nullable = false;
   join_table.table_columns.push_back(std::move(join_limit_column));
+  bind_columns(join_table);
   RequireEngineOk(api::EngineCreateTable(join_table),
                   "object-backed join fixture table create failed");
 
@@ -1530,6 +1573,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
       2, "crs_uuid", "uuid",
       scratchbird::tests::NativeCatalogColumnFixture({{{"canonical", "uuid"}, {"nullable", "false"}}, {{"type_uuid", uuid_type_uuid}}}),
       false));
+  bind_columns(spatial_table);
   RequireEngineOk(api::EngineCreateTable(spatial_table),
                   "object-backed spatial fixture table create failed");
 
@@ -1550,6 +1594,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   columnar_table.table_columns.push_back(make_column(
       2, "payload", "text", fixture_text_descriptor(),
       false));
+  bind_columns(columnar_table);
   RequireEngineOk(api::EngineCreateTable(columnar_table),
                   "object-backed columnar fixture table create failed");
   const auto persisted_columnar = api::LoadMgaRelationStorageDescriptor(
@@ -1571,6 +1616,24 @@ void CreateObjectBackedRelation(Fixture* fixture) {
               SB_ENGINE_STATUS_OK,
           "object-backed fixture datatype receipt release failed");
   ddl_session.End();
+
+  const auto insert_rows = [&](api::EngineInsertRowsRequest& request) {
+    PublicSession session(*fixture, fixture->session_uuid);
+    bridge::StatementContextReceiptView view;
+    const auto receipt = Acquire(session.get(), context, &view);
+    Require(static_cast<bool>(receipt), "object-backed insert receipt acquisition failed");
+    sb_engine_result_t copy_result = nullptr;
+    const auto copied = bridge::CopyStatementContextEngineContextV1(
+        receipt, &request.context, &copy_result);
+    if (copy_result) sb_engine_result_release(copy_result);
+    Require(copied == SB_ENGINE_STATUS_OK, "object-backed insert receipt copy failed");
+    for (auto& row : request.input_rows)
+      for (auto& field : row.fields) bind_descriptor(field.second.descriptor);
+    const auto result = api::EngineInsertRows(request);
+    Require(bridge::ReleaseStatementContextReceipt(receipt) == SB_ENGINE_STATUS_OK,
+            "object-backed insert receipt release failed");
+    return result;
+  };
 
   api::EngineInsertRowsRequest insert;
   insert.context = context;
@@ -1624,7 +1687,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     insert.input_rows.push_back(std::move(row));
   }
   insert.estimated_row_count = insert.input_rows.size();
-  const auto inserted = api::EngineInsertRows(insert);
+  const auto inserted = insert_rows(insert);
   RequireEngineOk(inserted, "object-backed fixture row insert failed");
   Require(inserted.inserted_count == 3,
           "object-backed fixture did not insert three rows");
@@ -1659,7 +1722,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     join_insert.input_rows.push_back(std::move(row));
   }
   join_insert.estimated_row_count = join_insert.input_rows.size();
-  const auto join_inserted = api::EngineInsertRows(join_insert);
+  const auto join_inserted = insert_rows(join_insert);
   RequireEngineOk(join_inserted,
                   "object-backed join fixture row insert failed");
   Require(join_inserted.inserted_count == 3,
@@ -1715,7 +1778,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     spatial_insert.input_rows.push_back(std::move(row));
   }
   spatial_insert.estimated_row_count = spatial_insert.input_rows.size();
-  const auto spatial_inserted = api::EngineInsertRows(spatial_insert);
+  const auto spatial_inserted = insert_rows(spatial_insert);
   RequireEngineOk(spatial_inserted,
                   "object-backed spatial fixture row insert failed");
   Require(spatial_inserted.inserted_count == 2,
@@ -1741,7 +1804,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     columnar_insert.input_rows.push_back(std::move(row));
   }
   columnar_insert.estimated_row_count = columnar_insert.input_rows.size();
-  const auto columnar_inserted = api::EngineInsertRows(columnar_insert);
+  const auto columnar_inserted = insert_rows(columnar_insert);
   RequireEngineOk(columnar_inserted,
                   "object-backed columnar fixture row insert failed");
   Require(columnar_inserted.inserted_count == 2,
@@ -1790,6 +1853,32 @@ void PrintMessages(const sbsql::MessageVectorSet& messages) {
   }
 }
 
+// Assertion view of scalar result fields only. UUID and byte fields remain
+// binary and are never converted to human-readable identities by this helper.
+std::string ScalarResultText(std::string_view packet) {
+  if (packet.empty()) return {};
+  namespace result = scratchbird::wire::public_result;
+  std::vector<result::Field> fields;
+  Require(result::Decode(packet, &fields), "result packet is not canonical binary framing");
+  std::string scalar;
+  for (const auto& field : fields) {
+    if (field.kind == result::Kind::text) {
+      scalar += field.name + "=" + field.value + "\n";
+    } else if (field.kind == result::Kind::row || field.kind == result::Kind::evidence) {
+      std::vector<result::Field> nested;
+      Require(result::Decode(field.value, &nested), "result record is not canonical binary framing");
+      for (const auto& value : nested) {
+        if (value.kind != result::Kind::text) continue;
+        scalar += field.kind == result::Kind::evidence
+            ? "evidence=" + value.name + ":" + value.value + "\n"
+            : value.name + "=" + value.value + ";";
+      }
+      scalar += '\n';
+    }
+  }
+  return scalar;
+}
+
 void VerifyFullParserServerRoute(const Fixture& fixture,
                                  const bool join_tail_proof_only,
                                  const bool table_function_proof_only = false,
@@ -1811,7 +1900,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
   config.database_default_path = fixture.database_path;
   config.embedded_direct_mode = true;
   config.sbps_enabled = true;
-  config.database_daemon_scope = "shared";
+  config.database_daemon_scope = "dedicated";
 
   server::ServerLifecycleArtifacts artifacts;
   artifacts.generation = 1;
@@ -1835,6 +1924,15 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         config, artifacts, engine_state, callbacks);
     ready_condition.notify_one();
   });
+  struct EndpointCleanup {
+    std::thread& endpoint;
+    ~EndpointCleanup() {
+      if (endpoint.joinable()) {
+        server::RequestParserServerStop();
+        endpoint.join();
+      }
+    }
+  } cleanup{endpoint};
 
   {
     std::unique_lock<std::mutex> lock(ready_mutex);
@@ -1894,17 +1992,17 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
               mixed_model_join.server_operation_id == "query.execute" &&
               mixed_model_join.server_cursor_uuid.is_nil() &&
               mixed_model_join.server_row_count == 1 &&
-              mixed_model_join.server_result_payload.find("payload=matched") !=
+              ScalarResultText(mixed_model_join.server_result_payload).find("payload=matched") !=
                   std::string::npos &&
-              mixed_model_join.server_result_payload.find(
+              ScalarResultText(mixed_model_join.server_result_payload).find(
                   "evidence=canonical.model_join_left_provider_route:"
                   "canonical.model-provider.spatial.v1") !=
                   std::string::npos &&
-              mixed_model_join.server_result_payload.find(
+              ScalarResultText(mixed_model_join.server_result_payload).find(
                   "evidence=canonical.model_join_right_provider_route:"
                   "canonical.model-provider.columnar.v1") !=
                   std::string::npos &&
-              mixed_model_join.server_result_payload.find(
+              ScalarResultText(mixed_model_join.server_result_payload).find(
                   "evidence=canonical.model_join_consumer_route:"
                   "canonical.relational.join-3vl-nested.v1") !=
                   std::string::npos,
@@ -2015,9 +2113,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
               columnar_text_filter.server_operation_id == "query.execute" &&
               columnar_text_filter.server_cursor_uuid.is_nil() &&
               columnar_text_filter.server_row_count == 1 &&
-              columnar_text_filter.server_result_payload.find(
+              ScalarResultText(columnar_text_filter.server_result_payload).find(
                   "payload=matched") != std::string::npos &&
-              columnar_text_filter.server_result_payload.find(
+              ScalarResultText(columnar_text_filter.server_result_payload).find(
                   "payload=columnar-only") == std::string::npos,
           "standalone COLUMNAR_FILTER did not retain live canonical TEXT "
           "descriptor authority");
@@ -2051,7 +2149,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   filtered_count.server_operation_id == "query.execute" &&
                   filtered_count.server_cursor_uuid.is_nil() &&
                   filtered_count.server_row_count == 1 &&
-                  filtered_count.server_result_payload.find("row_count=2") !=
+                  ScalarResultText(filtered_count.server_result_payload).find("row_count=2") !=
                       std::string::npos,
               "object-backed WHERE/global COUNT(*) composition did not "
               "preserve the filtered MGA heap input");
@@ -2062,7 +2160,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!sum.accepted) PrintMessages(sum.messages);
       Require(sum.accepted && sum.server_operation_id == "query.execute" &&
                   sum.server_cursor_uuid.is_nil() && sum.server_row_count == 1 &&
-                  sum.server_result_payload.find("total_amount=6") !=
+                  ScalarResultText(sum.server_result_payload).find("total_amount=6") !=
                       std::string::npos,
               "object-backed SUM(expression) did not execute through the "
               "canonical aggregate registry");
@@ -2075,7 +2173,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   average.server_operation_id == "query.execute" &&
                   average.server_cursor_uuid.is_nil() &&
                   average.server_row_count == 1 &&
-                  average.server_result_payload.find("average_value=2") !=
+                  ScalarResultText(average.server_result_payload).find("average_value=2") !=
                       std::string::npos,
               "object-backed AVG(expression) did not execute through the "
               "engine-issued canonical aggregate registry");
@@ -2115,7 +2213,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   "query.execute" &&
               object_backed_cross_join.server_cursor_uuid.is_nil() &&
               object_backed_cross_join.server_row_count == 9 &&
-              object_backed_cross_join.server_result_payload.find(
+              ScalarResultText(object_backed_cross_join.server_result_payload).find(
                   "join_value") != std::string::npos,
           "object-backed native CROSS JOIN did not complete the canonical "
           "two-heap-scan route");
@@ -2148,9 +2246,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
               generate_series.server_operation_id == "query.execute" &&
               generate_series.server_cursor_uuid.is_nil() &&
               generate_series.server_row_count == 3 &&
-              generate_series.server_result_payload.find(
+              ScalarResultText(generate_series.server_result_payload).find(
                   "generate_series=1") != std::string::npos &&
-              generate_series.server_result_payload.find(
+              ScalarResultText(generate_series.server_result_payload).find(
                   "generate_series=5") != std::string::npos,
           "generate_series did not complete the independent SBSQL parser, "
           "bound SBLR, optimizer, physical source, and executor route");
@@ -2163,9 +2261,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       }
       Require(generate_series_default_step.accepted &&
                   generate_series_default_step.server_row_count == 3 &&
-                  generate_series_default_step.server_result_payload.find(
+                  ScalarResultText(generate_series_default_step.server_result_payload).find(
                       "generate_series=3") != std::string::npos &&
-                  generate_series_default_step.server_result_payload.find(
+                  ScalarResultText(generate_series_default_step.server_result_payload).find(
                       "generate_series=5") != std::string::npos,
               "generate_series default step did not preserve inclusive int64 semantics");
 
@@ -2177,9 +2275,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       }
       Require(generate_series_descending.accepted &&
                   generate_series_descending.server_row_count == 3 &&
-                  generate_series_descending.server_result_payload.find(
+                  ScalarResultText(generate_series_descending.server_result_payload).find(
                       "generate_series=5") != std::string::npos &&
-                  generate_series_descending.server_result_payload.find(
+                  ScalarResultText(generate_series_descending.server_result_payload).find(
                       "generate_series=1") != std::string::npos,
               "generate_series descending step did not preserve inclusive int64 semantics");
 
@@ -2215,7 +2313,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           {text_parameter("9223372036854775806"),
            text_parameter("9223372036854775807"), text_parameter("2")});
       Require(upper_endpoint.accepted && upper_endpoint.server_row_count == 1 &&
-                  upper_endpoint.server_result_payload.find(
+                  ScalarResultText(upper_endpoint.server_result_payload).find(
                       "generate_series=9223372036854775806") != std::string::npos,
               "generate_series overflowed the upper int64 endpoint");
       const auto lower_endpoint = run_direct_parameterized(
@@ -2223,7 +2321,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           {text_parameter("-9223372036854775807"),
            text_parameter("-9223372036854775808"), text_parameter("-2")});
       Require(lower_endpoint.accepted && lower_endpoint.server_row_count == 1 &&
-                  lower_endpoint.server_result_payload.find(
+                  ScalarResultText(lower_endpoint.server_result_payload).find(
                       "generate_series=-9223372036854775807") != std::string::npos,
               "generate_series overflowed the lower int64 endpoint");
       const auto minimum_step = run_direct_parameterized(
@@ -2231,7 +2329,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           {text_parameter("0"), text_parameter("-9223372036854775808"),
            text_parameter("-9223372036854775808")});
       Require(minimum_step.accepted && minimum_step.server_row_count == 2 &&
-                  minimum_step.server_result_payload.find(
+                  ScalarResultText(minimum_step.server_result_payload).find(
                       "generate_series=-9223372036854775808") != std::string::npos,
               "generate_series lost the inclusive int64-minimum step endpoint");
     }
@@ -2251,11 +2349,11 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       if (!match_recognize.accepted) {
         PrintMessages(match_recognize.messages);
       }
-      const auto one = match_recognize.server_result_payload.find(
+      const auto one = ScalarResultText(match_recognize.server_result_payload).find(
           "generate_series=1");
-      const auto three = match_recognize.server_result_payload.find(
+      const auto three = ScalarResultText(match_recognize.server_result_payload).find(
           "generate_series=3");
-      const auto five = match_recognize.server_result_payload.find(
+      const auto five = ScalarResultText(match_recognize.server_result_payload).find(
           "generate_series=5");
       Require(
           match_recognize.accepted &&
@@ -2302,9 +2400,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 "query.execute" &&
             joined_literal_parameter_tail.server_cursor_uuid.is_nil() &&
             joined_literal_parameter_tail.server_row_count == 1 &&
-            joined_literal_parameter_tail.server_result_payload.find(
+            ScalarResultText(joined_literal_parameter_tail.server_result_payload).find(
                 "integer_value") != std::string::npos &&
-            joined_literal_parameter_tail.server_result_payload.find(
+            ScalarResultText(joined_literal_parameter_tail.server_result_payload).find(
                 "join_limit_value") == std::string::npos,
         "joined literal FILTER/PROJECT/parameter LIMIT did not cross the "
         "combined SBEL/SBPE/SBPV transport");
@@ -2345,7 +2443,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 "query.execute" &&
             three_way_literal_parameter_tail.server_cursor_uuid.is_nil() &&
             three_way_literal_parameter_tail.server_row_count == 1 &&
-            three_way_literal_parameter_tail.server_result_payload.find(
+            ScalarResultText(three_way_literal_parameter_tail.server_result_payload).find(
                 "join_limit_value") != std::string::npos,
         "three-way literal FILTER/parameter LIMIT did not complete the "
         "bounded multi-source route");
@@ -2511,9 +2609,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   joined.server_operation_id == "query.execute" &&
                   joined.server_cursor_uuid.is_nil() &&
                   joined.server_row_count == expected_rows &&
-                  joined.server_result_payload.find("integer_value") !=
+                  ScalarResultText(joined.server_result_payload).find("integer_value") !=
                       std::string::npos &&
-                  joined.server_result_payload.find("join_value") ==
+                  ScalarResultText(joined.server_result_payload).find("join_value") ==
                       std::string::npos,
               label);
     };
@@ -2539,12 +2637,14 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
               "single-source heap scan did not publish its three visible rows");
       const auto result_rows = [](std::string_view payload) {
         std::vector<std::string> rows;
-        while (!payload.empty()) {
-          const auto end = payload.find('\n');
-          const auto line = payload.substr(0, end);
-          if (line.starts_with("row[")) rows.emplace_back(line);
-          if (end == std::string_view::npos) break;
-          payload.remove_prefix(end + 1);
+        namespace result = scratchbird::wire::public_result;
+        std::vector<result::Field> fields;
+        Require(result::Decode(payload, &fields), "heap result framing was invalid");
+        for (const auto& field : fields) {
+          if (field.kind != result::Kind::row) continue;
+          std::vector<result::Field> values;
+          Require(result::Decode(field.value, &values), "heap row framing was invalid");
+          rows.push_back(field.value);
         }
         return rows;
       };
@@ -2568,23 +2668,39 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   quoted_cte.server_row_count == 3 && quoted_cte.server_cursor_uuid.is_nil() &&
                   result_rows(quoted_cte.server_result_payload) == scan_rows,
               "quoted CTE binding did not preserve the canonical heap rows");
-      for (const std::string sql : {
-               "WITH v AS (SELECT * FROM qow_packet7.qow_packet7_relation) SELECT * FROM other;",
-               "WITH RECURSIVE v AS (SELECT * FROM qow_packet7.qow_packet7_relation) SELECT * FROM v;",
-               "WITH v AS (SELECT * FROM v) SELECT * FROM v;"}) {
+      // The parser supports WITH RECURSIVE when the body has no recursive
+      // reference. It retains the same engine-owned heap query semantics.
+      const auto recursive_keyword_cte = parser.RunPipeline(
+          "WITH RECURSIVE v AS (SELECT * FROM qow_packet7.qow_packet7_relation) "
+          "SELECT * FROM v;", true);
+      if (!recursive_keyword_cte.accepted) PrintMessages(recursive_keyword_cte.messages);
+      Require(recursive_keyword_cte.accepted &&
+                  recursive_keyword_cte.server_operation_id == "query.execute" &&
+                  recursive_keyword_cte.server_cursor_uuid.is_nil() &&
+                  recursive_keyword_cte.server_row_count == 3 &&
+                  result_rows(recursive_keyword_cte.server_result_payload) == scan_rows,
+              "nonrecursive body with RECURSIVE keyword changed heap rows");
+      for (const auto& [sql, diagnostic_code] :
+           std::vector<std::pair<std::string, std::string>>{
+               {"WITH v AS (SELECT * FROM qow_packet7.qow_packet7_relation) SELECT * FROM other;",
+                "SBSQL.IMPL.NOT_AVAILABLE"},
+               {"WITH v AS (SELECT * FROM v) SELECT * FROM v;",
+                "SBSQL.OBJECT_RESOLUTION_FAILED"},
+               {"WITH RECURSIVE v AS (SELECT * FROM v) SELECT * FROM v;",
+                "SBSQL.IMPL.NOT_AVAILABLE"}}) {
         const auto refused = parser.RunPipeline(sql, true);
         Require(!refused.accepted && refused.server_cursor_uuid.is_nil() &&
                     refused.server_row_count == 0 && refused.server_result_payload.empty() &&
-                    std::ranges::any_of(refused.messages.diagnostics, [](const auto& diagnostic) {
-                      return diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE";
-                    }), "unsupported CTE did not refuse before server execution");
+                    std::ranges::any_of(refused.messages.diagnostics, [&](const auto& diagnostic) {
+                      return diagnostic.code == diagnostic_code;
+                    }), "invalid CTE did not refuse with its exact parser diagnostic");
       }
       auto ranking = parser.RunPipeline(
           "SELECT ROW_NUMBER() OVER (ORDER BY integer_value) AS row_no "
           "FROM qow_packet7.qow_packet7_relation;", true);
       if (!ranking.accepted) PrintMessages(ranking.messages);
-      const auto first_rank = ranking.server_result_payload.find("row_no=1");
-      const auto last_rank = ranking.server_result_payload.find("row_no=3");
+      const auto first_rank = ScalarResultText(ranking.server_result_payload).find("row_no=1");
+      const auto last_rank = ScalarResultText(ranking.server_result_payload).find("row_no=3");
       Require(ranking.accepted &&
                   ranking.server_operation_id == "query.execute" &&
                   ranking.server_cursor_uuid.is_nil() &&
@@ -2602,7 +2718,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 object_backed_count.server_operation_id == "query.execute" &&
                 object_backed_count.server_cursor_uuid.is_nil() &&
                 object_backed_count.server_row_count == 1 &&
-                object_backed_count.server_result_payload.find("row_count=3") !=
+                ScalarResultText(object_backed_count.server_result_payload).find("row_count=3") !=
                     std::string::npos,
             "object-backed global COUNT(*) did not complete the canonical "
             "heap aggregate route");
@@ -2619,7 +2735,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                     "query.execute" &&
                 object_backed_filtered_count.server_cursor_uuid.is_nil() &&
                 object_backed_filtered_count.server_row_count == 1 &&
-                object_backed_filtered_count.server_result_payload.find(
+                ScalarResultText(object_backed_filtered_count.server_result_payload).find(
                     "row_count=2") != std::string::npos,
             "object-backed WHERE/global COUNT(*) composition did not preserve "
             "the filtered MGA heap input");
@@ -2635,7 +2751,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                     "query.execute" &&
                 object_backed_count_limit.server_cursor_uuid.is_nil() &&
                 object_backed_count_limit.server_row_count == 1 &&
-                object_backed_count_limit.server_result_payload.find(
+                ScalarResultText(object_backed_count_limit.server_result_payload).find(
                     "row_count=3") != std::string::npos,
             "object-backed global COUNT(*)/LIMIT composition did not publish "
             "its aggregate result");
@@ -2652,7 +2768,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                     "query.execute" &&
                 object_backed_count_expression.server_cursor_uuid.is_nil() &&
                 object_backed_count_expression.server_row_count == 1 &&
-                object_backed_count_expression.server_result_payload.find(
+                ScalarResultText(object_backed_count_expression.server_result_payload).find(
                     "row_count=2") != std::string::npos,
             "object-backed COUNT(expression) did not exclude the persisted "
             "NULL value");
@@ -2665,7 +2781,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 object_backed_sum.server_operation_id == "query.execute" &&
                 object_backed_sum.server_cursor_uuid.is_nil() &&
                 object_backed_sum.server_row_count == 1 &&
-                object_backed_sum.server_result_payload.find("total_amount=6") !=
+                ScalarResultText(object_backed_sum.server_result_payload).find("total_amount=6") !=
                     std::string::npos,
             "object-backed SUM(expression) did not execute through the "
             "canonical aggregate registry");
@@ -2682,7 +2798,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                     "query.execute" &&
                 object_backed_filtered_sum.server_cursor_uuid.is_nil() &&
                 object_backed_filtered_sum.server_row_count == 1 &&
-                object_backed_filtered_sum.server_result_payload.find(
+                ScalarResultText(object_backed_filtered_sum.server_result_payload).find(
                     "total_amount=5") != std::string::npos,
             "object-backed WHERE/SUM composition did not aggregate only the "
             "visible filtered heap rows");
@@ -2695,7 +2811,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 object_backed_avg.server_operation_id == "query.execute" &&
                 object_backed_avg.server_cursor_uuid.is_nil() &&
                 object_backed_avg.server_row_count == 1 &&
-                object_backed_avg.server_result_payload.find(
+                ScalarResultText(object_backed_avg.server_result_payload).find(
                     "average_value=2") != std::string::npos,
             "object-backed AVG(expression) did not execute through the "
             "engine-issued canonical aggregate registry");
@@ -2709,7 +2825,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 object_backed_min.server_operation_id == "query.execute" &&
                 object_backed_min.server_cursor_uuid.is_nil() &&
                 object_backed_min.server_row_count == 1 &&
-                object_backed_min.server_result_payload.find(
+                ScalarResultText(object_backed_min.server_result_payload).find(
                     "minimum_value=10") != std::string::npos,
             "object-backed MIN(expression) did not ignore NULL and retain the "
             "least visible persisted value");
@@ -2723,7 +2839,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 object_backed_max.server_operation_id == "query.execute" &&
                 object_backed_max.server_cursor_uuid.is_nil() &&
                 object_backed_max.server_row_count == 1 &&
-                object_backed_max.server_result_payload.find(
+                ScalarResultText(object_backed_max.server_result_payload).find(
                     "maximum_value=20") != std::string::npos,
             "object-backed MAX(expression) did not ignore NULL and retain the "
             "greatest visible persisted value");
@@ -2751,7 +2867,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   aggregate.server_operation_id == "query.execute" &&
                   aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
-                  aggregate.server_result_payload.find(
+                  ScalarResultText(aggregate.server_result_payload).find(
                       proof.expected_payload) != std::string::npos,
               "object-backed unary statistical aggregate did not execute "
               "through the complete engine-issued aggregate registry");
@@ -2773,7 +2889,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   aggregate.server_operation_id == "query.execute" &&
                   aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
-                  aggregate.server_result_payload.find(
+                  ScalarResultText(aggregate.server_result_payload).find(
                       proof.expected_payload) != std::string::npos,
               "object-backed boolean aggregate did not execute through the "
               "complete engine-issued aggregate registry");
@@ -2804,7 +2920,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   aggregate.server_operation_id == "query.execute" &&
                   aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
-                  aggregate.server_result_payload.find(
+                  ScalarResultText(aggregate.server_result_payload).find(
                       proof.expected_payload) != std::string::npos,
               "object-backed pair statistical aggregate did not execute "
               "through the complete engine-issued aggregate registry");
@@ -2821,7 +2937,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                     "query.execute" &&
                 repeated_pair_argument.server_cursor_uuid.is_nil() &&
                 repeated_pair_argument.server_row_count == 1 &&
-                repeated_pair_argument.server_result_payload.find(
+                ScalarResultText(repeated_pair_argument.server_result_payload).find(
                     "corr_value=1") != std::string::npos,
             "object-backed pair aggregate did not preserve a repeated "
             "source argument binding");
@@ -2841,7 +2957,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   aggregate.server_operation_id == "query.execute" &&
                   aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
-                  aggregate.server_result_payload.find(
+                  ScalarResultText(aggregate.server_result_payload).find(
                       proof.expected_payload) != std::string::npos,
               "object-backed approximate aggregate did not execute through "
               "the complete engine-issued aggregate registry");
@@ -2858,7 +2974,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 approximate_top_k.server_operation_id == "query.execute" &&
                 approximate_top_k.server_cursor_uuid.is_nil() &&
                 approximate_top_k.server_row_count == 1 &&
-                approximate_top_k.server_result_payload.find(
+                ScalarResultText(approximate_top_k.server_result_payload).find(
                     "approx_top_k_value=[{\"value\":\"alpha\",\"count\":2},"
                     "{\"value\":\"beta\",\"count\":1}]") !=
                     std::string::npos,
@@ -2876,7 +2992,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 string_aggregate.server_operation_id == "query.execute" &&
                 string_aggregate.server_cursor_uuid.is_nil() &&
                 string_aggregate.server_row_count == 1 &&
-                string_aggregate.server_result_payload.find(
+                ScalarResultText(string_aggregate.server_result_payload).find(
                     "string_agg_value=alpha,beta,alpha") !=
                     std::string::npos,
             "object-backed STRING_AGG did not preserve its engine-typed "
@@ -2891,7 +3007,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 listagg.server_operation_id == "query.execute" &&
                 listagg.server_cursor_uuid.is_nil() &&
                 listagg.server_row_count == 1 &&
-                listagg.server_result_payload.find(
+                ScalarResultText(listagg.server_result_payload).find(
                     "listagg_value=alpha,beta,alpha") != std::string::npos,
             "object-backed LISTAGG did not preserve its exact WITHIN GROUP "
             "ordering and engine-typed text separator");
@@ -2916,7 +3032,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       auto aggregate = parser.RunPipeline(sql, true);
       if (!aggregate.accepted) PrintMessages(aggregate.messages);
       if (aggregate.accepted &&
-          aggregate.server_result_payload.find(proof.expected_payload) ==
+          ScalarResultText(aggregate.server_result_payload).find(proof.expected_payload) ==
               std::string::npos) {
         std::cerr << "collection_expression=" << proof.expression << '\n'
                   << "collection_payload="
@@ -2926,7 +3042,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   aggregate.server_operation_id == "query.execute" &&
                   aggregate.server_cursor_uuid.is_nil() &&
                   aggregate.server_row_count == 1 &&
-                  aggregate.server_result_payload.find(
+                  ScalarResultText(aggregate.server_result_payload).find(
                       proof.expected_payload) != std::string::npos,
               "object-backed ordered collection aggregate did not preserve "
               "its canonical result and persisted ordering route");
@@ -2941,7 +3057,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 mode.server_operation_id == "query.execute" &&
                 mode.server_cursor_uuid.is_nil() &&
                 mode.server_row_count == 1 &&
-                mode.server_result_payload.find("mode_value=1") !=
+                ScalarResultText(mode.server_result_payload).find("mode_value=1") !=
                     std::string::npos,
             "object-backed MODE did not preserve its exact WITHIN GROUP "
             "signed-integer ordering route");
@@ -2967,7 +3083,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   percentile.server_operation_id == "query.execute" &&
                   percentile.server_cursor_uuid.is_nil() &&
                   percentile.server_row_count == 1 &&
-                  percentile.server_result_payload.find(
+                  ScalarResultText(percentile.server_result_payload).find(
                       proof.expected_payload) != std::string::npos,
               "object-backed percentile did not preserve its exact numeric "
               "fraction and persisted WITHIN GROUP ordering route");
@@ -2991,7 +3107,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                   hypothetical.server_operation_id == "query.execute" &&
                   hypothetical.server_cursor_uuid.is_nil() &&
                   hypothetical.server_row_count == 1 &&
-                  hypothetical.server_result_payload.find(
+                  ScalarResultText(hypothetical.server_result_payload).find(
                       proof.expected_payload) != std::string::npos,
               "object-backed hypothetical set aggregate did not preserve "
               "its exact direct value and persisted ordering route");
@@ -3004,9 +3120,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 projected.server_operation_id == "query.execute" &&
                 projected.server_cursor_uuid.is_nil() &&
                 projected.server_row_count == 3 &&
-                projected.server_result_payload.find("integer_value") !=
+                ScalarResultText(projected.server_result_payload).find("integer_value") !=
                     std::string::npos &&
-                projected.server_result_payload.find("auxiliary_value") ==
+                ScalarResultText(projected.server_result_payload).find("auxiliary_value") ==
                     std::string::npos,
             "object-backed source projection did not publish only its bound "
             "persisted column");
@@ -3019,9 +3135,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       PrintMessages(reordered_projection.messages);
     }
     const auto auxiliary_position =
-        reordered_projection.server_result_payload.find("auxiliary_value");
+        ScalarResultText(reordered_projection.server_result_payload).find("auxiliary_value");
     const auto integer_position =
-        reordered_projection.server_result_payload.find("integer_value");
+        ScalarResultText(reordered_projection.server_result_payload).find("integer_value");
     Require(reordered_projection.accepted &&
                 reordered_projection.server_operation_id == "query.execute" &&
                 reordered_projection.server_cursor_uuid.is_nil() &&
@@ -3043,9 +3159,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 projected_filter.server_operation_id == "query.execute" &&
                 projected_filter.server_cursor_uuid.is_nil() &&
                 projected_filter.server_row_count == 1 &&
-                projected_filter.server_result_payload.find(
+                ScalarResultText(projected_filter.server_result_payload).find(
                     "integer_value") != std::string::npos &&
-                projected_filter.server_result_payload.find(
+                ScalarResultText(projected_filter.server_result_payload).find(
                     "auxiliary_value") == std::string::npos,
             "object-backed projection/WHERE/LIMIT did not preserve its bound "
             "source column");
@@ -3059,9 +3175,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 hidden_filter.server_operation_id == "query.execute" &&
                 hidden_filter.server_cursor_uuid.is_nil() &&
                 hidden_filter.server_row_count == 2 &&
-                hidden_filter.server_result_payload.find("integer_value") !=
+                ScalarResultText(hidden_filter.server_result_payload).find("integer_value") !=
                     std::string::npos &&
-                hidden_filter.server_result_payload.find("auxiliary_value") ==
+                ScalarResultText(hidden_filter.server_result_payload).find("auxiliary_value") ==
                     std::string::npos,
             "object-backed hidden predicate column did not filter before its "
             "canonical projection");
@@ -3077,9 +3193,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 hidden_filter_limit.server_operation_id == "query.execute" &&
                 hidden_filter_limit.server_cursor_uuid.is_nil() &&
                 hidden_filter_limit.server_row_count == 1 &&
-                hidden_filter_limit.server_result_payload.find(
+                ScalarResultText(hidden_filter_limit.server_result_payload).find(
                     "integer_value") != std::string::npos &&
-                hidden_filter_limit.server_result_payload.find(
+                ScalarResultText(hidden_filter_limit.server_result_payload).find(
                     "auxiliary_value") == std::string::npos,
             "object-backed hidden predicate/project/LIMIT chain leaked its "
             "dependency column");
@@ -3093,7 +3209,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 ordered_limit.server_operation_id == "query.execute" &&
                 ordered_limit.server_cursor_uuid.is_nil() &&
                 ordered_limit.server_row_count == 1 &&
-                ordered_limit.server_result_payload.find("integer_value=3") !=
+                ScalarResultText(ordered_limit.server_result_payload).find("integer_value=3") !=
                     std::string::npos,
             "object-backed ORDER BY/LIMIT did not complete the canonical live "
             "route");
@@ -3107,11 +3223,11 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                 hidden_order.server_operation_id == "query.execute" &&
                 hidden_order.server_cursor_uuid.is_nil() &&
                 hidden_order.server_row_count == 1 &&
-                hidden_order.server_result_payload.find("integer_value") !=
+                ScalarResultText(hidden_order.server_result_payload).find("integer_value") !=
                     std::string::npos &&
-                hidden_order.server_result_payload.find("integer_value=3") !=
+                ScalarResultText(hidden_order.server_result_payload).find("integer_value=3") !=
                     std::string::npos &&
-                hidden_order.server_result_payload.find("auxiliary_value") ==
+                ScalarResultText(hidden_order.server_result_payload).find("auxiliary_value") ==
                     std::string::npos,
             "object-backed hidden ORDER BY key leaked through its canonical "
             "projection");
@@ -3122,9 +3238,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         true);
     if (!nulls_first.accepted) PrintMessages(nulls_first.messages);
     Require(nulls_first.accepted && nulls_first.server_row_count == 1 &&
-                nulls_first.server_result_payload.find("integer_value=2") !=
+                ScalarResultText(nulls_first.server_result_payload).find("integer_value=2") !=
                     std::string::npos &&
-                nulls_first.server_result_payload.find(
+                ScalarResultText(nulls_first.server_result_payload).find(
                     "nullable_order_value") == std::string::npos,
             "object-backed NULLS FIRST ordering did not select the null-key "
             "row without leaking the hidden key");
@@ -3135,9 +3251,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         true);
     if (!nulls_last.accepted) PrintMessages(nulls_last.messages);
     Require(nulls_last.accepted && nulls_last.server_row_count == 1 &&
-                nulls_last.server_result_payload.find("integer_value=3") !=
+                ScalarResultText(nulls_last.server_result_payload).find("integer_value=3") !=
                     std::string::npos &&
-                nulls_last.server_result_payload.find(
+                ScalarResultText(nulls_last.server_result_payload).find(
                     "nullable_order_value") == std::string::npos,
             "object-backed NULLS LAST ordering did not select the lowest "
             "non-null hidden key");
@@ -3149,18 +3265,18 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         true);
     if (!filtered_order.accepted) PrintMessages(filtered_order.messages);
     const auto ordered_three =
-        filtered_order.server_result_payload.find("integer_value=3");
+        ScalarResultText(filtered_order.server_result_payload).find("integer_value=3");
     const auto ordered_two =
-        filtered_order.server_result_payload.find("integer_value=2");
+        ScalarResultText(filtered_order.server_result_payload).find("integer_value=2");
     Require(filtered_order.accepted &&
                 filtered_order.server_operation_id == "query.execute" &&
                 filtered_order.server_cursor_uuid.is_nil() &&
                 filtered_order.server_row_count == 2 &&
                 ordered_three != std::string::npos &&
                 ordered_two != std::string::npos && ordered_three < ordered_two &&
-                filtered_order.server_result_payload.find("integer_value") !=
+                ScalarResultText(filtered_order.server_result_payload).find("integer_value") !=
                     std::string::npos &&
-                filtered_order.server_result_payload.find("auxiliary_value") ==
+                ScalarResultText(filtered_order.server_result_payload).find("auxiliary_value") ==
                     std::string::npos,
             "object-backed WHERE/ORDER BY/hidden PROJECT/LIMIT chain did not "
             "complete the canonical live route");
@@ -3520,7 +3636,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
               parser_context.transaction.transaction_uuid ==
                   server_transaction.transaction_uuid &&
               parser_context.snapshot_visible_through_local_transaction_id ==
-                  0 &&
+                  transaction.snapshot_visible_through_local_transaction_id &&
               registry.statement_contexts_by_statement_uuid.size() == 1,
           "server did not return the exact bounded statement-context projection");
 
@@ -3535,6 +3651,45 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                   parser_context.statement_snapshot_uuid,
           "opaque statement receipt crossed or escaped server ownership");
   const auto private_receipt = statement->second.receipt;
+  {
+    auto selected_session = registry.sessions_by_uuid.at(platform::Uuid{session_uuid});
+    std::lock_guard<std::mutex> lock(*selected_session.transaction_mutex);
+    const auto metadata_request = AcquireFrame(session_uuid,
+        server_transaction.local_transaction_id, transaction_uuid.value.value.bytes);
+    api::EngineRequestContext metadata_context;
+    bridge::StatementContextReceiptHandle metadata_receipt;
+    server::ServerDiagnostic diagnostic;
+    Require(server::AcquireServerMetadataContext(&registry, selected_session,
+        engine_state, metadata_request, &metadata_context, &metadata_receipt, &diagnostic),
+        "server metadata receipt admission failed");
+    Require(metadata_receipt && metadata_context.statement_metadata_snapshot_engine_owned &&
+                !metadata_context.datatype_catalog_snapshot_uuid.is_nil() &&
+                metadata_context.datatype_catalog_generation != 0 &&
+                metadata_context.datatype_registry_generation != 0 &&
+                metadata_context.statement_receipt_uuid != statement->second.view.receipt_uuid &&
+                metadata_context.transaction_uuid == transaction.transaction_uuid &&
+                registry.statement_contexts_by_statement_uuid.size() == 1,
+            "metadata read reused or exported an execution receipt");
+    api::EngineResolveStatementSnapshotRequest metadata_snapshot;
+    metadata_snapshot.context = metadata_context;
+    Require(api::EngineResolveStatementSnapshot(metadata_snapshot).ok,
+            "metadata read did not own an actual MGA snapshot");
+    Require(bridge::ReleaseStatementContextReceipt(metadata_receipt) == SB_ENGINE_STATUS_OK &&
+                !api::EngineResolveStatementSnapshot(metadata_snapshot).ok,
+            "metadata snapshot survived receipt release");
+    metadata_receipt = {};
+    auto wrong_session = selected_session;
+    wrong_session.session_uuid = NewIdentity(platform::UuidKind::session, fixture.salt + 111).bytes;
+    Require(!server::AcquireServerMetadataContext(&registry, wrong_session,
+        engine_state, metadata_request, &metadata_context, &metadata_receipt, &diagnostic) && !metadata_receipt,
+        "metadata read admitted a crossed session");
+    auto wrong_transaction = selected_session;
+    wrong_transaction.transaction_uuid = NewIdentity(platform::UuidKind::transaction, fixture.salt + 112);
+    Require(!server::AcquireServerMetadataContext(&registry, wrong_transaction,
+        engine_state, metadata_request, &metadata_context, &metadata_receipt, &diagnostic) && !metadata_receipt,
+        "metadata read admitted a crossed transaction");
+  }
+
 
   const auto verify_legacy_native_projection =
       [&](const std::uint16_t version,
@@ -4617,7 +4772,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int RunConformance(int argc, char** argv) {
   ConfigureMemoryFixture();
   const bool join_tail_proof_only =
       argc == 2 &&
@@ -4679,10 +4834,25 @@ int main(int argc, char** argv) {
     return EXIT_SUCCESS;
   }
 
-  auto fixture = CreateFixture();
-  auto transaction = BeginTransaction(fixture);
-  Require(transaction.snapshot_visible_through_local_transaction_id == 0,
+  namespace mga = scratchbird::transaction::mga;
+  const auto empty_begin = mga::BeginLocalTransaction({},
+      NewTypedUuid(platform::UuidKind::transaction, 1), 1945000000001ull);
+  Require(empty_begin.ok(), "empty-inventory transaction begin failed");
+  const auto empty_snapshot = mga::CreateLocalTransactionSnapshot(
+      empty_begin.inventory, empty_begin.entry.identity.local_id);
+  Require(empty_snapshot.ok() && empty_snapshot.snapshot.visible_through_local_transaction.value == 0 &&
+              empty_snapshot.snapshot.visible_through_commit_sequence == 0,
           "fresh inventory did not preserve zero as a valid high-watermark");
+  auto fixture = CreateFixture();
+  const auto bootstrap_inventory = db::LoadLocalTransactionInventoryFromDatabase(fixture.database_path.string());
+  Require(bootstrap_inventory.ok(), "bootstrap inventory unavailable");
+  std::uint64_t bootstrap_high_watermark = 0;
+  for (const auto& entry : bootstrap_inventory.inventory.entries)
+    if (mga::HasCommittedInventoryOutcome(entry))
+      bootstrap_high_watermark = std::max(bootstrap_high_watermark, entry.identity.local_id.value);
+  auto transaction = BeginTransaction(fixture);
+  Require(transaction.snapshot_visible_through_local_transaction_id == bootstrap_high_watermark,
+          "live database snapshot lost committed bootstrap visibility");
 
   PublicSession owner(fixture, fixture.session_uuid);
   const auto other_session_uuid =
@@ -4727,8 +4897,8 @@ int main(int argc, char** argv) {
               first_view.owning_local_transaction_id ==
                   transaction.local_transaction_id,
           "live statement-context receipt transaction identity drifted");
-  Require(first_view.visible_committed_high_watermark == 0,
-          "live statement-context receipt rejected zero high-watermark");
+  Require(first_view.visible_committed_high_watermark == bootstrap_high_watermark,
+          "live statement-context receipt changed committed bootstrap high-watermark");
   Require(first_view.optimizer_memory_budget_bytes ==
                   transaction.optimizer_memory_budget_bytes &&
               first_view.optimizer_maximum_search_steps ==
@@ -4794,4 +4964,12 @@ int main(int argc, char** argv) {
   VerifyFullParserServerRoute(full_route_fixture, false);
   std::cout << "qow_live_server_statement_context=passed\n";
   return EXIT_SUCCESS;
+}
+
+int main(int argc, char** argv) {
+  try { return RunConformance(argc, argv); }
+  catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

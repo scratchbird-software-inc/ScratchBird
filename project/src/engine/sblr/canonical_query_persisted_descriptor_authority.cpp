@@ -90,19 +90,25 @@ bool ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
       bound.datatype_catalog_generation,
       bound.datatype_registry_generation, encoded_datatype_descriptor_uuid,
       bound.descriptor_generation);
-  if (!identity.ok ||
-      !dt::IsExactCanonicalTextTypeCodecIdentityV1(identity.row) ||
-      (bound.descriptor_uuid != persisted.descriptor_uuid &&
-       bound.descriptor_uuid != identity.row.descriptor_uuid) ||
-      bound.descriptor_generation != identity.row.descriptor_generation ||
-      bound.type_uuid != identity.row.type_uuid ||
-      bound.type_generation != identity.row.type_generation ||
-      bound.codec_id != identity.row.codec_id ||
+  if (!identity.ok)
+    return refuse("bound canonical TEXT registry authority is stale: datatype identity lookup");
+  if (!dt::IsExactCanonicalTextTypeCodecIdentityV1(identity.row))
+    return refuse("bound canonical TEXT registry authority is stale: codec row");
+  if (bound.descriptor_uuid != persisted.descriptor_uuid &&
+      bound.descriptor_uuid != identity.row.descriptor_uuid)
+    return refuse("bound canonical TEXT registry authority is stale: descriptor identity");
+  if (bound.descriptor_generation != identity.row.descriptor_generation)
+    return refuse("bound canonical TEXT registry authority is stale: descriptor generation");
+  if (bound.type_uuid != identity.row.type_uuid)
+    return refuse("bound canonical TEXT registry authority is stale: type identity");
+  if (bound.type_generation != identity.row.type_generation)
+    return refuse("bound canonical TEXT registry authority is stale: type generation");
+  if (bound.codec_id != identity.row.codec_id ||
       bound.codec_version != identity.row.codec_version ||
-      bound.codec_generation != identity.row.codec_generation ||
-      *bound.width > identity.row.canonical_value_maximum_bytes) {
-    return refuse("bound canonical TEXT registry authority is stale");
-  }
+      bound.codec_generation != identity.row.codec_generation)
+    return refuse("bound canonical TEXT registry authority is stale: codec binding");
+  if (*bound.width > identity.row.canonical_value_maximum_bytes)
+    return refuse("bound canonical TEXT registry authority is stale: value width");
   if (!api::QowCanonicalDescriptorIdentityV1(persisted) ||
       persisted.descriptor_uuid == identity.row.descriptor_uuid ||
       persisted.descriptor_kind != "scalar" ||

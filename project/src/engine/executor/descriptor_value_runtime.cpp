@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../internal_api/catalog/column_metadata_codec.hpp"
 #include "../../core/uuid/uuid.hpp"
 
 #include <algorithm>
@@ -223,10 +224,18 @@ bool RequiresExpandedScalarValidation(const EngineDescriptor& descriptor) {
   }
 }
 
-std::optional<std::string_view> DescriptorField(
+std::optional<std::string> DescriptorField(
     const std::string_view descriptor,
     const std::string_view key) {
-  std::optional<std::string_view> value;
+  if (descriptor.starts_with("SBMETA")) {
+    internal_api::CatalogColumnMetadata fields;
+    if (!internal_api::DecodeCatalogColumnMetadata(descriptor, &fields))
+      return std::nullopt;
+    const auto found = fields.text.find(std::string(key));
+    if (found == fields.text.end()) return std::nullopt;
+    return found->second;
+  }
+  std::optional<std::string> value;
   std::size_t start = 0;
   while (start <= descriptor.size()) {
     const auto end = descriptor.find(';', start);
@@ -234,7 +243,7 @@ std::optional<std::string_view> DescriptorField(
     if (field.size() > key.size() && field[key.size()] == '=' &&
         field.substr(0, key.size()) == key) {
       if (value.has_value()) return std::nullopt;
-      value = field.substr(key.size() + 1);
+      value = std::string(field.substr(key.size() + 1));
     }
     if (end == std::string::npos) break;
     start = end + 1;
@@ -606,6 +615,34 @@ bool CanonicalDerivedDescriptorShapesMatch(
     const std::string_view left, const std::string_view right,
     bool* left_nullable, bool* right_nullable) {
   if (left_nullable == nullptr || right_nullable == nullptr) return false;
+  if (left.starts_with("SBMETA") || right.starts_with("SBMETA")) {
+    internal_api::CatalogColumnMetadata left_fields, right_fields;
+    if (!internal_api::DecodeCatalogColumnMetadata(left, &left_fields) ||
+        !internal_api::DecodeCatalogColumnMetadata(right, &right_fields) ||
+        left_fields.identities != right_fields.identities) return false;
+    const auto normalize = [](auto* fields, bool* nullable) {
+      unsigned count = 0;
+      for (const auto key : {"nullable", "nullability"}) {
+        const auto found = fields->text.find(key);
+        if (found == fields->text.end()) continue;
+        const bool long_form = std::string_view(key) == "nullability";
+        const auto& value = found->second;
+        bool parsed = false;
+        if (value == (long_form ? "nullable" : "true") ||
+            (long_form && value == "unknown")) parsed = true;
+        else if (value != (long_form ? "non_null" : "false")) return 0u;
+        if (count && *nullable != parsed) return 0u;
+        *nullable = parsed;
+        ++count;
+        fields->text.erase(found);
+      }
+      return count;
+    };
+    const auto left_count = normalize(&left_fields, left_nullable);
+    const auto right_count = normalize(&right_fields, right_nullable);
+    return left_count && left_count == right_count &&
+           left_fields.text == right_fields.text;
+  }
   bool left_canonical_found = false;
   bool left_storage_found = false;
   bool left_admitted = false;
@@ -780,6 +817,27 @@ bool DeriveCanonicalNullableDescriptorEncoding(
     EngineDescriptor* descriptor) {
   if (descriptor == nullptr || descriptor->encoded_descriptor.empty()) {
     return false;
+  }
+  if (descriptor->encoded_descriptor.starts_with("SBMETA")) {
+    internal_api::CatalogColumnMetadata fields;
+    if (!internal_api::DecodeCatalogColumnMetadata(
+            descriptor->encoded_descriptor, &fields)) return false;
+    auto canonical = fields.text.find("nullability");
+    auto storage = fields.text.find("nullable");
+    if ((canonical == fields.text.end()) == (storage == fields.text.end()))
+      return false;
+    if (canonical != fields.text.end()) {
+      if (canonical->second != "nullable" && canonical->second != "non_null")
+        return false;
+      canonical->second = "nullable";
+    } else {
+      if (storage->second != "true" && storage->second != "false") return false;
+      storage->second = "true";
+    }
+    std::string encoded;
+    if (!internal_api::EncodeCatalogColumnMetadata(fields, &encoded)) return false;
+    descriptor->encoded_descriptor = std::move(encoded);
+    return true;
   }
   bool nullability_carrier_seen = false;
   std::size_t nullable_value_offset = std::string::npos;

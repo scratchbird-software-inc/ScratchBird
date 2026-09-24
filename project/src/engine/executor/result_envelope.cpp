@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../internal_api/catalog/column_metadata_codec.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -381,6 +382,12 @@ std::string RetryabilityName(const CanonicalResultRetryability retryability) {
 
 std::optional<std::map<std::string, std::string>> ParseDescriptorFields(
     const std::string_view encoded) {
+  if (encoded.starts_with("SBMETA")) {
+    internal_api::CatalogColumnMetadata metadata;
+    if (!internal_api::DecodeCatalogColumnMetadata(encoded, &metadata))
+      return std::nullopt;
+    return std::move(metadata.text);
+  }
   std::map<std::string, std::string> fields;
   std::size_t begin = 0;
   while (begin < encoded.size()) {
@@ -442,8 +449,17 @@ DescriptorRuntimeDiagnostic ValidatePublishedDescriptor(
        !IsCanonicalUuid(*published.collation_uuid)) ||
       (published.timezone_profile_id.has_value() &&
        published.timezone_profile_id->empty())) {
-    return Refusal("published result descriptor identity is invalid", 0,
-                   expected_ordinal);
+    const char* reason = published.ordinal != expected_ordinal ? "ordinal"
+        : published.name_utf8.empty() || published.name_utf8 != physical.stable_name ? "name"
+        : published.descriptor_uuid != physical.descriptor.descriptor_uuid ? "descriptor identity"
+        : !internal_api::QowCanonicalDescriptorIdentityV1(physical.descriptor) ? "physical descriptor"
+        : !IsCanonicalUuid(published.descriptor_uuid) ? "published descriptor"
+        : !IsCanonicalUuid(published.type_uuid) ? "type identity"
+        : !IsValidNullability(published.nullability) ? "nullability"
+        : published.collation_uuid.has_value() && !IsCanonicalUuid(*published.collation_uuid)
+            ? "collation identity" : "timezone";
+    return Refusal(std::string("published result descriptor identity is invalid: ") + reason,
+                   0, expected_ordinal);
   }
   const auto fields =
       ParseDescriptorFields(physical.descriptor.encoded_descriptor);

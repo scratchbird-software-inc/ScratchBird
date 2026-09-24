@@ -28,9 +28,11 @@
 #include "server_ipc_lifecycle.hpp"
 #include "server_observability.hpp"
 #include "session_registry.hpp"
+#include "session_metadata_context.hpp"
 #include "sblr_dispatch_server.hpp"
 
 #include "catalog/name_registry.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/relation_projection_view.hpp"
@@ -1951,28 +1953,33 @@ ServerDiagnostic PsRelationProjectionEngineDiagnostic(
 bool PsEncodedDescriptorHasExactField(std::string_view descriptor,
                                       std::string_view key,
                                       std::string_view expected_value) {
-  const std::string expected =
-      std::string(key) + "=" + std::string(expected_value);
-  const std::string prefix = std::string(key) + "=";
-  bool matched = false;
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto delimiter = descriptor.find(';', offset);
-    const auto field = descriptor.substr(
-        offset,
-        delimiter == std::string_view::npos
-            ? descriptor.size() - offset
-            : delimiter - offset);
-    if (field == expected) {
-      if (matched) return false;
-      matched = true;
-    } else if (field.starts_with(prefix)) {
-      return false;
-    }
-    if (delimiter == std::string_view::npos) break;
-    offset = delimiter + 1;
+  engine_api::CatalogColumnMetadata fields;
+  if (!engine_api::DecodeCatalogColumnMetadata(descriptor, &fields)) return false;
+  const auto found = fields.text.find(std::string(key));
+  return found != fields.text.end() && found->second == expected_value;
+}
+
+std::optional<std::string> PsPublicScalarMetadata(std::string_view descriptor) {
+  engine_api::CatalogColumnMetadata fields;
+  if (!engine_api::DecodeCatalogColumnMetadata(descriptor, &fields)) return std::nullopt;
+  std::string scalar;
+  // Only these non-identity shape fields belong in the scalar projection.
+  // Catalog, column, datatype, charset and collation UUIDs stay in native fields.
+  for (const auto key : {"canonical", "type", "width", "precision", "scale",
+                         "timezone_profile_id", "nullable", "nullability", "dimension",
+                         "element_type", "text_resource_storage", "character_length",
+                         "encoding", "storage"}) {
+    const auto found = fields.text.find(key);
+    if (found == fields.text.end()) continue;
+    if (found->second.empty() || found->second.find(';') != std::string::npos ||
+        found->second.find('\0') != std::string::npos) return std::nullopt;
+    if (!scalar.empty()) scalar += ';';
+    scalar += key;
+    scalar += '=';
+    scalar += found->second;
   }
-  return matched;
+  if (!parser::ipc::relation_projection_detail::ScalarMetadata(scalar)) return std::nullopt;
+  return scalar;
 }
 
 PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
@@ -2309,7 +2316,9 @@ EncodePsNameResolvePayloadV3(
     target.descriptor_uuid = core::platform::Uuid{column.type_descriptor_uuid};
     target.descriptor_kind = column.type_descriptor_kind;
     target.canonical_type_name = column.canonical_type_name;
-    target.scalar_metadata = column.encoded_type_descriptor;
+    const auto scalar_metadata = PsPublicScalarMetadata(column.encoded_type_descriptor);
+    if (!scalar_metadata) return std::nullopt;
+    target.scalar_metadata = *scalar_metadata;
     target.datatype_descriptor_uuid = column.datatype_descriptor_uuid;
     target.nullable = column.nullable;
     target.generated = column.generated;
@@ -3045,6 +3054,23 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
     }
     engine_api::EngineResolveNameRequest request;
     request.context = PsNameEngineContextFromSession(*session, engine_state, frame, decoded->language);
+    struct MetadataReceiptLease {
+      scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt;
+      ~MetadataReceiptLease() {
+        if (receipt) (void)scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt);
+      }
+    } metadata;
+    if (decoded->include_persisted_relation_descriptor) {
+      auto metadata_session = *session;
+      if (!decoded->language.empty())
+        ApplyRequestedLanguageProfile(&metadata_session, decoded->language);
+      ServerDiagnostic diagnostic;
+      if (!AcquireServerMetadataContext(session_registry, std::move(metadata_session),
+              engine_state, frame, &request.context, &metadata.receipt, &diagnostic))
+        return ErrorFrame({std::move(diagnostic)}, frame.header.request_uuid,
+            frame.header.sequence_number,
+            static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+    }
     // Registry bootstrap entries are materialized under the request's
     // identifier profile.  Keep the engine context and identifier atoms on
     // the same profile so one parser-family request cannot be compared

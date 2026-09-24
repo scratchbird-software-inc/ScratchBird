@@ -1,3 +1,4 @@
+#include "../../src/engine/internal_api/catalog/column_metadata_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -393,6 +394,31 @@ exec::CanonicalResultPublicationRequest ClosureRowsRequest(
     return resolution;
   };
   return request;
+}
+
+bool ValidateNativeColumnMetadataPublication() {
+  auto request = RowsRequest();
+  for (std::size_t column = 0; column < request.physical_output_batch.columns.size(); ++column) {
+    auto& physical = request.physical_output_batch.columns[column];
+    api::CatalogColumnMetadata metadata;
+    metadata.text.emplace("nullable", physical.nullable ? "true" : "false");
+    metadata.identities.emplace("type_uuid", physical.descriptor.type_uuid);
+    if (!physical.descriptor.collation_uuid.is_nil())
+      metadata.identities.emplace("collation_uuid", physical.descriptor.collation_uuid);
+    if (!api::EncodeCatalogColumnMetadata(metadata, &physical.descriptor.encoded_descriptor))
+      return Require(false, "native column metadata fixture could not encode");
+    for (auto& row : request.physical_output_batch.rows)
+      row.values[column].descriptor = physical.descriptor;
+  }
+  const auto native = exec::PublishCanonicalResultEnvelope(request);
+  bool passed = Require(native.diagnostic.ok && native.published,
+                        "result publication rejected framed native column descriptors");
+  auto& malformed = request.physical_output_batch.columns.front().descriptor;
+  malformed.encoded_descriptor.pop_back();
+  const auto invalid = exec::PublishCanonicalResultEnvelope(request);
+  passed &= Require(!invalid.diagnostic.ok && !invalid.published,
+                    "result publication admitted truncated native column metadata");
+  return passed;
 }
 
 bool ValidateRowsEmptyCursorAndParity() {
@@ -1066,6 +1092,7 @@ bool ValidateBinaryDescriptorBindingAndCursorStaging() {
 // QOW-TEST-IAS-010-V1
 int main() {
   bool passed = true;
+  passed &= ValidateNativeColumnMetadataPublication();
   passed &= ValidateRowsEmptyCursorAndParity();
   passed &= ValidateDiagnosticAndCancellation();
   passed &= ValidateCursorCancellationAndCleanup();

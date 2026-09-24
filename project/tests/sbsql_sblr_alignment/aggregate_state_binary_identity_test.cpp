@@ -5,6 +5,7 @@
 // This is a spill-codec component test, not query execution or recovery proof.
 #include "../../src/engine/executor/aggregate_executor.cpp"
 
+#include "../../src/engine/internal_api/catalog/column_metadata_codec.hpp"
 #include <iostream>
 #include <stdexcept>
 
@@ -40,6 +41,57 @@ int main() {
     value.descriptor.encoded_descriptor = "nullability=non_null";
     value.state = api::EngineValueState::value;
     value.binary_value = {0,1,2,3,4,5,0x17,7,0x89,9,10,11,12,13,14,0xff};
+
+    // Persisted descriptors carry UUIDs in native typed metadata, including
+    // bytes that would be delimiters in the former text representation.
+    api::CatalogColumnMetadata native_fields;
+    native_fields.text = {{"canonical", "int128"}, {"nullable", "false"}};
+    auto domain = descriptor;
+    domain.bytes[14] = ';';
+    native_fields.identities.emplace("domain_uuid", domain);
+    auto native = value.descriptor;
+    Require(api::EncodeCatalogColumnMetadata(native_fields, &native.encoded_descriptor),
+            "native descriptor fixture did not encode");
+    auto derived = native;
+    Require(codec::CanonicalDerivedDescriptorTypeMatches(native, false, native, false),
+            "native descriptor rejected its own exact shape");
+    Require(codec::DeriveCanonicalNullableDescriptorEncoding(&derived) &&
+            codec::CanonicalDerivedDescriptorTypeMatches(native, false, derived, true),
+            "native descriptor could not derive nullable shape");
+    api::CatalogColumnMetadata restored_native;
+    Require(api::DecodeCatalogColumnMetadata(derived.encoded_descriptor, &restored_native) &&
+            restored_native.identities == native_fields.identities &&
+            restored_native.text.at("nullable") == "true",
+            "nullable derivation changed binary identity metadata");
+    auto crossed = native_fields;
+    crossed.identities.at("domain_uuid").bytes[15] ^= 1;
+    auto wrong_native = native;
+    Require(api::EncodeCatalogColumnMetadata(crossed, &wrong_native.encoded_descriptor) &&
+            !codec::CanonicalDerivedDescriptorTypeMatches(native, false, wrong_native, false),
+            "native shape comparison ignored changed binary identity");
+    for (const auto nullability : {"non_null", "nullable"}) {
+      auto duplicate = native_fields;
+      duplicate.text.emplace("nullability", nullability);
+      auto invalid = native;
+      Require(api::EncodeCatalogColumnMetadata(duplicate, &invalid.encoded_descriptor),
+              "duplicate nullability fixture did not encode");
+      const auto before = invalid.encoded_descriptor;
+      Require(!codec::DeriveCanonicalNullableDescriptorEncoding(&invalid) &&
+              before == invalid.encoded_descriptor,
+              "ambiguous nullability derivation changed native payload");
+      if (std::string_view(nullability) == "nullable")
+        Require(!codec::CanonicalDerivedDescriptorTypeMatches(invalid, false, invalid, false),
+                "native shape admitted inconsistent nullability");
+    }
+    for (std::size_t length = 6; length < native.encoded_descriptor.size(); ++length) {
+      auto truncated = native;
+      truncated.encoded_descriptor.resize(length);
+      const auto before = truncated.encoded_descriptor;
+      Require(!codec::DeriveCanonicalNullableDescriptorEncoding(&truncated) &&
+              before == truncated.encoded_descriptor &&
+              !codec::CanonicalDerivedDescriptorTypeMatches(native, false, truncated, false),
+              "truncated native descriptor accepted or changed");
+    }
 
     // Independent Core boolean v1 tuple; identity bytes never come from
     // metadata text. Exercise the actual join role-domain validator.

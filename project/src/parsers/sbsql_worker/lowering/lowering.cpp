@@ -45028,7 +45028,16 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
                                    "relational operand byte limit exceeded",
                                    "operand_bytes");
     }
-    if (operand.type != "relational_descriptor_v3" &&
+    const bool binary_record_slot = operand.type == "relational_descriptor_v3" ||
+        operand.type == "relational_expression_v2" ||
+        operand.type == "relational_window_definition_v2" ||
+        operand.type == "relational_window_invocation_v2" ||
+        operand.type == "relational_property_v3" ||
+        operand.type == "relational_node_binding_v2" ||
+        operand.type == "relational_row_pattern_v2";
+    // Each admitted binary record is validated by its exact typed decoder
+    // below. Text-only and unrelated slots must still reject binary bodies.
+    if (!binary_record_slot &&
         !scratchbird::engine::sblr::IsRelationalContextIdentitySlot(operand.name) &&
         (operand.canonical_value_kind != 0 || !operand.canonical_value_body.empty())) {
       return RefuseRelationalGraph("SBLR.OPERAND_INVALID",

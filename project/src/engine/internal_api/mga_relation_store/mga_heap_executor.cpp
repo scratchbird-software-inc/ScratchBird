@@ -978,11 +978,10 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
         output_descriptor.encoded_descriptor +=
             ";width=" + std::to_string(*relational_descriptor->width);
       }
-    } else if (output_descriptor.canonical_type_name == "text" &&
-               !output_descriptor.datatype_descriptor_uuid.is_nil() &&
-               !column.column_uuid.is_nil()) {
-      output_descriptor.descriptor_uuid = column.column_uuid;
     }
+    // Keep the persisted descriptor identity validated against the bound
+    // graph above. The column UUID names the storage column, not its type
+    // descriptor, and cannot replace the descriptor during materialization.
     output_descriptor.descriptor_kind = "scalar";
     batch.columns.push_back({column.canonical_name_key,
                              output_descriptor,

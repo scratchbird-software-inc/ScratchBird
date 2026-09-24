@@ -10,6 +10,7 @@
 // SEARCH_KEY: SB_SERVER_AUTH_SESSION_ATTACH
 
 #include "session_registry.hpp"
+#include "session_metadata_context.hpp"
 #include "native_identity_selector.hpp"
 #include "hash_digest.hpp"
 #include <stdexcept>
@@ -3220,6 +3221,66 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
                     .first;
   }
   return &cached_it->second;
+}
+
+bool AcquireServerMetadataContext(
+    ServerSessionRegistry* registry, ServerSessionRecord session,
+    const HostedEngineState& engine_state, const sbps::Frame& request,
+    engine_api::EngineRequestContext* context,
+    engine_bridge::StatementContextReceiptHandle* receipt,
+    ServerDiagnostic* diagnostic) {
+  const auto refuse = [&](const char* reason) {
+    if (diagnostic) *diagnostic = sbps::IpcDiagnostic(
+        "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_REQUEST_INVALID",
+        "parser_server_ipc.relation_descriptor_request_invalid",
+        "The engine refused metadata snapshot admission.", {{"reason", reason}});
+    return false;
+  };
+  if (!registry || !context || !receipt || *receipt ||
+      session.session_uuid != request.header.session_uuid ||
+      session.connection_uuid != request.header.connection_uuid)
+    return refuse("metadata_session_binding_invalid");
+  const auto selected = session.transactions_by_local_id.find(session.local_transaction_id);
+  if (selected == session.transactions_by_local_id.end() ||
+      selected->second.transaction_uuid != session.transaction_uuid ||
+      selected->second.lifecycle_state != ServerTransactionLifecycleState::kActive)
+    return refuse("metadata_transaction_selector_invalid");
+  const auto catalog = engine_api::LoadCatalogObjectLifecycleEpochState(
+      EngineCatalogEpochContextForSession(session, engine_state, request));
+  if (!catalog.ok) return refuse("metadata_catalog_unavailable");
+  session.catalog_generation = std::max(session.catalog_generation, catalog.state.metadata_epoch);
+  session.name_resolution_epoch = std::max(session.name_resolution_epoch, catalog.state.name_resolution_epoch);
+  std::string detail;
+  auto* public_context = EnsureServerPublicAbiSessionForContext(registry, session, &detail);
+  if (!public_context || !public_context->engine_session)
+    return refuse("metadata_engine_session_unavailable");
+  auto base = EngineContextForSession(session, engine_state, request);
+  base.statement_uuid = {};
+  base.statement_snapshot_uuid = {};
+  base.statement_metadata_snapshot_engine_owned = false;
+  base.statement_metadata_snapshot_uuid = {};
+  base.catalog_epoch_uuid = {};
+  base.resource_admission_uuid = {};
+  base.optimizer_capability_snapshot_uuid = {};
+  base.optimizer_resource_snapshot_uuid = {};
+  base.optimizer_route_snapshot_uuid = {};
+  base.statement_timestamp.clear();
+  base.current_timestamp.clear();
+  engine_bridge::StatementContextAcquireRequest acquire;
+  acquire.engine_context = &base;
+  acquire.exact_transaction_uuid = session.transaction_uuid;
+  engine_bridge::StatementContextReceiptView view;
+  sb_engine_result_t result = nullptr;
+  const auto status = engine_bridge::AcquireStatementContextReceipt(
+      public_context->engine_session, &acquire, receipt, &view, &result);
+  if (result) sb_engine_result_release(result);
+  if (status != SB_ENGINE_STATUS_OK || !*receipt)
+    return refuse("metadata_snapshot_acquisition_failed");
+  result = nullptr;
+  const auto copied = engine_bridge::CopyStatementContextEngineContextV1(*receipt, context, &result);
+  if (result) sb_engine_result_release(result);
+  if (copied != SB_ENGINE_STATUS_OK) return refuse("metadata_snapshot_copy_failed");
+  return true;
 }
 
 SessionOperationResult HandleAcquireStatementContext(
