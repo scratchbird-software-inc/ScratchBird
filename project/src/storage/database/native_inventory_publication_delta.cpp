@@ -28,7 +28,8 @@ bool Same(const Entry& a, const Entry& b) {
     a.begin_visible_through_local_transaction_id == b.begin_visible_through_local_transaction_id &&
     a.begin_visible_through_commit_sequence == b.begin_visible_through_commit_sequence &&
     a.commit_sequence == b.commit_sequence && a.evidence_record_required == b.evidence_record_required &&
-    a.evidence_record_written == b.evidence_record_written && a.rollback_only == b.rollback_only;
+    a.evidence_record_written == b.evidence_record_written && a.rollback_only == b.rollback_only &&
+    a.stable_snapshot == b.stable_snapshot;
 }
 disk::NativePageReference Ref(const disk::NativeCommonPageHeader& h) {
   return {h.filespace_uuid, h.page_number, h.page_generation, h.page_size_profile_uuid};

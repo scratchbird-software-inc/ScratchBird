@@ -533,6 +533,7 @@ std::string BuildPublishJournal(FileDevice* device,
       StoreLittle32(row + 28, (entry.evidence_record_required ? 1u : 0u) |
                               (entry.evidence_record_written ? 2u : 0u) |
                               (entry.rollback_only ? 4u : 0u) |
+                              (entry.stable_snapshot ? 32u : 0u) |
                               ((entry.archived_from_state == TransactionState::committed ? 1u :
                                 entry.archived_from_state == TransactionState::rolled_back ? 2u :
                                 entry.archived_from_state == TransactionState::failed_terminal ? 3u : 0u) << 3));
@@ -724,10 +725,11 @@ PublishJournalLoadResult ParsePublishJournal(FileDevice* device, const std::stri
       entry.identity.scope = static_cast<TransactionScope>(LoadLittle16(row + 24));
       entry.state = static_cast<TransactionState>(LoadLittle16(row + 26));
       const auto flags = LoadLittle32(row + 28);
-      if ((flags & ~31u) != 0) { return false; }
+      if ((flags & ~63u) != 0) { return false; }
       entry.evidence_record_required = (flags & 1u) != 0;
       entry.evidence_record_written = (flags & 2u) != 0;
       entry.rollback_only = (flags & 4u) != 0;
+      entry.stable_snapshot = (flags & 32u) != 0;
       const auto origin = (flags >> 3) & 3u;
       entry.archived_from_state = origin == 1 ? TransactionState::committed :
           origin == 2 ? TransactionState::rolled_back : origin == 3 ? TransactionState::failed_terminal : TransactionState::none;

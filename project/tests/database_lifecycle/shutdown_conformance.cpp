@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -10,6 +11,8 @@
 #include "database_lifecycle_test_memory.hpp"
 #include "disk_device.hpp"
 #include "maintenance_coordinator.hpp"
+#include "wire/management_request_codec.hpp"
+#include "../../drivers/tool/cli/binary_status_display.hpp"
 #include "sbps.hpp"
 #include "startup_state.hpp"
 #include "uuid.hpp"
@@ -90,7 +93,7 @@ Fixture CreateActiveDatabase(const std::filesystem::path& path, std::uint64_t no
 
   Fixture fixture;
   fixture.path = path;
-  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.database_uuid = scratchbird::wire::ManagementTargetBytes(create.database_uuid.value);
   fixture.page_size = created.state.header.page_size;
   return fixture;
 }
@@ -161,6 +164,23 @@ void TestGracefulShutdownCommitsCleanFinalTransaction(const std::filesystem::pat
       Snapshot(fixture));
   Require(result.ok, "graceful database shutdown was refused");
   Require(result.outcome == "shutdown_clean", "graceful shutdown outcome mismatch");
+  std::vector<scratchbird::wire::public_result::Field> fields;
+  Require(scratchbird::wire::binary_status::Decode(result.records_json, &fields),
+          "joined shutdown records are not a valid binary status packet");
+  std::size_t database_atoms = 0;
+  std::size_t uuid_atoms = 0;
+  for (const auto& field : fields) {
+    if (field.kind != scratchbird::wire::public_result::Kind::uuid) continue;
+    ++uuid_atoms;
+    Require(field.value.size() == 16, "shutdown UUID atom is not binary16");
+    if (field.value == fixture.database_uuid) ++database_atoms;
+  }
+  Require(database_atoms == 4 && uuid_atoms == 7,
+          "coordinator/runtime/storage array joining changed UUID atoms");
+  const auto display = scratchbird::cli::RenderBinaryStatus(result.records_json);
+  Require(display && display->starts_with("[{") && display->ends_with("}]") &&
+          Contains(*display, "},{"), "client could not render joined shutdown records");
+
   Require(coordinator.state == "closed_clean", "coordinator did not enter closed_clean");
   Require(coordinator.attach_admission_fenced && coordinator.write_admission_fenced &&
               coordinator.sblr_admission_fenced && coordinator.event_admission_fenced,
@@ -242,7 +262,8 @@ void TestForceShutdownRequiresExplicitPolicyAndDoesNotMarkClean(const std::files
       &coordinator,
       config,
       Request("shutdown_database_force",
-              "force_termination_policy_uuid:019e1100-0000-7000-8000-000000000011;"
+              "force_termination_policy_uuid:" + scratchbird::wire::ManagementTargetBytes(
+                  scratchbird::tests::FixtureUuidLiteral("019e1100-0000-7000-8000-000000000011")) + ";" +
               "recovery_evidence_preserved:true;acknowledgements_satisfied:true"),
       snapshot);
   Require(result.ok, "explicit force shutdown was refused");

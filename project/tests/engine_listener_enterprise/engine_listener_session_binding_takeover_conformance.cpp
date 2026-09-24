@@ -9,6 +9,7 @@
 
 #include "control_plane.hpp"
 #include "session_registry.hpp"
+#include "maintenance_coordinator.hpp"
 #include "../../drivers/tool/cli/binary_status_display.hpp"
 
 #include <array>
@@ -219,6 +220,46 @@ void ProveNativeRequestStatus() {
   const auto cancelled = CancelServerRequestLifecycle(&registry, target, actor, false, 0);
   Require(cancelled.accepted && !cancelled.error, "owner cancellation must remain accepted");
   verify(cancelled.records_json);
+}
+
+void ProveNativeMaintenanceStatus() {
+  using namespace scratchbird::server;
+  namespace packet = scratchbird::wire::public_result;
+  ServerBootstrapConfig config;
+  ServerLifecycleArtifacts artifacts;
+  auto coordinator = BuildMaintenanceCoordinator(config, artifacts);
+  ServerMaintenanceOperationRequest request;
+  request.operation_key = "begin_backup_fence";
+  request.request_uuid = Uuid(17);
+  request.session_uuid = Uuid(35);
+  request.request_uuid[11] = '\0';
+  request.request_uuid[12] = '\n';
+  request.request_uuid[13] = ']';
+  const auto begun = ApplyServerMaintenanceOperation(&coordinator, config, request);
+  Require(begun.ok && begun.finality_token_uuid.size() == 16 &&
+          coordinator.finality_by_token_uuid.contains(begun.finality_token_uuid),
+          "maintenance finality keys and returned tokens must remain binary16");
+  const auto bytes = MaintenanceFinalityRecordsJson(coordinator);
+  std::vector<packet::Field> fields;
+  Require(scratchbird::wire::binary_status::Decode(bytes, &fields), "maintenance finality must be framed");
+  std::vector<std::string> identities;
+  for (const auto& field : fields) if (field.kind == packet::Kind::uuid) identities.push_back(field.value);
+  Require(identities == std::vector<std::string>{begun.finality_token_uuid,
+          std::string(reinterpret_cast<const char*>(request.request_uuid.data()),16),
+          std::string(reinterpret_cast<const char*>(request.session_uuid.data()),16)},
+          "maintenance finality UUID atoms lost exact bytes");
+  Require(scratchbird::cli::RenderBinaryStatus(bytes).has_value(), "client maintenance display failed");
+  request.operation_key = "cancel_request";
+  request.target_uuid = begun.finality_token_uuid;
+  const auto cancelled = ApplyServerMaintenanceOperation(&coordinator, config, request);
+  Require(cancelled.ok && cancelled.outcome == "cancelled" &&
+          scratchbird::wire::binary_status::Decode(cancelled.records_json, &fields),
+          "native finality cancellation or array framing failed");
+  const auto generation = coordinator.generation;
+  request.target_uuid = "019e1100-0000-7000-8000-000000000011";
+  const auto invalid = ApplyServerMaintenanceOperation(&coordinator, config, request);
+  Require(!invalid.ok && coordinator.generation == generation,
+          "maintenance admitted human-readable target identity");
 }
 
 void ProveControlPlaneCodecCompatibility() {
@@ -510,6 +551,7 @@ void ProveMissingCapabilityRecordClearsInheritedAuthority() {
 int main() {
   ProveNativeRequestLookup();
   ProveNativeRequestStatus();
+  ProveNativeMaintenanceStatus();
   ProveControlPlaneCodecCompatibility();
   ProveBindingTakeoverAndClear();
   ProveTakeoverRejectsUnadmittedPhysicalChannel();

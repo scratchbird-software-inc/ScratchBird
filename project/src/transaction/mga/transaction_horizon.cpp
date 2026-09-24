@@ -102,6 +102,22 @@ TransactionHorizonResult CalculateLocalHorizons(const LocalTransactionInventory&
     ost = std::min(ost, snapshot_horizon.value);
   }
 
+  // Stable readers retain versions hidden by commits after their BEGIN,
+  // including writers with lower local numbers. This applies between
+  // statements as well as while a published statement snapshot is pinned.
+  u64 stable_commit_boundary = inventory.next_commit_sequence;
+  for (const auto& entry : inventory.entries)
+    if (entry.stable_snapshot && IsActiveForOat(entry.state))
+      stable_commit_boundary = std::min(stable_commit_boundary,
+                                       entry.begin_visible_through_commit_sequence);
+  if (stable_commit_boundary != inventory.next_commit_sequence) {
+    ost = std::min(ost, oit);
+    for (const auto& entry : inventory.entries)
+      if (HasCommittedInventoryOutcome(entry) &&
+          entry.commit_sequence > stable_commit_boundary)
+        ost = std::min(ost, entry.identity.local_id.value);
+  }
+
   result.horizons.next_transaction_id = MakeLocalTransactionId(inventory.next_local_transaction_id);
   result.horizons.oldest_interesting_transaction = MakeLocalTransactionId(oit);
   result.horizons.oldest_active_transaction = MakeLocalTransactionId(oat);

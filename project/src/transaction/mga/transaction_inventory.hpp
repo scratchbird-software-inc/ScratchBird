@@ -36,6 +36,8 @@ struct TransactionInventoryEntry {
   bool evidence_record_required = true;
   bool evidence_record_written = false;
   bool rollback_only = false;
+  // Admitted at BEGIN and immutable until retirement; persisted in inventory flags.
+  bool stable_snapshot = false;
 };
 
 // Trusted in-process optimistic-concurrency provenance, not durable state or

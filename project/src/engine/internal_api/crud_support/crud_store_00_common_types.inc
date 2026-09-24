@@ -18,6 +18,7 @@
 #include "local_transaction_store.hpp"
 #include "metric_producer.hpp"
 #include "transaction_inventory.hpp"
+#include "transaction/transaction_api.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
 
@@ -191,6 +192,14 @@ bool CrudRowVersionVisibleToContextInternal(const RelationReadSnapshot& state,
       row.temporary_session_uuid != context.session_uuid) {
     return false;
   }
+  std::optional<scratchbird::transaction::mga::SnapshotVectorDescriptor> admitted_snapshot;
+  if (!context.statement_snapshot_uuid.is_nil()) {
+    EngineResolveStatementSnapshotRequest request;
+    request.context = context;
+    auto resolved = EngineResolveStatementSnapshot(request);
+    if (!resolved.ok) return false;
+    admitted_snapshot = std::move(resolved.snapshot_vector);
+  }
   const std::uint64_t observer_tx = context.local_transaction_id;
   if (row.creator_tx == observer_tx) {
     const auto own = state.transactions.find(row.creator_tx);
@@ -202,6 +211,14 @@ bool CrudRowVersionVisibleToContextInternal(const RelationReadSnapshot& state,
   const auto it = state.transactions.find(row.creator_tx);
   if (it == state.transactions.end()) { return false; }
   if (it->second != "committed") { return false; }
+  if (admitted_snapshot) {
+    const auto excluded = [&](const auto& ids) {
+      return std::binary_search(ids.begin(), ids.end(), row.creator_tx);
+    };
+    return row.creator_tx <= admitted_snapshot->visible_committed_high_watermark &&
+        !excluded(admitted_snapshot->active_excluded_local_transaction_ids) &&
+        !excluded(admitted_snapshot->in_doubt_excluded_local_transaction_ids);
+  }
   const std::uint64_t visible_through = VisibilityHighWaterForContext(state, context);
   return visible_through == 0 || row.creator_tx <= visible_through;
 }

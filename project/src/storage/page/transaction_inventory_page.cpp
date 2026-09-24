@@ -71,6 +71,7 @@ namespace EntryFlag {
 inline constexpr u32 evidence_required = 1u << 0;
 inline constexpr u32 evidence_written = 1u << 1;
 inline constexpr u32 rollback_only = 1u << 2;
+inline constexpr u32 stable_snapshot = 1u << 5;
 }
 
 Status TxnPageOkStatus() {
@@ -98,6 +99,7 @@ u32 EntryFlags(const TransactionInventoryEntry& entry) {
   if (entry.evidence_record_required) { flags |= EntryFlag::evidence_required; }
   if (entry.evidence_record_written) { flags |= EntryFlag::evidence_written; }
   if (entry.rollback_only) { flags |= EntryFlag::rollback_only; }
+  if (entry.stable_snapshot) { flags |= EntryFlag::stable_snapshot; }
   const u32 origin = entry.archived_from_state == TransactionState::committed ? 1u :
       entry.archived_from_state == TransactionState::rolled_back ? 2u :
       entry.archived_from_state == TransactionState::failed_terminal ? 3u : 0u;
@@ -403,11 +405,12 @@ TransactionInventoryPageBodyResult ParseTransactionInventoryPageBody(const std::
     entry.identity.scope = static_cast<TransactionScope>(LoadLittle16(serialized.data() + offset + 24));
     entry.state = static_cast<TransactionState>(LoadLittle16(serialized.data() + offset + 26));
     const u32 flags = LoadLittle32(serialized.data() + offset + 28);
-    if ((flags & ~31u) != 0)
+    if ((flags & ~63u) != 0)
       return TxnPageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.entry_flags_invalid");
     entry.evidence_record_required = (flags & EntryFlag::evidence_required) != 0;
     entry.evidence_record_written = (flags & EntryFlag::evidence_written) != 0;
     entry.rollback_only = (flags & EntryFlag::rollback_only) != 0;
+    entry.stable_snapshot = (flags & EntryFlag::stable_snapshot) != 0;
     const auto origin = (flags >> 3) & 3u;
     entry.archived_from_state = origin == 1 ? TransactionState::committed :
         origin == 2 ? TransactionState::rolled_back : origin == 3 ? TransactionState::failed_terminal : TransactionState::none;
@@ -570,8 +573,8 @@ NativeTransactionInventoryPageResult DecodeNativeTransactionInventoryPage(const 
       e.identity.transaction_uuid={UuidKind::transaction,Get(in+8)};
       e.identity.scope=static_cast<TransactionScope>(LoadLittle16(in+24));
       e.state=static_cast<TransactionState>(LoadLittle16(in+26));
-      const auto flags=LoadLittle32(in+28); if (flags&~31u) return Fail(Error::invalid_inventory);
-      e.evidence_record_required=flags&1; e.evidence_record_written=flags&2; e.rollback_only=flags&4;
+      const auto flags=LoadLittle32(in+28); if (flags&~63u) return Fail(Error::invalid_inventory);
+      e.evidence_record_required=flags&1; e.evidence_record_written=flags&2; e.rollback_only=flags&4; e.stable_snapshot=flags&32;
       const auto origin=(flags>>3)&3;
       e.archived_from_state=origin==1?TransactionState::committed:origin==2?TransactionState::rolled_back:
           origin==3?TransactionState::failed_terminal:TransactionState::none;

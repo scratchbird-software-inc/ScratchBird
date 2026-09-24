@@ -1257,7 +1257,7 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
   }
 
   const auto transaction_timestamp = CurrentUtcTimestampText();
-  const auto begun = read_settings.read_only
+  auto begun = read_settings.read_only
                          ? BeginLocalReadOnlyTransaction(loaded.inventory,
                                                          *generated_transaction_uuid,
                                                          begin_unix_epoch_millis)
@@ -1272,6 +1272,14 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
                           "SB-MGA-TXN-LIFE-BEGIN-FAILED",
                           "mga.transaction_lifecycle.begin_failed"));
   }
+
+  // The admitted isolation boundary belongs to the durable transaction, not
+  // a later caller-supplied statement context.
+  begun.entry.stable_snapshot = isolation == "snapshot" ||
+      isolation == "repeatable_read" || isolation == "serializable";
+  for (auto& entry : begun.inventory.entries)
+    if (entry.identity.local_id.value == begun.entry.identity.local_id.value)
+      entry.stable_snapshot = begun.entry.stable_snapshot;
 
   EngineTransactionInventoryObservation observation;
   observation.transaction_uuid = begun.entry.identity.transaction_uuid.value.bytes;
@@ -2113,7 +2121,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   }
 
   const auto replacement_timestamp = CurrentUtcTimestampText();
-  const auto begun = read_settings.read_only
+  auto begun = read_settings.read_only
                          ? BeginLocalReadOnlyTransaction(finalized_inventory,
                                                          *generated_transaction_uuid,
                                                          begin_unix_epoch_millis)
@@ -2131,6 +2139,12 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
                           "SB-MGA-TXN-LIFE-BEGIN-FAILED",
                           "mga.transaction_lifecycle.begin_failed"));
   }
+
+  begun.entry.stable_snapshot = isolation == "snapshot" ||
+      isolation == "repeatable_read" || isolation == "serializable";
+  for (auto& entry : begun.inventory.entries)
+    if (entry.identity.local_id.value == begun.entry.identity.local_id.value)
+      entry.stable_snapshot = begun.entry.stable_snapshot;
 
   const scratchbird::core::platform::WholeStoreRealDmlCommitCrashScope
       whole_store_crash_scope(request.statement_succeeded &&

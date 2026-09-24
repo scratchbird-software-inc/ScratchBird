@@ -118,7 +118,8 @@ inline const char* ValidateLocalTransactionInventoryEvolution(
         old.identity.scope != entry.identity.scope) return "transaction_identity_changed";
     if (old.begin_unix_epoch_millis != entry.begin_unix_epoch_millis ||
         old.begin_visible_through_local_transaction_id != entry.begin_visible_through_local_transaction_id ||
-        old.begin_visible_through_commit_sequence != entry.begin_visible_through_commit_sequence)
+        old.begin_visible_through_commit_sequence != entry.begin_visible_through_commit_sequence ||
+        old.stable_snapshot != entry.stable_snapshot)
       return "transaction_begin_changed";
     if ((old.evidence_record_required && !entry.evidence_record_required) ||
         (old.evidence_record_written && !entry.evidence_record_written)) return "transaction_evidence_regressed";

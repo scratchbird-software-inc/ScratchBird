@@ -8,6 +8,15 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "api_types.hpp"
+#include "server_engine_bridge/statement_context.hpp"
+#include <memory>
+#include <map>
+#include <algorithm>
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
+#include "security/security_principal_lifecycle.hpp"
+#include "security/security_model.hpp"
 #include "agent_workload_resource_quota.hpp"
 #include "cache/sblr_template_cache.hpp"
 #include "database_lifecycle.hpp"
@@ -16,6 +25,8 @@
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "memory.hpp"
 #include "transaction/transaction_api.hpp"
+#include "local_transaction_store.hpp"
+#include "transaction_snapshot.hpp"
 #include "transaction/savepoint_api.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
@@ -204,23 +215,160 @@ std::string IdentityBytes(const api::EngineUuid& id) {
   return {reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size()};
 }
 
+class FixtureSession {
+ public:
+  explicit FixtureSession(const api::EngineRequestContext& context) {
+    sb_engine_open_params_v1_t open{};
+    open.struct_size = sizeof(open);
+    open.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    open.database_path_utf8 = context.database_path.data();
+    open.database_path_size = context.database_path.size();
+    open.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
+    Check(sb_engine_open(&open, &engine_, nullptr), nullptr, "engine open");
+    sb_engine_session_params_v1_t begin{};
+    begin.struct_size = sizeof(begin);
+    begin.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    std::copy(context.principal_uuid.bytes.begin(), context.principal_uuid.bytes.end(),
+              begin.effective_user_uuid.bytes);
+    std::copy(context.session_uuid.bytes.begin(), context.session_uuid.bytes.end(),
+              begin.session_uuid.bytes);
+    begin.default_language_utf8 = "en";
+    begin.default_language_size = 2;
+    begin.trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
+    Check(sb_engine_session_begin(engine_, &begin, &session_, nullptr), nullptr,
+          "session begin");
+  }
+  ~FixtureSession() {
+    sb_engine_session_end_params_v1_t end{};
+    end.struct_size = sizeof(end);
+    end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    end.rollback_active_transactions = 1;
+    end.cancel_open_results = 1;
+    (void)sb_engine_session_end(session_, &end, nullptr);
+    (void)sb_engine_close(engine_, nullptr);
+  }
+  FixtureSession(const FixtureSession&) = delete;
+  FixtureSession& operator=(const FixtureSession&) = delete;
+  sb_engine_session_t get() const { return session_; }
+  static void Check(sb_engine_status_t status, sb_engine_result_t result,
+                    const char* phase) {
+    if (status != SB_ENGINE_STATUS_OK && result != nullptr) {
+      sb_engine_diagnostic_set_view_t diagnostics{};
+      if (sb_engine_result_diagnostics(result, &diagnostics) == SB_ENGINE_STATUS_OK) {
+        for (std::size_t i = 0; i < diagnostics.diagnostic_count; ++i) {
+          const auto& d = diagnostics.diagnostics[i];
+          for (const auto text : {d.symbolic_code, d.message_key, d.safe_detail}) {
+            if (text.data) std::cerr.write(text.data, text.size_bytes);
+            std::cerr << ':';
+          }
+          std::cerr << '\n';
+        }
+      }
+    }
+    if (result) sb_engine_result_release(result);
+    if (status != SB_ENGINE_STATUS_OK)
+      Require(false, std::string("concurrency fixture ") + phase + " failed");
+  }
+ private:
+  sb_engine_handle_t engine_ = nullptr;
+  sb_engine_session_t session_ = nullptr;
+};
+
+class FixtureStatement {
+ public:
+  FixtureStatement(const FixtureSession& session, const api::EngineRequestContext& base) {
+    namespace bridge = scratchbird::server_engine_bridge;
+    bridge::StatementContextAcquireRequest request;
+    request.engine_context = &base;
+    request.exact_transaction_uuid = base.transaction_uuid;
+    bridge::StatementContextReceiptView view;
+    sb_engine_result_t result = nullptr;
+    const auto status = bridge::AcquireStatementContextReceipt(
+        session.get(), &request, &receipt_, &view, &result);
+    FixtureSession::Check(status, result, "statement acquisition");
+    result = nullptr;
+    const auto copied = bridge::CopyStatementContextEngineContextV1(
+        receipt_, &context, &result);
+    FixtureSession::Check(copied, result, "statement context copy");
+  }
+  ~FixtureStatement() {
+    (void)scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_);
+  }
+  FixtureStatement(const FixtureStatement&) = delete;
+  FixtureStatement& operator=(const FixtureStatement&) = delete;
+  api::EngineRequestContext context;
+ private:
+  scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt_;
+};
+
+std::map<api::EngineUuid, std::unique_ptr<FixtureSession>> fixture_sessions;
+const FixtureSession& SessionFor(const api::EngineRequestContext& context) {
+  auto& session = fixture_sessions[context.session_uuid];
+  if (!session) session = std::make_unique<FixtureSession>(context);
+  return *session;
+}
+
+api::EngineRequestContext fixture_owner;
+
+void InitializeOwner(const scratchbird::storage::database::DatabaseLifecycleResult& created,
+                     const std::filesystem::path& path) {
+  auto& owner = fixture_owner;
+  owner.database_path = path.string();
+  owner.database_uuid = created.state.database_uuid.value;
+  owner.default_root_uuid = created.state.filespace_uuid.value;
+  owner.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
+  owner.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  owner.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
+  const auto bootstrap = scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(owner.database_path);
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "concurrent session fixture durable bootstrap principal unavailable");
+  owner.principal_uuid = bootstrap.state.principal_uuid.value;
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(owner);
+  Require(loaded.ok, "concurrent session fixture durable security catalog unavailable");
+  const auto& lifecycle = loaded.state;
+  api::DurableAuthorizationState authority;
+  authority.authority_uuid = owner.database_uuid;
+  authority.security_context_generation = lifecycle.security_context_generation;
+  authority.security_epoch = lifecycle.security_generation;
+  authority.policy_epoch = lifecycle.policy_generation;
+  authority.catalog_generation_id = 1;
+  authority.engine_owned_sysarch_role_uuid = bootstrap.state.sysarch_role_uuid.value;
+  for (const auto& principal : lifecycle.principals)
+    if (!principal.deleted && principal.lifecycle_state == "active")
+      authority.principals.push_back({principal.principal_uuid, "principal", true,
+                                     authority.security_epoch});
+  for (const auto& role : lifecycle.roles)
+    if (!role.deleted && role.lifecycle_state == "active")
+      authority.roles.push_back({role.role_uuid, true, authority.security_epoch});
+  for (const auto& membership : lifecycle.memberships)
+    if (!membership.revoked)
+      authority.memberships.push_back({membership.member_principal_uuid, "principal",
+          membership.container_uuid, membership.container_kind, true, authority.security_epoch});
+  for (const auto& grant : lifecycle.grants)
+    if (!grant.revoked)
+      authority.grants.push_back({grant.grant_uuid, grant.grantee_uuid, grant.grantee_kind,
+          grant.target_object_uuid, grant.privilege, grant.grant_effect == "deny", true,
+          authority.security_epoch});
+  const auto materialized = api::MaterializeDurableAuthorizationContext(authority,
+      {owner.principal_uuid, authority.security_epoch, authority.policy_epoch,
+       authority.catalog_generation_id});
+  Require(materialized.ok, "concurrent session fixture durable authorization unavailable");
+  owner.authorization_context = materialized.context;
+
+}
+
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
                                       std::string session_suffix = "001") {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture_owner;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "fspe011e-concurrency";
   context.database_path = database_path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e07be-f11e-7000-8000-000000000001");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e07be-f11e-7000-8000-000000000002");
   context.session_uuid = FixtureIdentity(std::stoull(session_suffix, nullptr, 16));
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
   context.trace_tags.push_back("FSPE-011E");
   context.trace_tags.push_back("concurrent-session-transaction");
   return context;
@@ -285,6 +433,11 @@ sblr::SblrDispatchResult Dispatch(const std::filesystem::path& database_path,
   auto envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
       Envelope(canonical_operation_id, opcode));
   envelope.requires_transaction_context = requires_transaction;
+  std::unique_ptr<FixtureStatement> statement;
+  if (canonical_operation_id.starts_with("dml.")) {
+    statement = std::make_unique<FixtureStatement>(SessionFor(context), context);
+    context = statement->context;
+  }
   request.context = context;
   request.operation_id = canonical_operation_id;
   sblr::SblrDispatchRequest dispatch;
@@ -302,10 +455,30 @@ sblr::SblrDispatchResult Dispatch(const std::filesystem::path& database_path,
   return result;
 }
 
+void BindDatatype(api::EngineDescriptor& descriptor) {
+  namespace types = scratchbird::core::datatypes;
+  const auto manifest = types::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "concurrency datatype manifest unavailable");
+  const auto catalog = types::LookupDatatypeCatalogRow(manifest.manifest,
+      types::CanonicalTypeIdFromStableName(descriptor.canonical_type_name));
+  Require(catalog.ok() && catalog.manifest.descriptor_rows.size() == 1,
+          "concurrency datatype catalog row unavailable");
+  const auto& row = catalog.manifest.descriptor_rows.front();
+  const auto codec = types::LookupDatatypeTypeCodecIdentityV1(
+      fixture_owner.datatype_catalog_snapshot_uuid,
+      fixture_owner.datatype_catalog_generation, fixture_owner.datatype_registry_generation,
+      row.descriptor_uuid.value, row.descriptor_epoch);
+  Require(codec.ok, "concurrency datatype codec unavailable");
+  descriptor.datatype_descriptor_uuid = row.descriptor_uuid.value;
+  descriptor.datatype_descriptor_generation = row.descriptor_epoch;
+  descriptor.type_uuid = codec.row.type_uuid;
+}
+
 api::EngineTypedValue TextValue(std::string value) {
   api::EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
   typed.descriptor.canonical_type_name = "text";
+  BindDatatype(typed.descriptor);
   typed.encoded_value = std::move(value);
   return typed;
 }
@@ -319,6 +492,7 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name, std:
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
   column.descriptor.encoded_descriptor = "type=" + column.descriptor.canonical_type_name;
+  BindDatatype(column.descriptor);
   return column;
 }
 
@@ -332,6 +506,7 @@ api::EngineColumnDefinition ColumnWithUuidSuffix(std::uint32_t ordinal,
       FixtureIdentity(std::stoull(column_suffix, nullptr, 16));
   column.descriptor.descriptor_uuid =
       FixtureIdentity(std::stoull(descriptor_suffix, nullptr, 16));
+  BindDatatype(column.descriptor);
   return column;
 }
 
@@ -410,8 +585,11 @@ std::size_t SelectByIdFromTable(const std::filesystem::path& database_path,
   request.projection.canonical_projection_envelopes.push_back("note");
   api::EngineSelectRowsRequest select_request;
   static_cast<api::EngineApiRequest&>(select_request) = request;
-  select_request.context = context;
+  FixtureStatement statement(SessionFor(context), context);
+  select_request.context = statement.context;
   const auto selected = api::EngineSelectRows(select_request);
+  for (const auto& diagnostic : selected.diagnostics)
+    std::cerr << diagnostic.code << ":" << diagnostic.detail << "\n";
   Require(selected.ok, "select by id failed");
   return selected.result_shape.rows.size();
 }
@@ -471,6 +649,8 @@ void CreateSchemaTableAndIndex(const std::filesystem::path& database_path) {
   static_cast<api::EngineApiRequest&>(create_schema_request) = schema_request;
   create_schema_request.context = ddl_context;
   const auto schema = api::EngineCreateSchema(create_schema_request);
+  for (const auto& diagnostic : schema.diagnostics)
+    std::cerr << diagnostic.code << ":" << diagnostic.detail << "\n";
   Require(schema.ok && schema.primary_object.uuid == kSchemaUuid,
           "schema create did not preserve UUID");
 
@@ -524,13 +704,23 @@ void VerifyTransactionVisibility(const std::filesystem::path& database_path) {
   Require(SelectById(database_path, snapshot_reader, "writer-commit") == 0,
           "snapshot reader saw another session's uncommitted row");
 
+  auto read_committed_reader = BeginTransaction(database_path, "203");
+  Require(SelectById(database_path, read_committed_reader, "writer-commit") == 0,
+          "read-committed reader saw an uncommitted writer");
   Commit(database_path, writer);
   Require(SelectById(database_path, snapshot_reader, "writer-commit") == 0,
           "snapshot reader saw a post-snapshot commit");
+  auto caller_override = snapshot_reader;
+  caller_override.transaction_isolation_level = "read_committed";
+  Require(SelectById(database_path, caller_override, "writer-commit") == 0,
+          "caller context weakened the durable snapshot isolation admission");
 
-  auto read_committed_reader = BeginTransaction(database_path, "203");
   Require(SelectById(database_path, read_committed_reader, "writer-commit") == 1,
           "read-committed reader did not see committed row");
+  caller_override = read_committed_reader;
+  caller_override.transaction_isolation_level = "snapshot";
+  Require(SelectById(database_path, caller_override, "writer-commit") == 1,
+          "caller context replaced engine-owned read-committed admission");
   Commit(database_path, read_committed_reader);
 
   auto rollback_writer = BeginTransaction(database_path, "204");
@@ -1054,6 +1244,43 @@ void VerifyCdp032AlwaysActiveServerFinality(const std::filesystem::path& databas
                   rollback_context.transaction_uuid,
           "retired text rollback changed server transaction finality");
   Rollback(database_path, rollback_context);
+}
+
+void VerifyAutocommitReplacementIsolation(const std::filesystem::path& database_path) {
+  for (const bool succeeded : {false, true}) {
+    for (const std::string isolation : {"snapshot", "repeatable_read", "serializable",
+                                        "read_committed", "read_consistency"}) {
+      auto writer = BeginTransaction(database_path, "a90");
+      auto reader = BeginTransaction(database_path, "a91");
+      api::EngineAutocommitBoundaryRequest request;
+      request.context = reader;
+      request.statement_succeeded = succeeded;
+      request.replacement_isolation_level = isolation;
+      const auto result = api::EngineAutocommitBoundary(request);
+      Require(result.ok && result.replacement_local_transaction_id != 0,
+              "autocommit replacement transaction failed");
+      reader.local_transaction_id = result.replacement_local_transaction_id;
+      reader.transaction_uuid = result.replacement_transaction_uuid;
+      reader.transaction_isolation_level = isolation;
+      Commit(database_path, writer);
+      const auto loaded = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
+          database_path.string());
+      Require(loaded.ok(), "autocommit replacement inventory unavailable");
+      const bool stable = isolation == "snapshot" || isolation == "repeatable_read" ||
+                          isolation == "serializable";
+      const auto entry = std::find_if(loaded.inventory.entries.begin(), loaded.inventory.entries.end(),
+          [&](const auto& e) { return e.identity.local_id.value == reader.local_transaction_id; });
+      Require(entry != loaded.inventory.entries.end() && entry->stable_snapshot == stable,
+              "autocommit replacement lost admitted isolation in durable inventory");
+      const auto snapshot = tx::CreateLocalTransactionSnapshot(
+          loaded.inventory, tx::MakeLocalTransactionId(reader.local_transaction_id));
+      Require(snapshot.ok(), "autocommit replacement snapshot unavailable");
+      const auto& excluded = snapshot.visibility_snapshot.active_excluded_local_transaction_ids;
+      Require((std::find(excluded.begin(), excluded.end(), writer.local_transaction_id) != excluded.end()) == stable,
+              "autocommit replacement used wrong visibility for late lower-number writer");
+      Rollback(database_path, reader);
+    }
+  }
 }
 
 void VerifyCdp032AutocommitEmulation(const std::filesystem::path& database_path) {
@@ -2234,6 +2461,8 @@ int main() {
   Require(created.ok(), "credentialed lifecycle fixture database create failed");
   Require(std::filesystem::exists(database_path), "lifecycle create did not create database file");
 
+  InitializeOwner(created, database_path);
+
   auto open_result = Dispatch(database_path,
                               "lifecycle.open_database",
                               "SBLR_LIFECYCLE_OPEN_DATABASE",
@@ -2245,6 +2474,7 @@ int main() {
   VerifyDdlDmlOverlapPolicy(database_path);
   VerifyCdp032AlwaysActiveServerFinality(database_path);
   VerifyCdp032AutocommitEmulation(database_path);
+  VerifyAutocommitReplacementIsolation(database_path);
   VerifyCdp032PressureRestartPolicy(database_path);
   VerifyCdp032BackgroundPressureDoesNotStarveForegroundDml(database_path);
   VerifyNeutralV2MultiTransactionRouting(database_path);
@@ -2254,6 +2484,7 @@ int main() {
   VerifyServerSessionConformance();
   VerifyParserCacheConformance();
 
+  fixture_sessions.clear();
   std::cout << "sbsql_concurrent_session_transaction_conformance=passed\n";
   std::cout << "cdp_concurrency_transaction_stress_gate=passed\n";
   return EXIT_SUCCESS;

@@ -9,6 +9,7 @@
 // SEARCH_KEY: SB_SERVER_MAINTENANCE_RELOAD_SHUTDOWN
 
 #include "maintenance_coordinator.hpp"
+#include "wire/binary_status_packet.hpp"
 #include "management_request_codec.hpp"
 #include <algorithm>
 
@@ -23,6 +24,9 @@ namespace scratchbird::server {
 
 namespace {
 
+namespace status = scratchbird::wire::binary_status;
+namespace packet = scratchbird::wire::public_result;
+
 std::string JsonEscape(const std::string& value) {
   return EscapeMessageVectorText(value);
 }
@@ -30,19 +34,27 @@ std::string JsonEscape(const std::string& value) {
 ServerDiagnostic MaintenanceDiagnostic(std::string code,
                                        std::string message,
                                        std::vector<ServerDiagnosticField> fields = {}) {
-  return ServerDiagnostic{std::move(code),
-                          std::move(code),
-                          ServerDiagnosticSeverity::kError,
-                          std::move(message),
-                          std::move(fields)};
+  const auto message_key = code;
+  ServerDiagnostic diagnostic{std::move(code), message_key,
+      ServerDiagnosticSeverity::kError, std::move(message), {}};
+  for (auto& field : fields) {
+    if (field.key.ends_with("_uuid")) {
+      core::platform::Uuid id;
+      if (field.value.empty() || wire::DecodeManagementTarget(field.value, &id))
+        diagnostic.identity_fields.emplace_back(std::move(field.key), id);
+      else
+        diagnostic.fields.push_back({field.key + "_invalid", "true"});
+    } else diagnostic.fields.push_back(std::move(field));
+  }
+  return diagnostic;
 }
 
 std::string BoolText(bool value) {
   return value ? "true" : "false";
 }
 
-std::string TokenText(const std::array<std::uint8_t, 16>& uuid) {
-  return UuidBytesToText(uuid);
+std::string TokenBytes(const std::array<std::uint8_t, 16>& uuid) {
+  return {reinterpret_cast<const char*>(uuid.data()), uuid.size()};
 }
 
 void ApplyModeFences(ServerMaintenanceCoordinator* coordinator,
@@ -209,11 +221,11 @@ std::string ShutdownRuntimeRecordJson(const ServerMaintenanceOperationRequest& r
                                        "drain_complete",
                                        snapshot.drain_complete ||
                                            snapshot.active_transaction_session_count == 0);
-  std::ostringstream out;
+  status::Stream out;
   out << "[{\"operation_key\":\"" << JsonEscape(request.operation_key)
       << "\",\"shutdown_mode\":\"" << JsonEscape(shutdown_mode)
       << "\",\"database_ref\":\"" << JsonEscape(snapshot.database_path.empty() ? "" : "[path-redacted]")
-      << "\",\"database_uuid\":\"" << JsonEscape(snapshot.database_uuid)
+      << "\",\"database_uuid\":\"" << status::Identity(std::string_view(snapshot.database_uuid))
       << "\",\"association_scope_proven\":" << BoolText(snapshot.association_scope_proven)
       << ",\"notified_manager_count\":" << snapshot.associated_manager_count
       << ",\"notified_listener_count\":" << snapshot.associated_listener_count
@@ -229,7 +241,7 @@ std::string ShutdownRuntimeRecordJson(const ServerMaintenanceOperationRequest& r
       << ",\"parser_fallback_used\":" << BoolText(parser_fallback_used)
       << ",\"listener_unavailable\":" << BoolText(snapshot.listener_unavailable)
       << ",\"clean_shutdown_marked\":" << BoolText(clean_shutdown_marked)
-      << ",\"force_termination_policy_uuid\":\"" << JsonEscape(force_policy_uuid)
+      << ",\"force_termination_policy_uuid\":\"" << status::Identity(std::string_view(force_policy_uuid))
       << "\",\"recovery_evidence_preserved\":" << BoolText(recovery_evidence_preserved)
       << ",\"unknown_transaction_finality_preserved\":"
       << BoolText(shutdown_mode == "force" && snapshot.active_transaction_session_count != 0)
@@ -261,15 +273,15 @@ ServerDiagnostic StorageLifecycleDiagnostic(
 std::string DatabaseLifecycleRecordJson(
     const scratchbird::storage::database::DatabaseLifecycleState& state,
     const std::string& operation_key) {
-  std::ostringstream out;
+  status::Stream out;
   out << "[{\"operation_key\":\"" << JsonEscape(operation_key)
       << "\",\"database_ref\":\"" << JsonEscape(state.path.empty() ? "" : "[path-redacted]")
       << "\",\"phase\":\""
       << scratchbird::storage::database::DatabaseLifecyclePhaseName(state.phase)
       << "\",\"database_uuid\":\""
-      << JsonEscape(scratchbird::core::uuid::UuidToString(state.database_uuid.value))
+      << status::Identity(state.database_uuid.value)
       << "\",\"filespace_uuid\":\""
-      << JsonEscape(scratchbird::core::uuid::UuidToString(state.filespace_uuid.value))
+      << status::Identity(state.filespace_uuid.value)
       << "\",\"read_only_open\":" << BoolText(state.read_only_open)
       << ",\"write_admission_fenced\":" << BoolText(state.write_admission_fenced)
       << ",\"startup_recovery_classification\":\""
@@ -286,19 +298,46 @@ std::string DatabaseLifecycleRecordJson(
 }
 
 std::string JoinRecordArrays(const std::string& left, const std::string& right) {
-  if (left == "[]" || left.empty()) return right.empty() ? "[]" : right;
-  if (right == "[]" || right.empty()) return left;
-  return left.substr(0, left.size() - 1) + "," + right.substr(1);
+  std::vector<packet::Field> joined{{"contract", packet::Kind::text, std::string(status::kContract)},
+                                    {"text", packet::Kind::text, "["}};
+  bool first = true;
+  for (const auto* bytes : {&left, &right}) {
+    if (bytes->empty() || *bytes == "[]") continue;
+    std::vector<packet::Field> fields;
+    if (!status::Decode(*bytes, &fields) || fields.size() < 2 ||
+        fields[1].kind != packet::Kind::text || !fields[1].value.starts_with("[") ||
+        fields.back().kind != packet::Kind::text || !fields.back().value.ends_with("]"))
+      throw std::invalid_argument("maintenance_status_array_invalid");
+    fields[1].value.erase(0, 1);
+    fields.back().value.pop_back();
+    fields.erase(fields.begin());
+    std::erase_if(fields, [](const auto& field) {
+      return field.kind == packet::Kind::text && field.value.empty();
+    });
+    if (fields.empty()) continue;
+    if (!first) joined.push_back({"text", packet::Kind::text, ","});
+    first = false;
+    joined.insert(joined.end(), fields.begin(), fields.end());
+  }
+  joined.push_back({"text", packet::Kind::text, "]"});
+  std::string encoded;
+  if (!packet::Encode(joined, &encoded)) throw std::invalid_argument("maintenance_status_encode_failed");
+  return encoded;
+}
+
+std::string FinalityDetail(const std::string& detail) {
+  std::vector<packet::Field> fields;
+  return status::Decode(detail, &fields) ? detail : JsonEscape(detail);
 }
 
 std::string FinalityRecordJson(const ServerFinalityRecord& finality) {
-  std::ostringstream out;
-  out << "{\"finality_token_uuid\":\"" << JsonEscape(TokenText(finality.finality_token_uuid))
-      << "\",\"request_uuid\":\"" << JsonEscape(TokenText(finality.request_uuid))
-      << "\",\"session_uuid\":\"" << JsonEscape(TokenText(finality.session_uuid))
+  status::Stream out;
+  out << "{\"finality_token_uuid\":\"" << status::Identity(finality.finality_token_uuid)
+      << "\",\"request_uuid\":\"" << status::Identity(finality.request_uuid)
+      << "\",\"session_uuid\":\"" << status::Identity(finality.session_uuid)
       << "\",\"operation\":\"" << JsonEscape(finality.operation)
       << "\",\"state\":\"" << JsonEscape(finality.state)
-      << "\",\"detail\":\"" << JsonEscape(finality.detail)
+      << "\",\"detail\":\"" << FinalityDetail(finality.detail)
       << "\",\"policy_generation\":" << finality.policy_generation << "}";
   return out.str();
 }
@@ -315,7 +354,7 @@ ServerFinalityRecord RecordMaintenanceFinality(ServerMaintenanceCoordinator* coo
   finality.state = state;
   finality.detail = detail;
   finality.policy_generation = coordinator->generation;
-  const auto token = TokenText(finality.finality_token_uuid);
+  const auto token = TokenBytes(finality.finality_token_uuid);
   coordinator->last_finality_token = token;
   coordinator->finality_by_token_uuid[token] = finality;
   return finality;
@@ -329,8 +368,8 @@ ServerMaintenanceOperationResult Done(ServerMaintenanceCoordinator* coordinator,
   result.outcome = std::move(outcome);
   result.state_after = coordinator->state;
   const auto finality = RecordMaintenanceFinality(coordinator, request, result.outcome, std::move(detail));
-  result.finality_token_uuid = TokenText(finality.finality_token_uuid);
-  result.records_json = "[" + MaintenanceCoordinatorRecordsJson(*coordinator).substr(1);
+  result.finality_token_uuid = TokenBytes(finality.finality_token_uuid);
+  result.records_json = MaintenanceCoordinatorRecordsJson(*coordinator);
   return result;
 }
 
@@ -343,7 +382,7 @@ ServerMaintenanceOperationResult DatabaseDone(ServerMaintenanceCoordinator* coor
   result.outcome = std::move(outcome);
   result.state_after = coordinator->state;
   const auto finality = RecordMaintenanceFinality(coordinator, request, result.outcome, std::move(detail));
-  result.finality_token_uuid = TokenText(finality.finality_token_uuid);
+  result.finality_token_uuid = TokenBytes(finality.finality_token_uuid);
   result.records_json = JoinRecordArrays(MaintenanceCoordinatorRecordsJson(*coordinator),
                                          DatabaseLifecycleRecordJson(database_result.state,
                                                                      request.operation_key));
@@ -397,7 +436,7 @@ ServerDiagnostic MaintenanceAdmissionDiagnostic(const ServerMaintenanceCoordinat
 }
 
 std::string MaintenanceCoordinatorRecordsJson(const ServerMaintenanceCoordinator& coordinator) {
-  std::ostringstream out;
+  status::Stream out;
   out << "[{\"server_state\":\"" << JsonEscape(coordinator.state)
       << "\",\"state_generation\":" << coordinator.generation
       << ",\"reload_generation\":" << coordinator.reload_generation
@@ -421,13 +460,13 @@ std::string MaintenanceCoordinatorRecordsJson(const ServerMaintenanceCoordinator
       << ",\"shutdown_active_transaction_session_count\":"
       << coordinator.shutdown_active_transaction_session_count
       << ",\"shutdown_mode\":\"" << JsonEscape(coordinator.shutdown_mode)
-      << "\",\"shutdown_database_uuid\":\"" << JsonEscape(coordinator.shutdown_database_uuid)
-      << "\",\"database_uuid\":\"" << JsonEscape(coordinator.database_uuid)
+      << "\",\"shutdown_database_uuid\":\"" << status::Identity(std::string_view(coordinator.shutdown_database_uuid))
+      << "\",\"database_uuid\":\"" << status::Identity(std::string_view(coordinator.database_uuid))
       << "\",\"permitted_maintenance_operations\":\""
       << JsonEscape(coordinator.permitted_maintenance_operations)
       << "\",\"last_operation\":\"" << JsonEscape(coordinator.last_operation)
       << "\",\"last_outcome\":\"" << JsonEscape(coordinator.last_outcome)
-      << "\",\"last_finality_token_uuid\":\"" << JsonEscape(coordinator.last_finality_token)
+      << "\",\"last_finality_token_uuid\":\"" << status::Identity(std::string_view(coordinator.last_finality_token))
       << "\",\"observability_contract\":\"DBLC_P15_OBSERVABILITY_COMPLETE"
       << "\",\"message_vector_shape\":\"diag.server.lifecycle.v1"
       << "\",\"cache_invalidation_marker_required\":true"
@@ -438,7 +477,7 @@ std::string MaintenanceCoordinatorRecordsJson(const ServerMaintenanceCoordinator
 }
 
 std::string MaintenanceFinalityRecordsJson(const ServerMaintenanceCoordinator& coordinator) {
-  std::ostringstream out;
+  status::Stream out;
   out << "[";
   bool first = true;
   for (const auto& [_, finality] : coordinator.finality_by_token_uuid) {
@@ -479,13 +518,34 @@ ServerMaintenanceOperationResult ApplyDatabaseShutdownOperation(
         MaintenanceDiagnostic(std::move(code), std::move(message), std::move(fields)));
     const auto finality =
         RecordMaintenanceFinality(coordinator, request, "refused", std::move(finality_detail));
-    refused.finality_token_uuid = TokenText(finality.finality_token_uuid);
+    refused.finality_token_uuid = TokenBytes(finality.finality_token_uuid);
     coordinator->last_outcome = refused.outcome;
     return refused;
   };
 
+  core::platform::Uuid target;
+  const auto valid_optional = [](const std::string& bytes) {
+    core::platform::Uuid id;
+    return bytes.empty() || wire::DecodeManagementTarget(bytes, &id);
+  };
+  if (!valid_optional(request.target_uuid) ||
+      !valid_optional(coordinator->database_uuid) ||
+      !valid_optional(coordinator->shutdown_database_uuid) ||
+      !valid_optional(coordinator->last_finality_token)) {
+    result.ok = false;
+    result.outcome = "refused";
+    result.diagnostics.push_back(MaintenanceDiagnostic(
+        "SERVER.MAINTENANCE.IDENTITY_INVALID", "Maintenance identities require native binary16 UUIDs."));
+    return result;
+  }
   result.state_before = coordinator->state;
   coordinator->last_operation = request.operation_key;
+
+  std::vector<std::string> mode_fields;
+  if (!wire::SplitManagementMode(request.mode, &mode_fields) ||
+      !valid_optional(snapshot.database_uuid))
+    return refuse("ENGINE.SHUTDOWN_INPUT_INVALID", "Shutdown identities and options require native binary16 UUIDs.",
+                  "shutdown_binary_identity_invalid");
 
   const bool force = IsForceShutdownRequest(request);
   const std::string shutdown_mode = force ? "force" : "graceful";
@@ -510,6 +570,7 @@ ServerMaintenanceOperationResult ApplyDatabaseShutdownOperation(
                   {{"database_uuid", snapshot.database_uuid}});
   }
   if (!request.target_uuid.empty() &&
+      wire::DecodeManagementTarget(request.target_uuid, &target) && !target.is_nil() &&
       !snapshot.database_uuid.empty() &&
       request.target_uuid != snapshot.database_uuid) {
     return refuse("ENGINE.SHUTDOWN_SCOPE_INVALID",
@@ -618,7 +679,8 @@ ServerMaintenanceOperationResult ApplyDatabaseShutdownOperation(
     if (force_policy_uuid.empty()) force_policy_uuid = ModeValue(request.mode, "force_policy_uuid");
     recovery_evidence_preserved =
         ModeBool(request.mode, "recovery_evidence_preserved", false);
-    if (force_policy_uuid.empty()) {
+    core::platform::Uuid force_policy;
+    if (!wire::DecodeManagementTarget(force_policy_uuid, &force_policy) || force_policy.is_nil()) {
       return refuse("ENGINE.SHUTDOWN_INPUT_INVALID",
                     "Force shutdown requires an explicit force termination policy UUID.",
                     "shutdown_force_policy_uuid_missing");
@@ -665,7 +727,7 @@ ServerMaintenanceOperationResult ApplyDatabaseShutdownOperation(
       result.outcome,
       force ? "shutdown_force_runtime_terminated_with_mga_recovery_evidence"
             : "shutdown_clean_final_lifecycle_transaction_committed");
-  result.finality_token_uuid = TokenText(finality.finality_token_uuid);
+  result.finality_token_uuid = TokenBytes(finality.finality_token_uuid);
   result.records_json = JoinRecordArrays(
       MaintenanceCoordinatorRecordsJson(*coordinator),
       ShutdownRuntimeRecordJson(request,
@@ -703,6 +765,21 @@ ServerMaintenanceOperationResult ApplyServerMaintenanceOperation(
     result.outcome = "refused";
     result.diagnostics.push_back(MaintenanceDiagnostic(
         "SERVER.MAINTENANCE.MODE_INVALID", "Maintenance options contain malformed binary identity or duplicate fields."));
+    return result;
+  }
+  core::platform::Uuid target;
+  const auto valid_optional = [](const std::string& bytes) {
+    core::platform::Uuid id;
+    return bytes.empty() || wire::DecodeManagementTarget(bytes, &id);
+  };
+  if (!valid_optional(request.target_uuid) ||
+      !valid_optional(coordinator->database_uuid) ||
+      !valid_optional(coordinator->shutdown_database_uuid) ||
+      !valid_optional(coordinator->last_finality_token)) {
+    result.ok = false;
+    result.outcome = "refused";
+    result.diagnostics.push_back(MaintenanceDiagnostic(
+        "SERVER.MAINTENANCE.IDENTITY_INVALID", "Maintenance identities require native binary16 UUIDs."));
     return result;
   }
   result.state_before = coordinator->state;
@@ -749,12 +826,11 @@ ServerMaintenanceOperationResult ApplyServerMaintenanceOperation(
     }
     ++coordinator->shutdown_acknowledged_count;
     coordinator->shutdown_generation = acknowledgement_generation_value;
-    result = Done(coordinator,
-                  request,
-                  "shutdown_acknowledged",
-                  "acknowledger_kind=" + acknowledger_kind +
-                      ";acknowledger_uuid=" + acknowledger_uuid +
-                      ";acknowledgement_state=" + acknowledgement_state);
+    status::Stream detail;
+    detail << "acknowledger_kind=" << JsonEscape(acknowledger_kind)
+           << ";acknowledger_uuid=" << status::Identity(std::string_view(acknowledger_uuid))
+           << ";acknowledgement_state=" << JsonEscape(acknowledgement_state);
+    result = Done(coordinator, request, "shutdown_acknowledged", detail.str());
   } else if (request.operation_key == "enter_database_maintenance" ||
              request.operation_key == "exit_database_maintenance" ||
              request.operation_key == "enter_restricted_open" ||
@@ -876,7 +952,7 @@ ServerMaintenanceOperationResult ApplyServerMaintenanceOperation(
       return result;
     }
 
-    coordinator->database_uuid = scratchbird::core::uuid::UuidToString(database_result.state.database_uuid.value);
+    coordinator->database_uuid = TokenBytes(database_result.state.database_uuid.value.bytes);
     ++coordinator->generation;
     const std::string outcome =
         request.operation_key == "enter_database_maintenance" ? "maintenance_enabled" :
@@ -966,13 +1042,18 @@ ServerMaintenanceOperationResult ApplyServerMaintenanceOperation(
     if (found == coordinator->finality_by_token_uuid.end()) {
       result.outcome = "unknown_finality";
       result.state_after = coordinator->state;
-      result.records_json = "[{\"requested_finality_token_uuid\":\"" + JsonEscape(request.target_uuid) +
-                            "\",\"finality_state\":\"unknown\",\"diagnostic_code\":\"SERVER.REQUEST.FINALITY_UNKNOWN\"}]";
+      status::Stream records;
+      records << "[{\"requested_finality_token_uuid\":\""
+              << status::Identity(std::string_view(request.target_uuid))
+              << "\",\"finality_state\":\"unknown\",\"diagnostic_code\":\"SERVER.REQUEST.FINALITY_UNKNOWN\"}]";
+      result.records_json = records.str();
       RecordMaintenanceFinality(coordinator, request, "unknown_finality", "no matching active request");
     } else {
       found->second.state = "cancelled";
       found->second.detail = "operator_cancelled";
-      result.records_json = "[" + FinalityRecordJson(found->second) + "]";
+      status::Stream records;
+      records << "[" << FinalityRecordJson(found->second) << "]";
+      result.records_json = records.str();
       result.outcome = "cancelled";
       result.state_after = coordinator->state;
     }

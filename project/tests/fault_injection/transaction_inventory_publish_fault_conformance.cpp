@@ -220,7 +220,8 @@ bool SameInventory(const txn::LocalTransactionInventory& lhs,
         left.commit_sequence != right.commit_sequence ||
         left.evidence_record_required != right.evidence_record_required ||
         left.evidence_record_written != right.evidence_record_written ||
-        left.rollback_only != right.rollback_only) {
+        left.rollback_only != right.rollback_only ||
+        left.stable_snapshot != right.stable_snapshot) {
       return false;
     }
   }
@@ -272,6 +273,7 @@ std::string BuildPublishJournalBody(const Fixture& fixture, std::string_view pha
       Put(bytes, offset + 28, (entry.evidence_record_required ? 1 : 0) |
                               (entry.evidence_record_written ? 2 : 0) |
                               (entry.rollback_only ? 4 : 0) |
+                              (entry.stable_snapshot ? 32 : 0) |
                               ((entry.archived_from_state == txn::TransactionState::committed ? 1u :
                                 entry.archived_from_state == txn::TransactionState::rolled_back ? 2u :
                                 entry.archived_from_state == txn::TransactionState::failed_terminal ? 3u : 0u) << 3), 4);
@@ -617,6 +619,7 @@ bool TestBinaryPublicationContract() {
   old_inventory.entries.back().state = txn::TransactionState::read_only_active;
   old_inventory.entries.back().evidence_record_required = false;
   old_inventory.entries.back().rollback_only = true;
+  old_inventory.entries.back().stable_snapshot = true;
   auto new_inventory = InventoryWithCommittedTransactions(7200, 1, old_inventory);
   const auto archived = txn::ArchiveLocalTransaction(new_inventory, new_inventory.entries[0].identity.local_id);
   ok = Require(archived.ok(), "archive actual committed fixture transaction") && ok;
@@ -660,6 +663,7 @@ bool TestBinaryPublicationContract() {
     invalid_write(bad); }
   { auto bad = new_inventory; bad.next_local_transaction_id = 0; invalid_write(bad); }
   { auto bad = new_inventory; bad.next_commit_sequence = 0; invalid_write(bad); }
+  { auto bad = new_inventory; bad.entries[0].stable_snapshot = !bad.entries[0].stable_snapshot; invalid_write(bad); }
   { auto bad = new_inventory; bad.entries[0].commit_sequence = 0; invalid_write(bad); }
   { auto bad = new_inventory; bad.entries[1].commit_sequence = 2; invalid_write(bad); }
   { auto bad = new_inventory; bad.entries[0].begin_visible_through_commit_sequence = bad.next_commit_sequence; invalid_write(bad); }
@@ -727,7 +731,7 @@ bool TestBinaryPublicationContract() {
     mutate(row, 0, 8);
     mutate(row + 24, 2, 2);
     mutate(row + 26, 0, 2); mutate(row + 26, 14, 2);
-    mutate(row + 28, 32, 4);
+    mutate(row + 28, 64, 4); // Bit5 is the admitted stable-snapshot setting.
     mutate(row + 56, ~u64{0}, 8);
     mutate(row + 64, ~u64{0}, 8);
   }

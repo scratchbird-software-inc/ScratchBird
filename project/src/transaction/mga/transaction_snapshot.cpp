@@ -114,6 +114,16 @@ bool IsCanonicalExclusionVector(const std::vector<u64>& values,
          });
 }
 
+u64 SnapshotRetentionBoundary(const SnapshotVectorDescriptor& descriptor) {
+  u64 boundary = std::min(descriptor.oldest_interesting_transaction.value,
+                          descriptor.owning_transaction.value);
+  for (const auto id : descriptor.active_excluded_local_transaction_ids)
+    boundary = std::min(boundary, id);
+  for (const auto id : descriptor.in_doubt_excluded_local_transaction_ids)
+    boundary = std::min(boundary, id);
+  return boundary;
+}
+
 bool SnapshotVectorStructurallyComplete(
     const SnapshotVectorDescriptor& descriptor) {
   if (!descriptor.snapshot_uuid.valid() ||
@@ -145,8 +155,7 @@ bool SnapshotVectorStructurallyComplete(
       descriptor.oldest_snapshot_transaction.value !=
           descriptor.retention_horizon_transaction.value ||
       descriptor.oldest_snapshot_transaction.value !=
-          std::min(descriptor.oldest_interesting_transaction.value,
-                   descriptor.owning_transaction.value) ||
+          SnapshotRetentionBoundary(descriptor) ||
       !IsCanonicalExclusionVector(
           descriptor.active_excluded_local_transaction_ids,
           descriptor.publication_inventory_next_local_transaction_id - 1) ||
@@ -292,15 +301,23 @@ TransactionSnapshotResult CreateLocalTransactionSnapshot(const LocalTransactionI
     return result;
   }
 
+  const u64 commit_boundary = lookup.entry.stable_snapshot
+      ? lookup.entry.begin_visible_through_commit_sequence
+      : inventory.next_commit_sequence - 1;
+  u64 visible_high_watermark = kInvalidLocalTransactionId;
+  for (const auto& entry : inventory.entries)
+    if (HasCommittedInventoryOutcome(entry) && entry.commit_sequence <= commit_boundary)
+      visible_high_watermark = std::max(visible_high_watermark, entry.identity.local_id.value);
+
   result.snapshot.reader_transaction = reader_transaction;
   result.snapshot.visible_through_local_transaction =
-      MakeLocalTransactionId(LatestCommittedLocalTransactionId(inventory));
+      MakeLocalTransactionId(visible_high_watermark);
   result.snapshot.transaction_start_visible_through_local_transaction =
       MakeLocalTransactionId(lookup.entry.begin_visible_through_local_transaction_id);
   result.snapshot.oldest_active_transaction = horizons.horizons.oldest_active_transaction;
   result.snapshot.oldest_snapshot_transaction = horizons.horizons.oldest_snapshot_transaction;
   result.snapshot.allow_reader_own_uncommitted = true;
-  result.snapshot.visible_through_commit_sequence = inventory.next_commit_sequence - 1;
+  result.snapshot.visible_through_commit_sequence = commit_boundary;
   result.snapshot.transaction_start_visible_through_commit_sequence =
       lookup.entry.begin_visible_through_commit_sequence;
   result.visibility_snapshot.reader_transaction = reader_transaction;
@@ -309,10 +326,11 @@ TransactionSnapshotResult CreateLocalTransactionSnapshot(const LocalTransactionI
   result.visibility_snapshot.visible_through_local_transaction_id_is_boundary = true;
   result.visibility_snapshot.allow_reader_own_uncommitted = true;
   result.visibility_snapshot.recovery_context = false;
-  result.visibility_snapshot.visible_through_commit_sequence = inventory.next_commit_sequence - 1;
+  result.visibility_snapshot.visible_through_commit_sequence = commit_boundary;
   result.visibility_snapshot.visible_through_commit_sequence_is_boundary = true;
   for (const auto& entry : inventory.entries) {
-    if (IsActiveSnapshotExclusion(entry.state)) {
+    if (IsActiveSnapshotExclusion(entry.state) ||
+        (HasCommittedInventoryOutcome(entry) && entry.commit_sequence > commit_boundary)) {
       result.visibility_snapshot.active_excluded_local_transaction_ids.push_back(entry.identity.local_id.value);
     } else if (IsInDoubtSnapshotExclusion(entry.state)) {
       result.visibility_snapshot.in_doubt_excluded_local_transaction_ids.push_back(entry.identity.local_id.value);
@@ -421,11 +439,6 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
       established_snapshot.snapshot.oldest_active_transaction;
   descriptor.oldest_interesting_transaction =
       horizons.horizons.oldest_interesting_transaction;
-  descriptor.oldest_snapshot_transaction = MakeLocalTransactionId(
-      std::min(horizons.horizons.oldest_interesting_transaction.value,
-               owning_transaction.value));
-  descriptor.retention_horizon_transaction =
-      descriptor.oldest_snapshot_transaction;
   descriptor.snapshot_kind = SnapshotVectorKind::statement_stable;
   descriptor.publication_inventory_next_local_transaction_id =
       inventory.next_local_transaction_id;
@@ -434,6 +447,9 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
       established_snapshot.visibility_snapshot.active_excluded_local_transaction_ids;
   descriptor.in_doubt_excluded_local_transaction_ids =
       established_snapshot.visibility_snapshot.in_doubt_excluded_local_transaction_ids;
+  descriptor.oldest_snapshot_transaction =
+      MakeLocalTransactionId(SnapshotRetentionBoundary(descriptor));
+  descriptor.retention_horizon_transaction = descriptor.oldest_snapshot_transaction;
 
   constexpr u64 kGenerationAttempts = 32;
   for (u64 attempt = 0; attempt < kGenerationAttempts; ++attempt) {

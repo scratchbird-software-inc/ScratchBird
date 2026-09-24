@@ -49,7 +49,7 @@ Bytes Oracle(const page::NativeTransactionInventoryPage& p){
  u64 header_hash=14695981039346656037ull;for(unsigned i=0;i<128;++i){header_hash^=b[i];header_hash*=1099511628211ull;}Num(b,96,8,header_hash);
  std::copy_n("SBTINV01",8,b.begin()+128);Num(b,136,2,1);Num(b,138,2,256);Num(b,140,4,384+72*p.inventory.entries.size());Put(b,144,p.object_uuid);Num(b,160,8,p.inventory_generation);Num(b,168,8,p.inventory.next_local_transaction_id);Num(b,176,8,p.inventory.next_commit_sequence);Num(b,184,4,p.inventory.entries.size());if(p.previous)PutRef(b,192,*p.previous);if(p.next)PutRef(b,240,*p.next);
  u64 oit=p.inventory.next_local_transaction_id,oat=oit;
- for(std::size_t i=0;i<p.inventory.entries.size();++i){const auto& e=p.inventory.entries[i];const auto at=384+72*i;Num(b,at,8,e.identity.local_id.value);Put(b,at+8,e.identity.transaction_uuid.value);Num(b,at+24,2,u16(e.identity.scope));Num(b,at+26,2,u16(e.state));const unsigned origin=e.archived_from_state==State::committed?1:e.archived_from_state==State::rolled_back?2:e.archived_from_state==State::failed_terminal?3:0;Num(b,at+28,4,(e.evidence_record_required?1:0)|(e.evidence_record_written?2:0)|(e.rollback_only?4:0)|(origin<<3));Num(b,at+32,8,e.begin_unix_epoch_millis);Num(b,at+40,8,e.final_unix_epoch_millis);Num(b,at+48,8,e.begin_visible_through_local_transaction_id);Num(b,at+56,8,e.begin_visible_through_commit_sequence);Num(b,at+64,8,e.commit_sequence);
+ for(std::size_t i=0;i<p.inventory.entries.size();++i){const auto& e=p.inventory.entries[i];const auto at=384+72*i;Num(b,at,8,e.identity.local_id.value);Put(b,at+8,e.identity.transaction_uuid.value);Num(b,at+24,2,u16(e.identity.scope));Num(b,at+26,2,u16(e.state));const unsigned origin=e.archived_from_state==State::committed?1:e.archived_from_state==State::rolled_back?2:e.archived_from_state==State::failed_terminal?3:0;Num(b,at+28,4,(e.evidence_record_required?1:0)|(e.evidence_record_written?2:0)|(e.rollback_only?4:0)|(e.stable_snapshot?32:0)|(origin<<3));Num(b,at+32,8,e.begin_unix_epoch_millis);Num(b,at+40,8,e.final_unix_epoch_millis);Num(b,at+48,8,e.begin_visible_through_local_transaction_id);Num(b,at+56,8,e.begin_visible_through_commit_sequence);Num(b,at+64,8,e.commit_sequence);
   const auto outcome=e.state==State::archived?e.archived_from_state:e.state;if(outcome!=State::committed&&outcome!=State::rolled_back)oit=std::min(oit,e.identity.local_id.value);if(e.state==State::active||e.state==State::read_only_active)oat=std::min(oat,e.identity.local_id.value);
  }
  Num(b,288,8,oit);Num(b,296,8,oat);Num(b,304,8,oat);Seal(b);return b;
@@ -242,8 +242,47 @@ void BeginIsolation() {
   }
  }
 }
+void StableSnapshotBoundary() {
+  for (bool stable : {false, true}) {
+    const auto writer = mga::BeginLocalTransaction(mga::MakeEmptyLocalTransactionInventory(),
+        {UuidKind::transaction, Id(920)}, 2000);
+    auto prior = mga::BeginLocalTransaction(writer.inventory, {UuidKind::transaction, Id(921)}, 2001);
+    prior = mga::CommitLocalTransaction(prior.inventory, prior.entry.identity.local_id, 2002);
+    auto reader = mga::BeginLocalTransaction(prior.inventory, {UuidKind::transaction, Id(922)}, 2003);
+    Check(reader.ok(), "begin snapshot reader");
+    reader.inventory.entries.back().stable_snapshot = stable;
+    const auto committed = mga::CommitLocalTransaction(reader.inventory, writer.entry.identity.local_id, 2004);
+    Check(committed.ok(), "commit earlier-number writer after reader begin");
+    const auto horizons = mga::ComputeLocalTransactionHorizons(committed.inventory);
+    Check(horizons.ok() && horizons.horizons.oldest_snapshot_transaction.value ==
+          (stable ? writer.entry.identity.local_id.value : reader.entry.identity.local_id.value),
+          "stable readers retain earlier-number late writers between statements");
+    const auto snapshot = mga::PublishStatementStableSnapshotVector(committed.inventory,
+        reader.entry.identity.local_id, 2005);
+    Check(snapshot.ok(), "publish admitted transaction snapshot");
+    const auto& exclusions = snapshot.descriptor.active_excluded_local_transaction_ids;
+    Check((std::find(exclusions.begin(), exclusions.end(), writer.entry.identity.local_id.value) != exclusions.end()) == stable,
+          "stable snapshots exclude late lower-number commits; read committed refreshes");
+    Check(snapshot.descriptor.visible_committed_high_watermark >= prior.entry.identity.local_id.value,
+          "prior committed row remains visible");
+    mga::ReleasePublishedSnapshotVector(snapshot.descriptor.snapshot_uuid);
+    Fixture f;
+    f.before[0].inventory.entries[0].stable_snapshot = stable;
+    f.after[0].inventory.entries[0].stable_snapshot = stable;
+    f.Refresh();
+    const auto decoded = page::DecodeNativeTransactionInventoryPage(f.old_images[0]);
+    Check(decoded.ok() && decoded.page->inventory.entries[0].stable_snapshot == stable,
+          "native inventory preserves admitted snapshot setting");
+    const auto encoded = page::EncodeNativeTransactionInventoryPage(f.before[0]);
+    Check(encoded.ok() && encoded.bytes == f.old_images[0], "stable flag encoder matches independent binary oracle");
+    Check(f.CheckDelta().ok(), "unchanged snapshot setting admitted");
+    f.after[0].inventory.entries[0].stable_snapshot = !stable;
+    f.Refresh();
+    Failed(f.CheckDelta());
+  }
+}
 void Faults(){Fixture f(0,4);allocations=0;counting=true;const auto base=f.CheckDelta();counting=false;const auto sites=allocations;Check(base.ok()&&sites,"allocation baseline");for(unsigned long at=0;at<=sites;++at){allocation_budget=at;const auto result=f.CheckDelta();const auto left=allocation_budget;allocation_budget=-1;if(at==sites)Check(result.ok()&&left==0,"exact allocation success boundary");else{Check(result.error==E::resource_exhausted&&left==-1,"all required allocations consumed and classified");Failed(result);}}
  hash_seen=0;hash_counting=true;const auto hashed=f.CheckDelta();hash_counting=false;const auto hashes=hash_seen;Check(hashed.ok()&&hashes,"hash baseline");for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){hash_target=at;hash_fault=mode;hash_seen=0;const auto result=f.CheckDelta();const bool consumed=!hash_fault;hash_fault=0;hash_active=false;Check(consumed&&result.error==E::hash_failure,"every digest failure consumed and classified");Failed(result);}std::cout<<"allocation sites="<<sites<<" hashes="<<hashes<<"\n";
 }
 }
-int main(){try{ColdFaults();Profiles();Negatives();Differences();Boundaries();BeginCandidates();BeginCounterEdges();BeginIsolation();Faults();std::cout<<"native inventory publication delta checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}
+int main(){try{ColdFaults();Profiles();Negatives();Differences();Boundaries();BeginCandidates();BeginCounterEdges();BeginIsolation();StableSnapshotBoundary();Faults();std::cout<<"native inventory publication delta checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}

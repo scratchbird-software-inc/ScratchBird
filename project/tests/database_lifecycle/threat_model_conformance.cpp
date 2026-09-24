@@ -8,12 +8,18 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "agent_feature_gates.hpp"
+#include "credentialed_database_fixture.hpp"
+#include "database_lifecycle_test_memory.hpp"
+#include "security/security_principal_lifecycle.hpp"
+#include "transaction/transaction_api.hpp"
 #include "agent_workload_resource_quota.hpp"
 #include "backup_archive/backup_archive_api.hpp"
 #include "config_policy_security_lifecycle.hpp"
 #include "management/support_bundle_api.hpp"
 #include "manager_control.hpp"
 #include "maintenance_coordinator.hpp"
+#include "wire/management_request_codec.hpp"
+#include "../../drivers/tool/cli/binary_status_display.hpp"
 #include "sbps.hpp"
 #include "server_observability.hpp"
 #include "session_registry.hpp"
@@ -253,7 +259,8 @@ void TestForceShutdownRuntimeGate(const std::filesystem::path& temp_dir) {
 
   server::ServerShutdownRuntimeSnapshot snapshot;
   snapshot.database_path = config.database_default_path.string();
-  snapshot.database_uuid = "019e13d0-0000-7000-8000-000000000001";
+  snapshot.database_uuid = scratchbird::wire::ManagementTargetBytes(
+      scratchbird::tests::FixtureUuidLiteral("019e13d0-0000-7000-8000-000000000001"));
   snapshot.association_scope_proven = true;
   snapshot.associated_manager_count = 1;
   snapshot.associated_listener_count = 1;
@@ -288,7 +295,8 @@ void TestForceShutdownRuntimeGate(const std::filesystem::path& temp_dir) {
       &coordinator,
       config,
       MaintenanceRequest("shutdown_database_force",
-                         "force_termination_policy_uuid:019e13d0-0000-7000-8000-000000000011;"
+                         "force_termination_policy_uuid:" + scratchbird::wire::ManagementTargetBytes(
+                  scratchbird::tests::FixtureUuidLiteral("019e13d0-0000-7000-8000-000000000011")) + ";" +
                          "recovery_evidence_preserved:true;acknowledgements_satisfied:true"),
       snapshot);
   Require(safe.ok && Contains(safe.records_json, "unknown_transaction_finality_preserved"),
@@ -331,9 +339,85 @@ sbps::Frame ManagementFrame(const std::array<std::uint8_t, 16>& session_uuid,
   return frame;
 }
 
+struct AuditorFixture {
+  api::EngineUuid database_uuid;
+  api::EngineUuid principal_uuid;
+  std::uint64_t security_epoch;
+  std::uint64_t policy_epoch;
+};
+
+AuditorFixture CreateAuditor(const std::filesystem::path& path) {
+  namespace db = scratchbird::storage::database;
+  const auto created = scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(path, {});
+  Require(created.ok(), "auditor database bootstrap failed");
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+  Require(bootstrap.ok() && bootstrap.state.committed_by_inventory, "auditor bootstrap authority unavailable");
+  api::EngineRequestContext owner;
+  owner.trust_mode = api::EngineTrustMode::server_isolated;
+  owner.database_path = path.string();
+  owner.database_uuid = created.state.database_uuid.value;
+  owner.default_root_uuid = created.state.filespace_uuid.value;
+  owner.principal_uuid = bootstrap.state.principal_uuid.value;
+  owner.session_uuid = api::EngineUuid{sbps::MakeUuidV7Bytes()};
+  owner.security_context_present = true;
+  owner.catalog_generation_id = 1;
+  owner.resource_epoch = 1;
+  owner.name_resolution_epoch = 1;
+  const auto refresh = [&]() {
+    const auto loaded = api::LoadSecurityPrincipalLifecycleState(owner);
+    Require(loaded.ok, "auditor security catalog unavailable");
+    owner.security_epoch = loaded.state.security_generation;
+    server::ServerSessionRecord session;
+    session.session_uuid = owner.session_uuid.bytes;
+    session.effective_user_uuid = owner.principal_uuid.bytes;
+    session.policy_generation = loaded.state.policy_generation;
+    session.catalog_generation = owner.catalog_generation_id;
+    owner.authorization_context = server::MaterializeDurableManagementAuthorizationContext(session, owner);
+    Require(owner.authorization_context.present, "auditor owner authorization unavailable");
+  };
+  const auto check = [](const auto& result, const char* message) {
+    for (const auto& diagnostic : result.diagnostics)
+      std::cerr << diagnostic.code << ":" << diagnostic.detail << "\n";
+    Require(result.ok, message);
+  };
+  refresh();
+  api::EngineBeginTransactionRequest begin;
+  begin.context = owner;
+  const auto begun = api::EngineBeginTransaction(begin);
+  check(begun, "auditor security transaction begin failed");
+  owner.local_transaction_id = begun.local_transaction_id;
+  owner.transaction_uuid = begun.transaction_uuid;
+  owner.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+  api::EngineSecurityCreatePrincipalRequest principal;
+  principal.context = owner;
+  principal.principal_uuid = api::EngineUuid{sbps::MakeUuidV7Bytes()};
+  principal.principal_name = "auditor";
+  principal.credential_fingerprint = std::string(scratchbird::tests::database_lifecycle::kCredentialedFixtureFingerprint);
+  check(api::EngineSecurityCreatePrincipal(principal), "durable auditor creation failed");
+  refresh();
+  api::EngineSecurityGrantPrivilegeRequest grant;
+  grant.context = owner;
+  grant.grant_uuid = api::EngineUuid{sbps::MakeUuidV7Bytes()};
+  grant.grantee_uuid = principal.principal_uuid;
+  grant.target_object_uuid = owner.database_uuid;
+  grant.target_object_kind = "server_management";
+  grant.privilege = "OBS_MANAGEMENT_INSPECT";
+  check(api::EngineSecurityGrantPrivilege(grant), "durable auditor inspection grant failed");
+  api::EngineCommitTransactionRequest commit;
+  commit.context = owner;
+  check(api::EngineCommitTransaction(commit), "auditor security commit failed");
+  owner.local_transaction_id = 0;
+  owner.transaction_uuid = {};
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(owner);
+  Require(loaded.ok, "committed auditor catalog unavailable");
+  return {owner.database_uuid, principal.principal_uuid, loaded.state.security_generation,
+          loaded.state.policy_generation};
+}
+
 void TestManagementIpcHealthAuthGate(const std::filesystem::path& temp_dir) {
   const auto database_path = temp_dir / "management.sbdb";
-  const auto database_uuid = scratchbird::tests::FixtureUuidLiteral("019e13d0-0000-7000-8000-000000000002");
+  const auto fixture = CreateAuditor(database_path);
+  const auto database_uuid = fixture.database_uuid;
   server::ServerBootstrapConfig config;
   config.database_default_path = database_path;
   config.control_dir = temp_dir / "control";
@@ -374,10 +458,11 @@ void TestManagementIpcHealthAuthGate(const std::filesystem::path& temp_dir) {
   const auto auditor = AddSession(&registry, "auditor", database_path, database_uuid);
   auto& auditor_session =
       registry.sessions_by_uuid[scratchbird::core::platform::Uuid{auditor}];
-  auditor_session.embedded_in_process = true;
-  auditor_session.engine_authorization_trace_tags = {
-      "security.fixture_trace_authority",
-      "right:OBS_MANAGEMENT_INSPECT"};
+  auditor_session.embedded_in_process = false;
+  auditor_session.principal_uuid = fixture.principal_uuid.bytes;
+  auditor_session.effective_user_uuid = fixture.principal_uuid.bytes;
+  auditor_session.security_epoch = fixture.security_epoch;
+  auditor_session.policy_generation = fixture.policy_epoch;
   const auto denied =
       server::HandleServerManagementRequest(context, ManagementFrame(auditor, "verify_database"));
   Require(denied.error && HasManagementDiagnostic(denied, "SECURITY.ACCESS_DENIED"),
@@ -564,6 +649,7 @@ void TestFeatureAndQuotaThreatGates() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("threat_model_conformance");
   const auto temp_dir = MakeTempDir();
   TestCentralThreatModelGate();
   TestForceShutdownRuntimeGate(temp_dir);
