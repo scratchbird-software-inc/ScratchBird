@@ -392,13 +392,6 @@ void WriteParserPipelinePhaseTrace(
       "SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE", trace.str());
 }
 
-std::string NewRowUuid() {
-  static std::uint64_t sequence = 0;
-  const auto generated =
-      uuid::GenerateEngineIdentityV7(UuidKind::row, CurrentUnixMillis() + (++sequence));
-  return generated.ok() ? uuid::UuidToString(generated.value.value) : std::string{};
-}
-
 UuidKind UuidKindForCreatedObjectClass(std::string_view object_class) {
   std::string normalized;
   normalized.reserve(object_class.size());
@@ -4673,6 +4666,21 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.canonical_type_name = column->canonical_type_name;
       if (column->character_length != 0) {
         descriptor.width_precision_scale.width = column->character_length;
+      }
+      // Window sources retain the same exact projected datatype cohort as
+      // ordinary catalog scans. These catalog descriptor UUIDs are distinct
+      // from the statement-issued result/operand profile UUIDs.
+      if (column->datatype_identity_present) {
+        descriptor.descriptor_generation = column->datatype_descriptor_generation;
+        descriptor.type_uuid = column->datatype_type_uuid;
+        descriptor.type_generation = column->datatype_type_generation;
+        descriptor.codec_id = column->datatype_codec_id;
+        descriptor.codec_version = column->datatype_codec_version;
+        descriptor.codec_generation = column->datatype_codec_generation;
+        descriptor.statement_receipt_uuid = statement_context.literal_preliminary_receipt_uuid;
+        descriptor.datatype_catalog_snapshot_uuid = projection.datatype_catalog_snapshot_uuid;
+        descriptor.datatype_catalog_generation = projection.datatype_catalog_generation;
+        descriptor.datatype_registry_generation = projection.datatype_registry_generation;
       }
       context.descriptors.push_back(std::move(descriptor));
       context.expressions.push_back(
@@ -22051,52 +22059,6 @@ std::string TransactionRollbackOperationEnvelope() {
                                 "SBSFC-021-copy-stream-full-route-rollback");
 }
 
-std::string EngineBackedCopyStreamImportEnvelope(std::string_view target_object_uuid) {
-  const auto good_row_uuid = NewRowUuid();
-  const auto reject_row_uuid = NewRowUuid();
-  std::string out = ExactOperationEnvelope("dml.execute_import_rows",
-                                           "SBLR_DML_EXECUTE_IMPORT_ROWS",
-                                           "sblr.dml.operation.v3",
-                                           true,
-                                           "SBSFC-021-copy-stream-full-route-import");
-  out += "copy_stream_kind=copy_import\n";
-  out += "target_object_uuid=";
-  out += target_object_uuid;
-  out += "\n";
-  out += "target_object_kind=table\n";
-  out += "source_kind=csv_stream\n";
-  out += "source_fingerprint=sbsfc021-copy-stream-full-route\n";
-  out += "source_position=row:0\n";
-  out += "format_family=csv\n";
-  out += "encoding=utf8\n";
-  out += "line_ending=lf\n";
-  out += "delimiter=,\n";
-  out += "quote=\"\n";
-  out += "escape=\"\n";
-  out += "header_policy=absent\n";
-  out += "estimated_row_count=2\n";
-  out += "duplicate_mode=error\n";
-  out += "require_generated_row_uuid=true\n";
-  out += "reject_mode=reject_row\n";
-  out += "reject_limit_rows=10\n";
-  out += "reject_payload_policy=diagnostic_only\n";
-  out += "resume_policy=fail_closed\n";
-  out += "checkpoint_mode=disabled\n";
-  out += "operand=row_field\t";
-  out += good_row_uuid;
-  out += "|id\t8\n";
-  out += "operand=row_field\t";
-  out += good_row_uuid;
-  out += "|payload\tstream-valid\n";
-  out += "operand=row_field\t";
-  out += reject_row_uuid;
-  out += "|id\t6\n";
-  out += "operand=row_field\t";
-  out += reject_row_uuid;
-  out += "|payload\tstream-duplicate\n";
-  return out;
-}
-
 std::optional<engine::internal_api::RelationalTypeDescriptor> DecodeProofDescriptor(const SblrOperand& operand) {
   engine::internal_api::RelationalTypeDescriptor descriptor;
   if (operand.type != "relational_descriptor_v3" || !operand.value.empty() ||
@@ -22713,17 +22675,16 @@ ResolvedObjectReferenceSeed Rcp080ProofSeed(
   const auto type_uuid = [](const std::string_view type) {
     const auto manifest =
         scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
-    if (!manifest.ok()) return std::string{};
+    if (!manifest.ok()) return core::platform::Uuid{};
     const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
         manifest.manifest,
         scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
             std::string(type)));
     if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
         !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
-      return std::string{};
+      return core::platform::Uuid{};
     }
-    return scratchbird::core::uuid::UuidToString(
-        row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    return row.manifest.descriptor_rows.front().descriptor_uuid.value;
   };
   const auto add_column = [&](const std::string_view name,
                               const std::string_view type,
@@ -22740,10 +22701,10 @@ ResolvedObjectReferenceSeed Rcp080ProofSeed(
     column.type_descriptor_kind = "canonical_type_descriptor";
     column.canonical_type_name = std::string(type);
     column.nullable = false;
-    column.encoded_type_descriptor =
-        "type_uuid=" +
-        type_uuid(manifest_type.empty() ? type : manifest_type) +
-        ";nullability=non_null";
+    // Structural proof input keeps identity in its native slot. This does
+    // not invent a codec row or claim receipt authority for this fixture.
+    column.datatype_type_uuid = type_uuid(manifest_type.empty() ? type : manifest_type);
+    column.encoded_type_descriptor = "nullability=non_null";
     projection.columns.push_back(std::move(column));
   };
   if (ref.object_class == "time_series") {
